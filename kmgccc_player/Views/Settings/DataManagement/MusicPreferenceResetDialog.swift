@@ -187,14 +187,7 @@ private final class MusicPreferenceResetDialogController: NSObject, NSWindowDele
         applyCurrentAppearance(to: panel)
 
         self.panel = panel
-        panel.center()
-        panel.makeKeyAndOrderFront(nil)
-        panel.orderFrontRegardless()
-        panel.alphaValue = 0
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.2
-            panel.animator().alphaValue = 1
-        }
+        AppDialogTokens.presentWithMotion(panel)
     }
 
     func bringToFront() {
@@ -205,22 +198,14 @@ private final class MusicPreferenceResetDialogController: NSObject, NSWindowDele
     func dismiss() {
         guard let panel, !viewModel.isRunning else { return }
 
-        NSAnimationContext.runAnimationGroup(
-            { context in
-                context.duration = 0.18
-                panel.animator().alphaValue = 0
-            },
-            completionHandler: { [weak self] in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    let onClose = self.onClose
-                    self.onClose = nil
-                    self.panel = nil
-                    panel.close()
-                    onClose?()
-                }
-            }
-        )
+        AppDialogTokens.animatePanelOpacity(panel, to: 0) { [weak self] in
+            guard let self else { return }
+            let onClose = self.onClose
+            self.onClose = nil
+            self.panel = nil
+            panel.close()
+            onClose?()
+        }
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {

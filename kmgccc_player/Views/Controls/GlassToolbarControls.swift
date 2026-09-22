@@ -6,6 +6,7 @@
 //  - Glass is background only; content stays crisp above it.
 //
 
+import MotionKit
 import SwiftUI
 
 /// Base icon button with Liquid Glass background and crisp foreground content.
@@ -260,7 +261,7 @@ struct GlassToolbarTriplePill: View {
                     .contentTransition(
                         .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
                     )
-                    .animation(.snappy(duration: 0.22), value: isMultiselectActive)
+                    .motionAnimation(.microInteraction, value: isMultiselectActive)
                     .frame(
                         width: GlassStyleTokens.headerControlHeight,
                         height: GlassStyleTokens.headerControlHeight

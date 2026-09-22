@@ -214,7 +214,7 @@ final class NCMImportProgressDialogPresenter: NSObject, NSWindowDelegate {
         hostingView.autoresizingMask = [.width, .height]
         
         visualEffect.addSubview(hostingView)
-        AppDialogTokens.presentWithFade(panel)
+        AppDialogTokens.presentWithMotion(panel)
 
         // Start conversion asynchronously - use DispatchQueue to ensure it doesn't block
         presenter.startConversionAsync(ncmFiles: ncmFiles, viewModel: viewModel)

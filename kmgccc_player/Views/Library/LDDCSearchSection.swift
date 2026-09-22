@@ -329,7 +329,6 @@ struct LDDCSearchSection: View {
                     SlidingSelector(
                         segments: LDDCMode.allCases,
                         selection: $selectedMode,
-                        animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
                         hSpacing: 0,
                         background: {
                             Color.clear
@@ -362,7 +361,6 @@ struct LDDCSearchSection: View {
                     SlidingSelector(
                         segments: [true, false],
                         selection: $includeTranslation,
-                        animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
                         hSpacing: 0,
                         background: {
                             Color.clear

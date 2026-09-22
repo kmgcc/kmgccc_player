@@ -5,6 +5,7 @@
 //  kmgccc_player - Appearance Settings View
 //
 
+import MotionKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -14,6 +15,9 @@ struct AppearanceSettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.settingsAppForegroundColors) private var appColors
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     @State private var globalArtworkTintEnabled: Bool = AppSettings.shared.globalArtworkTintEnabled
     @State private var audioVisualizationHDREnabled: Bool = AppSettings.shared.audioVisualizationHDREnabled
@@ -52,6 +56,21 @@ struct AppearanceSettingsView: View {
     // cursor without flying off; it is purely cosmetic and never feeds reorder.
     private let dragHorizontalDamping: CGFloat = 0.45
     private let dragHorizontalLimit: CGFloat = 28
+
+    private var motionPolicy: MotionPolicy {
+        configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
+    }
+
+    private var reorderAnimation: Animation? {
+        motionPolicy.animation(for: motionTokens[.control])
+    }
+
+    private func settleAnimation(initialVelocity: Double = 0) -> Animation? {
+        motionPolicy.animation(
+            for: motionTokens[.gestureSettle],
+            initialVelocity: initialVelocity
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -147,7 +166,6 @@ struct AppearanceSettingsView: View {
             SlidingSelector(
                 segments: AppSettings.LyricsBackgroundMode.allCases,
                 selection: $lyricsBackgroundMode,
-                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
                 hSpacing: 0,
                 background: {
                     Color.clear
@@ -185,7 +203,6 @@ struct AppearanceSettingsView: View {
             SlidingSelector(
                 segments: AppSettings.HomeCardMaterialMode.allCases,
                 selection: $homeCardMaterialMode,
-                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
                 hSpacing: 0,
                 background: {
                     Color.clear
@@ -259,7 +276,7 @@ struct AppearanceSettingsView: View {
                 Spacer(minLength: 0)
 
                 Button("恢复默认排序") {
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                withAnimation(reorderAnimation) {
                         homeSectionOrder = HomeSection.defaultOrder
                         draggingSection = nil
                         isFinishingDrag = false
@@ -343,14 +360,14 @@ struct AppearanceSettingsView: View {
 
                 // Animate ONLY the reorder, so neighbours slide while the pill
                 // keeps tracking the cursor without any animation interference.
-                withAnimation(.snappy(duration: 0.16)) {
+                withAnimation(reorderAnimation) {
                     homeSectionOrder.move(
                         fromOffsets: IndexSet(integer: current),
                         toOffset: target > current ? target + 1 : target
                     )
                 }
             }
-            .onEnded { _ in
+            .onEnded { value in
                 // Persist once at the end (not per onChanged) to avoid hammering
                 // UserDefaults.
                 saveHomeSectionOrder(homeSectionOrder)
@@ -358,19 +375,39 @@ struct AppearanceSettingsView: View {
                 // Settle the floating pill onto its final slot (x → 0, y → final
                 // row origin) before the real row reappears, so there is no pop.
                 let finalIndex = homeSectionOrder.firstIndex(of: section) ?? dragStartIndex
+                let finalY = CGFloat(finalIndex) * homeRowStride
+                let initialVelocity = MotionSpec.clampedInitialVelocity(
+                    MotionSpec.normalizedInitialVelocity(
+                        from: dragFloatingY,
+                        to: finalY,
+                        velocity: Double(value.velocity.height)
+                    )
+                )
                 isFinishingDrag = true
-                withAnimation(.snappy(duration: 0.16)) {
+                withAnimation(settleAnimation(initialVelocity: initialVelocity)) {
                     dragFloatingX = 0
-                    dragFloatingY = CGFloat(finalIndex) * homeRowStride
+                    dragFloatingY = finalY
                 }
 
                 // Clear only after the settle animation, and only if a new drag
                 // has not taken over in the meantime (token guards against the
                 // stale async callback wiping a fresh drag).
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                let cleanupDelay = motionPolicy.visualCompletionDelay(
+                    for: motionTokens[.gestureSettle],
+                    initialVelocity: initialVelocity
+                )
+                let clearDrag = {
                     guard isFinishingDrag, draggingSection == section else { return }
                     draggingSection = nil
                     isFinishingDrag = false
+                }
+                if cleanupDelay <= .leastNonzeroMagnitude {
+                    clearDrag()
+                } else {
+                    DispatchQueue.main.asyncAfter(
+                        deadline: .now() + cleanupDelay,
+                        execute: clearDrag
+                    )
                 }
             }
     }

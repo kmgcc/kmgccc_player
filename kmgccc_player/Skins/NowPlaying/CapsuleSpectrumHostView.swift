@@ -28,6 +28,7 @@
 //
 
 import AppKit
+import MotionKit
 import QuartzCore
 
 // MARK: - Configuration types
@@ -58,6 +59,23 @@ struct CapsuleSpectrumDynamics: Equatable {
     /// over ~500-700 ms instead of snapping or continuing the fast playback
     /// release.
     static let pauseFall = CapsuleSpectrumDynamics(response: 0.60, dampingFraction: 1.0)
+
+    var motionSpec: MotionSpec {
+        let angularFrequency = (2 * CGFloat.pi) / max(0.01, response)
+        let dampingRatio = max(0, dampingFraction)
+        return MotionSpec(
+            physical: MotionPhysicalParameters(
+                stiffness: Double(angularFrequency * angularFrequency),
+                damping: Double(2 * dampingRatio * angularFrequency),
+                allowOverDamping: true
+            )
+        )
+    }
+}
+
+enum CapsuleSpectrumMotionBackend: String, Equatable {
+    case closedForm
+    case appleSpringEvaluator
 }
 
 /// What the bars do while playback is paused.
@@ -102,6 +120,9 @@ struct CapsuleSpectrumConfiguration {
     var levelShaping: LevelShaping
     /// Opts adaptive MiniPlayer spectra into raw-FFT sub-band sampling.
     var usesDetailedSampling: Bool
+    /// Selects the follower implementation. Production defaults to the closed
+    /// form integrator; the Apple evaluator is an opt-in debug A/B backend.
+    var motionBackend: CapsuleSpectrumMotionBackend
     /// Computes bar geometry from the current bounds. Pure / cheap.
     var metrics: (_ bounds: CGRect, _ count: Int) -> CapsuleSpectrumMetrics
 
@@ -128,6 +149,7 @@ struct CapsuleSpectrumConfiguration {
         heightBoost: CGFloat = 1.0,
         levelShaping: LevelShaping = .standard,
         usesDetailedSampling: Bool = false,
+        motionBackend: CapsuleSpectrumMotionBackend = .closedForm,
         metrics: @escaping (_ bounds: CGRect, _ count: Int) -> CapsuleSpectrumMetrics
     ) {
         self.capsuleCount = capsuleCount
@@ -138,6 +160,7 @@ struct CapsuleSpectrumConfiguration {
         self.heightBoost = heightBoost
         self.levelShaping = levelShaping
         self.usesDetailedSampling = usesDetailedSampling
+        self.motionBackend = motionBackend
         self.metrics = metrics
     }
 
@@ -154,7 +177,8 @@ struct CapsuleSpectrumConfiguration {
         pauseDynamics: CapsuleSpectrumDynamics = .pauseFall,
         pausedBehavior: CapsuleSpectrumPausedBehavior = .idlePose,
         levelShaping: LevelShaping = .standard,
-        usesDetailedSampling: Bool = false
+        usesDetailedSampling: Bool = false,
+        motionBackend: CapsuleSpectrumMotionBackend = .closedForm
     ) -> CapsuleSpectrumConfiguration {
         CapsuleSpectrumConfiguration(
             capsuleCount: capsuleCount,
@@ -164,7 +188,8 @@ struct CapsuleSpectrumConfiguration {
             strokeWidth: strokeWidth,
             heightBoost: 1.0,
             levelShaping: levelShaping,
-            usesDetailedSampling: usesDetailedSampling
+            usesDetailedSampling: usesDetailedSampling,
+            motionBackend: motionBackend
         ) { bounds, count in
             let totalWidth = CGFloat(count) * capsuleWidth
                 + CGFloat(max(0, count - 1)) * capsuleSpacing
@@ -195,6 +220,10 @@ final class CapsuleSpectrumHostView: NSView {
     private var capsuleLayers: [CALayer] = []
 
     private var configuration: CapsuleSpectrumConfiguration
+    private var motionBackend: CapsuleSpectrumMotionBackend
+    private var appleSpringEvaluator: MotionSpringEvaluator?
+    private var appleSpringDynamics: CapsuleSpectrumDynamics?
+    private var appleSpringPlayingState: Bool?
 
     // Follower state, one slot per band.
     private var targetWave: [CGFloat]
@@ -242,6 +271,7 @@ final class CapsuleSpectrumHostView: NSView {
 
     init(configuration: CapsuleSpectrumConfiguration) {
         self.configuration = configuration
+        self.motionBackend = Self.resolveMotionBackend(configuration.motionBackend)
         let count = max(1, configuration.capsuleCount)
         self.targetWave = Array(repeating: 0, count: count)
         self.position = Array(repeating: 0, count: count)
@@ -281,7 +311,13 @@ final class CapsuleSpectrumHostView: NSView {
     func configure(_ newConfiguration: CapsuleSpectrumConfiguration) {
         let countChanged = newConfiguration.capsuleCount != configuration.capsuleCount
         let samplingChanged = newConfiguration.usesDetailedSampling != configuration.usesDetailedSampling
+        let nextMotionBackend = Self.resolveMotionBackend(newConfiguration.motionBackend)
+        let motionBackendChanged = nextMotionBackend != motionBackend
         configuration = newConfiguration
+        motionBackend = nextMotionBackend
+        if motionBackendChanged {
+            resetAppleSpringEvaluator()
+        }
         if countChanged {
             resizeFollowerState()
             rebuildCapsuleLayers()
@@ -521,6 +557,10 @@ final class CapsuleSpectrumHostView: NSView {
         // Paused → ease down with the gentle pause spring so the fall reads as a
         // graceful settle, not a snap; playing → the agile playback spring.
         let dynamics = isPlaying ? configuration.dynamics : configuration.pauseDynamics
+        if motionBackend == .appleSpringEvaluator {
+            advanceAppleSpringFollowers(dt: dt, dynamics: dynamics)
+            return
+        }
         let omega = (2 * CGFloat.pi) / max(0.01, dynamics.response)
         let zeta = max(0, dynamics.dampingFraction)
         // Sub-step when dt is large (e.g. after a stalled display-link frame) so
@@ -545,6 +585,100 @@ final class CapsuleSpectrumHostView: NSView {
             }
             remaining -= step
         }
+    }
+
+    private func advanceAppleSpringFollowers(
+        dt: CGFloat,
+        dynamics: CapsuleSpectrumDynamics
+    ) {
+        let evaluator: MotionSpringEvaluator
+        if appleSpringDynamics != dynamics || appleSpringPlayingState != isPlaying {
+            evaluator = MotionSpringEvaluator(spec: dynamics.motionSpec)
+            appleSpringEvaluator = evaluator
+            appleSpringDynamics = dynamics
+            appleSpringPlayingState = isPlaying
+        } else if let cached = appleSpringEvaluator {
+            evaluator = cached
+        } else {
+            evaluator = MotionSpringEvaluator(spec: dynamics.motionSpec)
+            appleSpringEvaluator = evaluator
+            appleSpringDynamics = dynamics
+            appleSpringPlayingState = isPlaying
+        }
+
+        let maxStep: CGFloat = 1.0 / 120.0
+        var remaining = dt
+        while remaining > 0 {
+            let step = min(remaining, maxStep)
+            for index in 0..<count {
+                let target = targetWave[index]
+                let current = position[index]
+                let travel = target - current
+                let evaluationTravel: CGFloat
+                if abs(travel) > 0.00001 {
+                    evaluationTravel = travel
+                } else if abs(velocity[index]) > 0.00001 {
+                    evaluationTravel = velocity[index] > 0 ? 0.00001 : -0.00001
+                } else {
+                    position[index] = target
+                    velocity[index] = 0
+                    continue
+                }
+
+                let normalizedVelocity = MotionSpec.clampedInitialVelocity(
+                    MotionSpec.normalizedInitialVelocity(
+                        from: Double(current),
+                        to: Double(current + evaluationTravel),
+                        velocity: Double(velocity[index])
+                    ),
+                    maximumMagnitude: 8
+                )
+                position[index] = CGFloat(
+                    evaluator.value(
+                        from: Double(current),
+                        to: Double(current + evaluationTravel),
+                        at: TimeInterval(step),
+                        initialVelocity: normalizedVelocity
+                    )
+                )
+                velocity[index] = CGFloat(
+                    evaluator.velocity(
+                        from: Double(current),
+                        to: Double(current + evaluationTravel),
+                        at: TimeInterval(step),
+                        initialVelocity: normalizedVelocity
+                    )
+                )
+                if abs(travel) <= 0.00001, abs(position[index] - target) <= 0.00001 {
+                    position[index] = target
+                }
+            }
+            remaining -= step
+        }
+    }
+
+    private func resetAppleSpringEvaluator() {
+        appleSpringEvaluator = nil
+        appleSpringDynamics = nil
+        appleSpringPlayingState = nil
+    }
+
+    private static func resolveMotionBackend(
+        _ configured: CapsuleSpectrumMotionBackend
+    ) -> CapsuleSpectrumMotionBackend {
+#if DEBUG
+        guard
+            let rawValue = ProcessInfo.processInfo.environment[
+                "MOTIONKIT_CAPSULE_SPECTRUM_BACKEND"
+            ],
+            let override = CapsuleSpectrumMotionBackend(rawValue: rawValue)
+        else {
+            return configured
+        }
+        return override
+#else
+        configured
+#endif
     }
 
     /// Exact step of `d'' + 2ζω·d' + ω²·d = 0` (d = position − target) over `dt`.

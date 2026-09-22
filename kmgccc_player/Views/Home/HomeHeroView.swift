@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct HomeHeroView: View {
@@ -276,7 +277,7 @@ struct HomeHeroView: View {
                 .allowsHitTesting(false)
         }
         .scaleEffect(isHovering ? 1.005 : 1.0)
-        .animation(.easeOut(duration: 0.2), value: isHovering)
+        .motionAnimation(.microInteraction, value: isHovering)
         .onHover { hovering in
             isHovering = hovering
         }

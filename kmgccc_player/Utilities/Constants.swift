@@ -77,14 +77,6 @@ nonisolated enum Constants {
         static let ledSpacing: CGFloat = 8
     }
 
-    // MARK: - Animation
-
-    enum Animation {
-        static let defaultDuration: Double = 0.25
-        static let fastDuration: Double = 0.15
-        static let slowDuration: Double = 0.4
-    }
-
     // MARK: - File Types
 
     enum FileTypes {

@@ -5,12 +5,16 @@
 //  kmgccc_player - About Settings View
 //
 
+import MotionKit
 import SwiftUI
 
 /// About page with app info, licenses, and social links.
 struct AboutSettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.settingsAppForegroundColors) private var appColors
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
     @AppStorage(UpdatePreferences.automaticUpdatesEnabledKey) private var automaticUpdatesEnabled = true
     @State private var aboutEasterEggTracker = AboutEasterEggTapTracker()
     @State private var showEasterEggImage: Bool = false
@@ -278,7 +282,10 @@ struct AboutSettingsView: View {
     }
 
     private func showPage(_ nextPage: AboutSettingsPage) {
-        withAnimation(.easeInOut(duration: 0.18)) {
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: reduceMotion
+        )
+        withAnimation(policy.animation(for: motionTokens[.navigation])) {
             page = nextPage
         }
     }

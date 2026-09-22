@@ -4,23 +4,16 @@
 //
 //  kmgccc_player - Shared animated media control buttons for the Window Mini
 //  Player and the Fullscreen Mini Player. Single implementation, two size
-//  profiles. The animation recipe mirrors Tools/Demos/amll-controls-demo.html:
+//  profiles. State motion uses MotionKit semantic tokens; the three-arrow
+//  relay keeps its staged choreography while using the same Apple spring
+//  vocabulary as the other control states.
 //
-//    Play/Pause press     spring(0.22, bounce 0)      scale 1 -> 0.48, opacity 0.88
-//    Play/Pause cancel    spring(0.35, bounce 0.16)   -> 1.0 / 1.0
-//    Play/Pause exit      spring(0.11, bounce 0)      -> 0.0 / 0.0
-//    Play/Pause handoff   40 ms delayed, then spring(0.38, bounce 0.32) 0.05 -> 1.0
-//    Skip press           spring(0.20, bounce 0)      scale 1 -> 0.62, opacity 0.88
-//    Skip cancel          spring(0.35, bounce 0.16)   -> 1.0 / 1.0
-//    Skip release         spring(0.38, bounce 0.32)   -> 1.0 (SwiftUI preserves velocity)
-//    Three-arrow relay    0.6 s timingCurve(0.4, 1.51, 0.4, 1) glide / pop,
-//                         trailing arrow 0.2 s ease-out shrink
-//
-//  All motion is driven by SwiftUI system springs/timing curves — no
-//  per-frame timers, no display links. Idle cost is zero.
+//  All motion is driven by SwiftUI system springs and the relay state machine
+//  — no per-frame timers, no display links. Idle cost is zero.
 //
 
 import SwiftUI
+import MotionKit
 
 // MARK: - Metrics
 
@@ -145,6 +138,8 @@ struct AnimatedPlayPauseButton: View {
     let action: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     @State private var showingPlaySymbol: Bool
     @State private var symbolScale: CGFloat = 1
@@ -217,8 +212,8 @@ struct AnimatedPlayPauseButton: View {
         // a previous release must not fire mid-press and reset the values.
         cancelHandoff()
         isUserAnimating = true
-        let targetScale: CGFloat = reduceMotion ? 0.85 : 0.48
-        let targetOpacity: CGFloat = reduceMotion ? 0.9 : 0.88
+        let targetScale: CGFloat = motionPolicy == .full ? 0.48 : 0.85
+        let targetOpacity: CGFloat = motionPolicy == .full ? 0.88 : 0.9
         withAnimation(pressAnimation) {
             symbolScale = targetScale
             symbolOpacity = targetOpacity
@@ -246,7 +241,7 @@ struct AnimatedPlayPauseButton: View {
         // 2) The other symbol becomes the active one.
         showingPlaySymbol.toggle()
 
-        if reduceMotion {
+        if motionPolicy != .full {
             // Reduce Motion: gentle direct crossfade, no spring handoff.
             withAnimation(enterAnimation) {
                 symbolScale = 1
@@ -304,22 +299,26 @@ struct AnimatedPlayPauseButton: View {
         }
     }
 
-    // MARK: Animation parmeters (demo pinned values)
+    // MARK: MotionKit token parameters
 
-    private var pressAnimation: Animation {
-        reduceMotion ? .linear(duration: 0.12) : .spring(duration: 0.22, bounce: 0)
+    private var motionPolicy: MotionPolicy {
+        configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
     }
 
-    private var cancelAnimation: Animation {
-        reduceMotion ? .linear(duration: 0.18) : .spring(duration: 0.35, bounce: 0.16)
+    private var pressAnimation: Animation? {
+        motionPolicy.animation(for: motionTokens[.microInteraction])
     }
 
-    private var exitAnimation: Animation {
-        reduceMotion ? .linear(duration: 0.12) : .spring(duration: 0.11, bounce: 0)
+    private var cancelAnimation: Animation? {
+        motionPolicy.animation(for: motionTokens[.gestureSettle])
     }
 
-    private var enterAnimation: Animation {
-        reduceMotion ? .linear(duration: 0.12) : .spring(duration: 0.38, bounce: 0.32)
+    private var exitAnimation: Animation? {
+        motionPolicy.animation(for: motionTokens[.microInteraction])
+    }
+
+    private var enterAnimation: Animation? {
+        motionPolicy.animation(for: motionTokens[.emphasis])
     }
 }
 
@@ -343,6 +342,8 @@ struct AnimatedSkipButton: View {
     let action: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     @State private var symbolScale: CGFloat = 1
     @State private var symbolOpacity: CGFloat = 1
@@ -415,8 +416,8 @@ struct AnimatedSkipButton: View {
     // MARK: Gesture phases
 
     private func press() {
-        let targetScale: CGFloat = reduceMotion ? 0.85 : 0.62
-        let targetOpacity: CGFloat = reduceMotion ? 0.9 : 0.88
+        let targetScale: CGFloat = motionPolicy == .full ? 0.62 : 0.85
+        let targetOpacity: CGFloat = motionPolicy == .full ? 0.88 : 0.9
         withAnimation(pressAnimation) {
             symbolScale = targetScale
             symbolOpacity = targetOpacity
@@ -438,7 +439,7 @@ struct AnimatedSkipButton: View {
         }
 
         // 2. Immediate arrow relay on alternate channel:
-        if !reduceMotion {
+        if motionPolicy == .full {
             if isChannelBActive {
                 // Switching to Channel A:
                 var resetTx = Transaction()
@@ -475,22 +476,27 @@ struct AnimatedSkipButton: View {
 
     // MARK: Animation parameters
 
-    private var pressAnimation: Animation {
-        reduceMotion ? .linear(duration: 0.12) : .spring(duration: 0.2, bounce: 0)
+    private var motionPolicy: MotionPolicy {
+        configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
     }
 
-    private var cancelAnimation: Animation {
-        reduceMotion ? .linear(duration: 0.18) : .spring(duration: 0.35, bounce: 0.16)
+    private var pressAnimation: Animation? {
+        motionPolicy.animation(for: motionTokens[.microInteraction])
     }
 
-    private var releaseAnimation: Animation {
-        reduceMotion ? .linear(duration: 0.12) : .spring(duration: 0.44, bounce: 0.32)
+    private var cancelAnimation: Animation? {
+        motionPolicy.animation(for: motionTokens[.gestureSettle])
     }
 
-    /// Paced to 0.58s with AMLL's cubic-bezier(0.4, 1.51, 0.4, 1) to match the deliberate,
-    /// tactile, clearly visible relay motion of Apple Music and the web demo.
-    private var relayAnimation: Animation {
-        reduceMotion ? .linear(duration: 0.12) : .timingCurve(0.4, 1.51, 0.4, 1, duration: 0.58)
+    private var releaseAnimation: Animation? {
+        motionPolicy.animation(for: motionTokens[.emphasis])
+    }
+
+    /// Keeps the relay's deliberate 0.58s visual window while deriving its
+    /// spring behavior and Reduce Motion response from the emphasis token.
+    private var relayAnimation: Animation? {
+        let relaySpec = motionTokens.phaseSpec(for: .emphasis, duration: 0.58)
+        return motionPolicy.animation(for: relaySpec)
     }
 }
 

@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import MotionKit
 import SwiftUI
 
 /// Unified row containing progress bar and optional spectrum visualizer.
@@ -69,7 +70,6 @@ struct MiniPlayerProgressSpectrumRow: View {
     /// Unified hover state for the entire row
     @State private var isRowHovered = false
     @State private var isProgressDragging = false
-
     init(
         scale: CGFloat,
         visualization: AudioVisualizationKind,
@@ -209,7 +209,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         }
         .frame(maxHeight: .infinity)
         .padding(.horizontal, hPadding)
-        .animation(.spring(response: 0.35, dampingFraction: 0.75, blendDuration: 0.1), value: isRowHovered)
+        .motionAnimation(.control, value: isRowHovered)
     }
     
     // MARK: - Spectrum Section
@@ -240,7 +240,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         .frame(maxHeight: .infinity, alignment: .center)
         .opacity(isRowHovered ? 0 : 1)
         .allowsHitTesting(!isRowHovered)
-        .animation(.spring(response: 0.35, dampingFraction: 0.75, blendDuration: 0.1), value: isRowHovered)
+        .motionAnimation(.control, value: isRowHovered)
     }
 
     private func compactVisualizationProgress(size: CGSize) -> some View {
@@ -327,7 +327,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         }
         .compositingGroup()
         .frame(width: size.width, height: size.height)
-        .animation(.easeInOut(duration: 0.2), value: isRowHovered)
+        .motionAnimation(.control, value: isRowHovered)
     }
 
     private var spectrumLabelCutout: some View {

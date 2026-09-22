@@ -8,6 +8,7 @@
 
 import AppKit
 import Combine
+import MotionKit
 import SwiftUI
 
 private final class CachedArtworkBox: NSObject {
@@ -468,7 +469,10 @@ final class ThemeStore: ObservableObject {
         let fillAlpha = colorScheme == .dark ? 0.20 : 0.14
         let renderedDominant = ColorRenderingAdapter.makeNSColor(rawDominantColor)
         let renderedAccent = ColorRenderingAdapter.makeNSColor(resolvedAccentNS)
-        withAnimation(.easeInOut(duration: 0.20)) {
+        let policy = MotionPolicy.system(
+            accessibilityReduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
+        withAnimation(policy.animation(for: MotionTokens.standard[.backgroundTransition])) {
             baseColor = ColorRenderingAdapter.makeSwiftUIColor(rawDominantColor)
             accentColor = ColorRenderingAdapter.makeSwiftUIColor(resolvedAccentNS)
             accentNSColor = renderedAccent

@@ -6,6 +6,7 @@
 //  their clipped edges without changing layout.
 //
 
+import MotionKit
 import SwiftUI
 
 struct ScrollEdgeFadeState: Equatable {
@@ -66,7 +67,7 @@ extension View {
         fadeHeight: CGFloat,
         topEnabled: Bool = true,
         bottomEnabled: Bool = true,
-        animation: Animation = .easeInOut(duration: 0.2)
+        motionToken: MotionToken = .microInteraction
     ) -> some View {
         scrollEdgeFadeMask(
             state,
@@ -74,7 +75,7 @@ extension View {
             bottomFadeHeight: fadeHeight,
             topEnabled: topEnabled,
             bottomEnabled: bottomEnabled,
-            animation: animation
+            motionToken: motionToken
         )
     }
 
@@ -85,7 +86,7 @@ extension View {
         topChromeInset: CGFloat = 0,
         topEnabled: Bool = true,
         bottomEnabled: Bool = true,
-        animation: Animation = .easeInOut(duration: 0.2)
+        motionToken: MotionToken = .microInteraction
     ) -> some View {
         mask {
             ScrollEdgeFadeMask(
@@ -95,8 +96,8 @@ extension View {
                 bottomFadeHeight: bottomFadeHeight,
                 topChromeInset: topChromeInset
             )
-            .animation(animation, value: state.topOpacity)
-            .animation(animation, value: state.bottomOpacity)
+            .motionAnimation(motionToken, value: state.topOpacity)
+            .motionAnimation(motionToken, value: state.bottomOpacity)
         }
     }
 }

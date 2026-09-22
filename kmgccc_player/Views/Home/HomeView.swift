@@ -12,6 +12,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct HomeView: View {
@@ -24,6 +25,7 @@ struct HomeView: View {
 
     @Environment(HomeViewModel.self) private var homeVM
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
     @State private var hasAppeared = false
     @State private var didPassStartupGate = false
     @State private var startupFallbackExpired = false
@@ -36,6 +38,10 @@ struct HomeView: View {
     /// reacts to scroll motion; SwiftUI bodies stay decoupled.
     private let ambientMotion = HomeAmbientMotionState.shared
 
+    private var motionPolicy: MotionPolicy {
+        configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
+    }
+
     var body: some View {
         HomeThemeSnapshotReader { homeTheme in
             Group {
@@ -47,6 +53,7 @@ struct HomeView: View {
                     scrollContent(theme: homeTheme)
                 }
             }
+            .motionAnimation(.navigation, value: shouldShowStartupLoading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
@@ -196,7 +203,7 @@ struct HomeView: View {
         didPassStartupGate = true
 
         guard !hasAppeared else { return }
-        if reduceMotion {
+        if motionPolicy != .full {
             hasAppeared = true
             return
         }
@@ -262,7 +269,7 @@ struct HomeView: View {
                         sourceColor: theme.semanticPalette.ambientSurface,
                         sourceAnalysis: theme.semanticPalette.analysis,
                         colorScheme: colorScheme,
-                        reduceMotion: reduceMotion
+                        motionEnabled: motionPolicy == .full
                     )
                 }
 
@@ -275,7 +282,7 @@ struct HomeView: View {
                 )
                 .opacity(hasAppeared ? 1 : 0)
                 .offset(y: hasAppeared ? 0 : 12)
-                .animation(.easeOut(duration: 0.4), value: hasAppeared)
+                .motionAnimation(.navigation, value: hasAppeared)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

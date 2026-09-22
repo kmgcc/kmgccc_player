@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import MotionKit
 
 // MARK: - Frame Measurement
 
@@ -41,7 +42,7 @@ private struct SegmentFramePreferenceKey<ID: Hashable>: PreferenceKey {
 struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Content: View>: View {
     let segments: [Selection]
     @Binding var selection: Selection
-    let animation: Animation
+    let motionToken: MotionToken
     let hSpacing: CGFloat
     let enableDrag: Bool
     let onTap: ((Selection) -> Void)?
@@ -55,6 +56,11 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging: Bool = false
     @State private var instanceID = UUID()
+    @State private var pendingInitialVelocity: Double?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     private var selectedFrame: CGRect? { frames[selection] }
 
@@ -71,7 +77,7 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
     init(
         segments: [Selection],
         selection: Binding<Selection>,
-        animation: Animation = .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
+        motionToken: MotionToken = .control,
         hSpacing: CGFloat = 4,
         enableDrag: Bool = true,
         onTap: ((Selection) -> Void)? = nil,
@@ -82,7 +88,7 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
     ) {
         self.segments = segments
         self._selection = selection
-        self.animation = animation
+        self.motionToken = motionToken
         self.hSpacing = hSpacing
         self.enableDrag = enableDrag
         self.onTap = onTap
@@ -90,6 +96,16 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
         self.background = background
         self.knob = knob
         self.content = content
+    }
+
+    private func resolvedAnimation(initialVelocity: Double = 0) -> Animation? {
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: reduceMotion
+        )
+        return policy.animation(
+            for: motionTokens[motionToken],
+            initialVelocity: initialVelocity
+        )
     }
 
     var body: some View {
@@ -135,7 +151,11 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
                 }
                 .onChange(of: targetFrame) { oldValue, newValue in
                     guard oldValue != newValue else { return }
-                    withAnimation(isDragging ? .none : animation) {
+                    let initialVelocity = pendingInitialVelocity ?? 0
+                    pendingInitialVelocity = nil
+                    withAnimation(
+                        isDragging ? nil : resolvedAnimation(initialVelocity: initialVelocity)
+                    ) {
                         knobFrame = newValue
                     }
                 }
@@ -190,19 +210,31 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
             }
             .onEnded { value in
                 guard let frame = selectedFrame else {
-                    isDragging = false
-                    dragOffset = 0
+                    withAnimation(nil) {
+                        isDragging = false
+                        dragOffset = 0
+                    }
                     return
                 }
-                isDragging = false
                 let finalX = frame.midX + value.translation.width
-                if let target = segment(at: finalX), target != selection {
+                let target = segment(at: finalX) ?? selection
+                let destinationFrame = frames[target] ?? frame
+                let initialVelocity = MotionSpec.clampedInitialVelocity(
+                    MotionSpec.normalizedInitialVelocity(
+                        from: finalX,
+                        to: destinationFrame.midX,
+                        velocity: Double(value.velocity.width)
+                    )
+                )
+                pendingInitialVelocity = initialVelocity
+                if target != selection {
                     onDragEnd?(target)
-                    withAnimation(animation) {
-                        selection = target
-                    }
                 }
-                dragOffset = 0
+                withAnimation(resolvedAnimation(initialVelocity: initialVelocity)) {
+                    isDragging = false
+                    selection = target
+                    dragOffset = 0
+                }
             }
     }
 

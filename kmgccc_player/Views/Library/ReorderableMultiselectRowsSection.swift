@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct ReorderableMultiselectRowsSection<Row, RowContent, FloatingContent>: View
@@ -28,6 +29,9 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
     @ViewBuilder let floatingContent: (Row) -> FloatingContent
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     @State private var visualOrderIDs: [UUID]?
     @State private var rowFrames: [UUID: CGRect] = [:]
@@ -61,12 +65,19 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
     private let pileCardOverlap: CGFloat = 12
     private let pileHorizontalJitter: CGFloat = 5
 
-    private var dragReorderAnimation: Animation {
-        .spring(response: 0.30, dampingFraction: 0.88, blendDuration: 0.04)
+    private var motionPolicy: MotionPolicy {
+        configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
     }
 
-    private var dragSettleAnimation: Animation {
-        .spring(response: 0.38, dampingFraction: 0.90, blendDuration: 0.04)
+    private var dragReorderAnimation: Animation? {
+        motionPolicy.animation(for: motionTokens[.control])
+    }
+
+    private func dragSettleAnimation(initialVelocity: Double = 0) -> Animation? {
+        motionPolicy.animation(
+            for: motionTokens[.gestureSettle],
+            initialVelocity: initialVelocity
+        )
     }
 
     var body: some View {
@@ -124,6 +135,7 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
                     .offset(x: rect.minX, y: rect.minY)
                     .allowsHitTesting(false)
                     .transition(.opacity)
+                    .motionAnimation(.gestureSettle, value: dragPlaceholderRect != nil)
                     .zIndex(5)
             }
 
@@ -440,8 +452,8 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
                 updateAutoScroll(forCenterY: centerY)
                 updateDragTarget(forCenterY: centerY)
             }
-            .onEnded { _ in
-                endDrag()
+            .onEnded { value in
+                endDrag(releaseVelocity: value.velocity.height)
             }
     }
 
@@ -510,7 +522,7 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
         }
     }
 
-    private func endDrag() {
+    private func endDrag(releaseVelocity: CGFloat) {
         guard draggingID != nil else { return }
         stopAutoScroll()
         let finalOrder = visualOrderIDs ?? rows.map(\.id)
@@ -520,15 +532,25 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
             onCommitOrder(finalOrder)
         }
 
-        settleDrag(commitSucceeded: shouldCommit)
+        settleDrag(
+            commitSucceeded: shouldCommit,
+            releaseVelocity: releaseVelocity
+        )
     }
 
-    private func settleDrag(commitSucceeded: Bool) {
+    private func settleDrag(commitSucceeded: Bool, releaseVelocity: CGFloat = 0) {
         guard let draggingID else { return }
         let settledOrder = visualOrderIDs
         let finalY = finalDraggedGroupTopY() ?? insertionIndicatorY ?? dragFloatingY
         let settleOffsets = finalDraggedCardYOffsets(groupTopY: finalY)
-        withAnimation(dragSettleAnimation) {
+        let initialVelocity = MotionSpec.clampedInitialVelocity(
+            MotionSpec.normalizedInitialVelocity(
+                from: dragFloatingY,
+                to: finalY,
+                velocity: Double(releaseVelocity)
+            )
+        )
+        withAnimation(dragSettleAnimation(initialVelocity: initialVelocity)) {
             isFinishingDrag = true
             dragFloatingX = 0
             dragFloatingY = finalY
@@ -536,27 +558,50 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
             dragGlassOpacity = 0
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
+        let cleanupDelay = motionPolicy.visualCompletionDelay(
+            for: motionTokens[.gestureSettle],
+            initialVelocity: initialVelocity
+        )
+        let clearDrag = {
             guard isFinishingDrag, self.draggingID == draggingID else { return }
             let keepVisualOrder = commitSucceeded
                 && settledOrder != nil
                 && rows.map(\.id) != settledOrder
             clearDragState(keepVisualOrder: keepVisualOrder)
         }
+        if cleanupDelay <= .leastNonzeroMagnitude {
+            clearDrag()
+        } else {
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + cleanupDelay,
+                execute: clearDrag
+            )
+        }
     }
 
     private func cancelDrag() {
         guard draggingID != nil else { return }
         stopAutoScroll()
-        withAnimation(dragSettleAnimation) {
+        withAnimation(dragSettleAnimation()) {
             visualOrderIDs = dragStartOrderedIDs.isEmpty ? nil : dragStartOrderedIDs
             dragFloatingX = 0
             dragFloatingY = dragStartAnchorY
             dragGlassOpacity = 0
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
+        let cleanupDelay = motionPolicy.visualCompletionDelay(
+            for: motionTokens[.gestureSettle]
+        )
+        let clearDrag = {
             guard !isFinishingDrag else { return }
             clearDragState(keepVisualOrder: false)
+        }
+        if cleanupDelay <= .leastNonzeroMagnitude {
+            clearDrag()
+        } else {
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + cleanupDelay,
+                execute: clearDrag
+            )
         }
     }
 

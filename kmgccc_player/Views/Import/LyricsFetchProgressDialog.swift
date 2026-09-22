@@ -256,7 +256,7 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
         hostingView.autoresizingMask = [.width, .height]
         
         visualEffect.addSubview(hostingView)
-        AppDialogTokens.presentWithFade(panel)
+        AppDialogTokens.presentWithMotion(panel)
 
         presenter.startFetchAsync(
             tracks: tracks,

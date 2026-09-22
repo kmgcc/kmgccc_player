@@ -8,6 +8,7 @@
 //
 
 import MelismaKit
+import MotionKit
 import SwiftUI
 
 /// Right-side lyrics panel with the native layer-backed lyrics surface.
@@ -206,7 +207,7 @@ struct LyricsPanelView: View {
             WindowPlaybackQueuePanelView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .animation(.easeInOut(duration: 0.22), value: uiState.isWindowPlaybackQueueVisible)
+        .motionAnimation(.navigation, value: uiState.isWindowPlaybackQueueVisible)
     }
 
     // MARK: - Actions
@@ -384,6 +385,8 @@ struct WindowPlaybackQueuePanelView: View {
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     @State private var hasPerformedInitialScroll = false
 
@@ -423,7 +426,7 @@ struct WindowPlaybackQueuePanelView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .animation(reduceMotion ? .none : .easeInOut(duration: 0.22), value: uiState.isWindowPlaybackQueueVisible)
+        .motionAnimation(.navigation, value: uiState.isWindowPlaybackQueueVisible)
     }
 
     private var header: some View {
@@ -566,8 +569,11 @@ struct WindowPlaybackQueuePanelView: View {
         Color.primary.opacity(0.08)
     }
 
-    private var queueScrollAnimation: Animation {
-        .timingCurve(0.22, 0.88, 0.24, 1.0, duration: 0.42)
+    private var queueScrollAnimation: Animation? {
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: reduceMotion
+        )
+        return policy.animation(for: motionTokens[.navigation])
     }
 
     private func revealCurrentTrack(using proxy: ScrollViewProxy, animated: Bool) {

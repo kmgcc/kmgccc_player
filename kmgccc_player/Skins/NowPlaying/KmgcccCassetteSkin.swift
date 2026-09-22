@@ -9,6 +9,7 @@ import AppKit
 import Combine
 import CoreImage
 import ImageIO
+import MotionKit
 import QuartzCore
 import SwiftUI
 
@@ -392,6 +393,10 @@ private struct CassetteArtwork: View, Equatable {
     @AppStorage("skin.kmgcccCassette.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
 
+    private var kmgLookTransitionAnimation: Animation? {
+        context.motionPolicy.animation(for: context.motionTokens[.contentReplacement])
+    }
+
     static func == (lhs: CassetteArtwork, rhs: CassetteArtwork) -> Bool {
         lhs.showKmgLook == rhs.showKmgLook
             && lhs.normalVisualizerMode == rhs.normalVisualizerMode
@@ -458,7 +463,7 @@ private struct CassetteArtwork: View, Equatable {
                     .scaleEffect(1.50)
                     // Let it extend beyond the cassette bounds into the background.
                     .offset(x: 52, y: -7)
-                    .transition(.opacity.animation(.easeInOut(duration: 0.3)))
+                    .transition(.opacity.animation(kmgLookTransitionAnimation))
             }
         }
         .overlay(HolesOverlay(context: context))

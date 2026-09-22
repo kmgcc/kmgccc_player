@@ -9,6 +9,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 /// 11-dot LED level meter with symmetric lighting from center.
@@ -129,7 +130,7 @@ struct LedMeterView: View {
                     )
             )
         }
-        .animation(.easeInOut(duration: 0.25), value: numLEDs)
+        .motionAnimation(.microInteraction, value: numLEDs)
         .background {
             HDRDisplayCapabilityReader(info: $displayHDRInfo)
                 .frame(width: 1, height: 1)

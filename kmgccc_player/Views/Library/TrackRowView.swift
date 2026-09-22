@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct TrackRowModel: Identifiable, Equatable {
@@ -120,9 +121,20 @@ struct TrackRowView<MenuContent: View>: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(LibraryCacheServices.self) private var cacheServices
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     private var artistColumnWidth: CGFloat { 164 }
     private var playingIndicatorColumnWidth: CGFloat { 20 }
+
+    private var artworkReadyAnimation: Animation? {
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: reduceMotion
+        )
+        let spec = motionTokens.phaseSpec(for: .contentReplacement, duration: 0.05)
+        return policy.animation(for: spec)
+    }
 
     init(
         model: TrackRowModel,
@@ -438,8 +450,17 @@ struct TrackRowView<MenuContent: View>: View {
             try? await Task.sleep(for: .milliseconds(15))
             guard !Task.isCancelled else { return }
 
-            // Phase 1: Rise - quick attack with an ease-out curve.
-            revealCurrentAnimation = .easeOut(duration: RevealHighlightTiming.riseDuration)
+            // Phase 1: Rise - quick attack with a short, critically damped spring.
+            let policy = configuredMotionPolicy.resolving(
+                accessibilityReduceMotion: reduceMotion
+            )
+            revealCurrentAnimation = policy.animation(
+                for: motionTokens.phaseSpec(
+                    for: .contentReplacement,
+                    duration: RevealHighlightTiming.riseDuration,
+                    bounce: 0
+                )
+            )
             revealHighlightOpacity = RevealHighlightTiming.peakOpacity
 
             // Wait for rise + brief hold at peak.
@@ -449,8 +470,14 @@ struct TrackRowView<MenuContent: View>: View {
             ))
             guard !Task.isCancelled else { return }
 
-            // Phase 2: Fall - slower decay with an ease-in curve.
-            revealCurrentAnimation = .easeIn(duration: RevealHighlightTiming.fallDuration)
+            // Phase 2: Fall - slower decay with a critically damped spring.
+            revealCurrentAnimation = policy.animation(
+                for: motionTokens.phaseSpec(
+                    for: .contentReplacement,
+                    duration: RevealHighlightTiming.fallDuration,
+                    bounce: 0
+                )
+            )
             revealHighlightOpacity = 0
 
             try? await Task.sleep(for: .milliseconds(
@@ -570,7 +597,7 @@ struct TrackRowView<MenuContent: View>: View {
 
         if let highImage = await pipeline.load(highRequest) {
             artworkImage = highImage
-            withAnimation(.easeInOut(duration: 0.05)) {
+            withAnimation(artworkReadyAnimation) {
                 isArtworkReady = true
             }
         } else if artworkImage == nil {

@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 @MainActor
@@ -67,7 +68,7 @@ final class PlaylistPageController {
         /// almost immediately (fast acceleration) then creeps the last few percent
         /// into the target row over a long deceleration. Slower and more non-linear
         /// than a plain easeOut for a silkier reveal.
-        static let animation: Animation = .timingCurve(0.1, 1.0, 0.3, 1.0, duration: 0.75)
+        static let animationDuration: Double = 0.75
         /// Delay after the scroll is triggered before the highlight pulse fires,
         /// chosen to land near the end of the scroll animation.
         static let highlightDelayMilliseconds: UInt64 = 620
@@ -84,6 +85,8 @@ final class PlaylistPageController {
     private(set) var areRowArtworkLoadsEnabled = true
     private(set) var isRowArtworkPrefetchEnabled = false
     private(set) var isHeaderEffectsEnabled = false
+    var motionTokens: MotionTokens = .standard
+    var motionPolicyOverride: MotionPolicy = .full
 
     // MARK: - Header Artwork Crossfade State
     /// Current visible artwork layer (old or placeholder)
@@ -134,6 +137,24 @@ final class PlaylistPageController {
     private(set) var revealHighlightTrackID: UUID?
 
     let haloState = HeaderHaloState()
+
+    private var resolvedMotionPolicy: MotionPolicy {
+        motionPolicyOverride.resolving(
+            accessibilityReduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
+    }
+
+    private func motionAnimation(for spec: MotionSpec) -> Animation? {
+        resolvedMotionPolicy.animation(for: spec)
+    }
+
+    private var revealScrollAnimationSpec: MotionSpec {
+        motionTokens.phaseSpec(
+            for: .navigation,
+            duration: RevealScroll.animationDuration,
+            bounce: 0
+        )
+    }
 
     private var libraryVM: LibraryViewModel?
     private var playerVM: PlayerViewModel?
@@ -1598,7 +1619,14 @@ final class PlaylistPageController {
             guard self.currentArtworkPresentationIdentity == identity else { return }
 
             LyricsRuntimeProfile.increment("header.crossfade.animationStart")
-            withAnimation(.easeInOut(duration: FadeTiming.headerCrossfadeDuration)) {
+            withAnimation(
+                motionAnimation(
+                    for: motionTokens.phaseSpec(
+                        for: .contentReplacement,
+                        duration: FadeTiming.headerCrossfadeDuration
+                    )
+                )
+            ) {
                 self.headerIncomingOpacity = 1
             }
 
@@ -1643,7 +1671,14 @@ final class PlaylistPageController {
             await Task.yield()
 
             LyricsRuntimeProfile.increment("header.halo.animationStart")
-            withAnimation(.easeInOut(duration: FadeTiming.haloReadyFadeDuration)) {
+            withAnimation(
+                motionAnimation(
+                    for: motionTokens.phaseSpec(
+                        for: .backgroundTransition,
+                        duration: FadeTiming.haloReadyFadeDuration
+                    )
+                )
+            ) {
                 self.haloPresentationOpacity = 1
             }
 
@@ -1849,7 +1884,7 @@ final class PlaylistPageController {
             guard let self else { return }
 
             if animated {
-                withAnimation(RevealScroll.animation) {
+                withAnimation(motionAnimation(for: revealScrollAnimationSpec)) {
                     self.listScrollPositionID = trackID
                 }
                 self.scheduleRevealHighlight(for: trackID)

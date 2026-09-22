@@ -15,6 +15,7 @@
 //  center pane.
 //
 
+import MotionKit
 import SwiftData
 import SwiftUI
 
@@ -64,6 +65,7 @@ struct HomeFullWindowRoot: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .all)
+        .motionEnvironment()
     }
 
     private var shouldRenderHome: Bool {

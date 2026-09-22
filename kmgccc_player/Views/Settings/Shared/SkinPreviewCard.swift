@@ -5,6 +5,7 @@
 //  kmgccc_player - Reusable skin selection card with preview and title.
 //
 
+import MotionKit
 import SwiftUI
 
 /// A selectable card showing a skin preview thumbnail and its name.
@@ -153,6 +154,6 @@ private struct SkinCardButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .opacity(configuration.isPressed ? 0.82 : 1.0)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .motionAnimation(.microInteraction, value: configuration.isPressed)
     }
 }

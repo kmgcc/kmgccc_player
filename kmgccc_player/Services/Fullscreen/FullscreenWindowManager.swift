@@ -9,6 +9,7 @@
 
 import AppKit
 import Combine
+import MotionKit
 import SwiftUI
 
 /// Coordinates fullscreen-player presentation state and the dedicated system fullscreen window.
@@ -226,6 +227,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         let baseContentView = FullscreenPlayerView(hostContext: .systemFullscreenSpace) {
             self.closeFullscreenWindow()
         }
+        .motionEnvironment()
         .environment(playerVM)
         .environment(playbackCoordinator)
         .environment(fullscreenLyricsVM)

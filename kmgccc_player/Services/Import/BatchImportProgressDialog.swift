@@ -240,14 +240,7 @@ final class BatchImportProgressDialogController: NSObject, NSWindowDelegate {
         hostingView.autoresizingMask = [.width, .height]
         visualEffect.addSubview(hostingView)
 
-        panel.center()
-        panel.alphaValue = 0
-        panel.makeKeyAndOrderFront(nil)
-        panel.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.25
-            panel.animator().alphaValue = 1
-        }
+        AppDialogTokens.presentWithMotion(panel)
         self.panel = panel
     }
 
@@ -530,4 +523,3 @@ private struct BatchImportProgressRowView: View {
         .frame(width: 20, height: 20)
     }
 }
-

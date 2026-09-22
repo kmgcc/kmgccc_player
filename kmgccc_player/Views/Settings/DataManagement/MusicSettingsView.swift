@@ -1,10 +1,14 @@
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct MusicSettingsView: View {
     @EnvironmentObject private var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     @State private var registry = MusicLibraryRegistry()
     @State private var sources: [ReferencedSourceDescriptor] = []
@@ -301,7 +305,10 @@ struct MusicSettingsView: View {
 
                 if sources.count > Self.collapsedSourceCount {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.18)) {
+                        let policy = configuredMotionPolicy.resolving(
+                            accessibilityReduceMotion: reduceMotion
+                        )
+                        withAnimation(policy.animation(for: motionTokens[.microInteraction])) {
                             isSourceListExpanded.toggle()
                         }
                     } label: {
@@ -586,7 +593,10 @@ struct MusicSettingsView: View {
 
                     if unavailableTracks.count > Self.collapsedSourceCount {
                         Button {
-                            withAnimation(.easeInOut(duration: 0.18)) {
+                            let policy = configuredMotionPolicy.resolving(
+                                accessibilityReduceMotion: reduceMotion
+                            )
+                            withAnimation(policy.animation(for: motionTokens[.microInteraction])) {
                                 isMissingListExpanded.toggle()
                             }
                         } label: {

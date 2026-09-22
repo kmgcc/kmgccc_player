@@ -1,4 +1,5 @@
 import AppKit
+import MotionKit
 import SwiftUI
 
 /// A deliberately small, referenced-library-only map of physical sources to
@@ -9,6 +10,9 @@ struct ReferencedFolderView: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @ObservedObject var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     @State private var sources: [ReferencedSourceDescriptor] = []
     /// Bumped by `reload()` so the derived-content memo invalidates when
@@ -825,7 +829,10 @@ struct ReferencedFolderView: View {
     }
 
     private func toggleFolderExpanded(_ entry: FolderEntry) {
-        withAnimation(.snappy(duration: 0.18)) {
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: reduceMotion
+        )
+        withAnimation(policy.animation(for: motionTokens[.microInteraction])) {
             folderExpansionOverrides[expansionKey(entry)] = !isFolderExpanded(entry)
         }
     }

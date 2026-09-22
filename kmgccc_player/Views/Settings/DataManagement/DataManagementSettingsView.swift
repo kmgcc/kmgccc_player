@@ -5,6 +5,7 @@
 //  kmgccc_player - Data Management Settings View
 //
 
+import MotionKit
 import SwiftUI
 
 /// Data management settings split between music-library controls and app data.
@@ -35,6 +36,9 @@ private struct ApplicationDataSettingsView: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryCacheServices.self) private var cacheServices
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
     @AppStorage("telemetry.anonymousUsageEnabled") private var telemetryEnabled: Bool = true
     @AppStorage(CrashReportPreferences.automaticUploadKey) private var automaticCrashReportUploadEnabled = true
 
@@ -95,7 +99,10 @@ private struct ApplicationDataSettingsView: View {
             // More settings
             SettingsSection("更多设置", headerTrailing: {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
+                    let policy = configuredMotionPolicy.resolving(
+                        accessibilityReduceMotion: reduceMotion
+                    )
+                    withAnimation(policy.animation(for: motionTokens[.microInteraction])) {
                         isMoreSettingsExpanded.toggle()
                     }
                 } label: {

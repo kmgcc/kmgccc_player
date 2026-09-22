@@ -18,7 +18,7 @@
 //  Architecture:
 //    HomeAmbientShapesBackground is a thin SwiftUI `NSViewRepresentable`
 //    whose only SwiftUI inputs are stable per-content values
-//    (sourceColor / analysis / colorScheme / reduceMotion). All live
+//    (sourceColor / analysis / colorScheme / motionEnabled). All live
 //    geometry and scroll-offset observation happens INSIDE the AppKit
 //    `HomeAmbientRootView`, which subscribes directly to:
 //      - `HomeWindowLayoutState.shared.geometryPublisher` (continuous
@@ -67,7 +67,7 @@ struct HomeAmbientShapesBackground: NSViewRepresentable {
     let sourceColor: NSColor?
     let sourceAnalysis: ArtworkColorAnalysis?
     let colorScheme: ColorScheme
-    let reduceMotion: Bool
+    let motionEnabled: Bool
 
     static func ambientBaseColorForStaticCache(colorScheme: ColorScheme) -> NSColor {
         HomeAmbientPalette.ambientBaseColor(from: nil, analysis: nil, colorScheme: colorScheme)
@@ -82,7 +82,7 @@ struct HomeAmbientShapesBackground: NSViewRepresentable {
             sourceColor: sourceColor,
             sourceAnalysis: sourceAnalysis,
             colorScheme: colorScheme,
-            reduceMotion: reduceMotion
+            motionEnabled: motionEnabled
         )
     }
 }
@@ -145,7 +145,7 @@ final class HomeAmbientRootView: NSView {
     private var sourceColor: NSColor?
     private var sourceAnalysis: ArtworkColorAnalysis?
     private var colorScheme: ColorScheme = .light
-    private var reduceMotion = false
+    private var motionEnabled = true
 
     private var geometry: HomeWindowLayoutState.Geometry = .empty
     private var scrollOffsetY: CGFloat = 0
@@ -232,23 +232,23 @@ final class HomeAmbientRootView: NSView {
         sourceColor: NSColor?,
         sourceAnalysis: ArtworkColorAnalysis?,
         colorScheme: ColorScheme,
-        reduceMotion: Bool
+        motionEnabled: Bool
     ) {
         let paletteChanged = !colorsEqual(self.sourceColor, sourceColor)
             || self.sourceAnalysis != sourceAnalysis
             || self.colorScheme != colorScheme
-        let reduceMotionChanged = self.reduceMotion != reduceMotion
+        let motionEnabledChanged = self.motionEnabled != motionEnabled
 
         self.sourceColor = sourceColor
         self.sourceAnalysis = sourceAnalysis
         self.colorScheme = colorScheme
-        self.reduceMotion = reduceMotion
+        self.motionEnabled = motionEnabled
 
         if paletteChanged {
             updateBaseLayerColor()
             rebuildOrReposition(for: geometry, forceFullRebuild: true)
         }
-        if reduceMotionChanged {
+        if motionEnabledChanged {
             applyLayerTransforms()
         }
     }
@@ -694,7 +694,7 @@ final class HomeAmbientRootView: NSView {
         for presentation: Presentation,
         scrollOffsetY: CGFloat
     ) -> (x: CGFloat, y: CGFloat, rotationDegrees: Double) {
-        guard !reduceMotion else { return (0, 0, 0) }
+        guard motionEnabled else { return (0, 0, 0) }
         let virtualHeight = max(geometry.windowHeight * 2.6, geometry.windowHeight + 1400)
         return (
             x: clamp(scrollOffsetY * presentation.parallaxX, min: -8, max: 8),

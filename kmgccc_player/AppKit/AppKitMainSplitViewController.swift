@@ -8,6 +8,7 @@
 
 import AppKit
 import MelismaKit
+import MotionKit
 import SwiftData
 import SwiftUI
 
@@ -803,6 +804,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         else { return }
 
         let driverView = LyricsFlatDriverView()
+            .motionEnvironment()
             .environment(AppSettings.shared)
             .environment(appSession.uiState)
             .environment(libraryVM)
@@ -830,6 +832,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         else { return }
 
         let queueView = WindowPlaybackQueuePanelView()
+            .motionEnvironment()
             .environment(AppSettings.shared)
             .environment(appSession.uiState)
             .environment(libraryVM)

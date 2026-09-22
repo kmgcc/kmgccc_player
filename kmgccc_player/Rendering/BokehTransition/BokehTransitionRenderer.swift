@@ -6,157 +6,72 @@
 @preconcurrency import Metal
 @preconcurrency import MetalKit
 import Foundation
+import MotionKit
 import os
 import QuartzCore
 
-private struct TimedTransitionScalar {
-    enum Curve {
-        case easeInOut
-        case blurRise
-        case blurFall
-        case background
-        case layerFadeIn
-        case layerFadeOut
+private enum BokehMotion {
+    static func phase(
+        duration: CFTimeInterval,
+        token: MotionToken,
+        tokens: MotionTokens
+    ) -> MotionSpec {
+        tokens.phaseSpec(for: token, duration: duration)
     }
+}
 
+private struct MotionTransitionScalar {
     private(set) var value: CGFloat
-    private var startValue: CGFloat
-    private var targetValue: CGFloat
-    private var startTime: CFTimeInterval
-    private var duration: CFTimeInterval
-    private var curve: Curve
+    private var state: MotionRetargetState?
 
     init(_ value: CGFloat) {
         self.value = value
-        startValue = value
-        targetValue = value
-        startTime = 0
-        duration = 0
-        curve = .easeInOut
     }
 
     mutating func advance(to time: CFTimeInterval) {
-        guard duration > 0 else {
-            value = targetValue
-            return
-        }
-        let progress = CGFloat(min(max((time - startTime) / duration, 0), 1))
-        value = startValue + (targetValue - startValue) * curve.value(at: progress)
-        if progress >= 1 {
-            startValue = targetValue
-            duration = 0
-        }
+        guard var state else { return }
+        let frame = state.advance(to: time)
+        self.state = state
+        value = CGFloat(frame.value)
     }
 
     mutating func retarget(
         to target: CGFloat,
         at time: CFTimeInterval,
-        duration newDuration: CFTimeInterval,
-        curve newCurve: Curve
+        spec: MotionSpec,
+        policy: MotionPolicy
     ) {
         advance(to: time)
-        guard abs(target - targetValue) > 0.0001 || duration > 0 else { return }
-        startValue = value
-        targetValue = target
-        startTime = time
-        duration = max(0, newDuration)
-        curve = newCurve
-        if newDuration <= 0 { value = target }
-    }
-}
+        guard abs(target - value) > 0.0001 else { return }
 
-private extension TimedTransitionScalar.Curve {
-    func value(at x: CGFloat) -> CGFloat {
-        switch self {
-        case .easeInOut:
-            return cubicBezier(x: x, x1: 0.42, y1: 0, x2: 0.58, y2: 1)
-        case .blurRise:
-            return cubicBezier(x: x, x1: 0.22, y1: 0, x2: 0.24, y2: 1)
-        case .blurFall:
-            return cubicBezier(x: x, x1: 0.20, y1: 0.78, x2: 0.22, y2: 1)
-        case .background:
-            return cubicBezier(x: x, x1: 0.36, y1: 0.0, x2: 0.64, y2: 1.0)
-        case .layerFadeIn:
-            return cubicBezier(x: x, x1: 0.42, y1: 0, x2: 0.58, y2: 1)
-        case .layerFadeOut:
-            return cubicBezier(x: x, x1: 0.24, y1: 0.72, x2: 0.22, y2: 1)
+        guard let resolvedSpec = policy.resolve(spec) else {
+            snap(to: target)
+            return
         }
+
+        var next = MotionRetargetState(
+            value: Double(value),
+            velocity: state?.velocity ?? 0,
+            spec: resolvedSpec
+        )
+        next.retarget(to: Double(target), at: time)
+        state = next
     }
 
-    private func cubicBezier(
-        x: CGFloat,
-        x1: CGFloat,
-        y1: CGFloat,
-        x2: CGFloat,
-        y2: CGFloat
-    ) -> CGFloat {
-        var low: CGFloat = 0
-        var high: CGFloat = 1
-        for _ in 0..<10 {
-            let t = (low + high) * 0.5
-            let sampledX = bezier(t, x1, x2)
-            if sampledX < x { low = t } else { high = t }
-        }
-        return bezier((low + high) * 0.5, y1, y2)
-    }
-
-    private func bezier(_ t: CGFloat, _ p1: CGFloat, _ p2: CGFloat) -> CGFloat {
-        let inverse = 1 - t
-        return 3 * inverse * inverse * t * p1
-            + 3 * inverse * t * t * p2
-            + t * t * t
-    }
-}
-
-private struct InterruptibleSpringScalar {
-    private(set) var value: CGFloat
-    private(set) var velocity: CGFloat = 0
-    private var target: CGFloat
-    private var lastTime: CFTimeInterval?
-
-    init(_ value: CGFloat) {
-        self.value = value
-        target = value
-    }
-
-    mutating func retarget(to newTarget: CGFloat, at time: CFTimeInterval, reduceMotion: Bool) {
-        advance(to: time, reduceMotion: reduceMotion)
-        target = newTarget
-        if reduceMotion {
-            value = newTarget
-            velocity = 0
-        }
-    }
-
-    mutating func advance(to time: CFTimeInterval, reduceMotion: Bool) {
-        defer { lastTime = time }
-        guard !reduceMotion, let lastTime else { return }
-        var remaining = min(max(time - lastTime, 0), 1.0 / 15.0)
-        let omega = 2.0 * Double.pi / 0.74
-        let damping = 2.0 * 0.78 * omega
-        let stiffness = omega * omega
-        while remaining > 0 {
-            let step = min(remaining, 1.0 / 120.0)
-            let acceleration = stiffness * Double(target - value) - damping * Double(velocity)
-            velocity += CGFloat(acceleration * step)
-            value += velocity * CGFloat(step)
-            remaining -= step
-        }
-        if abs(target - value) < 0.0002, abs(velocity) < 0.001 {
-            value = target
-            velocity = 0
-        }
+    mutating func snap(to target: CGFloat) {
+        value = target
+        state = nil
     }
 }
 
 private struct BokehTransitionPresentationState {
     private(set) var target = BokehTransitionSnapshot.inactive
-    private var position = InterruptibleSpringScalar(0)
-    private var centeredOpacity = TimedTransitionScalar(0)
-    private var transitionOpacity = TimedTransitionScalar(0)
-    private var radius = TimedTransitionScalar(0)
-    private var opticalOpacity = TimedTransitionScalar(0)
-    private var handoffOpacity = TimedTransitionScalar(0)
+    private var position = MotionTransitionScalar(0)
+    private var centeredOpacity = MotionTransitionScalar(0)
+    private var transitionOpacity = MotionTransitionScalar(0)
+    private var radius = MotionTransitionScalar(0)
+    private var opticalOpacity = MotionTransitionScalar(0)
+    private var handoffOpacity = MotionTransitionScalar(0)
 
     mutating func retarget(to newTarget: BokehTransitionSnapshot, at time: CFTimeInterval) {
         // Keep the dormant renderer exactly aligned with whichever static layout
@@ -164,24 +79,34 @@ private struct BokehTransitionPresentationState {
         // centered state would animate internally from the default leading state.
         if target.surfaceOpacity <= 0.5, newTarget.surfaceOpacity <= 0.5 {
             target = newTarget
-            position = InterruptibleSpringScalar(newTarget.transitionPosition)
-            centeredOpacity = TimedTransitionScalar(newTarget.centeredOpacity)
-            transitionOpacity = TimedTransitionScalar(newTarget.transitionOpacity)
-            radius = TimedTransitionScalar(newTarget.bokehRadius)
-            opticalOpacity = TimedTransitionScalar(newTarget.opticalOpacity)
-            handoffOpacity = TimedTransitionScalar(newTarget.handoffOpacity)
+            position = MotionTransitionScalar(newTarget.transitionPosition)
+            centeredOpacity = MotionTransitionScalar(newTarget.centeredOpacity)
+            transitionOpacity = MotionTransitionScalar(newTarget.transitionOpacity)
+            radius = MotionTransitionScalar(newTarget.bokehRadius)
+            opticalOpacity = MotionTransitionScalar(newTarget.opticalOpacity)
+            handoffOpacity = MotionTransitionScalar(newTarget.handoffOpacity)
             return
         }
-        let reduceMotion = newTarget.reduceMotion
+        let motionPolicy = newTarget.motionPolicy
+        let reducedMotion = motionPolicy != .full
         if abs(newTarget.transitionPosition - target.transitionPosition) > 0.0001 {
-            position.retarget(to: newTarget.transitionPosition, at: time, reduceMotion: reduceMotion)
+            position.retarget(
+                to: newTarget.transitionPosition,
+                at: time,
+                spec: newTarget.motionTokens[.backgroundTransition],
+                policy: reducedMotion ? .disabled : .full
+            )
         }
         if abs(newTarget.centeredOpacity - target.centeredOpacity) > 0.0001 {
             centeredOpacity.retarget(
                 to: newTarget.centeredOpacity,
                 at: time,
-                duration: reduceMotion ? 0.34 : 0.72,
-                curve: .background
+                spec: BokehMotion.phase(
+                    duration: 0.72,
+                    token: .backgroundTransition,
+                    tokens: newTarget.motionTokens
+                ),
+                policy: motionPolicy
             )
         }
         if abs(newTarget.transitionOpacity - target.transitionOpacity) > 0.0001 {
@@ -189,13 +114,12 @@ private struct BokehTransitionPresentationState {
             transitionOpacity.retarget(
                 to: newTarget.transitionOpacity,
                 at: time,
-                // Finish the same-artwork moving-layer handoff before position
-                // starts at 105 ms. A slower rise lets the stationary and
-                // moving copies separate while both are translucent, which
-                // reads as a trailing double image. Artwork swaps use the
-                // independent per-surface optical opacity below.
-                duration: rising ? 0.08 : (reduceMotion ? 0.22 : 0.42),
-                curve: rising ? .layerFadeIn : .layerFadeOut
+                spec: BokehMotion.phase(
+                    duration: rising ? 0.08 : 0.42,
+                    token: .contentReplacement,
+                    tokens: newTarget.motionTokens
+                ),
+                policy: motionPolicy
             )
         }
         if abs(newTarget.bokehRadius - target.bokehRadius) > 0.0001 {
@@ -203,8 +127,12 @@ private struct BokehTransitionPresentationState {
             radius.retarget(
                 to: newTarget.bokehRadius,
                 at: time,
-                duration: reduceMotion ? (rising ? 0.16 : 0.28) : (rising ? 0.34 : 0.78),
-                curve: rising ? .blurRise : .blurFall
+                spec: BokehMotion.phase(
+                    duration: rising ? 0.34 : 0.78,
+                    token: .backgroundTransition,
+                    tokens: newTarget.motionTokens
+                ),
+                policy: motionPolicy
             )
         }
         if abs(newTarget.opticalOpacity - target.opticalOpacity) > 0.0001 {
@@ -212,8 +140,12 @@ private struct BokehTransitionPresentationState {
             opticalOpacity.retarget(
                 to: newTarget.opticalOpacity,
                 at: time,
-                duration: reduceMotion ? 0.10 : (rising ? 0.08 : 0.60),
-                curve: rising ? .layerFadeIn : .layerFadeOut
+                spec: BokehMotion.phase(
+                    duration: rising ? 0.08 : 0.60,
+                    token: .contentReplacement,
+                    tokens: newTarget.motionTokens
+                ),
+                policy: motionPolicy
             )
         }
         if abs(newTarget.handoffOpacity - target.handoffOpacity) > 0.0001 {
@@ -221,8 +153,12 @@ private struct BokehTransitionPresentationState {
             handoffOpacity.retarget(
                 to: newTarget.handoffOpacity,
                 at: time,
-                duration: reduceMotion ? 0.10 : (rising ? 0.08 : 0.60),
-                curve: rising ? .layerFadeIn : .layerFadeOut
+                spec: BokehMotion.phase(
+                    duration: rising ? 0.08 : 0.60,
+                    token: .contentReplacement,
+                    tokens: newTarget.motionTokens
+                ),
+                policy: motionPolicy
             )
         }
         target = newTarget
@@ -241,29 +177,37 @@ private struct BokehTransitionPresentationState {
     /// animation is not interrupted.
     mutating func snapAfterInstall(
         targetOpticalOpacity: CGFloat,
-        reduceMotion: Bool,
+        motionPolicy: MotionPolicy,
         at time: CFTimeInterval
     ) {
         let t = target
-        position = InterruptibleSpringScalar(t.transitionPosition)
-        centeredOpacity = TimedTransitionScalar(t.centeredOpacity)
-        transitionOpacity = TimedTransitionScalar(t.transitionOpacity)
+        position = MotionTransitionScalar(t.transitionPosition)
+        centeredOpacity = MotionTransitionScalar(t.centeredOpacity)
+        transitionOpacity = MotionTransitionScalar(t.transitionOpacity)
         // Snap to full so the surface is visible immediately (no fade-in).
-        opticalOpacity = TimedTransitionScalar(1)
+        opticalOpacity = MotionTransitionScalar(1)
         // If the target is below full, set up the fade-out animation from
         // full to the target in the same update.
         if targetOpticalOpacity < 0.999 {
             opticalOpacity.retarget(
                 to: targetOpticalOpacity,
                 at: time,
-                duration: reduceMotion ? 0.10 : 0.60,
-                curve: .layerFadeOut
+                spec: BokehMotion.phase(
+                    duration: 0.60,
+                    token: .contentReplacement,
+                    tokens: t.motionTokens
+                ),
+                policy: motionPolicy
             )
         }
     }
 
     mutating func snapshot(at time: CFTimeInterval) -> BokehTransitionSnapshot {
-        position.advance(to: time, reduceMotion: target.reduceMotion)
+        if target.motionPolicy != .full {
+            position.snap(to: target.transitionPosition)
+        } else {
+            position.advance(to: time)
+        }
         centeredOpacity.advance(to: time)
         transitionOpacity.advance(to: time)
         radius.advance(to: time)
@@ -357,7 +301,7 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
         if needsSnapAfterInstall {
             presentationState.snapAfterInstall(
                 targetOpticalOpacity: snapshot.opticalOpacity,
-                reduceMotion: snapshot.reduceMotion,
+                motionPolicy: snapshot.motionPolicy,
                 at: time
             )
             needsSnapAfterInstall = false

@@ -6,6 +6,7 @@
 //  Provides smooth numeric rolling transitions for playback time labels.
 //
 
+import MotionKit
 import SwiftUI
 
 /// A time label with smooth numeric text transitions.
@@ -15,7 +16,7 @@ import SwiftUI
 /// - Stable identity (no recreation on each tick)
 /// - `.monospacedDigit()` for stable width
 /// - `.contentTransition(.numericText())` for rolling effect
-/// - `.animation(.smooth, value:)` for implicit animation context
+/// - MotionKit's value-driven modifier for the implicit animation context
 struct NumericTimeText: View {
     /// The raw time value in seconds
     let time: Double
@@ -29,21 +30,19 @@ struct NumericTimeText: View {
     /// Foreground color
     let color: Color
     
-    /// Animation duration for the numeric transition (default: 0.3s)
-    let animationDuration: Double
-    
     /// Whether to enable the numeric transition (default: true)
     let enableTransition: Bool
     
     /// Optional id for stable identity when used in dynamic contexts
     let id: String?
+
+    @Environment(\.motionTokens) private var motionTokens
     
     init(
         time: Double,
         fontSize: CGFloat = 12,
         fontWeight: Font.Weight = .medium,
         color: Color = .secondary,
-        animationDuration: Double = 0.3,
         enableTransition: Bool = true,
         id: String? = nil
     ) {
@@ -51,7 +50,6 @@ struct NumericTimeText: View {
         self.fontSize = fontSize
         self.fontWeight = fontWeight
         self.color = color
-        self.animationDuration = animationDuration
         self.enableTransition = enableTransition
         self.id = id
     }
@@ -69,8 +67,12 @@ struct NumericTimeText: View {
             .if(enableTransition) { view in
                 view
                     .contentTransition(.numericText())
-                    .animation(.smooth(duration: animationDuration), value: displayedTime)
+                    .motionAnimation(numericMotionSpec, value: displayedTime)
             }
+    }
+
+    private var numericMotionSpec: MotionSpec {
+        motionTokens[.contentReplacement]
     }
     
     /// Formats time as "m:ss" or "mm:ss"

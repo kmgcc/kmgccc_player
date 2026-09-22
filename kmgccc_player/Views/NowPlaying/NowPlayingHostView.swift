@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 @MainActor
@@ -20,6 +21,8 @@ struct NowPlayingHostView: View {
     @Environment(SkinManager.self) private var skinManager
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var skinRevision = 0
@@ -31,6 +34,10 @@ struct NowPlayingHostView: View {
     let mainContentWidth: CGFloat
     var artBackgroundIsUltraDark: Bool = false
     private static let externalArtworkTrackID = UUID(uuidString: "9D7D2E53-8CC0-4E65-8B19-7D9E772E6D43")!
+
+    private var motionPolicy: MotionPolicy {
+        configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
+    }
 
     var body: some View {
         let selectedSkinID = settings.selectedNowPlayingSkinID
@@ -158,7 +165,6 @@ struct NowPlayingHostView: View {
         let theme = SkinContext.ThemeTokens(
             accentColor: themeStore.accentColor,
             colorScheme: colorScheme,
-            reduceMotion: reduceMotion,
             reduceTransparency: reduceTransparency,
             glassIntensity: AppSettings.shared.liquidGlassIntensity,
             backgroundBlur: AppSettings.shared.nowPlayingBackgroundBlur,
@@ -195,6 +201,8 @@ struct NowPlayingHostView: View {
             audio: .zero,
             led: LEDMeterMetrics.zero(count: AppSettings.shared.ledCount),
             theme: theme,
+            motionTokens: motionTokens,
+            motionPolicy: motionPolicy,
             windowSize: windowSize,
             contentBounds: contentBounds,
             fullscreenScale: 1.0,

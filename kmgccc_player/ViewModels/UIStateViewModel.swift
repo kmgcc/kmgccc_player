@@ -7,7 +7,9 @@
 //  Sidebar can be collapsed and restored.
 //
 
+import AppKit
 import Foundation
+import MotionKit
 import SwiftUI
 
 extension Notification.Name {
@@ -58,6 +60,16 @@ final class UIStateViewModel {
     private let defaults = UserDefaults.standard
     private var isLoadingPersistedLayoutState = false
     @ObservationIgnored private var sidebarNoticeDismissTask: Task<Void, Never>?
+
+    private var motionPolicy: MotionPolicy {
+        MotionPolicy.system(
+            accessibilityReduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
+    }
+
+    private func motionAnimation(for token: MotionToken) -> Animation? {
+        motionPolicy.animation(for: MotionTokens.standard[token])
+    }
 
     // MARK: - Layout Visibility
 
@@ -188,19 +200,19 @@ final class UIStateViewModel {
     }
 
     func showWindowPlaybackQueue() {
-        withAnimation(.easeInOut(duration: 0.22)) {
+        withAnimation(motionAnimation(for: .navigation)) {
             isWindowPlaybackQueueVisible = true
         }
     }
 
     func hideWindowPlaybackQueue() {
-        withAnimation(.easeInOut(duration: 0.22)) {
+        withAnimation(motionAnimation(for: .navigation)) {
             isWindowPlaybackQueueVisible = false
         }
     }
 
     func toggleWindowPlaybackQueue() {
-        withAnimation(.easeInOut(duration: 0.22)) {
+        withAnimation(motionAnimation(for: .navigation)) {
             isWindowPlaybackQueueVisible.toggle()
         }
     }
@@ -348,7 +360,7 @@ final class UIStateViewModel {
     // MARK: - Actions
 
     func toggleSidebar() {
-        withAnimation(.easeInOut(duration: 0.25)) {
+        withAnimation(motionAnimation(for: .layout)) {
             sidebarVisible.toggle()
         }
     }
@@ -364,26 +376,26 @@ final class UIStateViewModel {
     }
 
     func toggleLyrics() {
-        withAnimation(.easeInOut(duration: 0.25)) {
+        withAnimation(motionAnimation(for: .layout)) {
             lyricsVisible.toggle()
         }
     }
 
     func showNowPlaying() {
-        withAnimation(.easeInOut(duration: 0.3)) {
+        withAnimation(motionAnimation(for: .navigation)) {
             contentMode = .nowPlaying
         }
     }
 
     func showLibrary() {
-        withAnimation(.easeInOut(duration: 0.3)) {
+        withAnimation(motionAnimation(for: .navigation)) {
             playbackHistoryDate = nil
             contentMode = .library
         }
     }
 
     func showPlaybackHistory(for date: Date? = nil) {
-        withAnimation(.easeInOut(duration: 0.3)) {
+        withAnimation(motionAnimation(for: .navigation)) {
             playbackHistoryDate = date.map { Calendar.current.startOfDay(for: $0) }
             contentMode = .playbackHistory
         }

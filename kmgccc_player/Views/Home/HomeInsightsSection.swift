@@ -8,6 +8,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct HomeInsightsSection: View {
@@ -832,10 +833,24 @@ struct HomeListeningHeatmapView: View {
     var onSelectDay: ((Date) -> Void)? = nil
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
+    @Environment(\.motionTokens) private var motionTokens
     @State private var displayedMonth: Date
     @State private var monthDirection: Int = 0
 
     private var headerGridSpacing: CGFloat { compact ? 8 : 12 }
+
+    private var monthMotionSpec: MotionSpec {
+        motionTokens.phaseSpec(for: .contentReplacement, duration: 0.32)
+    }
+
+    private var monthAnimation: Animation? {
+        configuredMotionPolicy.resolvedAnimation(
+            for: monthMotionSpec,
+            accessibilityReduceMotion: reduceMotion
+        )
+    }
 
     init(
         dailyMap: [Date: Int],
@@ -873,7 +888,7 @@ struct HomeListeningHeatmapView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
-                .animation(.smooth(duration: 0.32), value: model.monthIdentity)
+                .motionAnimation(monthMotionSpec, value: model.monthIdentity)
             }
             .padding(compact ? 0 : 2)
         }
@@ -957,7 +972,7 @@ struct HomeListeningHeatmapView: View {
         withTransaction(directionTransaction) {
             monthDirection = delta
         }
-        withAnimation(.smooth(duration: 0.32)) {
+        withAnimation(monthAnimation) {
             displayedMonth = clampedMonth
         }
     }

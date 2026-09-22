@@ -100,7 +100,6 @@ struct LEDMeterSettingsView: View {
             SlidingSelector(
                 segments: [9, 11, 13, 15],
                 selection: $ledCount,
-                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
                 hSpacing: 0,
                 background: {
                     Color.clear
@@ -144,7 +143,6 @@ struct LEDMeterSettingsView: View {
             SlidingSelector(
                 segments: [3, 5, 7],
                 selection: $brightnessLevels,
-                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
                 hSpacing: 0,
                 background: {
                     Color.clear

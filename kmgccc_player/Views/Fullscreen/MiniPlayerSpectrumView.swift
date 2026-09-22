@@ -7,8 +7,9 @@
 //
 
 import Foundation
-import SwiftUI
 import AppKit
+import MotionKit
+import SwiftUI
 
 /// Behavior when playback is paused
 enum MiniPlayerSpectrumPausedBehavior {
@@ -106,7 +107,7 @@ struct MiniPlayerSpectrumView: View {
         .frame(width: currentWidth, height: height)
         .opacity(currentOpacity)
         .clipShape(RoundedRectangle(cornerRadius: currentCornerRadius, style: .continuous))
-        .animation(.spring(response: 0.35, dampingFraction: 0.75, blendDuration: 0.1), value: isHovered)
+        .motionAnimation(.control, value: isHovered)
     }
 
     @MainActor

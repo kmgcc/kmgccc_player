@@ -45,7 +45,7 @@ final class EnrichmentStatusDialogPresenter: NSObject, NSWindowDelegate {
         hostingView.autoresizingMask = [.width, .height]
         visualEffect.addSubview(hostingView)
 
-        AppDialogTokens.presentWithFade(panel)
+        AppDialogTokens.presentWithMotion(panel)
     }
 
     static func close() {

@@ -7,6 +7,7 @@
 //  drawn from the home page background.
 //
 
+import MotionKit
 import SwiftUI
 
 struct ThemedBaseBackgroundColorView: View {
@@ -20,6 +21,6 @@ struct ThemedBaseBackgroundColorView: View {
         )
         ColorRenderingAdapter.makeSwiftUIColor(baseColor)
             .ignoresSafeArea()
-            .animation(.easeInOut(duration: 0.20), value: baseColor)
+            .motionAnimation(.backgroundTransition, value: baseColor)
     }
 }

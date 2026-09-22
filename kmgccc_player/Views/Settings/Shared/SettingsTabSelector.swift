@@ -38,7 +38,6 @@ struct SettingsTabSelector: View {
         SlidingSelector(
             segments: Array(tabs.indices),
             selection: $selectedTab,
-            animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
             hSpacing: 0,
             background: {
                 Color.clear

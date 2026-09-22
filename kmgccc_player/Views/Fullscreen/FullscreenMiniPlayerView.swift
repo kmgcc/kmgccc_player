@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct FullscreenControlsGlassStyle {
@@ -82,6 +83,9 @@ struct FullscreenMiniPlayerView: View {
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var isDragging = false
@@ -124,8 +128,18 @@ struct FullscreenMiniPlayerView: View {
     private var progressAreaHPadding: CGFloat { 8 * scale }
     private var progressTimeSpacing: CGFloat { 10 * scale }
     private var progressYOffset: CGFloat { 13 * scale }
-    private var layoutAnimation: Animation {
-        .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
+    private var layoutAnimation: Animation? {
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: reduceMotion
+        )
+        return policy.animation(for: motionTokens[.layout])
+    }
+
+    private var contentReplacementAnimation: Animation? {
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: reduceMotion
+        )
+        return policy.animation(for: motionTokens[.contentReplacement])
     }
 
     var body: some View {
@@ -341,7 +355,7 @@ struct FullscreenMiniPlayerView: View {
             value: .bounds
         ) { $0 }
         .contentShape(Capsule())
-        .animation(layoutAnimation, value: isPlaybackModeExpanded)
+        .motionAnimation(.layout, value: isPlaybackModeExpanded)
         .onHover { hovering in
             guard isEnabled else {
                 if isPlaybackModeExpanded {
@@ -690,6 +704,9 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
     let onInteraction: () -> Void
 
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     // Layout derived from scale (mirrors FullscreenMiniPlayerView formulas)
     private var artworkSize: CGFloat { 60 * 0.73 * scale }
@@ -698,6 +715,12 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
     private var trackInfoVSpacing: CGFloat { 6 * scale }
     private var titleFontSize: CGFloat { 15 * scale }
     private var artistFontSize: CGFloat { 12.5 * scale }
+    private var contentReplacementAnimation: Animation? {
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: reduceMotion
+        )
+        return policy.animation(for: motionTokens[.contentReplacement])
+    }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.hasTrack == rhs.hasTrack
@@ -771,7 +794,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .animation(.easeInOut(duration: 0.15), value: isRefetchingLyrics)
+        .motionAnimation(.contentReplacement, value: isRefetchingLyrics)
         .contextMenu {
             // Closure is lazy — evaluated only when NSMenu appears, not during body computation.
             nowPlayingInfoContextMenu

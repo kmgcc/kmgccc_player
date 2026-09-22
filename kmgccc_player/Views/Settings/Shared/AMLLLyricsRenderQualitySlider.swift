@@ -29,7 +29,6 @@ struct AMLLLyricsRenderQualitySlider: View {
             SlidingSelector(
                 segments: AppSettings.AMLLLyricsRenderQuality.allCases,
                 selection: $quality,
-                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
                 hSpacing: 0,
                 background: {
                     Color.clear

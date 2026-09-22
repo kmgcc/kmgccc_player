@@ -9,6 +9,7 @@
 import AppKit
 import Combine
 import Foundation
+import MotionKit
 import SwiftUI
 
 /// Reusable fullscreen-player content view with enlarged skin artwork (left),
@@ -230,6 +231,8 @@ struct FullscreenPlayerView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @EnvironmentObject private var themeStore: ThemeStore
     @StateObject private var bkController = BKArtBackgroundController()
@@ -746,7 +749,7 @@ struct FullscreenPlayerView: View {
         } else {
             detailReaderTrack = nil
         }
-        withAnimation(.easeOut(duration: 0.22)) {
+        withAnimation(motionPolicy.animation(for: motionTokens[.navigation])) {
             isDetailReaderPanelPresented = presented
         }
     }
@@ -925,7 +928,7 @@ struct FullscreenPlayerView: View {
             }
         }
         .frame(width: proxy.size.width, height: proxy.size.height)
-        .animation(.easeOut(duration: 0.22), value: isDetailReaderPanelPresented)
+        .motionAnimation(.navigation, value: isDetailReaderPanelPresented)
         .onAppear {
             currentFullscreenScale = scale
             fullscreenViewportSize = proxy.size
@@ -1063,7 +1066,7 @@ struct FullscreenPlayerView: View {
                     .padding(.top, 6)
                     .padding(.bottom, 12)
                     .offset(y: coverDropY)
-                    .animation(coverDropAnimation, value: isFullscreenBottomControlsVisible)
+                    .motionAnimation(.navigation, value: isFullscreenBottomControlsVisible)
 
                 Spacer(minLength: fullscreenControlsBottomPadding + fullscreenControlButtonSize)
             }
@@ -1189,7 +1192,7 @@ struct FullscreenPlayerView: View {
         // in from above, making it look like a falling block. The native surface
         // handles line motion internally, keeping the current line fixed while
         // other lines converge.
-        .animation(bottomControlsAnimation, value: isFullscreenBottomControlsVisible)  // mask only
+        .motionAnimation(.layout, value: isFullscreenBottomControlsVisible)  // mask only
     }
 
     @ViewBuilder
@@ -1237,7 +1240,7 @@ struct FullscreenPlayerView: View {
                 y: isFullscreenBottomControlsVisible ? 0.97 : 1.0,
                 anchor: .top
             )
-            .animation(bottomControlsAnimation, value: isFullscreenBottomControlsVisible)
+            .motionAnimation(.layout, value: isFullscreenBottomControlsVisible)
         }
     }
 
@@ -1485,7 +1488,7 @@ struct FullscreenPlayerView: View {
                 if isPanoramicVolumeHUDVisible {
                     panoramicVolumeHUD(scale: artworkBounds.scale)
                         .transition(
-                            reduceMotion
+                            motionPolicy != .full
                                 ? .opacity
                                 : .opacity.combined(with: .scale(scale: 0.92))
                         )
@@ -1500,7 +1503,7 @@ struct FullscreenPlayerView: View {
                         blendMode: fullscreenMiniPlayerIconBlendMode
                     )
                     .transition(
-                        reduceMotion
+                        motionPolicy != .full
                             ? .opacity
                             : .opacity.combined(with: .scale(scale: 0.94))
                     )
@@ -1511,10 +1514,7 @@ struct FullscreenPlayerView: View {
             .position(x: artworkBounds.center.x, y: artworkBounds.center.y)
         }
         .frame(width: viewportSize.width, height: viewportSize.height)
-        .animation(
-            .easeOut(duration: reduceMotion ? 0.12 : 0.18),
-            value: isPanoramicVolumeHUDVisible
-        )
+        .motionAnimation(.microInteraction, value: isPanoramicVolumeHUDVisible)
     }
 
     private func panoramicVolumeHUD(scale: CGFloat) -> some View {
@@ -1530,10 +1530,7 @@ struct FullscreenPlayerView: View {
                 .monospacedDigit()
                 .lineLimit(1)
                 .contentTransition(.numericText())
-                .animation(
-                    reduceMotion ? nil : .smooth(duration: 0.24),
-                    value: percentage
-                )
+                .motionAnimation(.contentReplacement, value: percentage)
                 .frame(width: 86 * scale)
         }
         .foregroundStyle(fullscreenMiniPlayerPrimaryColor)
@@ -1586,7 +1583,7 @@ struct FullscreenPlayerView: View {
         playbackCoordinator.setVolume(newVolume)
 
         pendingPanoramicVolumeHUDHideTask?.cancel()
-        withAnimation(.easeOut(duration: reduceMotion ? 0.12 : 0.18)) {
+        withAnimation(motionPolicy.animation(for: motionTokens[.microInteraction])) {
             isPanoramicVolumeHUDVisible = true
         }
 
@@ -1597,18 +1594,30 @@ struct FullscreenPlayerView: View {
                 return
             }
             guard !Task.isCancelled else { return }
-            withAnimation(.easeIn(duration: reduceMotion ? 0.12 : 0.20)) {
+            withAnimation(motionPolicy.animation(for: motionTokens[.microInteraction])) {
                 isPanoramicVolumeHUDVisible = false
             }
             pendingPanoramicVolumeHUDHideTask = nil
         }
     }
 
-    private var bottomControlsAnimation: Animation {
-        if reduceMotion {
-            return .easeInOut(duration: 0.18)
+    private var motionPolicy: MotionPolicy {
+        configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
+    }
+
+    private func motionDelay(full: TimeInterval, reduced: TimeInterval) -> TimeInterval {
+        switch motionPolicy {
+        case .full:
+            full
+        case .reduced:
+            reduced
+        case .disabled:
+            0
         }
-        return .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
+    }
+
+    private var bottomControlsAnimation: Animation? {
+        motionPolicy.animation(for: motionTokens[.layout])
     }
 
     private func animateFullscreenBottomControlsGeometry(_ updates: () -> Void) {
@@ -1625,22 +1634,8 @@ struct FullscreenPlayerView: View {
         }
     }
 
-    private var quickAppearancePanelAnimation: Animation {
-        if reduceMotion {
-            return .easeInOut(duration: 0.14)
-        }
-        return .spring(response: 0.24, dampingFraction: 0.88, blendDuration: 0.05)
-    }
-
-    /// Slower spring used specifically for the cover-element drop/rise when the
-    /// fullscreen miniplayer hides or shows. Same damping and character as
-    /// bottomControlsAnimation but a longer response so the motion feels
-    /// deliberate and consistent with the lyrics-region expansion.
-    private var coverDropAnimation: Animation {
-        if reduceMotion {
-            return .easeInOut(duration: 0.28)
-        }
-        return .spring(response: 0.55, dampingFraction: 0.82, blendDuration: 0.08)
+    private var quickAppearancePanelAnimation: Animation? {
+        motionPolicy.animation(for: motionTokens[.control])
     }
 
     private var isFullscreenBottomControlsAutoHideEnabled: Bool {
@@ -2207,7 +2202,7 @@ struct FullscreenPlayerView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(quickAppearancePanelAnimation, value: isQuickAppearancePanelPresented)
+        .motionAnimation(.control, value: isQuickAppearancePanelPresented)
     }
 
     // MARK: - Artwork and Controls Area (No Lyrics - Lyrics are in crisp layer)
@@ -2440,7 +2435,7 @@ struct FullscreenPlayerView: View {
                 .contentTransition(
                     .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
                 )
-                .animation(.snappy(duration: 0.20), value: icon)
+                .motionAnimation(.microInteraction, value: icon)
         } action: {
             setQuickAppearancePanelPresented(!isQuickAppearancePanelPresented)
         }
@@ -2463,7 +2458,7 @@ struct FullscreenPlayerView: View {
                 .contentTransition(
                     .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
                 )
-                .animation(.snappy(duration: 0.22), value: icon)
+                .motionAnimation(.microInteraction, value: icon)
         } action: {
             handleLyricsButtonTap()
         }
@@ -2488,12 +2483,8 @@ struct FullscreenPlayerView: View {
         playbackCoordinator.stablePresentation.localPlaybackOrderMode ?? settings.playbackOrderMode
     }
 
-    private var lyricsLayoutAnimation: Animation {
-        if reduceMotion {
-            return .easeInOut(duration: 0.2)
-        }
-        // Non-linear, spring-like layout movement for artwork/lyrics transitions.
-        return .spring(response: 0.62, dampingFraction: 0.84, blendDuration: 0.18)
+    private var lyricsLayoutAnimation: Animation? {
+        motionPolicy.animation(for: motionTokens[.navigation])
     }
 
     private var fullscreenMiniPlayerPrimaryColor: Color {
@@ -2977,7 +2968,7 @@ struct FullscreenPlayerView: View {
         fullscreenLyricsHostMounted = true
         suppressFullscreenLyricsViewport = true
 
-        let delay: TimeInterval = reduceMotion ? 0.18 : 0.28
+        let delay = motionDelay(full: 0.28, reduced: 0.18)
         let workItem = DispatchWorkItem {
             guard currentDisplayContext.trackID == trackID else {
                 pendingFullscreenLyricsAutoRestoreReload = nil
@@ -3028,9 +3019,9 @@ struct FullscreenPlayerView: View {
                         at: 0,
                         reason: fullscreenLyricsAutoRestoreReason
                     )
-                    let revealAnimation: Animation = reduceMotion
-                        ? .easeInOut(duration: 0.08)
-                        : .easeInOut(duration: 0.24)
+                    let revealAnimation = motionPolicy.animation(
+                        for: motionTokens[.contentReplacement]
+                    )
                     withAnimation(revealAnimation) {
                         suppressFullscreenLyricsViewport = false
                     }
@@ -3040,14 +3031,14 @@ struct FullscreenPlayerView: View {
 
                 pendingFullscreenLyricsAutoRestoreReveal = revealWorkItem
                 DispatchQueue.main.asyncAfter(
-                    deadline: .now() + (reduceMotion ? 0.24 : 0.44),
+                    deadline: .now() + motionDelay(full: 0.44, reduced: 0.24),
                     execute: revealWorkItem
                 )
             }
 
             pendingFullscreenLyricsAutoRestoreReload = showWorkItem
             DispatchQueue.main.asyncAfter(
-                deadline: .now() + (reduceMotion ? 0.42 : 0.78),
+                deadline: .now() + motionDelay(full: 0.78, reduced: 0.42),
                 execute: showWorkItem
             )
         }
@@ -3076,7 +3067,10 @@ struct FullscreenPlayerView: View {
             pendingFullscreenLyricsAutoRestoreReload = nil
         }
         pendingFullscreenLyricsAutoRestoreReload = clearWorkItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: clearWorkItem)
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + motionDelay(full: 0.18, reduced: 0),
+            execute: clearWorkItem
+        )
     }
 
     private func fullscreenLyricsRevealCurrentTime() -> TimeInterval {
@@ -3404,7 +3398,7 @@ struct FullscreenPlayerView: View {
 
         if needsSystemFullscreenBlendPreflight {
             scheduleSystemFullscreenLyricsBlendReveal(
-                after: reduceMotion ? 0 : 2.0 / 60.0
+                after: motionDelay(full: 2.0 / 60.0, reduced: 0)
             )
         }
     }
@@ -3882,7 +3876,7 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenLyricsHostDetachDelay: TimeInterval {
-        reduceMotion ? 0.22 : 0.72
+        motionDelay(full: 0.72, reduced: 0.22)
     }
 
     private func syncFullscreenLyricsHostMount() {
@@ -3939,9 +3933,9 @@ struct FullscreenPlayerView: View {
                 suppressFullscreenLyricsViewport = false
                 return
             }
-            let revealAnimation: Animation = reduceMotion
-                ? .linear(duration: 0)
-                : .easeOut(duration: 0.12)
+            let revealAnimation = motionPolicy.animation(
+                for: motionTokens[.contentReplacement]
+            )
             withAnimation(revealAnimation) {
                 suppressFullscreenLyricsViewport = false
             }
@@ -3983,7 +3977,9 @@ struct FullscreenPlayerView: View {
         pendingFullscreenLyricsReveal?.cancel()
         pendingFullscreenLyricsReveal = nil
 
-        let delay: TimeInterval = layoutWillChange ? (reduceMotion ? 0.20 : 0.34) : 0
+        let delay = layoutWillChange
+            ? motionDelay(full: 0.34, reduced: 0.20)
+            : 0
         let workItem = DispatchWorkItem {
             reloadLyricsSurface(reason: "fullscreen track changed", forceLyricsReload: true)
             if revealLyricsAfterRefresh {
@@ -3995,7 +3991,7 @@ struct FullscreenPlayerView: View {
                 }
                 pendingFullscreenLyricsReveal = revealWorkItem
                 DispatchQueue.main.asyncAfter(
-                    deadline: .now() + (reduceMotion ? 0 : 1.0/60.0),
+                    deadline: .now() + motionDelay(full: 1.0 / 60.0, reduced: 0),
                     execute: revealWorkItem
                 )
             } else {
@@ -4594,7 +4590,6 @@ struct FullscreenPlayerView: View {
         let theme = SkinContext.ThemeTokens(
             accentColor: themeStore.accentColor,
             colorScheme: colorScheme,
-            reduceMotion: reduceMotion,
             reduceTransparency: reduceTransparency,
             glassIntensity: AppSettings.shared.liquidGlassIntensity,
             backgroundBlur: AppSettings.shared.nowPlayingBackgroundBlur,
@@ -4638,6 +4633,8 @@ struct FullscreenPlayerView: View {
             audio: .zero,
             led: LEDMeterMetrics.zero(count: AppSettings.shared.ledCount),
             theme: theme,
+            motionTokens: motionTokens,
+            motionPolicy: motionPolicy,
             windowSize: windowSize,
             contentBounds: contentBounds,
             fullscreenScale: fullscreenScale,

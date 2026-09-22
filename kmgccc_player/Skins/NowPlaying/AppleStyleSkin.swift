@@ -5,6 +5,7 @@
 //  Apple Music-style AMLL mesh background with classic foreground content.
 //
 
+import MotionKit
 import SwiftUI
 
 struct AppleStyleSkin: NowPlayingSkin {
@@ -47,7 +48,7 @@ private struct AppleMeshBackground: View {
                 artworkData: context.track?.artworkData,
                 artworkChecksum: context.track?.artworkChecksum ?? 0,
                 isPlaying: context.playback.isPlaying,
-                dynamicBackgroundEnabled: dynamicBackgroundEnabled && !context.theme.reduceMotion,
+                dynamicBackgroundEnabled: dynamicBackgroundEnabled && context.motionPolicy == .full,
                 speed: AppleMeshBackgroundSpeed(rawValue: flowSpeed) ?? .standard
             ))
         }
@@ -189,7 +190,6 @@ private struct AppleStyleSettingsView: View {
             SlidingSelector(
                 segments: AppleMeshBackgroundSpeed.allCases,
                 selection: speedSelection,
-                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
                 hSpacing: 0,
                 background: {
                     Color.clear

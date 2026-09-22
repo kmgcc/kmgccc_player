@@ -9,6 +9,7 @@
 // detection matches the actual row rendering.
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct SeamlessMarqueeText: View {
@@ -96,7 +97,7 @@ struct SeamlessMarqueeText: View {
         if enablesContentTransition {
             base
                 .contentTransition(.interpolate)
-                .animation(.easeInOut(duration: 0.25), value: text)
+                .motionAnimation(.contentReplacement, value: text)
         } else {
             base
         }

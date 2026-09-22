@@ -10,6 +10,7 @@ import AppKit
 import Combine
 import CoreServices
 import Foundation
+import MotionKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -149,6 +150,9 @@ struct DuplicateImportDialogView: View {
     let onFinish: (Bool) -> Void
     @EnvironmentObject var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
     private let maxItemsWithoutScroll = 9
 
     // LAYOUT CONSTANTS (Width: 760)
@@ -226,7 +230,10 @@ struct DuplicateImportDialogView: View {
                 )
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    withAnimation(.easeInOut(duration: 0.15)) {
+                    let policy = configuredMotionPolicy.resolving(
+                        accessibilityReduceMotion: reduceMotion
+                    )
+                    withAnimation(policy.animation(for: motionTokens[.microInteraction])) {
                         viewModel.handleTap(
                             id: row.id,
                             extendingRange: LibraryRowInput.isShiftPressed

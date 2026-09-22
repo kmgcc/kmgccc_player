@@ -9,6 +9,7 @@ import AppKit
 import Combine
 import CoreImage
 import CryptoKit
+import MotionKit
 import SwiftUI
 
 struct RotatingCoverSkin: NowPlayingSkin {
@@ -964,7 +965,7 @@ private struct RotatingCoverArtwork: View {
         let usesFullscreenLayout = context.usesFullscreenPlayerLayout
         let layout = RotatingCoverLayout.metrics(for: context, isFullscreen: usesFullscreenLayout)
         let visualizerMode = usesFullscreenLayout ? fullscreenVisualizerMode : normalVisualizerMode
-        let reduceMotion = context.theme.reduceMotion
+        let motionEnabled = context.motionPolicy == .full
 
         VStack(spacing: 32) {
             RotatingCoverDiscStack(
@@ -1018,7 +1019,7 @@ private struct RotatingCoverArtwork: View {
         .onAppear {
             lastTrackID = context.track?.id
             rotation.setMode(discMode, isPlaying: context.playback.isPlaying)
-            rotation.setMotionEnabled(!reduceMotion, isPlaying: context.playback.isPlaying)
+            rotation.setMotionEnabled(motionEnabled, isPlaying: context.playback.isPlaying)
             updateCDMotionBlurCache(discSize: layout.discSize)
         }
         .onChange(of: context.playback.isPlaying) { _, isPlaying in
@@ -1028,8 +1029,8 @@ private struct RotatingCoverArtwork: View {
             rotation.setMode(discMode, isPlaying: context.playback.isPlaying)
             updateCDMotionBlurCache(discSize: layout.discSize)
         }
-        .onChange(of: reduceMotion) { _, isReduced in
-            rotation.setMotionEnabled(!isReduced, isPlaying: context.playback.isPlaying)
+        .onChange(of: motionEnabled) { _, isEnabled in
+            rotation.setMotionEnabled(isEnabled, isPlaying: context.playback.isPlaying)
         }
         .onChange(of: Int(layout.discSize.rounded())) { _, _ in
             updateCDMotionBlurCache(discSize: layout.discSize)

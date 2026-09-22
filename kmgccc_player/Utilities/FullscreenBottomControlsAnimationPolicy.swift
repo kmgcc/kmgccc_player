@@ -16,10 +16,11 @@ private struct FullscreenBottomControlsGeometryAnimationKey: TransactionKey {
 
 enum FullscreenBottomControlsAnimationPolicy {
     static func animateGeometry(
-        with animation: Animation,
+        with animation: Animation?,
         _ updates: () -> Void
     ) {
-        var transaction = Transaction(animation: animation)
+        var transaction = Transaction()
+        transaction.animation = animation
         transaction[FullscreenBottomControlsGeometryAnimationKey.self] = true
         withTransaction(transaction, updates)
     }

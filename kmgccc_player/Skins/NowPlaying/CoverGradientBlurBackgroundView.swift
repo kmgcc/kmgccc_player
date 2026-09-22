@@ -8,6 +8,7 @@
 import AppKit
 import CoreImage
 import ImageIO
+import MotionKit
 import SwiftUI
 
 private let coverGradientBlurRendererCacheVersion = "smoothStretchV15"
@@ -184,6 +185,9 @@ struct CoverGradientBlurBackgroundView: View {
     @State private var renderedCGImage: CGImage?
     @State private var visibleRenderedImage: Bool = false
     @State private var lastRenderKey: RenderKey?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     init(
         artworkData: Data?,
@@ -207,6 +211,21 @@ struct CoverGradientBlurBackgroundView: View {
         self.readabilityPlacement = readabilityPlacement
         self.onReadabilitySnapshot = onReadabilitySnapshot
         self.onRenderedFrame = onRenderedFrame
+    }
+
+    private var transitionMotionSpec: MotionSpec {
+        motionTokens.phaseSpec(
+            for: .backgroundTransition,
+            duration: config.transitionDuration,
+            bounce: 0
+        )
+    }
+
+    private var transitionAnimation: Animation? {
+        configuredMotionPolicy.resolvedAnimation(
+            for: transitionMotionSpec,
+            accessibilityReduceMotion: reduceMotion
+        )
     }
 
     private var resolvedArtworkChecksum: UInt64 {
@@ -239,7 +258,7 @@ struct CoverGradientBlurBackgroundView: View {
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
-            .animation(.easeInOut(duration: config.transitionDuration), value: visibleRenderedImage)
+            .motionAnimation(transitionMotionSpec, value: visibleRenderedImage)
             .onAppear {
                 updateCurrentSize(geometry.size)
             }
@@ -429,7 +448,7 @@ struct CoverGradientBlurBackgroundView: View {
         guard key == renderKey else { return }
         renderedCGImage = image
         lastRenderKey = key
-        withAnimation(.easeInOut(duration: config.transitionDuration)) {
+        withAnimation(transitionAnimation) {
             visibleRenderedImage = image != nil
         }
     }
@@ -444,7 +463,7 @@ struct CoverGradientBlurBackgroundView: View {
         sourceCGImage = sourceImage
         renderedCGImage = renderedImage
         lastRenderKey = key
-        withAnimation(.easeInOut(duration: config.transitionDuration)) {
+        withAnimation(transitionAnimation) {
             visibleRenderedImage = true
         }
     }

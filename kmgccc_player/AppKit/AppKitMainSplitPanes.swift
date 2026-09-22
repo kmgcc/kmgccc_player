@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftData
 import SwiftUI
 
@@ -23,6 +24,7 @@ struct AppKitMainSidebarPaneRoot: View {
            let cacheServices = appSession.cacheServices,
             let skinManager = appSession.skinManager {
             SidebarView()
+                .motionEnvironment()
                 .environment(AppSettings.shared)
                 .environment(appSession.uiState)
                 .environment(libraryVM)
@@ -415,6 +417,10 @@ struct AppKitMainContentPaneRoot: View {
             }
 
         return withEvents
+            .motionAnimation(
+                .navigation,
+                value: fullscreenWindowManager.isWindowedFullscreenActive
+            )
             .environment(AppSettings.shared)
             .environment(appSession.uiState)
             .environment(appSession.homeVM)
@@ -436,6 +442,7 @@ struct AppKitMainContentPaneRoot: View {
             .modelContainer(appSession.sharedModelContainer)
             .tint(themeStore.accentColor)
             .accentColor(themeStore.accentColor)
+            .motionEnvironment()
             .sheet(item: crashPromptBinding) { _ in
                 CrashReportPromptSheet(
                     onCancel: {
@@ -617,6 +624,7 @@ struct AppKitMainLyricsPaneRoot: View {
             .modelContainer(appSession.sharedModelContainer)
             .tint(ThemeStore.shared.accentColor)
             .accentColor(ThemeStore.shared.accentColor)
+            .motionEnvironment()
         } else {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -631,6 +639,13 @@ struct AppKitMainWindowArtBackgroundLayer: View {
     @ObservedObject private var fullscreenWindowManager = FullscreenWindowManager.shared
     @StateObject private var themeStore = ThemeStore.shared
     @State private var settings = AppSettings.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
+
+    private var motionPolicy: MotionPolicy {
+        configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -690,6 +705,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .all)
+        .motionEnvironment()
     }
 
     private var shouldShowPlaylistHeaderBackground: Bool {
@@ -816,7 +832,6 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         let theme = SkinContext.ThemeTokens(
             accentColor: themeStore.accentColor,
             colorScheme: themeStore.colorScheme,
-            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
             reduceTransparency: NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
             glassIntensity: settings.liquidGlassIntensity,
             backgroundBlur: settings.nowPlayingBackgroundBlur,
@@ -848,6 +863,8 @@ struct AppKitMainWindowArtBackgroundLayer: View {
             audio: audioMetrics,
             led: ledMetrics,
             theme: theme,
+            motionTokens: motionTokens,
+            motionPolicy: motionPolicy,
             windowSize: windowSize,
             contentBounds: CGRect(origin: .zero, size: windowSize),
             fullscreenScale: 1.0,

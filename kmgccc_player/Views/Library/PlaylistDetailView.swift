@@ -9,6 +9,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 // MARK: - Playlist Detail View
@@ -27,6 +28,8 @@ struct PlaylistDetailView: View {
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(UIStateViewModel.self) private var uiState
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var motionPolicy
 
     let pageController: PlaylistPageController
 
@@ -131,6 +134,8 @@ struct PlaylistDetailView: View {
                     + "playbackCoord=\(ObjectIdentifier(playbackCoordinator).hashValue) "
                     + "uiState=\(ObjectIdentifier(uiState).hashValue)"
             )
+            pageController.motionTokens = motionTokens
+            pageController.motionPolicyOverride = motionPolicy
             pageController.bind(
                 libraryVM: libraryVM,
                 playerVM: playerVM,
@@ -143,6 +148,12 @@ struct PlaylistDetailView: View {
         .onDisappear {
             pageController.disappear(token: lifecycleToken)
             pageController.clearMultiselectState()
+        }
+        .onChange(of: motionTokens) { _, newValue in
+            pageController.motionTokens = newValue
+        }
+        .onChange(of: motionPolicy) { _, newValue in
+            pageController.motionPolicyOverride = newValue
         }
         .onChange(of: pageController.searchText) { _, _ in
             pageController.handleSearchChange()

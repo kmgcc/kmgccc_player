@@ -13,6 +13,7 @@
 //
 
 import AppKit
+import MotionKit
 import QuartzCore
 import SwiftUI
 
@@ -37,9 +38,12 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
     @State private var canScrollRight = false
     @State private var activeScrollEdge: HorizontalScrollEdge?
     @State private var nativeScrollView: NSScrollView?
+    @State private var scrollAnimator = HorizontalScrollSpringAnimator()
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
-
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
+    @Environment(\.motionTokens) private var motionTokens
     init(
         spacing: CGFloat = 0,
         fadeWidth: CGFloat = 24,
@@ -152,10 +156,21 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
                     }
             }
         }
-        .animation(showsEdgeFade ? .easeOut(duration: 0.18) : nil, value: leftFadeOpacity)
-        .animation(showsEdgeFade ? .easeOut(duration: 0.18) : nil, value: rightFadeOpacity)
-        .animation(.easeOut(duration: 0.30), value: showsLeftScrollButton)
-        .animation(.easeOut(duration: 0.30), value: showsRightScrollButton)
+        .motionAnimation(
+            .microInteraction,
+            value: leftFadeOpacity,
+            enabled: showsEdgeFade
+        )
+        .motionAnimation(
+            .microInteraction,
+            value: rightFadeOpacity,
+            enabled: showsEdgeFade
+        )
+        .motionAnimation(.microInteraction, value: showsLeftScrollButton)
+        .motionAnimation(.microInteraction, value: showsRightScrollButton)
+        .onDisappear {
+            scrollAnimator.invalidate()
+        }
     }
 
     @ViewBuilder
@@ -275,17 +290,121 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
         let clipView = scrollView.contentView
         let maxNativeX = max(0, documentView.bounds.width - clipView.bounds.width)
         let targetX = min(max(target, 0), maxNativeX)
-        let targetOrigin = NSPoint(x: targetX, y: clipView.bounds.origin.y)
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.44
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.20, 0.00, 0.12, 1.00)
-            clipView.animator().setBoundsOrigin(targetOrigin)
-        } completionHandler: {
-            Task { @MainActor in
-                scrollView.reflectScrolledClipView(clipView)
-            }
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: accessibilityReduceMotion
+        )
+        scrollAnimator.animate(
+            clipView: clipView,
+            targetX: targetX,
+            spec: motionTokens[.layout],
+            policy: policy
+        ) {
+            scrollView.reflectScrolledClipView(clipView)
         }
+    }
+}
+
+private final class HorizontalScrollSpringAnimator: NSObject {
+    private weak var clipView: NSClipView?
+    private var frameLink: CADisplayLink?
+    private var retargetState: MotionRetargetState?
+    private var targetX = 0.0
+    private var startTime: CFTimeInterval = 0
+    private var completion: (() -> Void)?
+
+    func animate(
+        clipView: NSClipView,
+        targetX: CGFloat,
+        spec: MotionSpec,
+        policy: MotionPolicy,
+        completion: @escaping () -> Void
+    ) {
+        let now = CACurrentMediaTime()
+        let current: (value: Double, velocity: Double)
+        if var retargetState {
+            current = retargetState.advance(to: now)
+            self.retargetState = retargetState
+        } else {
+            current = (Double(clipView.bounds.origin.x), 0)
+        }
+        stop()
+
+        self.clipView = clipView
+        self.targetX = Double(targetX)
+        self.completion = completion
+
+        guard let resolvedSpec = policy.resolve(spec) else {
+            finish()
+            return
+        }
+
+        guard abs(self.targetX - current.value) > 0.5 else {
+            finish()
+            return
+        }
+
+        var retargetState = MotionRetargetState(
+            value: current.value,
+            velocity: current.velocity,
+            spec: resolvedSpec
+        )
+        retargetState.retarget(to: self.targetX, at: now)
+        self.retargetState = retargetState
+        self.startTime = now
+
+        let link = clipView.displayLink(target: self, selector: #selector(handleFrame(_:)))
+        link.add(to: .main, forMode: .common)
+        frameLink = link
+    }
+
+    func invalidate() {
+        stop()
+    }
+
+    private func stop() {
+        frameLink?.invalidate()
+        frameLink = nil
+        retargetState = nil
+        completion = nil
+    }
+
+    @objc private func handleFrame(_ link: CADisplayLink) {
+        guard let clipView, var retargetState else {
+            finish()
+            return
+        }
+
+        let elapsed = max(0, link.timestamp - startTime)
+        let state = retargetState.advance(to: link.timestamp)
+        self.retargetState = retargetState
+        clipView.setBoundsOrigin(
+            NSPoint(x: state.value, y: clipView.bounds.origin.y)
+        )
+
+        let settled = elapsed >= retargetState.visualCompletionDelay
+            || retargetState.isSettled(
+                at: link.timestamp,
+                positionEpsilon: 0.1,
+                velocityEpsilon: 0.1
+            )
+        if settled {
+            finish()
+        }
+    }
+
+    private func finish() {
+        guard let clipView else {
+            stop()
+            return
+        }
+
+        let targetX = retargetState?.target ?? self.targetX
+        clipView.setBoundsOrigin(
+            NSPoint(x: targetX, y: clipView.bounds.origin.y)
+        )
+        let onComplete = completion
+        stop()
+        onComplete?()
     }
 }
 

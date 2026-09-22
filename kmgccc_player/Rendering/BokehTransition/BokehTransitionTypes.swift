@@ -8,6 +8,7 @@
 
 import CoreGraphics
 import Foundation
+import MotionKit
 import simd
 
 /// Bokeh's visual and performance parameters are intentionally fixed so every
@@ -147,7 +148,8 @@ struct BokehTransitionSnapshot: Equatable, Sendable {
     var transitionCanvasOffsetRatio: CGFloat
     var configuration: BokehTransitionConfig
     var tier: BokehTransitionRenderTier
-    var reduceMotion: Bool
+    var motionPolicy: MotionPolicy
+    var motionTokens: MotionTokens
 
     static let inactive = Self(
         transitionPosition: 0,
@@ -161,7 +163,8 @@ struct BokehTransitionSnapshot: Equatable, Sendable {
         transitionCanvasOffsetRatio: 0,
         configuration: BokehTransitionConfig(),
         tier: .balanced,
-        reduceMotion: false
+        motionPolicy: .full,
+        motionTokens: .standard
     )
 
     var isActive: Bool { bokehRadius > 0.01 || surfaceOpacity > 0.01 }
