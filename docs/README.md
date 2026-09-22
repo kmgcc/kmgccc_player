@@ -8,6 +8,7 @@
 | --- | --- |
 | [实现约束与坑](PITFALLS.md) | 只收仍生效的实现约束与坑；**改对应功能代码前先读** |
 | [架构概览](architecture.md) | 应用组合根、资料库 session、本地与外部播放、统一展示模型、歌词、主题和频谱的主链路 |
+| [MotionKit 动画标准化与迁移计划](motion-kit-plan.md) | 原生弹簧 API、语义 motion token、动画分类、歌词边界与分阶段迁移门禁 |
 | [外部组件与构建依赖](dependencies.md) | AMLL、LDDC、QQ Music Helper、MediaRemoteAdapter、SACAD 与 Swift Package 依赖 |
 | [原生 Swift 歌词系统](native-lyrics.md) | 原生 Swift 渲染架构、Core Text 字体排版、Core Animation 动效与硬件时钟同步 |
 | [歌词渲染系统](lyric-rendering.md) | TTML 解析、多 surface 生命周期管理、时间偏移计算与多后端适配层 |
