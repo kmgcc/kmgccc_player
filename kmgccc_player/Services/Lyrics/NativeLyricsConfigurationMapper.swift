@@ -74,6 +74,7 @@ enum NativeLyricsConfigurationMapper {
         configuration.profile = .currentPlayer
         configuration.surface = .window
         configuration.blur = role.enableBlur
+        configuration.bakeSettledBlur = false
         configuration.spring = role.enableSpring
         configuration.renderScale = role.supportsAMLLRenderQuality
             ? AppSettings.shared.amllLyricsRenderQualityScale
