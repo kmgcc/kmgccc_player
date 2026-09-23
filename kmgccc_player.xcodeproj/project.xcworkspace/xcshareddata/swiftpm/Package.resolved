@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/kmgcc/melismakit.git",
       "state" : {
-        "revision" : "e64ccd10bc77a8d59ab9b62e85e1ab549d59f2ef",
-        "version" : "0.2.1"
+        "revision" : "3dc556720c9690dd12042901e5546fdc08478259",
+        "version" : "0.2.2"
       }
     },
     {
