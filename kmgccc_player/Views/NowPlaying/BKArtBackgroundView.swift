@@ -718,7 +718,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private var loadedFullscreenCircleImages = BKThemeAssets.FullscreenCircleLoadResult()
     private var loadedFullscreenCircleMaxPixel = 0
     private var loadedMaskFrames: [CGImage] = []
-    private var loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0)
+    private var loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0, circle: 0)
     private var loadedBackgroundSourceIndices: [Int] = []
     private let tintedBackgroundCache = NSCache<NSString, CGImageBox>()
     private var fromContainer: Container?
@@ -840,6 +840,10 @@ private final class BKArtBackgroundLayerView: NSView {
         backgroundController = nil
         trackID = nil
         tearDownRootLayer()
+        CATransaction.begin()
+        CATransaction.flush()
+        CATransaction.commit()
+        CacheManager.trimProcessMemory()
         FSDiagnostics.emit("BKArtBackground.prepareForDismissal END t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
     }
 
@@ -1885,7 +1889,7 @@ private final class BKArtBackgroundLayerView: NSView {
         if dotRenderStyle == .solidCircles,
            loadedFullscreenCircleImages.outerImages.count < 2
             || loadedFullscreenCircleImages.innerImages.count < 2 {
-            let budget = currentAssetBudget().background
+            let budget = currentAssetBudget().circle
             loadedFullscreenCircleImages = assets.fullscreenCircleImages(maxPixel: budget)
             loadedFullscreenCircleMaxPixel = budget
         }
@@ -2165,7 +2169,7 @@ private final class BKArtBackgroundLayerView: NSView {
                 let shapes = assets.shapes(maxPixel: budget.shape)
                 guard !Task.isCancelled else { return nil }
                 let fullscreenCircleImages = shouldLoadFullscreenCircleImages
-                    ? assets.fullscreenCircleImages(maxPixel: budget.background)
+                    ? assets.fullscreenCircleImages(maxPixel: budget.circle)
                     : BKThemeAssets.FullscreenCircleLoadResult()
                 guard !Task.isCancelled else { return nil }
                 let maskFrames: [CGImage]
@@ -2239,7 +2243,7 @@ private final class BKArtBackgroundLayerView: NSView {
         loadedBackgroundSourceIndices = snapshot.backgroundSourceIndices
         loadedShapes = snapshot.shapes
         loadedFullscreenCircleImages = snapshot.fullscreenCircleImages
-        loadedFullscreenCircleMaxPixel = snapshot.budget.background
+        loadedFullscreenCircleMaxPixel = snapshot.budget.circle
         if maskBudgetChanged || !snapshot.maskFrames.isEmpty || loadedMaskFrames.isEmpty {
             loadedMaskFrames = snapshot.maskFrames
         }
@@ -3349,7 +3353,7 @@ private final class BKArtBackgroundLayerView: NSView {
         let maskBudgetChanged = budget.mask != loadedBudget.mask
         let circleBudgetChanged =
             dotRenderStyle == .solidCircles
-            && budget.background != loadedFullscreenCircleMaxPixel
+            && budget.circle != loadedFullscreenCircleMaxPixel
         let backgroundSetChanged = targetBackgroundIndices != loadedBackgroundSourceIndices
 
         guard backgroundBudgetChanged
@@ -3387,8 +3391,8 @@ private final class BKArtBackgroundLayerView: NSView {
            circleBudgetChanged
             || loadedFullscreenCircleImages.outerImages.isEmpty
             || loadedFullscreenCircleImages.innerImages.isEmpty {
-            loadedFullscreenCircleImages = assets.fullscreenCircleImages(maxPixel: budget.background)
-            loadedFullscreenCircleMaxPixel = budget.background
+            loadedFullscreenCircleImages = assets.fullscreenCircleImages(maxPixel: budget.circle)
+            loadedFullscreenCircleMaxPixel = budget.circle
         }
         if let cachedMaskFrames = assets.cachedMaskFrames(maxPixel: budget.mask) {
             loadedMaskFrames = cachedMaskFrames
@@ -3415,7 +3419,8 @@ private final class BKArtBackgroundLayerView: NSView {
         return BKThemeAssets.PixelBudget(
             background: background,
             shape: fullBudget.shape,
-            mask: fullBudget.mask
+            mask: fullBudget.mask,
+            circle: fullBudget.circle
         )
     }
 
@@ -3423,17 +3428,20 @@ private final class BKArtBackgroundLayerView: NSView {
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         let longestEdge = max(bounds.width, bounds.height)
         let nativePixel = Int(max(1, (longestEdge * scale).rounded()))
-        let backgroundCap = resourceProfile == .cassetteForeground ? 1_024 : 1_536
+        let backgroundCap = resourceProfile == .cassetteForeground ? 1_024 : 1_280
         let backgroundFloor = resourceProfile == .cassetteForeground ? 640 : 960
         let shapeCap = resourceProfile == .cassetteForeground ? 320 : 512
         let shapeFloor = resourceProfile == .cassetteForeground ? 192 : 256
         let maskCap = resourceProfile == .cassetteForeground ? 512 : 768
         let maskFloor = resourceProfile == .cassetteForeground ? 384 : 512
+        let circleCap = resourceProfile == .cassetteForeground ? 256 : 384
+        let circleFloor = resourceProfile == .cassetteForeground ? 192 : 256
         let background = min(max(nativePixel, backgroundFloor), backgroundCap)
         let shapeDivisor = resourceProfile == .cassetteForeground ? 4 : 3
         let shape = min(max(background / shapeDivisor, shapeFloor), shapeCap)
         let mask = min(max(background / 2, maskFloor), maskCap)
-        return BKThemeAssets.PixelBudget(background: background, shape: shape, mask: mask)
+        let circle = min(max(background / 3, circleFloor), circleCap)
+        return BKThemeAssets.PixelBudget(background: background, shape: shape, mask: mask, circle: circle)
     }
 
     private func desiredBackgroundSourceIndices() -> [Int] {
@@ -3555,7 +3563,7 @@ private final class BKArtBackgroundLayerView: NSView {
         loadedFullscreenCircleImages = BKThemeAssets.FullscreenCircleLoadResult()
         loadedFullscreenCircleMaxPixel = 0
         loadedMaskFrames.removeAll(keepingCapacity: false)
-        loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0)
+        loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0, circle: 0)
         backgroundAssetMode = .currentPhaseLowRes
         tintedBackgroundCache.removeAllObjects()
         assets.purgeTransientCaches()
@@ -3570,6 +3578,10 @@ private final class BKArtBackgroundLayerView: NSView {
             sublayer.removeFromSuperlayer()
         }
         layer?.sublayers = nil
+        CATransaction.begin()
+        CATransaction.flush()
+        CATransaction.commit()
+        CacheManager.trimProcessMemory()
     }
 
     private func ensureRootLayerIfNeeded() {
@@ -3693,7 +3705,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func debugBudgetDescription(_ budget: BKThemeAssets.PixelBudget) -> String {
-        "bg=\(budget.background) shape=\(budget.shape) mask=\(budget.mask)"
+        "bg=\(budget.background) shape=\(budget.shape) mask=\(budget.mask) circle=\(budget.circle)"
     }
 
     private var initialBackgroundBudgetCap: Int {

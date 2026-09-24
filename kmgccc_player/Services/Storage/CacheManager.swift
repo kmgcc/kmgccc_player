@@ -7,6 +7,7 @@
 
 import Darwin
 import Foundation
+import QuartzCore
 
 nonisolated struct DiskCacheTrimResult: Sendable, Equatable {
     let removedFileCount: Int
@@ -177,9 +178,21 @@ nonisolated enum CacheManager {
         await ArtworkLoader.clearMemoryCache()
         await CassetteArtworkCache.shared.removeAll()
         ThemeStore.shared.clearArtworkColorCache()
+        CATransaction.begin()
+        CATransaction.flush()
+        CATransaction.commit()
         trimProcessMemory()
+
+        // CoreAnimation and layer deallocations cascade across several runloop turns.
+        // Multiple scheduled trim passes ensure that once the layers and textures are
+        // truly released by the graphics server, the dirty pages are returned to the OS kernel.
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(300))
+            try? await Task.sleep(for: .milliseconds(150))
+            CATransaction.flush()
+            trimProcessMemory()
+            try? await Task.sleep(for: .milliseconds(350))
+            trimProcessMemory()
+            try? await Task.sleep(for: .milliseconds(700))
             trimProcessMemory()
         }
 

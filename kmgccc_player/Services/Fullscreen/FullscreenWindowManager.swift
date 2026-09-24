@@ -364,7 +364,10 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         AppKitMainSplitWindowController.synchronizeLyricsSurfaceAfterFullscreenTransition(
             reason: "closeEmbedded"
         )
-        schedulePresentationCachePurge(reason: "embedded fullscreen dismissed")
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(420))
+            self?.schedulePresentationCachePurge(reason: "embedded fullscreen dismissed")
+        }
         PaneLayoutTrace.log("fullscreen.closeEmbedded end")
     }
 

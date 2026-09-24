@@ -16,6 +16,7 @@ final class BKThemeAssets: @unchecked Sendable {
         let background: Int
         let shape: Int
         let mask: Int
+        let circle: Int
     }
 
     struct ShapeLoadResult: @unchecked Sendable {
@@ -136,10 +137,10 @@ final class BKThemeAssets: @unchecked Sendable {
         shapeCache.totalCostLimit = 4 * 1024 * 1024
         maskCache.countLimit = 2
         maskCache.totalCostLimit = 4 * 1024 * 1024
-        artworkFrameCache.countLimit = 2
-        artworkFrameCache.totalCostLimit = 9 * 1024 * 1024
+        artworkFrameCache.countLimit = 1
+        artworkFrameCache.totalCostLimit = 4 * 1024 * 1024
         fullscreenCircleCache.countLimit = 2
-        fullscreenCircleCache.totalCostLimit = 2 * 1024 * 1024
+        fullscreenCircleCache.totalCostLimit = 4 * 1024 * 1024
     }
 
     nonisolated func backgrounds(maxPixel: Int) -> [CGImage] {

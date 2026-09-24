@@ -444,6 +444,10 @@ private struct ArtworkFrameMaskedImageView: View {
             extendedArtworkKey = nil
             displayedMask = nil
             displayedFinalScale = 1.0
+            Task {
+                await ClassicArtworkFrameExtendedArtworkCache.shared.removeAll()
+                ClassicArtworkFrameExtendedArtworkRenderer.clearCaches()
+            }
         }
     }
 
@@ -546,8 +550,8 @@ actor ClassicArtworkFrameExtendedArtworkCache {
     private var keys: [String] = []
     private var costs: [String: Int] = [:]
     private var totalBytes = 0
-    private let maxCount = 2
-    private let maxTotalBytes = 9 * 1024 * 1024
+    private let maxCount = 1
+    private let maxTotalBytes = 4 * 1024 * 1024
     private var memoryGeneration: UInt64 = 0
 
     func generation() -> UInt64 {
@@ -797,8 +801,10 @@ enum ClassicArtworkFrameExtendedArtworkRenderer {
     /// and corners (box / Chebyshev distance from the inner rect). The
     /// (t,t,t,t) straight-alpha encoding matches the gradient-blur masks.
     private nonisolated static func edgeBlurMask(outputPixel: Int, insetPixel: Int) -> CGImage? {
-        let n = max(1, outputPixel)
-        let inset = max(1, insetPixel)
+        let dimension = min(max(1, outputPixel), 256)
+        let scale = Double(dimension) / Double(max(1, outputPixel))
+        let n = dimension
+        let inset = max(1, Int(round(Double(insetPixel) * scale)))
         guard inset * 2 < n else { return nil }
 
         // Band is narrow — precompute the ramp once per distance step.
