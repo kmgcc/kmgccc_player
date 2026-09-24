@@ -8,6 +8,7 @@
 import AppKit
 import Foundation
 import ImageIO
+import UniformTypeIdentifiers
 
 private final class ArtworkDerivativeImageBox: NSObject {
     let image: NSImage
@@ -29,8 +30,8 @@ actor ArtworkDerivativeCacheStore {
 
     init(diskRootURL: URL) {
         self.diskRootURL = diskRootURL
-        memoryCache.countLimit = 220
-        memoryCache.totalCostLimit = 12 * 1024 * 1024
+        memoryCache.countLimit = 48
+        memoryCache.totalCostLimit = 4 * 1024 * 1024
 
         try? fileManager.createDirectory(at: diskRootURL, withIntermediateDirectories: true)
     }
@@ -261,10 +262,22 @@ actor ArtworkDerivativeCacheStore {
     }
 
     private func pngData(for image: NSImage) -> Data? {
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff)
-        else { return nil }
-        return rep.representation(using: .png, properties: [:])
+        var rect = CGRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
+            guard let tiff = image.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff)
+            else { return nil }
+            return rep.representation(using: .png, properties: [:])
+        }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
+            return nil
+        }
+        CGImageDestinationAddImage(destination, cgImage, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            return nil
+        }
+        return data as Data
     }
 
     private func estimatedCost(for image: NSImage) -> Int {

@@ -158,7 +158,7 @@ final class HomeAmbientRootView: NSView {
     private let randomLayoutSeed: UInt64
     private let randomizedShapeCount: Int
 
-    private static let shapeMaxPixel = 256
+    private static let shapeMaxPixel = 384
 
     init(motion: HomeAmbientMotionState) {
         self.motion = motion
@@ -205,6 +205,11 @@ final class HomeAmbientRootView: NSView {
             Log.debug("[HomeAmbient/root] viewDidMoveToWindow=nil — releasing subs", category: .ui)
             geometrySubscription = nil
             motionSubscription = nil
+            presentations = []
+            removeAllShapeLayers()
+            shapeLoadResult = BKThemeAssets.ShapeLoadResult(images: [], scaleByIndex: [:], edgePinnedIndices: [])
+            hasLoadedShapes = false
+            lastLayoutSignature = nil
         } else {
             loadShapesIfNeeded()
             subscribeToLayoutState()
@@ -438,7 +443,7 @@ final class HomeAmbientRootView: NSView {
             let tinted: CGImage?
             if let cached = tintedCache[key] {
                 tinted = cached
-            } else if let generated = Self.tintedShapeImage(from: image, color: color) {
+            } else if let generated = autoreleasepool(invoking: { Self.tintedShapeImage(from: image, color: color) }) {
                 tintedCache[key] = generated
                 tinted = generated
             } else {

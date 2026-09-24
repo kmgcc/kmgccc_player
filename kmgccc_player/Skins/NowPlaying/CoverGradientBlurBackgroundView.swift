@@ -1576,8 +1576,8 @@ actor CoverGradientBlurRenderStore {
 
     private let cache: NSCache<NSString, CoverGradientBlurRenderedImageBox> = {
         let cache = NSCache<NSString, CoverGradientBlurRenderedImageBox>()
-        cache.countLimit = 2
-        cache.totalCostLimit = 8 * 1024 * 1024
+        cache.countLimit = 1
+        cache.totalCostLimit = 4 * 1024 * 1024
         return cache
     }()
     private var inFlightKeys: Set<RenderRequestKey> = []

@@ -1151,6 +1151,11 @@ final class AppSessionHost: ObservableObject {
         // queued); when prompts are crash-gated the drained handler calls
         // this again after What's New appears.
         autoPresentLibrarySetupIfNeeded()
+        CacheManager.trimProcessMemory()
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            CacheManager.trimProcessMemory()
+        }
     }
 
     /// Re-attempts the factory-default recovery path without repeating all

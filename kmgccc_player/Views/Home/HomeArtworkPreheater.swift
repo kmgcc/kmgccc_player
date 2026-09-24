@@ -13,8 +13,8 @@ final class HomeArtworkMemoryStore {
     static let shared = HomeArtworkMemoryStore()
 
     private var cache = CostBoundedCache<String, NSImage>(
-        countLimit: 96,
-        totalCostLimit: 12 * 1024 * 1024
+        countLimit: 36,
+        totalCostLimit: 4 * 1024 * 1024
     )
 
     func cachedImage(for key: String) -> NSImage? {
@@ -348,12 +348,15 @@ final class HomeArtworkPreheater {
         pipeline: PlaylistArtworkPipeline
     ) async -> NSImage? {
         guard let resolved else { return nil }
+        if let image = resolved.image {
+            return image
+        }
         let request = PlaylistArtworkPipeline.headerRequest(
             artworkIdentity: identity,
-            artworkData: resolved.image?.tiffRepresentation,
+            artworkData: nil,
             fileURL: resolved.fileURL
         )
-        return await pipeline.load(request) ?? resolved.image
+        return await pipeline.load(request)
     }
 
     static func playlistHeaderIdentity(for playlist: Playlist, revision: String?) -> String {
@@ -457,6 +460,9 @@ private enum HomeArtworkPreheatWorker {
         for item in snapshot.rankItems {
             guard !Task.isCancelled else { return }
             await preheatTrack(item, derivativeStore: derivativeStore)
+        }
+        if !Task.isCancelled {
+            CacheManager.trimProcessMemory()
         }
     }
 

@@ -858,12 +858,15 @@ private struct HomePlaylistCard: View {
 
     private func loadHeaderImage(from resolved: ResolvedHeaderArtwork?) async -> NSImage? {
         guard let resolved else { return nil }
+        if let image = resolved.image {
+            return image
+        }
         let request = PlaylistArtworkPipeline.headerRequest(
             artworkIdentity: headerArtworkIdentity,
-            artworkData: resolved.image?.tiffRepresentation,
+            artworkData: nil,
             fileURL: resolved.fileURL
         )
-        return await cacheServices.playlistArtworkPipeline.load(request) ?? resolved.image
+        return await cacheServices.playlistArtworkPipeline.load(request)
     }
 
     private var headerArtworkIdentity: String {
@@ -892,8 +895,8 @@ final class HomePlaylistCardCoverStore {
     static let shared = HomePlaylistCardCoverStore()
 
     private var cache = CostBoundedCache<String, NSImage>(
-        countLimit: 16,
-        totalCostLimit: 12 * 1024 * 1024
+        countLimit: 8,
+        totalCostLimit: 3 * 1024 * 1024
     )
 
     func cachedImage(for identity: String) -> NSImage? {
@@ -1132,8 +1135,8 @@ final class HomePlaylistPreviewArtworkStore {
     static let previewPixelSide: CGFloat = 96
 
     private var cache = CostBoundedCache<UUID, NSImage>(
-        countLimit: 128,
-        totalCostLimit: 6 * 1024 * 1024
+        countLimit: 48,
+        totalCostLimit: 2 * 1024 * 1024
     )
 
     func cachedImage(forTrackID trackID: UUID) -> NSImage? {

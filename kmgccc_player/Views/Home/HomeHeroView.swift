@@ -1035,8 +1035,8 @@ private final class HomeHeroArtworkCache {
     private let cache = NSCache<NSString, SnapshotBox>()
 
     private init() {
-        cache.countLimit = 2
-        cache.totalCostLimit = 8 * 1024 * 1024
+        cache.countLimit = 1
+        cache.totalCostLimit = 4 * 1024 * 1024
     }
 
     func snapshot(for key: String) -> HomeHeroArtworkSnapshot? {
@@ -1090,8 +1090,8 @@ private final class HomeHeroBackdropCache {
     private let cache = NSCache<NSString, ImageBox>()
 
     private init() {
-        cache.countLimit = 2
-        cache.totalCostLimit = 8 * 1024 * 1024
+        cache.countLimit = 1
+        cache.totalCostLimit = 4 * 1024 * 1024
     }
 
     func artifact(for key: NSString) -> HomeHeroBackdropArtifact? {

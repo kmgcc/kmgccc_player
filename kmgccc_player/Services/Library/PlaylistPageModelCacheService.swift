@@ -40,8 +40,8 @@ actor PlaylistPageModelCacheService {
     private var keysBySelection: [String: Set<String>] = [:]
 
     private init() {
-        cache.countLimit = 6
-        cache.totalCostLimit = 16 * 1024 * 1024
+        cache.countLimit = 3
+        cache.totalCostLimit = 6 * 1024 * 1024
     }
 
     func cacheKey(

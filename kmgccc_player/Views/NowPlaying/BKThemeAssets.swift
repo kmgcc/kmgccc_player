@@ -131,15 +131,15 @@ final class BKThemeAssets: @unchecked Sendable {
         self.fullscreenCircleInnerEntries = fullscreenCircleEntries.inner
 
         backgroundCache.countLimit = 2
-        backgroundCache.totalCostLimit = 8 * 1024 * 1024
+        backgroundCache.totalCostLimit = 4 * 1024 * 1024
         shapeCache.countLimit = 2
-        shapeCache.totalCostLimit = 6 * 1024 * 1024
+        shapeCache.totalCostLimit = 4 * 1024 * 1024
         maskCache.countLimit = 2
-        maskCache.totalCostLimit = 8 * 1024 * 1024
-        artworkFrameCache.countLimit = 4
-        artworkFrameCache.totalCostLimit = 4 * 1024 * 1024
+        maskCache.totalCostLimit = 4 * 1024 * 1024
+        artworkFrameCache.countLimit = 2
+        artworkFrameCache.totalCostLimit = 2 * 1024 * 1024
         fullscreenCircleCache.countLimit = 2
-        fullscreenCircleCache.totalCostLimit = 4 * 1024 * 1024
+        fullscreenCircleCache.totalCostLimit = 2 * 1024 * 1024
     }
 
     nonisolated func backgrounds(maxPixel: Int) -> [CGImage] {
@@ -157,10 +157,12 @@ final class BKThemeAssets: @unchecked Sendable {
         } else {
             for (index, entry) in backgroundEntries.enumerated() {
                 guard !Task.isCancelled else { return [] }
-                images.append(
-                    downsampledImage(from: entry, maxPixel: maxPixel)
-                        ?? Self.programmaticImage(kind: .background, index: index, maxPixel: maxPixel)
-                )
+                autoreleasepool {
+                    images.append(
+                        downsampledImage(from: entry, maxPixel: maxPixel)
+                            ?? Self.programmaticImage(kind: .background, index: index, maxPixel: maxPixel)
+                    )
+                }
             }
         }
         guard !Task.isCancelled else { return [] }
@@ -206,21 +208,23 @@ final class BKThemeAssets: @unchecked Sendable {
             guard !Task.isCancelled else {
                 return ShapeLoadResult(images: [], scaleByIndex: [:], edgePinnedIndices: [], fileNames: [])
             }
-            let asset = AssetEntry(
-                logicalName: entry.logicalName,
-                plainURL: entry.plainURL,
-                fileName: entry.fileName
-            )
-            let image = downsampledImage(from: asset, maxPixel: maxPixel)
-                ?? Self.programmaticImage(kind: .shape, index: index, maxPixel: maxPixel)
-            images.append(image)
-            fileNames.append(entry.fileName)
-            if entry.sourceIndex == 10 {
-                scaleByIndex[images.count - 1] = 3.0
-                edgePinnedIndices.insert(images.count - 1)
-            }
-            if entry.sourceIndex == 11 {
-                scaleByIndex[images.count - 1] = 2.0
+            autoreleasepool {
+                let asset = AssetEntry(
+                    logicalName: entry.logicalName,
+                    plainURL: entry.plainURL,
+                    fileName: entry.fileName
+                )
+                let image = downsampledImage(from: asset, maxPixel: maxPixel)
+                    ?? Self.programmaticImage(kind: .shape, index: index, maxPixel: maxPixel)
+                images.append(image)
+                fileNames.append(entry.fileName)
+                if entry.sourceIndex == 10 {
+                    scaleByIndex[images.count - 1] = 3.0
+                    edgePinnedIndices.insert(images.count - 1)
+                }
+                if entry.sourceIndex == 11 {
+                    scaleByIndex[images.count - 1] = 2.0
+                }
             }
         }
 
@@ -263,9 +267,11 @@ final class BKThemeAssets: @unchecked Sendable {
         } else {
             for (index, entry) in maskFrameEntries.enumerated() {
                 guard !Task.isCancelled else { return [] }
-                let sampled = downsampledImage(from: entry, maxPixel: maxPixel)
-                    ?? Self.programmaticImage(kind: .mask, index: index, maxPixel: maxPixel)
-                frames.append(Self.maskAlphaImage(from: sampled) ?? sampled)
+                autoreleasepool {
+                    let sampled = downsampledImage(from: entry, maxPixel: maxPixel)
+                        ?? Self.programmaticImage(kind: .mask, index: index, maxPixel: maxPixel)
+                    frames.append(Self.maskAlphaImage(from: sampled) ?? sampled)
+                }
             }
         }
 

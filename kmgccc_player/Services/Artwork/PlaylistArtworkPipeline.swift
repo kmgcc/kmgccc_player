@@ -35,8 +35,8 @@ actor PlaylistArtworkPipeline {
 
     init(derivativeStore: ArtworkDerivativeCacheStore) {
         self.derivativeStore = derivativeStore
-        memoryCache.countLimit = 180
-        memoryCache.totalCostLimit = 12 * 1024 * 1024
+        memoryCache.countLimit = 32
+        memoryCache.totalCostLimit = 4 * 1024 * 1024
     }
 
     func cachedImage(for request: PlaylistArtworkRequest) -> NSImage? {

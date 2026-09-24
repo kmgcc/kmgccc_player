@@ -31,8 +31,8 @@ actor ArtistArtworkGenerator {
     private final class PlaceholderCacheBox: @unchecked Sendable {
         let cache: NSCache<NSString, NSImage> = {
             let cache = NSCache<NSString, NSImage>()
-            cache.countLimit = 64
-            cache.totalCostLimit = 16 * 1024 * 1024
+            cache.countLimit = 16
+            cache.totalCostLimit = 4 * 1024 * 1024
             return cache
         }()
     }

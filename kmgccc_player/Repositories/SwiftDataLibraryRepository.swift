@@ -1362,6 +1362,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 category: .library
             )
         }
+        CacheManager.trimProcessMemory()
     }
 
     private func writePlaylistToDisk(

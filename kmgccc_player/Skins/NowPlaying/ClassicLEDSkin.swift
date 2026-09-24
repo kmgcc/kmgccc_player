@@ -544,8 +544,8 @@ actor ClassicArtworkFrameExtendedArtworkCache {
     private var keys: [String] = []
     private var costs: [String: Int] = [:]
     private var totalBytes = 0
-    private let maxCount = 8
-    private let maxTotalBytes = 16 * 1024 * 1024
+    private let maxCount = 2
+    private let maxTotalBytes = 4 * 1024 * 1024
     private var memoryGeneration: UInt64 = 0
 
     func generation() -> UInt64 {

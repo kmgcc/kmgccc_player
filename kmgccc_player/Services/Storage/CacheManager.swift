@@ -5,6 +5,7 @@
 //  Central maintenance entry points for app-managed caches.
 //
 
+import Darwin
 import Foundation
 
 nonisolated struct DiskCacheTrimResult: Sendable, Equatable {
@@ -137,6 +138,7 @@ nonisolated enum CacheManager {
         await PlaylistPageModelCacheService.shared.removeAll()
         await CassetteArtworkCache.shared.removeAll()
         ThemeStore.shared.clearArtworkColorCache()
+        trimProcessMemory()
 
         Log.info(
             "[CacheManager] Purged rebuildable memory caches reason=\(reason)",
@@ -168,11 +170,16 @@ nonisolated enum CacheManager {
         await ArtworkLoader.clearMemoryCache()
         await CassetteArtworkCache.shared.removeAll()
         ThemeStore.shared.clearArtworkColorCache()
+        trimProcessMemory()
 
         Log.info(
             "[CacheManager] Purged presentation memory caches reason=\(reason)",
             category: .perf
         )
+    }
+
+    nonisolated static func trimProcessMemory() {
+        malloc_zone_pressure_relief(nil, 0)
     }
 
     @MainActor

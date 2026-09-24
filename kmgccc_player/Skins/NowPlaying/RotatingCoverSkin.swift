@@ -565,13 +565,7 @@ private extension NSImage {
         if let trackID {
             return "track:\(trackID.uuidString)"
         }
-
-        if let tiffRepresentation {
-            let digest = SHA256.hash(data: tiffRepresentation)
-            return digest.prefix(12).map { String(format: "%02x", $0) }.joined()
-        }
-
-        return "size:\(Int(size.width))x\(Int(size.height))"
+        return "size:\(Int(size.width))x\(Int(size.height))-\(self.hash)"
     }
 }
 
@@ -958,7 +952,7 @@ private struct RotatingCoverArtwork: View {
     }
 
     private var artworkSignature: String? {
-        context.track?.artworkImage?.blurCacheSignature(trackID: nil)
+        context.track?.artworkImage?.blurCacheSignature(trackID: context.track?.id)
     }
 
     var body: some View {

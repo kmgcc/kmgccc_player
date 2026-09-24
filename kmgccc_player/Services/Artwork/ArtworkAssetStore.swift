@@ -49,16 +49,16 @@ actor ArtworkAssetStore {
 
     private let cache: NSCache<NSString, ArtworkAssetSnapshot> = {
         let cache = NSCache<NSString, ArtworkAssetSnapshot>()
-        cache.countLimit = 64
-        cache.totalCostLimit = 12 * 1024 * 1024
+        cache.countLimit = 32
+        cache.totalCostLimit = 4 * 1024 * 1024
         return cache
     }()
     private let fullImageCache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
         // Keep the current playback window warm without retaining a second
         // screenful of decoded full-size artwork after a track switch.
-        cache.countLimit = 4
-        cache.totalCostLimit = 12 * 1024 * 1024
+        cache.countLimit = 2
+        cache.totalCostLimit = 8 * 1024 * 1024
         return cache
     }()
     private var inProgressTokens: [String: UUID] = [:]

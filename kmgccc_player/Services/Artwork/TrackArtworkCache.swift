@@ -8,6 +8,7 @@
 import AppKit
 import Foundation
 import ImageIO
+import UniformTypeIdentifiers
 
 struct TrackArtworkSource: Sendable, Equatable {
     let trackID: UUID
@@ -122,10 +123,10 @@ actor TrackArtworkCache {
     init(storage: LibraryStorageLocations) {
         self.originalsRootURL = storage.trackArtworkOriginalsURL
         self.derivativesRootURL = storage.trackArtworkDerivativesURL
-        imageCache.countLimit = 64
-        imageCache.totalCostLimit = 12 * 1024 * 1024
-        sourceDataCache.countLimit = 48
-        sourceDataCache.totalCostLimit = 4 * 1024 * 1024
+        imageCache.countLimit = 16
+        imageCache.totalCostLimit = 8 * 1024 * 1024
+        sourceDataCache.countLimit = 16
+        sourceDataCache.totalCostLimit = 2 * 1024 * 1024
         try? FileManager.default.createDirectory(at: originalsRootURL, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: derivativesRootURL, withIntermediateDirectories: true)
     }
@@ -214,6 +215,9 @@ actor TrackArtworkCache {
             for source in uniqueSources {
                 guard !Task.isCancelled else { return }
                 await self.preloadPlaybackArtwork(for: source, reason: reason)
+            }
+            if !Task.isCancelled {
+                CacheManager.trimProcessMemory()
             }
         }
     }
@@ -694,12 +698,24 @@ actor TrackArtworkCache {
     }
 
     private nonisolated static func pngData(for image: NSImage) -> Data? {
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff)
-        else {
+        var rect = CGRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
+            guard let tiff = image.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff)
+            else {
+                return nil
+            }
+            return rep.representation(using: .png, properties: [:])
+        }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
             return nil
         }
-        return rep.representation(using: .png, properties: [:])
+        CGImageDestinationAddImage(destination, cgImage, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            return nil
+        }
+        return data as Data
     }
 
     private nonisolated static func estimatedCost(for image: NSImage) -> Int {

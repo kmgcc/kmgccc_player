@@ -143,8 +143,8 @@ private final class CassetteThemeAssetCache {
     private var resolvedAspectRatio: CGFloat?
 
     private init() {
-        cache.countLimit = 4
-        cache.totalCostLimit = 12 * 1024 * 1024
+        cache.countLimit = 2
+        cache.totalCostLimit = 4 * 1024 * 1024
     }
 
     func imageSet(
@@ -833,8 +833,8 @@ actor CassetteArtworkCache {
     private var keys: [String] = []
     private var costs: [String: Int] = [:]
     private var totalBytes = 0
-    private let maxCount = 48
-    private let maxTotalBytes = 24 * 1024 * 1024
+    private let maxCount = 8
+    private let maxTotalBytes = 4 * 1024 * 1024
     private var memoryGeneration: UInt64 = 0
 
     func generation() -> UInt64 {
