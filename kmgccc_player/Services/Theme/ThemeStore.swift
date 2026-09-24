@@ -136,7 +136,12 @@ final class ThemeStore: ObservableObject {
     /// - Falls back to default blue when artwork is missing or extraction fails.
     func updateTheme(for track: Track?) async {
         let trackID = track?.id
-        let artworkData = track?.artworkData
+        let artworkData: Data?
+        if let inlineData = track?.artworkData, !inlineData.isEmpty {
+            artworkData = inlineData
+        } else {
+            artworkData = await track?.loadArtworkDataOffMainIfNeeded()
+        }
         await updateThemeFromArtworkData(
             artworkData,
             artworkIdentity: trackID?.uuidString,

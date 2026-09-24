@@ -106,11 +106,13 @@ private final class TestFileEventSource: LibraryFileEventSource, @unchecked Send
     private var handler: (@Sendable ([LibraryFileEvent]) -> Void)?
     private(set) var stopCount = 0
     private(set) var startCount = 0
+    private(set) var lastPaths: [String] = []
     var onStart: (() -> Void)?
 
-    func start(paths _: [String], handler: @escaping @Sendable ([LibraryFileEvent]) -> Void) throws {
+    func start(paths: [String], handler: @escaping @Sendable ([LibraryFileEvent]) -> Void) throws {
         lock.withLock {
             startCount += 1
+            lastPaths = paths
             self.handler = handler
             onStart?()
         }
@@ -938,6 +940,33 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         XCTAssertEqual(batchesAfterClose.count, countAtClose)
     }
 
+    func testMonitorUsesExplicitWatchPathsWhileMatchingSourceRoots() async throws {
+        let eventSource = TestFileEventSource()
+        let monitor = LibraryChangeMonitor(eventSource: eventSource, debounceNanoseconds: 20_000_000)
+        let sourceID = UUID()
+        let sourceURL = URL(fileURLWithPath: "/tmp/library", isDirectory: true)
+        let watchURL = sourceURL.appendingPathComponent("Tracks", isDirectory: true)
+        let recorder = MonitorRecorder()
+
+        try await monitor.start(
+            sourceRoots: [sourceID: sourceURL],
+            watchPathsBySource: [sourceID: [watchURL]]
+        ) { ids, full in
+            await recorder.record(ids, full)
+        }
+
+        XCTAssertEqual(eventSource.lastPaths, [watchURL.path])
+        eventSource.send([
+            .init(
+                path: watchURL.appendingPathComponent("track-id/meta.json").path,
+                requiresFullScan: false
+            )
+        ])
+        try await Task.sleep(nanoseconds: 80_000_000)
+        let batches = await recorder.snapshot()
+        XCTAssertEqual(batches.first?.0, Set([sourceID]))
+    }
+
     func testPartialAuthorityFailureStaysPreparedAndRetriesOnlyFailedTrack() async throws {
         let writer = PartialLocatorWriter()
         let fixture = try await ReconcileFixture(locatorWriter: { track, _, _, _ in writer.write(track) })
@@ -1425,10 +1454,9 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         let filter = ManagedLibraryFileEventFilter(paths: paths)
 
         for url in [
-            paths.trackMetaURL(for: UUID()),
             paths.playlistURL(for: UUID()),
-            paths.artistMetaURL(for: UUID()),
-            paths.albumMetaURL(for: UUID()),
+            paths.artistFolderURL(for: UUID()).appendingPathComponent("artwork.png"),
+            paths.albumFolderURL(for: UUID()).appendingPathComponent("artwork.png"),
         ] {
             XCTAssertTrue(filter.shouldProcess(.init(path: url.path, requiresFullScan: false)))
         }
@@ -1444,6 +1472,10 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         ] {
             XCTAssertFalse(filter.shouldProcess(.init(path: url.path, requiresFullScan: false)))
         }
+
+        XCTAssertFalse(
+            filter.shouldProcess(.init(path: paths.trackMetaURL(for: UUID()).path, requiresFullScan: false))
+        )
     }
 
     func testInitialReconcileAttemptsEverySourceWhenOneFails() async throws {

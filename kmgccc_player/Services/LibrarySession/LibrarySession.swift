@@ -1207,9 +1207,12 @@ final class LibrarySession: LibrarySessionLifecycle {
         let libraryRootPath = context.rootURL.standardizedFileURL.path
         var monitoredRoots = roots
         monitoredRoots[libraryID] = context.rootURL
+        var watchPathsBySource = roots.mapValues { [$0] }
+        watchPathsBySource[libraryID] = libraryMonitorWatchPaths()
 
         try await monitor.start(
             sourceRoots: monitoredRoots,
+            watchPathsBySource: watchPathsBySource,
             eventFilter: { event in
                 let eventPath = URL(fileURLWithPath: event.path).standardizedFileURL.path
                 guard eventPath == libraryRootPath || eventPath.hasPrefix(libraryRootPath + "/") else {
@@ -1251,12 +1254,27 @@ final class LibrarySession: LibrarySessionLifecycle {
         let filter = ManagedLibraryFileEventFilter(paths: context.paths)
         try await monitor.start(
             sourceRoots: [libraryID: context.rootURL],
+            watchPathsBySource: [libraryID: libraryMonitorWatchPaths()],
             eventFilter: { filter.shouldProcess($0) },
             initiallyDirty: false
         ) { [weak libraryViewModel] libraryIDs, _ in
             guard libraryIDs.contains(libraryID), let libraryViewModel else { return }
             await libraryViewModel.reloadLibrary()
         }
+    }
+
+    private func libraryMonitorWatchPaths() -> [URL] {
+        let paths = [
+            context.paths.tracksRootURL,
+            context.paths.playlistsRootURL,
+            context.paths.artistsRootURL,
+            context.paths.albumsRootURL,
+        ]
+        let fileManager = FileManager.default
+        guard paths.allSatisfy({ fileManager.fileExists(atPath: $0.path) }) else {
+            return [context.rootURL]
+        }
+        return paths
     }
 
     private func sourceReconnectServiceRoots(

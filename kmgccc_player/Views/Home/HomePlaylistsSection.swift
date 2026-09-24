@@ -892,8 +892,8 @@ final class HomePlaylistCardCoverStore {
     static let shared = HomePlaylistCardCoverStore()
 
     private var cache = CostBoundedCache<String, NSImage>(
-        countLimit: 32,
-        totalCostLimit: 48 * 1024 * 1024
+        countLimit: 16,
+        totalCostLimit: 12 * 1024 * 1024
     )
 
     func cachedImage(for identity: String) -> NSImage? {
@@ -1063,8 +1063,25 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
         let pixelSide = HomePlaylistPreviewArtworkStore.previewPixelSide
         let displayedSize = CGSize(width: pixelSide, height: pixelSide)
 
-        // Track helper handles in-memory + disk read off the main thread
-        // and caches the bytes on the model — don't reimplement here.
+        if let artworkFileURL = track.existingArtworkURL() {
+            let key = ArtworkLoader.fileCacheKey(
+                fileURL: artworkFileURL,
+                targetPixelSize: displayedSize
+            )
+            guard let loaded = await ArtworkLoader.loadImage(
+                fileURL: artworkFileURL,
+                cacheKey: key,
+                targetPixelSize: displayedSize,
+                derivativeStore: cacheServices.artworkDerivativeStore
+            ) else {
+                image = nil
+                return
+            }
+            HomePlaylistPreviewArtworkStore.shared.store(loaded, forTrackID: track.id)
+            image = loaded
+            return
+        }
+
         guard let data = await track.loadArtworkDataOffMainIfNeeded(),
               !data.isEmpty
         else {
@@ -1115,8 +1132,8 @@ final class HomePlaylistPreviewArtworkStore {
     static let previewPixelSide: CGFloat = 96
 
     private var cache = CostBoundedCache<UUID, NSImage>(
-        countLimit: 256,
-        totalCostLimit: 16 * 1024 * 1024
+        countLimit: 128,
+        totalCostLimit: 6 * 1024 * 1024
     )
 
     func cachedImage(forTrackID trackID: UUID) -> NSImage? {
@@ -1144,6 +1161,6 @@ final class HomePlaylistPreviewArtworkStore {
 private extension Track {
     var hasArtworkSource: Bool {
         if let artworkData, !artworkData.isEmpty { return true }
-        return artworkFileName?.isEmpty == false
+        return existingArtworkURL() != nil
     }
 }

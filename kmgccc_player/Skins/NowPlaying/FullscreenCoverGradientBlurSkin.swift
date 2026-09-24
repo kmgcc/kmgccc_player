@@ -276,6 +276,12 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             transitionTask?.cancel()
             bokehPrewarmTask?.cancel()
             bokehSourcePreparer.invalidate()
+            bokehPrewarmEnabled = false
+            bokehSourceSets = [nil, nil]
+            bokehPreparedSourceSet = nil
+            leadingRenderedFrame = nil
+            centeredRenderedFrame = nil
+            transitionRenderedFrame = nil
         }
     }
 
@@ -453,6 +459,10 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             bokehPreparedSourceSet = sourceSet
             if !isTransitionActive {
                 bokehSourceSets[0] = sourceSet
+                bokehPrewarmEnabled = false
+                leadingRenderedFrame = nil
+                centeredRenderedFrame = nil
+                transitionRenderedFrame = nil
             }
             // Do NOT swap mid-transition. The artwork swap is deferred to
             // retirement so it runs in the transitionTask (no separate
@@ -777,6 +787,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             // startTransitionEffect raises the base again.
             bokehSourceSets[0] = bokehPreparedSourceSet
             bokehSourceSets[1] = nil
+            bokehPreparedSourceSet = nil
             withoutSwiftUIAnimation {
                 bokehOpticalOpacities[0] = 0
                 bokehOpticalOpacities[1] = 0

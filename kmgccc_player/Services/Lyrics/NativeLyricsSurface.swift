@@ -234,6 +234,7 @@ final class NativeLyricsSurfaceManager {
     private var configurations: [LyricsSurfaceRole: LyricsConfiguration] = [:]
     private var seekHandlers: [LyricsSurfaceRole: (Double) -> Void] = [:]
     private var activeRoles: Set<LyricsSurfaceRole> = []
+    private var renderingResourceReleaseTasks: [LyricsSurfaceRole: Task<Void, Never>] = [:]
     private var snapshot = PlaybackSnapshot()
 
     private init() {}
@@ -241,10 +242,10 @@ final class NativeLyricsSurfaceManager {
     func surface(for role: LyricsSurfaceRole) -> NativeLyricsSurface {
         if let surface = surfaces[role] { return surface }
         let surface = NativeLyricsSurface(role: role)
-        if let configuration = configurations[role] {
+        if let configuration = configurations[role], activeRoles.contains(role) {
             surface.apply(configuration: configuration)
         }
-        if role.receivesSharedPlaybackSnapshot {
+        if role.receivesSharedPlaybackSnapshot, activeRoles.contains(role) {
             surface.applyTrack(
                 trackID: snapshot.trackID,
                 ttml: snapshot.ttml,
@@ -266,15 +267,55 @@ final class NativeLyricsSurfaceManager {
     var currentPlaybackTime: Double { snapshot.time }
 
     func activate(role: LyricsSurfaceRole) {
+        renderingResourceReleaseTasks.removeValue(forKey: role)?.cancel()
+        if let surface = surfaces[role] {
+            if let configuration = configurations[role] {
+                surface.apply(configuration: configuration)
+            }
+            if role.receivesSharedPlaybackSnapshot {
+                surface.applyTrack(
+                    trackID: snapshot.trackID,
+                    ttml: snapshot.ttml,
+                    currentTime: snapshot.time,
+                    isPlaying: snapshot.playing
+                )
+            }
+            activeRoles.insert(role)
+            surface.setRenderingActive(true)
+            return
+        }
         activeRoles.insert(role)
-        surface(for: role).setRenderingActive(true)
+        _ = surface(for: role)
     }
 
     func deactivate(role: LyricsSurfaceRole) {
         activeRoles.remove(role)
-        surfaces[role]?.setRenderingActive(false)
-        guard !role.persistsState else { return }
-        surfaces.removeValue(forKey: role)?.shutdown()
+        renderingResourceReleaseTasks.removeValue(forKey: role)?.cancel()
+        guard let surface = surfaces[role] else { return }
+        surface.setRenderingActive(false)
+        guard role.persistsState else {
+            surfaces.removeValue(forKey: role)?.shutdown()
+            return
+        }
+        renderingResourceReleaseTasks[role] = Task { [weak self, weak surface] in
+            do {
+                try await Task.sleep(for: .milliseconds(500))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  let self,
+                  let surface,
+                  !self.activeRoles.contains(role) else { return }
+            surface.releaseRenderingResources()
+            self.renderingResourceReleaseTasks[role] = nil
+        }
+    }
+
+    private var activePlaybackSurface: NativeLyricsSurface? {
+        surfaces.first {
+            activeRoles.contains($0.key) && $0.key.receivesSharedPlaybackSnapshot
+        }?.value
     }
 
     func isActive(_ role: LyricsSurfaceRole) -> Bool {
@@ -294,7 +335,7 @@ final class NativeLyricsSurfaceManager {
             time: currentTime.isFinite ? max(0, currentTime) : 0,
             playing: isPlaying
         )
-        for (role, surface) in surfaces where role.receivesSharedPlaybackSnapshot {
+        for (role, surface) in surfaces where activeRoles.contains(role) && role.receivesSharedPlaybackSnapshot {
             surface.applyTrack(
                 trackID: trackID,
                 ttml: lyricsTTML,
@@ -303,7 +344,7 @@ final class NativeLyricsSurfaceManager {
                 forceLyricsReload: forceLyricsReload
             )
         }
-        snapshot.time = surfaces.values.first(where: { $0.role.receivesSharedPlaybackSnapshot })?.currentTime ?? snapshot.time
+        snapshot.time = activePlaybackSurface?.currentTime ?? snapshot.time
     }
 
     func applyTrack(
@@ -319,7 +360,7 @@ final class NativeLyricsSurfaceManager {
             time: currentTime.isFinite ? max(0, currentTime) : 0,
             playing: isPlaying
         )
-        for (role, surface) in surfaces where role.receivesSharedPlaybackSnapshot {
+        for (role, surface) in surfaces where activeRoles.contains(role) && role.receivesSharedPlaybackSnapshot {
             surface.applyTrack(
                 trackID: trackID,
                 ttml: ttml,
@@ -328,7 +369,7 @@ final class NativeLyricsSurfaceManager {
                 forceLyricsReload: forceLyricsReload
             )
         }
-        snapshot.time = surfaces.values.first(where: { $0.role.receivesSharedPlaybackSnapshot })?.currentTime ?? snapshot.time
+        snapshot.time = activePlaybackSurface?.currentTime ?? snapshot.time
     }
 
     func updatePlaybackTime(
@@ -339,25 +380,27 @@ final class NativeLyricsSurfaceManager {
         guard time.isFinite else { return }
         let normalized = max(0, time)
         snapshot.time = normalized
-        for (role, surface) in surfaces where role.receivesSharedPlaybackSnapshot {
+        for (role, surface) in surfaces where activeRoles.contains(role) && role.receivesSharedPlaybackSnapshot {
             surface.setCurrentTime(normalized, force: force, motion: motion)
         }
-        snapshot.time = surfaces.values.first(where: { $0.role.receivesSharedPlaybackSnapshot })?.currentTime ?? normalized
+        snapshot.time = activePlaybackSurface?.currentTime ?? normalized
     }
 
     func updatePlayingState(_ playing: Bool) {
         snapshot.playing = playing
-        for (role, surface) in surfaces where role.receivesSharedPlaybackSnapshot {
+        for (role, surface) in surfaces where activeRoles.contains(role) && role.receivesSharedPlaybackSnapshot {
             surface.setPlaying(playing)
         }
-        if let effectiveTime = surfaces.values.first(where: { $0.role.receivesSharedPlaybackSnapshot })?.currentTime {
+        if let effectiveTime = activePlaybackSurface?.currentTime {
             snapshot.time = effectiveTime
         }
     }
 
     func applyConfiguration(_ configuration: LyricsConfiguration, for role: LyricsSurfaceRole) {
         configurations[role] = configuration
-        surfaces[role]?.apply(configuration: configuration)
+        if activeRoles.contains(role) {
+            surfaces[role]?.apply(configuration: configuration)
+        }
     }
 
     func applyConfigurationJSON(_ json: String, for role: LyricsSurfaceRole) {
@@ -405,6 +448,8 @@ final class NativeLyricsSurfaceManager {
     }
 
     func shutdownAll() {
+        renderingResourceReleaseTasks.values.forEach { $0.cancel() }
+        renderingResourceReleaseTasks.removeAll()
         surfaces.values.forEach { $0.shutdown() }
         surfaces.removeAll()
         configurations.removeAll()

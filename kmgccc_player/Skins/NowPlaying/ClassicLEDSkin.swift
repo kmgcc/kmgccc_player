@@ -181,6 +181,10 @@ private struct ClassicArtworkCoverContainer: View {
             .task(id: maskRequestKey) {
                 await loadArtworkFrameMask()
             }
+            .onDisappear {
+                resolvedMask = nil
+                resolvedMaskKey = nil
+            }
     }
 
     @ViewBuilder
@@ -435,6 +439,10 @@ private struct ArtworkFrameMaskedImageView: View {
         .onDisappear {
             processingTask?.cancel()
             processingTask = nil
+            extendedArtworkImage = nil
+            extendedArtworkKey = nil
+            displayedMask = nil
+            displayedFinalScale = 1.0
         }
     }
 
@@ -488,6 +496,7 @@ private struct ArtworkFrameMaskedImageView: View {
         let committedMask = mask
         let committedFinalScale = finalMaskedArtworkScale
         processingTask = Task(priority: .utility) {
+            let cacheGeneration = await ClassicArtworkFrameExtendedArtworkCache.shared.generation()
             if let cached = await ClassicArtworkFrameExtendedArtworkCache.shared.image(for: key),
                !Task.isCancelled {
                 await MainActor.run {
@@ -500,20 +509,22 @@ private struct ArtworkFrameMaskedImageView: View {
                 return
             }
 
-            let rendered = await Task.detached(priority: .utility) {
-                ClassicArtworkFrameExtendedArtworkRenderer.render(
-                    sourceImage: sourceImage,
-                    outputPixel: outputPixel,
-                    artworkScale: scale
-                )
-            }.value
+            let rendered = await ClassicArtworkFrameExtendedArtworkRenderQueue.shared.render(
+                sourceImage: sourceImage,
+                outputPixel: outputPixel,
+                artworkScale: scale
+            )
 
             guard !Task.isCancelled, let rendered else { return }
             let renderedImage = NSImage(
                 cgImage: rendered,
                 size: NSSize(width: rendered.width, height: rendered.height)
             )
-            await ClassicArtworkFrameExtendedArtworkCache.shared.setImage(renderedImage, for: key)
+            await ClassicArtworkFrameExtendedArtworkCache.shared.setImage(
+                renderedImage,
+                for: key,
+                generation: cacheGeneration
+            )
 
             await MainActor.run {
                 extendedArtworkImage = renderedImage
@@ -526,21 +537,27 @@ private struct ArtworkFrameMaskedImageView: View {
     }
 }
 
-private actor ClassicArtworkFrameExtendedArtworkCache {
+actor ClassicArtworkFrameExtendedArtworkCache {
     static let shared = ClassicArtworkFrameExtendedArtworkCache()
 
     private var storage: [String: NSImage] = [:]
     private var keys: [String] = []
     private var costs: [String: Int] = [:]
     private var totalBytes = 0
-    private let maxCount = 40
-    private let maxTotalBytes = 32 * 1024 * 1024
+    private let maxCount = 8
+    private let maxTotalBytes = 16 * 1024 * 1024
+    private var memoryGeneration: UInt64 = 0
+
+    func generation() -> UInt64 {
+        memoryGeneration
+    }
 
     func image(for key: String) -> NSImage? {
         storage[key]
     }
 
-    func setImage(_ image: NSImage, for key: String) {
+    func setImage(_ image: NSImage, for key: String, generation: UInt64) {
+        guard memoryGeneration == generation else { return }
         if storage[key] == nil {
             keys.append(key)
         }
@@ -561,12 +578,33 @@ private actor ClassicArtworkFrameExtendedArtworkCache {
         }
     }
 
+    func removeAll() {
+        memoryGeneration &+= 1
+        storage.removeAll(keepingCapacity: false)
+        keys.removeAll(keepingCapacity: false)
+        costs.removeAll(keepingCapacity: false)
+        totalBytes = 0
+    }
+
     private static func estimatedCost(for image: NSImage) -> Int {
         if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
             return max(1, cgImage.bytesPerRow * cgImage.height)
         }
         let size = image.size
         return max(1, Int(ceil(size.width)) * Int(ceil(size.height)) * 4)
+    }
+}
+
+private actor ClassicArtworkFrameExtendedArtworkRenderQueue {
+    static let shared = ClassicArtworkFrameExtendedArtworkRenderQueue()
+
+    func render(sourceImage: CGImage, outputPixel: Int, artworkScale: CGFloat) -> CGImage? {
+        guard !Task.isCancelled else { return nil }
+        return ClassicArtworkFrameExtendedArtworkRenderer.render(
+            sourceImage: sourceImage,
+            outputPixel: outputPixel,
+            artworkScale: artworkScale
+        )
     }
 }
 

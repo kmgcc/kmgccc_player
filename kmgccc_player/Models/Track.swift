@@ -408,11 +408,20 @@ final class Track {
         availability.isPlayable
     }
 
+    var hasArtwork: Bool {
+        artworkData?.isEmpty == false || existingArtworkURL() != nil
+    }
+
     /// Drop heavyweight in-memory payloads once a track is removed from the library.
     func releaseTransientMediaResources() {
         artworkData = nil
         ttmlLyricText = nil
         lyricsText = nil
+    }
+
+    func releaseFileBackedArtworkData() {
+        guard artworkData?.isEmpty == false, existingArtworkURL() != nil else { return }
+        artworkData = nil
     }
 
     // MARK: - Persistence URL Resolution (root-snapshot aware)
@@ -450,6 +459,18 @@ final class Track {
         return paths.trackArtworkURL(for: id, fileName: artworkFileName)
     }
 
+    func existingArtworkURL() -> URL? {
+        guard let url = resolvedArtworkURL() else { return nil }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let fileType = attributes[.type] as? FileAttributeType,
+              fileType == .typeRegular,
+              let fileSize = attributes[.size] as? NSNumber,
+              fileSize.int64Value > 0,
+              FileManager.default.isReadableFile(atPath: url.path)
+        else { return nil }
+        return url
+    }
+
     func resolvedLyricsURL() -> URL? {
         guard let lyricsFileName, let paths = capturedLibraryPaths else { return nil }
         return paths.trackAssetURL(for: id, fileName: lyricsFileName)
@@ -465,13 +486,11 @@ final class Track {
     /// Load artwork data from disk if not already in memory.
     func loadArtworkDataIfNeeded() -> Data? {
         if let data = artworkData, !data.isEmpty { return data }
-        guard let url = resolvedArtworkURL() else { return nil }
-        let data = try? Data(contentsOf: url)
-        artworkData = data
-        return data
+        guard let url = existingArtworkURL() else { return nil }
+        return try? Data(contentsOf: url)
     }
 
-    /// Read the artwork file off the main actor, then preserve the existing lazy in-memory cache behavior.
+    /// Read file-backed artwork without copying it into SwiftData's external-storage attribute.
     func loadArtworkDataOffMainIfNeeded() async -> Data? {
         if let data = artworkData, !data.isEmpty { return data }
         guard let folder = resolvedTrackFolderURL(),
@@ -492,7 +511,6 @@ final class Track {
             }
             return nil
         }.value
-        artworkData = data
         return data
     }
 

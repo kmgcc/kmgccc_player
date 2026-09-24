@@ -4865,7 +4865,7 @@ final class AutomationIPCServer {
             return AutomationArtworkInfo(
                 targetType: target.type,
                 artistID: entry.id,
-                available: entry.artworkData != nil || entry.artworkFileName != nil,
+                available: entry.hasArtwork,
                 fileName: entry.artworkFileName,
                 byteCount: entry.artworkData?.count,
                 sha256: artworkDigest(entry.artworkData),
@@ -4875,7 +4875,7 @@ final class AutomationIPCServer {
             return AutomationArtworkInfo(
                 targetType: target.type,
                 albumKey: entry.canonicalKey,
-                available: entry.artworkData != nil || entry.artworkFileName != nil,
+                available: entry.hasArtwork,
                 fileName: entry.artworkFileName,
                 byteCount: entry.artworkData?.count,
                 sha256: artworkDigest(entry.artworkData),
@@ -5654,7 +5654,7 @@ final class AutomationIPCServer {
             metadataSource: entry.metadataSource,
             metadataFetchedAt: entry.metadataFetchedAt,
             metadataConfidence: entry.metadataConfidence,
-            artworkAvailable: entry.artworkData != nil || entry.artworkFileName != nil,
+            artworkAvailable: entry.hasArtwork,
             artworkFileName: entry.artworkFileName,
             trackCount: entry.trackCount,
             albumCount: entry.albumCount,
@@ -5688,7 +5688,7 @@ final class AutomationIPCServer {
             metadataSource: entry.metadataSource,
             metadataFetchedAt: entry.metadataFetchedAt,
             metadataConfidence: entry.metadataConfidence,
-            artworkAvailable: entry.artworkData != nil || entry.artworkFileName != nil,
+            artworkAvailable: entry.hasArtwork,
             artworkFileName: entry.artworkFileName,
             trackCount: entry.trackCount,
             totalDuration: entry.totalDuration,
@@ -7201,7 +7201,7 @@ final class AutomationIPCServer {
         let audio = track.mediaLocator.referencedFile?.locations.first?.audioProperties
             ?? track.audioProperties
         let lyricsStatus = trackLyricsStatus(track)
-        let artworkAvailable = track.artworkData != nil || track.artworkFileName != nil
+        let artworkAvailable = track.hasArtwork
 
         for (key, value) in values where key != "all" && key != "any" && key != "not" {
             switch key {
@@ -7545,7 +7545,7 @@ final class AutomationIPCServer {
             musicBrainzReleaseID: track.musicBrainzReleaseID,
             lyricsTimeOffsetMs: track.lyricsTimeOffsetMs,
             lyricsStatus: trackLyricsStatus(track),
-            artworkAvailable: track.artworkData != nil || track.artworkFileName != nil,
+            artworkAvailable: track.hasArtwork,
             artworkFileName: track.artworkFileName,
             format: audio?.format,
             codec: audio?.codec,

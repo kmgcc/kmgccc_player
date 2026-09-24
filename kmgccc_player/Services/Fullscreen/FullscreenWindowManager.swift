@@ -184,6 +184,14 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             return
         }
 
+        CacheManager.purgeHomePresentationMemoryCaches()
+        Task { @MainActor in
+            await ArtworkLoader.clearMemoryCache()
+            if let cacheServices = self.cacheServices {
+                await cacheServices.playlistArtworkPipeline.clearMemory()
+            }
+        }
+
         isTransitioning = true
         presentationMode = .systemFullscreenSpace
         TelemetryService.shared.updateSkinState()
@@ -299,6 +307,14 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             return
         }
 
+        CacheManager.purgeHomePresentationMemoryCaches()
+        Task { @MainActor in
+            await ArtworkLoader.clearMemoryCache()
+            if let cacheServices = self.cacheServices {
+                await cacheServices.playlistArtworkPipeline.clearMemory()
+            }
+        }
+
         captureEmbeddedHostWindowFrame()
         if EmbeddedFullscreenTrace.enabled {
             let frame = embeddedHostWindowOriginalFrame
@@ -354,6 +370,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         AppKitMainSplitWindowController.synchronizeLyricsSurfaceAfterFullscreenTransition(
             reason: "closeEmbedded"
         )
+        schedulePresentationCachePurge(reason: "embedded fullscreen dismissed")
         PaneLayoutTrace.log("fullscreen.closeEmbedded end")
     }
 
@@ -447,6 +464,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         AppKitMainSplitWindowController.synchronizeLyricsSurfaceAfterFullscreenTransition(
             reason: "dismissSystemFullscreen"
         )
+        schedulePresentationCachePurge(reason: "system fullscreen dismissed")
 
         DispatchQueue.main.async {
             if let previousKeyWindow = self.previousKeyWindow, previousKeyWindow.isVisible {
@@ -456,6 +474,16 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
                     nil)
             }
             self.previousKeyWindow = nil
+        }
+    }
+
+    private func schedulePresentationCachePurge(reason: String) {
+        let cacheServices = self.cacheServices
+        Task { @MainActor in
+            await CacheManager.purgePresentationMemoryCaches(
+                reason: reason,
+                cacheServices: cacheServices
+            )
         }
     }
 

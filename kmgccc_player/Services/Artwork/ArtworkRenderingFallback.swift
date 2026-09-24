@@ -34,7 +34,7 @@ enum ArtworkRenderingFallback {
     private nonisolated(unsafe) static let dataCache: NSCache<NSString, NSData> = {
         let cache = NSCache<NSString, NSData>()
         cache.countLimit = 32
-        cache.totalCostLimit = 32 * 1024 * 1024
+        cache.totalCostLimit = 16 * 1024 * 1024
         return cache
     }()
 

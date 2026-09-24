@@ -46,6 +46,7 @@ private struct AppleMeshBackground: View {
             AppleMeshFallbackBackground(context: context)
             AMLLMeshGradientBackgroundView(configuration: .init(
                 artworkData: context.track?.artworkData,
+                artworkFileURL: context.track?.artworkFileURL,
                 artworkChecksum: context.track?.artworkChecksum ?? 0,
                 isPlaying: context.playback.isPlaying,
                 dynamicBackgroundEnabled: dynamicBackgroundEnabled && context.motionPolicy == .full,

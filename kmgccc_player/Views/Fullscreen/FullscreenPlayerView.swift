@@ -661,12 +661,6 @@ struct FullscreenPlayerView: View {
         setLeftActionsExpanded(false, reason: "fullscreen-disappear")
         setVolumeExpanded(false, reason: "fullscreen-disappear")
         clearFullscreenLyricsTheme()
-        Task { @MainActor in
-            await CacheManager.purgePresentationMemoryCaches(
-                reason: "fullscreen-disappear",
-                cacheServices: cacheServices
-            )
-        }
 
         // Always report disappearance, including an embedded surface that was
         // removed before its initial geometry/theme gate completed. The
@@ -4553,6 +4547,10 @@ struct FullscreenPlayerView: View {
                 // previous cover under the next track's key and stay stuck on it.
                 artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
                 artworkData: renderingArtworkData,
+                artworkFileURL: display.source == .local
+                    && display.artworkData?.isEmpty != false
+                    ? playbackCoordinator.stablePresentation.localTrack?.existingArtworkURL()
+                    : nil,
                 artworkImage: artworkSnapshot?.fullImage,
                 displayedArtworkID: artworkSnapshot?.trackID
             )

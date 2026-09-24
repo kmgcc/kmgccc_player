@@ -1,7 +1,157 @@
+import AppKit
 import Foundation
 import XCTest
+@testable import kmgccc_player
 
 final class TrackMediaLocatorTests: XCTestCase {
+    @MainActor
+    func testMissingArtworkCandidatePreservesInlineData() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let artworkData = Data([1, 2, 3])
+        let track = Track(
+            title: "Song",
+            fileBookmarkData: Data(),
+            artworkData: artworkData,
+            libraryRootSnapshot: root.path,
+            artworkFileName: "cover.png"
+        )
+
+        XCTAssertNotNil(track.resolvedArtworkURL())
+        XCTAssertNil(track.existingArtworkURL())
+        XCTAssertTrue(track.hasArtwork)
+        XCTAssertEqual(track.artistArtworkSource().artworkData, artworkData)
+        XCTAssertEqual(track.trackArtworkSource()?.inlineArtworkData, artworkData)
+        track.releaseFileBackedArtworkData()
+
+        XCTAssertEqual(track.artworkData, artworkData)
+    }
+
+    @MainActor
+    func testReadableArtworkFileAllowsInlineDataRelease() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let trackID = UUID()
+        let paths = LibraryPaths(rootURL: root)
+        let artworkURL = try XCTUnwrap(paths.trackArtworkURL(for: trackID, fileName: "cover.png"))
+        try FileManager.default.createDirectory(
+            at: artworkURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let artworkData = Data([1, 2, 3])
+        try artworkData.write(to: artworkURL)
+        let track = Track(
+            id: trackID,
+            title: "Song",
+            fileBookmarkData: Data(),
+            artworkData: artworkData,
+            libraryRootSnapshot: root.path,
+            artworkFileName: "cover.png"
+        )
+
+        XCTAssertEqual(track.existingArtworkURL(), artworkURL)
+        XCTAssertTrue(track.hasArtwork)
+        let fileBackedSource = try XCTUnwrap(track.trackArtworkSource())
+        XCTAssertEqual(fileBackedSource.artworkFileURL, artworkURL)
+        XCTAssertNil(fileBackedSource.inlineArtworkData)
+        let currentArtworkData = Data([5, 6, 7])
+        let currentSource = try XCTUnwrap(track.trackArtworkSource(fallbackData: currentArtworkData))
+        XCTAssertEqual(currentSource.inlineArtworkData, currentArtworkData)
+        XCTAssertNotEqual(currentSource.sourceKey, fileBackedSource.sourceKey)
+        track.releaseFileBackedArtworkData()
+
+        XCTAssertNil(track.artworkData)
+        XCTAssertTrue(track.hasArtwork)
+    }
+
+    @MainActor
+    func testFileBackedArtworkReadsDoNotPersistDuplicateData() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let trackID = UUID()
+        let paths = LibraryPaths(rootURL: root)
+        let artworkURL = try XCTUnwrap(paths.trackArtworkURL(for: trackID, fileName: "cover.png"))
+        try FileManager.default.createDirectory(
+            at: artworkURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let artworkData = Data([1, 2, 3, 4])
+        try artworkData.write(to: artworkURL)
+        let track = Track(
+            id: trackID,
+            title: "Song",
+            fileBookmarkData: Data(),
+            artworkData: nil,
+            libraryRootSnapshot: root.path,
+            artworkFileName: "cover.png"
+        )
+
+        XCTAssertEqual(track.loadArtworkDataIfNeeded(), artworkData)
+        XCTAssertNil(track.artworkData)
+        let artworkLoadedOffMain = await track.loadArtworkDataOffMainIfNeeded()
+        XCTAssertEqual(artworkLoadedOffMain, artworkData)
+        XCTAssertNil(track.artworkData)
+    }
+
+    @MainActor
+    func testAlbumAndArtistArtworkRequireNonemptyReadableFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let artworkURL = root.appendingPathComponent("cover.png")
+        try Data().write(to: artworkURL)
+        let now = Date()
+        var artist = ArtistEntry(
+            id: UUID(),
+            canonicalName: "artist",
+            displayName: "Artist",
+            artworkFileURL: artworkURL,
+            createdAt: now,
+            updatedAt: now,
+            trackCount: 0,
+            albumCount: 0,
+            totalDuration: 0,
+            isOrphaned: false
+        )
+        var album = AlbumEntry(
+            id: UUID(),
+            canonicalKey: "album",
+            displayTitle: "Album",
+            primaryArtistCanonicalName: "artist",
+            primaryArtistDisplayName: "Artist",
+            artworkFileURL: artworkURL,
+            createdAt: now,
+            updatedAt: now,
+            trackCount: 0,
+            totalDuration: 0,
+            isOrphaned: false
+        )
+
+        XCTAssertFalse(artist.hasArtwork)
+        XCTAssertFalse(album.hasArtwork)
+        artist.artworkData = Data([1, 2, 3])
+        album.artworkData = Data([1, 2, 3])
+        XCTAssertTrue(artist.hasArtwork)
+        XCTAssertTrue(album.hasArtwork)
+
+        try Data([1, 2, 3]).write(to: artworkURL)
+        XCTAssertEqual(artist.existingArtworkURL, artworkURL)
+        XCTAssertEqual(album.existingArtworkURL, artworkURL)
+    }
+
+    @MainActor
+    func testArtworkCacheClearRejectsLateImageInsertion() async {
+        let cache = ArtworkImageCache()
+        let generation = await cache.currentGeneration()
+        let image = NSImage(size: NSSize(width: 8, height: 8))
+
+        await cache.clear()
+        await cache.setImage(image, for: "stale", cost: 256, generation: generation)
+
+        let cachedImage = await cache.image(for: "stale")
+        XCTAssertNil(cachedImage)
+    }
+
     func testTaggedManagedEncodingIsStable() throws {
         let locator = TrackMediaLocator.managed(libraryRelativePath: "Tracks/id/audio.flac")
         let data = try JSONEncoder().encode(locator)

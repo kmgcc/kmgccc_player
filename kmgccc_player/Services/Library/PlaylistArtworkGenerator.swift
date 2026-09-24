@@ -15,8 +15,9 @@ struct PlaylistArtworkSnapshot: Sendable {
     @MainActor
     init(track: Track) {
         self.id = track.id
-        self.artworkData = track.artworkData
-        self.artworkFileURL = track.resolvedArtworkURL()
+        let artworkFileURL = track.existingArtworkURL()
+        self.artworkData = artworkFileURL == nil ? track.artworkData : nil
+        self.artworkFileURL = artworkFileURL
     }
 
     nonisolated init(id: UUID, artworkData: Data?, artworkFileURL: URL? = nil) {
@@ -382,9 +383,23 @@ final class DetailHeaderArtworkResolver {
             if let data = entry.artworkData,
                let image = ArtworkLoader.headerPreviewImage(data: data, maxPixelSize: 320)
             {
-                let fileURL = entry.artworkFileName.map {
+                let fileURL = entry.artworkFileURL ?? entry.artworkFileName.map {
                     paths.artistFolderURL(for: entry.id).appendingPathComponent($0)
                 }
+                return ResolvedHeaderArtwork(
+                    selectionIdentity: selectionIdentity,
+                    selectionType: .artist,
+                    source: .custom,
+                    image: image,
+                    fileURL: fileURL,
+                    generationSignature: nil
+                )
+            }
+
+            if let fileURL = entry.artworkFileURL ?? entry.artworkFileName.map({
+                paths.artistFolderURL(for: entry.id).appendingPathComponent($0)
+            }),
+               let image = ArtworkLoader.headerPreviewImage(fileURL: fileURL, maxPixelSize: 320) {
                 return ResolvedHeaderArtwork(
                     selectionIdentity: selectionIdentity,
                     selectionType: .artist,
@@ -409,17 +424,31 @@ final class DetailHeaderArtworkResolver {
             )
 
         case .album(let selectionIdentity, let entry, let fallbackImage):
-            if let fileName = entry.artworkFileName,
-               let data = entry.artworkData,
-               let image = ArtworkLoader.squareHeaderPreviewImage(data: data, maxPixelSize: 320)
-            {
-                let fileURL = paths.albumFolderURL(for: entry.id).appendingPathComponent(fileName)
+            let artworkFileURL = entry.artworkFileURL ?? entry.artworkFileName.map {
+                paths.albumFolderURL(for: entry.id).appendingPathComponent($0)
+            }
+            if let data = entry.artworkData,
+               let image = ArtworkLoader.squareHeaderPreviewImage(data: data, maxPixelSize: 320) {
                 return ResolvedHeaderArtwork(
                     selectionIdentity: selectionIdentity,
                     selectionType: .album,
                     source: .custom,
                     image: image,
-                    fileURL: fileURL,
+                    fileURL: artworkFileURL,
+                    generationSignature: nil
+                )
+            }
+            if let artworkFileURL,
+               let image = ArtworkLoader.squareHeaderPreviewImage(
+                fileURL: artworkFileURL,
+                maxPixelSize: 320
+               ) {
+                return ResolvedHeaderArtwork(
+                    selectionIdentity: selectionIdentity,
+                    selectionType: .album,
+                    source: .custom,
+                    image: image,
+                    fileURL: artworkFileURL,
                     generationSignature: nil
                 )
             }

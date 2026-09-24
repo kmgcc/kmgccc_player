@@ -22,6 +22,7 @@ final class NowPlayingService {
     private let progressInterval: TimeInterval = 0.5
     private var cachedArtworkKey: String?
     private var cachedArtwork: MPMediaItemArtwork?
+    private var cachedArtworkTrackID: UUID?
     private var artworkLoadTask: Task<Void, Never>?
     private var artworkLoadKey: String?
     private var failedArtworkLoadKey: String?
@@ -391,6 +392,10 @@ final class NowPlayingService {
     }
     
     private func mediaArtwork(for track: Track) -> MPMediaItemArtwork? {
+        if cachedArtworkTrackID == track.id, let cachedArtwork {
+            return cachedArtwork
+        }
+
         let artworkData = track.artworkData
         let cacheKey = "track-\(track.id.uuidString)-\(artworkSignature(for: artworkData))"
 
@@ -407,6 +412,13 @@ final class NowPlayingService {
     }
 
     private func mediaArtwork(for presentation: NowPlayingPresentation) -> MPMediaItemArtwork? {
+        if let trackID = presentation.localTrack?.id,
+           cachedArtworkTrackID == trackID,
+           let cachedArtwork
+        {
+            return cachedArtwork
+        }
+
         let artworkData = presentation.artworkData ?? presentation.localTrack?.artworkData
         let identity = presentation.artworkIdentity
             ?? presentation.lyricsIdentity
@@ -428,7 +440,12 @@ final class NowPlayingService {
     }
 
     private func scheduleArtworkLoadIfNeeded(for track: Track) {
+        if cachedArtworkTrackID != track.id {
+            clearFileBackedArtworkCache()
+        }
+
         if track.artworkData?.isEmpty == false {
+            clearFileBackedArtworkCache()
             if artworkLoadKey?.hasPrefix(track.id.uuidString) == true {
                 cancelArtworkLoad()
             }
@@ -436,6 +453,9 @@ final class NowPlayingService {
         }
 
         let key = "\(track.id.uuidString):\(track.artworkFileName ?? "auto")"
+        if cachedArtworkTrackID == track.id, cachedArtwork != nil {
+            return
+        }
         guard artworkLoadKey != key, failedArtworkLoadKey != key else { return }
 
         artworkLoadTask?.cancel()
@@ -447,13 +467,16 @@ final class NowPlayingService {
 
             self.artworkLoadTask = nil
             self.artworkLoadKey = nil
-            if data?.isEmpty != false {
+            guard let data, !data.isEmpty,
+                  let artwork = Self.makeMediaArtwork(from: data)
+            else {
                 self.failedArtworkLoadKey = key
                 return
             }
             self.failedArtworkLoadKey = nil
             self.cachedArtworkKey = nil
-            self.cachedArtwork = nil
+            self.cachedArtwork = artwork
+            self.cachedArtworkTrackID = track.id
             self.updateNowPlaying(force: true)
         }
     }
@@ -462,6 +485,14 @@ final class NowPlayingService {
         artworkLoadTask?.cancel()
         artworkLoadTask = nil
         artworkLoadKey = nil
+        clearFileBackedArtworkCache()
+    }
+
+    private func clearFileBackedArtworkCache() {
+        guard cachedArtworkTrackID != nil else { return }
+        cachedArtworkKey = nil
+        cachedArtwork = nil
+        cachedArtworkTrackID = nil
     }
 
     private nonisolated static func makeMediaArtwork(from data: Data?) -> MPMediaItemArtwork? {

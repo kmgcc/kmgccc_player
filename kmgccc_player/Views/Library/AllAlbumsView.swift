@@ -443,24 +443,62 @@ private struct AlbumListRow: View {
     }
 
     private func loadArtwork() async {
-        var data = album.artworkData
-        if data == nil || data!.isEmpty {
-            let key = album.canonicalKey
-            if let firstTrack = libraryVM.allTracks.first(where: { $0.albumGroupKey == key }) {
-                data = await firstTrack.loadArtworkDataOffMainIfNeeded()
-            }
+        let targetSize = CGSize(width: 132, height: 132)
+        if let data = album.artworkData, !data.isEmpty {
+            let checksum = ArtworkLoader.checksum(for: data)
+            let key = ArtworkLoader.cacheKey(
+                trackID: album.id,
+                checksum: checksum,
+                targetPixelSize: targetSize
+            )
+            image = await ArtworkLoader.loadImage(
+                artworkData: data,
+                cacheKey: key,
+                targetPixelSize: targetSize,
+                derivativeStore: cacheServices.artworkDerivativeStore
+            )
+            return
         }
-        guard let data, !data.isEmpty else { return }
+        if let artworkFileURL = album.artworkFileURL,
+           let loaded = await ArtworkLoader.loadImage(
+               fileURL: artworkFileURL,
+               cacheKey: ArtworkLoader.fileCacheKey(
+                   fileURL: artworkFileURL,
+                   targetPixelSize: targetSize
+               ),
+               targetPixelSize: targetSize,
+               derivativeStore: cacheServices.artworkDerivativeStore
+           )
+        {
+            image = loaded
+            return
+        }
+        let key = album.canonicalKey
+        guard let firstTrack = libraryVM.allTracks.first(where: { $0.albumGroupKey == key }) else { return }
+        if let artworkFileURL = firstTrack.existingArtworkURL() {
+            let cacheKey = ArtworkLoader.fileCacheKey(
+                fileURL: artworkFileURL,
+                targetPixelSize: targetSize
+            )
+            image = await ArtworkLoader.loadImage(
+                fileURL: artworkFileURL,
+                cacheKey: cacheKey,
+                targetPixelSize: targetSize,
+                derivativeStore: cacheServices.artworkDerivativeStore
+            )
+            return
+        }
+        guard let data = await firstTrack.loadArtworkDataOffMainIfNeeded(), !data.isEmpty else { return }
         let checksum = ArtworkLoader.checksum(for: data)
-        let key = ArtworkLoader.cacheKey(
+        let cacheKey = ArtworkLoader.cacheKey(
             trackID: album.id,
             checksum: checksum,
-            targetPixelSize: CGSize(width: 132, height: 132)
+            targetPixelSize: targetSize
         )
         image = await ArtworkLoader.loadImage(
             artworkData: data,
-            cacheKey: key,
-            targetPixelSize: CGSize(width: 132, height: 132),
+            cacheKey: cacheKey,
+            targetPixelSize: targetSize,
             derivativeStore: cacheServices.artworkDerivativeStore
         )
     }

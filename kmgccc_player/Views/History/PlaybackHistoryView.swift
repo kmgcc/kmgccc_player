@@ -385,8 +385,8 @@ private struct PlaybackHistoryTrackRow: View {
         let title = track?.title ?? item.title
         let artist = track?.artist ?? item.artist
         let duration = track?.duration ?? item.duration
-        let artworkData = track?.artworkData
-        let artworkFileURL = track?.resolvedArtworkURL()
+        let artworkFileURL = track?.existingArtworkURL()
+        let artworkData = artworkFileURL == nil ? track?.artworkData : nil
         return TrackRowModel(
             id: item.id,
             title: title,

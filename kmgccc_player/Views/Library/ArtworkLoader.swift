@@ -19,21 +19,28 @@ final class CachedArtworkImage: @unchecked Sendable {
 
 actor ArtworkImageCache {
     private let cache = NSCache<NSString, CachedArtworkImage>()
+    private var memoryGeneration: UInt64 = 0
 
     init() {
-        cache.countLimit = 500
-        cache.totalCostLimit = 80 * 1024 * 1024
+        cache.countLimit = 250
+        cache.totalCostLimit = 24 * 1024 * 1024
     }
 
     func image(for key: String) -> NSImage? {
         cache.object(forKey: key as NSString)?.image
     }
 
-    func setImage(_ image: NSImage, for key: String, cost: Int) {
+    func currentGeneration() -> UInt64 {
+        memoryGeneration
+    }
+
+    func setImage(_ image: NSImage, for key: String, cost: Int, generation: UInt64) {
+        guard generation == memoryGeneration else { return }
         cache.setObject(CachedArtworkImage(image), forKey: key as NSString, cost: cost)
     }
 
     func clear() {
+        memoryGeneration &+= 1
         cache.removeAllObjects()
     }
 }
@@ -136,6 +143,17 @@ enum ArtworkLoader {
         "\(trackID.uuidString)-\(checksum)-\(Int(targetPixelSize.width))x\(Int(targetPixelSize.height))"
     }
 
+    nonisolated static func fileCacheKey(fileURL: URL, targetPixelSize: CGSize) -> String {
+        let values = try? fileURL.resourceValues(
+            forKeys: [.fileSizeKey, .contentModificationDateKey]
+        )
+        let fileSize = values?.fileSize ?? 0
+        let modificationTime = Int64(
+            (values?.contentModificationDate?.timeIntervalSince1970 ?? 0) * 1000
+        )
+        return "\(fileURL.standardizedFileURL.path)-\(fileSize)-\(modificationTime)-\(Int(targetPixelSize.width))x\(Int(targetPixelSize.height))"
+    }
+
     static func cachedImage(for cacheKey: String) async -> NSImage? {
         await cache.image(for: cacheKey)
     }
@@ -152,6 +170,7 @@ enum ArtworkLoader {
     ) async -> NSImage? {
         guard let artworkData, !artworkData.isEmpty else { return nil }
 
+        let memoryGeneration = await cache.currentGeneration()
         if let cached = await cache.image(for: cacheKey) {
             return cached
         }
@@ -176,7 +195,43 @@ enum ArtworkLoader {
 
         if let image {
             let cost = Int(targetPixelSize.width * targetPixelSize.height * 4)
-            await cache.setImage(image, for: cacheKey, cost: max(1, cost))
+            await cache.setImage(image, for: cacheKey, cost: max(1, cost), generation: memoryGeneration)
+        }
+        return image
+    }
+
+    static func loadImage(
+        fileURL: URL,
+        cacheKey: String,
+        targetPixelSize: CGSize,
+        derivativeStore: ArtworkDerivativeCacheStore
+    ) async -> NSImage? {
+        guard FileManager.default.isReadableFile(atPath: fileURL.path) else { return nil }
+
+        let memoryGeneration = await cache.currentGeneration()
+        if let cached = await cache.image(for: cacheKey) {
+            return cached
+        }
+
+        let signpost = PlaylistPerfDiagnostics.beginDecodeSignpost()
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        let image = await derivativeStore.image(
+            for: cacheKey,
+            sourceURL: fileURL,
+            targetPixelSize: targetPixelSize
+        )
+        let endUptime = ProcessInfo.processInfo.systemUptime
+        PlaylistPerfDiagnostics.endDecodeSignpost(signpost)
+        PlaylistPerfDiagnostics.markDecode(
+            durationMs: (endUptime - startUptime) * 1000,
+            wasOnMainThread: false
+        )
+
+        guard !Task.isCancelled else { return nil }
+
+        if let image {
+            let cost = Int(targetPixelSize.width * targetPixelSize.height * 4)
+            await cache.setImage(image, for: cacheKey, cost: max(1, cost), generation: memoryGeneration)
         }
         return image
     }
@@ -188,6 +243,7 @@ enum ArtworkLoader {
         derivativeStore: ArtworkDerivativeCacheStore
     ) async -> NSImage? {
         guard let artworkData, !artworkData.isEmpty else { return nil }
+        let memoryGeneration = await cache.currentGeneration()
         if let cached = await cache.image(for: cacheKey) {
             LyricsRuntimeProfile.increment("header.loadHeaderImage.cacheHit")
             return cached
@@ -203,9 +259,10 @@ enum ArtworkLoader {
             "header.loadHeaderImage",
             ms: (ProcessInfo.processInfo.systemUptime - startUptime) * 1000
         )
+        guard !Task.isCancelled else { return nil }
         if let image {
             let side = max(1, maxPixelSize)
-            await cache.setImage(image, for: cacheKey, cost: side * side * 4)
+            await cache.setImage(image, for: cacheKey, cost: side * side * 4, generation: memoryGeneration)
         }
         return image
     }

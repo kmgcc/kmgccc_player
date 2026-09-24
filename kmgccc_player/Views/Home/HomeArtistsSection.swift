@@ -323,6 +323,25 @@ private struct HomeArtistCircle: View {
             return
         }
 
+        if let artworkFileURL = artist.artworkFileURL,
+           let loaded = await ArtworkLoader.loadImage(
+               fileURL: artworkFileURL,
+               cacheKey: ArtworkLoader.fileCacheKey(
+                   fileURL: artworkFileURL,
+                   targetPixelSize: targetSize
+               ),
+               targetPixelSize: targetSize,
+               derivativeStore: cacheServices.artworkDerivativeStore
+           )
+        {
+            HomeArtworkMemoryStore.shared.store(
+                loaded,
+                for: HomeArtworkMemoryStore.artistKey(for: artist, pixelSide: pixelSide)
+            )
+            image = loaded
+            return
+        }
+
         let canonicalName = artist.canonicalName
         let tracks = libraryVM.allTracks.filter {
             LibraryNormalization.containsArtist(canonicalName, in: $0)

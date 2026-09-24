@@ -203,7 +203,7 @@ private struct ArtistMetadataFieldSnapshot {
         region = entry.region
         foreignName = entry.foreignName
         qqMusicSingerMid = entry.qqMusicSingerMid
-        hasArtwork = entry.artworkFileName != nil || entry.artworkData?.isEmpty == false
+        hasArtwork = entry.hasArtwork
     }
 
     func existingFieldCount() -> Int {
@@ -260,7 +260,7 @@ private struct AlbumMetadataFieldSnapshot {
         language = entry.language
         labelOrCompany = entry.labelOrCompany
         qqMusicAlbumMid = entry.qqMusicAlbumMid
-        hasArtwork = entry.artworkFileName != nil || entry.artworkData?.isEmpty == false
+        hasArtwork = entry.hasArtwork
     }
 
     func existingFieldCount() -> Int {
@@ -309,6 +309,8 @@ private struct AlbumMetadataFieldSnapshot {
 @Observable
 final class LibraryCompletionService {
     private static let maxProgressEventCount = 4
+    private static let maxTrackCoverCacheEntryCount = 32
+    private static let maxTrackCoverCacheBytes = 16 * 1_024 * 1_024
 
     var progress: LibraryCompletionProgress = .idle
 
@@ -321,6 +323,7 @@ final class LibraryCompletionService {
     @ObservationIgnored private var artistEntryCache: [String: ArtistEntry] = [:]
     @ObservationIgnored private var albumEntryCache: [String: AlbumEntry] = [:]
     @ObservationIgnored private var trackCoverCache: [String: LibraryCompletionCachedCover] = [:]
+    @ObservationIgnored private var trackCoverCacheBytes = 0
     @ObservationIgnored private var progressEvents: [LibraryCompletionProgressEvent] = []
 
     init(
@@ -339,12 +342,10 @@ final class LibraryCompletionService {
         options: LibraryCompletionOptions,
         progress progressHandler: @escaping @MainActor (LibraryCompletionProgress) -> Void
     ) async -> LibraryCompletionResult {
-        processedArtistKeys.removeAll()
-        processedAlbumKeys.removeAll()
+        clearCompletionCaches()
+        defer { clearCompletionCaches() }
         artistEntryCache = Dictionary(uniqueKeysWithValues: libraryVM.artistEntries.map { ($0.canonicalName, $0) })
         albumEntryCache = Dictionary(uniqueKeysWithValues: libraryVM.albumEntries.map { ($0.canonicalKey, $0) })
-        trackCoverCache.removeAll()
-        progressEvents.removeAll()
 
         let tracks = libraryVM.allTracks.sorted {
             if $0.title.localizedStandardCompare($1.title) == .orderedSame {
@@ -823,7 +824,7 @@ final class LibraryCompletionService {
             case .completed(let data):
                 guard !Task.isCancelled else { return outcome }
                 var latest = albumEntryCache[key] ?? entry
-                if latest.artworkFileName == nil && latest.artworkData?.isEmpty != false {
+                if !latest.hasArtwork {
                     latest.artworkData = data
                     latest.artworkFileName = "artwork.png"
                     latest.updatedAt = Date()
@@ -874,8 +875,56 @@ final class LibraryCompletionService {
         case .failed(_):
             result = .missing("暂未补全歌曲封面")
         }
-        trackCoverCache[key] = result
+        storeTrackCoverResult(result, for: key)
         return result
+    }
+
+    private func storeTrackCoverResult(_ result: LibraryCompletionCachedCover, for key: String) {
+        let resultBytes: Int
+        switch result {
+        case .found(let data):
+            resultBytes = data.count
+        case .missing:
+            resultBytes = 0
+        }
+
+        guard resultBytes <= Self.maxTrackCoverCacheBytes else {
+            if let previous = trackCoverCache.removeValue(forKey: key),
+               case .found(let data) = previous {
+                trackCoverCacheBytes -= data.count
+            }
+            return
+        }
+
+        if let previous = trackCoverCache.updateValue(result, forKey: key),
+           case .found(let data) = previous {
+            trackCoverCacheBytes -= data.count
+        }
+        trackCoverCacheBytes += resultBytes
+
+        while trackCoverCache.count > Self.maxTrackCoverCacheEntryCount
+            || trackCoverCacheBytes > Self.maxTrackCoverCacheBytes {
+            guard let evictedKey = trackCoverCache.keys.first(where: { $0 != key }),
+                  let evicted = trackCoverCache.removeValue(forKey: evictedKey)
+            else {
+                trackCoverCache.removeValue(forKey: key)
+                trackCoverCacheBytes -= resultBytes
+                return
+            }
+            if case .found(let data) = evicted {
+                trackCoverCacheBytes -= data.count
+            }
+        }
+    }
+
+    private func clearCompletionCaches() {
+        processedArtistKeys.removeAll(keepingCapacity: false)
+        processedAlbumKeys.removeAll(keepingCapacity: false)
+        artistEntryCache.removeAll(keepingCapacity: false)
+        albumEntryCache.removeAll(keepingCapacity: false)
+        trackCoverCache.removeAll(keepingCapacity: false)
+        trackCoverCacheBytes = 0
+        progressEvents.removeAll(keepingCapacity: false)
     }
 
     private func trackCoverCacheKey(for track: Track) -> String {
@@ -933,7 +982,7 @@ final class LibraryCompletionService {
         if let data = track.artworkData, !data.isEmpty {
             return true
         }
-        if track.artworkFileName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+        if track.existingArtworkURL() != nil {
             return true
         }
         return await track.loadArtworkDataOffMainIfNeeded()?.isEmpty == false

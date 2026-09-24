@@ -13,8 +13,8 @@ final class HomeArtworkMemoryStore {
     static let shared = HomeArtworkMemoryStore()
 
     private var cache = CostBoundedCache<String, NSImage>(
-        countLimit: 256,
-        totalCostLimit: 64 * 1024 * 1024
+        countLimit: 96,
+        totalCostLimit: 12 * 1024 * 1024
     )
 
     func cachedImage(for key: String) -> NSImage? {
@@ -58,7 +58,20 @@ final class HomeArtworkMemoryStore {
     }
 
     private static func trackKey(prefix: String, track: Track, pixelSide: Int) -> String {
-        "\(prefix)|\(track.id.uuidString)|\(track.artworkFileName ?? "embedded")|\(ArtworkDataFingerprint.sampledString(for: track.artworkData))|\(pixelSide)"
+        let artworkIdentity: String
+        if let artworkURL = track.existingArtworkURL(),
+           let values = try? artworkURL.resourceValues(
+                forKeys: [.fileSizeKey, .contentModificationDateKey]
+           ) {
+            artworkIdentity = [
+                artworkURL.standardizedFileURL.path,
+                String(values.fileSize ?? 0),
+                String(values.contentModificationDate?.timeIntervalSince1970 ?? 0)
+            ].joined(separator: "|")
+        } else {
+            artworkIdentity = "\(track.artworkFileName ?? "embedded")|\(ArtworkDataFingerprint.sampledString(for: track.artworkData))"
+        }
+        return "\(prefix)|\(track.id.uuidString)|\(artworkIdentity)|\(pixelSide)"
     }
 
     private static func estimatedCost(for image: NSImage) -> Int {
@@ -124,19 +137,25 @@ final class HomeArtworkPreheater {
                 "HomeArtworkPreheat",
                 detail: snapshot.diagnosticDetail
             )
+            defer { FirstUseHitchDiagnostics.end(token) }
+            await preheatPlaylistHeaders(
+                playlistPlans,
+                artworkResolver: artworkResolver,
+                pipeline: playlistArtworkPipeline
+            )
+            guard !Task.isCancelled else { return }
+
             let workerTask = Task.detached(priority: .utility) {
                 await HomeArtworkPreheatWorker.run(
                     snapshot,
                     derivativeStore: artworkDerivativeStore
                 )
             }
-            await preheatPlaylistHeaders(
-                playlistPlans,
-                artworkResolver: artworkResolver,
-                pipeline: playlistArtworkPipeline
-            )
-            await workerTask.value
-            FirstUseHitchDiagnostics.end(token)
+            await withTaskCancellationHandler {
+                await workerTask.value
+            } onCancel: {
+                workerTask.cancel()
+            }
         }
     }
 
@@ -158,21 +177,22 @@ final class HomeArtworkPreheater {
         mode: HomeLayoutMode,
         sectionOrder: [HomeSection]
     ) -> HomeArtworkPreheatSnapshot {
-        let albumLimit = mode == .wide || mode == .medium ? 10 : 8
-        let artistLimit = mode == .wide || mode == .medium ? 10 : 8
-        let playlistLimit = mode == .wide || mode == .medium ? 10 : 8
-        let rankLimit = mode == .wide || mode == .medium ? 10 : 8
+        let albumLimit = mode == .wide || mode == .medium ? 6 : 5
+        let artistLimit = mode == .wide || mode == .medium ? 6 : 5
+        let playlistLimit = mode == .wide || mode == .medium ? 6 : 5
+        let rankLimit = mode == .wide || mode == .medium ? 6 : 5
 
         let albumPixelSide = mode.homeAlbumRailPixelSide
         let artistPixelSide = mode.homeArtistRailPixelSide
         let rankPixelSide = HomeArtworkMemoryStore.rankPixelSide(for: 34)
 
-        let hero = heroTrack.map {
-            HomeTrackArtworkPreheatCandidate(
-                id: $0.id,
-                displayKey: HomeArtworkMemoryStore.heroCoverKey(for: $0),
-                artworkData: $0.artworkData,
-                artworkURL: $0.resolvedArtworkURL(),
+        let hero = heroTrack.map { track in
+            let artworkURL = track.existingArtworkURL()
+            return HomeTrackArtworkPreheatCandidate(
+                id: track.id,
+                displayKey: HomeArtworkMemoryStore.heroCoverKey(for: track),
+                artworkData: artworkURL == nil ? track.artworkData : nil,
+                artworkURL: artworkURL,
                 pixelSide: 480
             )
         }
@@ -182,6 +202,7 @@ final class HomeArtworkPreheater {
                 id: album.id,
                 displayKey: HomeArtworkMemoryStore.albumKey(for: album, pixelSide: albumPixelSide),
                 artworkData: album.artworkData,
+                artworkFileURL: album.artworkFileURL,
                 fallbackTrack: libraryVM.firstTrack(forAlbumGroupKey: album.canonicalKey).map {
                     HomeRawArtworkCandidate(track: $0)
                 },
@@ -192,12 +213,12 @@ final class HomeArtworkPreheater {
         let allTracks = libraryVM.allTracks
         let artistCandidates = artists.prefix(artistLimit).map { artist in
             let sources: [ArtistArtworkTrackSource]
-            if artist.artworkData?.isEmpty == false {
+            if artist.hasArtwork {
                 sources = []
             } else {
                 sources = allTracks
                     .filter { LibraryNormalization.containsArtist(artist.canonicalName, in: $0) }
-                    .prefix(24)
+                    .prefix(8)
                     .map { $0.artistArtworkSource() }
             }
             return HomeArtistArtworkPreheatCandidate(
@@ -205,6 +226,7 @@ final class HomeArtworkPreheater {
                 displayName: artist.displayName,
                 displayKey: HomeArtworkMemoryStore.artistKey(for: artist, pixelSide: artistPixelSide),
                 artworkData: artist.artworkData,
+                artworkFileURL: artist.artworkFileURL,
                 trackSources: sources,
                 pixelSide: artistPixelSide
             )
@@ -222,21 +244,23 @@ final class HomeArtworkPreheater {
         var seenPreviewTrackIDs = Set<UUID>()
         let playlistPreviewCandidates = playlistPreviewTracks.compactMap { track -> HomeTrackArtworkPreheatCandidate? in
             guard seenPreviewTrackIDs.insert(track.id).inserted else { return nil }
+            let artworkURL = track.existingArtworkURL()
             return HomeTrackArtworkPreheatCandidate(
                 id: track.id,
                 displayKey: HomeArtworkMemoryStore.playlistPreviewKey(trackID: track.id),
-                artworkData: track.artworkData,
-                artworkURL: track.resolvedArtworkURL(),
+                artworkData: artworkURL == nil ? track.artworkData : nil,
+                artworkURL: artworkURL,
                 pixelSide: HomeArtworkPreheatConstants.playlistPreviewPixelSide
             )
         }
 
         let rankCandidates = preferenceRanking.prefix(rankLimit).map { item in
-            HomeTrackArtworkPreheatCandidate(
+            let artworkURL = item.track.existingArtworkURL()
+            return HomeTrackArtworkPreheatCandidate(
                 id: item.id,
                 displayKey: HomeArtworkMemoryStore.rankKey(trackID: item.id, pixelSide: rankPixelSide),
-                artworkData: item.track.artworkData,
-                artworkURL: item.track.resolvedArtworkURL(),
+                artworkData: artworkURL == nil ? item.track.artworkData : nil,
+                artworkURL: artworkURL,
                 pixelSide: rankPixelSide
             )
         }
@@ -266,7 +290,7 @@ final class HomeArtworkPreheater {
         playlists: [Playlist],
         libraryVM: LibraryViewModel
     ) -> [HomePlaylistHeaderPreheatPlan] {
-        playlists.prefix(8).map { playlist in
+        playlists.prefix(6).map { playlist in
             let identity = Self.playlistHeaderIdentity(
                 for: playlist,
                 revision: libraryVM.playlistArtworkRevision(playlistID: playlist.id)
@@ -289,6 +313,7 @@ final class HomeArtworkPreheater {
     ) async {
         guard !plans.isEmpty else { return }
         try? await Task.sleep(for: .milliseconds(120))
+        guard !Task.isCancelled else { return }
         for plan in plans {
             guard !Task.isCancelled else { return }
             let key = HomeArtworkMemoryStore.playlistHeaderKey(identity: plan.identity)
@@ -365,6 +390,7 @@ private struct HomeArtworkPreheatSnapshot: Sendable {
     let playlistPreviews: [HomeTrackArtworkPreheatCandidate]
     let rankItems: [HomeTrackArtworkPreheatCandidate]
     let diagnosticDetail: String
+
 }
 
 private struct HomeRawArtworkCandidate: Sendable {
@@ -375,8 +401,8 @@ private struct HomeRawArtworkCandidate: Sendable {
     @MainActor
     init(track: Track) {
         id = track.id
-        artworkData = track.artworkData
-        artworkURL = track.resolvedArtworkURL()
+        artworkURL = track.existingArtworkURL()
+        artworkData = artworkURL == nil ? track.artworkData : nil
     }
 }
 
@@ -392,6 +418,7 @@ private struct HomeAlbumArtworkPreheatCandidate: Sendable {
     let id: UUID
     let displayKey: String
     let artworkData: Data?
+    let artworkFileURL: URL?
     let fallbackTrack: HomeRawArtworkCandidate?
     let pixelSide: Int
 }
@@ -401,6 +428,7 @@ private struct HomeArtistArtworkPreheatCandidate: Sendable {
     let displayName: String
     let displayKey: String
     let artworkData: Data?
+    let artworkFileURL: URL?
     let trackSources: [ArtistArtworkTrackSource]
     let pixelSide: Int
 }
@@ -410,6 +438,7 @@ private enum HomeArtworkPreheatWorker {
         _ snapshot: HomeArtworkPreheatSnapshot,
         derivativeStore: ArtworkDerivativeCacheStore
     ) async {
+        guard !Task.isCancelled else { return }
         if let hero = snapshot.hero {
             await preheatTrack(hero, derivativeStore: derivativeStore)
         }
@@ -435,21 +464,43 @@ private enum HomeArtworkPreheatWorker {
         _ candidate: HomeAlbumArtworkPreheatCandidate,
         derivativeStore: ArtworkDerivativeCacheStore
     ) async {
-        let data: Data?
         if let artworkData = candidate.artworkData, !artworkData.isEmpty {
-            data = artworkData
-        } else if let fallbackData = candidate.fallbackTrack?.artworkData, !fallbackData.isEmpty {
-            data = fallbackData
-        } else {
-            data = await readData(from: candidate.fallbackTrack?.artworkURL)
+            await preheatImage(
+                id: candidate.id,
+                displayKey: candidate.displayKey,
+                artworkData: artworkData,
+                pixelSide: candidate.pixelSide,
+                derivativeStore: derivativeStore
+            )
+            return
         }
-        await preheatImage(
-            id: candidate.id,
-            displayKey: candidate.displayKey,
-            artworkData: data,
-            pixelSide: candidate.pixelSide,
-            derivativeStore: derivativeStore
-        )
+        if let artworkFileURL = candidate.artworkFileURL {
+            await preheatFileImage(
+                displayKey: candidate.displayKey,
+                fileURL: artworkFileURL,
+                pixelSide: candidate.pixelSide,
+                derivativeStore: derivativeStore
+            )
+            return
+        }
+        if let fallbackData = candidate.fallbackTrack?.artworkData, !fallbackData.isEmpty {
+            await preheatImage(
+                id: candidate.id,
+                displayKey: candidate.displayKey,
+                artworkData: fallbackData,
+                pixelSide: candidate.pixelSide,
+                derivativeStore: derivativeStore
+            )
+            return
+        }
+        if let artworkURL = candidate.fallbackTrack?.artworkURL {
+            await preheatFileImage(
+                displayKey: candidate.displayKey,
+                fileURL: artworkURL,
+                pixelSide: candidate.pixelSide,
+                derivativeStore: derivativeStore
+            )
+        }
     }
 
     private static func preheatArtist(
@@ -461,6 +512,15 @@ private enum HomeArtworkPreheatWorker {
                 id: candidate.id,
                 displayKey: candidate.displayKey,
                 artworkData: data,
+                pixelSide: candidate.pixelSide,
+                derivativeStore: derivativeStore
+            )
+            return
+        }
+        if let artworkFileURL = candidate.artworkFileURL {
+            await preheatFileImage(
+                displayKey: candidate.displayKey,
+                fileURL: artworkFileURL,
                 pixelSide: candidate.pixelSide,
                 derivativeStore: derivativeStore
             )
@@ -482,19 +542,47 @@ private enum HomeArtworkPreheatWorker {
         _ candidate: HomeTrackArtworkPreheatCandidate,
         derivativeStore: ArtworkDerivativeCacheStore
     ) async {
-        let data: Data?
         if let artworkData = candidate.artworkData, !artworkData.isEmpty {
-            data = artworkData
-        } else {
-            data = await readData(from: candidate.artworkURL)
+            await preheatImage(
+                id: candidate.id,
+                displayKey: candidate.displayKey,
+                artworkData: artworkData,
+                pixelSide: candidate.pixelSide,
+                derivativeStore: derivativeStore
+            )
+            return
         }
-        await preheatImage(
-            id: candidate.id,
+        guard let artworkURL = candidate.artworkURL else { return }
+        await preheatFileImage(
             displayKey: candidate.displayKey,
-            artworkData: data,
+            fileURL: artworkURL,
             pixelSide: candidate.pixelSide,
             derivativeStore: derivativeStore
         )
+    }
+
+    private static func preheatFileImage(
+        displayKey: String,
+        fileURL: URL,
+        pixelSide: Int,
+        derivativeStore: ArtworkDerivativeCacheStore
+    ) async {
+        guard !Task.isCancelled else { return }
+        let targetSize = CGSize(width: pixelSide, height: pixelSide)
+        let cacheKey = ArtworkLoader.fileCacheKey(
+            fileURL: fileURL,
+            targetPixelSize: targetSize
+        )
+        guard let image = await ArtworkLoader.loadImage(
+            fileURL: fileURL,
+            cacheKey: cacheKey,
+            targetPixelSize: targetSize,
+            derivativeStore: derivativeStore
+        ) else { return }
+
+        await MainActor.run {
+            HomeArtworkMemoryStore.shared.store(image, for: displayKey)
+        }
     }
 
     private static func preheatImage(
@@ -524,10 +612,4 @@ private enum HomeArtworkPreheatWorker {
         }
     }
 
-    private static func readData(from url: URL?) async -> Data? {
-        guard let url else { return nil }
-        return await Task.detached(priority: .utility) {
-            try? Data(contentsOf: url)
-        }.value
-    }
 }

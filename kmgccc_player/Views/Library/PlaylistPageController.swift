@@ -2111,7 +2111,7 @@ final class PlaylistPageController {
                     durationText: formatDuration(track.duration),
                     artworkIdentity: PlaylistArtworkPipeline.rowSourceIdentity(
                         trackID: track.id,
-                        artworkData: track.artworkData,
+                        artworkData: artworkFileURL == nil ? track.artworkData : nil,
                         artworkFileURL: artworkFileURL
                     ),
                     artworkFileURL: artworkFileURL,

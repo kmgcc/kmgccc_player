@@ -1035,8 +1035,8 @@ private final class HomeHeroArtworkCache {
     private let cache = NSCache<NSString, SnapshotBox>()
 
     private init() {
-        cache.countLimit = 4
-        cache.totalCostLimit = 32 * 1024 * 1024
+        cache.countLimit = 2
+        cache.totalCostLimit = 8 * 1024 * 1024
     }
 
     func snapshot(for key: String) -> HomeHeroArtworkSnapshot? {
@@ -1068,6 +1068,10 @@ private final class HomeHeroArtworkCache {
             cost: max(1, data.count + imageCost)
         )
     }
+
+    func clearMemory() {
+        cache.removeAllObjects()
+    }
 }
 
 private final class HomeHeroBackdropCache {
@@ -1086,8 +1090,8 @@ private final class HomeHeroBackdropCache {
     private let cache = NSCache<NSString, ImageBox>()
 
     private init() {
-        cache.countLimit = 12
-        cache.totalCostLimit = 64 * 1024 * 1024
+        cache.countLimit = 6
+        cache.totalCostLimit = 16 * 1024 * 1024
     }
 
     func artifact(for key: NSString) -> HomeHeroBackdropArtifact? {
@@ -1103,6 +1107,16 @@ private final class HomeHeroBackdropCache {
         let cost = max(1, artifact.image.bytesPerRow * artifact.image.height)
         cache.setObject(ImageBox(artifact.image, artifact.readabilityMap), forKey: key, cost: cost)
     }
+
+    func clearMemory() {
+        cache.removeAllObjects()
+    }
+}
+
+@MainActor
+func clearHomeHeroArtworkMemoryCaches() {
+    HomeHeroArtworkCache.shared.clearMemory()
+    HomeHeroBackdropCache.shared.clearMemory()
 }
 
 private extension View {

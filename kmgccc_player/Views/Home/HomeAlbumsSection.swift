@@ -323,27 +323,72 @@ private struct HomeAlbumCard: View {
     }
 
     private func loadImage() async {
-        var artworkData = album.artworkData
-        if artworkData == nil || artworkData!.isEmpty {
-            if let firstTrack = libraryVM.firstTrack(forAlbumGroupKey: album.canonicalKey) {
-                artworkData = await firstTrack.loadArtworkDataOffMainIfNeeded()
-            }
-        }
-        guard let data = artworkData, !data.isEmpty else { return }
         let pixelSide = mode.homeAlbumRailPixelSide
         let targetSize = CGSize(width: pixelSide, height: pixelSide)
-        let checksum = ArtworkLoader.checksum(for: data)
-        let key = ArtworkLoader.cacheKey(
-            trackID: album.id,
-            checksum: checksum,
-            targetPixelSize: targetSize
-        )
-        let loaded = await ArtworkLoader.loadImage(
-            artworkData: data,
-            cacheKey: key,
-            targetPixelSize: targetSize,
-            derivativeStore: cacheServices.artworkDerivativeStore
-        )
+        let loaded: NSImage?
+        if let artworkData = album.artworkData, !artworkData.isEmpty {
+            let checksum = ArtworkLoader.checksum(for: artworkData)
+            let key = ArtworkLoader.cacheKey(
+                trackID: album.id,
+                checksum: checksum,
+                targetPixelSize: targetSize
+            )
+            loaded = await ArtworkLoader.loadImage(
+                artworkData: artworkData,
+                cacheKey: key,
+                targetPixelSize: targetSize,
+                derivativeStore: cacheServices.artworkDerivativeStore
+            )
+        } else {
+            let fileImage: NSImage?
+            if let artworkFileURL = album.artworkFileURL {
+                let key = ArtworkLoader.fileCacheKey(
+                    fileURL: artworkFileURL,
+                    targetPixelSize: targetSize
+                )
+                fileImage = await ArtworkLoader.loadImage(
+                    fileURL: artworkFileURL,
+                    cacheKey: key,
+                    targetPixelSize: targetSize,
+                    derivativeStore: cacheServices.artworkDerivativeStore
+                )
+            } else {
+                fileImage = nil
+            }
+
+            if let fileImage {
+                loaded = fileImage
+            } else if let firstTrack = libraryVM.firstTrack(forAlbumGroupKey: album.canonicalKey),
+                      let trackArtworkURL = firstTrack.existingArtworkURL() {
+                let key = ArtworkLoader.fileCacheKey(
+                    fileURL: trackArtworkURL,
+                    targetPixelSize: targetSize
+                )
+                loaded = await ArtworkLoader.loadImage(
+                    fileURL: trackArtworkURL,
+                    cacheKey: key,
+                    targetPixelSize: targetSize,
+                    derivativeStore: cacheServices.artworkDerivativeStore
+                )
+            } else if let firstTrack = libraryVM.firstTrack(forAlbumGroupKey: album.canonicalKey),
+                      let artworkData = await firstTrack.loadArtworkDataOffMainIfNeeded(),
+                      !artworkData.isEmpty {
+                let checksum = ArtworkLoader.checksum(for: artworkData)
+                let key = ArtworkLoader.cacheKey(
+                    trackID: album.id,
+                    checksum: checksum,
+                    targetPixelSize: targetSize
+                )
+                loaded = await ArtworkLoader.loadImage(
+                    artworkData: artworkData,
+                    cacheKey: key,
+                    targetPixelSize: targetSize,
+                    derivativeStore: cacheServices.artworkDerivativeStore
+                )
+            } else {
+                return
+            }
+        }
         if let loaded {
             HomeArtworkMemoryStore.shared.store(
                 loaded,

@@ -31,11 +31,12 @@ actor PlaylistArtworkPipeline {
     private let memoryCache = NSCache<NSString, CachedArtworkImage>()
     private let decodeGate = ArtworkDecodeGate(maxConcurrent: 2)
     private let derivativeStore: ArtworkDerivativeCacheStore
+    private var memoryGeneration: UInt64 = 0
 
     init(derivativeStore: ArtworkDerivativeCacheStore) {
         self.derivativeStore = derivativeStore
-        memoryCache.countLimit = 720
-        memoryCache.totalCostLimit = 96 * 1024 * 1024
+        memoryCache.countLimit = 180
+        memoryCache.totalCostLimit = 12 * 1024 * 1024
     }
 
     func cachedImage(for request: PlaylistArtworkRequest) -> NSImage? {
@@ -43,6 +44,7 @@ actor PlaylistArtworkPipeline {
     }
 
     func load(_ request: PlaylistArtworkRequest) async -> NSImage? {
+        let requestGeneration = memoryGeneration
         if let cached = cachedImage(for: request) {
             return cached
         }
@@ -55,6 +57,7 @@ actor PlaylistArtworkPipeline {
             let checksum = request.artworkData.flatMap { ArtworkAssetStore.checksum(for: $0) } ?? 0
             if let snapshot = await ArtworkAssetStore.shared.get(trackID: trackID, artworkChecksum: checksum),
                let thumbnail = snapshot.thumbnailImage {
+                guard !Task.isCancelled, memoryGeneration == requestGeneration else { return nil }
                 memoryCache.setObject(
                     CachedArtworkImage(thumbnail),
                     forKey: request.cacheKey as NSString,
@@ -91,11 +94,7 @@ actor PlaylistArtworkPipeline {
             targetPixelSize: request.pixelSize
         )
 
-        guard let image else {
-            return nil
-        }
-
-        guard !Task.isCancelled else {
+        guard !Task.isCancelled, memoryGeneration == requestGeneration, let image else {
             return nil
         }
 
@@ -132,6 +131,7 @@ actor PlaylistArtworkPipeline {
     }
 
     func clearMemory() {
+        memoryGeneration &+= 1
         memoryCache.removeAllObjects()
     }
 

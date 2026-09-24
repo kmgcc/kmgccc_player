@@ -90,11 +90,13 @@ struct NowPlayingHostView: View {
             TelemetryService.shared.setWindowNowPlayingVisible(false)
             ledMeterProvider.releaseNowPlayingResources()
             artworkSnapshot = nil
-            Task { @MainActor in
-                await CacheManager.purgePresentationMemoryCaches(
-                    reason: "now-playing-disappear",
-                    cacheServices: cacheServices
-                )
+            if !FullscreenWindowManager.shared.isWindowedFullscreenActive {
+                Task { @MainActor in
+                    await CacheManager.purgePresentationMemoryCaches(
+                        reason: "now-playing-disappear",
+                        cacheServices: cacheServices
+                    )
+                }
             }
         }
         .task(id: currentArtworkTaskKey) {
@@ -134,6 +136,10 @@ struct NowPlayingHostView: View {
                 // synced checksum keeps key and image atomic across the switch.
                 artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
                 artworkData: renderingArtworkData,
+                artworkFileURL: presentation.source == .local
+                    && presentation.artworkData?.isEmpty != false
+                    ? presentation.localTrack?.existingArtworkURL()
+                    : nil,
                 artworkImage: artworkSnapshot?.fullImage,
                 displayedArtworkID: artworkSnapshot?.trackID
             )

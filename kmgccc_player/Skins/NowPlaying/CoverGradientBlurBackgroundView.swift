@@ -11,7 +11,7 @@ import ImageIO
 import MotionKit
 import SwiftUI
 
-private let coverGradientBlurRendererCacheVersion = "smoothStretchV15"
+private let coverGradientBlurRendererCacheVersion = "smoothStretchV16"
 
 // MARK: - Edge Fill Mode
 
@@ -181,7 +181,6 @@ struct CoverGradientBlurBackgroundView: View {
     /// surface. It receives no cache or mutable render-store references.
     var onRenderedFrame: (@MainActor (CoverGradientBlurRenderedFrame) -> Void)? = nil
 
-    @State private var sourceCGImage: CGImage?
     @State private var renderedCGImage: CGImage?
     @State private var visibleRenderedImage: Bool = false
     @State private var lastRenderKey: RenderKey?
@@ -325,7 +324,6 @@ struct CoverGradientBlurBackgroundView: View {
             // before the new cover appeared. Only blank when there is no prior
             // cover to hold (genuine first mount).
             if renderedCGImage == nil {
-                updateSourceImage(nil, forKey: key)
                 updateRenderedImage(nil, forKey: key)
             }
             return
@@ -336,26 +334,31 @@ struct CoverGradientBlurBackgroundView: View {
         guard artworkData != nil || artworkImage != nil else {
             // Same hold semantics as above for the artwork-bytes gap.
             if renderedCGImage == nil {
-                updateSourceImage(nil, forKey: key)
                 updateRenderedImage(nil, forKey: key)
             }
             return
         }
 
-        let preparedArtwork = await Task.detached(priority: .utility) {
-            CoverGradientBlurRenderer.preparedArtworkImage(
-                artworkData: artworkData,
-                artworkImage: artworkImage,
-                targetSize: key.size
-            )
-        }.value
-
-        guard !Task.isCancelled else { return }
-
         let renderedBox = await CoverGradientBlurRenderStore.shared.image(for: key.cacheKey) {
-            guard let preparedArtwork else { return nil }
-            return await Task.detached(priority: .utility) {
-                autoreleasepool {
+            guard !Task.isCancelled else { return nil }
+            let prepareTask = Task.detached(priority: .utility) { () -> CGImage? in
+                guard !Task.isCancelled else { return nil }
+                return CoverGradientBlurRenderer.preparedArtworkImage(
+                    artworkData: artworkData,
+                    artworkImage: artworkImage,
+                    targetSize: key.size
+                )
+            }
+            let preparedArtwork = await withTaskCancellationHandler {
+                await prepareTask.value
+            } onCancel: {
+                prepareTask.cancel()
+            }
+
+            guard !Task.isCancelled, let preparedArtwork else { return nil }
+            let renderTask = Task.detached(priority: .utility) { () -> CoverGradientBlurRenderedImageBox? in
+                guard !Task.isCancelled else { return nil }
+                return autoreleasepool { () -> CoverGradientBlurRenderedImageBox? in
                     guard
                         let image = CoverGradientBlurRenderer.render(
                             artworkCGImage: preparedArtwork,
@@ -370,16 +373,17 @@ struct CoverGradientBlurBackgroundView: View {
                     let map = RenderedBackdropReadabilityMap.make(from: image)
                     return CoverGradientBlurRenderedImageBox(image: image, readabilityMap: map)
                 }
-            }.value
+            }
+            return await withTaskCancellationHandler {
+                await renderTask.value
+            } onCancel: {
+                renderTask.cancel()
+            }
         }
 
         guard !Task.isCancelled else { return }
         if let renderedImage = renderedBox?.image {
-            updatePreparedAndRenderedImages(
-                preparedArtwork,
-                renderedImage: renderedImage,
-                forKey: key
-            )
+            updatePreparedAndRenderedImages(renderedImage: renderedImage, forKey: key)
             publishReadabilitySnapshot(
                 image: renderedImage,
                 map: renderedBox?.readabilityMap,
@@ -387,7 +391,6 @@ struct CoverGradientBlurBackgroundView: View {
             )
             publishRenderedFrame(image: renderedImage, forKey: key)
         } else {
-            updateSourceImage(preparedArtwork, forKey: key)
             updateRenderedImage(nil, forKey: key)
         }
     }
@@ -438,12 +441,6 @@ struct CoverGradientBlurBackgroundView: View {
     }
 
     @MainActor
-    private func updateSourceImage(_ image: CGImage?, forKey key: RenderKey) {
-        guard key == renderKey else { return }
-        sourceCGImage = image
-    }
-    
-    @MainActor
     private func updateRenderedImage(_ image: CGImage?, forKey key: RenderKey) {
         guard key == renderKey else { return }
         renderedCGImage = image
@@ -455,12 +452,10 @@ struct CoverGradientBlurBackgroundView: View {
 
     @MainActor
     private func updatePreparedAndRenderedImages(
-        _ sourceImage: CGImage?,
         renderedImage: CGImage,
         forKey key: RenderKey
     ) {
         guard key == renderKey else { return }
-        sourceCGImage = sourceImage
         renderedCGImage = renderedImage
         lastRenderKey = key
         withAnimation(transitionAnimation) {
@@ -496,8 +491,8 @@ enum CoverGradientBlurRenderer {
         artworkImage: NSImage?,
         targetSize: CGSize
     ) -> CGImage? {
-        if let artworkImage, let cgImage = cgImage(from: artworkImage) {
-            return cgImage
+        if let artworkImage, let image = cgImage(from: artworkImage) {
+            return image
         }
 
         guard let artworkData else { return nil }
@@ -859,7 +854,6 @@ enum CoverGradientBlurRenderer {
         guard var finalImage = compositeFilter.outputImage?.cropped(to: canvasRect) else {
             return nil
         }
-        // Upscale the reduced-resolution render back to the canvas size.
         if internalRenderScale < 1,
            let scaleFilter = CIFilter(name: "CILanczosScaleTransform") {
             scaleFilter.setValue(finalImage, forKey: kCIInputImageKey)
@@ -869,7 +863,6 @@ enum CoverGradientBlurRenderer {
                 finalImage = upscaled.cropped(to: outputRect)
             }
         }
-
         defer {
             ciContext.clearCaches()
         }
@@ -1560,7 +1553,7 @@ enum CoverGradientBlurRenderer {
     }
 }
 
-private final class CoverGradientBlurRenderedImageBox: NSObject, @unchecked Sendable {
+final class CoverGradientBlurRenderedImageBox: NSObject, @unchecked Sendable {
     nonisolated let image: CGImage
     nonisolated let readabilityMap: RenderedBackdropReadabilityMap?
     nonisolated let cost: Int
@@ -1573,52 +1566,114 @@ private final class CoverGradientBlurRenderedImageBox: NSObject, @unchecked Send
     }
 }
 
-private actor CoverGradientBlurRenderStore {
+actor CoverGradientBlurRenderStore {
     static let shared = CoverGradientBlurRenderStore()
+
+    private struct RenderRequestKey: Hashable {
+        let cacheKey: String
+        let generation: UInt64
+    }
 
     private let cache: NSCache<NSString, CoverGradientBlurRenderedImageBox> = {
         let cache = NSCache<NSString, CoverGradientBlurRenderedImageBox>()
-        // Retain a small window of recent renders so re-selecting a recently
-        // shown track swaps in instantly within a session. `2` evicted the
-        // previous render almost immediately, forcing a cold multi-pass
-        // CIMaskedVariableBlur re-render on nearly every switch.
-        cache.countLimit = 6
-        cache.totalCostLimit = 64 * 1024 * 1024
+        cache.countLimit = 3
+        cache.totalCostLimit = 16 * 1024 * 1024
         return cache
     }()
-    private var inFlightKeys: Set<String> = []
+    private var inFlightKeys: Set<RenderRequestKey> = []
     private var waitingContinuations:
-        [String: [CheckedContinuation<CoverGradientBlurRenderedImageBox?, Never>]] = [:]
+        [RenderRequestKey: [CheckedContinuation<CoverGradientBlurRenderedImageBox?, Never>]] = [:]
+    private var renderTasks: [RenderRequestKey: Task<CoverGradientBlurRenderedImageBox?, Never>] = [:]
+    private var renderQueueTail: Task<Void, Never>?
+    private var renderQueueTailID: UUID?
+    private var memoryGeneration: UInt64 = 0
 
     func image(
         for key: String,
         producer: @Sendable @escaping () async -> CoverGradientBlurRenderedImageBox?
     ) async -> CoverGradientBlurRenderedImageBox? {
+        let requestGeneration = memoryGeneration
         if let cached = cache.object(forKey: key as NSString) {
             return cached
         }
 
-        if inFlightKeys.contains(key) {
+        let requestKey = RenderRequestKey(cacheKey: key, generation: requestGeneration)
+        if inFlightKeys.contains(requestKey) {
             return await withCheckedContinuation { continuation in
-                waitingContinuations[key, default: []].append(continuation)
+                waitingContinuations[requestKey, default: []].append(continuation)
             }
         }
 
-        inFlightKeys.insert(key)
-        let result = await producer()
+        inFlightKeys.insert(requestKey)
+        let result = await produceSerially(producer, requestKey: requestKey)
+        let currentResult = memoryGeneration == requestGeneration ? result : nil
 
-        if let result {
-            cache.setObject(result, forKey: key as NSString, cost: result.cost)
+        if let currentResult {
+            cache.setObject(currentResult, forKey: key as NSString, cost: currentResult.cost)
         }
 
-        inFlightKeys.remove(key)
-        if let waiters = waitingContinuations.removeValue(forKey: key) {
+        inFlightKeys.remove(requestKey)
+        if let waiters = waitingContinuations.removeValue(forKey: requestKey) {
             for continuation in waiters {
-                continuation.resume(returning: result)
+                continuation.resume(returning: currentResult)
             }
         }
 
+        return currentResult
+    }
+
+    func clearMemory() {
+        memoryGeneration &+= 1
+        cache.removeAllObjects()
+        for task in renderTasks.values {
+            task.cancel()
+        }
+        renderTasks.removeAll(keepingCapacity: false)
+        inFlightKeys.removeAll(keepingCapacity: false)
+        let continuations = waitingContinuations.values.flatMap { $0 }
+        waitingContinuations.removeAll(keepingCapacity: false)
+        for continuation in continuations {
+            continuation.resume(returning: nil)
+        }
+    }
+
+    private func produceSerially(
+        _ producer: @Sendable @escaping () async -> CoverGradientBlurRenderedImageBox?,
+        requestKey: RenderRequestKey
+    ) async -> CoverGradientBlurRenderedImageBox? {
+        guard !Task.isCancelled else { return nil }
+
+        let queueID = UUID()
+        let previous = renderQueueTail
+        let task = Task { [producer] () -> CoverGradientBlurRenderedImageBox? in
+            await previous?.value
+            guard !Task.isCancelled else { return nil }
+            return await producer()
+        }
+        renderQueueTailID = queueID
+        renderQueueTail = Task {
+            _ = await task.value
+        }
+        renderTasks[requestKey] = task
+
+        let result = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        renderTasks.removeValue(forKey: requestKey)
+
+        if renderQueueTailID == queueID {
+            renderQueueTail = nil
+            renderQueueTailID = nil
+        }
         return result
+    }
+}
+
+enum CoverGradientBlurMemory {
+    static func clear() async {
+        await CoverGradientBlurRenderStore.shared.clearMemory()
     }
 }
 

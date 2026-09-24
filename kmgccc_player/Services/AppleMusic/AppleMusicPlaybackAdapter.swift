@@ -1414,8 +1414,7 @@ final class AppleMusicPlaybackAdapter {
             return
         }
 
-        let hasArtwork = track.artworkData?.isEmpty == false
-            || track.artworkFileName?.isEmpty == false
+        let hasArtwork = track.hasArtwork
         let resourceSummary = [
             "metadata",
             hasArtwork ? "artwork" : nil,

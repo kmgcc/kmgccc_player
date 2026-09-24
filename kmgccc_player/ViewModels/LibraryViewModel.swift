@@ -2123,7 +2123,9 @@ final class LibraryViewModel {
             values: [
                 track.id.uuidString,
                 track.artworkFileName ?? "",
-                artworkDigest(track.artworkData ?? track.loadArtworkDataIfNeeded())
+                artworkDigest(track.artworkData) + (track.existingArtworkURL().map {
+                    ArtworkLoader.fileCacheKey(fileURL: $0, targetPixelSize: .zero)
+                } ?? "")
             ]
         )
     }
@@ -2134,7 +2136,9 @@ final class LibraryViewModel {
             values: [
                 entry.id.uuidString,
                 entry.artworkFileName ?? "",
-                artworkDigest(entry.artworkData)
+                artworkDigest(entry.artworkData) + (entry.artworkFileURL.map {
+                    ArtworkLoader.fileCacheKey(fileURL: $0, targetPixelSize: .zero)
+                } ?? "")
             ]
         )
     }
@@ -2145,7 +2149,9 @@ final class LibraryViewModel {
             values: [
                 entry.id.uuidString,
                 entry.artworkFileName ?? "",
-                artworkDigest(entry.artworkData)
+                artworkDigest(entry.artworkData) + (entry.artworkFileURL.map {
+                    ArtworkLoader.fileCacheKey(fileURL: $0, targetPixelSize: .zero)
+                } ?? "")
             ]
         )
     }
@@ -2579,7 +2585,7 @@ final class LibraryViewModel {
             }
             let changed = artworkData != nil
                 ? current.artworkData != artworkData || current.artworkFileName == nil
-                : current.artworkData != nil || current.artworkFileName != nil
+                : current.hasArtwork
             guard changed else {
                 skippedIDs.append(artistID)
                 return
@@ -2627,7 +2633,7 @@ final class LibraryViewModel {
             }
             let changed = artworkData != nil
                 ? current.artworkData != artworkData || current.artworkFileName == nil
-                : current.artworkData != nil || current.artworkFileName != nil
+                : current.hasArtwork
             guard changed else {
                 skippedIDs.append(albumID)
                 return
@@ -2900,14 +2906,19 @@ final class LibraryViewModel {
     private func saveArtistEntryWithoutOwnership(_ entry: ArtistEntry) async throws {
         var persisted = entry
         persisted.updatedAt = Date()
-        try await repository.updateArtistEntry(persisted)
-        if let idx = artistEntries.firstIndex(where: { $0.id == persisted.id }) {
-            artistEntries[idx] = persisted
+        let saved = try await repository.updateArtistEntry(persisted)
+        if persisted.id != saved.id {
+            artistEntries.removeAll { $0.id == persisted.id }
+        }
+        if let idx = artistEntries.firstIndex(where: { $0.id == saved.id }) {
+            artistEntries[idx] = saved
+        } else {
+            artistEntries.append(saved)
         }
         await invalidateDetailSelectionCachesIfNeeded(
             selectionIdentities: selectionIdentityVariants(
-                for: .artist(persisted.canonicalName),
-                entityIDOverride: persisted.id
+                for: .artist(saved.canonicalName),
+                entityIDOverride: saved.id
             )
         )
     }
@@ -3075,7 +3086,7 @@ final class LibraryViewModel {
     }
 
     private func hasPersistedArtistArtwork(_ entry: ArtistEntry) -> Bool {
-        entry.artworkFileName != nil || entry.artworkData?.isEmpty == false
+        entry.hasArtwork
     }
 
     func saveArtistEdits(original: ArtistEntry, updated: ArtistEntry) async {
@@ -3118,14 +3129,19 @@ final class LibraryViewModel {
     private func saveAlbumEntryWithoutOwnership(_ entry: AlbumEntry) async throws {
         var persisted = entry
         persisted.updatedAt = Date()
-        try await repository.updateAlbumEntry(persisted)
-        if let idx = albumEntries.firstIndex(where: { $0.id == persisted.id }) {
-            albumEntries[idx] = persisted
+        let saved = try await repository.updateAlbumEntry(persisted)
+        if persisted.id != saved.id {
+            albumEntries.removeAll { $0.id == persisted.id }
+        }
+        if let idx = albumEntries.firstIndex(where: { $0.id == saved.id }) {
+            albumEntries[idx] = saved
+        } else {
+            albumEntries.append(saved)
         }
         await invalidateDetailSelectionCachesIfNeeded(
             selectionIdentities: selectionIdentityVariants(
-                for: .album(persisted.canonicalKey),
-                entityIDOverride: persisted.id
+                for: .album(saved.canonicalKey),
+                entityIDOverride: saved.id
             )
         )
     }

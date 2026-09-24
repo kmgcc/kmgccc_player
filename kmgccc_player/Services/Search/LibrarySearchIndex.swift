@@ -40,8 +40,10 @@ actor LibrarySearchIndex {
 
             for (index, source) in sources.enumerated() {
                 try Task.checkCancellation()
-                let document = try makeDocument(from: source, reusable: nil)
-                try store(document)
+                try autoreleasepool {
+                    let document = try makeDocument(from: source, reusable: nil)
+                    try store(document)
+                }
                 if (index + 1).isMultiple(of: 50) {
                     await Task.yield()
                 }
@@ -69,9 +71,11 @@ actor LibrarySearchIndex {
             try execute("BEGIN IMMEDIATE TRANSACTION")
 
             for source in sources {
-                let reusable = try existingDocument(trackID: source.trackID)
-                let document = try makeDocument(from: source, reusable: reusable)
-                try store(document)
+                try autoreleasepool {
+                    let reusable = try existingDocument(trackID: source.trackID)
+                    let document = try makeDocument(from: source, reusable: reusable)
+                    try store(document)
+                }
             }
 
             try execute("COMMIT")

@@ -155,11 +155,15 @@ nonisolated enum CacheManager {
         reason: String,
         cacheServices: LibraryCacheServices? = nil
     ) async {
+        purgeHomePresentationMemoryCaches()
         BKThemeAssets.shared.purgeTransientCaches()
+        await CoverGradientBlurMemory.clear()
+        await ClassicArtworkFrameExtendedArtworkCache.shared.removeAll()
         await ArtworkAssetStore.shared.purgeHydratedImages()
         if let cacheServices {
             await cacheServices.trackArtworkCache.clearMemory()
             await cacheServices.artworkDerivativeStore.clearMemory()
+            await cacheServices.playlistArtworkPipeline.clearMemory()
         }
         await ArtworkLoader.clearMemoryCache()
         await CassetteArtworkCache.shared.removeAll()
@@ -169,6 +173,15 @@ nonisolated enum CacheManager {
             "[CacheManager] Purged presentation memory caches reason=\(reason)",
             category: .perf
         )
+    }
+
+    @MainActor
+    static func purgeHomePresentationMemoryCaches() {
+        HomeArtworkPreheater.shared.cancel()
+        HomeArtworkMemoryStore.shared.clearMemory()
+        clearHomeHeroArtworkMemoryCaches()
+        HomePlaylistCardCoverStore.shared.clearMemory()
+        HomePlaylistPreviewArtworkStore.shared.clearMemory()
     }
 
     static func clearLibraryCaches(

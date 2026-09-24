@@ -68,14 +68,14 @@ final class LibraryMetadataSync {
 
             if let (sidecar, folderURL) = existing[section.key] {
                 existing.removeValue(forKey: section.key)
-                let artworkData = sidecar.artworkFileName.flatMap { fileName in
-                    try? Data(contentsOf: folderURL.appendingPathComponent(fileName))
-                }
-                result.append(ArtistEntry(
+                var entry = ArtistEntry(
                     id: sidecar.id,
                     canonicalName: sidecar.canonicalName,
                     displayName: sidecar.displayName,
                     artworkFileName: sidecar.artworkFileName,
+                    artworkFileURL: sidecar.artworkFileName.map {
+                        folderURL.appendingPathComponent($0)
+                    },
                     description: sidecar.description ?? "",
                     genreTags: sidecar.genreTags,
                     region: sidecar.region ?? "",
@@ -84,14 +84,19 @@ final class LibraryMetadataSync {
                     metadataSource: sidecar.metadataSource,
                     metadataFetchedAt: sidecar.metadataFetchedAt,
                     metadataConfidence: sidecar.metadataConfidence,
-                    artworkData: artworkData,
+                    artworkData: nil,
                     createdAt: sidecar.createdAt,
                     updatedAt: sidecar.updatedAt,
                     trackCount: section.trackCount,
                     albumCount: albumCount,
                     totalDuration: totalDuration,
                     isOrphaned: false
-                ))
+                )
+                if entry.artworkFileURL != nil, entry.existingArtworkURL == nil {
+                    entry.artworkFileURL = nil
+                    entry.artworkFileName = nil
+                }
+                result.append(entry)
             } else {
                 let newID = UUID()
                 let newSidecar = ArtistSidecar(
@@ -133,14 +138,14 @@ final class LibraryMetadataSync {
                 || sidecar.trackSortOrder != nil
                 || sidecar.customTrackOrder != nil
             if hasUserContent {
-                let artworkData = sidecar.artworkFileName.flatMap { fileName in
-                    try? Data(contentsOf: folderURL.appendingPathComponent(fileName))
-                }
                 result.append(ArtistEntry(
                     id: sidecar.id,
                     canonicalName: sidecar.canonicalName,
                     displayName: sidecar.displayName,
                     artworkFileName: sidecar.artworkFileName,
+                    artworkFileURL: sidecar.artworkFileName.map {
+                        folderURL.appendingPathComponent($0)
+                    },
                     description: sidecar.description ?? "",
                     genreTags: sidecar.genreTags,
                     region: sidecar.region ?? "",
@@ -149,7 +154,7 @@ final class LibraryMetadataSync {
                     metadataSource: sidecar.metadataSource,
                     metadataFetchedAt: sidecar.metadataFetchedAt,
                     metadataConfidence: sidecar.metadataConfidence,
-                    artworkData: artworkData,
+                    artworkData: nil,
                     createdAt: sidecar.createdAt,
                     updatedAt: sidecar.updatedAt,
                     trackCount: 0,
@@ -195,9 +200,6 @@ final class LibraryMetadataSync {
         for section in derived {
             let matchingTracks = tracksByAlbumKey[section.key] ?? []
             let totalDuration = matchingTracks.reduce(0) { $0 + $1.duration }
-            let firstArtwork =
-                matchingTracks.first(where: { $0.artworkData != nil })?.artworkData
-                ?? matchingTracks.first?.artworkData
 
             var matchedSidecars: [(sidecar: AlbumSidecar, folderURL: URL)] = []
             if let exact = existing.removeValue(forKey: section.key) {
@@ -217,7 +219,6 @@ final class LibraryMetadataSync {
             if let entry = try mergedAlbumEntry(
                 from: matchedSidecars,
                 section: section,
-                firstArtwork: firstArtwork,
                 totalDuration: totalDuration,
                 now: now,
                 libraryService: libraryService
@@ -243,7 +244,7 @@ final class LibraryMetadataSync {
                     artworkFileName: nil,
                     description: "",
                     year: nil,
-                    artworkData: firstArtwork,
+                    artworkData: nil,
                     createdAt: now,
                     updatedAt: now,
                     trackCount: section.trackCount,
@@ -271,9 +272,6 @@ final class LibraryMetadataSync {
                 || sidecar.trackSortOrder != nil
                 || sidecar.customTrackOrder != nil
             if hasUserContent {
-                let artworkData = sidecar.artworkFileName.flatMap { fileName in
-                    try? Data(contentsOf: folderURL.appendingPathComponent(fileName))
-                }
                 result.append(AlbumEntry(
                     id: sidecar.id,
                     canonicalKey: sidecar.canonicalKey,
@@ -281,6 +279,9 @@ final class LibraryMetadataSync {
                     primaryArtistCanonicalName: sidecar.primaryArtistCanonicalName,
                     primaryArtistDisplayName: sidecar.primaryArtistDisplayName ?? "",
                     artworkFileName: sidecar.artworkFileName,
+                    artworkFileURL: sidecar.artworkFileName.map {
+                        folderURL.appendingPathComponent($0)
+                    },
                     description: sidecar.description ?? "",
                     year: sidecar.year,
                     releaseYear: sidecar.releaseYear ?? sidecar.year,
@@ -293,7 +294,7 @@ final class LibraryMetadataSync {
                     metadataSource: sidecar.metadataSource,
                     metadataFetchedAt: sidecar.metadataFetchedAt,
                     metadataConfidence: sidecar.metadataConfidence,
-                    artworkData: artworkData,
+                    artworkData: nil,
                     createdAt: sidecar.createdAt,
                     updatedAt: sidecar.updatedAt,
                     trackCount: 0,
@@ -622,7 +623,6 @@ final class LibraryMetadataSync {
     private func mergedAlbumEntry(
         from candidates: [(sidecar: AlbumSidecar, folderURL: URL)],
         section: AlbumSection,
-        firstArtwork: Data?,
         totalDuration: Double,
         now: Date,
         libraryService: LocalLibraryService
@@ -671,11 +671,13 @@ final class LibraryMetadataSync {
 
         let artworkSource = sortedCandidates.first { candidate in
             guard let fileName = candidate.sidecar.artworkFileName else { return false }
-            return (try? Data(contentsOf: candidate.folderURL.appendingPathComponent(fileName))) != nil
+            return FileManager.default.isReadableFile(
+                atPath: candidate.folderURL.appendingPathComponent(fileName).path
+            )
         }
-        let artworkData = artworkSource.flatMap { candidate in
-            candidate.sidecar.artworkFileName.flatMap { fileName in
-                try? Data(contentsOf: candidate.folderURL.appendingPathComponent(fileName))
+        let artworkSourceURL = artworkSource.flatMap { candidate in
+            candidate.sidecar.artworkFileName.map {
+                candidate.folderURL.appendingPathComponent($0)
             }
         }
         let mergedDescription = sortedCandidates.compactMap { candidate in
@@ -733,6 +735,15 @@ final class LibraryMetadataSync {
             trackSortOrder: mergedTrackSortOrder,
             customTrackOrder: mergedCustomTrackOrder
         )
+        let needsArtworkCopy: Bool
+        if let artworkSourceURL,
+           let artworkFileName = artworkSource?.sidecar.artworkFileName {
+            let destinationURL = libraryService.paths.albumFolderURL(for: keeper.sidecar.id)
+                .appendingPathComponent(artworkFileName)
+            needsArtworkCopy = artworkSourceURL.standardizedFileURL != destinationURL.standardizedFileURL
+        } else {
+            needsArtworkCopy = false
+        }
 
         let needsSidecarWrite =
             hasMergedCandidates
@@ -756,6 +767,7 @@ final class LibraryMetadataSync {
             || keeper.sidecar.trackSortOrder != candidateSidecar.trackSortOrder
             || keeper.sidecar.customTrackOrder != candidateSidecar.customTrackOrder
             || keeper.sidecar.createdAt != candidateSidecar.createdAt
+            || needsArtworkCopy
 
         let mergedSidecar: AlbumSidecar
         if needsSidecarWrite {
@@ -783,9 +795,12 @@ final class LibraryMetadataSync {
                 trackSortOrder: candidateSidecar.trackSortOrder,
                 customTrackOrder: candidateSidecar.customTrackOrder
             )
+            let artworkDataToPersist = needsArtworkCopy
+                ? artworkSourceURL.flatMap { try? Data(contentsOf: $0) }
+                : nil
             try libraryService.writeAlbumSidecar(
                 mergedSidecar,
-                artworkData: mergedSidecar.artworkFileName != nil ? artworkData : nil
+                artworkData: mergedSidecar.artworkFileName != nil ? artworkDataToPersist : nil
             )
         } else {
             mergedSidecar = keeper.sidecar
@@ -795,13 +810,16 @@ final class LibraryMetadataSync {
             try libraryService.deleteAlbumEntry(id: candidate.sidecar.id)
         }
 
-        return AlbumEntry(
+        var entry = AlbumEntry(
             id: mergedSidecar.id,
             canonicalKey: mergedSidecar.canonicalKey,
             displayTitle: mergedSidecar.displayTitle,
             primaryArtistCanonicalName: mergedSidecar.primaryArtistCanonicalName,
             primaryArtistDisplayName: section.artistName,
             artworkFileName: mergedSidecar.artworkFileName,
+            artworkFileURL: mergedSidecar.artworkFileName.map {
+                libraryService.paths.albumFolderURL(for: mergedSidecar.id).appendingPathComponent($0)
+            },
             description: mergedSidecar.description ?? "",
             year: mergedSidecar.year,
             releaseYear: mergedSidecar.releaseYear ?? mergedSidecar.year,
@@ -814,12 +832,17 @@ final class LibraryMetadataSync {
             metadataSource: mergedSidecar.metadataSource,
             metadataFetchedAt: mergedSidecar.metadataFetchedAt,
             metadataConfidence: mergedSidecar.metadataConfidence,
-            artworkData: artworkData ?? firstArtwork,
+            artworkData: nil,
             createdAt: mergedSidecar.createdAt,
             updatedAt: mergedSidecar.updatedAt,
             trackCount: section.trackCount,
             totalDuration: totalDuration,
             isOrphaned: false
         )
+        if entry.artworkFileURL != nil, entry.existingArtworkURL == nil {
+            entry.artworkFileURL = nil
+            entry.artworkFileName = nil
+        }
+        return entry
     }
 }

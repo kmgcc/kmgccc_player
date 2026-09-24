@@ -325,7 +325,7 @@ final class ImportImmediateEnrichmentEngine {
         let canonical = LibraryNormalization.normalizeArtist(artist)
         guard canonical != LibraryNormalization.normalizeArtist(nil) else { return false }
         var entry = await latestArtistEntry(canonical: canonical, displayName: artist)
-        guard entry.artworkData == nil else { return false }
+        guard !entry.hasArtwork else { return false }
         entry.artworkData = data
         entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
@@ -351,7 +351,7 @@ final class ImportImmediateEnrichmentEngine {
     private func applyAlbumArtworkData(_ data: Data, album: String, artist: String) async -> Bool {
         guard !LibraryNormalization.isUnknownAlbum(album) else { return false }
         var entry = await latestAlbumEntry(album: album, artist: artist)
-        guard entry.artworkData == nil else { return false }
+        guard !entry.hasArtwork else { return false }
         entry.artworkData = data
         entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
@@ -647,7 +647,7 @@ final class ImportImmediateEnrichmentEngine {
         if let coverOutcome = output.coverOutcome {
             switch coverOutcome {
             case .completed(let artworkData):
-                if record.track.artworkData == nil {
+                if !record.track.hasArtwork {
                     record.track.artworkData = artworkData
                 }
                 stats.coverSuccess += 1

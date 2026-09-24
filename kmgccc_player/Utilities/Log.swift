@@ -71,6 +71,7 @@ private nonisolated(unsafe) var _logConfigLock = NSLock()
 private nonisolated(unsafe) var _logDebugEnabledCategories: Set<LogCategory> = []
 
 enum LogConfig {
+    private nonisolated static let processEnvironment = ProcessInfo.processInfo.environment
     
     nonisolated static var minimumLevel: LogLevel {
         if let configuredLevel {
@@ -79,8 +80,8 @@ enum LogConfig {
         return .warning
     }
 
-    private nonisolated static var configuredLevel: LogLevel? {
-        guard let rawValue = ProcessInfo.processInfo.environment["KMGCCC_LOG_LEVEL"]?
+    private nonisolated static let configuredLevel: LogLevel? = {
+        guard let rawValue = processEnvironment["KMGCCC_LOG_LEVEL"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased(),
             !rawValue.isEmpty
@@ -102,27 +103,17 @@ enum LogConfig {
         default:
             return nil
         }
-    }
+    }()
 
-    nonisolated static var webViewDebugEnabled: Bool {
-        ProcessInfo.processInfo.environment["KMGCCC_DEBUG_WEBVIEW"] == "1"
-    }
+    nonisolated static let webViewDebugEnabled = processEnvironment["KMGCCC_DEBUG_WEBVIEW"] == "1"
 
-    nonisolated static var perfDebugEnabled: Bool {
-        ProcessInfo.processInfo.environment["KMGCCC_DEBUG_PERF"] == "1"
-    }
+    nonisolated static let perfDebugEnabled = processEnvironment["KMGCCC_DEBUG_PERF"] == "1"
 
-    nonisolated static var libraryScanDebugEnabled: Bool {
-        ProcessInfo.processInfo.environment["KMGCCC_DEBUG_LIBRARY_SCAN"] == "1"
-    }
+    nonisolated static let libraryScanDebugEnabled = processEnvironment["KMGCCC_DEBUG_LIBRARY_SCAN"] == "1"
 
-    nonisolated static var miniPlayerFGDebugEnabled: Bool {
-        ProcessInfo.processInfo.environment["KMGCCC_DEBUG_MINIPLAYER_FG"] == "1"
-    }
+    nonisolated static let miniPlayerFGDebugEnabled = processEnvironment["KMGCCC_DEBUG_MINIPLAYER_FG"] == "1"
 
-    nonisolated static var spectrumDebugEnabled: Bool {
-        ProcessInfo.processInfo.environment["KMGCCC_DEBUG_SPECTRUM"] == "1"
-    }
+    nonisolated static let spectrumDebugEnabled = processEnvironment["KMGCCC_DEBUG_SPECTRUM"] == "1"
 
     nonisolated static var debugEnabledCategories: Set<LogCategory> {
         _logConfigLock.lock()
@@ -132,7 +123,7 @@ enum LogConfig {
     
     private nonisolated(unsafe) static var _audioVerbose = false
     nonisolated static var audioVerbose: Bool {
-        get { _audioVerbose || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_AUDIO_VERBOSE"] == "1" }
+        get { _audioVerbose || processEnvironment["KMGCCC_DEBUG_AUDIO_VERBOSE"] == "1" }
         set { _audioVerbose = newValue }
     }
 
@@ -146,8 +137,8 @@ enum LogConfig {
             #else
             return _sampleBusDiagnosticsVerbose
                 || audioVerbose
-                || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_SAMPLEBUS"] == "1"
-                || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_SAMPLE_BUS"] == "1"
+                || processEnvironment["KMGCCC_DEBUG_SAMPLEBUS"] == "1"
+                || processEnvironment["KMGCCC_DEBUG_SAMPLE_BUS"] == "1"
             #endif
         }
         set { _sampleBusDiagnosticsVerbose = newValue }
@@ -158,31 +149,31 @@ enum LogConfig {
     /// trim / boundary probe). Off by default so normal Debug runs aren't flooded.
     /// Set this or `KMGCCC_DEBUG_GAPLESS_VERBOSE=1` to restore the full trace.
     nonisolated static var gaplessVerbose: Bool {
-        get { _gaplessVerbose || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_GAPLESS_VERBOSE"] == "1" }
+        get { _gaplessVerbose || processEnvironment["KMGCCC_DEBUG_GAPLESS_VERBOSE"] == "1" }
         set { _gaplessVerbose = newValue }
     }
 
     private nonisolated(unsafe) static var _themeColorVerbose = false
     nonisolated static var themeColorVerbose: Bool {
-        get { _themeColorVerbose || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_THEME_COLOR_VERBOSE"] == "1" }
+        get { _themeColorVerbose || processEnvironment["KMGCCC_DEBUG_THEME_COLOR_VERBOSE"] == "1" }
         set { _themeColorVerbose = newValue }
     }
 
     private nonisolated(unsafe) static var _playbackStatsVerbose = false
     nonisolated static var playbackStatsVerbose: Bool {
-        get { _playbackStatsVerbose || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_PLAYBACK_STATS_VERBOSE"] == "1" }
+        get { _playbackStatsVerbose || processEnvironment["KMGCCC_DEBUG_PLAYBACK_STATS_VERBOSE"] == "1" }
         set { _playbackStatsVerbose = newValue }
     }
 
     private nonisolated(unsafe) static var _mainThreadStallLoggingEnabled = false
     nonisolated static var mainThreadStallLoggingEnabled: Bool {
-        get { _mainThreadStallLoggingEnabled || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_MAIN_THREAD_STALL"] == "1" }
+        get { _mainThreadStallLoggingEnabled || processEnvironment["KMGCCC_DEBUG_MAIN_THREAD_STALL"] == "1" }
         set { _mainThreadStallLoggingEnabled = newValue }
     }
 
     private nonisolated(unsafe) static var _menuDiagnosticsVerbose = false
     nonisolated static var menuDiagnosticsVerbose: Bool {
-        get { _menuDiagnosticsVerbose || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_MENU_DIAGNOSTICS_VERBOSE"] == "1" }
+        get { _menuDiagnosticsVerbose || processEnvironment["KMGCCC_DEBUG_MENU_DIAGNOSTICS_VERBOSE"] == "1" }
         set { _menuDiagnosticsVerbose = newValue }
     }
 
@@ -191,7 +182,7 @@ enum LogConfig {
         get {
             #if DEBUG
             return _trackArtworkCacheVerbose
-                || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_TRACK_ARTWORK_CACHE"] == "1"
+                || processEnvironment["KMGCCC_DEBUG_TRACK_ARTWORK_CACHE"] == "1"
             #else
             return _trackArtworkCacheVerbose
             #endif
@@ -199,13 +190,13 @@ enum LogConfig {
         set { _trackArtworkCacheVerbose = newValue }
     }
 
-    nonisolated static var printToConsole: Bool {
+    nonisolated static let printToConsole: Bool = {
         #if DEBUG
-        return ProcessInfo.processInfo.environment["KMGCCC_LOG_PRINT_TO_CONSOLE"] == "1"
+        return processEnvironment["KMGCCC_LOG_PRINT_TO_CONSOLE"] == "1"
         #else
         return false
         #endif
-    }
+    }()
     
     nonisolated static func enableDebug(for categories: LogCategory...) {
         _logConfigLock.lock()

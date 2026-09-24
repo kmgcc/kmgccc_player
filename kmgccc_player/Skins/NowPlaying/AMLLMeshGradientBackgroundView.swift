@@ -44,6 +44,7 @@ enum AppleMeshBackgroundSpeed: String, CaseIterable, Identifiable {
 struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
     struct Configuration: Equatable {
         let artworkData: Data?
+        let artworkFileURL: URL?
         let artworkChecksum: UInt64
         let isPlaying: Bool
         let dynamicBackgroundEnabled: Bool
@@ -98,6 +99,10 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
         // checksum is snapshot-synced and can lag `artworkData`, which used to
         // strand the background on the previous cover after a track switch.
         private var lastAppliedArtworkFingerprint: UInt64?
+        private var lastAppliedArtworkSourceKey: String?
+        private var pendingArtworkSourceKey: String?
+        private var artworkFileLoadToken: UUID?
+        private var artworkFileLoadTask: Task<Void, Never>?
         private var lowFreqConsumerID: UUID?
         // Eased low-frequency volume. The AMLL mesh shader reacts to the raw
         // pushed value (its internal smoothedVolume is computed but unused), so
@@ -156,6 +161,11 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
             lastAppliedRuntimeConfig = nil
             lastAppliedPlaying = nil
             lastAppliedArtworkFingerprint = nil
+            lastAppliedArtworkSourceKey = nil
+            pendingArtworkSourceKey = nil
+            artworkFileLoadToken = nil
+            artworkFileLoadTask?.cancel()
+            artworkFileLoadTask = nil
             lastPushedLowFreq = -1
             lastLowFreqPushTime = 0
         }
@@ -260,18 +270,54 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
         }
 
         private func applyArtworkIfNeeded(_ configuration: Configuration, force: Bool = false) {
-            // Fingerprint the bytes we actually push so the gate stays atomic
-            // with the cover being displayed. The host-supplied checksum can
-            // lag `artworkData` in fullscreen (snapshot- vs presentation-synced);
-            // keying off it let a stale gate skip the new cover and stick on the
-            // previous track's colors.
-            let fingerprint = ArtworkDataFingerprint.sampledHash(for: configuration.artworkData)
-            guard force || lastAppliedArtworkFingerprint != fingerprint else { return }
-            guard let data = configuration.artworkData, !data.isEmpty else {
-                // Bytes not ready yet: do NOT record the fingerprint, so a later
-                // update carrying the real artwork still passes this gate.
+            if let data = configuration.artworkData, !data.isEmpty {
+                artworkFileLoadTask?.cancel()
+                artworkFileLoadTask = nil
+                artworkFileLoadToken = nil
+                pendingArtworkSourceKey = nil
+                applyArtwork(data, sourceKey: "data:\(ArtworkDataFingerprint.sampledString(for: data))", force: force)
                 return
             }
+
+            guard let artworkFileURL = configuration.artworkFileURL else { return }
+            let sourceKey = "file:\(artworkFileURL.standardizedFileURL.path)|\(configuration.artworkChecksum)"
+            guard force || (sourceKey != lastAppliedArtworkSourceKey && sourceKey != pendingArtworkSourceKey) else {
+                return
+            }
+
+            artworkFileLoadTask?.cancel()
+            let token = UUID()
+            artworkFileLoadToken = token
+            pendingArtworkSourceKey = sourceKey
+            let loadTask = Task.detached(priority: .utility) { () -> Data? in
+                guard !Task.isCancelled else { return nil }
+                return autoreleasepool {
+                    try? Data(contentsOf: artworkFileURL)
+                }
+            }
+            artworkFileLoadTask = Task { [weak self] in
+                let data = await withTaskCancellationHandler {
+                    await loadTask.value
+                } onCancel: {
+                    loadTask.cancel()
+                }
+                guard let self,
+                      !Task.isCancelled,
+                      self.artworkFileLoadToken == token
+                else { return }
+                self.artworkFileLoadTask = nil
+                self.artworkFileLoadToken = nil
+                self.pendingArtworkSourceKey = nil
+                guard let data, !data.isEmpty else { return }
+                self.applyArtwork(data, sourceKey: sourceKey, force: force)
+            }
+        }
+
+        private func applyArtwork(_ data: Data, sourceKey: String, force: Bool) {
+            let fingerprint = ArtworkDataFingerprint.sampledHash(for: data)
+            let alreadyApplied = fingerprint == lastAppliedArtworkFingerprint
+            lastAppliedArtworkSourceKey = sourceKey
+            guard force || !alreadyApplied else { return }
             lastAppliedArtworkFingerprint = fingerprint
             let mime = imageMIMEType(for: data)
             let dataURL = "data:\(mime);base64,\(data.base64EncodedString())"

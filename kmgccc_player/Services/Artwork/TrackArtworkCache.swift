@@ -41,7 +41,18 @@ struct TrackArtworkSource: Sendable, Equatable {
         artworkFileURL: URL?,
         inlineArtworkData: Data?
     ) -> String {
-        let version = "track-artwork-v1"
+        let version = "track-artwork-v2"
+        if let inlineArtworkData, !inlineArtworkData.isEmpty {
+            let checksum = ArtworkAssetStore.checksum(for: inlineArtworkData)
+            return [
+                version,
+                ArtworkColorExtractor.cacheVersion,
+                trackID.uuidString,
+                artworkFileName ?? "inline",
+                "\(inlineArtworkData.count)",
+                "\(checksum)",
+            ].joined(separator: "|")
+        }
         if let artworkFileURL,
            let values = try? artworkFileURL.resourceValues(
                 forKeys: [.fileSizeKey, .contentModificationDateKey]
@@ -75,11 +86,14 @@ struct TrackArtworkSource: Sendable, Equatable {
 extension Track {
     @MainActor
     func trackArtworkSource(fallbackData: Data? = nil) -> TrackArtworkSource? {
-        TrackArtworkSource(
+        let artworkFileURL = existingArtworkURL()
+        let inlineArtworkData = fallbackData.flatMap { $0.isEmpty ? nil : $0 }
+            ?? (artworkFileURL == nil ? artworkData : nil)
+        return TrackArtworkSource(
             trackID: id,
             artworkFileName: artworkFileName,
-            artworkFileURL: resolvedArtworkURL(),
-            inlineArtworkData: fallbackData ?? artworkData
+            artworkFileURL: artworkFileURL,
+            inlineArtworkData: inlineArtworkData
         )
     }
 }
@@ -87,6 +101,7 @@ extension Track {
 actor TrackArtworkCache {
     private static let maxOriginalDiskBytes: Int64 = 512 * 1024 * 1024
     private static let maxDerivativeDiskBytes: Int64 = 512 * 1024 * 1024
+    private static let maxCachedSourceDataBytes = 8 * 1024 * 1024
 
     private nonisolated let originalsRootURL: URL
     private nonisolated let derivativesRootURL: URL
@@ -95,6 +110,9 @@ actor TrackArtworkCache {
     private let fileManager = FileManager.default
     private var sourceDataTasks: [String: Task<Data?, Never>] = [:]
     private var imageTasks: [String: Task<NSImage?, Never>] = [:]
+    private var sourceDataTaskIDs: [String: UUID] = [:]
+    private var imageTaskIDs: [String: UUID] = [:]
+    private var memoryGeneration: UInt64 = 0
     private var warmupInProgressKeys: Set<String> = []
     private var completedWarmupKeys: [String] = []
     private var completedWarmupKeySet: Set<String> = []
@@ -104,10 +122,10 @@ actor TrackArtworkCache {
     init(storage: LibraryStorageLocations) {
         self.originalsRootURL = storage.trackArtworkOriginalsURL
         self.derivativesRootURL = storage.trackArtworkDerivativesURL
-        imageCache.countLimit = 256
-        imageCache.totalCostLimit = 96 * 1024 * 1024
-        sourceDataCache.countLimit = 192
-        sourceDataCache.totalCostLimit = 64 * 1024 * 1024
+        imageCache.countLimit = 128
+        imageCache.totalCostLimit = 24 * 1024 * 1024
+        sourceDataCache.countLimit = 96
+        sourceDataCache.totalCostLimit = 8 * 1024 * 1024
         try? FileManager.default.createDirectory(at: originalsRootURL, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: derivativesRootURL, withIntermediateDirectories: true)
     }
@@ -162,13 +180,18 @@ actor TrackArtworkCache {
     }
 
     func clearMemory() {
+        memoryGeneration &+= 1
+        sourceDataTasks.values.forEach { $0.cancel() }
+        imageTasks.values.forEach { $0.cancel() }
         imageCache.removeAllObjects()
         sourceDataCache.removeAllObjects()
-        sourceDataTasks.removeAll()
-        imageTasks.removeAll()
-        warmupInProgressKeys.removeAll()
-        completedWarmupKeys.removeAll()
-        completedWarmupKeySet.removeAll()
+        sourceDataTasks.removeAll(keepingCapacity: false)
+        imageTasks.removeAll(keepingCapacity: false)
+        sourceDataTaskIDs.removeAll(keepingCapacity: false)
+        imageTaskIDs.removeAll(keepingCapacity: false)
+        warmupInProgressKeys.removeAll(keepingCapacity: false)
+        completedWarmupKeys.removeAll(keepingCapacity: false)
+        completedWarmupKeySet.removeAll(keepingCapacity: false)
     }
 
     @discardableResult
@@ -219,6 +242,7 @@ actor TrackArtworkCache {
 
     func sourceData(for source: TrackArtworkSource, purpose: String = "ui") async -> Data? {
         scheduleInitialDiskTrimIfNeeded()
+        let requestGeneration = memoryGeneration
 
         if let cached = sourceDataCache.object(forKey: source.sourceKey as NSString) {
             Self.log(
@@ -238,14 +262,20 @@ actor TrackArtworkCache {
                 detail: "kind=raw"
             )
             let data = await task.value
-            cacheSourceData(data, for: source)
+            guard !Task.isCancelled else { return nil }
+            if memoryGeneration == requestGeneration {
+                cacheSourceData(data, for: source)
+            }
             return data
         }
 
         let cachedURL = originalFileURL(for: source)
         let diskStartedAt = Self.now()
         if let cachedData = await Self.readData(at: cachedURL), !cachedData.isEmpty {
-            cacheSourceData(cachedData, for: source)
+            guard !Task.isCancelled else { return nil }
+            if memoryGeneration == requestGeneration {
+                cacheSourceData(cachedData, for: source)
+            }
             touchItem(at: cachedURL)
             Self.log(
                 "disk raw hit",
@@ -262,8 +292,11 @@ actor TrackArtworkCache {
             detail: "kind=raw file=\(cachedURL.lastPathComponent) elapsedMs=\(Self.formatMs(Self.elapsedMs(since: diskStartedAt)))"
         )
 
+        let taskID = UUID()
         let task = Task.detached(priority: .utility) { [cachedURL] () -> Data? in
+            guard !Task.isCancelled else { return nil }
             if let inline = source.inlineArtworkData, !inline.isEmpty {
+                guard !Task.isCancelled else { return nil }
                 let startedAt = Self.now()
                 try? FileManager.default.createDirectory(
                     at: cachedURL.deletingLastPathComponent(),
@@ -276,13 +309,15 @@ actor TrackArtworkCache {
                     purpose: purpose,
                     detail: "source=inline bytes=\(inline.count) file=\(cachedURL.lastPathComponent) elapsedMs=\(Self.formatMs(Self.elapsedMs(since: startedAt)))"
                 )
+                guard !Task.isCancelled else { return nil }
                 return inline
             }
 
             let fallbackStartedAt = Self.now()
             guard let sourceURL = source.artworkFileURL,
                   let data = try? Data(contentsOf: sourceURL),
-                  !data.isEmpty
+                  !data.isEmpty,
+                  !Task.isCancelled
             else {
                 Self.log(
                     "sidecar / audio file fallback",
@@ -315,9 +350,16 @@ actor TrackArtworkCache {
         }
 
         sourceDataTasks[source.sourceKey] = task
+        sourceDataTaskIDs[source.sourceKey] = taskID
         let data = await task.value
-        sourceDataTasks[source.sourceKey] = nil
-        cacheSourceData(data, for: source)
+        if sourceDataTaskIDs[source.sourceKey] == taskID {
+            sourceDataTasks[source.sourceKey] = nil
+            sourceDataTaskIDs[source.sourceKey] = nil
+        }
+        guard !Task.isCancelled else { return nil }
+        if memoryGeneration == requestGeneration {
+            cacheSourceData(data, for: source)
+        }
         if data != nil {
             recordDiskWriteAndTrimIfNeeded()
         }
@@ -331,6 +373,7 @@ actor TrackArtworkCache {
         purpose: String
     ) async -> NSImage? {
         scheduleInitialDiskTrimIfNeeded()
+        let requestGeneration = memoryGeneration
 
         let imageKey = Self.imageKey(for: source, variant: variant, maxPixelSize: maxPixelSize)
         if let cached = imageCache.object(forKey: imageKey as NSString)?.image {
@@ -347,7 +390,10 @@ actor TrackArtworkCache {
         let diskURL = derivativeFileURL(for: imageKey)
         let diskStartedAt = Self.now()
         if let diskImage = await Self.readImage(at: diskURL, maxPixelSize: maxPixelSize) {
-            setMemoryImage(diskImage, key: imageKey)
+            guard !Task.isCancelled else { return nil }
+            if memoryGeneration == requestGeneration {
+                setMemoryImage(diskImage, key: imageKey)
+            }
             touchItem(at: diskURL)
             Self.log(
                 "disk derivative hit",
@@ -377,13 +423,25 @@ actor TrackArtworkCache {
             return await task.value
         }
 
+        let taskID = UUID()
+        let taskGeneration = memoryGeneration
         let task = Task { [weak self] () -> NSImage? in
             guard let self else { return nil }
             guard let data = await self.sourceData(for: source, purpose: purpose) else { return nil }
+            guard !Task.isCancelled else { return nil }
             let generateStartedAt = Self.now()
-            let image = await Task.detached(priority: .utility) {
-                Self.downsampledImage(data: data, maxPixelSize: maxPixelSize)
-            }.value
+            let decodeTask = Task.detached(priority: .utility) { () -> NSImage? in
+                guard !Task.isCancelled else { return nil }
+                return autoreleasepool {
+                    let image = Self.downsampledImage(data: data, maxPixelSize: maxPixelSize)
+                    return Task.isCancelled ? nil : image
+                }
+            }
+            let image = await withTaskCancellationHandler {
+                await decodeTask.value
+            } onCancel: {
+                decodeTask.cancel()
+            }
             Self.log(
                 "derivative generate",
                 source: source,
@@ -391,14 +449,23 @@ actor TrackArtworkCache {
                 purpose: purpose,
                 detail: "variant=\(variant) px=\(max(1, maxPixelSize)) result=\(image == nil ? "miss" : "hit") elapsedMs=\(Self.formatMs(Self.elapsedMs(since: generateStartedAt)))"
             )
-            guard let image else { return nil }
-            await self.persistImage(image, key: imageKey, diskURL: diskURL)
+            guard !Task.isCancelled, let image else { return nil }
+            await self.persistImage(
+                image,
+                key: imageKey,
+                diskURL: diskURL,
+                generation: taskGeneration
+            )
             return image
         }
 
         imageTasks[imageKey] = task
+        imageTaskIDs[imageKey] = taskID
         let image = await task.value
-        imageTasks[imageKey] = nil
+        if imageTaskIDs[imageKey] == taskID {
+            imageTasks[imageKey] = nil
+            imageTaskIDs[imageKey] = nil
+        }
         return image
     }
 
@@ -425,8 +492,11 @@ actor TrackArtworkCache {
 
         warmupInProgressKeys.insert(warmupKey)
         let startedAt = Self.now()
+        let warmupGeneration = memoryGeneration
         defer {
-            warmupInProgressKeys.remove(warmupKey)
+            if memoryGeneration == warmupGeneration {
+                warmupInProgressKeys.remove(warmupKey)
+            }
         }
 
         guard await sourceData(for: source, purpose: "warmup") != nil else {
@@ -439,8 +509,11 @@ actor TrackArtworkCache {
             return
         }
 
+        guard !Task.isCancelled, memoryGeneration == warmupGeneration else { return }
         _ = await thumbnail(for: source, maxPixelSize: 160, purpose: "warmup")
+        guard !Task.isCancelled, memoryGeneration == warmupGeneration else { return }
         _ = await snapshot(for: source, fullImageMaxPixelSize: 1_400, purpose: "warmup")
+        guard !Task.isCancelled, memoryGeneration == warmupGeneration else { return }
         rememberCompletedWarmupKey(warmupKey)
         Self.log(
             "preload / warmup hit",
@@ -450,7 +523,13 @@ actor TrackArtworkCache {
         )
     }
 
-    private func persistImage(_ image: NSImage, key: String, diskURL: URL) {
+    private func persistImage(
+        _ image: NSImage,
+        key: String,
+        diskURL: URL,
+        generation: UInt64
+    ) {
+        guard memoryGeneration == generation, !Task.isCancelled else { return }
         setMemoryImage(image, key: key)
         guard let png = Self.pngData(for: image) else { return }
         let startedAt = Self.now()
@@ -502,7 +581,10 @@ actor TrackArtworkCache {
     }
 
     private func cacheSourceData(_ data: Data?, for source: TrackArtworkSource) {
-        guard let data, !data.isEmpty else { return }
+        guard let data,
+              !data.isEmpty,
+              data.count <= Self.maxCachedSourceDataBytes
+        else { return }
         sourceDataCache.setObject(
             data as NSData,
             forKey: source.sourceKey as NSString,
@@ -548,23 +630,38 @@ actor TrackArtworkCache {
     }
 
     private nonisolated static func readData(at url: URL) async -> Data? {
-        await Task.detached(priority: .utility) {
-            try? Data(contentsOf: url)
-        }.value
+        let task = Task.detached(priority: .utility) { () -> Data? in
+            guard !Task.isCancelled else { return nil }
+            return try? Data(contentsOf: url)
+        }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private nonisolated static func readImage(at url: URL, maxPixelSize: Int) async -> NSImage? {
-        await Task.detached(priority: .utility) {
-            guard FileManager.default.fileExists(atPath: url.path),
-                  let source = CGImageSourceCreateWithURL(
-                    url as CFURL,
-                    [kCGImageSourceShouldCache: false] as CFDictionary
-                  )
-            else {
-                return nil
+        let task = Task.detached(priority: .utility) { () -> NSImage? in
+            guard !Task.isCancelled else { return nil }
+            return autoreleasepool {
+                guard FileManager.default.fileExists(atPath: url.path),
+                      let source = CGImageSourceCreateWithURL(
+                        url as CFURL,
+                        [kCGImageSourceShouldCache: false] as CFDictionary
+                      )
+                else {
+                    return nil
+                }
+                let image = downsampledImage(source: source, maxPixelSize: maxPixelSize)
+                return Task.isCancelled ? nil : image
             }
-            return downsampledImage(source: source, maxPixelSize: maxPixelSize)
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private func touchItem(at url: URL) {

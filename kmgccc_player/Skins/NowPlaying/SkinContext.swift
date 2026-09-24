@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import Foundation
 import MotionKit
 import SwiftUI
 
@@ -30,6 +31,7 @@ struct SkinContext {
         let duration: Double
         let artworkChecksum: UInt64
         let artworkData: Data?
+        let artworkFileURL: URL?
         let artworkImage: NSImage?
         let displayedArtworkID: UUID?
     }

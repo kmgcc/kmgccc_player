@@ -952,6 +952,7 @@ struct LibraryDetailHeaderView: View {
 struct ArtistInfoEditSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @EnvironmentObject private var themeStore: ThemeStore
 
     let entry: ArtistEntry
@@ -986,6 +987,8 @@ struct ArtistInfoEditSheet: View {
         ) {
             artworkEditor(
                 data: artworkData,
+                fileURL: artworkData == nil ? entry.artworkFileURL : nil,
+                derivativeStore: cacheServices.artworkDerivativeStore,
                 isLoading: isArtworkLookupInFlight,
                 error: artworkMessage,
                 candidates: artworkCandidates,
@@ -1072,7 +1075,9 @@ struct ArtistInfoEditSheet: View {
         draft.metadataFetchedAt = metadataFetchedAt
         draft.metadataConfidence = metadataConfidence
         draft.artworkData = artworkData
-        draft.artworkFileName = artworkData == nil ? nil : "artwork.png"
+        if artworkData != nil {
+            draft.artworkFileName = "artwork.png"
+        }
         return draft
     }
 
@@ -1212,6 +1217,8 @@ struct AlbumInfoEditSheet: View {
         ) {
             artworkEditor(
                 data: artworkData,
+                fileURL: artworkData == nil ? entry.artworkFileURL : nil,
+                derivativeStore: cacheServices.artworkDerivativeStore,
                 isLoading: coverCoordinator?.isLoading == true,
                 error: coverCoordinator?.error,
                 candidates: coverCoordinator?.candidates ?? [],
@@ -1322,7 +1329,9 @@ struct AlbumInfoEditSheet: View {
         draft.metadataFetchedAt = metadataFetchedAt
         draft.metadataConfidence = metadataConfidence
         draft.artworkData = artworkData
-        draft.artworkFileName = artworkData == nil ? nil : "artwork.png"
+        if artworkData != nil {
+            draft.artworkFileName = "artwork.png"
+        }
         return draft
     }
 
@@ -1472,6 +1481,8 @@ private func metadataEntitySheet<Content: View>(
 
 private func artworkEditor(
     data: Data?,
+    fileURL: URL?,
+    derivativeStore: ArtworkDerivativeCacheStore,
     isLoading: Bool,
     error: String?,
     candidates: [CoverCandidate],
@@ -1494,6 +1505,11 @@ private func artworkEditor(
                         Image(nsImage: image)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
+                    } else if let fileURL {
+                        ArtworkEditorFilePreview(
+                            fileURL: fileURL,
+                            derivativeStore: derivativeStore
+                        )
                     } else {
                         Image(systemName: "photo")
                             .font(.largeTitle)
@@ -1544,6 +1560,42 @@ private func artworkEditor(
                     onSelect: selectCandidate
                 )
             }
+        }
+    }
+}
+
+private struct ArtworkEditorFilePreview: View {
+    let fileURL: URL
+    let derivativeStore: ArtworkDerivativeCacheStore
+
+    @State private var image: NSImage?
+
+    private var cacheKey: String {
+        ArtworkLoader.fileCacheKey(
+            fileURL: fileURL,
+            targetPixelSize: CGSize(width: 200, height: 200)
+        )
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: "photo")
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .task(id: cacheKey) {
+            image = await ArtworkLoader.loadImage(
+                fileURL: fileURL,
+                cacheKey: cacheKey,
+                targetPixelSize: CGSize(width: 200, height: 200),
+                derivativeStore: derivativeStore
+            )
         }
     }
 }

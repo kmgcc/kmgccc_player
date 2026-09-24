@@ -215,21 +215,43 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
         manager.shutdownAll()
         defer { manager.shutdownAll() }
 
+        let originalTrackID = UUID()
+        let latestTrackID = UUID()
+        let latestTTML = mainTTML.replacingOccurrences(of: "Main", with: "Latest")
         manager.updatePlaybackSnapshot(
-            trackID: UUID(),
+            trackID: originalTrackID,
             lyricsTTML: mainTTML,
             currentTime: 1,
             isPlaying: true
         )
         let surface = manager.surface(for: .main)
         XCTAssertFalse(surface.isRenderingActive)
+        XCTAssertNil(surface.lastTrackID)
 
         manager.activate(role: .main)
         XCTAssertTrue(surface.isRenderingActive)
+        XCTAssertEqual(surface.lastTrackID, originalTrackID)
+        XCTAssertEqual(surface.lastTTML, mainTTML)
 
         manager.deactivate(role: .main)
         XCTAssertFalse(surface.isRenderingActive)
         XCTAssertIdentical(manager.existingSurface(for: .main), surface)
+
+        manager.updatePlaybackSnapshot(
+            trackID: latestTrackID,
+            lyricsTTML: latestTTML,
+            currentTime: 3,
+            isPlaying: false
+        )
+        XCTAssertEqual(surface.lastTrackID, originalTrackID)
+        XCTAssertEqual(surface.lastTTML, mainTTML)
+
+        manager.activate(role: .main)
+        XCTAssertTrue(surface.isRenderingActive)
+        XCTAssertEqual(surface.lastTrackID, latestTrackID)
+        XCTAssertEqual(surface.lastTTML, latestTTML)
+        XCTAssertEqual(surface.currentTime, 3)
+        XCTAssertFalse(surface.isPlaying)
     }
 
     @MainActor

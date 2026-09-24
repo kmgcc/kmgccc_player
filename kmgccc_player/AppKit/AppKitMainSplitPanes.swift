@@ -798,6 +798,10 @@ struct AppKitMainWindowArtBackgroundLayer: View {
                 duration: presentation.duration,
                 artworkChecksum: artworkChecksum,
                 artworkData: effectiveArtworkData,
+                artworkFileURL: presentation.source == .local
+                    && presentation.artworkData?.isEmpty != false
+                    ? presentation.localTrack?.existingArtworkURL()
+                    : nil,
                 artworkImage: nil,
                 displayedArtworkID: nil
             )

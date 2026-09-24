@@ -16,10 +16,11 @@ nonisolated struct ArtistArtworkTrackSource: Sendable {
 
 extension Track {
     func artistArtworkSource() -> ArtistArtworkTrackSource {
-        ArtistArtworkTrackSource(
+        let artworkURL = existingArtworkURL()
+        return ArtistArtworkTrackSource(
             id: id,
-            artworkData: artworkData,
-            artworkURL: resolvedArtworkURL()
+            artworkData: artworkURL == nil ? artworkData : nil,
+            artworkURL: artworkURL
         )
     }
 }
@@ -30,8 +31,8 @@ actor ArtistArtworkGenerator {
     private final class PlaceholderCacheBox: @unchecked Sendable {
         let cache: NSCache<NSString, NSImage> = {
             let cache = NSCache<NSString, NSImage>()
-            cache.countLimit = 128
-            cache.totalCostLimit = 40 * 1024 * 1024
+            cache.countLimit = 64
+            cache.totalCostLimit = 16 * 1024 * 1024
             return cache
         }()
     }
@@ -51,13 +52,19 @@ actor ArtistArtworkGenerator {
         trackSources: [ArtistArtworkTrackSource],
         pixelSide: Int = defaultPlaceholderPixelSide
     ) async -> NSImage? {
-        await Task.detached(priority: .userInitiated) { @Sendable in
-            Self.placeholderArtwork(
+        let renderTask = Task.detached(priority: .userInitiated) { @Sendable () -> NSImage? in
+            guard !Task.isCancelled else { return nil }
+            return Self.placeholderArtwork(
                 artistName: artistName,
                 trackSources: trackSources,
                 pixelSide: pixelSide
             )
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await renderTask.value
+        } onCancel: {
+            renderTask.cancel()
+        }
     }
 
     nonisolated static func placeholderArtwork(

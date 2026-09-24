@@ -430,7 +430,7 @@ final class ImportEnrichmentService {
                 )
             }
 
-            if track.artworkData == nil {
+            if !track.hasArtwork {
                 enqueuePart(.cover, for: track.id)
             } else if var state = itemStates[track.id], state.state(for: .cover) != .completed {
                 state.setState(.skipped, for: .cover)
@@ -517,7 +517,7 @@ final class ImportEnrichmentService {
         albumEntriesByCanonical: [String: AlbumEntry]
     ) -> ImportEnrichmentItemState? {
         let needsLyrics = track.ttmlLyricText == nil
-        let needsCover = track.artworkData == nil
+        let needsCover = !track.hasArtwork
         let needsTrackMetadata = trackMetadataIsMissing(track)
         let needsArtistMetadata = Self.artistMetadataNeedsEnrichment(
             artist: track.artist,
@@ -607,7 +607,7 @@ final class ImportEnrichmentService {
         let canonical = LibraryNormalization.normalizeArtist(artist)
         guard canonical != LibraryNormalization.normalizeArtist(nil) else { return false }
         guard let entry = entriesByCanonical[canonical] else { return true }
-        return entry.artworkData == nil
+        return !entry.hasArtwork
     }
 
     static func albumMetadataNeedsEnrichment(
@@ -632,7 +632,7 @@ final class ImportEnrichmentService {
         guard !LibraryNormalization.isUnknownAlbum(album) else { return false }
         let canonical = LibraryNormalization.normalizedAlbumKey(album: album)
         guard let entry = entriesByCanonical[canonical] else { return true }
-        return entry.artworkData == nil
+        return !entry.hasArtwork
     }
 
     private func enqueuePart(_ part: ImportEnrichmentPart, for trackID: UUID) {
@@ -744,7 +744,7 @@ final class ImportEnrichmentService {
         let canonical = LibraryNormalization.normalizeArtist(artist)
         guard canonical != LibraryNormalization.normalizeArtist(nil) else { return false }
         var entry = await latestArtistEntry(canonical: canonical, displayName: artist)
-        guard entry.artworkData == nil else { return false }
+        guard !entry.hasArtwork else { return false }
         entry.artworkData = data
         entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
@@ -770,7 +770,7 @@ final class ImportEnrichmentService {
     private func applyAlbumArtworkDataUnlocked(_ data: Data, album: String, artist: String) async -> Bool {
         guard !LibraryNormalization.isUnknownAlbum(album) else { return false }
         var entry = await latestAlbumEntry(album: album, artist: artist)
-        guard entry.artworkData == nil else { return false }
+        guard !entry.hasArtwork else { return false }
         entry.artworkData = data
         entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
@@ -981,7 +981,7 @@ final class ImportEnrichmentService {
                 continue
             }
 
-            if request.part == .cover, track.artworkData != nil {
+            if request.part == .cover, track.hasArtwork {
                 state.setState(.skipped, for: .cover)
                 itemStates[request.trackID] = state
                 Log.info(
@@ -1176,7 +1176,7 @@ final class ImportEnrichmentService {
         var shouldRequeue = false
         switch outcome {
         case .completed(let data):
-            if track.artworkData == nil {
+            if !track.hasArtwork {
                 bufferFlushPatch(
                     trackID: request.trackID,
                     title: state.title,
@@ -1198,7 +1198,7 @@ final class ImportEnrichmentService {
                 )
             }
         case .noResults:
-            if track.artworkData != nil {
+            if track.hasArtwork {
                 // The file's embedded cover survived import; an online
                 // miss is not a failure.
                 state.setState(.skipped, for: .cover)
@@ -1221,7 +1221,7 @@ final class ImportEnrichmentService {
                     "[ImportEnrichment] cover failed \(state.title) - \(state.artist) | retrying: \(message)",
                     category: .import
                 )
-            } else if track.artworkData != nil {
+            } else if track.hasArtwork {
                 state.setState(.skipped, for: .cover)
                 Log.info(
                     "[ImportEnrichment] cover failed \(state.title) - \(state.artist) | embedded artwork present: \(message)",
@@ -1820,7 +1820,7 @@ final class ImportEnrichmentService {
                 }
             }
             if patch.coverShouldFlush {
-                if track.artworkData == nil, let artworkData = patch.artworkData {
+                if !track.hasArtwork, let artworkData = patch.artworkData {
                     track.artworkData = artworkData
                 } else {
                     effectivePatch.artworkData = nil
