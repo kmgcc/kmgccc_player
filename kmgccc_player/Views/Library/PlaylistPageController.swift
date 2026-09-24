@@ -977,7 +977,13 @@ final class PlaylistPageController {
 
     private func applyPageModel(_ pageModel: PlaylistPageModel, restoreScroll: Bool) {
         resetArtworkPresentation(force: false, identity: pageModel.header?.artworkIdentity)
-        page = pageModel
+        let wipeAnimation = MotionPolicy.full.animation(for: MotionTokens.standard[.contentReplacement])
+            ?? .easeInOut(duration: 0.28)
+        withAnimation(wipeAnimation) {
+            page = pageModel
+            isSelectionTransitioning = false
+            phase = .ready
+        }
         LyricsRuntimeProfile.setMetadata("page.rows.count", value: "\(pageModel.rows.count)")
         LyricsRuntimeProfile.setMetadata(
             "page.header.present",
@@ -992,8 +998,6 @@ final class PlaylistPageController {
         }
         latestTrackLookup = Dictionary(uniqueKeysWithValues: pageModel.queueTracks.map { ($0.id, $0) })
         lastPrefetchBucket = nil
-        isSelectionTransitioning = false
-        phase = .ready
 
         if revealPendingTrackIfPossible() {
             // The explicit reveal request owns the scroll target for this rebuild.

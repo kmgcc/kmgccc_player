@@ -240,6 +240,7 @@ struct AppKitMainContentPaneRoot: View {
                             PlaylistDetailView(pageController: pageController)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                                 .id("appkit-main-home-search")
+                                .transition(.pageSwitchMotion)
                         } else {
                             // The real HomeView is rendered by
                             // HomeFullWindowRoot in the AppKit window's
@@ -250,6 +251,7 @@ struct AppKitMainContentPaneRoot: View {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                                 .allowsHitTesting(false)
                                 .id("appkit-main-home")
+                                .transition(.pageSwitchMotion)
                         }
                     case .allPlaylists:
                         AllPlaylistsView(pageController: pageController)
@@ -298,7 +300,10 @@ struct AppKitMainContentPaneRoot: View {
                 }
               }
             }
-            .motionAnimation(.contentReplacement, value: "\(uiState.contentMode)-\(libraryVM.currentSelection.selectionIdentity(in: libraryVM))")
+            .animation(
+                MotionPolicy.full.animation(for: MotionTokens.standard[.navigation]) ?? .spring(response: 0.38, dampingFraction: 0.86),
+                value: "\(uiState.contentMode)-\(libraryVM.currentSelection.selectionIdentity(in: libraryVM))"
+            )
 
             if !FullscreenWindowManager.shared.isWindowedFullscreenActive {
                 GeometryReader { proxy in
@@ -322,7 +327,12 @@ struct AppKitMainContentPaneRoot: View {
                     fullscreenWindowManager.closeFullscreenPlayerInWindow()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .transition(.opacity)
+                .transition(
+                    .asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                        removal: .move(edge: .bottom).combined(with: .opacity)
+                    )
+                )
                 .zIndex(1)
                 .environment(AppSettings.shared)
                 .environment(appSession.uiState)
@@ -341,6 +351,10 @@ struct AppKitMainContentPaneRoot: View {
                 .modelContainer(appSession.sharedModelContainer)
             }
         }
+        .animation(
+            MotionPolicy.full.animation(for: MotionTokens.standard[.emphasis]) ?? .spring(response: 0.40, dampingFraction: 0.86),
+            value: fullscreenWindowManager.isWindowedFullscreenActive
+        )
 
         let withAppear: some View = base
             .onAppear {

@@ -131,7 +131,6 @@ struct PlaylistDetailView: View {
     @ViewBuilder
     private var baseLayoutContent: some View {
         mainContent
-            .motionAnimation(.contentReplacement, value: activePage?.selectionIdentity)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.root"))
             .background(
@@ -195,7 +194,10 @@ struct PlaylistDetailView: View {
                     .transition(.leftToRightWipe)
             }
         }
-        .motionAnimation(.contentReplacement, value: pageController.isSelectionTransitioning || activePage == nil)
+        .animation(
+            MotionPolicy.full.animation(for: MotionTokens.standard[.contentReplacement]) ?? .easeInOut(duration: 0.28),
+            value: pageController.isSelectionTransitioning || activePage == nil
+        )
     }
 
     @ViewBuilder
@@ -217,8 +219,8 @@ struct PlaylistDetailView: View {
                     .transition(.leftToRightWipe)
             }
         }
-        .motionAnimation(
-            .contentReplacement,
+        .animation(
+            MotionPolicy.full.animation(for: MotionTokens.standard[.contentReplacement]) ?? .easeInOut(duration: 0.28),
             value: pageController.isSelectionTransitioning
                 || (libraryVM.state == .loading && pageController.page == nil)
                 || activePage == nil

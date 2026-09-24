@@ -71,7 +71,10 @@ struct HomeFullWindowRoot: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .all)
-        .motionAnimation(.contentReplacement, value: shouldRenderHome)
+        .animation(
+            MotionPolicy.full.animation(for: MotionTokens.standard[.navigation]) ?? .spring(response: 0.38, dampingFraction: 0.86),
+            value: shouldRenderHome
+        )
         .motionEnvironment()
     }
 

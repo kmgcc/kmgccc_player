@@ -184,14 +184,6 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             return
         }
 
-        CacheManager.purgeHomePresentationMemoryCaches()
-        Task { @MainActor in
-            await ArtworkLoader.clearMemoryCache()
-            if let cacheServices = self.cacheServices {
-                await cacheServices.playlistArtworkPipeline.clearMemory()
-            }
-        }
-
         isTransitioning = true
         presentationMode = .systemFullscreenSpace
         TelemetryService.shared.updateSkinState()
@@ -276,7 +268,9 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         installEscapeMonitorIfNeeded()
 
         window.makeKeyAndOrderFront(nil)
-        window.toggleFullScreen(nil)
+        DispatchQueue.main.async { [weak window] in
+            window?.toggleFullScreen(nil)
+        }
     }
 
     /// Present the fullscreen player UI inside the main window detail area.
@@ -307,14 +301,6 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             return
         }
 
-        CacheManager.purgeHomePresentationMemoryCaches()
-        Task { @MainActor in
-            await ArtworkLoader.clearMemoryCache()
-            if let cacheServices = self.cacheServices {
-                await cacheServices.playlistArtworkPipeline.clearMemory()
-            }
-        }
-
         captureEmbeddedHostWindowFrame()
         if EmbeddedFullscreenTrace.enabled {
             let frame = embeddedHostWindowOriginalFrame
@@ -332,7 +318,11 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
                 category: .fullscreen
             )
         }
-        presentationMode = .embeddedInWindow
+        let slideAnimation = MotionPolicy.full.animation(for: MotionTokens.standard[.emphasis])
+            ?? .spring(response: 0.40, dampingFraction: 0.86)
+        withAnimation(slideAnimation) {
+            presentationMode = .embeddedInWindow
+        }
         TelemetryService.shared.updateSkinState()
         suspendMainSidebarForEmbeddedFullscreenIfNeeded()
         suspendMainLyricsIfNeeded()
@@ -363,7 +353,11 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         )
         HomeWindowLayoutState.shared.setEmbeddedFullscreenActive(false)
 
-        presentationMode = .none
+        let slideAnimation = MotionPolicy.full.animation(for: MotionTokens.standard[.emphasis])
+            ?? .spring(response: 0.40, dampingFraction: 0.86)
+        withAnimation(slideAnimation) {
+            presentationMode = .none
+        }
         TelemetryService.shared.updateSkinState()
         removeEscapeMonitor()
         uiState?.clearEmbeddedFullscreenTransientPaneState(reason: "closeFullscreenPlayerInWindow")
@@ -625,6 +619,14 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         window.makeKey()
         isTransitioning = false
         cursorAutoHideCoordinator.start(for: window)
+
+        Task { @MainActor in
+            CacheManager.purgeHomePresentationMemoryCaches()
+            await ArtworkLoader.clearMemoryCache()
+            if let cacheServices = self.cacheServices {
+                await cacheServices.playlistArtworkPipeline.clearMemory()
+            }
+        }
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
