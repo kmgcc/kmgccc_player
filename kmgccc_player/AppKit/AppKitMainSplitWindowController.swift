@@ -132,6 +132,11 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
             animated: animated,
             preserveMirroredState: preserveMirroredState
         )
+        sharedController?.refreshPaneGlassBlendingModes()
+    }
+
+    func refreshPaneGlassBlendingModes() {
+        (window?.contentViewController as? AppKitMainRootViewController)?.applyWithinWindowBlendingModeToPaneGlass()
     }
 
     static func isLyricsVisible() -> Bool {
@@ -564,10 +569,7 @@ private final class AppKitMainRootViewController: NSViewController {
         // Keep the sidebar and center-pane glass sampling the Home layer below
         // the split view. The lyrics inspector is handled separately: it hosts
         // a continuously animated layer tree, so whichever backdrop it samples
-        // is recomposited on every lyric frame. See LyricsPaneGlassMode.
-        if !didApplyPaneGlassBlendingMode {
-            didApplyPaneGlassBlendingMode = applyWithinWindowBlendingModeToPaneGlass()
-        }
+        _ = applyWithinWindowBlendingModeToPaneGlass()
     }
 
     /// Backdrop policy for the lyrics inspector pane.
@@ -594,18 +596,21 @@ private final class AppKitMainRootViewController: NSViewController {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         guard let raw, let mode = LyricsPaneGlassMode(rawValue: raw) else {
-            return .behindWindow
+            return .staticBackdrop
         }
         return mode
     }
 
-    private func applyWithinWindowBlendingModeToPaneGlass() -> Bool {
+    @discardableResult
+    func applyWithinWindowBlendingModeToPaneGlass() -> Bool {
         let splitView = splitViewController.splitView
-        let lyricsPaneIndex = splitView.subviews.count - 1
+        let lyricsPaneView = splitViewController.splitViewItems.count > 2
+            ? splitViewController.splitViewItems[2].viewController.view
+            : nil
         let lyricsMode = Self.lyricsPaneGlassMode
         var foundEffectView = false
-        for (paneIndex, subview) in splitView.subviews.enumerated() {
-            let isLyricsPane = paneIndex == lyricsPaneIndex
+        for subview in splitView.subviews {
+            let isLyricsPane = (lyricsPaneView != nil && (subview === lyricsPaneView || lyricsPaneView?.isDescendant(of: subview) == true))
             // Direct subview plus one nesting level, which is where the system
             // layers the visual-effect views inside sidebar / inspector
             // wrappers.

@@ -62,6 +62,7 @@ struct HomeFullWindowRoot: View {
                         .modelContainer(appSession.sharedModelContainer)
                         .tint(ThemeStore.shared.accentColor)
                         .accentColor(ThemeStore.shared.accentColor)
+                        .transition(.pageSwitchMotion)
                 }
             } else {
                 Color.clear
@@ -70,6 +71,7 @@ struct HomeFullWindowRoot: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .all)
+        .motionAnimation(.contentReplacement, value: shouldRenderHome)
         .motionEnvironment()
     }
 

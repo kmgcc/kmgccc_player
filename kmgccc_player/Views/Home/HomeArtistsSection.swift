@@ -10,6 +10,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct HomeArtistsSection: View {
@@ -243,10 +244,12 @@ private struct HomeArtistCircle: View {
                         size: circleSize,
                         clipShape: .circle,
                         iconSize: 28,
-                        iconOpacity: 0.4
+                        iconOpacity: 0.0,
+                        themeColor: Color.primary.opacity(0.04)
                     )
                 }
             }
+            .motionAnimation(.microInteraction, value: image != nil)
             .frame(width: circleSize, height: circleSize)
             .clipShape(Circle())
 

@@ -14,6 +14,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 // MARK: - Deletion Request
@@ -371,10 +372,12 @@ private struct ArtistListRow: View {
                     cornerRadius: artworkSize / 2,
                     clipShape: .circle,
                     iconSize: 22,
-                    iconOpacity: 0.4
+                    iconOpacity: 0.0,
+                    themeColor: Color.primary.opacity(0.04)
                 )
             }
         }
+        .motionAnimation(.microInteraction, value: image != nil)
         .frame(width: artworkSize, height: artworkSize)
         .clipShape(Circle())
         .shadow(

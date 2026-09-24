@@ -136,11 +136,11 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
         case .batchPreview:
             return 96
         case .main:
-            return 260
+            return 80
         case .fullscreen, .fullscreenCoverBlurHighlight:
-            return 260
-        case .standalone:
             return 180
+        case .standalone:
+            return 80
         }
     }
 

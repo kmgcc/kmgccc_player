@@ -30,8 +30,8 @@ actor ArtworkDerivativeCacheStore {
 
     init(diskRootURL: URL) {
         self.diskRootURL = diskRootURL
-        memoryCache.countLimit = 48
-        memoryCache.totalCostLimit = 4 * 1024 * 1024
+        memoryCache.countLimit = 96
+        memoryCache.totalCostLimit = 16 * 1024 * 1024
 
         try? fileManager.createDirectory(at: diskRootURL, withIntermediateDirectories: true)
     }

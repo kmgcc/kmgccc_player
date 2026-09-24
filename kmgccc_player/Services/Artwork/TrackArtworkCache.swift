@@ -123,10 +123,10 @@ actor TrackArtworkCache {
     init(storage: LibraryStorageLocations) {
         self.originalsRootURL = storage.trackArtworkOriginalsURL
         self.derivativesRootURL = storage.trackArtworkDerivativesURL
-        imageCache.countLimit = 16
-        imageCache.totalCostLimit = 8 * 1024 * 1024
-        sourceDataCache.countLimit = 16
-        sourceDataCache.totalCostLimit = 2 * 1024 * 1024
+        imageCache.countLimit = 48
+        imageCache.totalCostLimit = 16 * 1024 * 1024
+        sourceDataCache.countLimit = 32
+        sourceDataCache.totalCostLimit = 6 * 1024 * 1024
         try? FileManager.default.createDirectory(at: originalsRootURL, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: derivativesRootURL, withIntermediateDirectories: true)
     }
@@ -215,9 +215,6 @@ actor TrackArtworkCache {
             for source in uniqueSources {
                 guard !Task.isCancelled else { return }
                 await self.preloadPlaybackArtwork(for: source, reason: reason)
-            }
-            if !Task.isCancelled {
-                CacheManager.trimProcessMemory()
             }
         }
     }

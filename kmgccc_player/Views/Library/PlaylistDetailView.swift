@@ -52,78 +52,8 @@ struct PlaylistDetailView: View {
             "contextMenu.hostBodyUpdate",
             detail: "surface=PlaylistDetailView, selection=\(selectionIdentity)"
         )
-        Group {
-            if libraryVM.currentSelection == .allSongs {
-                if libraryVM.loadingPhase.isLoading && libraryVM.allTracks.isEmpty {
-                    loadingView
-                } else if libraryVM.loadingPhase.isFailed && libraryVM.allTracks.isEmpty {
-                    errorView(message: libraryVM.lastLoadingError ?? "未知错误")
-                } else if pageController.isSelectionTransitioning {
-                    ProgressView()
-                        .controlSize(.large)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if activePage == nil {
-                    ProgressView()
-                        .controlSize(.large)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if playableSourceTrackCount == 0 {
-                    emptyStateView
-                } else if currentRows.isEmpty && isFiltering {
-                    noResultsView
-                } else {
-                    trackListView
-                        .id("rows-\(selectionIdentity)")
-                }
-            } else {
-                if libraryVM.loadingPhase.isLoading && pageController.page == nil && libraryVM.allTracks.isEmpty {
-                    loadingView
-                } else if libraryVM.loadingPhase.isFailed && pageController.page == nil {
-                    errorView(message: libraryVM.lastLoadingError ?? "未知错误")
-                } else if pageController.isSelectionTransitioning
-                    || (libraryVM.state == .loading && pageController.page == nil)
-                {
-                    ProgressView()
-                        .controlSize(.large)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if activePage == nil {
-                    ProgressView()
-                        .controlSize(.large)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    detailScrollView
-                        .id("rows-\(selectionIdentity)")
-                }
-            }
-        }
-        // Fill available space, anchor content to top
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.root"))
-        .background(
-            PlaylistTopChromeInsetReader(topInset: $scrollFadeTopChromeInset)
-                .allowsHitTesting(false)
-        )
-        .frame(minWidth: 320)
-        .sheet(item: $trackToEdit) { track in
-            TrackEditSheet(track: track)
-        }
-        .sheet(item: $trackForDetailReader) { track in
-            TrackDetailDescriptionSheet(track: track)
-                .environmentObject(themeStore)
-        }
-        .sheet(
-            item: $batchEditRequest,
-            onDismiss: {
-                clearMultiselectState()
-            }
-        ) { request in
-            BatchTrackEditSheet(
-                tracks: request.tracks
-            )
-        }
-        .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
-            confirmTrackDeletion(tracks)
-        }
-        .onAppear {
+        sheetDecoratedContent
+            .onAppear {
             let token = FirstUseHitchDiagnostics.begin(
                 "PlaylistDetailView.onAppear",
                 detail: "selection=\(fallbackSelectionIdentity), tracks=\(libraryVM.allTracks.count)"
@@ -191,6 +121,108 @@ struct PlaylistDetailView: View {
         .onChange(of: themeStore.colorScheme) { _, newScheme in
             pageController.colorSchemeDidChange(to: newScheme)
         }
+        .task(id: activePage?.selectionIdentity) {
+            await preheatActivePageRows()
+        }
+    }
+
+    // MARK: - Subviews
+
+    @ViewBuilder
+    private var baseLayoutContent: some View {
+        mainContent
+            .motionAnimation(.contentReplacement, value: activePage?.selectionIdentity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.root"))
+            .background(
+                PlaylistTopChromeInsetReader(topInset: $scrollFadeTopChromeInset)
+                    .allowsHitTesting(false)
+            )
+            .frame(minWidth: 320)
+    }
+
+    @ViewBuilder
+    private var sheetDecoratedContent: some View {
+        baseLayoutContent
+            .sheet(item: $trackToEdit) { track in
+                TrackEditSheet(track: track)
+            }
+            .sheet(item: $trackForDetailReader) { track in
+                TrackDetailDescriptionSheet(track: track)
+                    .environmentObject(themeStore)
+            }
+            .sheet(
+                item: $batchEditRequest,
+                onDismiss: {
+                    clearMultiselectState()
+                }
+            ) { request in
+                BatchTrackEditSheet(
+                    tracks: request.tracks
+                )
+            }
+            .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
+                confirmTrackDeletion(tracks)
+            }
+    }
+
+    @ViewBuilder
+    private var mainContent: some View {
+        if libraryVM.currentSelection == .allSongs {
+            allSongsContent
+        } else {
+            detailContent
+        }
+    }
+
+    @ViewBuilder
+    private var allSongsContent: some View {
+        Group {
+            if libraryVM.loadingPhase.isLoading && libraryVM.allTracks.isEmpty {
+                loadingView
+            } else if libraryVM.loadingPhase.isFailed && libraryVM.allTracks.isEmpty {
+                errorView(message: libraryVM.lastLoadingError ?? "未知错误")
+            } else if pageController.isSelectionTransitioning || activePage == nil {
+                PlaylistDetailSkeletonView(showHeader: false)
+                    .transition(.leftToRightWipe)
+            } else if playableSourceTrackCount == 0 {
+                emptyStateView
+            } else if currentRows.isEmpty && isFiltering {
+                noResultsView
+            } else {
+                trackListView
+                    .id("rows-\(selectionIdentity)")
+                    .transition(.leftToRightWipe)
+            }
+        }
+        .motionAnimation(.contentReplacement, value: pageController.isSelectionTransitioning || activePage == nil)
+    }
+
+    @ViewBuilder
+    private var detailContent: some View {
+        Group {
+            if libraryVM.loadingPhase.isLoading && pageController.page == nil && libraryVM.allTracks.isEmpty {
+                loadingView
+            } else if libraryVM.loadingPhase.isFailed && pageController.page == nil {
+                errorView(message: libraryVM.lastLoadingError ?? "未知错误")
+            } else if pageController.isSelectionTransitioning
+                || (libraryVM.state == .loading && pageController.page == nil)
+                || activePage == nil
+            {
+                PlaylistDetailSkeletonView(showHeader: true)
+                    .transition(.leftToRightWipe)
+            } else {
+                detailScrollView
+                    .id("rows-\(selectionIdentity)")
+                    .transition(.leftToRightWipe)
+            }
+        }
+        .motionAnimation(
+            .contentReplacement,
+            value: pageController.isSelectionTransitioning
+                || (libraryVM.state == .loading && pageController.page == nil)
+                || activePage == nil
+        )
     }
 
     // MARK: - Computed Properties
@@ -265,6 +297,26 @@ struct PlaylistDetailView: View {
         case .allPlaylists, .allAlbums, .allArtists:
             return 0
         }
+    }
+
+    private func preheatActivePageRows() async {
+        guard let rows = activePage?.rows, !rows.isEmpty else { return }
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let pipeline = cacheServices.playlistArtworkPipeline
+        let targetRows = Array(rows.prefix(40))
+        let requests: [PlaylistArtworkRequest] = targetRows.compactMap { row in
+            let model = row.trackRowModel
+            guard model.artworkData != nil || model.artworkFileURL != nil else { return nil }
+            return PlaylistArtworkPipeline.rowHighRequest(
+                trackID: model.artworkTrackID,
+                artworkData: model.artworkData,
+                artworkFileURL: model.artworkFileURL,
+                artworkIdentity: model.artworkIdentity,
+                logicalSize: Constants.Layout.artworkSmallSize,
+                scale: scale
+            )
+        }
+        await pipeline.preheat(requests: requests)
     }
 
     // MARK: - Subviews

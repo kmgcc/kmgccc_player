@@ -1292,14 +1292,17 @@ struct SidebarView: View {
         shape: SidebarSelectionHighlightShape = .roundedRectangle
     ) -> some View {
         let fill = isSelected ? themeStore.selectionFill : Color.clear
-        switch shape {
-        case .capsule:
-            Capsule(style: .continuous)
-                .fill(fill)
-        case .roundedRectangle:
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(fill)
+        Group {
+            switch shape {
+            case .capsule:
+                Capsule(style: .continuous)
+                    .fill(fill)
+            case .roundedRectangle:
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(fill)
+            }
         }
+        .motionAnimation(.microInteraction, value: isSelected)
     }
 
     private func play(_ playlist: Playlist) {

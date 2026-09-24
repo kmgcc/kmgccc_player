@@ -10,6 +10,7 @@
 
 import CryptoKit
 import Foundation
+import MotionKit
 import SwiftUI
 
 enum LibraryAutomationMutationError: Error, Equatable, LocalizedError, Sendable {
@@ -530,7 +531,10 @@ final class LibraryViewModel {
         if isSameSelection {
             searchResetTrigger += 1
         } else {
-            currentSelection = selection
+            let navAnimation = MotionPolicy.full.animation(for: MotionTokens.standard[.navigation])
+            withAnimation(navAnimation) {
+                currentSelection = selection
+            }
         }
 
         if case .album(let key) = selection {

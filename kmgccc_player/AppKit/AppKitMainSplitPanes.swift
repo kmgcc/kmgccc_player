@@ -255,27 +255,33 @@ struct AppKitMainContentPaneRoot: View {
                         AllPlaylistsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-all-playlists")
+                            .transition(.pageSwitchMotion)
                     case .allAlbums:
                         AllAlbumsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-all-albums")
+                            .transition(.pageSwitchMotion)
                     case .allArtists:
                         AllArtistsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-all-artists")
+                            .transition(.pageSwitchMotion)
                     case .folders:
                         ReferencedFolderView(appSession: appSession)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-referenced-folders")
+                            .transition(.pageSwitchMotion)
                     case .allSongs, .playlist, .artist, .album:
                         PlaylistDetailView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                            .id("appkit-main-library")
+                            .id("appkit-main-library-\(libraryVM.currentSelection.selectionIdentity(in: libraryVM))")
+                            .transition(.pageSwitchMotion)
                     }
                 case .playbackHistory:
                     PlaybackHistoryView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .id("appkit-main-playback-history")
+                        .transition(.pageSwitchMotion)
                 case .nowPlaying:
                     GeometryReader { proxy in
                         NowPlayingHostView(
@@ -288,9 +294,11 @@ struct AppKitMainContentPaneRoot: View {
                     }
                     .ignoresSafeArea(.container, edges: .top)
                     .id("appkit-main-nowplaying")
+                    .transition(.pageSwitchMotion)
                 }
               }
             }
+            .motionAnimation(.contentReplacement, value: "\(uiState.contentMode)-\(libraryVM.currentSelection.selectionIdentity(in: libraryVM))")
 
             if !FullscreenWindowManager.shared.isWindowedFullscreenActive {
                 GeometryReader { proxy in
@@ -896,7 +904,7 @@ struct FlatLyricsBackgroundView: View {
                 .allowsHitTesting(false)
         case .clear:
             Rectangle()
-                .fill(.ultraThinMaterial)
+                .fill(Color.black.opacity(0.12))
                 .allowsHitTesting(false)
         }
     }

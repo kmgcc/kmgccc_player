@@ -67,6 +67,12 @@ struct TrackRowModel: Identifiable, Equatable {
             && lhs.isMissing == rhs.isMissing
             && lhs.artworkTrackID == rhs.artworkTrackID
     }
+
+    var highArtworkCacheKey: String {
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let side = max(1, Constants.Layout.artworkSmallSize) * max(1, scale)
+        return "\(artworkIdentity)|rowHigh|\(Int(side))x\(Int(side))"
+    }
 }
 
 struct TrackRowSelectionContinuity: Equatable {
@@ -172,6 +178,10 @@ struct TrackRowView<MenuContent: View>: View {
         self.rowSecondaryColor = rowSecondaryColor
         self.rowTertiaryColor = rowTertiaryColor
         self.menuContent = menuContent
+
+        let fastCached = FastArtworkMemoryCache.shared.image(forKey: model.highArtworkCacheKey)
+        _artworkImage = State(initialValue: fastCached)
+        _isArtworkReady = State(initialValue: fastCached != nil)
     }
 
     var body: some View {
@@ -194,28 +204,47 @@ struct TrackRowView<MenuContent: View>: View {
 
             HStack(alignment: .center, spacing: Constants.Layout.TrackRow.textColumnSpacing) {
                 VStack(alignment: .leading, spacing: Constants.Layout.TrackRow.textVerticalSpacing) {
-                    SeamlessMarqueeText(
-                        text: model.title,
-                        fontSize: Constants.Layout.TrackRow.titleFontSize,
-                        fontWeight: isPlaying ? .semibold : .regular,
-                        color: textPrimaryColor,
-                        shouldAnimate: isPlaying || isHovering
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(1)
+                    if isPlaying || isHovering {
+                        SeamlessMarqueeText(
+                            text: model.title,
+                            fontSize: Constants.Layout.TrackRow.titleFontSize,
+                            fontWeight: isPlaying ? .semibold : .regular,
+                            color: textPrimaryColor,
+                            shouldAnimate: isPlaying || isHovering
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .layoutPriority(1)
+                    } else {
+                        Text(model.title)
+                            .font(.system(size: Constants.Layout.TrackRow.titleFontSize, weight: isPlaying ? .semibold : .regular))
+                            .foregroundStyle(textPrimaryColor)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .layoutPriority(1)
+                    }
 
                     lyricSnippetView
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                SeamlessMarqueeText(
-                    text: artistText,
-                    fontSize: Constants.Layout.TrackRow.subtitleFontSize,
-                    fontWeight: .regular,
-                    color: textSecondaryColor,
-                    shouldAnimate: isPlaying || isHovering
-                )
-                .frame(width: artistColumnWidth, alignment: .leading)
+                if isPlaying || isHovering {
+                    SeamlessMarqueeText(
+                        text: artistText,
+                        fontSize: Constants.Layout.TrackRow.subtitleFontSize,
+                        fontWeight: .regular,
+                        color: textSecondaryColor,
+                        shouldAnimate: isPlaying || isHovering
+                    )
+                    .frame(width: artistColumnWidth, alignment: .leading)
+                } else {
+                    Text(artistText)
+                        .font(.system(size: Constants.Layout.TrackRow.subtitleFontSize, weight: .regular))
+                        .foregroundStyle(textSecondaryColor)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(width: artistColumnWidth, alignment: .leading)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -543,12 +572,18 @@ struct TrackRowView<MenuContent: View>: View {
     }
 
     private var placeholderArtwork: some View {
-        ArtworkPlaceholderView.trackRow(isGrayscale: model.isMissing)
+        RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.artworkCornerRadius, style: .continuous)
+            .fill(Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.035))
+            .frame(
+                width: Constants.Layout.artworkSmallSize,
+                height: Constants.Layout.artworkSmallSize
+            )
     }
 
     @MainActor
     private func loadArtwork() async {
         guard enableArtworkLoading else { return }
+        if artworkImage != nil { return }
 
         let hasData = model.artworkData != nil && !model.artworkData!.isEmpty
         let hasFileURL = model.artworkFileURL != nil
@@ -585,22 +620,15 @@ struct TrackRowView<MenuContent: View>: View {
 
         guard !Task.isCancelled else { return }
 
-        if let lowImage = await pipeline.load(lowRequest) {
+        if let image = await pipeline.load(highRequest) {
+            guard !Task.isCancelled else { return }
+            artworkImage = image
+            isArtworkReady = true
+        } else if let lowImage = await pipeline.load(lowRequest) {
+            guard !Task.isCancelled else { return }
             artworkImage = lowImage
             isArtworkReady = true
-        }
-
-        guard !Task.isCancelled else { return }
-
-        try? await Task.sleep(nanoseconds: 120_000_000)
-        guard !Task.isCancelled else { return }
-
-        if let highImage = await pipeline.load(highRequest) {
-            artworkImage = highImage
-            withAnimation(artworkReadyAnimation) {
-                isArtworkReady = true
-            }
-        } else if artworkImage == nil {
+        } else {
             artworkImage = nil
             isArtworkReady = false
         }

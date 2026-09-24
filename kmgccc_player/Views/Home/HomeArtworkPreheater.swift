@@ -13,8 +13,8 @@ final class HomeArtworkMemoryStore {
     static let shared = HomeArtworkMemoryStore()
 
     private var cache = CostBoundedCache<String, NSImage>(
-        countLimit: 36,
-        totalCostLimit: 4 * 1024 * 1024
+        countLimit: 96,
+        totalCostLimit: 28 * 1024 * 1024
     )
 
     func cachedImage(for key: String) -> NSImage? {
@@ -127,7 +127,7 @@ final class HomeArtworkPreheater {
             // critical path. Give a just-started track switch a quiet window;
             // `HomeView` also cancels this task on each track notification.
             do {
-                try await Task.sleep(for: .milliseconds(500))
+                try await Task.sleep(for: .milliseconds(60))
             } catch {
                 return
             }
@@ -460,9 +460,6 @@ private enum HomeArtworkPreheatWorker {
         for item in snapshot.rankItems {
             guard !Task.isCancelled else { return }
             await preheatTrack(item, derivativeStore: derivativeStore)
-        }
-        if !Task.isCancelled {
-            CacheManager.trimProcessMemory()
         }
     }
 

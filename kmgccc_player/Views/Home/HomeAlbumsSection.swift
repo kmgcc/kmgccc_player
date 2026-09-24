@@ -13,6 +13,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct HomeAlbumsSection: View {
@@ -268,10 +269,12 @@ private struct HomeAlbumCard: View {
                         cornerRadius: coverCornerRadius,
                         clipShape: .continuous,
                         iconSize: 32,
-                        iconOpacity: 0.4
+                        iconOpacity: 0.0,
+                        themeColor: Color.primary.opacity(0.04)
                     )
                 }
             }
+            .motionAnimation(.microInteraction, value: image != nil)
             .frame(width: cardSize, height: cardSize)
             .clipShape(RoundedRectangle(cornerRadius: coverCornerRadius, style: .continuous))
 

@@ -66,15 +66,17 @@ struct ArtworkPlaceholderView: View {
     @ViewBuilder
     private var placeholderContent: some View {
         ZStack {
-            // Theme-colored background
+            // Background
             themeBackgroundColor
                 .frame(width: size, height: size)
 
-            // Music note icon
-            Image(systemName: "music.note")
-                .font(.system(size: iconSize, weight: .medium))
-                .foregroundStyle(iconColor)
-                .opacity(iconOpacity)
+            // Music note icon - only rendered when iconOpacity > 0
+            if iconOpacity > 0 {
+                Image(systemName: "music.note")
+                    .font(.system(size: iconSize, weight: .medium))
+                    .foregroundStyle(iconColor)
+                    .opacity(iconOpacity)
+            }
         }
     }
 
@@ -94,9 +96,12 @@ struct ArtworkPlaceholderView: View {
 
     // MARK: - Colors
 
-    /// The background color - uses theme accent color from ThemeStore
+    /// The background color - uses theme accent color from ThemeStore or explicit themeColor
     private var themeBackgroundColor: Color {
-        let baseColor = themeColor ?? ThemeStore.shared.accentColor
+        if let themeColor {
+            return themeColor
+        }
+        let baseColor = ThemeStore.shared.accentColor
         return baseColor.opacity(colorScheme == .dark ? 0.6 : 0.5)
     }
 
@@ -107,15 +112,16 @@ struct ArtworkPlaceholderView: View {
 
     // MARK: - Convenience Presets
 
-    /// Small placeholder for track rows.
+    /// Small placeholder for track rows (clean, quiet, Apple Music style).
     static func trackRow(isGrayscale: Bool = false, themeColor: Color? = nil) -> ArtworkPlaceholderView {
         ArtworkPlaceholderView(
             size: Constants.Layout.TrackRow.artworkSize,
             cornerRadius: Constants.Layout.TrackRow.artworkCornerRadius,
             clipShape: .rounded,
-            iconSize: max(16, Constants.Layout.TrackRow.artworkSize * 0.36),
+            iconSize: 14,
+            iconOpacity: 0.0,
             isGrayscale: isGrayscale,
-            themeColor: themeColor
+            themeColor: themeColor ?? Color.primary.opacity(0.04)
         )
     }
 

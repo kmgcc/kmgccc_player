@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct HomePlaylistsSection: View {
@@ -808,19 +809,23 @@ private struct HomePlaylistCard: View {
 
     @ViewBuilder
     private func artwork(side: CGFloat, iconSize: CGFloat) -> some View {
-        if let coverImage {
-            Image(nsImage: coverImage)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-        } else {
-            ArtworkPlaceholderView(
-                size: side,
-                cornerRadius: coverCornerRadius,
-                clipShape: .continuous,
-                iconSize: iconSize,
-                iconOpacity: 0.4
-            )
+        Group {
+            if let coverImage {
+                Image(nsImage: coverImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                ArtworkPlaceholderView(
+                    size: side,
+                    cornerRadius: coverCornerRadius,
+                    clipShape: .continuous,
+                    iconSize: iconSize,
+                    iconOpacity: 0.0,
+                    themeColor: Color.primary.opacity(0.04)
+                )
+            }
         }
+        .motionAnimation(.microInteraction, value: coverImage != nil)
     }
 
     private var trackCountLine: some View {
@@ -895,8 +900,8 @@ final class HomePlaylistCardCoverStore {
     static let shared = HomePlaylistCardCoverStore()
 
     private var cache = CostBoundedCache<String, NSImage>(
-        countLimit: 8,
-        totalCostLimit: 3 * 1024 * 1024
+        countLimit: 24,
+        totalCostLimit: 12 * 1024 * 1024
     )
 
     func cachedImage(for identity: String) -> NSImage? {
@@ -1135,8 +1140,8 @@ final class HomePlaylistPreviewArtworkStore {
     static let previewPixelSide: CGFloat = 96
 
     private var cache = CostBoundedCache<UUID, NSImage>(
-        countLimit: 48,
-        totalCostLimit: 2 * 1024 * 1024
+        countLimit: 96,
+        totalCostLimit: 6 * 1024 * 1024
     )
 
     func cachedImage(forTrackID trackID: UUID) -> NSImage? {

@@ -525,26 +525,22 @@ final class PlaylistPageController {
         guard start < end else { return }
 
         let rows = Array(page.rows[start..<end])
-        var requests = rows.map {
-            PlaylistArtworkPipeline.rowLowRequest(
-                trackID: $0.id,
-                artworkData: $0.artworkData,
-                artworkFileURL: $0.artworkFileURL,
-                artworkIdentity: $0.artworkIdentity,
+        let targetSide = Int(Constants.Layout.artworkSmallSize * scale)
+        let requests = rows.compactMap { row -> PlaylistArtworkRequest? in
+            let cacheKey = "\(row.artworkIdentity)|rowHigh|\(targetSide)x\(targetSide)"
+            if FastArtworkMemoryCache.shared.image(forKey: cacheKey) != nil {
+                return nil
+            }
+            return PlaylistArtworkPipeline.rowHighRequest(
+                trackID: row.id,
+                artworkData: row.artworkData,
+                artworkFileURL: row.artworkFileURL,
+                artworkIdentity: row.artworkIdentity,
                 logicalSize: Constants.Layout.artworkSmallSize,
                 scale: scale
             )
         }
-        requests.append(contentsOf: rows.prefix(24).map {
-            PlaylistArtworkPipeline.rowHighRequest(
-                trackID: $0.id,
-                artworkData: $0.artworkData,
-                artworkFileURL: $0.artworkFileURL,
-                artworkIdentity: $0.artworkIdentity,
-                logicalSize: Constants.Layout.artworkSmallSize,
-                scale: scale
-            )
-        })
+        guard !requests.isEmpty else { return }
         startArtworkPrefetch(
             key: "\(page.selectionIdentity)-bucket-\(bucket)-\(page.sourceFingerprint)",
             requests: requests

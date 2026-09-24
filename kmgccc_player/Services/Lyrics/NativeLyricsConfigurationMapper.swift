@@ -58,6 +58,7 @@ enum NativeLyricsConfigurationMapper {
         )
         config.spring = role.enableSpring && settings.amllLyricsSpringEnabled
         config.blur = role.enableBlur
+        config.bakeSettledBlur = role.bakeSettledBlur
         // MelismaKit rasterizes glyph masks at the display backing scale.
         // Reuse the user-facing quality setting for every interactive surface
         // so a 5K display does not implicitly force the most expensive path.
@@ -74,7 +75,7 @@ enum NativeLyricsConfigurationMapper {
         configuration.profile = .currentPlayer
         configuration.surface = .window
         configuration.blur = role.enableBlur
-        configuration.bakeSettledBlur = false
+        configuration.bakeSettledBlur = role.bakeSettledBlur
         configuration.spring = role.enableSpring
         configuration.renderScale = role.supportsAMLLRenderQuality
             ? AppSettings.shared.amllLyricsRenderQualityScale
@@ -160,6 +161,7 @@ enum NativeLyricsConfigurationMapper {
         }
         if let value = double(values["blendOpacity"]) { configuration.blendOpacity = value }
         if let value = bool(values["enableBlur"]) { configuration.blur = value }
+        if let value = bool(values["bakeSettledBlur"]) { configuration.bakeSettledBlur = value }
         if let value = bool(values["enableSpring"]) { configuration.spring = value }
         if double(values["springDuration"]) != nil || double(values["springBounce"]) != nil {
             let springDuration = double(values["springDuration"])

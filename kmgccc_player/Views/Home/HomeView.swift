@@ -334,13 +334,10 @@ struct HomeView: View {
         let appFgTertiary  = theme.foregroundPalette.tertiaryColor
 
         return ScrollView(.vertical, showsIndicators: true) {
-            // `LazyVStack` defers body evaluation and layout for sections
-            // that haven't intersected the scroll viewport yet — typically
-            // Insights, footer, and (in narrow modes) part of the Albums
-            // rail at first paint. Rails / hero / playlist grids already
-            // use `.frame(maxWidth: .infinity)` internally, so under-glass
-            // full-window extension and rail widths are preserved.
-            LazyVStack(spacing: mode.sectionSpacing) {
+            // `VStack` keeps the 5 dashboard sections instantiated and laid out once.
+            // Eliminates view deallocation during downward scrolling and heavy main-thread
+            // rematerialization/re-loading when scrolling back up.
+            VStack(spacing: mode.sectionSpacing) {
                 ForEach(settings.homeSectionOrder) { section in
                     homeSection(
                         section,

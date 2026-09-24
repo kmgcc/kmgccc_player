@@ -146,7 +146,7 @@ struct LyricsPanelView: View {
                 .allowsHitTesting(false)
         case .clear:
             Rectangle()
-                .fill(.ultraThinMaterial)
+                .fill(Color.primary.opacity(themeStore.colorScheme == .dark ? 0.04 : 0.025))
                 .allowsHitTesting(false)
         }
     }

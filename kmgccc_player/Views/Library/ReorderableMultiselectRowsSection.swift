@@ -425,12 +425,15 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
             .contentShape(Rectangle())
     }
 
+    @ViewBuilder
     private func rowFrameReporter(for id: UUID) -> some View {
-        GeometryReader { proxy in
-            Color.clear.preference(
-                key: ReorderableRowFramePreferenceKey.self,
-                value: [id: proxy.frame(in: .named(coordinateSpaceName))]
-            )
+        if isMultiselectMode {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: ReorderableRowFramePreferenceKey.self,
+                    value: [id: proxy.frame(in: .named(coordinateSpaceName))]
+                )
+            }
         }
     }
 

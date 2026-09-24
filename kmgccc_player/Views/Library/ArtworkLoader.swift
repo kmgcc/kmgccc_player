@@ -22,8 +22,8 @@ actor ArtworkImageCache {
     private var memoryGeneration: UInt64 = 0
 
     init() {
-        cache.countLimit = 48
-        cache.totalCostLimit = 4 * 1024 * 1024
+        cache.countLimit = 96
+        cache.totalCostLimit = 16 * 1024 * 1024
     }
 
     func image(for key: String) -> NSImage? {
