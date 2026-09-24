@@ -137,8 +137,14 @@ nonisolated enum CacheManager {
         await ArtworkLoader.clearMemoryCache()
         await PlaylistPageModelCacheService.shared.removeAll()
         await CassetteArtworkCache.shared.removeAll()
+        await ClassicArtworkFrameExtendedArtworkCache.shared.removeAll()
+        ClassicArtworkFrameExtendedArtworkRenderer.clearCaches()
         ThemeStore.shared.clearArtworkColorCache()
         trimProcessMemory()
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            trimProcessMemory()
+        }
 
         Log.info(
             "[CacheManager] Purged rebuildable memory caches reason=\(reason)",
@@ -161,6 +167,7 @@ nonisolated enum CacheManager {
         BKThemeAssets.shared.purgeTransientCaches()
         await CoverGradientBlurMemory.clear()
         await ClassicArtworkFrameExtendedArtworkCache.shared.removeAll()
+        ClassicArtworkFrameExtendedArtworkRenderer.clearCaches()
         await ArtworkAssetStore.shared.purgeHydratedImages()
         if let cacheServices {
             await cacheServices.trackArtworkCache.clearMemory()
@@ -171,6 +178,10 @@ nonisolated enum CacheManager {
         await CassetteArtworkCache.shared.removeAll()
         ThemeStore.shared.clearArtworkColorCache()
         trimProcessMemory()
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            trimProcessMemory()
+        }
 
         Log.info(
             "[CacheManager] Purged presentation memory caches reason=\(reason)",

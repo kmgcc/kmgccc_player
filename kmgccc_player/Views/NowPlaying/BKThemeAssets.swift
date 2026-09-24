@@ -137,7 +137,7 @@ final class BKThemeAssets: @unchecked Sendable {
         maskCache.countLimit = 2
         maskCache.totalCostLimit = 4 * 1024 * 1024
         artworkFrameCache.countLimit = 2
-        artworkFrameCache.totalCostLimit = 2 * 1024 * 1024
+        artworkFrameCache.totalCostLimit = 9 * 1024 * 1024
         fullscreenCircleCache.countLimit = 2
         fullscreenCircleCache.totalCostLimit = 2 * 1024 * 1024
     }

@@ -229,7 +229,8 @@ private struct ClassicArtworkCoverContainer: View {
             1,
             Int(ceil(size * max(1, displayScale) * max(1, rasterScale) * finalScale))
         )
-        let maxPixel = ((targetPixel + 127) / 128) * 128
+        let roundedPixel = ((targetPixel + 127) / 128) * 128
+        let maxPixel = min(1_024, roundedPixel)
         return ClassicArtworkFrameMaskRequest(index: index, maxPixel: maxPixel)
     }
 
@@ -332,8 +333,8 @@ private enum ClassicArtworkFrameCoverTuning {
     ]
 
     static let fallbackFinalMaskedArtworkScale: CGFloat = 1.0
-    /// v7: raster budgets include the fullscreen canvas scale.
-    static let rendererVersion = 7
+    /// v8: raster budgets include the fullscreen canvas scale clamped to 1024.
+    static let rendererVersion = 8
 
     static func artworkScale(for frameIndex: Int) -> CGFloat {
         min(1.0, max(0.50, artworkScaleByFrameIndex[frameIndex] ?? fallbackArtworkScale))
@@ -462,7 +463,8 @@ private struct ArtworkFrameMaskedImageView: View {
             1,
             Int(ceil(size * max(1, displayScale) * max(1, rasterScale) * finalMaskedArtworkScale))
         )
-        return ((rawPixel + 63) / 64) * 64
+        let rounded = ((rawPixel + 63) / 64) * 64
+        return min(1_024, rounded)
     }
 
     private var processingKey: String {
@@ -545,7 +547,7 @@ actor ClassicArtworkFrameExtendedArtworkCache {
     private var costs: [String: Int] = [:]
     private var totalBytes = 0
     private let maxCount = 2
-    private let maxTotalBytes = 4 * 1024 * 1024
+    private let maxTotalBytes = 9 * 1024 * 1024
     private var memoryGeneration: UInt64 = 0
 
     func generation() -> UInt64 {
@@ -569,7 +571,7 @@ actor ClassicArtworkFrameExtendedArtworkCache {
         costs[key] = cost
         totalBytes += cost
 
-        while keys.count > maxCount || totalBytes > maxTotalBytes {
+        while keys.count > maxCount || (totalBytes > maxTotalBytes && keys.count > 1) {
             let oldest = keys.removeFirst()
             storage.removeValue(forKey: oldest)
             if let removedCost = costs.removeValue(forKey: oldest) {
@@ -608,7 +610,11 @@ private actor ClassicArtworkFrameExtendedArtworkRenderQueue {
     }
 }
 
-private enum ClassicArtworkFrameExtendedArtworkRenderer {
+enum ClassicArtworkFrameExtendedArtworkRenderer {
+    nonisolated static func clearCaches() {
+        ciContext.clearCaches()
+    }
+
     nonisolated static func render(sourceImage: CGImage, outputPixel: Int, artworkScale: CGFloat) -> CGImage? {
         autoreleasepool {
             let outputPixel = max(1, outputPixel)

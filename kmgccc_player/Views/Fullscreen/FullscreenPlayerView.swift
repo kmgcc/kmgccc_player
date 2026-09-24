@@ -662,6 +662,14 @@ struct FullscreenPlayerView: View {
         setVolumeExpanded(false, reason: "fullscreen-disappear")
         clearFullscreenLyricsTheme()
 
+        let cacheServices = self.cacheServices
+        Task { @MainActor in
+            await CacheManager.purgePresentationMemoryCaches(
+                reason: "fullscreen-player-view-disappeared-\(hostContext.rawValue)",
+                cacheServices: cacheServices
+            )
+        }
+
         // Always report disappearance, including an embedded surface that was
         // removed before its initial geometry/theme gate completed. The
         // manager updates the native surface state before the next appearance.
@@ -5045,7 +5053,7 @@ struct FullscreenPlayerView: View {
     }
 
     private var preferredArtworkFullImageMaxPixel: Int {
-        settings.fullscreen.skinID == ClassicLEDSkin.id ? 2_048 : 1_024
+        1_024
     }
 
     private static func isValidDisplayArtworkSnapshot(_ snapshot: ArtworkAssetSnapshot?) -> Bool {
