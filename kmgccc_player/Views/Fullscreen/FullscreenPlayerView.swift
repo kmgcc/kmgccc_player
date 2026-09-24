@@ -5045,7 +5045,7 @@ struct FullscreenPlayerView: View {
     }
 
     private var preferredArtworkFullImageMaxPixel: Int {
-        settings.fullscreen.skinID == ClassicLEDSkin.id ? 2_048 : 1_400
+        settings.fullscreen.skinID == ClassicLEDSkin.id ? 2_048 : 1_024
     }
 
     private static func isValidDisplayArtworkSnapshot(_ snapshot: ArtworkAssetSnapshot?) -> Bool {

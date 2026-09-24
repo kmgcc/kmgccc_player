@@ -318,7 +318,7 @@ struct NowPlayingHostView: View {
     }
 
     private var preferredArtworkFullImageMaxPixel: Int {
-        1_400
+        1_024
     }
 
     private var currentDisplayArtworkTrackID: UUID {

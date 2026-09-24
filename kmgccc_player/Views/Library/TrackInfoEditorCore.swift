@@ -947,8 +947,8 @@ private nonisolated struct TrackInfoArtworkPreviewDecodeResult: Sendable {
 private nonisolated enum TrackInfoArtworkPreviewDecoder {
     private nonisolated(unsafe) static let previewCache: NSCache<NSString, TrackInfoArtworkPreviewImage> = {
         let cache = NSCache<NSString, TrackInfoArtworkPreviewImage>()
-        cache.countLimit = 96
-        cache.totalCostLimit = 32 * 1024 * 1024
+        cache.countLimit = 24
+        cache.totalCostLimit = 8 * 1024 * 1024
         return cache
     }()
 

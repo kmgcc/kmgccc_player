@@ -22,8 +22,8 @@ public nonisolated enum ArtworkColorExtractor {
     private final class PixelCacheBox: @unchecked Sendable {
         nonisolated(unsafe) let cache: NSCache<NSString, PixelDataCacheEntry> = {
             let cache = NSCache<NSString, PixelDataCacheEntry>()
-            cache.countLimit = 256
-            cache.totalCostLimit = 8 * 1024 * 1024
+            cache.countLimit = 32
+            cache.totalCostLimit = 2 * 1024 * 1024
             return cache
         }()
     }

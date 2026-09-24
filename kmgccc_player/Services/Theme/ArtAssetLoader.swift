@@ -62,8 +62,8 @@ final class ArtAssetLoader: @unchecked Sendable {
 
     private nonisolated(unsafe) let imageCache: NSCache<NSString, CGImageBox> = {
         let cache = NSCache<NSString, CGImageBox>()
-        cache.countLimit = 96
-        cache.totalCostLimit = 80 * 1024 * 1024
+        cache.countLimit = 32
+        cache.totalCostLimit = 16 * 1024 * 1024
         return cache
     }()
 
@@ -248,7 +248,7 @@ final class ArtAssetLoader: @unchecked Sendable {
 
 struct ArtAssetImage: View {
     let name: String
-    var maxPixel: Int = 1_600
+    var maxPixel: Int = 800
     var fallbackSystemName: String = "photo"
 
     var body: some View {
@@ -267,7 +267,7 @@ struct ArtAssetImage: View {
 enum ArtAssetImages {
     static let emptyLyricsName = "Empty Lyrics"
 
-    static func image(named name: String, maxPixel: Int = 1_600, fallbackSystemName: String = "photo") -> Image {
+    static func image(named name: String, maxPixel: Int = 800, fallbackSystemName: String = "photo") -> Image {
         if let image = ArtAssetLoader.shared.xcAssetImage(
             named: name,
             maxPixel: maxPixel,

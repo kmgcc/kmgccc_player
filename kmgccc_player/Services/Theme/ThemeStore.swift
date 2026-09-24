@@ -113,7 +113,8 @@ final class ThemeStore: ObservableObject {
             useArtworkTint: AppSettings.shared.globalArtworkTintEnabled
         )
 
-        dominantColorCache.countLimit = 50
+        dominantColorCache.countLimit = 12
+        dominantColorCache.totalCostLimit = 4 * 1024 * 1024
 
         // Initial palette generation
         Task {
@@ -366,7 +367,8 @@ final class ThemeStore: ObservableObject {
         if let cacheKey {
             dominantColorCache.setObject(
                 CachedArtworkBox(color: resolved, analysis: resolvedAnalysis),
-                forKey: cacheKey as NSString
+                forKey: cacheKey as NSString,
+                cost: 256 * 1024
             )
         }
         rawDominantColor = resolved

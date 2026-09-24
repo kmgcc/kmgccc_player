@@ -103,7 +103,7 @@ actor ArtworkAssetStore {
     func snapshot(
         trackID: UUID,
         artworkData: Data,
-        fullImageMaxPixelSize: Int = 1_400
+        fullImageMaxPixelSize: Int = 1_024
     ) async -> ArtworkAssetSnapshot? {
         let checksum = Self.computeChecksum(artworkData)
         let snapshot = await snapshotMetadata(
@@ -121,7 +121,7 @@ actor ArtworkAssetStore {
 
     func renderingFallbackSnapshot(
         trackID: UUID,
-        fullImageMaxPixelSize: Int = 1_400
+        fullImageMaxPixelSize: Int = 1_024
     ) async -> ArtworkAssetSnapshot? {
         guard let fallbackData = ArtworkRenderingFallback.data(for: trackID) else {
             return nil

@@ -122,10 +122,10 @@ actor TrackArtworkCache {
     init(storage: LibraryStorageLocations) {
         self.originalsRootURL = storage.trackArtworkOriginalsURL
         self.derivativesRootURL = storage.trackArtworkDerivativesURL
-        imageCache.countLimit = 128
-        imageCache.totalCostLimit = 24 * 1024 * 1024
-        sourceDataCache.countLimit = 96
-        sourceDataCache.totalCostLimit = 8 * 1024 * 1024
+        imageCache.countLimit = 64
+        imageCache.totalCostLimit = 12 * 1024 * 1024
+        sourceDataCache.countLimit = 48
+        sourceDataCache.totalCostLimit = 4 * 1024 * 1024
         try? FileManager.default.createDirectory(at: originalsRootURL, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: derivativesRootURL, withIntermediateDirectories: true)
     }
@@ -140,7 +140,7 @@ actor TrackArtworkCache {
 
     func fullImage(
         for source: TrackArtworkSource,
-        maxPixelSize: Int = 1_400,
+        maxPixelSize: Int = 1_024,
         purpose: String = "ui"
     ) async -> NSImage? {
         await image(for: source, variant: "full", maxPixelSize: maxPixelSize, purpose: purpose)
@@ -148,7 +148,7 @@ actor TrackArtworkCache {
 
     func snapshot(
         for source: TrackArtworkSource,
-        fullImageMaxPixelSize: Int = 1_400,
+        fullImageMaxPixelSize: Int = 1_024,
         purpose: String = "ui"
     ) async -> ArtworkAssetSnapshot? {
         let startedAt = Self.now()
@@ -512,7 +512,7 @@ actor TrackArtworkCache {
         guard !Task.isCancelled, memoryGeneration == warmupGeneration else { return }
         _ = await thumbnail(for: source, maxPixelSize: 160, purpose: "warmup")
         guard !Task.isCancelled, memoryGeneration == warmupGeneration else { return }
-        _ = await snapshot(for: source, fullImageMaxPixelSize: 1_400, purpose: "warmup")
+        _ = await snapshot(for: source, fullImageMaxPixelSize: 1_024, purpose: "warmup")
         guard !Task.isCancelled, memoryGeneration == warmupGeneration else { return }
         rememberCompletedWarmupKey(warmupKey)
         Self.log(

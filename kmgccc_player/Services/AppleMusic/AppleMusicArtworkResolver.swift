@@ -29,8 +29,8 @@ actor AppleMusicArtworkResolver {
 
     private let session: URLSession
     private var cache = CostBoundedCache<String, Data?>(
-        countLimit: 96,
-        totalCostLimit: 32 * 1024 * 1024
+        countLimit: 32,
+        totalCostLimit: 8 * 1024 * 1024
     )
     private var inFlight: [String: Task<Data?, Never>] = [:]
 

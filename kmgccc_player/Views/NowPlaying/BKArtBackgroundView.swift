@@ -779,8 +779,8 @@ private final class BKArtBackgroundLayerView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         ensureRootLayerIfNeeded()
-        tintedBackgroundCache.countLimit = 6
-        tintedBackgroundCache.totalCostLimit = 48 * 1024 * 1024
+        tintedBackgroundCache.countLimit = 4
+        tintedBackgroundCache.totalCostLimit = 16 * 1024 * 1024
         logLifecycle("init")
     }
 
@@ -2979,11 +2979,11 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func configureTintedBackgroundCache(for profile: BKArtBackgroundView.MotionProfile) {
         if profile == .fullscreenBalanced {
-            tintedBackgroundCache.countLimit = 12
-            tintedBackgroundCache.totalCostLimit = 32 * 1024 * 1024
-        } else {
             tintedBackgroundCache.countLimit = 6
-            tintedBackgroundCache.totalCostLimit = 48 * 1024 * 1024
+            tintedBackgroundCache.totalCostLimit = 20 * 1024 * 1024
+        } else {
+            tintedBackgroundCache.countLimit = 4
+            tintedBackgroundCache.totalCostLimit = 16 * 1024 * 1024
         }
     }
 

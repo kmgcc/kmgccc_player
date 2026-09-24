@@ -1126,7 +1126,7 @@ final class AppleMusicPlaybackAdapter {
         _ = await ArtworkAssetStore.shared.snapshot(
             trackID: displayTrackID,
             artworkData: data,
-            fullImageMaxPixelSize: 1_400
+            fullImageMaxPixelSize: 1_024
         )
         guard !Task.isCancelled else { return false }
         return await MainActor.run {
