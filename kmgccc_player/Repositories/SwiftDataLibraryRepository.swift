@@ -150,7 +150,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             metas: trackMetas,
             paths: paths
         )
-        let tracks = trackMetas.map { buildTrack(from: $0, existingManagedAudioPaths: existingManagedAudioPaths) }
+        let stringPool = StringInternPool()
+        let tracks = trackMetas.map { buildTrack(from: $0, existingManagedAudioPaths: existingManagedAudioPaths, stringPool: stringPool) }
         let tracksById = trackDictionaryByID(tracks)
 
         let loadedPlaylists: [Playlist] = snapshot.playlistSidecars.map { sidecar in
@@ -1205,7 +1206,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }.value
     }
 
-    private func buildTrack(from meta: ScannedTrackMeta, existingManagedAudioPaths: Set<String>) -> Track {
+    private func buildTrack(
+        from meta: ScannedTrackMeta,
+        existingManagedAudioPaths: Set<String>,
+        stringPool: StringInternPool? = nil
+    ) -> Track {
         let availability: TrackAvailability
         switch meta.mediaLocator {
         case let .managed(relativePath):
@@ -1221,20 +1226,46 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
         preferenceStatsService.replaceStats(for: meta.id, with: persistedStats)
 
+        let intern: (String) -> String = { str in
+            stringPool?.intern(str) ?? str
+        }
+
+        let internedArtist = intern(meta.artist)
+        let internedAlbum = intern(meta.album)
+        let internedAlbumArtist = meta.albumArtist.map(intern)
+        let internedGenreTags = meta.genreTags.map(intern)
+        let internedLanguage = intern(meta.language)
+        let internedLabelOrCompany = intern(meta.labelOrCompany)
+        let internedMetadataSource = meta.metadataSource.map(intern)
+        let internedRootSnapshot = intern(paths.rootURL.path)
+
+        let internedAudioFileName = intern(meta.audioFileName)
+        let internedArtworkFileName = meta.artworkFileName.map(intern)
+        let internedLyricsFileName = meta.lyricsFileName.map(intern)
+        let internedTtmlLyricsFileName = meta.ttmlLyricsFileName.map(intern)
+        let internedArtistCredits = meta.artistCredits?.map { credit in
+            TrackCredit(
+                id: credit.id,
+                displayName: intern(credit.displayName),
+                role: credit.role,
+                canonicalName: intern(credit.canonicalName)
+            )
+        }
+
         let track = Track(
             id: meta.id,
             title: meta.title,
-            artist: meta.artist,
-            artistCredits: meta.artistCredits,
-            album: meta.album,
-            albumArtist: meta.albumArtist,
+            artist: internedArtist,
+            artistCredits: internedArtistCredits,
+            album: internedAlbum,
+            albumArtist: internedAlbumArtist,
             userDescription: meta.description,
-            genreTags: meta.genreTags,
-            language: meta.language,
-            labelOrCompany: meta.labelOrCompany,
+            genreTags: internedGenreTags,
+            language: internedLanguage,
+            labelOrCompany: internedLabelOrCompany,
             releaseDate: meta.releaseDate,
             qqMusicSongMid: meta.qqMusicSongMid,
-            metadataSource: meta.metadataSource,
+            metadataSource: internedMetadataSource,
             metadataFetchedAt: meta.metadataFetchedAt,
             metadataConfidence: meta.metadataConfidence,
             musicBrainzReleaseID: meta.musicBrainzReleaseID,
@@ -1243,25 +1274,21 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             addedAt: meta.addedAt,
             importedAt: meta.importedAt,
             lyricsTimeOffsetMs: meta.lyricsTimeOffsetMs,
-            fileBookmarkData: meta.mediaLocator.referencedFile?.fileBookmarkData ?? Data(),
-            originalFilePath: meta.originalFilePath,
-            libraryRelativePath: meta.libraryRelativePath,
             mediaLocator: meta.mediaLocator,
             availability: availability,
             artworkData: nil,
             ttmlLyricText: nil,
             lyricsText: nil,
+            libraryRootSnapshot: internedRootSnapshot,
+            audioFileName: internedAudioFileName,
+            artworkFileName: internedArtworkFileName,
+            lyricsFileName: internedLyricsFileName,
+            ttmlLyricsFileName: internedTtmlLyricsFileName,
             ncmConversionAssociation: meta.ncmConversionAssociation,
             importProvenance: meta.importProvenance,
             audioProperties: meta.audioProperties,
             enrichmentSuggestions: meta.enrichmentSuggestions
         )
-
-        track.libraryRootSnapshot = paths.rootURL.path
-        track.audioFileName = meta.audioFileName
-        track.artworkFileName = meta.artworkFileName
-        track.lyricsFileName = meta.lyricsFileName
-        track.ttmlLyricsFileName = meta.ttmlLyricsFileName
 
         return track
     }
@@ -1293,9 +1320,16 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
         let albumGrouping = LibraryNormalization.buildAlbumGrouping(tracks: allTracks)
+        var albumKeyPool: [String: String] = [:]
         for track in allTracks {
-            track.albumGroupKey = albumGrouping.albumKeyByTrackID[track.id]
+            let key = albumGrouping.albumKeyByTrackID[track.id]
                 ?? LibraryNormalization.normalizedAlbumKey(album: track.album)
+            if let existing = albumKeyPool[key] {
+                track.albumGroupKey = existing
+            } else {
+                albumKeyPool[key] = key
+                track.albumGroupKey = key
+            }
         }
         runtimeAlbums = albumGrouping.sections
     }
@@ -2380,3 +2414,17 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
     }
 }
+
+private final class StringInternPool {
+    private var pool: [String: String] = [:]
+
+    func intern(_ str: String) -> String {
+        if str.isEmpty { return "" }
+        if let existing = pool[str] {
+            return existing
+        }
+        pool[str] = str
+        return str
+    }
+}
+

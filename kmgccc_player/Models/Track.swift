@@ -8,38 +8,34 @@
 
 import AppKit
 import Foundation
-import SwiftData
+import Observation
 
 // TrackAvailability lives in its own value-type model for resolver reuse.
 
-@Model
-final class Track {
+nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sendable {
     // MARK: - Identifiers
 
-    @Attribute(.unique) var id: UUID
+    var id: UUID
 
     // MARK: - Metadata
 
     var title: String
     var artist: String
-    /// JSON-backed structured credits. The raw artist string above is kept
-    /// unchanged so existing displays and metadata round-trips preserve it.
-    var artistCreditsData: Data?
 
-    var artistCredits: [TrackCredit] {
+    var artistCredits: [TrackCredit] = []
+
+    var artistCreditsData: Data? {
         get {
-            if let data = artistCreditsData,
-               let credits = try? JSONDecoder().decode([TrackCredit].self, from: data),
-               !credits.isEmpty {
-                return credits
-            }
-            return TrackCredit.fallback(for: artist)
+            guard !artistCredits.isEmpty else { return nil }
+            return try? JSONEncoder().encode(artistCredits)
         }
         set {
-            let normalized = newValue.filter {
-                !$0.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if let data = newValue,
+               let credits = try? JSONDecoder().decode([TrackCredit].self, from: data) {
+                artistCredits = credits
+            } else {
+                artistCredits = []
             }
-            artistCreditsData = try? JSONEncoder().encode(normalized)
         }
     }
 
@@ -66,86 +62,80 @@ final class Track {
     /// Per-track lyric time offset in milliseconds (+/-).
     var lyricsTimeOffsetMs: Double = 0
 
-    // MARK: - File Access (security-scoped bookmark)
-
-    /// Security-scoped bookmark data for the audio file.
-    /// Used to regain access to the file after app restart (sandbox).
-    var fileBookmarkData: Data
-
-    /// Original file path (for display/debugging only - not for access!)
-    var originalFilePath: String
-
-    /// Relative path inside the local library (e.g. "Tracks/<id>/audio.m4a").
-    /// Empty means the track still relies on a legacy bookmark.
-    var libraryRelativePath: String = ""
+    // MARK: - File Access & Media Locator
 
     /// Stable encoded locator snapshot. Legacy path/bookmark fields remain as compatibility projections.
-    var mediaLocatorData: Data = Data()
+    var mediaLocator: TrackMediaLocator
 
-    /// Decode cache for `mediaLocator`. Reconcile/reload paths read the
-    /// locator several times per track per pass; decoding JSON on every access
-    /// was a measurable main-thread cost on large referenced libraries.
-    /// Transient: never persisted; a faulted-in model simply re-decodes once.
-    @Transient private var mediaLocatorDecodedFrom: Data?
-    @Transient private var mediaLocatorDecodedValue: TrackMediaLocator?
+    /// For managed tracks, remembers where the track was originally imported from (if known).
+    private var managedOriginalFilePath: String?
 
-    var mediaLocator: TrackMediaLocator {
+    /// Security-scoped bookmark data for the audio file (derived from mediaLocator).
+    var fileBookmarkData: Data {
+        get { mediaLocator.referencedFile?.fileBookmarkData ?? Data() }
+        set {
+            if case var .referenced(locator) = mediaLocator {
+                locator.fileBookmarkData = newValue
+                mediaLocator = .referenced(locator)
+            } else if !newValue.isEmpty {
+                mediaLocator = .referenced(ReferencedFileLocator(
+                    fileBookmarkData: newValue,
+                    lastKnownPath: originalFilePath
+                ))
+            }
+        }
+    }
+
+    /// Original file path (derived from mediaLocator for referenced tracks, or captured on import for managed tracks).
+    var originalFilePath: String {
         get {
-            if let cachedFrom = mediaLocatorDecodedFrom,
-               cachedFrom == mediaLocatorData,
-               let cachedValue = mediaLocatorDecodedValue {
-                return cachedValue
+            if case let .referenced(locator) = mediaLocator {
+                return locator.lastKnownPath
             }
-            if let decoded = try? JSONDecoder().decode(TrackMediaLocator.self, from: mediaLocatorData) {
-                mediaLocatorDecodedFrom = mediaLocatorData
-                mediaLocatorDecodedValue = decoded
-                return decoded
-            }
-            if !libraryRelativePath.isEmpty {
-                return .managed(libraryRelativePath: libraryRelativePath)
-            }
-            return .referenced(ReferencedFileLocator(
-                fileBookmarkData: fileBookmarkData,
-                lastKnownPath: originalFilePath
-            ))
+            return managedOriginalFilePath ?? ""
         }
         set {
-            let encoded = (try? JSONEncoder().encode(newValue)) ?? Data()
-            mediaLocatorData = encoded
-            // Keep the decode cache coherent with the freshly written value.
-            mediaLocatorDecodedFrom = encoded
-            mediaLocatorDecodedValue = newValue
-            switch newValue {
-            case let .managed(path):
-                libraryRelativePath = path
-                fileBookmarkData = Data()
-            case let .referenced(locator):
-                libraryRelativePath = ""
-                fileBookmarkData = locator.fileBookmarkData
-                originalFilePath = locator.lastKnownPath
+            if case var .referenced(locator) = mediaLocator {
+                locator.lastKnownPath = newValue
+                mediaLocator = .referenced(locator)
+            } else {
+                managedOriginalFilePath = newValue.isEmpty ? nil : newValue
+            }
+        }
+    }
+
+    /// Relative path inside the local library (derived from mediaLocator).
+    var libraryRelativePath: String {
+        get { mediaLocator.managedLibraryRelativePath ?? "" }
+        set {
+            if !newValue.isEmpty {
+                mediaLocator = .managed(libraryRelativePath: newValue)
+            }
+        }
+    }
+
+    /// Encoded locator data snapshot for legacy compatibility.
+    var mediaLocatorData: Data {
+        get { (try? JSONEncoder().encode(mediaLocator)) ?? Data() }
+        set {
+            if let decoded = try? JSONDecoder().decode(TrackMediaLocator.self, from: newValue) {
+                mediaLocator = decoded
             }
         }
     }
 
     /// Availability status (updated on locator resolution).
-    private var availabilityRaw: String
-
-    var availability: TrackAvailability {
-        get { TrackAvailability(rawValue: availabilityRaw) ?? .available }
-        set { availabilityRaw = newValue.rawValue }
-    }
+    var availability: TrackAvailability
 
     // MARK: - Relationships
 
     /// Playlists this track belongs to.
-    /// Inverse relationship for Playlist.tracks.
-    @Relationship(inverse: \Playlist.tracks) var playlists: [Playlist] = []
+    var playlists: [Playlist] = []
 
     // MARK: - Artwork
 
     /// Embedded or user-edited cover art (JPEG/PNG data).
     /// Lazily loaded from disk via `loadArtworkDataIfNeeded()`.
-    @Attribute(.externalStorage)
     var artworkData: Data?
 
     // MARK: - Persistence References (lightweight, for lazy loading)
@@ -166,74 +156,152 @@ final class Track {
     /// TTML lyrics file name inside the track folder (e.g. "lyrics.ttml").
     var ttmlLyricsFileName: String?
 
-    /// Durable referenced-NCM transaction association, mirrored into schema 7 sidecars.
-    var ncmConversionAssociationData: Data?
+    // MARK: - Auxiliary Metadata Layer (Schema 7 & 9, allocated on-demand)
+
+    private struct TrackAuxiliaryMetadata: Equatable {
+        var embeddedMetadataSnapshot: EmbeddedMetadataSnapshot?
+        var importProvenance: ImportProvenance?
+        var audioProperties: TrackAudioProperties?
+        var enrichmentSuggestions: [EnrichmentSuggestion]?
+        var ncmConversionAssociation: NCMConversionAssociation?
+
+        var isEmpty: Bool {
+            embeddedMetadataSnapshot == nil &&
+            importProvenance == nil &&
+            audioProperties == nil &&
+            (enrichmentSuggestions?.isEmpty ?? true) &&
+            ncmConversionAssociation == nil
+        }
+    }
+
+    private var auxiliary: TrackAuxiliaryMetadata?
+
+    private func ensureAuxiliary() -> TrackAuxiliaryMetadata {
+        auxiliary ?? TrackAuxiliaryMetadata()
+    }
 
     var ncmConversionAssociation: NCMConversionAssociation? {
-        get {
-            guard let data = ncmConversionAssociationData else { return nil }
-            return try? JSONDecoder().decode(NCMConversionAssociation.self, from: data)
-        }
+        get { auxiliary?.ncmConversionAssociation }
         set {
-            ncmConversionAssociationData = try? newValue.map { try JSONEncoder().encode($0) }
+            if newValue == nil && auxiliary == nil { return }
+            var aux = ensureAuxiliary()
+            aux.ncmConversionAssociation = newValue
+            auxiliary = aux.isEmpty ? nil : aux
         }
     }
 
-    // MARK: - Schema 9 Metadata Layers
-
-    /// JSON-backed embedded-tag snapshot mirrored from the sidecar.
-    var embeddedMetadataSnapshotData: Data?
+    var ncmConversionAssociationData: Data? {
+        get {
+            guard let assoc = ncmConversionAssociation else { return nil }
+            return try? JSONEncoder().encode(assoc)
+        }
+        set {
+            if let data = newValue,
+               let decoded = try? JSONDecoder().decode(NCMConversionAssociation.self, from: data) {
+                ncmConversionAssociation = decoded
+            } else {
+                ncmConversionAssociation = nil
+            }
+        }
+    }
 
     var embeddedMetadataSnapshot: EmbeddedMetadataSnapshot? {
-        get {
-            guard let data = embeddedMetadataSnapshotData else { return nil }
-            return try? JSONDecoder().decode(EmbeddedMetadataSnapshot.self, from: data)
-        }
+        get { auxiliary?.embeddedMetadataSnapshot }
         set {
-            embeddedMetadataSnapshotData = try? newValue.map { try JSONEncoder().encode($0) }
+            if newValue == nil && auxiliary == nil { return }
+            var aux = ensureAuxiliary()
+            aux.embeddedMetadataSnapshot = newValue
+            auxiliary = aux.isEmpty ? nil : aux
         }
     }
 
-    /// JSON-backed import provenance mirrored from the sidecar (schema 9).
-    /// Captured for managed imports at commit time; the identity resolver
-    /// consults it when a re-import no longer matches by canonical path.
-    var importProvenanceData: Data?
+    var embeddedMetadataSnapshotData: Data? {
+        get {
+            guard let snapshot = embeddedMetadataSnapshot else { return nil }
+            return try? JSONEncoder().encode(snapshot)
+        }
+        set {
+            if let data = newValue,
+               let decoded = try? JSONDecoder().decode(EmbeddedMetadataSnapshot.self, from: data) {
+                embeddedMetadataSnapshot = decoded
+            } else {
+                embeddedMetadataSnapshot = nil
+            }
+        }
+    }
 
     var importProvenance: ImportProvenance? {
-        get {
-            guard let data = importProvenanceData else { return nil }
-            return try? JSONDecoder().decode(ImportProvenance.self, from: data)
-        }
+        get { auxiliary?.importProvenance }
         set {
-            importProvenanceData = try? newValue.map { try JSONEncoder().encode($0) }
+            if newValue == nil && auxiliary == nil { return }
+            var aux = ensureAuxiliary()
+            aux.importProvenance = newValue
+            auxiliary = aux.isEmpty ? nil : aux
         }
     }
 
-    /// JSON-backed technical audio properties for managed copies (schema 9).
-    /// Referenced tracks carry the same values on their locator instead.
-    var audioPropertiesData: Data?
+    var importProvenanceData: Data? {
+        get {
+            guard let provenance = importProvenance else { return nil }
+            return try? JSONEncoder().encode(provenance)
+        }
+        set {
+            if let data = newValue,
+               let decoded = try? JSONDecoder().decode(ImportProvenance.self, from: data) {
+                importProvenance = decoded
+            } else {
+                importProvenance = nil
+            }
+        }
+    }
 
     var audioProperties: TrackAudioProperties? {
-        get {
-            guard let data = audioPropertiesData else { return nil }
-            return try? JSONDecoder().decode(TrackAudioProperties.self, from: data)
-        }
+        get { auxiliary?.audioProperties }
         set {
-            audioPropertiesData = try? newValue.map { try JSONEncoder().encode($0) }
+            if newValue == nil && auxiliary == nil { return }
+            var aux = ensureAuxiliary()
+            aux.audioProperties = newValue
+            auxiliary = aux.isEmpty ? nil : aux
         }
     }
 
-    /// JSON-backed advisory completion candidates mirrored from the sidecar
-    /// (schema 9). Advisory only: nothing here is written back to files.
-    var enrichmentSuggestionsData: Data?
-
-    var enrichmentSuggestions: [EnrichmentSuggestion]? {
+    var audioPropertiesData: Data? {
         get {
-            guard let data = enrichmentSuggestionsData else { return nil }
-            return try? JSONDecoder().decode([EnrichmentSuggestion].self, from: data)
+            guard let properties = audioProperties else { return nil }
+            return try? JSONEncoder().encode(properties)
         }
         set {
-            enrichmentSuggestionsData = try? newValue.map { try JSONEncoder().encode($0) }
+            if let data = newValue,
+               let decoded = try? JSONDecoder().decode(TrackAudioProperties.self, from: data) {
+                audioProperties = decoded
+            } else {
+                audioProperties = nil
+            }
+        }
+    }
+
+    var enrichmentSuggestions: [EnrichmentSuggestion]? {
+        get { auxiliary?.enrichmentSuggestions }
+        set {
+            if newValue == nil && auxiliary == nil { return }
+            var aux = ensureAuxiliary()
+            aux.enrichmentSuggestions = newValue
+            auxiliary = aux.isEmpty ? nil : aux
+        }
+    }
+
+    var enrichmentSuggestionsData: Data? {
+        get {
+            guard let suggestions = enrichmentSuggestions else { return nil }
+            return try? JSONEncoder().encode(suggestions)
+        }
+        set {
+            if let data = newValue,
+               let decoded = try? JSONDecoder().decode([EnrichmentSuggestion].self, from: data) {
+                enrichmentSuggestions = decoded
+            } else {
+                enrichmentSuggestions = nil
+            }
         }
     }
 
@@ -288,7 +356,7 @@ final class Track {
         addedAt: Date = Date(),
         importedAt: Date? = nil,
         lyricsTimeOffsetMs: Double = 0,
-        fileBookmarkData: Data,
+        fileBookmarkData: Data = Data(),
         originalFilePath: String = "",
         libraryRelativePath: String = "",
         mediaLocator: TrackMediaLocator? = nil,
@@ -310,9 +378,7 @@ final class Track {
         self.id = id
         self.title = title
         self.artist = artist
-        self.artistCreditsData = try? JSONEncoder().encode(
-            artistCredits ?? TrackCredit.fallback(for: artist)
-        )
+        self.artistCredits = artistCredits ?? TrackCredit.fallback(for: artist)
         self.album = album
         self.albumArtist = albumArtist
         self.userDescription = userDescription
@@ -325,29 +391,12 @@ final class Track {
         self.metadataFetchedAt = metadataFetchedAt
         self.metadataConfidence = metadataConfidence
         self.musicBrainzReleaseID = musicBrainzReleaseID
-        self.embeddedMetadataSnapshotData = try? embeddedMetadataSnapshot.map { try JSONEncoder().encode($0) }
-        self.importProvenanceData = try? importProvenance.map { try JSONEncoder().encode($0) }
-        self.audioPropertiesData = try? audioProperties.map { try JSONEncoder().encode($0) }
-        self.enrichmentSuggestionsData = try? enrichmentSuggestions.map { try JSONEncoder().encode($0) }
         self.albumGroupKey = albumGroupKey
         self.duration = duration
         self.addedAt = addedAt
         self.importedAt = importedAt ?? addedAt
         self.lyricsTimeOffsetMs = lyricsTimeOffsetMs
-        self.fileBookmarkData = fileBookmarkData
-        self.originalFilePath = originalFilePath
-        self.libraryRelativePath = libraryRelativePath
-        self.mediaLocatorData = Data()
-        self.availabilityRaw = availability.rawValue
-        self.mediaLocator = mediaLocator ?? {
-            if !libraryRelativePath.isEmpty {
-                return .managed(libraryRelativePath: libraryRelativePath)
-            }
-            return .referenced(ReferencedFileLocator(
-                fileBookmarkData: fileBookmarkData,
-                lastKnownPath: originalFilePath
-            ))
-        }()
+        self.availability = availability
         self.artworkData = artworkData
         self.ttmlLyricText = ttmlLyricText
         self.lyricsText = lyricsText
@@ -356,8 +405,47 @@ final class Track {
         self.artworkFileName = artworkFileName
         self.lyricsFileName = lyricsFileName
         self.ttmlLyricsFileName = ttmlLyricsFileName
-        self.ncmConversionAssociationData = try? ncmConversionAssociation.map { try JSONEncoder().encode($0) }
-        // NOTE: playCount parameter is deprecated. If provided, it's stored in preferenceStats via sidecar.
+
+        let resolvedLocator = mediaLocator ?? {
+            if !libraryRelativePath.isEmpty {
+                return .managed(libraryRelativePath: libraryRelativePath)
+            }
+            return .referenced(ReferencedFileLocator(
+                fileBookmarkData: fileBookmarkData,
+                lastKnownPath: originalFilePath
+            ))
+        }()
+        self.mediaLocator = resolvedLocator
+
+        if !originalFilePath.isEmpty && resolvedLocator.referencedFile == nil {
+            self.managedOriginalFilePath = originalFilePath
+        } else {
+            self.managedOriginalFilePath = nil
+        }
+
+        if embeddedMetadataSnapshot != nil ||
+            importProvenance != nil ||
+            audioProperties != nil ||
+            enrichmentSuggestions != nil ||
+            ncmConversionAssociation != nil {
+            self.auxiliary = TrackAuxiliaryMetadata(
+                embeddedMetadataSnapshot: embeddedMetadataSnapshot,
+                importProvenance: importProvenance,
+                audioProperties: audioProperties,
+                enrichmentSuggestions: enrichmentSuggestions,
+                ncmConversionAssociation: ncmConversionAssociation
+            )
+        } else {
+            self.auxiliary = nil
+        }
+    }
+
+    static func == (lhs: Track, rhs: Track) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
     }
 
     // MARK: - Bookmark Resolution

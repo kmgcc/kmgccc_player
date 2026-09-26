@@ -450,6 +450,8 @@ private final class AppKitMainRootViewController: NSViewController {
     private let homeFullWindowHost: PassthroughHostingView<HomeFullWindowRoot>
     private let fileDropOverlayHost: PassthroughHostingView<AppDialogDropImportOverlay>
     private var didApplyPaneGlassBlendingMode = false
+    private var homeHostHideTask: Task<Void, Never>?
+    private var fileDropOverlayHideTask: Task<Void, Never>?
 
     init(appSession: AppSessionHost, splitViewController: AppKitMainSplitViewController) {
         self.appSession = appSession
@@ -516,8 +518,13 @@ private final class AppKitMainRootViewController: NSViewController {
         splitViewController.splitView.layer?.backgroundColor = NSColor.clear.cgColor
         homeFullWindowHost.wantsLayer = true
         homeFullWindowHost.layer?.backgroundColor = NSColor.clear.cgColor
+        homeFullWindowHost.isHidden = !HomeWindowLayoutState.shared.isHomeMode
+        HomeWindowLayoutState.shared.onHomeModeChange = { [weak self] isHome in
+            self?.handleHomeModeChange(isHome)
+        }
         fileDropOverlayHost.wantsLayer = true
         fileDropOverlayHost.layer?.backgroundColor = NSColor.clear.cgColor
+        fileDropOverlayHost.isHidden = true
 
         // Z-order: art background → full-window Home host → split view → drop overlay.
         // The Home host sits BELOW the split view in subview order so that
@@ -645,8 +652,35 @@ private final class AppKitMainRootViewController: NSViewController {
         return effects
     }
 
+    private func handleHomeModeChange(_ isHome: Bool) {
+        homeHostHideTask?.cancel()
+        homeHostHideTask = nil
+        if isHome {
+            homeFullWindowHost.isHidden = false
+        } else {
+            homeHostHideTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 450_000_000)
+                guard !Task.isCancelled else { return }
+                guard !HomeWindowLayoutState.shared.isHomeMode else { return }
+                self?.homeFullWindowHost.isHidden = true
+            }
+        }
+    }
+
     private func setFileDropOverlayVisible(_ isVisible: Bool) {
-        fileDropOverlayHost.rootView = AppDialogDropImportOverlay(isVisible: isVisible)
+        fileDropOverlayHideTask?.cancel()
+        fileDropOverlayHideTask = nil
+        if isVisible {
+            fileDropOverlayHost.isHidden = false
+            fileDropOverlayHost.rootView = AppDialogDropImportOverlay(isVisible: true)
+        } else {
+            fileDropOverlayHost.rootView = AppDialogDropImportOverlay(isVisible: false)
+            fileDropOverlayHideTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                guard !Task.isCancelled else { return }
+                self?.fileDropOverlayHost.isHidden = true
+            }
+        }
     }
 
     private func importDroppedFileURLs(_ urls: [URL]) {

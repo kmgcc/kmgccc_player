@@ -853,6 +853,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         vc.view.autoresizingMask = [.width, .height]
         vc.view.wantsLayer = true
         vc.view.layer?.backgroundColor = NSColor.clear.cgColor
+        vc.view.isHidden = !appSession.uiState.isWindowPlaybackQueueVisible
         view.addSubview(vc.view, positioned: .above, relativeTo: nativeLyricsView)
         addChild(vc)
         queueOverlayVC = vc
@@ -891,6 +892,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
 
     private func syncVisibilityAndAttachment(reason: String) {
         guard isViewLoaded else { return }
+        queueOverlayVC?.view.isHidden = !appSession.uiState.isWindowPlaybackQueueVisible
         guard shouldAttachLyricsSurface else {
             reportMainSurfaceVisible(false)
             detachNativeView()

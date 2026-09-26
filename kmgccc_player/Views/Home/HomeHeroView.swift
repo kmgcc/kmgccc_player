@@ -603,7 +603,6 @@ struct HomeHeroView: View {
                 .tracking(0)
                 .lineLimit(2)
                 .foregroundStyle(heroPlusBlendTextProfile.primaryColor)
-                .compositingGroup()
                 .blendMode(heroPlusBlendTextProfile.blendMode)
 
             artistAlbumLine
@@ -620,10 +619,12 @@ struct HomeHeroView: View {
     }
 
     private var actionButtons: some View {
-        HStack(spacing: 10) {
-            playButton
-            moreButton
-            switchTrackButton
+        GlassEffectContainer(spacing: 10) {
+            HStack(spacing: 10) {
+                playButton
+                moreButton
+                switchTrackButton
+            }
         }
     }
 
@@ -632,17 +633,14 @@ struct HomeHeroView: View {
         HStack(spacing: 0) {
             Text(track.artist)
                 .foregroundStyle(heroPlusBlendTextProfile.secondaryColor)
-                .compositingGroup()
                 .blendMode(heroPlusBlendTextProfile.blendMode)
             let albumTitle = LibraryNormalization.displayAlbum(track.album)
             if !LibraryNormalization.isUnknownAlbum(track.album), !albumTitle.isEmpty {
                 Text(" \u{00B7} ")
                     .foregroundStyle(heroPlusBlendTextProfile.tertiaryColor)
-                    .compositingGroup()
                     .blendMode(heroPlusBlendTextProfile.blendMode)
                 Text(albumTitle)
                     .foregroundStyle(heroPlusBlendTextProfile.secondaryColor)
-                    .compositingGroup()
                     .blendMode(heroPlusBlendTextProfile.blendMode)
             }
         }
@@ -664,7 +662,6 @@ struct HomeHeroView: View {
             )
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: descriptionScrollHeight, alignment: .top)
-            .compositingGroup()
             .blendMode(heroPlusBlendTextProfile.blendMode)
             .clipped()
             .layoutPriority(1)
@@ -693,7 +690,6 @@ struct HomeHeroView: View {
         }
         .font(.caption)
         .foregroundStyle(heroPlusBlendTextProfile.tertiaryColor)
-        .compositingGroup()
         .blendMode(heroPlusBlendTextProfile.blendMode)
     }
 
@@ -708,7 +704,6 @@ struct HomeHeroView: View {
                 Text("播放")
                     .font(.system(size: heroButtonTextSize, weight: .medium))
                     .foregroundStyle(heroPlusBlendTextProfile.primaryColor)
-                    .compositingGroup()
                     .blendMode(heroPlusBlendTextProfile.blendMode)
             }
             .padding(.horizontal, heroButtonHorizontalPadding)

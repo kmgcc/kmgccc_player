@@ -419,11 +419,13 @@ struct SidebarView: View {
             Divider()
 
             // Bottom controls
-            HStack(spacing: 8) {
-                settingsButton
-                appearanceSwitchButton
-                fullscreenButton
-                Spacer(minLength: 0)
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 8) {
+                    settingsButton
+                    appearanceSwitchButton
+                    fullscreenButton
+                    Spacer(minLength: 0)
+                }
             }
             .tint(themeStore.accentColor)
             .padding(.horizontal, 12)
