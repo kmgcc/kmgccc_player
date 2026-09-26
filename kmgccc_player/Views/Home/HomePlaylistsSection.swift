@@ -900,8 +900,8 @@ final class HomePlaylistCardCoverStore {
     static let shared = HomePlaylistCardCoverStore()
 
     private var cache = CostBoundedCache<String, NSImage>(
-        countLimit: 24,
-        totalCostLimit: 12 * 1024 * 1024
+        countLimit: 12,
+        totalCostLimit: 4 * 1024 * 1024
     )
 
     func cachedImage(for identity: String) -> NSImage? {
@@ -1140,8 +1140,8 @@ final class HomePlaylistPreviewArtworkStore {
     static let previewPixelSide: CGFloat = 96
 
     private var cache = CostBoundedCache<UUID, NSImage>(
-        countLimit: 96,
-        totalCostLimit: 6 * 1024 * 1024
+        countLimit: 32,
+        totalCostLimit: 2 * 1024 * 1024
     )
 
     func cachedImage(forTrackID trackID: UUID) -> NSImage? {

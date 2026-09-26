@@ -62,8 +62,8 @@ final class ArtAssetLoader: @unchecked Sendable {
 
     private nonisolated(unsafe) let imageCache: NSCache<NSString, CGImageBox> = {
         let cache = NSCache<NSString, CGImageBox>()
-        cache.countLimit = 32
-        cache.totalCostLimit = 16 * 1024 * 1024
+        cache.countLimit = 6
+        cache.totalCostLimit = 2 * 1024 * 1024
         return cache
     }()
 

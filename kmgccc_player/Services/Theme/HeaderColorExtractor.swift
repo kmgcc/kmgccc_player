@@ -65,6 +65,7 @@ final class HeaderColorExtractor {
         label: "kmg.kmgccc_player.headerColor.extraction",
         qos: .userInitiated
     )
+    private var writeCounter = 0
 
     convenience init(storage: LibraryStorageLocations) {
         self.init(cacheDirectory: storage.headerColorCacheURL)
@@ -243,8 +244,30 @@ final class HeaderColorExtractor {
             )
             let data = try JSONEncoder().encode(record)
             try data.write(to: url, options: .atomic)
+            recordDiskWriteAndTrimIfNeeded()
         } catch {
             Log.warning("Failed to persist header color cache: \(error.localizedDescription)", category: .theme)
+        }
+    }
+
+    private func recordDiskWriteAndTrimIfNeeded() {
+        writeCounter += 1
+        guard writeCounter.isMultiple(of: 20) else { return }
+        trimDiskCaches()
+    }
+
+    func trimDiskCaches() {
+        let result = DiskCacheRetention.trim(
+            at: persistentCacheDirectory,
+            maxBytes: DiskCacheBudget.headerColors.maxBytes,
+            targetFraction: DiskCacheBudget.headerColors.targetFraction,
+            maxAge: DiskCacheBudget.headerColors.maxAge
+        )
+        if result.removedFileCount > 0 {
+            Log.debug(
+                "[HeaderColor] disk trim removedFiles=\(result.removedFileCount) removedBytes=\(result.removedBytes)",
+                category: .theme
+            )
         }
     }
 

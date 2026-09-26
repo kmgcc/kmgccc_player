@@ -45,6 +45,8 @@ nonisolated struct LibraryStorageLocations: Sendable, Equatable {
     var homeCacheURL: URL { paths.homeCacheRootURL }
     var externalPlaybackCacheRootURL: URL { paths.externalPlaybackCacheRootURL }
     var importStagingRootURL: URL { paths.importStagingRootURL }
+    var libraryScanCacheRootURL: URL { paths.libraryScanCacheRootURL }
+    var sourceScanCacheRootURL: URL { paths.sourceScanCacheRootURL }
 }
 
 nonisolated enum StorageLocations {

@@ -166,6 +166,7 @@ actor AppleMusicArtworkResolver {
 
     private static func makeDefaultSession() -> URLSession {
         let configuration = URLSessionConfiguration.default
+        configuration.urlCache = nil
         configuration.timeoutIntervalForRequest = 8
         configuration.timeoutIntervalForResource = 12
         return URLSession(configuration: configuration)

@@ -16,17 +16,125 @@ nonisolated struct DiskCacheTrimResult: Sendable, Equatable {
     static let empty = DiskCacheTrimResult(removedFileCount: 0, removedBytes: 0)
 }
 
+/// Centralized quota policies for rebuildable on-disk caches.
+nonisolated struct DiskCacheBudget: Sendable, Equatable {
+    let maxBytes: Int64
+    let targetFraction: Double
+    let maxAge: TimeInterval?
+
+    init(maxBytes: Int64, targetFraction: Double = 0.80, maxAge: TimeInterval? = nil) {
+        self.maxBytes = maxBytes
+        self.targetFraction = targetFraction
+        self.maxAge = maxAge
+    }
+
+    /// Track artwork originals cache: 64 MB.
+    /// Only inline artwork (without an on-disk sidecar/track file) is cached here.
+    static let trackOriginals = DiskCacheBudget(
+        maxBytes: 64 * 1024 * 1024,
+        targetFraction: 0.80,
+        maxAge: 30 * 24 * 3600
+    )
+
+    /// Track playback derivatives: 160 MB.
+    /// With compact encoding, this holds ~800-1200 tracks of full playback artwork.
+    static let trackDerivatives = DiskCacheBudget(
+        maxBytes: 160 * 1024 * 1024,
+        targetFraction: 0.80,
+        maxAge: 30 * 24 * 3600
+    )
+
+    /// Playlist row and header artwork derivatives: 96 MB.
+    static let playlistDerivatives = DiskCacheBudget(
+        maxBytes: 96 * 1024 * 1024,
+        targetFraction: 0.80,
+        maxAge: 30 * 24 * 3600
+    )
+
+    /// QQMusic candidate cover images: 64 MB.
+    /// Automatic candidate images expire after 14 days or when the 64 MB ceiling is reached.
+    static let qqMusicImages = DiskCacheBudget(
+        maxBytes: 64 * 1024 * 1024,
+        targetFraction: 0.75,
+        maxAge: 14 * 24 * 3600
+    )
+
+    /// QQMusic candidate search metadata: 8 MB.
+    static let qqMusicMetadata = DiskCacheBudget(
+        maxBytes: 8 * 1024 * 1024,
+        targetFraction: 0.75,
+        maxAge: 7 * 24 * 3600
+    )
+
+    /// External playback downloaded artwork: 48 MB.
+    static let externalPlaybackArtwork = DiskCacheBudget(
+        maxBytes: 48 * 1024 * 1024,
+        targetFraction: 0.80,
+        maxAge: 14 * 24 * 3600
+    )
+
+    /// Header color analysis cache: 4 MB.
+    static let headerColors = DiskCacheBudget(
+        maxBytes: 4 * 1024 * 1024,
+        targetFraction: 0.80,
+        maxAge: 30 * 24 * 3600
+    )
+
+    /// App-wide recommended total disk cache ceiling (~444 MB).
+    static let totalCeilingBytes: Int64 =
+        trackOriginals.maxBytes +
+        trackDerivatives.maxBytes +
+        playlistDerivatives.maxBytes +
+        qqMusicImages.maxBytes +
+        qqMusicMetadata.maxBytes +
+        externalPlaybackArtwork.maxBytes +
+        headerColors.maxBytes
+}
+
+nonisolated struct DiskCacheUsageSummary: Sendable, Equatable {
+    let trackOriginalsBytes: Int64
+    let trackDerivativesBytes: Int64
+    let playlistDerivativesBytes: Int64
+    let qqMusicCoverBytes: Int64
+    let externalPlaybackArtworkBytes: Int64
+    let colorsBytes: Int64
+    let otherBytes: Int64
+    let totalBytes: Int64
+    let totalFileCount: Int
+
+    static let zero = DiskCacheUsageSummary(
+        trackOriginalsBytes: 0,
+        trackDerivativesBytes: 0,
+        playlistDerivativesBytes: 0,
+        qqMusicCoverBytes: 0,
+        externalPlaybackArtworkBytes: 0,
+        colorsBytes: 0,
+        otherBytes: 0,
+        totalBytes: 0,
+        totalFileCount: 0
+    )
+
+    var formattedTotalSize: String {
+        ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+    }
+}
+
 /// Bounds rebuildable disk caches without making the cache format aware of the
 /// individual image or metadata producers.
 nonisolated enum DiskCacheRetention {
     static func trim(
         at rootURL: URL,
         maxBytes: Int64,
-        targetFraction: Double = 0.88,
+        targetFraction: Double = 0.80,
+        maxAge: TimeInterval? = nil,
+        recursive: Bool = false,
+        preservedFileNames: Set<String> = [],
         fileManager: FileManager = .default
     ) -> DiskCacheTrimResult {
-        guard maxBytes > 0,
-              let urls = try? fileManager.contentsOfDirectory(
+        guard maxBytes > 0 else { return .empty }
+        let urls: [URL]
+        if recursive {
+            guard let enumerator = fileManager.enumerator(
                 at: rootURL,
                 includingPropertiesForKeys: [
                     .isRegularFileKey,
@@ -34,14 +142,33 @@ nonisolated enum DiskCacheRetention {
                     .fileSizeKey,
                 ],
                 options: [.skipsHiddenFiles]
-              )
-        else {
-            return .empty
+            ) else {
+                return .empty
+            }
+            urls = enumerator.compactMap { $0 as? URL }
+        } else {
+            guard let immediate = try? fileManager.contentsOfDirectory(
+                at: rootURL,
+                includingPropertiesForKeys: [
+                    .isRegularFileKey,
+                    .contentModificationDateKey,
+                    .fileSizeKey,
+                ],
+                options: [.skipsHiddenFiles]
+            ) else {
+                return .empty
+            }
+            urls = immediate
         }
 
         var records: [(url: URL, size: Int64, modified: Date)] = []
         records.reserveCapacity(urls.count)
         var totalBytes: Int64 = 0
+        var removedFileCount = 0
+        var removedBytes: Int64 = 0
+
+        let now = Date()
+        let cutoffDate = maxAge.map { now.addingTimeInterval(-$0) }
 
         for url in urls {
             guard let values = try? url.resourceValues(
@@ -49,24 +176,37 @@ nonisolated enum DiskCacheRetention {
             ), values.isRegularFile == true else {
                 continue
             }
+            if preservedFileNames.contains(url.lastPathComponent) {
+                continue
+            }
             let size = Int64(values.fileSize ?? 0)
+            let modified = values.contentModificationDate ?? .distantPast
+
+            if let cutoff = cutoffDate, modified < cutoff {
+                do {
+                    try fileManager.removeItem(at: url)
+                    removedFileCount += 1
+                    removedBytes += size
+                } catch {
+                    continue
+                }
+                continue
+            }
+
             totalBytes += size
-            records.append(
-                (
-                    url: url,
-                    size: size,
-                    modified: values.contentModificationDate ?? .distantPast
-                )
-            )
+            records.append((url: url, size: size, modified: modified))
         }
 
-        guard totalBytes > maxBytes else { return .empty }
+        guard totalBytes > maxBytes else {
+            return DiskCacheTrimResult(
+                removedFileCount: removedFileCount,
+                removedBytes: removedBytes
+            )
+        }
 
         let clampedFraction = min(1, max(0, targetFraction))
         let targetBytes = Int64(Double(maxBytes) * clampedFraction)
         var currentBytes = totalBytes
-        var removedFileCount = 0
-        var removedBytes: Int64 = 0
 
         for record in records.sorted(by: { $0.modified < $1.modified })
         where currentBytes > targetBytes {
@@ -84,6 +224,52 @@ nonisolated enum DiskCacheRetention {
             removedFileCount: removedFileCount,
             removedBytes: removedBytes
         )
+    }
+
+    static func directorySize(
+        at rootURL: URL,
+        recursive: Bool = false,
+        fileManager: FileManager = .default
+    ) -> (bytes: Int64, fileCount: Int) {
+        guard fileManager.fileExists(atPath: rootURL.path) else {
+            return (0, 0)
+        }
+        var totalBytes: Int64 = 0
+        var fileCount = 0
+
+        if recursive {
+            guard let enumerator = fileManager.enumerator(
+                at: rootURL,
+                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                return (0, 0)
+            }
+            for case let url as URL in enumerator {
+                if let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                   values.isRegularFile == true {
+                    totalBytes += Int64(values.fileSize ?? 0)
+                    fileCount += 1
+                }
+            }
+        } else {
+            guard let items = try? fileManager.contentsOfDirectory(
+                at: rootURL,
+                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                return (0, 0)
+            }
+            for url in items {
+                if let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                   values.isRegularFile == true {
+                    totalBytes += Int64(values.fileSize ?? 0)
+                    fileCount += 1
+                }
+            }
+        }
+
+        return (totalBytes, fileCount)
     }
 }
 
@@ -126,6 +312,7 @@ nonisolated enum CacheManager {
         HomeArtworkMemoryStore.shared.clearMemory()
         HomePlaylistCardCoverStore.shared.clearMemory()
         HomePlaylistPreviewArtworkStore.shared.clearMemory()
+        FastArtworkMemoryCache.shared.removeAll()
         BKThemeAssets.shared.purgeTransientCaches()
 
         await ArtworkAssetStore.shared.purgeHydratedImages()
@@ -164,8 +351,11 @@ nonisolated enum CacheManager {
         reason: String,
         cacheServices: LibraryCacheServices? = nil
     ) async {
-        purgeHomePresentationMemoryCaches()
+        if !HomeWindowLayoutState.shared.isHomeMode {
+            purgeHomePresentationMemoryCaches()
+        }
         BKThemeAssets.shared.purgeTransientCaches()
+        ArtAssetLoader.shared.purgeCache()
         await CoverGradientBlurMemory.clear()
         await ClassicArtworkFrameExtendedArtworkCache.shared.removeAll()
         ClassicArtworkFrameExtendedArtworkRenderer.clearCaches()
@@ -176,6 +366,7 @@ nonisolated enum CacheManager {
             await cacheServices.playlistArtworkPipeline.clearMemory()
         }
         await ArtworkLoader.clearMemoryCache()
+        FastArtworkMemoryCache.shared.removeAll()
         await CassetteArtworkCache.shared.removeAll()
         ThemeStore.shared.clearArtworkColorCache()
         CATransaction.begin()
@@ -187,12 +378,14 @@ nonisolated enum CacheManager {
         // Multiple scheduled trim passes ensure that once the layers and textures are
         // truly released by the graphics server, the dirty pages are returned to the OS kernel.
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(150))
+            try? await Task.sleep(for: .milliseconds(200))
             CATransaction.flush()
             trimProcessMemory()
-            try? await Task.sleep(for: .milliseconds(350))
+            try? await Task.sleep(for: .milliseconds(450))
+            CATransaction.flush()
             trimProcessMemory()
-            try? await Task.sleep(for: .milliseconds(700))
+            try? await Task.sleep(for: .milliseconds(750))
+            CATransaction.flush()
             trimProcessMemory()
         }
 
@@ -203,7 +396,18 @@ nonisolated enum CacheManager {
     }
 
     nonisolated static func trimProcessMemory() {
-        malloc_zone_pressure_relief(nil, 0)
+        let pressureGoal = 1024 * 1024 * 1024
+        var count: UInt32 = 0
+        var zonesPtr: UnsafeMutablePointer<vm_address_t>?
+        if malloc_get_all_zones(mach_task_self_, nil, &zonesPtr, &count) == KERN_SUCCESS, let zonesPtr {
+            for i in 0..<Int(count) {
+                if let zone = UnsafeMutablePointer<malloc_zone_t>(bitPattern: UInt(zonesPtr[i])) {
+                    malloc_zone_pressure_relief(zone, pressureGoal)
+                }
+            }
+        } else {
+            malloc_zone_pressure_relief(nil, pressureGoal)
+        }
     }
 
     @MainActor
@@ -230,6 +434,9 @@ nonisolated enum CacheManager {
         await externalPlaybackMetadataStore.clearAutomaticCaches()
         try? await amllDBService.clearIndex()
 
+        // Flush system URLCache so network image responses don't stay cached in ~/Library/Caches
+        URLCache.shared.removeAllCachedResponses()
+
         await removeDirectories(libraryCacheDirectories(for: storageLocations))
         await removeDirectories(legacyCacheDirectories(at: legacyLocations))
         _ = await cleanupStaleImportStaging(
@@ -243,6 +450,154 @@ nonisolated enum CacheManager {
             reason: "manualLibraryCacheClear",
             maxAge: 0
         )
+    }
+
+    /// Calculates current disk cache usage for all app-managed cache directories.
+    static func calculateLibraryDiskCacheUsage(
+        storage: LibraryStorageLocations
+    ) async -> DiskCacheUsageSummary {
+        await Task.detached(priority: .utility) {
+            let fileManager = FileManager.default
+            let originals = DiskCacheRetention.directorySize(at: storage.trackArtworkOriginalsURL, fileManager: fileManager)
+            let derivatives = DiskCacheRetention.directorySize(at: storage.trackArtworkDerivativesURL, fileManager: fileManager)
+            let playlistDerivatives = DiskCacheRetention.directorySize(at: storage.playlistArtworkDerivativesURL, fileManager: fileManager)
+            let qqMusic = DiskCacheRetention.directorySize(at: storage.qqMusicCoverCacheURL, recursive: true, fileManager: fileManager)
+            let extPlayback = DiskCacheRetention.directorySize(at: storage.externalPlaybackCacheRootURL, recursive: true, fileManager: fileManager)
+            let colors = DiskCacheRetention.directorySize(at: storage.colorsCacheURL, recursive: true, fileManager: fileManager)
+
+            // Accurately capture total cache root footprint (including staging, scan caches, lyrics, and home)
+            let overall = DiskCacheRetention.directorySize(at: storage.libraryCacheRootURL, recursive: true, fileManager: fileManager)
+            let knownBytes = originals.bytes + derivatives.bytes + playlistDerivatives.bytes + qqMusic.bytes + extPlayback.bytes + colors.bytes
+            let otherBytes = max(0, overall.bytes - knownBytes)
+
+            return DiskCacheUsageSummary(
+                trackOriginalsBytes: originals.bytes,
+                trackDerivativesBytes: derivatives.bytes,
+                playlistDerivativesBytes: playlistDerivatives.bytes,
+                qqMusicCoverBytes: qqMusic.bytes,
+                externalPlaybackArtworkBytes: extPlayback.bytes,
+                colorsBytes: colors.bytes,
+                otherBytes: otherBytes,
+                totalBytes: overall.bytes > 0 ? overall.bytes : knownBytes,
+                totalFileCount: overall.fileCount > 0 ? overall.fileCount : (originals.fileCount + derivatives.fileCount + playlistDerivatives.fileCount + qqMusic.fileCount + extPlayback.fileCount + colors.fileCount)
+            )
+        }.value
+    }
+
+    /// Enforces disk cache budgets across all app-managed cache directories.
+    @discardableResult
+    static func trimAllDiskCaches(
+        storage: LibraryStorageLocations
+    ) async -> DiskCacheTrimResult {
+        await Task.detached(priority: .utility) {
+            let fileManager = FileManager.default
+            var removedFiles = 0
+            var removedBytes: Int64 = 0
+
+            func applyTrim(_ result: DiskCacheTrimResult) {
+                removedFiles += result.removedFileCount
+                removedBytes += result.removedBytes
+            }
+
+            // 1. Track originals & derivatives
+            applyTrim(DiskCacheRetention.trim(
+                at: storage.trackArtworkOriginalsURL,
+                maxBytes: DiskCacheBudget.trackOriginals.maxBytes,
+                targetFraction: DiskCacheBudget.trackOriginals.targetFraction,
+                maxAge: DiskCacheBudget.trackOriginals.maxAge,
+                fileManager: fileManager
+            ))
+            applyTrim(DiskCacheRetention.trim(
+                at: storage.trackArtworkDerivativesURL,
+                maxBytes: DiskCacheBudget.trackDerivatives.maxBytes,
+                targetFraction: DiskCacheBudget.trackDerivatives.targetFraction,
+                maxAge: DiskCacheBudget.trackDerivatives.maxAge,
+                fileManager: fileManager
+            ))
+
+            // 2. Playlist derivatives
+            applyTrim(DiskCacheRetention.trim(
+                at: storage.playlistArtworkDerivativesURL,
+                maxBytes: DiskCacheBudget.playlistDerivatives.maxBytes,
+                targetFraction: DiskCacheBudget.playlistDerivatives.targetFraction,
+                maxAge: DiskCacheBudget.playlistDerivatives.maxAge,
+                fileManager: fileManager
+            ))
+
+            // 3. QQMusic covers (Images & Metadata)
+            applyTrim(DiskCacheRetention.trim(
+                at: storage.qqMusicCoverCacheURL.appendingPathComponent("Images", isDirectory: true),
+                maxBytes: DiskCacheBudget.qqMusicImages.maxBytes,
+                targetFraction: DiskCacheBudget.qqMusicImages.targetFraction,
+                maxAge: DiskCacheBudget.qqMusicImages.maxAge,
+                fileManager: fileManager
+            ))
+            applyTrim(DiskCacheRetention.trim(
+                at: storage.qqMusicCoverCacheURL.appendingPathComponent("Metadata", isDirectory: true),
+                maxBytes: DiskCacheBudget.qqMusicMetadata.maxBytes,
+                targetFraction: DiskCacheBudget.qqMusicMetadata.targetFraction,
+                maxAge: DiskCacheBudget.qqMusicMetadata.maxAge,
+                fileManager: fileManager
+            ))
+
+            // 4. External playback artwork (preserving user manual overrides)
+            let manualArtwork = ExternalPlaybackMetadataStore.loadManualArtworkFileNames(
+                from: storage.externalPlaybackMetadataURL.appendingPathComponent("records.json")
+            )
+            applyTrim(DiskCacheRetention.trim(
+                at: storage.externalPlaybackArtworkURL,
+                maxBytes: DiskCacheBudget.externalPlaybackArtwork.maxBytes,
+                targetFraction: DiskCacheBudget.externalPlaybackArtwork.targetFraction,
+                maxAge: DiskCacheBudget.externalPlaybackArtwork.maxAge,
+                preservedFileNames: manualArtwork,
+                fileManager: fileManager
+            ))
+
+            // 5. Header Colors
+            applyTrim(DiskCacheRetention.trim(
+                at: storage.headerColorCacheURL,
+                maxBytes: DiskCacheBudget.headerColors.maxBytes,
+                targetFraction: DiskCacheBudget.headerColors.targetFraction,
+                maxAge: DiskCacheBudget.headerColors.maxAge,
+                fileManager: fileManager
+            ))
+
+            // 6. Stale import staging
+            _ = await cleanupStaleImportStaging(
+                roots: [storage.importStagingRootURL],
+                reason: "periodicMaintenance",
+                maxAge: staleImportStagingAge
+            )
+
+            if removedFiles > 0 {
+                Log.info(
+                    "[CacheManager] Disk maintenance completed: removed \(removedFiles) files, freed \(ByteCountFormatter.string(fromByteCount: removedBytes, countStyle: .file))",
+                    category: .perf
+                )
+            }
+
+            return DiskCacheTrimResult(
+                removedFileCount: removedFiles,
+                removedBytes: removedBytes
+            )
+        }.value
+    }
+
+    @MainActor private static var maintainedLibraryRoots: Set<URL> = []
+
+    /// Schedules a non-blocking background disk cache maintenance pass shortly after launch.
+    @MainActor
+    static func scheduleBackgroundDiskMaintenance(storage: LibraryStorageLocations) {
+        guard !maintainedLibraryRoots.contains(storage.libraryRootURL) else { return }
+        maintainedLibraryRoots.insert(storage.libraryRootURL)
+        Task {
+            do {
+                try await Task.sleep(nanoseconds: 12_000_000_000)
+            } catch {
+                return
+            }
+            _ = await trimAllDiskCaches(storage: storage)
+        }
     }
 
     static func hasBuild7LegacyCaches() async -> Bool {
@@ -466,7 +821,9 @@ nonisolated enum CacheManager {
             locations.qqMusicCoverCacheURL,
             locations.lyricsCacheRootURL,
             locations.colorsCacheURL,
-            locations.homeCacheURL
+            locations.homeCacheURL,
+            locations.libraryScanCacheRootURL,
+            locations.sourceScanCacheRootURL,
         ]
     }
 

@@ -5,6 +5,7 @@
 //  Shared ImageIO-based artwork normalization for import and persistence.
 //
 
+import AppKit
 import Foundation
 import CoreGraphics
 import ImageIO
@@ -108,5 +109,43 @@ nonisolated enum ArtworkDataNormalizer {
         CGImageDestinationAddImage(destination, cgImage, destinationOptions as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return output as Data
+    }
+
+    /// Compresses artwork derivatives: 85% quality JPEG for opaque artwork, PNG for images with alpha.
+    static func encodedDerivativeData(
+        for image: NSImage,
+        lossyCompressionQuality: CGFloat = 0.85
+    ) -> Data? {
+        var rect = CGRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
+            guard let tiff = image.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff)
+            else {
+                return nil
+            }
+            return rep.representation(using: .jpeg, properties: [.compressionFactor: lossyCompressionQuality])
+                ?? rep.representation(using: .png, properties: [:])
+        }
+
+        let alphaInfo = cgImage.alphaInfo
+        let hasAlpha = alphaInfo == .first
+            || alphaInfo == .last
+            || alphaInfo == .premultipliedFirst
+            || alphaInfo == .premultipliedLast
+            || alphaInfo == .alphaOnly
+
+        let uti = hasAlpha ? UTType.png.identifier : UTType.jpeg.identifier
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, uti as CFString, 1, nil) else {
+            return nil
+        }
+        let options: [CFString: Any] = hasAlpha ? [:] : [
+            kCGImageDestinationLossyCompressionQuality: min(max(lossyCompressionQuality, 0), 1)
+        ]
+        CGImageDestinationAddImage(destination, cgImage, options as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
+            return nil
+        }
+        return data as Data
     }
 }

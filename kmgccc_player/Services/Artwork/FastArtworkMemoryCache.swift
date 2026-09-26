@@ -10,15 +10,15 @@ import AppKit
 import Foundation
 
 final class FastArtworkMemoryCache: @unchecked Sendable {
-    nonisolated(unsafe) static let shared = FastArtworkMemoryCache()
+    nonisolated static let shared = FastArtworkMemoryCache()
 
     private nonisolated(unsafe) let cache = NSCache<NSString, NSImage>()
 
     nonisolated private init() {
-        // 512 thumbnails (each 40x40 @ 2x = 80x80px = ~25KB uncompressed)
-        // takes ~12-16MB of RAM. Bounded to 24MB maximum.
-        cache.countLimit = 512
-        cache.totalCostLimit = 24 * 1024 * 1024
+        // 72 thumbnails (each 40x40 @ 2x = 80x80px = ~25KB uncompressed)
+        // covers 3+ screens of 120fps scrolling. Bounded to 2MB maximum.
+        cache.countLimit = 72
+        cache.totalCostLimit = 2 * 1024 * 1024
     }
 
     nonisolated func image(forKey key: String) -> NSImage? {

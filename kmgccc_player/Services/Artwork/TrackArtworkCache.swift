@@ -100,8 +100,8 @@ extension Track {
 }
 
 actor TrackArtworkCache {
-    private static let maxOriginalDiskBytes: Int64 = 512 * 1024 * 1024
-    private static let maxDerivativeDiskBytes: Int64 = 512 * 1024 * 1024
+    private static let maxOriginalDiskBytes: Int64 = DiskCacheBudget.trackOriginals.maxBytes
+    private static let maxDerivativeDiskBytes: Int64 = DiskCacheBudget.trackDerivatives.maxBytes
     private static let maxCachedSourceDataBytes = 8 * 1024 * 1024
 
     private nonisolated let originalsRootURL: URL
@@ -123,10 +123,10 @@ actor TrackArtworkCache {
     init(storage: LibraryStorageLocations) {
         self.originalsRootURL = storage.trackArtworkOriginalsURL
         self.derivativesRootURL = storage.trackArtworkDerivativesURL
-        imageCache.countLimit = 48
-        imageCache.totalCostLimit = 16 * 1024 * 1024
-        sourceDataCache.countLimit = 32
-        sourceDataCache.totalCostLimit = 6 * 1024 * 1024
+        imageCache.countLimit = 16
+        imageCache.totalCostLimit = 4 * 1024 * 1024
+        sourceDataCache.countLimit = 8
+        sourceDataCache.totalCostLimit = 2 * 1024 * 1024
         try? FileManager.default.createDirectory(at: originalsRootURL, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: derivativesRootURL, withIntermediateDirectories: true)
     }
@@ -220,6 +220,10 @@ actor TrackArtworkCache {
     }
 
     nonisolated func hasAnyDiskCache(for source: TrackArtworkSource) -> Bool {
+        if let artworkFileURL = source.artworkFileURL,
+           FileManager.default.fileExists(atPath: artworkFileURL.path) {
+            return true
+        }
         let originalURL = originalFileURL(for: source)
         if FileManager.default.fileExists(atPath: originalURL.path) {
             return true
@@ -271,31 +275,39 @@ actor TrackArtworkCache {
         }
 
         let cachedURL = originalFileURL(for: source)
-        let diskStartedAt = Self.now()
-        if let cachedData = await Self.readData(at: cachedURL), !cachedData.isEmpty {
-            guard !Task.isCancelled else { return nil }
-            if memoryGeneration == requestGeneration {
-                cacheSourceData(cachedData, for: source)
-            }
-            touchItem(at: cachedURL)
-            Self.log(
-                "disk raw hit",
-                source: source,
-                purpose: purpose,
-                detail: "bytes=\(cachedData.count) file=\(cachedURL.lastPathComponent) elapsedMs=\(Self.formatMs(Self.elapsedMs(since: diskStartedAt)))"
-            )
-            return cachedData
-        }
-        Self.log(
-            "disk miss",
-            source: source,
-            purpose: purpose,
-            detail: "kind=raw file=\(cachedURL.lastPathComponent) elapsedMs=\(Self.formatMs(Self.elapsedMs(since: diskStartedAt)))"
-        )
-
         let taskID = UUID()
         let task = Task.detached(priority: .utility) { [cachedURL] () -> Data? in
             guard !Task.isCancelled else { return nil }
+
+            // 1. Direct stream from source artwork file on disk (no duplicate copy to originalsRootURL)
+            if let sourceURL = source.artworkFileURL,
+               FileManager.default.isReadableFile(atPath: sourceURL.path) {
+                let fileStartedAt = Self.now()
+                if let fileData = try? Data(contentsOf: sourceURL), !fileData.isEmpty {
+                    Self.log(
+                        "disk raw hit (source file)",
+                        source: source,
+                        purpose: purpose,
+                        detail: "bytes=\(fileData.count) file=\(sourceURL.lastPathComponent) elapsedMs=\(Self.formatMs(Self.elapsedMs(since: fileStartedAt)))"
+                    )
+                    return fileData
+                }
+            }
+
+            // 2. Check cached original for inline data
+            let diskStartedAt = Self.now()
+            if let cachedData = try? Data(contentsOf: cachedURL), !cachedData.isEmpty {
+                Self.touchItem(at: cachedURL)
+                Self.log(
+                    "disk raw hit",
+                    source: source,
+                    purpose: purpose,
+                    detail: "bytes=\(cachedData.count) file=\(cachedURL.lastPathComponent) elapsedMs=\(Self.formatMs(Self.elapsedMs(since: diskStartedAt)))"
+                )
+                return cachedData
+            }
+
+            // 3. Fallback for inline metadata tag data
             if let inline = source.inlineArtworkData, !inline.isEmpty {
                 guard !Task.isCancelled else { return nil }
                 let startedAt = Self.now()
@@ -314,40 +326,13 @@ actor TrackArtworkCache {
                 return inline
             }
 
-            let fallbackStartedAt = Self.now()
-            guard let sourceURL = source.artworkFileURL,
-                  let data = try? Data(contentsOf: sourceURL),
-                  !data.isEmpty,
-                  !Task.isCancelled
-            else {
-                Self.log(
-                    "sidecar / audio file fallback",
-                    source: source,
-                    purpose: purpose,
-                    detail: "result=miss elapsedMs=\(Self.formatMs(Self.elapsedMs(since: fallbackStartedAt)))"
-                )
-                return nil
-            }
             Self.log(
-                "sidecar / audio file fallback",
+                "disk miss",
                 source: source,
                 purpose: purpose,
-                detail: "result=hit bytes=\(data.count) name=\(sourceURL.lastPathComponent) elapsedMs=\(Self.formatMs(Self.elapsedMs(since: fallbackStartedAt)))"
+                detail: "kind=raw file=\(cachedURL.lastPathComponent)"
             )
-
-            let writeStartedAt = Self.now()
-            try? FileManager.default.createDirectory(
-                at: cachedURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try? data.write(to: cachedURL, options: .atomic)
-            Self.log(
-                "write raw cache",
-                source: source,
-                purpose: purpose,
-                detail: "source=file bytes=\(data.count) file=\(cachedURL.lastPathComponent) elapsedMs=\(Self.formatMs(Self.elapsedMs(since: writeStartedAt)))"
-            )
-            return data
+            return nil
         }
 
         sourceDataTasks[source.sourceKey] = task
@@ -361,7 +346,7 @@ actor TrackArtworkCache {
         if memoryGeneration == requestGeneration {
             cacheSourceData(data, for: source)
         }
-        if data != nil {
+        if data != nil, source.inlineArtworkData != nil {
             recordDiskWriteAndTrimIfNeeded()
         }
         return data
@@ -395,7 +380,7 @@ actor TrackArtworkCache {
             if memoryGeneration == requestGeneration {
                 setMemoryImage(diskImage, key: imageKey)
             }
-            touchItem(at: diskURL)
+            Self.touchItem(at: diskURL)
             Self.log(
                 "disk derivative hit",
                 source: source,
@@ -532,20 +517,20 @@ actor TrackArtworkCache {
     ) {
         guard memoryGeneration == generation, !Task.isCancelled else { return }
         setMemoryImage(image, key: key)
-        guard let png = Self.pngData(for: image) else { return }
+        guard let encoded = Self.encodedImageData(for: image) else { return }
         let startedAt = Self.now()
         try? fileManager.createDirectory(
             at: diskURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try? png.write(to: diskURL, options: .atomic)
+        try? encoded.write(to: diskURL, options: .atomic)
         recordDiskWriteAndTrimIfNeeded()
         Self.log(
             "write derivative cache",
             source: nil,
             imageKey: key,
             purpose: "cache",
-            detail: "bytes=\(png.count) file=\(diskURL.lastPathComponent) elapsedMs=\(Self.formatMs(Self.elapsedMs(since: startedAt)))"
+            detail: "bytes=\(encoded.count) file=\(diskURL.lastPathComponent) elapsedMs=\(Self.formatMs(Self.elapsedMs(since: startedAt)))"
         )
     }
 
@@ -559,18 +544,22 @@ actor TrackArtworkCache {
 
     private func recordDiskWriteAndTrimIfNeeded() {
         diskWriteCounter += 1
-        guard diskWriteCounter.isMultiple(of: 26) else { return }
+        guard diskWriteCounter.isMultiple(of: 16) else { return }
         trimDiskCaches()
     }
 
     private func trimDiskCaches() {
         let originalResult = DiskCacheRetention.trim(
             at: originalsRootURL,
-            maxBytes: Self.maxOriginalDiskBytes
+            maxBytes: Self.maxOriginalDiskBytes,
+            targetFraction: DiskCacheBudget.trackOriginals.targetFraction,
+            maxAge: DiskCacheBudget.trackOriginals.maxAge
         )
         let derivativeResult = DiskCacheRetention.trim(
             at: derivativesRootURL,
-            maxBytes: Self.maxDerivativeDiskBytes
+            maxBytes: Self.maxDerivativeDiskBytes,
+            targetFraction: DiskCacheBudget.trackDerivatives.targetFraction,
+            maxAge: DiskCacheBudget.trackDerivatives.maxAge
         )
         let removedFileCount = originalResult.removedFileCount + derivativeResult.removedFileCount
         let removedBytes = originalResult.removedBytes + derivativeResult.removedBytes
@@ -665,8 +654,8 @@ actor TrackArtworkCache {
         }
     }
 
-    private func touchItem(at url: URL) {
-        try? fileManager.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+    private nonisolated static func touchItem(at url: URL) {
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
     }
 
     private nonisolated static func downsampledImage(data: Data, maxPixelSize: Int) -> NSImage? {
@@ -694,25 +683,12 @@ actor TrackArtworkCache {
         )
     }
 
+    private nonisolated static func encodedImageData(for image: NSImage) -> Data? {
+        ArtworkDataNormalizer.encodedDerivativeData(for: image, lossyCompressionQuality: 0.85)
+    }
+
     private nonisolated static func pngData(for image: NSImage) -> Data? {
-        var rect = CGRect(origin: .zero, size: image.size)
-        guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
-            guard let tiff = image.tiffRepresentation,
-                  let rep = NSBitmapImageRep(data: tiff)
-            else {
-                return nil
-            }
-            return rep.representation(using: .png, properties: [:])
-        }
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
-            return nil
-        }
-        CGImageDestinationAddImage(destination, cgImage, nil)
-        guard CGImageDestinationFinalize(destination) else {
-            return nil
-        }
-        return data as Data
+        encodedImageData(for: image)
     }
 
     private nonisolated static func estimatedCost(for image: NSImage) -> Int {

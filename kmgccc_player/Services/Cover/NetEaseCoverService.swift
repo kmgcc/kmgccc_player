@@ -168,6 +168,7 @@ private extension NetEaseCoverService {
 
     nonisolated static func makeDefaultSession() -> URLSession {
         let configuration = URLSessionConfiguration.default
+        configuration.urlCache = nil
         configuration.timeoutIntervalForRequest = CoverLookupConfiguration.netEasePreferredTimeout
         configuration.timeoutIntervalForResource = CoverLookupConfiguration.netEaseCandidatesTimeout
         return URLSession(configuration: configuration)

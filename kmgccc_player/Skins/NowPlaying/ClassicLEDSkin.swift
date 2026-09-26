@@ -230,7 +230,7 @@ private struct ClassicArtworkCoverContainer: View {
             Int(ceil(size * max(1, displayScale) * max(1, rasterScale) * finalScale))
         )
         let roundedPixel = ((targetPixel + 127) / 128) * 128
-        let maxPixel = min(1_024, roundedPixel)
+        let maxPixel = min(896, roundedPixel)
         return ClassicArtworkFrameMaskRequest(index: index, maxPixel: maxPixel)
     }
 
@@ -447,6 +447,10 @@ private struct ArtworkFrameMaskedImageView: View {
             Task {
                 await ClassicArtworkFrameExtendedArtworkCache.shared.removeAll()
                 ClassicArtworkFrameExtendedArtworkRenderer.clearCaches()
+                await MainActor.run {
+                    CATransaction.flush()
+                    CacheManager.trimProcessMemory()
+                }
             }
         }
     }
@@ -468,7 +472,7 @@ private struct ArtworkFrameMaskedImageView: View {
             Int(ceil(size * max(1, displayScale) * max(1, rasterScale) * finalMaskedArtworkScale))
         )
         let rounded = ((rawPixel + 63) / 64) * 64
-        return min(1_024, rounded)
+        return min(896, rounded)
     }
 
     private var processingKey: String {

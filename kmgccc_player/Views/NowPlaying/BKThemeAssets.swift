@@ -131,16 +131,16 @@ final class BKThemeAssets: @unchecked Sendable {
         self.fullscreenCircleOuterEntries = fullscreenCircleEntries.outer
         self.fullscreenCircleInnerEntries = fullscreenCircleEntries.inner
 
-        backgroundCache.countLimit = 2
+        backgroundCache.countLimit = 1
         backgroundCache.totalCostLimit = 4 * 1024 * 1024
-        shapeCache.countLimit = 2
-        shapeCache.totalCostLimit = 4 * 1024 * 1024
-        maskCache.countLimit = 2
-        maskCache.totalCostLimit = 4 * 1024 * 1024
+        shapeCache.countLimit = 1
+        shapeCache.totalCostLimit = 2 * 1024 * 1024
+        maskCache.countLimit = 1
+        maskCache.totalCostLimit = 2 * 1024 * 1024
         artworkFrameCache.countLimit = 1
-        artworkFrameCache.totalCostLimit = 4 * 1024 * 1024
-        fullscreenCircleCache.countLimit = 2
-        fullscreenCircleCache.totalCostLimit = 4 * 1024 * 1024
+        artworkFrameCache.totalCostLimit = 2 * 1024 * 1024
+        fullscreenCircleCache.countLimit = 1
+        fullscreenCircleCache.totalCostLimit = 1 * 1024 * 1024
     }
 
     nonisolated func backgrounds(maxPixel: Int) -> [CGImage] {

@@ -365,7 +365,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             reason: "closeEmbedded"
         )
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(420))
+            try? await Task.sleep(for: .milliseconds(650))
             self?.schedulePresentationCachePurge(reason: "embedded fullscreen dismissed")
         }
         PaneLayoutTrace.log("fullscreen.closeEmbedded end")

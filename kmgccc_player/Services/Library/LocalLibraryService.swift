@@ -1406,23 +1406,42 @@ final class LocalLibraryService {
         }
     }
 
-    func loadPlaylistArtworkRecord(playlistID: UUID) -> PersistedPlaylistArtworkRecord {
+    func loadPlaylistArtworkRecord(playlistID: UUID, maxPixelSize: Int = 320) -> PersistedPlaylistArtworkRecord {
         let sidecar = loadPlaylistSidecar(playlistID: playlistID)
         let migratedSidecar = migrateLegacyPlaylistArtworkIfNeeded(
             playlistID: playlistID,
             sidecar: sidecar
         )
 
-        let customArtwork = loadPersistedPlaylistArtwork(
-            playlistID: playlistID,
-            fileName: migratedSidecar?.customHeaderArtworkFileName,
-            source: .custom
-        )
-        let generatedArtwork = loadPersistedPlaylistArtwork(
-            playlistID: playlistID,
-            fileName: migratedSidecar?.generatedHeaderArtworkFileName,
-            source: .generated
-        )
+        let customArtwork: PersistedPlaylistArtwork?
+        let generatedArtwork: PersistedPlaylistArtwork?
+
+        if let customFileName = migratedSidecar?.customHeaderArtworkFileName {
+            customArtwork = loadPersistedPlaylistArtwork(
+                playlistID: playlistID,
+                fileName: customFileName,
+                source: .custom,
+                maxPixelSize: maxPixelSize
+            )
+            if customArtwork == nil {
+                generatedArtwork = loadPersistedPlaylistArtwork(
+                    playlistID: playlistID,
+                    fileName: migratedSidecar?.generatedHeaderArtworkFileName,
+                    source: .generated,
+                    maxPixelSize: maxPixelSize
+                )
+            } else {
+                generatedArtwork = nil
+            }
+        } else {
+            customArtwork = nil
+            generatedArtwork = loadPersistedPlaylistArtwork(
+                playlistID: playlistID,
+                fileName: migratedSidecar?.generatedHeaderArtworkFileName,
+                source: .generated,
+                maxPixelSize: maxPixelSize
+            )
+        }
 
         return PersistedPlaylistArtworkRecord(
             customArtwork: customArtwork,
@@ -1878,13 +1897,14 @@ final class LocalLibraryService {
     private func loadPersistedPlaylistArtwork(
         playlistID _: UUID,
         fileName: String?,
-        source: PlaylistArtworkSource
+        source: PlaylistArtworkSource,
+        maxPixelSize: Int = 320
     ) -> PersistedPlaylistArtwork? {
         guard let fileName else { return nil }
         let fileURL = paths.playlistsRootURL.appendingPathComponent(fileName)
         guard
             fileManager.fileExists(atPath: fileURL.path),
-            let image = downsampledArtworkImage(fileURL: fileURL, maxPixelSize: 680)
+            let image = downsampledArtworkImage(fileURL: fileURL, maxPixelSize: maxPixelSize)
         else {
             return nil
         }

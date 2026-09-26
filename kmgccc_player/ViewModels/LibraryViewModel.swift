@@ -1373,6 +1373,11 @@ final class LibraryViewModel {
 
             loadingPhase = .loaded
             state = .loaded
+            CacheManager.trimProcessMemory()
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(500))
+                CacheManager.trimProcessMemory()
+            }
 
             let elapsed = Date().timeIntervalSince(startTime)
             Log.info(

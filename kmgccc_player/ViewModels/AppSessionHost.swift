@@ -1344,6 +1344,7 @@ final class AppSessionHost: ObservableObject {
     private func publishActiveSession(_ session: LibrarySession) async {
         uiState.clearLibraryImportFailureReports()
         activeLibraryBinding.publish(session)
+        CacheManager.scheduleBackgroundDiskMaintenance(storage: session.cacheServices.storageLocations)
         await bindReferencedScanStatePush(for: session)
         bindLibraryTaskStatePush(for: session)
         CrashReportService.shared.bindLibraryRoot(session.context.rootURL)

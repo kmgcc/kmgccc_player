@@ -35,8 +35,8 @@ actor PlaylistArtworkPipeline {
 
     init(derivativeStore: ArtworkDerivativeCacheStore) {
         self.derivativeStore = derivativeStore
-        memoryCache.countLimit = 256
-        memoryCache.totalCostLimit = 16 * 1024 * 1024
+        memoryCache.countLimit = 32
+        memoryCache.totalCostLimit = 2 * 1024 * 1024
     }
 
     func preheat(requests: [PlaylistArtworkRequest]) async {

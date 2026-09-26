@@ -39,6 +39,7 @@ actor AMLLDBClient {
 
     init() {
         let config = URLSessionConfiguration.default
+        config.urlCache = nil
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 120
         self.session = URLSession(configuration: config)

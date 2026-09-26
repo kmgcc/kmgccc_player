@@ -21,7 +21,7 @@ private final class ArtworkDerivativeImageBox: NSObject {
 actor ArtworkDerivativeCacheStore {
     private let memoryCache = NSCache<NSString, ArtworkDerivativeImageBox>()
     private let fileManager = FileManager.default
-    private let maxDiskBytes: Int64 = 220 * 1024 * 1024
+    private let maxDiskBytes: Int64 = DiskCacheBudget.playlistDerivatives.maxBytes
     private let decodeGate = ArtworkDecodeGate(maxConcurrent: 2)
     private var writeCounter = 0
     private var didScheduleInitialDiskTrim = false
@@ -30,8 +30,8 @@ actor ArtworkDerivativeCacheStore {
 
     init(diskRootURL: URL) {
         self.diskRootURL = diskRootURL
-        memoryCache.countLimit = 96
-        memoryCache.totalCostLimit = 16 * 1024 * 1024
+        memoryCache.countLimit = 32
+        memoryCache.totalCostLimit = 4 * 1024 * 1024
 
         try? fileManager.createDirectory(at: diskRootURL, withIntermediateDirectories: true)
     }
@@ -209,12 +209,12 @@ actor ArtworkDerivativeCacheStore {
     }
 
     private func persist(image: NSImage, to url: URL) {
-        guard let png = pngData(for: image) else { return }
+        guard let encoded = encodedImageData(for: image) else { return }
         try? fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? png.write(to: url, options: .atomic)
+        try? encoded.write(to: url, options: .atomic)
 
         writeCounter += 1
-        if writeCounter.isMultiple(of: 26) {
+        if writeCounter.isMultiple(of: 16) {
             trimDiskIfNeeded()
         }
     }
@@ -252,6 +252,8 @@ actor ArtworkDerivativeCacheStore {
         let result = DiskCacheRetention.trim(
             at: diskRootURL,
             maxBytes: maxDiskBytes,
+            targetFraction: DiskCacheBudget.playlistDerivatives.targetFraction,
+            maxAge: DiskCacheBudget.playlistDerivatives.maxAge,
             fileManager: fileManager
         )
         guard result.removedFileCount > 0 else { return }
@@ -261,23 +263,12 @@ actor ArtworkDerivativeCacheStore {
         )
     }
 
+    private func encodedImageData(for image: NSImage) -> Data? {
+        ArtworkDataNormalizer.encodedDerivativeData(for: image, lossyCompressionQuality: 0.85)
+    }
+
     private func pngData(for image: NSImage) -> Data? {
-        var rect = CGRect(origin: .zero, size: image.size)
-        guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
-            guard let tiff = image.tiffRepresentation,
-                  let rep = NSBitmapImageRep(data: tiff)
-            else { return nil }
-            return rep.representation(using: .png, properties: [:])
-        }
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
-            return nil
-        }
-        CGImageDestinationAddImage(destination, cgImage, nil)
-        guard CGImageDestinationFinalize(destination) else {
-            return nil
-        }
-        return data as Data
+        encodedImageData(for: image)
     }
 
     private func estimatedCost(for image: NSImage) -> Int {

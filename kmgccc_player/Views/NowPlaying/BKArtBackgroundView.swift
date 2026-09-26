@@ -3428,19 +3428,19 @@ private final class BKArtBackgroundLayerView: NSView {
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         let longestEdge = max(bounds.width, bounds.height)
         let nativePixel = Int(max(1, (longestEdge * scale).rounded()))
-        let backgroundCap = resourceProfile == .cassetteForeground ? 1_024 : 1_280
-        let backgroundFloor = resourceProfile == .cassetteForeground ? 640 : 960
-        let shapeCap = resourceProfile == .cassetteForeground ? 320 : 512
-        let shapeFloor = resourceProfile == .cassetteForeground ? 192 : 256
-        let maskCap = resourceProfile == .cassetteForeground ? 512 : 768
-        let maskFloor = resourceProfile == .cassetteForeground ? 384 : 512
-        let circleCap = resourceProfile == .cassetteForeground ? 256 : 384
-        let circleFloor = resourceProfile == .cassetteForeground ? 192 : 256
+        let backgroundCap = resourceProfile == .cassetteForeground ? 1_024 : 1_024
+        let backgroundFloor = resourceProfile == .cassetteForeground ? 640 : 768
+        let shapeCap = resourceProfile == .cassetteForeground ? 256 : 320
+        let shapeFloor = resourceProfile == .cassetteForeground ? 192 : 192
+        let maskCap = resourceProfile == .cassetteForeground ? 256 : 256
+        let maskFloor = resourceProfile == .cassetteForeground ? 160 : 160
+        let circleCap = resourceProfile == .cassetteForeground ? 256 : 256
+        let circleFloor = resourceProfile == .cassetteForeground ? 192 : 192
         let background = min(max(nativePixel, backgroundFloor), backgroundCap)
-        let shapeDivisor = resourceProfile == .cassetteForeground ? 4 : 3
+        let shapeDivisor = 4
         let shape = min(max(background / shapeDivisor, shapeFloor), shapeCap)
-        let mask = min(max(background / 2, maskFloor), maskCap)
-        let circle = min(max(background / 3, circleFloor), circleCap)
+        let mask = min(max(background / 4, maskFloor), maskCap)
+        let circle = min(max(background / 4, circleFloor), circleCap)
         return BKThemeAssets.PixelBudget(background: background, shape: shape, mask: mask, circle: circle)
     }
 
