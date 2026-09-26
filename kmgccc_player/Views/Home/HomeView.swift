@@ -337,27 +337,30 @@ struct HomeView: View {
             // `VStack` keeps the 5 dashboard sections instantiated and laid out once.
             // Eliminates view deallocation during downward scrolling and heavy main-thread
             // rematerialization/re-loading when scrolling back up.
-            VStack(spacing: mode.sectionSpacing) {
-                ForEach(settings.homeSectionOrder) { section in
-                    homeSection(
-                        section,
-                        mode: mode,
-                        contentWidth: contentWidth,
-                        centerLeftPad: centerLeftPad,
-                        centerRightPad: centerRightPad,
-                        accentColor: accentColor,
-                        titleColor: appFgPrimary,
-                        subtitleColor: appFgSecondary,
-                        tertiaryColor: appFgTertiary
-                    )
+            // `GlassEffectContainer` shares backdrop sampling across adjacent glass cards.
+            GlassEffectContainer(spacing: 0) {
+                VStack(spacing: mode.sectionSpacing) {
+                    ForEach(settings.homeSectionOrder) { section in
+                        homeSection(
+                            section,
+                            mode: mode,
+                            contentWidth: contentWidth,
+                            centerLeftPad: centerLeftPad,
+                            centerRightPad: centerRightPad,
+                            accentColor: accentColor,
+                            titleColor: appFgPrimary,
+                            subtitleColor: appFgSecondary,
+                            tertiaryColor: appFgTertiary
+                        )
+                    }
+
+                    footer(theme: theme)
+                        .padding(.leading, centerLeftPad)
+                        .padding(.trailing, centerRightPad)
+
+                    // Bottom safe space so the Mini Player doesn't cover footer text.
+                    Color.clear.frame(height: 120)
                 }
-
-                footer(theme: theme)
-                    .padding(.leading, centerLeftPad)
-                    .padding(.trailing, centerRightPad)
-
-                // Bottom safe space so the Mini Player doesn't cover footer text.
-                Color.clear.frame(height: 120)
             }
             // Top safe-area inset so the Hero card clears the unified
             // titlebar/toolbar at the initial scroll position. The

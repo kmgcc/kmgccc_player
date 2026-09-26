@@ -368,6 +368,7 @@ nonisolated enum CacheManager {
         await ArtworkLoader.clearMemoryCache()
         FastArtworkMemoryCache.shared.removeAll()
         await CassetteArtworkCache.shared.removeAll()
+        KmgcccCassetteSkin.purgeCaches()
         ThemeStore.shared.clearArtworkColorCache()
         CATransaction.begin()
         CATransaction.flush()
@@ -378,13 +379,13 @@ nonisolated enum CacheManager {
         // Multiple scheduled trim passes ensure that once the layers and textures are
         // truly released by the graphics server, the dirty pages are returned to the OS kernel.
         Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(100))
+            CATransaction.flush()
+            trimProcessMemory()
             try? await Task.sleep(for: .milliseconds(200))
             CATransaction.flush()
             trimProcessMemory()
-            try? await Task.sleep(for: .milliseconds(450))
-            CATransaction.flush()
-            trimProcessMemory()
-            try? await Task.sleep(for: .milliseconds(750))
+            try? await Task.sleep(for: .milliseconds(300))
             CATransaction.flush()
             trimProcessMemory()
         }

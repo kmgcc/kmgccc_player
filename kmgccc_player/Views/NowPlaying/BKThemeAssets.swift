@@ -101,7 +101,19 @@ final class BKThemeAssets: @unchecked Sendable {
     private nonisolated(unsafe) let fullscreenCircleCache = NSCache<NSString, FullscreenCircleLoadResultBox>()
     private let assetLoader = ArtAssetLoader.shared
 
-    private nonisolated static let maskProcessingContext = CIContext(options: [.cacheIntermediates: false])
+    private nonisolated(unsafe) static var maskProcessingContext: CIContext?
+    private nonisolated static let maskProcessingContextLock = NSLock()
+
+    private nonisolated static func currentMaskProcessingContext() -> CIContext {
+        maskProcessingContextLock.lock()
+        defer { maskProcessingContextLock.unlock() }
+        if let existing = maskProcessingContext {
+            return existing
+        }
+        let created = CIContext(options: [.cacheIntermediates: false])
+        maskProcessingContext = created
+        return created
+    }
 
     private init() {
         let resolvedBundle = Self.resolveBundle()
@@ -359,7 +371,10 @@ final class BKThemeAssets: @unchecked Sendable {
         maskCache.removeAllObjects()
         artworkFrameCache.removeAllObjects()
         fullscreenCircleCache.removeAllObjects()
-        Self.maskProcessingContext.clearCaches()
+        Self.maskProcessingContextLock.lock()
+        Self.maskProcessingContext?.clearCaches()
+        Self.maskProcessingContext = nil
+        Self.maskProcessingContextLock.unlock()
         assetLoader.purgeCache()
     }
 
@@ -692,7 +707,7 @@ final class BKThemeAssets: @unchecked Sendable {
     private nonisolated static func maskAlphaImage(from image: CGImage) -> CGImage? {
         let input = CIImage(cgImage: image)
         let alphaMask = input.applyingFilter("CIMaskToAlpha")
-        return maskProcessingContext.createCGImage(alphaMask, from: alphaMask.extent)
+        return currentMaskProcessingContext().createCGImage(alphaMask, from: alphaMask.extent)
     }
 
     private static func shapeIndex(from fileName: String) -> Int? {

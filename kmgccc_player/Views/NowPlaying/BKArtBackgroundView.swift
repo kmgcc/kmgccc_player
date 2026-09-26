@@ -3042,19 +3042,37 @@ private final class BKArtBackgroundLayerView: NSView {
         }
         let finalImage = toneMap(image: composed, isDark: isDark)
         let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
-        let rendered = backgroundRenderContext.createCGImage(
+        let ctx = currentBackgroundRenderContext()
+        let rendered = ctx.createCGImage(
             finalImage,
             from: input.extent,
             format: .RGBA8,
             colorSpace: outputSpace
         )
-        backgroundRenderContext.clearCaches()
+        ctx.clearCaches()
         return rendered
     }
 
-    private nonisolated static let backgroundRenderContext = CIContext(
-        options: [.cacheIntermediates: false]
-    )
+    private nonisolated(unsafe) static var backgroundRenderContext: CIContext?
+    private nonisolated static let backgroundRenderContextLock = NSLock()
+
+    private nonisolated static func currentBackgroundRenderContext() -> CIContext {
+        backgroundRenderContextLock.lock()
+        defer { backgroundRenderContextLock.unlock() }
+        if let existing = backgroundRenderContext {
+            return existing
+        }
+        let created = CIContext(options: [.cacheIntermediates: false])
+        backgroundRenderContext = created
+        return created
+    }
+
+    private nonisolated static func clearBackgroundRenderContext() {
+        backgroundRenderContextLock.lock()
+        defer { backgroundRenderContextLock.unlock() }
+        backgroundRenderContext?.clearCaches()
+        backgroundRenderContext = nil
+    }
 
     private nonisolated static func toneMap(image: CIImage, isDark: Bool) -> CIImage {
         image.applyingFilter(
@@ -3567,7 +3585,7 @@ private final class BKArtBackgroundLayerView: NSView {
         backgroundAssetMode = .currentPhaseLowRes
         tintedBackgroundCache.removeAllObjects()
         assets.purgeTransientCaches()
-        Self.backgroundRenderContext.clearCaches()
+        Self.clearBackgroundRenderContext()
         layer?.removeAllAnimations()
         layer?.mask = nil
         layer?.contents = nil

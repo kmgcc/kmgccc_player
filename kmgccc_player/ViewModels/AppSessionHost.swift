@@ -1738,6 +1738,12 @@ final class AppSessionHost: ObservableObject {
                     self.homeVM.refresh(from: libraryVM)
                 }
                 FirstUseHitchDiagnostics.end(token)
+                CATransaction.flush()
+                CacheManager.trimProcessMemory()
+                try? await Task.sleep(for: .seconds(3.0))
+                guard !Task.isCancelled else { return }
+                CATransaction.flush()
+                CacheManager.trimProcessMemory()
             }
 
         }
