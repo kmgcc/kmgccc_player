@@ -93,6 +93,7 @@ struct HomeAmbientShapesBackground: NSViewRepresentable {
 final class HomeAmbientRootView: NSView {
     private struct Presentation {
         let id: Int
+        let assetIndex: Int
         let shapeImage: CGImage?
         let color: NSColor
         let side: CGFloat
@@ -159,7 +160,13 @@ final class HomeAmbientRootView: NSView {
     private let randomLayoutSeed: UInt64
     private let randomizedShapeCount: Int
 
-    private static let shapeMaxPixel = 320
+    private struct TintedShapeKey: Hashable {
+        let assetIndex: Int
+        let rgba: UInt32
+    }
+    private var tintedShapeCache: [TintedShapeKey: CGImage] = [:]
+
+    private static let shapeMaxPixel = 256
 
     init(motion: HomeAmbientMotionState) {
         self.motion = motion
@@ -208,6 +215,7 @@ final class HomeAmbientRootView: NSView {
             motionSubscription = nil
             presentations = []
             removeAllShapeLayers()
+            tintedShapeCache.removeAll(keepingCapacity: false)
             shapeLoadResult = BKThemeAssets.ShapeLoadResult(images: [], scaleByIndex: [:], edgePinnedIndices: [])
             hasLoadedShapes = false
             lastLayoutSignature = nil
@@ -245,6 +253,7 @@ final class HomeAmbientRootView: NSView {
         self.motionEnabled = motionEnabled
 
         if paletteChanged {
+            tintedShapeCache.removeAll(keepingCapacity: true)
             updateBaseLayerColor()
             rebuildOrReposition(for: geometry, forceFullRebuild: true)
         }
@@ -442,6 +451,7 @@ final class HomeAmbientRootView: NSView {
             built.append(
                 Presentation(
                     id: spec.id,
+                    assetIndex: assetIndex,
                     shapeImage: image,
                     color: color,
                     side: side,
@@ -588,9 +598,11 @@ final class HomeAmbientRootView: NSView {
     private func removeAllShapeLayers() {
         for layer in layersByID.values {
             layer.mask = nil
+            layer.contents = nil
             layer.removeFromSuperlayer()
         }
         layersByID.removeAll(keepingCapacity: true)
+        tintedShapeCache.removeAll(keepingCapacity: true)
     }
 
     private func syncShapeLayers() {
@@ -598,6 +610,7 @@ final class HomeAmbientRootView: NSView {
         let activeIDs = Set(presentations.map(\.id))
         for (id, layer) in layersByID where !activeIDs.contains(id) {
             layer.mask = nil
+            layer.contents = nil
             layer.removeFromSuperlayer()
             layersByID[id] = nil
         }
@@ -612,27 +625,72 @@ final class HomeAmbientRootView: NSView {
             let bounds = CGRect(x: 0, y: 0, width: presentation.side, height: presentation.side)
             container.contentsScale = backingScale
             container.bounds = bounds
-            container.contents = nil
-            container.backgroundColor = presentation.color.homeAmbientCGColor
-
-            if let shapeImage = presentation.shapeImage {
-                let mask = container.mask ?? CALayer()
-                mask.contentsScale = backingScale
-                mask.contents = shapeImage
-                mask.contentsGravity = .resizeAspect
-                mask.minificationFilter = .linear
-                mask.magnificationFilter = .linear
-                mask.bounds = bounds
-                mask.position = CGPoint(x: bounds.midX, y: bounds.midY)
-                if container.mask !== mask {
-                    container.mask = mask
-                }
-            } else {
+            container.backgroundColor = nil
+            if container.mask != nil {
                 container.mask = nil
+            }
+
+            if let shapeImage = presentation.shapeImage,
+               let tinted = tintedShapeImage(
+                   for: shapeImage,
+                   color: presentation.color,
+                   assetIndex: presentation.assetIndex
+               ) {
+                container.contents = tinted
+                container.contentsGravity = .resizeAspect
+            } else {
+                container.contents = nil
             }
         }
 
         CATransaction.commit()
+    }
+
+    private func tintedShapeImage(
+        for shapeImage: CGImage,
+        color: NSColor,
+        assetIndex: Int
+    ) -> CGImage? {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return shapeImage }
+        let r = UInt32(min(max(rgb.redComponent, 0), 1) * 255)
+        let g = UInt32(min(max(rgb.greenComponent, 0), 1) * 255)
+        let b = UInt32(min(max(rgb.blueComponent, 0), 1) * 255)
+        let a = UInt32(min(max(rgb.alphaComponent, 0), 1) * 255)
+        let rgba = (r << 24) | (g << 16) | (b << 8) | a
+        let key = TintedShapeKey(assetIndex: assetIndex, rgba: rgba)
+        if let cached = tintedShapeCache[key] {
+            return cached
+        }
+
+        let width = shapeImage.width
+        let height = shapeImage.height
+        guard width > 0, height > 0,
+              let context = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else {
+            return shapeImage
+        }
+
+        let rect = CGRect(x: 0, y: 0, width: width, height: height)
+        context.draw(shapeImage, in: rect)
+        context.setBlendMode(.sourceIn)
+        context.setFillColor(color.homeAmbientCGColor)
+        context.fill(rect)
+
+        if let tinted = context.makeImage() {
+            if tintedShapeCache.count > 32 {
+                tintedShapeCache.removeAll(keepingCapacity: true)
+            }
+            tintedShapeCache[key] = tinted
+            return tinted
+        }
+        return shapeImage
     }
 
     private func shapeLayer(

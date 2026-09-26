@@ -328,7 +328,6 @@ final class HomeArtworkPreheater {
                 pipeline: pipeline
             ) {
                 HomeArtworkMemoryStore.shared.store(image, for: key)
-                HomePlaylistCardCoverStore.shared.store(image, for: plan.identity)
                 continue
             }
 
@@ -339,7 +338,6 @@ final class HomeArtworkPreheater {
                 pipeline: pipeline
             ) {
                 HomeArtworkMemoryStore.shared.store(image, for: key)
-                HomePlaylistCardCoverStore.shared.store(image, for: plan.identity)
             }
         }
     }

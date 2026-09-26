@@ -890,39 +890,27 @@ private struct HomePlaylistCard: View {
 }
 
 /// Main-actor synchronously-readable cache for Home playlist card cover
-/// images. Mirrors `HomePlaylistPreviewArtworkStore` but keyed by the
-/// playlist's full `headerArtworkIdentity` (selection + revision/signature)
-/// so a custom-artwork edit or generated-artwork refresh invalidates the
-/// entry automatically — the next render computes a new identity and
-/// misses the cache.
+/// images. Delegates to the central `HomeArtworkMemoryStore` to avoid
+/// duplicate decoded bitmap caches.
 @MainActor
 final class HomePlaylistCardCoverStore {
     static let shared = HomePlaylistCardCoverStore()
 
-    private var cache = CostBoundedCache<String, NSImage>(
-        countLimit: 12,
-        totalCostLimit: 4 * 1024 * 1024
-    )
-
     func cachedImage(for identity: String) -> NSImage? {
-        cache.value(forKey: identity)
+        HomeArtworkMemoryStore.shared.cachedImage(
+            for: HomeArtworkMemoryStore.playlistHeaderKey(identity: identity)
+        )
     }
 
     func store(_ image: NSImage, for identity: String) {
-        cache.insert(image, forKey: identity, cost: Self.estimatedCost(for: image))
+        HomeArtworkMemoryStore.shared.store(
+            image,
+            for: HomeArtworkMemoryStore.playlistHeaderKey(identity: identity)
+        )
     }
 
     func clearMemory() {
-        cache.removeAll()
-    }
-
-    private static func estimatedCost(for image: NSImage) -> Int {
-        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
-            return max(1, cgImage.bytesPerRow * cgImage.height)
-        }
-        let width = max(1, Int(ceil(image.size.width)))
-        let height = max(1, Int(ceil(image.size.height)))
-        return width * height * 4
+        // Owned and cleared by HomeArtworkMemoryStore.shared.clearMemory()
     }
 }
 
@@ -1127,9 +1115,8 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
 }
 
 /// Main-actor synchronously-readable cache for Home featured-card preview
-/// thumbnails. Holds the decoded `NSImage` keyed by track ID so the small
-/// 4–8 covers can survive LazyVStack rematerialization without flashing
-/// the placeholder while the actor cache is hopped to.
+/// thumbnails. Delegates to the central `HomeArtworkMemoryStore` to avoid
+/// duplicate decoded bitmap caches.
 @MainActor
 final class HomePlaylistPreviewArtworkStore {
     static let shared = HomePlaylistPreviewArtworkStore()
@@ -1139,30 +1126,21 @@ final class HomePlaylistPreviewArtworkStore {
     /// derivative key per track.
     static let previewPixelSide: CGFloat = 96
 
-    private var cache = CostBoundedCache<UUID, NSImage>(
-        countLimit: 32,
-        totalCostLimit: 2 * 1024 * 1024
-    )
-
     func cachedImage(forTrackID trackID: UUID) -> NSImage? {
-        cache.value(forKey: trackID)
+        HomeArtworkMemoryStore.shared.cachedImage(
+            for: HomeArtworkMemoryStore.playlistPreviewKey(trackID: trackID)
+        )
     }
 
     func store(_ image: NSImage, forTrackID trackID: UUID) {
-        cache.insert(image, forKey: trackID, cost: Self.estimatedCost(for: image))
+        HomeArtworkMemoryStore.shared.store(
+            image,
+            for: HomeArtworkMemoryStore.playlistPreviewKey(trackID: trackID)
+        )
     }
 
     func clearMemory() {
-        cache.removeAll()
-    }
-
-    private static func estimatedCost(for image: NSImage) -> Int {
-        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
-            return max(1, cgImage.bytesPerRow * cgImage.height)
-        }
-        let width = max(1, Int(ceil(image.size.width)))
-        let height = max(1, Int(ceil(image.size.height)))
-        return width * height * 4
+        // Owned and cleared by HomeArtworkMemoryStore.shared.clearMemory()
     }
 }
 
