@@ -1983,11 +1983,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     private func scheduleSearchIndexRebuild(reason: String) async {
         let sources = makeSearchDocumentSources(for: allTracks)
-        // Register the rebuild on the index actor before returning to any
+        // Register the sync on the index actor before returning to any
         // caller that can immediately rebuild a search page. `search()` waits
         // for the actor's pending task; spawning a separate Task here left a
         // race where the query could observe the old/empty index first.
-        await searchIndex.scheduleFullRebuild(from: sources, reason: reason)
+        await searchIndex.scheduleSync(from: sources, reason: reason)
     }
 
     private func scheduleSearchIndexUpsert(for tracks: [Track], reason: String) {

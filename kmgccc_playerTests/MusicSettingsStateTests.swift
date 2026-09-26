@@ -675,6 +675,90 @@ final class MusicSettingsStateTests: XCTestCase {
         await index.close()
     }
 
+    func testSearchIndexSynchronizeDocumentsPerformsIncrementalDiff() async throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = kmgccc_player.LibraryPaths(rootURL: root)
+        try paths.createRequiredDirectories()
+        let index = LibrarySearchIndex(paths: paths)
+
+        let track1 = UUID()
+        let track2 = UUID()
+        let source1 = SearchDocumentSource(
+            trackID: track1,
+            titleRaw: "First Track",
+            artistRaw: "Artist One",
+            albumRaw: "Album One",
+            albumArtistRaw: nil,
+            ttmlLyricsFileURL: nil,
+            plainLyricsFileURL: nil,
+            inlineTTMLText: nil,
+            inlinePlainLyricsText: nil,
+            playCount: 1,
+            preferenceScore: 10,
+            lastPlayedAt: nil,
+            updatedAt: Date(timeIntervalSince1970: 1000),
+            artistCreditsRaw: nil,
+            filePathRaw: "/Music/track1.mp3",
+            formatRaw: "mp3"
+        )
+        let source2 = SearchDocumentSource(
+            trackID: track2,
+            titleRaw: "Second Track",
+            artistRaw: "Artist Two",
+            albumRaw: "Album Two",
+            albumArtistRaw: nil,
+            ttmlLyricsFileURL: nil,
+            plainLyricsFileURL: nil,
+            inlineTTMLText: nil,
+            inlinePlainLyricsText: nil,
+            playCount: 0,
+            preferenceScore: 0,
+            lastPlayedAt: nil,
+            updatedAt: Date(timeIntervalSince1970: 1000),
+            artistCreditsRaw: nil,
+            filePathRaw: "/Music/track2.mp3",
+            formatRaw: "mp3"
+        )
+
+        await index.synchronizeDocuments([source1, source2], reason: "test-initial-sync")
+        var hits = await index.search(query: "Track", fields: [.title])
+        XCTAssertEqual(hits.count, 2)
+
+        await index.synchronizeDocuments([source1, source2], reason: "test-identical-sync")
+        hits = await index.search(query: "Track", fields: [.title])
+        XCTAssertEqual(hits.count, 2)
+
+        let track3 = UUID()
+        let source3 = SearchDocumentSource(
+            trackID: track3,
+            titleRaw: "Third Track",
+            artistRaw: "Artist Three",
+            albumRaw: "Album Three",
+            albumArtistRaw: nil,
+            ttmlLyricsFileURL: nil,
+            plainLyricsFileURL: nil,
+            inlineTTMLText: nil,
+            inlinePlainLyricsText: nil,
+            playCount: 0,
+            preferenceScore: 0,
+            lastPlayedAt: nil,
+            updatedAt: Date(timeIntervalSince1970: 2000),
+            artistCreditsRaw: nil,
+            filePathRaw: "/Music/track3.mp3",
+            formatRaw: "mp3"
+        )
+        await index.synchronizeDocuments([source1, source3], reason: "test-diff-sync")
+        hits = await index.search(query: "Track", fields: [.title])
+        XCTAssertEqual(hits.count, 2)
+        let foundIDs = Set(hits.map(\.trackID))
+        XCTAssertTrue(foundIDs.contains(track1))
+        XCTAssertTrue(foundIDs.contains(track3))
+        XCTAssertFalse(foundIDs.contains(track2))
+
+        await index.close()
+    }
+
     func testDeletePolicyIsStoredInsideEachLibrary() async throws {
         let first = temporaryLibraryRoot()
         let second = temporaryLibraryRoot()

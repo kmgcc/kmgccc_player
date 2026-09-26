@@ -165,6 +165,23 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
             return 1.1
         }
     }
+
+    /// Glyph cache budget in bytes for rasterized text in MelismaKit.
+    /// Setting this appropriately prevents unbounded CGImage / CoreAnimation backing bloat.
+    var glyphCacheBudgetBytes: Int {
+        switch self {
+        case .main:
+            return 3 * 1024 * 1024
+        case .fullscreen:
+            return 6 * 1024 * 1024
+        case .fullscreenCoverBlurHighlight:
+            return 3 * 1024 * 1024
+        case .batchPreview:
+            return 2 * 1024 * 1024
+        case .standalone:
+            return 3 * 1024 * 1024
+        }
+    }
     
     /// Whether this role should persist state when hidden.
     var persistsState: Bool {

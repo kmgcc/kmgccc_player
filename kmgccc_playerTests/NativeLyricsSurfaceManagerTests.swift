@@ -625,4 +625,73 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
         XCTAssertEqual(configuration.palette.mainActive.green, 192.0 / 255.0, accuracy: 0.0001)
     }
 
+    @MainActor
+    func testGlyphCacheBudgetIsStrictlyClampedToRoleBudget() throws {
+        let native = NativeLyricsSurfaceManager.shared
+        native.shutdownAll()
+        defer { native.shutdownAll() }
+
+        var largeConfig = LyricsConfiguration()
+        largeConfig.cacheBudgetBytes = 64 * 1024 * 1024
+        native.applyConfiguration(largeConfig, for: .main)
+
+        let resolved = try XCTUnwrap(native.configuration(for: .main))
+        XCTAssertLessThanOrEqual(resolved.cacheBudgetBytes, LyricsSurfaceRole.main.glyphCacheBudgetBytes)
+        XCTAssertEqual(resolved.cacheBudgetBytes, 3 * 1024 * 1024)
+
+        let jsonMapped = try XCTUnwrap(NativeLyricsConfigurationMapper.fromJSON(
+            "{\"cacheBudgetBytes\": 104857600}",
+            role: .fullscreen
+        ))
+        XCTAssertLessThanOrEqual(jsonMapped.cacheBudgetBytes, LyricsSurfaceRole.fullscreen.glyphCacheBudgetBytes)
+        XCTAssertEqual(jsonMapped.cacheBudgetBytes, 6 * 1024 * 1024)
+    }
+
+    @MainActor
+    func testPurgeInactiveRenderingResourcesOnlyReleasesInactiveSurfaces() throws {
+        let native = NativeLyricsSurfaceManager.shared
+        native.shutdownAll()
+        defer { native.shutdownAll() }
+
+        native.activate(role: .main)
+        let mainSurface = native.surface(for: .main)
+        mainSurface.view.frame = NSRect(x: 0, y: 0, width: 400, height: 600)
+        mainSurface.applyTrack(trackID: UUID(), ttml: mainTTML, currentTime: 2, isPlaying: true)
+
+        let standaloneSurface = native.surface(for: .standalone)
+        standaloneSurface.view.frame = NSRect(x: 0, y: 0, width: 400, height: 600)
+        standaloneSurface.applyTrack(trackID: UUID(), ttml: previewTTML, currentTime: 3, isPlaying: false)
+
+        XCTAssertNotNil(mainSurface.view.document)
+        XCTAssertNotNil(standaloneSurface.view.document)
+
+        native.purgeInactiveRenderingResources()
+
+        XCTAssertNotNil(mainSurface.view.document)
+        XCTAssertFalse(standaloneSurface.isRenderingActive)
+    }
+
+    @MainActor
+    func testInvalidTTMLDoesNotDestroyExistingRenderingLayers() throws {
+        let native = NativeLyricsSurfaceManager.shared
+        native.shutdownAll()
+        defer { native.shutdownAll() }
+
+        native.activate(role: .main)
+        let surface = native.surface(for: .main)
+        surface.view.frame = NSRect(x: 0, y: 0, width: 400, height: 600)
+        let validID = UUID()
+        surface.applyTrack(trackID: validID, ttml: mainTTML, currentTime: 2, isPlaying: true)
+
+        let originalDoc = surface.view.document
+        XCTAssertNotNil(originalDoc)
+
+        surface.applyTrack(trackID: UUID(), ttml: "<<bad-ttml>>", currentTime: 2.5, isPlaying: true)
+
+        XCTAssertEqual(surface.view.document, originalDoc)
+        XCTAssertEqual(surface.lastTrackID, validID)
+        XCTAssertEqual(surface.lastTTML, mainTTML)
+        XCTAssertNotNil(surface.lastError)
+    }
+
 }

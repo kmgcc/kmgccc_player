@@ -372,6 +372,7 @@ nonisolated enum CacheManager {
         KmgcccCassetteSkin.purgeCaches()
         RotatingCoverSkin.purgeCaches()
         ThemeStore.shared.clearArtworkColorCache()
+        NativeLyricsSurfaceManager.shared.purgeInactiveRenderingResources()
         URLCache.shared.removeAllCachedResponses()
         CATransaction.begin()
         CATransaction.flush()

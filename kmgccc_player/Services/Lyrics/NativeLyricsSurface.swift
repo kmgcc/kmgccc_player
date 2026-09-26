@@ -39,6 +39,7 @@ final class NativeLyricsSurface: NSObject {
         self.view = LyricsView(frame: .zero)
         super.init()
 
+        view.configuration = NativeLyricsConfigurationMapper.base(role: role)
         // A surface may be configured or receive a snapshot before a host is
         // visible. Activation is the only operation that starts frame delivery.
         view.automaticDisplayUpdates = false
@@ -68,7 +69,11 @@ final class NativeLyricsSurface: NSObject {
     }
 
     func apply(configuration: LyricsConfiguration) {
-        view.configuration = configuration
+        var resolved = configuration
+        if resolved.cacheBudgetBytes > role.glyphCacheBudgetBytes {
+            resolved.cacheBudgetBytes = role.glyphCacheBudgetBytes
+        }
+        view.configuration = resolved
     }
 
     func applyTrack(
@@ -109,6 +114,7 @@ final class NativeLyricsSurface: NSObject {
 
         if rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             view.clear(time: self.currentTime, playing: isPlaying)
+            view.releaseRenderingResources()
             lastError = nil
             lastTTML = ""
             lastTrackID = trackID
@@ -117,8 +123,11 @@ final class NativeLyricsSurface: NSObject {
         }
 
         do {
-            try view.load(
-                ttml: Data(rawText.utf8),
+            let data = Data(rawText.utf8)
+            let decoded = try TTMLDecoder().decode(data)
+            view.releaseRenderingResources()
+            view.install(
+                document: decoded,
                 time: self.currentTime,
                 playing: isPlaying
             )
@@ -312,6 +321,14 @@ final class NativeLyricsSurfaceManager {
         }
     }
 
+    func purgeInactiveRenderingResources() {
+        for (role, surface) in surfaces {
+            guard !activeRoles.contains(role) else { continue }
+            renderingResourceReleaseTasks.removeValue(forKey: role)?.cancel()
+            surface.releaseRenderingResources()
+        }
+    }
+
     private var activePlaybackSurface: NativeLyricsSurface? {
         surfaces.first {
             activeRoles.contains($0.key) && $0.key.receivesSharedPlaybackSnapshot
@@ -397,9 +414,13 @@ final class NativeLyricsSurfaceManager {
     }
 
     func applyConfiguration(_ configuration: LyricsConfiguration, for role: LyricsSurfaceRole) {
-        configurations[role] = configuration
+        var resolved = configuration
+        if resolved.cacheBudgetBytes > role.glyphCacheBudgetBytes {
+            resolved.cacheBudgetBytes = role.glyphCacheBudgetBytes
+        }
+        configurations[role] = resolved
         if activeRoles.contains(role) {
-            surfaces[role]?.apply(configuration: configuration)
+            surfaces[role]?.apply(configuration: resolved)
         }
     }
 

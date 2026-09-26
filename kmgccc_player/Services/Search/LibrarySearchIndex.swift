@@ -29,6 +29,76 @@ actor LibrarySearchIndex {
         }
     }
 
+    func scheduleSync(from sources: [SearchDocumentSource], reason: String) {
+        rebuildTask?.cancel()
+        rebuildTask = Task(priority: .utility) { [sources] in
+            await self.synchronizeDocuments(sources, reason: reason)
+        }
+    }
+
+    func synchronizeDocuments(_ sources: [SearchDocumentSource], reason: String) async {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        do {
+            try ensureSchema()
+            let existingMetadata = try fetchIndexedTrackMetadata()
+
+            if existingMetadata.isEmpty {
+                await replaceAllDocuments(sources, reason: reason)
+                return
+            }
+
+            let sourceIDs = Set(sources.map { $0.trackID.uuidString })
+            var deletedCount = 0
+            var updatedCount = 0
+
+            try execute("BEGIN IMMEDIATE TRANSACTION")
+
+            for existingID in existingMetadata.keys where !sourceIDs.contains(existingID) {
+                try deleteDocument(trackID: existingID)
+                deletedCount += 1
+            }
+
+            for source in sources {
+                try Task.checkCancellation()
+                let id = source.trackID.uuidString
+                let needsUpdate: Bool
+                if let meta = existingMetadata[id] {
+                    needsUpdate = isSourceChanged(source, against: meta)
+                } else {
+                    needsUpdate = true
+                }
+
+                if needsUpdate {
+                    try autoreleasepool {
+                        let reusable = try existingDocument(trackID: source.trackID)
+                        let document = try makeDocument(from: source, reusable: reusable)
+                        try store(document)
+                    }
+                    updatedCount += 1
+                    if updatedCount.isMultiple(of: 50) {
+                        await Task.yield()
+                    }
+                }
+            }
+
+            try execute("COMMIT")
+            if let db {
+                sqlite3_db_release_memory(db)
+            }
+            sqlite3_release_memory(Int32.max)
+            Log.debug(
+                "[SearchIndex] sync complete reason=\(reason) total=\(sources.count) updated=\(updatedCount) deleted=\(deletedCount) ms=\(String(format: "%.1f", (ProcessInfo.processInfo.systemUptime - startedAt) * 1000))",
+                category: .library
+            )
+        } catch is CancellationError {
+            try? execute("ROLLBACK")
+            Log.info("[SearchIndex] sync cancelled reason=\(reason)", category: .library)
+        } catch {
+            try? execute("ROLLBACK")
+            Log.error("[SearchIndex] sync failed reason=\(reason): \(error)", category: .library)
+        }
+    }
+
     func replaceAllDocuments(_ sources: [SearchDocumentSource], reason: String) async {
         let startedAt = ProcessInfo.processInfo.systemUptime
         do {
@@ -50,6 +120,10 @@ actor LibrarySearchIndex {
             }
 
             try execute("COMMIT")
+            if let db {
+                sqlite3_db_release_memory(db)
+            }
+            sqlite3_release_memory(Int32.max)
             Log.debug(
                 "[SearchIndex] rebuild complete reason=\(reason) tracks=\(sources.count) ms=\(String(format: "%.1f", (ProcessInfo.processInfo.systemUptime - startedAt) * 1000))",
                 category: .library
@@ -79,6 +153,10 @@ actor LibrarySearchIndex {
             }
 
             try execute("COMMIT")
+            if let db {
+                sqlite3_db_release_memory(db)
+            }
+            sqlite3_release_memory(Int32.max)
             Log.debug(
                 "[SearchIndex] upsert complete reason=\(reason) tracks=\(sources.count) ms=\(String(format: "%.1f", (ProcessInfo.processInfo.systemUptime - startedAt) * 1000))",
                 category: .library
@@ -100,6 +178,10 @@ actor LibrarySearchIndex {
                 try deleteDocument(trackID: trackID.uuidString)
             }
             try execute("COMMIT")
+            if let db {
+                sqlite3_db_release_memory(db)
+            }
+            sqlite3_release_memory(Int32.max)
             Log.debug(
                 "[SearchIndex] delete complete reason=\(reason) tracks=\(uniqueIDs.count)",
                 category: .library
@@ -279,6 +361,7 @@ actor LibrarySearchIndex {
         try execute("PRAGMA journal_mode=WAL")
         try execute("PRAGMA synchronous=NORMAL")
         try execute("PRAGMA temp_store=MEMORY")
+        try execute("PRAGMA cache_size=-512")
         try execute(
             """
             CREATE TABLE IF NOT EXISTS documents (
@@ -1221,6 +1304,103 @@ actor LibrarySearchIndex {
     }
 
     // MARK: - Document Fetch
+
+    private struct IndexedTrackMetadata {
+        let trackID: String
+        let titleRaw: String
+        let artistRaw: String
+        let albumRaw: String
+        let albumArtistRaw: String
+        let artistCreditsRaw: String
+        let filePathRaw: String
+        let formatRaw: String
+        let playCount: Int
+        let preferenceScore: Double
+        let lastPlayedAt: Double?
+        let updatedAt: Double
+        let lyricsPath: String?
+        let lyricsMtime: Double?
+        let lyricsSize: Int64?
+        let lyricsHash: String?
+    }
+
+    private func fetchIndexedTrackMetadata() throws -> [String: IndexedTrackMetadata] {
+        let statement = try prepare(
+            """
+            SELECT track_id, title_raw, artist_raw, album_raw,
+                   album_artist_raw, artist_credits_raw, file_path_raw,
+                   format_raw, play_count, preference_score, last_played_at,
+                   updated_at, lyrics_path, lyrics_mtime, lyrics_size, lyrics_hash
+            FROM documents
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        var map: [String: IndexedTrackMetadata] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let id = columnText(statement, 0) else { continue }
+            map[id] = IndexedTrackMetadata(
+                trackID: id,
+                titleRaw: columnText(statement, 1) ?? "",
+                artistRaw: columnText(statement, 2) ?? "",
+                albumRaw: columnText(statement, 3) ?? "",
+                albumArtistRaw: columnText(statement, 4) ?? "",
+                artistCreditsRaw: columnText(statement, 5) ?? "",
+                filePathRaw: columnText(statement, 6) ?? "",
+                formatRaw: columnText(statement, 7) ?? "",
+                playCount: Int(sqlite3_column_int(statement, 8)),
+                preferenceScore: sqlite3_column_double(statement, 9),
+                lastPlayedAt: optionalDouble(statement, 10),
+                updatedAt: sqlite3_column_double(statement, 11),
+                lyricsPath: columnText(statement, 12),
+                lyricsMtime: optionalDouble(statement, 13),
+                lyricsSize: optionalInt64(statement, 14),
+                lyricsHash: columnText(statement, 15)
+            )
+        }
+        return map
+    }
+
+    private func isSourceChanged(_ source: SearchDocumentSource, against meta: IndexedTrackMetadata) -> Bool {
+        if meta.titleRaw != source.titleRaw { return true }
+        if meta.artistRaw != source.artistRaw { return true }
+        if meta.albumRaw != source.albumRaw { return true }
+        if meta.albumArtistRaw != (source.albumArtistRaw ?? "") { return true }
+        if meta.artistCreditsRaw != (source.artistCreditsRaw ?? "") { return true }
+        if meta.filePathRaw != (source.filePathRaw ?? "") { return true }
+        if meta.formatRaw != (source.formatRaw ?? "") { return true }
+        if meta.playCount != source.playCount { return true }
+        if abs(meta.preferenceScore - source.preferenceScore) > 0.0001 { return true }
+        if abs(meta.updatedAt - source.updatedAt.timeIntervalSince1970) > 0.001 { return true }
+        let sourceLastPlayed = source.lastPlayedAt?.timeIntervalSince1970
+        if (meta.lastPlayedAt == nil) != (sourceLastPlayed == nil) { return true }
+        if let metaLastPlayed = meta.lastPlayedAt, let sourceLastPlayed, abs(metaLastPlayed - sourceLastPlayed) > 0.001 {
+            return true
+        }
+
+        if source.inlineTTMLText != nil || source.inlinePlainLyricsText != nil {
+            return true
+        }
+
+        if let indexedPath = meta.lyricsPath {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: indexedPath) else {
+                return true
+            }
+            let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970
+            let size = (attrs[.size] as? NSNumber)?.int64Value
+            if meta.lyricsMtime != mtime || meta.lyricsSize != size {
+                return true
+            }
+        } else {
+            if let ttml = source.ttmlLyricsFileURL, FileManager.default.fileExists(atPath: ttml.path) {
+                return true
+            }
+            if let plain = source.plainLyricsFileURL, FileManager.default.fileExists(atPath: plain.path) {
+                return true
+            }
+        }
+
+        return false
+    }
 
     private func existingDocument(trackID: UUID) throws -> SearchIndexedDocument? {
         try fetchDocuments(trackIDs: [trackID.uuidString]).first

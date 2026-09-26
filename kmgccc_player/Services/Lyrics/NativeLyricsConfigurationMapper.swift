@@ -83,6 +83,7 @@ enum NativeLyricsConfigurationMapper {
         configuration.fpsCap = role.fpsCap
         configuration.overscan = Double(role.overscanPx)
         configuration.wordFadeWidth = role.wordFadeWidth
+        configuration.cacheBudgetBytes = role.glyphCacheBudgetBytes
         // The package default is intentionally conservative for the standalone
         // demo. Keep the player marker legible without letting the breathing
         // transform dominate the compact lyric column.
@@ -147,6 +148,7 @@ enum NativeLyricsConfigurationMapper {
         if let value = string(values["fontFamilyTranslation"]) { configuration.translationFontName = firstFontName(value, fallback: configuration.translationFontName) }
         if let value = double(values["renderScale"]) { configuration.renderScale = max(0.35, min(1, value)) }
         if let value = int(values["fpsCap"]) { configuration.fpsCap = max(0, value) }
+        if let value = int(values["cacheBudgetBytes"]) { configuration.cacheBudgetBytes = min(max(1024 * 1024, value), role.glyphCacheBudgetBytes) }
         if let value = double(values["overscanPx"]) { configuration.overscan = max(0, value) }
         if let value = double(values["wordFadeWidth"]) { configuration.wordFadeWidth = max(0.05, value) }
         if let value = string(values["wordHighlightMode"]) { configuration.highlightMode = value == "discrete" ? .discrete : .smooth }
@@ -268,6 +270,7 @@ enum NativeLyricsConfigurationMapper {
                     && (configuration.surface == .coverBlurLight || configuration.surface == .coverBlurDark) {
             configuration.coverBlurRenderLayer = .base
         }
+        configuration.cacheBudgetBytes = min(configuration.cacheBudgetBytes, role.glyphCacheBudgetBytes)
     }
 
     static func paletteForWindow(_ palette: ThemePalette) -> LyricsPalette {

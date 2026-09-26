@@ -350,6 +350,10 @@ final class HomeWindowLayoutState {
     func setHomeMode(_ active: Bool) {
         guard isHomeMode != active else { return }
         isHomeMode = active
+        if !active {
+            CacheManager.purgeHomePresentationMemoryCaches()
+            CacheManager.trimProcessMemory()
+        }
     }
 
     func setEmbeddedFullscreenActive(_ active: Bool) {
