@@ -8,6 +8,7 @@
 import Darwin
 import Foundation
 import QuartzCore
+import SQLite3
 
 nonisolated struct DiskCacheTrimResult: Sendable, Equatable {
     let removedFileCount: Int
@@ -369,7 +370,9 @@ nonisolated enum CacheManager {
         FastArtworkMemoryCache.shared.removeAll()
         await CassetteArtworkCache.shared.removeAll()
         KmgcccCassetteSkin.purgeCaches()
+        RotatingCoverSkin.purgeCaches()
         ThemeStore.shared.clearArtworkColorCache()
+        URLCache.shared.removeAllCachedResponses()
         CATransaction.begin()
         CATransaction.flush()
         CATransaction.commit()
@@ -397,6 +400,7 @@ nonisolated enum CacheManager {
     }
 
     nonisolated static func trimProcessMemory() {
+        sqlite3_release_memory(Int32.max)
         let pressureGoal = 1024 * 1024 * 1024
         var count: UInt32 = 0
         var zonesPtr: UnsafeMutablePointer<vm_address_t>?
@@ -418,6 +422,7 @@ nonisolated enum CacheManager {
         clearHomeHeroArtworkMemoryCaches()
         HomePlaylistCardCoverStore.shared.clearMemory()
         HomePlaylistPreviewArtworkStore.shared.clearMemory()
+        HomeAmbientShapesBackground.purgeCaches()
     }
 
     static func clearLibraryCaches(

@@ -770,7 +770,6 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private static let fullscreenDiagnosticsEnabled =
         ProcessInfo.processInfo.environment["KMGCCC_FULLSCREEN_BK_DIAGNOSTICS"] == "1"
-    private nonisolated static let circleTintContext = CIContext(options: [.cacheIntermediates: false])
 
     // Style Selector State
     private var lastStyle: BackgroundStyle?
@@ -1990,13 +1989,14 @@ private final class BKArtBackgroundLayerView: NSView {
         )
 
         let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
-        let rendered = circleTintContext.createCGImage(
+        let renderContext = currentBackgroundRenderContext()
+        let rendered = renderContext.createCGImage(
             tinted,
             from: input.extent,
             format: .RGBA8,
             colorSpace: outputSpace
         )
-        circleTintContext.clearCaches()
+        renderContext.clearCaches()
         return rendered
     }
 

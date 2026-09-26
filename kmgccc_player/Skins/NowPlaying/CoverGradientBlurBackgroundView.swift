@@ -468,10 +468,27 @@ struct CoverGradientBlurBackgroundView: View {
 
 enum CoverGradientBlurRenderer {
 
-    private nonisolated static let ciContext = CIContext(options: [
-        .cacheIntermediates: false,
-        .useSoftwareRenderer: false
-    ])
+    private nonisolated(unsafe) static var ciContext: CIContext?
+    private nonisolated static let ciContextLock = NSLock()
+
+    private nonisolated static func currentCIContext() -> CIContext {
+        ciContextLock.lock()
+        defer { ciContextLock.unlock() }
+        if let ciContext { return ciContext }
+        let created = CIContext(options: [
+            .cacheIntermediates: false,
+            .useSoftwareRenderer: false
+        ])
+        ciContext = created
+        return created
+    }
+
+    nonisolated static func clearCaches() {
+        ciContextLock.lock()
+        defer { ciContextLock.unlock() }
+        ciContext?.clearCaches()
+        ciContext = nil
+    }
 
     /// Internal resolution at which the multi-pass backdrop blur is rendered.
     /// 0.5 → each blur pass costs 1/4 the pixels; the final render is upscaled
@@ -863,12 +880,13 @@ enum CoverGradientBlurRenderer {
                 finalImage = upscaled.cropped(to: outputRect)
             }
         }
+        let renderContext = currentCIContext()
         defer {
-            ciContext.clearCaches()
+            renderContext.clearCaches()
         }
 
         let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
-        guard let cgImage = ciContext.createCGImage(
+        guard let cgImage = renderContext.createCGImage(
             finalImage,
             from: outputRect,
             format: .RGBA8,
@@ -1674,6 +1692,7 @@ actor CoverGradientBlurRenderStore {
 enum CoverGradientBlurMemory {
     static func clear() async {
         await CoverGradientBlurRenderStore.shared.clearMemory()
+        CoverGradientBlurRenderer.clearCaches()
     }
 }
 

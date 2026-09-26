@@ -373,7 +373,24 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
 // inherit any actor isolation from the caller — that inheritance was the
 // remaining cause of `_dispatch_assert_queue_fail` after the previous patch.
 private enum RotatingCoverCDMotionBlurRenderer {
-    nonisolated static let ciContext = CIContext(options: nil)
+    private nonisolated(unsafe) static var ciContext: CIContext?
+    private nonisolated static let ciContextLock = NSLock()
+
+    private nonisolated static func currentCIContext() -> CIContext {
+        ciContextLock.lock()
+        defer { ciContextLock.unlock() }
+        if let ciContext { return ciContext }
+        let created = CIContext(options: [.cacheIntermediates: false])
+        ciContext = created
+        return created
+    }
+
+    nonisolated static func clearCaches() {
+        ciContextLock.lock()
+        defer { ciContextLock.unlock() }
+        ciContext?.clearCaches()
+        ciContext = nil
+    }
     nonisolated private static let angularBlurRadiusDegrees: CGFloat = 180
     nonisolated private static let angularSampleStepDegrees: CGFloat = 0.75
     nonisolated private static let angularBlurAccumulationAlpha: CGFloat = 24.0
@@ -461,7 +478,9 @@ private enum RotatingCoverCDMotionBlurRenderer {
             .clampedToExtent()
             .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 4.0])
             .cropped(to: bounds)
-        return ciContext.createCGImage(blurred, from: bounds)
+        let ctx = currentCIContext()
+        defer { ctx.clearCaches() }
+        return ctx.createCGImage(blurred, from: bounds)
     }
 
     nonisolated private static func densifiedOpaqueBlurImage(
@@ -1272,5 +1291,12 @@ private struct PillSpectrumContainer: NSViewRepresentable {
             )
             return (resolved.fillColors, resolved.strokeColors)
         }
+    }
+}
+
+extension RotatingCoverSkin {
+    @MainActor
+    static func purgeCaches() {
+        RotatingCoverCDMotionBlurRenderer.clearCaches()
     }
 }

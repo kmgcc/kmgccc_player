@@ -85,6 +85,11 @@ struct HomeAmbientShapesBackground: NSViewRepresentable {
             motionEnabled: motionEnabled
         )
     }
+
+    @MainActor
+    static func purgeCaches() {
+        HomeAmbientRootView.purgeCaches()
+    }
 }
 
 // MARK: - AppKit root view
@@ -165,6 +170,7 @@ final class HomeAmbientRootView: NSView {
         let rgba: UInt32
     }
     private var tintedShapeCache: [TintedShapeKey: CGImage] = [:]
+    private static weak var currentInstance: HomeAmbientRootView?
 
     private static let shapeMaxPixel = 256
 
@@ -174,6 +180,7 @@ final class HomeAmbientRootView: NSView {
         randomLayoutSeed = seed
         randomizedShapeCount = Self.shapeCount(seed: seed)
         super.init(frame: .zero)
+        Self.currentInstance = self
         wantsLayer = true
         layerContentsRedrawPolicy = .duringViewResize
         layer?.masksToBounds = true
@@ -184,6 +191,15 @@ final class HomeAmbientRootView: NSView {
             colorScheme: .light
         ).homeAmbientCGColor
         layer?.addSublayer(baseLayer)
+    }
+
+    func purgeTransientCaches() {
+        tintedShapeCache.removeAll(keepingCapacity: false)
+    }
+
+    static func purgeCaches() {
+        HomeAmbientShapeSpecCache.shared.clear()
+        currentInstance?.purgeTransientCaches()
     }
 
     @available(*, unavailable)
@@ -210,6 +226,9 @@ final class HomeAmbientRootView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil {
+            if Self.currentInstance === self {
+                Self.currentInstance = nil
+            }
             Log.debug("[HomeAmbient/root] viewDidMoveToWindow=nil — releasing subs", category: .ui)
             geometrySubscription = nil
             motionSubscription = nil
@@ -1219,6 +1238,12 @@ private final class HomeAmbientShapeSpecCache {
 
     private let lock = NSLock()
     private var specsByKey: [Key: [HomeAmbientShapeSpec]] = [:]
+
+    func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        specsByKey.removeAll(keepingCapacity: false)
+    }
 
     func specs(
         count: Int,

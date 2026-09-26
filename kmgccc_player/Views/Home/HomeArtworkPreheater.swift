@@ -13,8 +13,8 @@ final class HomeArtworkMemoryStore {
     static let shared = HomeArtworkMemoryStore()
 
     private var cache = CostBoundedCache<String, NSImage>(
-        countLimit: 36,
-        totalCostLimit: 6 * 1024 * 1024
+        countLimit: 24,
+        totalCostLimit: 3 * 1024 * 1024
     )
 
     func cachedImage(for key: String) -> NSImage? {

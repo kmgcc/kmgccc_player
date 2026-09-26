@@ -825,6 +825,10 @@ final class PlaybackCoordinator {
         if let previousTrack = presentation.localTrack,
            previousTrack.id != track.id {
             previousTrack.releaseFileBackedArtworkData()
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(500))
+                CacheManager.trimProcessMemory()
+            }
         }
 
         let artworkData = track.artworkData
