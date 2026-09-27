@@ -183,7 +183,7 @@ struct PlaylistDetailView: View {
                 errorView(message: libraryVM.lastLoadingError ?? "未知错误")
             } else if pageController.isSelectionTransitioning || activePage == nil {
                 PlaylistDetailSkeletonView(showHeader: false)
-                    .transition(.leftToRightWipe)
+                    .transition(.opacity)
             } else if playableSourceTrackCount == 0 {
                 emptyStateView
             } else if currentRows.isEmpty && isFiltering {
@@ -191,7 +191,7 @@ struct PlaylistDetailView: View {
             } else {
                 trackListView
                     .id("rows-\(selectionIdentity)")
-                    .transition(.leftToRightWipe)
+                    .transition(.opacity)
             }
         }
         .animation(
@@ -212,11 +212,11 @@ struct PlaylistDetailView: View {
                 || activePage == nil
             {
                 PlaylistDetailSkeletonView(showHeader: true)
-                    .transition(.leftToRightWipe)
+                    .transition(.opacity)
             } else {
                 detailScrollView
                     .id("rows-\(selectionIdentity)")
-                    .transition(.leftToRightWipe)
+                    .transition(.opacity)
             }
         }
         .animation(

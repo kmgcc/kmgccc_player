@@ -508,10 +508,9 @@ final class PlaylistPageController {
     func prefetchAroundTrackID(_ trackID: UUID) {
         guard isRowArtworkPrefetchEnabled else { return }
         guard let page else { return }
-        guard let startIndex = page.rows.firstIndex(where: { $0.id == trackID }) else { return }
-        
         let now = Date()
         guard now.timeIntervalSince(lastPrefetchTime) >= prefetchDebounceInterval else { return }
+        guard let startIndex = page.rows.firstIndex(where: { $0.id == trackID }) else { return }
         lastPrefetchTime = now
         
         let bucket = startIndex / 8

@@ -355,8 +355,9 @@ final class HomeWindowLayoutState {
         isHomeMode = active
         onHomeModeChange?(active)
         if !active {
-            CacheManager.purgeHomePresentationMemoryCaches()
-            CacheManager.trimProcessMemory()
+            // Keep the bounded Home artwork caches for the return transition.
+            // Memory-pressure and fullscreen paths still release them explicitly.
+            HomeArtworkPreheater.shared.cancel()
         }
     }
 

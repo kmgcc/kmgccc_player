@@ -21,6 +21,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 @MainActor
@@ -658,8 +659,9 @@ private final class AppKitMainRootViewController: NSViewController {
         if isHome {
             homeFullWindowHost.isHidden = false
         } else {
+            let hideDelay = MotionTokens.standard.navigation.visualCompletionDelay()
             homeHostHideTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 450_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(hideDelay * 1_000_000_000))
                 guard !Task.isCancelled else { return }
                 guard !HomeWindowLayoutState.shared.isHomeMode else { return }
                 self?.homeFullWindowHost.isHidden = true
