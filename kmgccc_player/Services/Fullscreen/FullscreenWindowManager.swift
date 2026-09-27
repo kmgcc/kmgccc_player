@@ -364,10 +364,6 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         AppKitMainSplitWindowController.synchronizeLyricsSurfaceAfterFullscreenTransition(
             reason: "closeEmbedded"
         )
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(250))
-            self?.schedulePresentationCachePurge(reason: "embedded fullscreen dismissed")
-        }
         PaneLayoutTrace.log("fullscreen.closeEmbedded end")
     }
 
@@ -461,8 +457,6 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         AppKitMainSplitWindowController.synchronizeLyricsSurfaceAfterFullscreenTransition(
             reason: "dismissSystemFullscreen"
         )
-        schedulePresentationCachePurge(reason: "system fullscreen dismissed")
-
         DispatchQueue.main.async {
             if let previousKeyWindow = self.previousKeyWindow, previousKeyWindow.isVisible {
                 previousKeyWindow.makeKeyAndOrderFront(nil)
@@ -471,16 +465,6 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
                     nil)
             }
             self.previousKeyWindow = nil
-        }
-    }
-
-    private func schedulePresentationCachePurge(reason: String) {
-        let cacheServices = self.cacheServices
-        Task { @MainActor in
-            await CacheManager.purgePresentationMemoryCaches(
-                reason: reason,
-                cacheServices: cacheServices
-            )
         }
     }
 
