@@ -694,4 +694,55 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
         XCTAssertNotNil(surface.lastError)
     }
 
+    /// A skin switch remounts the fullscreen presentation layers and a memory
+    /// reclaim can drop the surface's layer tree while the document stays
+    /// installed. A visible surface must rebuild its rows in place instead of
+    /// staying blank until the next fullscreen entry.
+    @MainActor
+    func testReassertRenderingRebuildsReleasedLayerTreeInPlace() throws {
+        let native = NativeLyricsSurfaceManager.shared
+        native.shutdownAll()
+        defer { native.shutdownAll() }
+
+        native.activate(role: .fullscreen)
+        let surface = native.surface(for: .fullscreen)
+        surface.view.frame = NSRect(x: 0, y: 0, width: 640, height: 480)
+        surface.view.layoutSubtreeIfNeeded()
+        surface.applyTrack(trackID: UUID(), ttml: mainTTML, currentTime: 2, isPlaying: false)
+
+        XCTAssertNotNil(surface.view.document)
+        XCTAssertTrue(surface.isRenderingActive)
+        XCTAssertGreaterThan(
+            renderedRowLayerCount(of: surface),
+            0,
+            "an installed document renders at least one row layer"
+        )
+
+        surface.releaseRenderingResources()
+        XCTAssertEqual(
+            renderedRowLayerCount(of: surface),
+            0,
+            "a released surface keeps no row layers"
+        )
+        XCTAssertNotNil(surface.view.document, "releasing resources keeps the decoded document")
+
+        surface.reassertRendering()
+
+        XCTAssertGreaterThan(
+            renderedRowLayerCount(of: surface),
+            0,
+            "reassertRendering must rebuild the released layer tree in place"
+        )
+        XCTAssertTrue(surface.isRenderingActive)
+    }
+
+    /// `LyricsView` adds one content layer to its own layer; lyric rows,
+    /// interlude dots and the bottom text are sublayers of it, so the row count
+    /// is the content's children minus the dots and the bottom text.
+    @MainActor
+    private func renderedRowLayerCount(of surface: NativeLyricsSurface) -> Int {
+        guard let content = surface.view.layer?.sublayers?.first else { return 0 }
+        return max(0, (content.sublayers?.count ?? 0) - 2)
+    }
+
 }

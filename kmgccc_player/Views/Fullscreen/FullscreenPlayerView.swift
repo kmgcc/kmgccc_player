@@ -488,6 +488,7 @@ struct FullscreenPlayerView: View {
             } else {
                 applyFullscreenLyricsTheme(force: true, reason: "fullscreen skin changed")
             }
+            reassertFullscreenLyricsPresentation(reason: "fullscreen skin changed")
         }
         .onChange(of: fullscreenLedServiceSignature) { _, _ in
             FSDiagnostics.emit(
@@ -3870,7 +3871,13 @@ struct FullscreenPlayerView: View {
     }
 
     private var shouldKeepFullscreenLyricsHostMounted: Bool {
-        fullscreenLyricsHostMounted && playbackCoordinator.stablePresentation.hasTrack
+        // The latch defers the detach so a hide/show cycle does not remount the
+        // native surface. It must not outlive its reason though: while the lyrics
+        // column is shown with a track, the host stays mounted regardless of a
+        // stale latch, so a remount of the surrounding presentation layers can
+        // never leave the column empty until the next fullscreen entry.
+        guard playbackCoordinator.stablePresentation.hasTrack else { return false }
+        return fullscreenLyricsHostMounted || isShowingLyricsPanel
     }
 
     private var isFullscreenLyricsHostVisible: Bool {
@@ -4281,6 +4288,41 @@ struct FullscreenPlayerView: View {
         // mini-player may already be under the pointer when the surface is
         // attached to the embedded fullscreen host.
         applyFullscreenLyricsMouseGate(reason: "native rendering state sync")
+    }
+
+    /// Re-assert the fullscreen lyrics presentation after a change that rebuilds
+    /// the surrounding presentation layers (a skin switch remounts every
+    /// skin-keyed layer). The lyrics host is deliberately not skin-keyed, so it
+    /// keeps its identity across that rebuild and nothing else re-arms it: the
+    /// mount latch, the viewport gate and the native rendering state can all
+    /// survive a remount in a stale state until the next fullscreen entry.
+    /// Idempotent, so it is safe to run on every skin switch.
+    private func reassertFullscreenLyricsPresentation(reason: String) {
+        guard FullscreenWindowManager.shared.presentationMode != .none else { return }
+        guard isShowingLyricsPanel, playbackCoordinator.stablePresentation.hasTrack else { return }
+        // Embedded fullscreen materializes the surface once its startup gate is
+        // open; activating earlier would show a frame with default styling.
+        guard hostContext != .embeddedWindow || embeddedInitialThemeUnlocked else { return }
+
+        pendingFullscreenLyricsHostDetach?.cancel()
+        pendingFullscreenLyricsHostDetach = nil
+        pendingFullscreenLyricsAutoRestoreReload?.cancel()
+        pendingFullscreenLyricsAutoRestoreReload = nil
+        pendingFullscreenLyricsAutoRestoreReveal?.cancel()
+        pendingFullscreenLyricsAutoRestoreReveal = nil
+        pendingFullscreenLyricsAutoRestoreTrackID = nil
+        suppressFullscreenLyricsViewport = false
+        fullscreenLyricsHostMounted = true
+
+        LyricsSurfaceManager.shared.reportFullscreenVisible(true)
+        syncNativeFullscreenRenderingState()
+        let surface = NativeLyricsSurfaceManager.shared.existingSurface(for: .fullscreen)
+        surface?.reassertRendering()
+
+        Log.debug(
+            "[FullscreenLyrics] reasserted presentation reason=\(reason), host=\(hostContext.rawValue), mounted=\(fullscreenLyricsHostMounted), suppressed=\(suppressFullscreenLyricsViewport), rendering=\(surface?.isRenderingActive ?? false), ready=\(surface?.isReady ?? false)",
+            category: .lyrics
+        )
     }
 
     private func pushFullscreenLyricsConfig(

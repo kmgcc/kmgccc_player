@@ -221,6 +221,18 @@ final class NativeLyricsSurface: NSObject {
         view.releaseRenderingResources()
     }
 
+    /// Rebuild the rendered layer tree and re-arm frame delivery in place.
+    /// `releaseRenderingResources()` drops every layer and invalidates the
+    /// display link; while playback is idle nothing ticks afterwards, so a
+    /// surface that lost its layers stays blank until the next transport
+    /// update. Host-level changes (skin switch, host remount, memory reclaim)
+    /// use this to bring a visible surface back without a fullscreen re-entry.
+    func reassertRendering() {
+        guard isRenderingActive, view.document != nil else { return }
+        view.render(at: CACurrentMediaTime())
+        synchronize(time: currentTime, playing: isPlaying)
+    }
+
     func shutdown() {
         setRenderingActive(false)
         view.releaseRenderingResources()
@@ -324,6 +336,10 @@ final class NativeLyricsSurfaceManager {
     func purgeInactiveRenderingResources() {
         for (role, surface) in surfaces {
             guard !activeRoles.contains(role) else { continue }
+            // A surface whose view is still on screen keeps its layer tree.
+            // Releasing it paints the visible host blank, and while playback is
+            // idle nothing re-renders it afterwards.
+            guard surface.view.window == nil || surface.view.isHiddenOrHasHiddenAncestor else { continue }
             renderingResourceReleaseTasks.removeValue(forKey: role)?.cancel()
             surface.releaseRenderingResources()
         }
