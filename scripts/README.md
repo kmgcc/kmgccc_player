@@ -29,6 +29,8 @@ CONFIGURATION=Release ./scripts/build_and_run.sh
 ### `build_app.sh`
 
 在新的 DerivedData 中构建可由 clean clone 复现的 App，并执行 bundle 完整性检查。该入口显式禁用本机构建扩展。
+构建前后都会检查 MelismaKit 的依赖来源；本机默认要求本地 NativeLyrics，干净 checkout 的远程构建需显式设置
+`MELISMAKIT_EXPECTED_SOURCE=remote`。
 
 用户协议和隐私政策位于受版本控制的 `kmgccc_player/LegalDocuments/`，属于公开且必需的运行资源；不要用本机忽略目录替代它们。
 
@@ -57,6 +59,8 @@ OUTPUT_DIR=/tmp/kmgccc-player-release \
 ### `verify.sh`
 
 PR 前统一门禁：bootstrap、ARM64 无签名 Debug 构建、LRC 回归、XCTest 和 App bundle 检查。构建与测试阶段显式禁用本机构建扩展。
+它会检查每次 App/XCTest 构建的 MelismaKit 来源；远程依赖门禁需显式设置
+`MELISMAKIT_EXPECTED_SOURCE=remote`。
 
 ```sh
 ./scripts/verify.sh
@@ -74,10 +78,27 @@ PR 前统一门禁：bootstrap、ARM64 无签名 Debug 构建、LRC 回归、XCT
 
 ### check-app-process-state.sh
 
-只读检查当前是否已有 kmgccc_player 进程，并输出 PID、父进程、启动时间和实际命令路径。
-发现进程时返回失败码，表示启动流程必须暂停；脚本不会结束任何进程。
+默认只读检查当前是否已有 kmgccc_player 进程，并输出 PID、父进程、启动时间和实际命令路径。
+发现进程时返回失败码。传入 --terminate-existing 后，只处理精确匹配的 kmgccc_player 进程：
+先发送 TERM，等待退出，必要时发送 KILL。
 
     ./scripts/check-app-process-state.sh
+    ./scripts/check-app-process-state.sh --terminate-existing
+
+### check-melismakit-dependency.sh
+
+检查 App 的 Swift Package 依赖图和实际编译日志。默认的本机测试要求工程指向相邻的
+`NativeLyrics` 本地 checkout；远程 `Package.resolved` 中的旧 pin 不会因为修改组件源码而自动更新。
+
+```sh
+./scripts/check-melismakit-dependency.sh --require-local
+./scripts/check-melismakit-dependency.sh --require-local --build-log /path/to/xcodebuild.log
+./scripts/check-melismakit-dependency.sh --require-remote
+```
+
+`build_and_run.sh` 默认执行本地检查并保存 verbose build log；只有明确进行远程依赖构建时才设置
+`MELISMAKIT_EXPECTED_SOURCE=remote`。构建日志必须显示 `NativeLyrics/Sources/MelismaKit`，不能只显示
+`SourcePackages/checkouts/melismakit`。
 
 ### check-ui-consistency.sh
 

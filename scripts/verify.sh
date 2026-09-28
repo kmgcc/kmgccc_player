@@ -10,6 +10,7 @@ PACKAGE_CACHE="$WORK_DIR/SourcePackages"
 LOG_DIR="$WORK_DIR/logs"
 CURRENT_PID=""
 KEEP_OUTPUT="${KMGCCC_KEEP_VERIFY_OUTPUT:-0}"
+MELISMAKIT_EXPECTED_SOURCE="${MELISMAKIT_EXPECTED_SOURCE:-local}"
 
 mkdir -p "$LOG_DIR"
 
@@ -90,14 +91,22 @@ if [[ $# -ne 0 ]]; then
   exit 2
 fi
 
+case "$MELISMAKIT_EXPECTED_SOURCE" in
+  local) MELISMAKIT_DEPENDENCY_FLAG="--require-local" ;;
+  remote) MELISMAKIT_DEPENDENCY_FLAG="--require-remote" ;;
+  *) echo "error: MELISMAKIT_EXPECTED_SOURCE must be local or remote" >&2; exit 2 ;;
+esac
+
 require_command xcodebuild
 require_command xcrun
 require_command git
 
+"$ROOT/scripts/check-melismakit-dependency.sh" "$MELISMAKIT_DEPENDENCY_FLAG"
+
 run_step "Bootstrap" 3600 "$ROOT/scripts/bootstrap.sh"
 
 run_step "ARM64 unsigned Debug build" 2400 \
-  xcodebuild -quiet \
+  xcodebuild -verbose \
     -project "$PROJECT" \
     -scheme "$SCHEME" \
     -configuration Debug \
@@ -107,6 +116,8 @@ run_step "ARM64 unsigned Debug build" 2400 \
     BUILD_EXTENSION_MODE=disabled \
     CODE_SIGNING_ALLOWED=NO \
     build
+"$ROOT/scripts/check-melismakit-dependency.sh" "$MELISMAKIT_DEPENDENCY_FLAG" \
+  --build-log "$LOG_DIR/ARM64_unsigned_Debug_build.log"
 
 LRC_EXECUTABLE="$WORK_DIR/lrc-regression"
 run_step "LRC regression" 180 \
@@ -117,7 +128,7 @@ run_step "LRC regression" 180 \
 run_step "LRC regression execution" 60 "$LRC_EXECUTABLE"
 
 run_step "XCTest" 1800 \
-  xcodebuild -quiet \
+  xcodebuild -verbose \
     -project "$PROJECT" \
     -scheme kmgccc_playerTests \
     -configuration Debug \
@@ -127,6 +138,8 @@ run_step "XCTest" 1800 \
     BUILD_EXTENSION_MODE=disabled \
     CODE_SIGNING_ALLOWED=NO \
     test
+"$ROOT/scripts/check-melismakit-dependency.sh" "$MELISMAKIT_DEPENDENCY_FLAG" \
+  --build-log "$LOG_DIR/XCTest.log"
 
 APP="$DERIVED_DATA/Build/Products/Debug/kmgccc_player.app"
 run_step "Required App bundle components" 120 \

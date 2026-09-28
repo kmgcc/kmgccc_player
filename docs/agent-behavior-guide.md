@@ -16,12 +16,23 @@ MCP Resources 应引用它；它不是安全边界，真正的 scope 和确认 p
 kmgccc_player 的资料库是独占资源。所有主 App 实测都必须先完成进程状态检查：
 
 1. 运行 ./scripts/check-app-process-state.sh，列出当前 kmgccc_player 的 PID、启动时间和实际二进制路径。
-2. 检查结果为空时，才允许继续构建和启动；启动前立即再检查一次，防止构建期间出现竞争实例。
-3. 检查到已有进程时，保持现状，不使用 pkill、kill 或第二次 open；先判断它对应的构建和资料库，再取得明确授权后处理。
+2. 检查到已有进程时，运行入口可以自动处理精确匹配的 kmgccc_player 进程：先记录 PID、启动时间和实际路径，再优雅结束，必要时强制结束。该授权只覆盖主 App 进程，不覆盖其他应用或辅助进程。
+3. 进程清理完成并复查为空后，才允许继续构建；启动前立即再检查一次，防止构建期间出现竞争实例。
 4. 主 App 的目标是 kmgccc_player。Demo、示例、临时 bundle 和其他测试实例不能作为主 App 的运行验收。
 5. 构建成功、LaunchServices 返回成功或窗口曾经出现，都不能单独证明运行成功；交付时至少保留 PID、实际二进制路径和相应的真实界面或功能证据。
 
-scripts/build_and_run.sh 已把这项检查放在构建前和启动前；检查失败就是安全停止，不应通过其他命令绕过。
+scripts/build_and_run.sh 使用运行锁，把这项检查放在构建前和启动前，并在启动后确认只存在一个主进程。不应通过其他命令绕过。
+
+## 歌词组件 Swift Package 前置
+
+歌词组件通过 Swift Package `MelismaKit` 接入，组件原项目是 `NativeLyrics`。修改组件原项目的源码不会改变 App 当前已经解析的远程依赖；因此本机测试不能只看组件仓库的提交，还要确认 App 的依赖图和实际编译输入：
+
+1. 默认运行 `./scripts/check-melismakit-dependency.sh --require-local`，确认 Xcode 工程引用本地 `NativeLyrics` checkout，而不是 `XCRemoteSwiftPackageReference`。
+2. 构建使用 `xcodebuild -verbose` 保存的日志，再用同一脚本的 `--build-log` 检查编译输入包含 `NativeLyrics/Sources/MelismaKit`，且没有 `SourcePackages/checkouts/melismakit`。
+3. `Package.resolved` 中残留旧远程 pin 只能作为复核信号；真正决定本次构建来源的是工程依赖图和编译日志。不要因为只修改了 `NativeLyrics` 就假设 App 已经使用了这次修改。
+4. 只有明确进行远程依赖构建时才使用 `--require-remote`：组件发布新版本 tag 后，App 必须重新解析依赖并核对 `Package.resolved` 的新 revision。
+
+`build_and_run.sh`、`build_app.sh` 和 `verify.sh` 默认执行本地依赖检查；远程构建必须显式设置 `MELISMAKIT_EXPECTED_SOURCE=remote`，不能用手动 `open` 或其他构建入口绕过依赖和进程检查。
 
 ## Library lifecycle workflow
 
