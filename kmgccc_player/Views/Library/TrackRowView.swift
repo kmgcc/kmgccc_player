@@ -639,7 +639,7 @@ private struct TrackRowSelectionBackgroundShape: Shape {
     let continuity: TrackRowSelectionContinuity
     let cornerRadius: CGFloat
 
-    func path(in rect: CGRect) -> Path {
+    nonisolated func path(in rect: CGRect) -> Path {
         let radius = min(cornerRadius, rect.width / 2, rect.height / 2)
         let topRadius = continuity.connectsToPrevious ? 0 : radius
         let bottomRadius = continuity.connectsToNext ? 0 : radius
@@ -678,7 +678,7 @@ private struct TrackRowSelectionBackgroundShape: Shape {
         return path
     }
 
-    private func addCorner(
+    nonisolated private func addCorner(
         to path: inout Path,
         radius: CGFloat,
         lineEnd: CGPoint,
