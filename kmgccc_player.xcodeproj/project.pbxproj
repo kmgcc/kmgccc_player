@@ -526,7 +526,7 @@
 			mainGroup = 935118892F3231C500766A5F;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				D20000000000000000000002 /* XCRemoteSwiftPackageReference "melismakit" */,
+				D20000000000000000000002 /* XCLocalSwiftPackageReference "../NativeLyrics" */,
 				AA0000000000000000000001 /* XCRemoteSwiftPackageReference "WhatsNewKit" */,
 				AA0000000000000000000003 /* XCRemoteSwiftPackageReference "plcrashreporter" */,
 				AA0000000000000000000005 /* XCRemoteSwiftPackageReference "Sparkle" */,
@@ -1116,6 +1116,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Dependencies/PlayerAutomation;
 		};
+		D20000000000000000000002 /* XCLocalSwiftPackageReference "../NativeLyrics" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../NativeLyrics;
+		};
 		D50000000000000000000003 /* XCLocalSwiftPackageReference "Dependencies/MotionKit" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Dependencies/MotionKit;
@@ -1145,14 +1149,6 @@
 			requirement = {
 				kind = exactVersion;
 				version = 2.9.4;
-			};
-		};
-		D20000000000000000000002 /* XCRemoteSwiftPackageReference "melismakit" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/kmgcc/melismakit.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.2.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -1185,7 +1181,7 @@
 		};
 		D20000000000000000000003 /* MelismaKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = D20000000000000000000002 /* XCRemoteSwiftPackageReference "melismakit" */;
+			package = D20000000000000000000002 /* XCLocalSwiftPackageReference "../NativeLyrics" */;
 			productName = MelismaKit;
 		};
 		D50000000000000000000002 /* MotionKit */ = {

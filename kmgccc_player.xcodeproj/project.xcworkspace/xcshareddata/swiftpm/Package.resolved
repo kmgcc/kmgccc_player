@@ -1,15 +1,6 @@
 {
-  "originHash" : "7e281b3ad506e0ee26eb1d24f30853fa2c4ef383780a76ba85c1e5ee678244f5",
+  "originHash" : "2ae907ddf569cac6c47e282f9d7a3b37da590d6b4aaeab9b7ae4e3621bc59e79",
   "pins" : [
-    {
-      "identity" : "melismakit",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/kmgcc/melismakit.git",
-      "state" : {
-        "revision" : "3dc556720c9690dd12042901e5546fdc08478259",
-        "version" : "0.2.2"
-      }
-    },
     {
       "identity" : "plcrashreporter",
       "kind" : "remoteSourceControl",
