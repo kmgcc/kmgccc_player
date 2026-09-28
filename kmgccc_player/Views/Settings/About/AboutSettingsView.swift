@@ -157,6 +157,11 @@ struct AboutSettingsView: View {
                     license: "AGPL-3.0"
                 )
                 complianceItem(
+                    name: "MelismaKit",
+                    url: "https://github.com/kmgcc/melismakit",
+                    license: "AGPL-3.0"
+                )
+                complianceItem(
                     name: "apple-audio-visualization",
                     url: "https://github.com/taterboom/apple-audio-visualization",
                     license: nil
@@ -172,6 +177,11 @@ struct AboutSettingsView: View {
                     license: "GPL-3.0"
                 )
                 complianceItem(
+                    name: "MediaRemoteAdapter",
+                    url: "https://github.com/ungive/mediaremote-adapter",
+                    license: "BSD-3-Clause"
+                )
+                complianceItem(
                     name: "sacad",
                     url: "https://github.com/desbma/sacad",
                     license: "MPL-2.0"
@@ -184,6 +194,16 @@ struct AboutSettingsView: View {
                 complianceItem(
                     name: "WhatsNewKit",
                     url: "https://github.com/SvenTiigi/WhatsNewKit",
+                    license: "MIT"
+                )
+                complianceItem(
+                    name: "PLCrashReporter",
+                    url: "https://github.com/microsoft/plcrashreporter",
+                    license: "MIT"
+                )
+                complianceItem(
+                    name: "Sparkle",
+                    url: "https://github.com/sparkle-project/Sparkle",
                     license: "MIT"
                 )
             }
@@ -358,7 +378,7 @@ struct AboutSettingsView: View {
         case "GPL-3.0", "GPL-3.0-or-later", "AGPL-3.0": return .blue
         case "MPL-2.0": return .purple
         case "Apache-2.0": return .teal
-        case "BSD": return .cyan
+        case "BSD", "BSD-3-Clause": return .cyan
         default: return appColors?.secondary ?? .secondary
         }
     }

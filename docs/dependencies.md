@@ -84,8 +84,10 @@ bootstrap 使用固定的 macOS ARM64 预编译产物并校验归档，不在本
 
 工程通过 Swift Package Manager 使用以下编译期依赖，由 Xcode 根据已固定的 package resolution 解析；它们不进入 bootstrap 的外部进程构建链：
 
+- [MelismaKit](https://github.com/kmgcc/melismakit)：原生 Swift 歌词排版度量与动效渲染引擎。
 - [WhatsNewKit](https://github.com/SvenTiigi/WhatsNewKit)：更新说明展示。
 - [PLCrashReporter](https://github.com/microsoft/plcrashreporter)：在主 App 进程发生异常退出时生成 crash-safe pending report；App 只在下一次正常启动时导入和处理报告。
+- [Sparkle](https://github.com/sparkle-project/Sparkle)：应用自动更新检查与交付框架。
 
 ## 可复现构建
 
@@ -102,8 +104,11 @@ bootstrap 把下载、源码、中间工作目录、最终产品和日志分开�
 | 组件 | 许可证 |
 | --- | --- |
 | AMLL | AGPL-3.0-only |
+| MelismaKit | AGPL-3.0-only |
 | LDDC Fetch Core | GPL-3.0-only |
 | QQMusicApi | GPL-3.0-or-later |
 | MediaRemoteAdapter | BSD-3-Clause |
 | SACAD | MPL-2.0 |
+| WhatsNewKit | MIT |
 | PLCrashReporter | MIT；内含 protobuf-c Apache-2.0 部分 |
+| Sparkle | MIT |
