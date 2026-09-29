@@ -23,6 +23,7 @@ struct HomeFullWindowRoot: View {
     @ObservedObject var appSession: AppSessionHost
     @State private var settings = AppSettings.shared
     @State private var layout = HomeWindowLayoutState.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -62,7 +63,7 @@ struct HomeFullWindowRoot: View {
                         .modelContainer(appSession.sharedModelContainer)
                         .tint(ThemeStore.shared.accentColor)
                         .accentColor(ThemeStore.shared.accentColor)
-                        .transition(.pageSwitchMotion)
+                        .transition(reduceMotion ? .opacity : .pageSwitchMotion)
                 }
             } else {
                 Color.clear
@@ -71,8 +72,8 @@ struct HomeFullWindowRoot: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .all)
-        .animation(
-            MotionPolicy.full.animation(for: MotionTokens.standard[.navigation]) ?? .spring(response: 0.38, dampingFraction: 0.86),
+        .motionAnimation(
+            .navigation,
             value: shouldRenderHome
         )
         .motionEnvironment()

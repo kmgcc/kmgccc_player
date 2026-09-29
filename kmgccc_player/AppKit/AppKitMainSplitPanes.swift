@@ -160,6 +160,7 @@ struct AppKitMainContentPaneRoot: View {
     @State private var settings = AppSettings.shared
     @State private var hasPresentedNowPlayingArtBackground = false
     @Environment(\.colorScheme) private var swiftUIColorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let pageController: PlaylistPageController
 
@@ -195,6 +196,10 @@ struct AppKitMainContentPaneRoot: View {
     /// passthrough hosting view forwards clicks to the host below.
     private func isHomeMode(uiState: UIStateViewModel, libraryVM: LibraryViewModel) -> Bool {
         uiState.contentMode == .library && libraryVM.currentSelection == .home
+    }
+
+    private var pageSwitchTransition: AnyTransition {
+        reduceMotion ? .opacity : .pageSwitchMotion
     }
 
     private func contentView(
@@ -240,7 +245,7 @@ struct AppKitMainContentPaneRoot: View {
                             PlaylistDetailView(pageController: pageController)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                                 .id("appkit-main-home-search")
-                                .transition(.pageSwitchMotion)
+                                .transition(pageSwitchTransition)
                         } else {
                             // The real HomeView is rendered by
                             // HomeFullWindowRoot in the AppKit window's
@@ -251,39 +256,39 @@ struct AppKitMainContentPaneRoot: View {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                                 .allowsHitTesting(false)
                                 .id("appkit-main-home")
-                                .transition(.pageSwitchMotion)
+                                .transition(pageSwitchTransition)
                         }
                     case .allPlaylists:
                         AllPlaylistsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-all-playlists")
-                            .transition(.pageSwitchMotion)
+                            .transition(pageSwitchTransition)
                     case .allAlbums:
                         AllAlbumsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-all-albums")
-                            .transition(.pageSwitchMotion)
+                            .transition(pageSwitchTransition)
                     case .allArtists:
                         AllArtistsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-all-artists")
-                            .transition(.pageSwitchMotion)
+                            .transition(pageSwitchTransition)
                     case .folders:
                         ReferencedFolderView(appSession: appSession)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-referenced-folders")
-                            .transition(.pageSwitchMotion)
+                            .transition(pageSwitchTransition)
                     case .allSongs, .playlist, .artist, .album:
                         PlaylistDetailView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-library-\(libraryVM.currentSelection.selectionIdentity(in: libraryVM))")
-                            .transition(.pageSwitchMotion)
+                            .transition(pageSwitchTransition)
                     }
                 case .playbackHistory:
                     PlaybackHistoryView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .id("appkit-main-playback-history")
-                        .transition(.pageSwitchMotion)
+                        .transition(pageSwitchTransition)
                 case .nowPlaying:
                     GeometryReader { proxy in
                         NowPlayingHostView(
@@ -296,12 +301,12 @@ struct AppKitMainContentPaneRoot: View {
                     }
                     .ignoresSafeArea(.container, edges: .top)
                     .id("appkit-main-nowplaying")
-                    .transition(.pageSwitchMotion)
+                    .transition(pageSwitchTransition)
                 }
               }
             }
-            .animation(
-                MotionPolicy.full.animation(for: MotionTokens.standard[.navigation]) ?? .spring(response: 0.38, dampingFraction: 0.86),
+            .motionAnimation(
+                .navigation,
                 value: "\(uiState.contentMode)-\(libraryVM.currentSelection.selectionIdentity(in: libraryVM))"
             )
 

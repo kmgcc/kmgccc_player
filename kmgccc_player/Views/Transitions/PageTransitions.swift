@@ -8,14 +8,11 @@
 import MotionKit
 import SwiftUI
 
-// MARK: - Page Switch Transition (Anti-Ghosting Sequential Upward Motion)
+// MARK: - Page Switch Transition
 
 /// Animatable modifier for unified page switching across library destinations.
-/// Implements "上移淡出" and "上移淡入" with staggered opacity timing:
-/// - Outgoing view lifts up slightly (0 -> -10pt) and vanishes rapidly (1.0 -> 0.0 by progress 0.35),
-///   completely dissolving before incoming content dominates.
-/// - Incoming view rises from below (+14pt -> 0pt), softly appearing from progress 0.20 to 1.0.
-/// This prevents overlapping 50% crossfade opacity, completely eliminating double-exposure ghosting.
+/// Uses a continuous crossfade with a restrained upward lift so the new page is
+/// visible throughout the transition instead of leaving a dim gap between pages.
 public struct PageSwitchTransitionModifier: AnimatableModifier {
     public var progress: Double
     public var isIncoming: Bool
@@ -39,19 +36,11 @@ public struct PageSwitchTransitionModifier: AnimatableModifier {
 
     private func computeTransform() -> (opacity: Double, yOffset: Double) {
         let p = max(0, min(1, progress))
+        let easedProgress = p * p * (3 - 2 * p)
         if isIncoming {
-            // Incoming: starts at progress = 0 (offset +14, opacity 0), settles at progress = 1 (offset 0, opacity 1)
-            // Delays initial fade-in until progress >= 0.20 so outgoing content has dissolved.
-            let fadeProgress = max(0, min(1, (p - 0.20) / 0.80))
-            let yOffset = (1.0 - p) * 14.0
-            return (fadeProgress, yOffset)
+            return (easedProgress, (1 - easedProgress) * 24)
         } else {
-            // Outgoing: starts at progress = 0 (offset 0, opacity 1), completes at progress = 1 (offset -10, opacity 0)
-            // Rapid fade-out: fully transparent by progress 0.35 to eliminate ghosting!
-            let fadeOutProgress = max(0, min(1, p / 0.35))
-            let opacity = 1.0 - fadeOutProgress
-            let yOffset = -p * 10.0
-            return (opacity, yOffset)
+            return (1 - easedProgress, -easedProgress * 16)
         }
     }
 }

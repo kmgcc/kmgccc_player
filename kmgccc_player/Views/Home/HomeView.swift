@@ -29,7 +29,6 @@ struct HomeView: View {
     @Environment(HomeViewModel.self) private var homeVM
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionPolicy) private var configuredMotionPolicy
-    @State private var hasAppeared = false
     @State private var didPassStartupGate = false
     @State private var startupFallbackExpired = false
     @State private var layout = HomeWindowLayoutState.shared
@@ -71,11 +70,13 @@ struct HomeView: View {
                     startupLoadingView
                 } else if homeVM.totalTrackCount == 0 {
                     emptyLibraryView(theme: homeTheme)
+                        .transition(.opacity)
                 } else {
                     scrollContent(theme: homeTheme)
+                        .transition(.opacity)
                 }
             }
-            .motionAnimation(.navigation, value: shouldShowStartupLoading)
+            .motionAnimation(.contentReplacement, value: contentTransitionKey)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
@@ -136,9 +137,9 @@ struct HomeView: View {
         .onChange(of: libraryVM.albumSortOrder) { _, _ in
             homeVM.refreshArtistAlbumSort(from: libraryVM)
         }
-        .onChange(of: libraryVM.state) { old, new in
+        .onChange(of: libraryVM.state) { _, new in
             if new == .loaded {
-                Task { await prepareStartupGate(resetEntranceAnimation: old == .loading) }
+                Task { await prepareStartupGate() }
             }
         }
     }
@@ -154,6 +155,11 @@ struct HomeView: View {
         return libraryVM.state == .loaded && !homeVM.hasPreparedContent
     }
 
+    private var contentTransitionKey: String {
+        if shouldShowStartupLoading { return "loading" }
+        return homeVM.totalTrackCount == 0 ? "empty" : "content"
+    }
+
     private var startupPreparationToken: String {
         let stateToken = libraryVM.state == .loading ? "loading" : "loaded"
         let phaseToken: String
@@ -167,7 +173,7 @@ struct HomeView: View {
         return "\(stateToken)|\(phaseToken)|tracks:\(homeVM.totalTrackCount)"
     }
 
-    private func prepareStartupGate(resetEntranceAnimation: Bool = false) async {
+    private func prepareStartupGate() async {
         if libraryVM.state == .loading, !didPassStartupGate {
             homeVM.invalidatePreparedContentForStartupGate()
         }
@@ -187,7 +193,7 @@ struct HomeView: View {
                 homeVM.refreshListeningFootprint(
                     dailyPlayCounts: listeningFootprintProvider()
                 )
-                revealStartupContent(resetEntranceAnimation: resetEntranceAnimation)
+                revealStartupContent()
                 return
             }
         }
@@ -214,7 +220,7 @@ struct HomeView: View {
             dailyPlayCounts: listeningFootprintProvider()
         )
         startupFallbackExpired = true
-        revealStartupContent(resetEntranceAnimation: true)
+        revealStartupContent()
     }
 
     private var playbackIsActive: Bool {
@@ -224,23 +230,8 @@ struct HomeView: View {
         playerVM.isPlaying
     }
 
-    private func revealStartupContent(resetEntranceAnimation: Bool) {
-        if resetEntranceAnimation {
-            hasAppeared = false
-        }
+    private func revealStartupContent() {
         didPassStartupGate = true
-
-        guard !hasAppeared else { return }
-        if motionPolicy != .full {
-            hasAppeared = true
-            return
-        }
-
-        Task {
-            try? await Task.sleep(for: .milliseconds(80))
-            guard !Task.isCancelled else { return }
-            hasAppeared = true
-        }
     }
 
     private var startupLoadingView: some View {
@@ -308,9 +299,6 @@ struct HomeView: View {
                     centerLeftPad: centerLeftPad,
                     centerRightPad: centerRightPad
                 )
-                .opacity(hasAppeared ? 1 : 0)
-                .offset(y: hasAppeared ? 0 : 12)
-                .motionAnimation(.navigation, value: hasAppeared)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
