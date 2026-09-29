@@ -65,18 +65,20 @@ struct HomeView: View {
     var body: some View {
         let _ = traceBodyChanges()
         HomeThemeSnapshotReader { homeTheme in
-            Group {
+            PagePresentation(
+                revision: "\(contentTransitionKey)-\(layout.allowsHomeInteraction)",
+                isPresented: layout.allowsHomeInteraction
+            ) {
                 if shouldShowStartupLoading {
                     startupLoadingView
                 } else if homeVM.totalTrackCount == 0 {
                     emptyLibraryView(theme: homeTheme)
-                        .transition(.opacity)
                 } else {
                     scrollContent(theme: homeTheme)
-                        .transition(.opacity)
                 }
+            } placeholder: {
+                if shouldShowStartupLoading { startupLoadingView }
             }
-            .motionAnimation(.contentReplacement, value: contentTransitionKey)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
@@ -86,7 +88,8 @@ struct HomeView: View {
             )
             FirstUseHitchDiagnostics.end(token)
         }
-        .task(id: startupPreparationToken) {
+        .task(id: "\(startupPreparationToken)-\(layout.allowsHomeInteraction)") {
+            guard layout.allowsHomeInteraction else { return }
             let token = FirstUseHitchDiagnostics.begin(
                 "HomeView.task",
                 detail: "tracks=\(homeVM.totalTrackCount), state=\(libraryVM.state)"

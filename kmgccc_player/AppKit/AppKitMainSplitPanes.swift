@@ -160,7 +160,6 @@ struct AppKitMainContentPaneRoot: View {
     @State private var settings = AppSettings.shared
     @State private var hasPresentedNowPlayingArtBackground = false
     @Environment(\.colorScheme) private var swiftUIColorScheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let pageController: PlaylistPageController
 
@@ -198,8 +197,34 @@ struct AppKitMainContentPaneRoot: View {
         uiState.contentMode == .library && libraryVM.currentSelection == .home
     }
 
-    private var pageSwitchTransition: AnyTransition {
-        reduceMotion ? .opacity : .pageSwitchMotion
+    private func pageDestinationIdentity(
+        uiState: UIStateViewModel,
+        libraryVM: LibraryViewModel,
+        homeSearchActive: Bool
+    ) -> String {
+        switch uiState.contentMode {
+        case .playbackHistory:
+            return "playback-history"
+        case .nowPlaying:
+            return "now-playing"
+        case .library:
+            switch libraryVM.currentSelection {
+            case .home:
+                return homeSearchActive ? "home-search" : "home"
+            case .allPlaylists:
+                return "all-playlists"
+            case .allAlbums:
+                return "all-albums"
+            case .allArtists:
+                return "all-artists"
+            case .folders:
+                return "folders"
+            case .allSongs, .playlist, .artist, .album:
+                // These pages share one stateful detail host. Selection changes
+                // are handled by PlaylistDetailView without rebuilding its owner.
+                return "library-detail"
+            }
+        }
     }
 
     private func contentView(
@@ -216,6 +241,19 @@ struct AppKitMainContentPaneRoot: View {
         let homeMode = isHomeMode(uiState: uiState, libraryVM: libraryVM)
         let homeSearchActive = homeMode
             && !pageController.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let destinationIdentity = pageDestinationIdentity(
+            uiState: uiState,
+            libraryVM: libraryVM,
+            homeSearchActive: homeSearchActive
+        )
+        let selectionIdentity = libraryVM.currentSelection.selectionIdentity(in: libraryVM)
+        let detailReady = pageController.page?.selection == libraryVM.currentSelection
+            && !pageController.isSelectionTransitioning
+        let isDetail = destinationIdentity == "library-detail" || homeSearchActive
+        let readiness = isDetail
+            ? detailReady
+            : (uiState.contentMode != .playbackHistory || !appSession.playbackHistoryViewModel.isLoading)
+        let presentationRevision = "\(destinationIdentity)-\(selectionIdentity)-\(readiness)-\(fullscreenWindowManager.isWindowedFullscreenActive)"
 
         let base = ZStack(alignment: .bottomLeading) {
             // Transparent center-rect probe. Reports the center pane's
@@ -226,7 +264,11 @@ struct AppKitMainContentPaneRoot: View {
             Color.clear
                 .allowsHitTesting(false)
 
-            Group {
+            PagePresentation(
+                revision: presentationRevision,
+                isPresented: (!homeMode || homeSearchActive) && (!isDetail || detailReady)
+            ) {
+              Group {
               if fullscreenWindowManager.isWindowedFullscreenActive {
                 // Embedded fullscreen presents an opaque, full-pane overlay
                 // (see `FullscreenPlayerView` zIndex(1) below). The heavy detail
@@ -245,7 +287,6 @@ struct AppKitMainContentPaneRoot: View {
                             PlaylistDetailView(pageController: pageController)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                                 .id("appkit-main-home-search")
-                                .transition(pageSwitchTransition)
                         } else {
                             // The real HomeView is rendered by
                             // HomeFullWindowRoot in the AppKit window's
@@ -256,39 +297,31 @@ struct AppKitMainContentPaneRoot: View {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                                 .allowsHitTesting(false)
                                 .id("appkit-main-home")
-                                .transition(pageSwitchTransition)
                         }
                     case .allPlaylists:
                         AllPlaylistsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-all-playlists")
-                            .transition(pageSwitchTransition)
                     case .allAlbums:
                         AllAlbumsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-all-albums")
-                            .transition(pageSwitchTransition)
                     case .allArtists:
                         AllArtistsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-all-artists")
-                            .transition(pageSwitchTransition)
                     case .folders:
                         ReferencedFolderView(appSession: appSession)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-referenced-folders")
-                            .transition(pageSwitchTransition)
                     case .allSongs, .playlist, .artist, .album:
                         PlaylistDetailView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                            .id("appkit-main-library-\(libraryVM.currentSelection.selectionIdentity(in: libraryVM))")
-                            .transition(pageSwitchTransition)
                     }
                 case .playbackHistory:
                     PlaybackHistoryView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .id("appkit-main-playback-history")
-                        .transition(pageSwitchTransition)
                 case .nowPlaying:
                     GeometryReader { proxy in
                         NowPlayingHostView(
@@ -301,14 +334,14 @@ struct AppKitMainContentPaneRoot: View {
                     }
                     .ignoresSafeArea(.container, edges: .top)
                     .id("appkit-main-nowplaying")
-                    .transition(pageSwitchTransition)
                 }
               }
+              }
+            } placeholder: {
+                if destinationIdentity == "library-detail" || homeSearchActive {
+                    PlaylistDetailSkeletonView(showHeader: libraryVM.currentSelection != .allSongs && !homeSearchActive)
+                }
             }
-            .motionAnimation(
-                .navigation,
-                value: "\(uiState.contentMode)-\(libraryVM.currentSelection.selectionIdentity(in: libraryVM))"
-            )
 
             if !FullscreenWindowManager.shared.isWindowedFullscreenActive {
                 GeometryReader { proxy in

@@ -451,7 +451,6 @@ private final class AppKitMainRootViewController: NSViewController {
     private let homeFullWindowHost: PassthroughHostingView<HomeFullWindowRoot>
     private let fileDropOverlayHost: PassthroughHostingView<AppDialogDropImportOverlay>
     private var didApplyPaneGlassBlendingMode = false
-    private var homeHostHideTask: Task<Void, Never>?
     private var fileDropOverlayHideTask: Task<Void, Never>?
 
     init(appSession: AppSessionHost, splitViewController: AppKitMainSplitViewController) {
@@ -654,19 +653,9 @@ private final class AppKitMainRootViewController: NSViewController {
     }
 
     private func handleHomeModeChange(_ isHome: Bool) {
-        homeHostHideTask?.cancel()
-        homeHostHideTask = nil
-        if isHome {
-            homeFullWindowHost.isHidden = false
-        } else {
-            let hideDelay = MotionTokens.standard.navigation.visualCompletionDelay()
-            homeHostHideTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(hideDelay * 1_000_000_000))
-                guard !Task.isCancelled else { return }
-                guard !HomeWindowLayoutState.shared.isHomeMode else { return }
-                self?.homeFullWindowHost.isHidden = true
-            }
-        }
+        // PagePresentation owns entry. Remove the outgoing Home surface at
+        // the route boundary so it cannot show behind another live page.
+        homeFullWindowHost.isHidden = !isHome
     }
 
     private func setFileDropOverlayVisible(_ isVisible: Bool) {

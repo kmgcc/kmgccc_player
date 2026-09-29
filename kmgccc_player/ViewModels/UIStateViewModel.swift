@@ -382,23 +382,17 @@ final class UIStateViewModel {
     }
 
     func showNowPlaying() {
-        withAnimation(motionAnimation(for: .navigation)) {
-            contentMode = .nowPlaying
-        }
+        contentMode = .nowPlaying
     }
 
     func showLibrary() {
-        withAnimation(motionAnimation(for: .navigation)) {
-            playbackHistoryDate = nil
-            contentMode = .library
-        }
+        playbackHistoryDate = nil
+        contentMode = .library
     }
 
     func showPlaybackHistory(for date: Date? = nil) {
-        withAnimation(motionAnimation(for: .navigation)) {
-            playbackHistoryDate = date.map { Calendar.current.startOfDay(for: $0) }
-            contentMode = .playbackHistory
-        }
+        playbackHistoryDate = date.map { Calendar.current.startOfDay(for: $0) }
+        contentMode = .playbackHistory
     }
 
     /// Called continuously by library list to keep the latest visible anchor snapshot.

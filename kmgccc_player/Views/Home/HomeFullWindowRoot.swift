@@ -23,11 +23,11 @@ struct HomeFullWindowRoot: View {
     @ObservedObject var appSession: AppSessionHost
     @State private var settings = AppSettings.shared
     @State private var layout = HomeWindowLayoutState.shared
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hasMountedHome = false
 
     var body: some View {
         Group {
-            if shouldRenderHome {
+            if hasMountedHome || shouldRenderHome {
                 if let libraryVM = appSession.libraryVM,
                    let playerVM = appSession.playerVM,
                    let playbackCoordinator = appSession.playbackCoordinator,
@@ -63,7 +63,6 @@ struct HomeFullWindowRoot: View {
                         .modelContainer(appSession.sharedModelContainer)
                         .tint(ThemeStore.shared.accentColor)
                         .accentColor(ThemeStore.shared.accentColor)
-                        .transition(reduceMotion ? .opacity : .pageSwitchMotion)
                 }
             } else {
                 Color.clear
@@ -72,10 +71,13 @@ struct HomeFullWindowRoot: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .all)
-        .motionAnimation(
-            .navigation,
-            value: shouldRenderHome
-        )
+        .opacity(shouldRenderHome ? 1 : 0)
+        .allowsHitTesting(shouldRenderHome)
+        .accessibilityHidden(!shouldRenderHome)
+        .transaction { $0.animation = nil }
+        .onChange(of: shouldRenderHome, initial: true) { _, active in
+            if active { hasMountedHome = true }
+        }
         .motionEnvironment()
     }
 
