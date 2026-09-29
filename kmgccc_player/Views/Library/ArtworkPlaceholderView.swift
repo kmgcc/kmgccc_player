@@ -132,8 +132,8 @@ struct ArtworkPlaceholderView: View {
             cornerRadius: 8,
             clipShape: .rounded,
             iconSize: 14,
-            iconOpacity: 0.6,
-            themeColor: themeColor
+            iconOpacity: 0,
+            themeColor: themeColor ?? ThemeStore.shared.appForegroundPalette.primaryColor.opacity(0.10)
         )
     }
 

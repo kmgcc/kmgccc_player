@@ -12,6 +12,8 @@ import SwiftUI
 
 struct PlaylistDetailSkeletonView: View {
     let showHeader: Bool
+    @Environment(LibraryViewModel.self) private var libraryVM
+    @EnvironmentObject private var themeStore: ThemeStore
 
     private enum Layout {
         static let artistColumnWidth: CGFloat = 164
@@ -25,51 +27,57 @@ struct PlaylistDetailSkeletonView: View {
     }
 
     private var placeholderColor: Color {
-        Color.primary.opacity(0.08)
+        themeStore.appForegroundPalette.primaryColor.opacity(0.06)
     }
 
     private var placeholderHighlightColor: Color {
-        Color.primary.opacity(0.14)
+        themeStore.appForegroundPalette.primaryColor.opacity(0.10)
+    }
+
+    private var isCircularArtwork: Bool {
+        if case .artist = libraryVM.currentSelection { return true }
+        return false
     }
 
     var body: some View {
         GeometryReader { geometry in
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 12) {
                     if showHeader {
-                        headerSkeleton(contentWidth: max(0, geometry.size.width - 48))
+                        headerSkeleton(contentWidth: max(0, geometry.size.width - 80))
                     }
 
-                    rowsSkeleton(contentWidth: max(0, geometry.size.width - 48))
+                    rowsSkeleton(contentWidth: max(0, geometry.size.width - (showHeader ? 80 : 64)))
+                        // Match the native table's inset style inside the scroll gutter.
+                        .padding(.horizontal, 16)
+                        .padding(.trailing, showHeader ? 16 : 0)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, showHeader ? 20 : 12)
-                .padding(.horizontal, 24)
+                .padding(.top, 16)
+                .padding(.horizontal, 16)
                 .padding(.bottom, 64)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .allowsHitTesting(false)
-            .opacity(0.68)
         }
     }
 
     @ViewBuilder
     private func headerSkeleton(contentWidth: CGFloat) -> some View {
-        let textColumnWidth = max(0, contentWidth - LibraryDetailHeaderView.artworkSide - 24)
+        let textColumnWidth = max(0, contentWidth - LibraryDetailHeaderView.artworkSide - 20)
 
-        HStack(alignment: .bottom, spacing: 24) {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(placeholderHighlightColor)
+        HStack(alignment: .bottom, spacing: 20) {
+            ArtworkPlaceholderView.header(
+                size: LibraryDetailHeaderView.artworkSide,
+                isCircle: isCircularArtwork,
+                themeColor: placeholderHighlightColor
+            )
                 .frame(
                     width: LibraryDetailHeaderView.artworkSide,
                     height: LibraryDetailHeaderView.artworkSide
                 )
 
-            VStack(alignment: .leading, spacing: 14) {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(placeholderColor)
-                    .frame(width: min(56, textColumnWidth), height: 13)
-
+            VStack(alignment: .leading, spacing: 8) {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(placeholderHighlightColor)
                     .frame(width: min(220, textColumnWidth), height: 26)
@@ -84,21 +92,23 @@ struct PlaylistDetailSkeletonView: View {
                         .frame(width: min(90, textColumnWidth), height: 13)
                 }
 
-                Spacer().frame(height: 4)
+                Spacer(minLength: 14)
 
                 HStack(spacing: 12) {
                     Capsule(style: .continuous)
                         .fill(placeholderHighlightColor)
-                        .frame(width: 92, height: 32)
+                        .frame(width: 78, height: 36)
 
                     Circle()
                         .fill(placeholderColor)
-                        .frame(width: 32, height: 32)
+                        .frame(width: 36, height: 36)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: LibraryDetailHeaderView.artworkSide, maxHeight: LibraryDetailHeaderView.artworkSide, alignment: .topLeading)
         }
-        .padding(.bottom, 8)
+        .frame(height: LibraryDetailHeaderView.artworkSide, alignment: .bottom)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 20)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -127,12 +137,6 @@ struct PlaylistDetailSkeletonView: View {
                                     height: Constants.Layout.TrackRow.titleFontSize
                                 )
 
-                            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                .fill(placeholderColor)
-                                .frame(
-                                    width: min(artistWidth(for: index), titleColumnWidth * 0.65),
-                                    height: Constants.Layout.TrackRow.subtitleFontSize
-                                )
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
 

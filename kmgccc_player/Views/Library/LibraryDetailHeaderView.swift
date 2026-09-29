@@ -121,8 +121,6 @@ struct LibraryDetailHeaderView: View {
             )
 
             headerTextColumn
-                .opacity(isColorReady ? 1 : 0)
-                .allowsHitTesting(isColorReady)
                 .transaction { transaction in
                     transaction.animation = nil
                 }
