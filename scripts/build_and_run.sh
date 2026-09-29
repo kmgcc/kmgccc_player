@@ -16,7 +16,7 @@ APP_BINARY="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 # Export log level for the app, defaulting to info
 export KMGCCC_LOG_LEVEL="${KMGCCC_LOG_LEVEL:-info}"
-
+KMGCCC_DEBUG_PERF="${KMGCCC_DEBUG_PERF:-0}"
 PROCESS_PREFLIGHT="$SCRIPT_DIR/check-app-process-state.sh"
 DEPENDENCY_PREFLIGHT="$SCRIPT_DIR/check-melismakit-dependency.sh"
 MELISMAKIT_EXPECTED_SOURCE="${MELISMAKIT_EXPECTED_SOURCE:-local}"
@@ -179,11 +179,13 @@ open_app() {
     if [ "$#" -gt 0 ]; then
         /usr/bin/open -n \
             --env "KMGCCC_LOG_LEVEL=$KMGCCC_LOG_LEVEL" \
+            --env "KMGCCC_DEBUG_PERF=$KMGCCC_DEBUG_PERF" \
             "$APP_BUNDLE" \
             --args "$@"
     else
         /usr/bin/open -n \
             --env "KMGCCC_LOG_LEVEL=$KMGCCC_LOG_LEVEL" \
+            --env "KMGCCC_DEBUG_PERF=$KMGCCC_DEBUG_PERF" \
             "$APP_BUNDLE"
     fi
 }

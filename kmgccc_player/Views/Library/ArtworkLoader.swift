@@ -62,6 +62,7 @@ enum PlaylistPerfDiagnostics {
 
     static func markRowBodyRecompute() {
         #if DEBUG
+            guard LogConfig.perfDebugEnabled else { return }
             lock.lock()
             rowBodyRecomputeCount += 1
             dumpIfNeededLocked()
@@ -79,6 +80,7 @@ enum PlaylistPerfDiagnostics {
 
     static func markDecode(durationMs: Double, wasOnMainThread: Bool) {
         #if DEBUG
+            guard LogConfig.perfDebugEnabled else { return }
             lock.lock()
             decodeCount += 1
             accumulatedDecodeMs += durationMs
@@ -92,6 +94,7 @@ enum PlaylistPerfDiagnostics {
 
     static func markListRebuild(reason: String, trackCount: Int, durationMs: Double) {
         #if DEBUG
+            guard LogConfig.perfDebugEnabled else { return }
             lock.lock()
             listRebuildCount += 1
             accumulatedListRebuildMs += durationMs

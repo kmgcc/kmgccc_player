@@ -611,9 +611,12 @@ nonisolated enum ContextMenuDiagnostics {
         FirstUseHitchDiagnostics.end(token, detail: detail)
     }
 
-    nonisolated static func markBodyUpdate(_ key: String, detail: String? = nil) {
-        guard isTrackingOrOpen else { return }
-        let token = FirstUseHitchDiagnostics.begin(key, detail: detail)
+    nonisolated static func markBodyUpdate(
+        _ key: String,
+        detail: @autoclosure () -> String? = nil
+    ) {
+        guard LogConfig.perfDebugEnabled, isTrackingOrOpen else { return }
+        let token = FirstUseHitchDiagnostics.begin(key, detail: detail())
         FirstUseHitchDiagnostics.end(token)
     }
 
