@@ -63,16 +63,19 @@ private struct HeaderArtworkBoundsReporter: View {
                     LyricsRuntimeProfile.increment("HeaderArtworkBoundsReporter.callback")
                     onChange(frame)
                 }
-                .onChange(of: frame) { _, newFrame in
+                .onChange(of: frame.midX) { _, _ in
                     LyricsRuntimeProfile.increment("HeaderArtworkBoundsReporter.callback")
-                    onChange(newFrame)
+                    // The halo anchor tracks horizontal changes only; vertical
+                    // movement follows scroll offset. Ignore per-frame Y changes
+                    // as the header scrolls offscreen.
+                    onChange(frame)
                 }
         }
     }
 }
 
 struct LibraryDetailHeaderView: View {
-    private static let artworkSide: CGFloat = 220
+    static let artworkSide: CGFloat = 220
     private static let visibleDescriptionLineCount = 6
 
     @Environment(LibraryViewModel.self) private var libraryVM

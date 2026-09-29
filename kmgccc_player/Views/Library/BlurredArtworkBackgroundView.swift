@@ -6,6 +6,8 @@
 //
 
 import AppKit
+import MotionKit
+import Observation
 import SwiftUI
 
 @MainActor
@@ -13,6 +15,10 @@ import SwiftUI
 final class HeaderHaloState {
     private static let anchorEpsilon: CGFloat = 0.5
     private static let scrollEpsilon: CGFloat = 6.0
+    fileprivate static let bloomSize: CGFloat = 220 * 4.0
+    private static let bloomVerticalExtent: CGFloat = bloomSize * 1.42
+    private static let maximumScale: CGFloat = baseScale + maxScaleGrowth
+    private static let scrollVisibilityOverscan: CGFloat = 96
 
     private(set) var selectionIdentity: String?
     private(set) var anchor: CGPoint?
@@ -26,7 +32,7 @@ final class HeaderHaloState {
     /// while the parallax baseline assumed scroll 0, pinning the halo too low.
     private var anchorCaptureOffset: CGFloat = 0
     /// Latest raw scroll offset reported by `updateScroll`.
-    private var latestScrollOffset: CGFloat = 0
+    @ObservationIgnored private var latestScrollOffset: CGFloat = 0
 
     private static let parallaxFraction: CGFloat = 0.6
     private static let baseScale: CGFloat = 0.72
@@ -87,8 +93,11 @@ final class HeaderHaloState {
     }
 
     @discardableResult
-    func updateScroll(offset: CGFloat) -> Bool {
+    func updateScroll(offset: CGFloat, viewportHeight: CGFloat) -> Bool {
         latestScrollOffset = offset
+        guard isHaloNearViewport(offset: offset, viewportHeight: viewportHeight) else {
+            return false
+        }
         // scrollDelta is the absolute scroll from the top (baseline = 0), used
         // by `scale`. Previously this was `offset - initialScrollOffset`, where
         // initialScrollOffset was captured on the first updateScroll call —
@@ -102,6 +111,26 @@ final class HeaderHaloState {
         scrollDelta = nextDelta
         return true
     }
+
+    private func isHaloNearViewport(offset: CGFloat, viewportHeight: CGFloat) -> Bool {
+        guard let anchor,
+              viewportHeight.isFinite,
+              viewportHeight > 0
+        else {
+            return true
+        }
+
+        // The window-level halo is much taller than its artwork, so keep
+        // tracking until the entire rendered extent is safely outside the
+        // scroll viewport. Using the maximum scale and an overscan preserves
+        // the visible edge while avoiding SwiftUI updates for an offscreen
+        // background during long playlist scrolls.
+        let centerY = anchor.y + offset * Self.parallaxFraction - anchorCaptureOffset
+        let halfExtent = Self.bloomVerticalExtent * Self.maximumScale / 2
+        let top = -Self.scrollVisibilityOverscan
+        let bottom = viewportHeight + Self.scrollVisibilityOverscan
+        return centerY + halfExtent >= top && centerY - halfExtent <= bottom
+    }
 }
 
 struct HeaderHaloBackgroundView: View {
@@ -110,7 +139,7 @@ struct HeaderHaloBackgroundView: View {
     let incomingSource: NSImage?
     let sourceBlendOpacity: Double
     let presentationOpacity: Double
-    var bloomSize: CGFloat = 220 * 4.0
+    var bloomSize: CGFloat = HeaderHaloState.bloomSize
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("HeaderHaloBackgroundView.body")
@@ -135,6 +164,9 @@ struct HeaderHaloBackgroundView: View {
 }
 
 struct HeaderFullWindowBackgroundView: View {
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
+
     let state: HeaderHaloState
     let currentSource: NSImage?
     let incomingSource: NSImage?
@@ -142,7 +174,7 @@ struct HeaderFullWindowBackgroundView: View {
     let presentationOpacity: Double
     var xOffset: CGFloat = 0
     var yOffset: CGFloat = 0
-    var bloomSize: CGFloat = 220 * 4.0
+    var bloomSize: CGFloat = HeaderHaloState.bloomSize
 
     var body: some View {
         Group {
@@ -158,10 +190,21 @@ struct HeaderFullWindowBackgroundView: View {
                 .opacity(presentationOpacity)
                 .scaleEffect(state.scale)
                 .position(x: xOffset + anchor.x, y: haloY)
+                .animation(scrollInterpolation, value: state.contentSpaceOffset)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .allowsHitTesting(false)
+    }
+
+    private var scrollInterpolation: Animation? {
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: accessibilityReduceMotion
+        )
+        guard policy == .full else {
+            return nil
+        }
+        return .linear(duration: 1.0 / 20.0)
     }
 }
 

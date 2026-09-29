@@ -61,6 +61,38 @@ struct ScrollEdgeFadeState: Equatable {
     }
 }
 
+/// Keeps scroll-driven fade updates local to the scroll view instead of
+/// invalidating the screen that owns a large lazy list on every scroll frame.
+struct ScrollEdgeFadeTrackingMask: ViewModifier {
+    let topFadeHeight: CGFloat
+    let bottomFadeHeight: CGFloat
+    var topChromeInset: CGFloat = 0
+
+    @State private var state = ScrollEdgeFadeState()
+    func body(content: Content) -> some View {
+        content
+            .onScrollGeometryChange(for: ScrollEdgeFadeState.self) { geometry in
+                ScrollEdgeFadeState(
+                    geometry: geometry,
+                    topFadeDistance: max(topFadeHeight, topChromeInset),
+                    bottomFadeDistance: bottomFadeHeight
+                )
+            } action: { _, newState in
+                guard state != newState else { return }
+                state = newState
+            }
+            .mask {
+                ScrollEdgeFadeMask(
+                    topOpacity: state.topOpacity,
+                    bottomOpacity: state.bottomOpacity,
+                    topFadeHeight: topFadeHeight,
+                    bottomFadeHeight: bottomFadeHeight,
+                    topChromeInset: topChromeInset
+                )
+            }
+    }
+}
+
 extension View {
     func scrollEdgeFadeMask(
         _ state: ScrollEdgeFadeState,
