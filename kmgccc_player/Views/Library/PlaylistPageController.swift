@@ -764,7 +764,9 @@ final class PlaylistPageController {
         let firstPaintToken = FirstUseHitchDiagnostics.begin("PlaylistPageController.firstPaint", detail: "selection=\(selection)")
         phaseTask?.cancel()
         let playbackActive = playerVM?.isPlaying == true
-        areRowSecondaryInteractionsEnabled = false
+        // Mount the final row shape once. Replacing the trailing glyph with a
+        // Menu after first paint changes its native width and reloads the table.
+        areRowSecondaryInteractionsEnabled = true
         areRowArtworkLoadsEnabled = true
         isRowArtworkPrefetchEnabled = false
         let hasDetailHeader: Bool = {
@@ -782,7 +784,6 @@ final class PlaylistPageController {
         phaseTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 130_000_000)
             guard !Task.isCancelled, self.phaseToken == token else { return }
-            self.areRowSecondaryInteractionsEnabled = true
             if !playbackActive {
                 self.isRowArtworkPrefetchEnabled = true
             } else {
@@ -871,9 +872,12 @@ final class PlaylistPageController {
             sortKeyRawValue: libraryVM.trackSortKey.rawValue,
             sortOrderRawValue: sortOrderCacheComponent
         )
+        guard activeLoadToken == token, !Task.isCancelled,
+              libraryVM.currentSelection == selection else { return }
 
         if !isSearching,
            let cached = await PlaylistPageModelCacheService.shared.model(for: modelKey),
+           activeLoadToken == token, !Task.isCancelled,
            let cachedPage = hydratedPageModel(
                 selection: selection,
                 selectionIdentity: selectionIdentity,
@@ -1011,9 +1015,9 @@ final class PlaylistPageController {
 
     private func applyPageModel(_ pageModel: PlaylistPageModel, restoreScroll: Bool) {
         resetArtworkPresentation(force: false, identity: pageModel.header?.artworkIdentity)
-        let wipeAnimation = MotionPolicy.full.animation(for: MotionTokens.standard[.contentReplacement])
-            ?? .easeInOut(duration: 0.28)
-        withAnimation(wipeAnimation) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
             page = pageModel
             isSelectionTransitioning = false
             phase = .ready

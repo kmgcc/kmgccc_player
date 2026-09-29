@@ -497,7 +497,9 @@ struct PlaylistDetailView: View {
                 .frame(maxWidth: .infinity)
             } else {
                 trackRowsContent
-                .padding(.horizontal, 16)
+                    // The detail scroll already provides the leading gutter.
+                    // Preserve the extra trailing space for the scroll edge.
+                    .padding(.trailing, 16)
             }
         }
     }
