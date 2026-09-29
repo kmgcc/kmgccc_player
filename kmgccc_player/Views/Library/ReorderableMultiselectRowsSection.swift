@@ -82,13 +82,28 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            selectedRunBackgrounds
-                .allowsHitTesting(false)
+            if isMultiselectMode {
+                selectedRunBackgrounds
+                    .allowsHitTesting(false)
+            }
 
             LazyVStack(spacing: 0) {
-                ForEach(displayRows) { row in
-                    rowContainer(row)
-                        .background(rowFrameReporter(for: row.id))
+                if !isMultiselectMode && draggingID == nil {
+                    ForEach(rows) { row in
+                        rowContent(row, selectedIDs.contains(row.id), .isolated)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            // Expose the model-derived extent at the lazy-stack
+                            // boundary so realized and estimated rows share the
+                            // same height contract.
+                            .frame(height: rowHeight(row), alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                } else {
+                    ForEach(displayRows) { row in
+                        rowContainer(row)
+                            .frame(height: rowHeight(row), alignment: .topLeading)
+                            .background(rowFrameReporter(for: row.id))
+                    }
                 }
                 Color.clear.frame(height: bottomSpacerHeight)
             }
@@ -174,11 +189,13 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
             cancelDrag()
             stopAutoScroll()
         }
-        .onChange(of: rows.map(\.id)) { _, newIDs in
+        .onChange(of: isMultiselectMode ? rows.map(\.id) : []) { _, newIDs in
+            // Row frames are only consumed by multiselect. Avoid rebuilding
+            // the full ID snapshot during ordinary long-list scrolling.
             // Purge cached frames for rows that no longer exist so the merge
             // above cannot leave ghost frames behind after deletions. Pure
-            // scrolling does not change rows.map(\.id), so this does not fire
-            // on scroll and cached off-screen frames survive.
+            // scrolling in multiselect does not change rows.map(\.id), so
+            // cached off-screen frames survive.
             let validIDs = Set(newIDs)
             rowFrames = rowFrames.filter { validIDs.contains($0.key) }
             if draggingID == nil {
@@ -220,6 +237,7 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
     }
 
     private var displayRows: [Row] {
+        guard visualOrderIDs != nil else { return rows }
         let lookup = rowLookup
         return displayedOrderIDs.compactMap { lookup[$0] }
     }
@@ -404,19 +422,29 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
             .clipShape(shape)
     }
 
+    @ViewBuilder
     private func rowContainer(_ row: Row) -> some View {
-        let isDragged = draggingID != nil && draggedIDSet.contains(row.id)
-        return ZStack {
-            rowPlaceholder()
-                .opacity(isDragged ? 1 : 0)
-            rowContent(row, selectedIDs.contains(row.id), selectionContinuity(for: row.id))
-                .opacity(isDragged ? 0 : 1)
+        let isSelected = selectedIDs.contains(row.id)
+        let continuity = selectionContinuity(for: row.id)
+
+        if !isMultiselectMode && draggingID == nil {
+            rowContent(row, isSelected, continuity)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        } else {
+            let isDragged = draggingID != nil && draggedIDSet.contains(row.id)
+            ZStack {
+                rowPlaceholder()
+                    .opacity(isDragged ? 1 : 0)
+                rowContent(row, isSelected, continuity)
+                    .opacity(isDragged ? 0 : 1)
+            }
+            .contentShape(Rectangle())
+            .reorderableMultiselectGesture(
+                isReorderEnabled,
+                reorderGesture(for: row)
+            )
         }
-        .contentShape(Rectangle())
-        .reorderableMultiselectGesture(
-            isReorderEnabled,
-            reorderGesture(for: row)
-        )
     }
 
     private func rowPlaceholder() -> some View {

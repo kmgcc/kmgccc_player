@@ -148,6 +148,11 @@ final class PlaylistPageController {
         resolvedMotionPolicy.animation(for: spec)
     }
 
+    var revealScrollPositionAnimation: Animation? {
+        guard isRevealScrollArmed, pendingRevealAnimated else { return nil }
+        return motionAnimation(for: revealScrollAnimationSpec)
+    }
+
     private var revealScrollAnimationSpec: MotionSpec {
         motionTokens.phaseSpec(
             for: .navigation,
@@ -184,6 +189,12 @@ final class PlaylistPageController {
     private var didFadeHaloIdentity: String?
     @ObservationIgnored
     private var artworkPrefetchTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored
+    private var rowArtworkPrefetchTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var rowArtworkPrefetchKey: String?
+    @ObservationIgnored
+    private var isRowArtworkScrollSuspended = false
     @ObservationIgnored
     private var prefetchedArtworkKeys: Set<String> = []
     @ObservationIgnored
@@ -493,9 +504,9 @@ final class PlaylistPageController {
         }
     }
 
-    func updateHaloScroll(offset: CGFloat) {
+    func updateHaloScroll(offset: CGFloat, viewportHeight: CGFloat) {
         LyricsRuntimeProfile.increment("header.haloScrollUpdate.called")
-        if haloState.updateScroll(offset: offset) {
+        if haloState.updateScroll(offset: offset, viewportHeight: viewportHeight) {
             LyricsRuntimeProfile.increment("header.haloScrollUpdate.changed")
         } else {
             LyricsRuntimeProfile.increment("header.haloScrollUpdate.same")
@@ -505,11 +516,31 @@ final class PlaylistPageController {
     private var lastPrefetchTime: Date = .distantPast
     private let prefetchDebounceInterval: TimeInterval = 0.08
 
-    func prefetchAroundTrackID(_ trackID: UUID) {
+    func setRowArtworkScrollSuspended(_ suspended: Bool, nearbyTrackID: UUID?) {
+        guard isRowArtworkScrollSuspended != suspended else { return }
+        isRowArtworkScrollSuspended = suspended
+
+        if suspended {
+            if let rowArtworkPrefetchKey {
+                prefetchedArtworkKeys.remove(rowArtworkPrefetchKey)
+            }
+            rowArtworkPrefetchTask?.cancel()
+            rowArtworkPrefetchTask = nil
+            rowArtworkPrefetchKey = nil
+            lastPrefetchBucket = nil
+            return
+        }
+
+        guard isRowArtworkPrefetchEnabled, let nearbyTrackID else { return }
+        prefetchAroundTrackID(nearbyTrackID, bypassDebounce: true)
+    }
+
+    func prefetchAroundTrackID(_ trackID: UUID, bypassDebounce: Bool = false) {
         guard isRowArtworkPrefetchEnabled else { return }
+        guard !isRowArtworkScrollSuspended else { return }
         guard let page else { return }
         let now = Date()
-        guard now.timeIntervalSince(lastPrefetchTime) >= prefetchDebounceInterval else { return }
+        guard bypassDebounce || now.timeIntervalSince(lastPrefetchTime) >= prefetchDebounceInterval else { return }
         guard let startIndex = page.rows.firstIndex(where: { $0.id == trackID }) else { return }
         lastPrefetchTime = now
         
@@ -519,8 +550,8 @@ final class PlaylistPageController {
 
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         
-        let start = max(0, startIndex - 12)
-        let end = min(page.rows.count, startIndex + 40)
+        let start = max(0, startIndex - 4)
+        let end = min(page.rows.count, startIndex + 20)
         guard start < end else { return }
 
         let rows = Array(page.rows[start..<end])
@@ -540,7 +571,7 @@ final class PlaylistPageController {
             )
         }
         guard !requests.isEmpty else { return }
-        startArtworkPrefetch(
+        startRowArtworkPrefetch(
             key: "\(page.selectionIdentity)-bucket-\(bucket)-\(page.sourceFingerprint)",
             requests: requests
         )
@@ -705,6 +736,10 @@ final class PlaylistPageController {
             task.cancel()
         }
         artworkPrefetchTasks.removeAll()
+        rowArtworkPrefetchTask?.cancel()
+        rowArtworkPrefetchTask = nil
+        rowArtworkPrefetchKey = nil
+        isRowArtworkScrollSuspended = false
         prefetchedArtworkKeys.removeAll()
         latestTrackLookup.removeAll()
         snapshotUpdateTask?.cancel()
@@ -1444,6 +1479,28 @@ final class PlaylistPageController {
         Task { @MainActor in
             await task.value
             self.artworkPrefetchTasks.removeValue(forKey: key)
+        }
+    }
+
+    private func startRowArtworkPrefetch(
+        key: String,
+        requests: [PlaylistArtworkRequest]
+    ) {
+        guard !requests.isEmpty, !prefetchedArtworkKeys.contains(key) else { return }
+        prefetchedArtworkKeys.insert(key)
+
+        rowArtworkPrefetchTask?.cancel()
+        rowArtworkPrefetchKey = key
+
+        guard let pipeline = playlistArtworkPipeline,
+              let task = pipeline.prefetch(requests, priority: .background) else { return }
+        rowArtworkPrefetchTask = task
+
+        Task { @MainActor [weak self] in
+            await task.value
+            guard let self, self.rowArtworkPrefetchKey == key else { return }
+            self.rowArtworkPrefetchTask = nil
+            self.rowArtworkPrefetchKey = nil
         }
     }
 

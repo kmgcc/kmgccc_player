@@ -38,8 +38,6 @@ struct PlaylistDetailView: View {
     @State private var trackForDetailReader: Track?
     @State private var trackDeletionRequest: TrackDeletionConfirmationRequest?
     @State private var batchEditRequest: BatchEditRequest?
-    @State private var trackScrollFadeState = ScrollEdgeFadeState()
-    @State private var detailScrollFadeState = ScrollEdgeFadeState()
     @State private var scrollFadeTopChromeInset: CGFloat = 0
     @State private var lifecycleToken = UUID()
 
@@ -248,24 +246,6 @@ struct PlaylistDetailView: View {
         libraryVM.currentSelection.selectionIdentity(in: libraryVM)
     }
 
-    private var scrollBinding: Binding<UUID?> {
-        Binding(
-            get: {
-                pageController.isManualTrackReorderActive ? nil : pageController.listScrollPositionID
-            },
-            set: { trackID in
-                guard !pageController.isManualTrackReorderActive else { return }
-                // While a reveal scroll is armed/animating, ignore position
-                // updates from the scroll view. A freshly-created ScrollView
-                // (after a playlist switch) can report nil or the first visible
-                // row before the target is scrolled to, which would clobber the
-                // reveal target.
-                if pageController.isRevealScrollArmed { return }
-                pageController.updateScrollPosition(trackID)
-            }
-        )
-    }
-
     private var currentRows: [PlaylistPageRowModel] {
         activePage?.rows ?? []
     }
@@ -354,23 +334,20 @@ struct PlaylistDetailView: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset)
             .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.trackList"))
-            .onScrollGeometryChange(for: ScrollEdgeFadeState.self) { geometry in
-                ScrollEdgeFadeState(
-                    geometry: geometry,
-                    topFadeDistance: max(topFadeHeight, scrollFadeTopChromeInset),
-                    bottomFadeDistance: bottomFadeHeight
-                )
-            } action: { _, newState in
-                trackScrollFadeState = newState
-            }
-            .scrollEdgeFadeMask(
-                trackScrollFadeState,
+            .modifier(
+                ScrollEdgeFadeTrackingMask(
                 topFadeHeight: topFadeHeight,
                 bottomFadeHeight: bottomFadeHeight,
                 topChromeInset: scrollFadeTopChromeInset
+                )
             )
             .offset(y: -scrollFadeTopChromeInset)
-            .scrollPosition(id: scrollBinding, anchor: revealScrollAnchor)
+            .modifier(
+                PlaylistScrollPositionModifier(
+                    pageController: pageController,
+                    anchor: revealScrollAnchor
+                )
+            )
         }
     }
 
@@ -380,9 +357,9 @@ struct PlaylistDetailView: View {
                 VStack(spacing: 0) {
                     if pageController.isHeaderEffectsEnabled {
                         if pageController.rendersHeaderBackgroundInWindowLayer {
-                            haloScrollTrackingLayer
+                            haloScrollTrackingLayer(viewportHeight: proxy.size.height)
                         } else {
-                            haloLayer
+                            haloLayer(viewportHeight: proxy.size.height)
                         }
                     } else {
                         Color.clear
@@ -407,39 +384,39 @@ struct PlaylistDetailView: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset)
             .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.detailScroll"))
-            .onScrollGeometryChange(for: ScrollEdgeFadeState.self) { geometry in
-                ScrollEdgeFadeState(
-                    geometry: geometry,
-                    topFadeDistance: max(topFadeHeight, scrollFadeTopChromeInset),
-                    bottomFadeDistance: bottomFadeHeight
-                )
-            } action: { _, newState in
-                detailScrollFadeState = newState
-            }
-            .scrollEdgeFadeMask(
-                detailScrollFadeState,
+            .modifier(
+                ScrollEdgeFadeTrackingMask(
                 topFadeHeight: topFadeHeight,
                 bottomFadeHeight: bottomFadeHeight,
                 topChromeInset: scrollFadeTopChromeInset
+                )
             )
             .coordinateSpace(name: "detailScroll")
             .offset(y: -scrollFadeTopChromeInset)
-            .scrollPosition(id: scrollBinding, anchor: revealScrollAnchor)
+            .modifier(
+                PlaylistScrollPositionModifier(
+                    pageController: pageController,
+                    anchor: revealScrollAnchor
+                )
+            )
         }
     }
 
-    private var haloScrollTrackingLayer: some View {
+    private func haloScrollTrackingLayer(viewportHeight: CGFloat) -> some View {
         Color.clear
             .frame(height: 0)
             .background(
                 ScrollOffsetSensor { offset in
-                    pageController.updateHaloScroll(offset: offset)
+                    pageController.updateHaloScroll(
+                        offset: offset,
+                        viewportHeight: viewportHeight
+                    )
                 }
             )
             .allowsHitTesting(false)
     }
 
-    private var haloLayer: some View {
+    private func haloLayer(viewportHeight: CGFloat) -> some View {
         HeaderHaloBackgroundView(
             state: pageController.haloState,
             currentSource: pageController.haloCurrentImage,
@@ -449,7 +426,10 @@ struct PlaylistDetailView: View {
         )
         .background(
             ScrollOffsetSensor { offset in
-                pageController.updateHaloScroll(offset: offset)
+                pageController.updateHaloScroll(
+                    offset: offset,
+                    viewportHeight: viewportHeight
+                )
             }
         )
     }
@@ -955,13 +935,176 @@ private final class PlaylistLayoutPassProbeView: NSView {
     }
 }
 
+private struct PlaylistScrollPositionModifier: ViewModifier {
+    let pageController: PlaylistPageController
+    let anchor: UnitPoint
+
+    @State private var positionID: UUID?
+    @State private var scrollPhase: ScrollPhase = .idle
+    @State private var userInterruptedReveal = false
+    @State private var usesRevealScrollAnchor = false
+    @State private var pendingUserPosition = PendingPlaylistScrollPosition()
+    @State private var committedUserPosition = PendingPlaylistScrollPosition()
+
+    init(pageController: PlaylistPageController, anchor: UnitPoint) {
+        self.pageController = pageController
+        self.anchor = anchor
+        _positionID = State(initialValue: pageController.listScrollPositionID)
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .scrollPosition(
+                id: scrollPositionBinding,
+                anchor: usesRevealScrollAnchor ? anchor : nil
+            )
+            .onChange(of: pageController.listScrollPositionID) { _, newValue in
+                guard !pageController.isManualTrackReorderActive else { return }
+                if committedUserPosition.consume(ifMatching: newValue) { return }
+                committedUserPosition.clear()
+                guard !isUserScrollActive else {
+                    // A model-side position update can race a user gesture.
+                    // Do not let it reinstall a scroll target that becomes
+                    // active again as soon as the scroll phase reaches idle.
+                    positionID = nil
+                    return
+                }
+                guard positionID != newValue else { return }
+                pendingUserPosition.clear()
+
+                if let animation = pageController.revealScrollPositionAnimation {
+                    withAnimation(animation) {
+                        usesRevealScrollAnchor = true
+                        positionID = newValue
+                    }
+                } else if pageController.isRevealScrollArmed {
+                    usesRevealScrollAnchor = true
+                    positionID = newValue
+                } else {
+                    positionID = newValue
+                }
+            }
+            .onChange(of: pageController.isManualTrackReorderActive) { _, isActive in
+                pendingUserPosition.clear()
+                if isActive {
+                    usesRevealScrollAnchor = false
+                    positionID = nil
+                } else {
+                    positionID = pageController.listScrollPositionID
+                }
+            }
+            .onScrollPhaseChange { oldPhase, newPhase in
+                let wasUserScrollActive = oldPhase == .tracking
+                    || oldPhase == .interacting
+                    || oldPhase == .decelerating
+                let endedUserScroll = newPhase == .idle && wasUserScrollActive
+                scrollPhase = newPhase
+                let isUserScrollActive = newPhase == .tracking
+                    || newPhase == .interacting
+                    || newPhase == .decelerating
+                pageController.setRowArtworkScrollSuspended(
+                    isUserScrollActive,
+                    nearbyTrackID: positionID
+                )
+
+                if isUserScrollActive {
+                    if !wasUserScrollActive {
+                        // Drop a previous locate/restore target as soon as a
+                        // user gesture takes ownership of the scroll view.
+                        positionID = nil
+                        pendingUserPosition.clear()
+                    }
+                    if pageController.isRevealScrollArmed {
+                        userInterruptedReveal = true
+                    }
+                    usesRevealScrollAnchor = false
+                }
+
+                guard newPhase == .idle else { return }
+                if usesRevealScrollAnchor && !pageController.isRevealScrollArmed {
+                    usesRevealScrollAnchor = false
+                }
+                defer {
+                    pendingUserPosition.clear()
+                    userInterruptedReveal = false
+                }
+                if endedUserScroll {
+                    // Clear an old programmatic target even when SwiftUI did
+                    // not publish a final visible row ID for this gesture.
+                    // Otherwise the binding becomes active again at idle and
+                    // can pull the lazy stack back to the previous target.
+                    positionID = nil
+                }
+                guard pendingUserPosition.hasValue else { return }
+                let userPosition = pendingUserPosition.value
+                // Treat the visible row as saved state, not as a new scroll
+                // command. Replaying it through scrollPosition after a drag can
+                // realign a lazy stack against estimated row heights.
+                guard !pageController.isRevealScrollArmed || userInterruptedReveal else { return }
+                guard pageController.listScrollPositionID != userPosition else { return }
+                committedUserPosition.set(userPosition)
+                pageController.updateScrollPosition(userPosition)
+            }
+            .task(id: usesRevealScrollAnchor) {
+                guard usesRevealScrollAnchor else { return }
+                try? await Task.sleep(for: .milliseconds(900))
+                guard !Task.isCancelled else { return }
+                usesRevealScrollAnchor = false
+            }
+    }
+
+    private var scrollPositionBinding: Binding<UUID?> {
+        Binding(
+            get: {
+                guard !pageController.isManualTrackReorderActive else { return nil }
+                guard !isUserScrollActive else { return nil }
+                return positionID
+            },
+            set: { newValue in
+                guard !pageController.isManualTrackReorderActive else { return }
+                if isUserScrollActive {
+                    pendingUserPosition.set(newValue)
+                }
+            }
+        )
+    }
+
+    private var isUserScrollActive: Bool {
+        scrollPhase == .tracking
+            || scrollPhase == .interacting
+            || scrollPhase == .decelerating
+    }
+}
+
+@MainActor
+private final class PendingPlaylistScrollPosition {
+    private(set) var hasValue = false
+    private(set) var value: UUID?
+
+    func set(_ value: UUID?) {
+        hasValue = true
+        self.value = value
+    }
+
+    func clear() {
+        hasValue = false
+        value = nil
+    }
+
+    func consume(ifMatching candidate: UUID?) -> Bool {
+        guard hasValue, value == candidate else { return false }
+        clear()
+        return true
+    }
+}
+
 private struct ScrollOffsetSensor: View {
     let onChange: (CGFloat) -> Void
     @State private var lastReportedOffset: CGFloat?
     @State private var lastReportUptime: TimeInterval = 0
 
     private let reportEpsilon: CGFloat = 18.0
-    private let minReportInterval: TimeInterval = 1.0 / 30.0
+    private let minReportInterval: TimeInterval = 1.0 / 20.0
 
     var body: some View {
         GeometryReader { geo in
