@@ -204,13 +204,13 @@ struct TrackRowView<MenuContent: View>: View {
 
             HStack(alignment: .center, spacing: Constants.Layout.TrackRow.textColumnSpacing) {
                 VStack(alignment: .leading, spacing: Constants.Layout.TrackRow.textVerticalSpacing) {
-                    if isPlaying || isHovering {
+                    if isPlaying {
                         SeamlessMarqueeText(
                             text: model.title,
                             fontSize: Constants.Layout.TrackRow.titleFontSize,
                             fontWeight: isPlaying ? .semibold : .regular,
                             color: textPrimaryColor,
-                            shouldAnimate: isPlaying || isHovering
+                            shouldAnimate: true
                         )
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .layoutPriority(1)
@@ -228,13 +228,13 @@ struct TrackRowView<MenuContent: View>: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                if isPlaying || isHovering {
+                if isPlaying {
                     SeamlessMarqueeText(
                         text: artistText,
                         fontSize: Constants.Layout.TrackRow.subtitleFontSize,
                         fontWeight: .regular,
                         color: textSecondaryColor,
-                        shouldAnimate: isPlaying || isHovering
+                        shouldAnimate: true
                     )
                     .frame(width: artistColumnWidth, alignment: .leading)
                 } else {
@@ -694,7 +694,7 @@ private struct TrackRowSelectionBackgroundShape: Shape {
 
 extension TrackRowView: Equatable where MenuContent: View {
     static func == (lhs: TrackRowView<MenuContent>, rhs: TrackRowView<MenuContent>) -> Bool {
-            lhs.model == rhs.model
+        lhs.model == rhs.model
             && lhs.isPlaying == rhs.isPlaying
             && lhs.isSelected == rhs.isSelected
             && lhs.selectionContinuity == rhs.selectionContinuity

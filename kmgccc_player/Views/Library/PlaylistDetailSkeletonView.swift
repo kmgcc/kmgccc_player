@@ -8,15 +8,17 @@
 //
 
 import AppKit
-import MotionKit
 import SwiftUI
 
 struct PlaylistDetailSkeletonView: View {
     let showHeader: Bool
 
-    @State private var isPulsing = false
-    @Environment(\.motionTokens) private var motionTokens
-    @Environment(\.motionPolicy) private var motionPolicy
+    private enum Layout {
+        static let artistColumnWidth: CGFloat = 164
+        static let playingIndicatorColumnWidth: CGFloat = 20
+        static let durationColumnWidth: CGFloat = 42
+        static let trailingMenuHitSize: CGFloat = 30
+    }
 
     init(showHeader: Bool = true) {
         self.showHeader = showHeader
@@ -31,58 +33,55 @@ struct PlaylistDetailSkeletonView: View {
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 24) {
-                if showHeader {
-                    headerSkeleton
-                }
+        GeometryReader { geometry in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 24) {
+                    if showHeader {
+                        headerSkeleton(contentWidth: max(0, geometry.size.width - 48))
+                    }
 
-                rowsSkeleton
-            }
-            .padding(.top, showHeader ? 20 : 12)
-            .padding(.horizontal, 24)
-            .padding(.bottom, 64)
-        }
-        .allowsHitTesting(false)
-        .opacity(isPulsing ? 0.42 : 0.85)
-        .onAppear {
-            let spec = motionTokens.phaseSpec(for: .emphasis, duration: 1.1, bounce: 0)
-            if let animation = motionPolicy.animation(for: spec) {
-                withAnimation(animation.repeatForever(autoreverses: true)) {
-                    isPulsing = true
+                    rowsSkeleton(contentWidth: max(0, geometry.size.width - 48))
                 }
-            } else {
-                withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
-                    isPulsing = true
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, showHeader ? 20 : 12)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 64)
             }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .allowsHitTesting(false)
+            .opacity(0.68)
         }
     }
 
     @ViewBuilder
-    private var headerSkeleton: some View {
+    private func headerSkeleton(contentWidth: CGFloat) -> some View {
+        let textColumnWidth = max(0, contentWidth - LibraryDetailHeaderView.artworkSide - 24)
+
         HStack(alignment: .bottom, spacing: 24) {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(placeholderHighlightColor)
-                .frame(width: 180, height: 180)
+                .frame(
+                    width: LibraryDetailHeaderView.artworkSide,
+                    height: LibraryDetailHeaderView.artworkSide
+                )
 
             VStack(alignment: .leading, spacing: 14) {
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .fill(placeholderColor)
-                    .frame(width: 56, height: 13)
+                    .frame(width: min(56, textColumnWidth), height: 13)
 
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(placeholderHighlightColor)
-                    .frame(width: 220, height: 26)
+                    .frame(width: min(220, textColumnWidth), height: 26)
 
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .fill(placeholderColor)
-                    .frame(width: 140, height: 15)
+                    .frame(width: min(140, textColumnWidth), height: 15)
 
                 HStack(spacing: 12) {
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .fill(placeholderColor)
-                        .frame(width: 90, height: 13)
+                        .frame(width: min(90, textColumnWidth), height: 13)
                 }
 
                 Spacer().frame(height: 4)
@@ -100,39 +99,66 @@ struct PlaylistDetailSkeletonView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.bottom, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder
-    private var rowsSkeleton: some View {
-        VStack(spacing: 8) {
-            ForEach(0..<10, id: \.self) { index in
-                HStack(spacing: 12) {
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(placeholderColor)
-                        .frame(width: 16, height: 12)
+    private func rowsSkeleton(contentWidth: CGFloat) -> some View {
+        let titleColumnWidth = max(0, contentWidth - 382)
 
+        return VStack(spacing: 0) {
+            ForEach(0..<10, id: \.self) { index in
+                HStack(spacing: Constants.Layout.TrackRow.horizontalSpacing) {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(placeholderHighlightColor)
-                        .frame(width: 36, height: 36)
+                        .frame(
+                            width: Constants.Layout.artworkSmallSize,
+                            height: Constants.Layout.artworkSmallSize
+                        )
+                        .clipShape(
+                            RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.artworkCornerRadius)
+                        )
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(placeholderHighlightColor)
-                            .frame(width: titleWidth(for: index), height: 13)
+                    HStack(spacing: Constants.Layout.TrackRow.textColumnSpacing) {
+                        VStack(alignment: .leading, spacing: Constants.Layout.TrackRow.textVerticalSpacing) {
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(placeholderHighlightColor)
+                                .frame(
+                                    width: min(titleWidth(for: index), titleColumnWidth),
+                                    height: Constants.Layout.TrackRow.titleFontSize
+                                )
+
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(placeholderColor)
+                                .frame(
+                                    width: min(artistWidth(for: index), titleColumnWidth * 0.65),
+                                    height: Constants.Layout.TrackRow.subtitleFontSize
+                                )
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
                         RoundedRectangle(cornerRadius: 3, style: .continuous)
                             .fill(placeholderColor)
-                            .frame(width: artistWidth(for: index), height: 11)
+                            .frame(width: min(artistWidth(for: index), Layout.artistColumnWidth), height: 12)
+                            .frame(width: Layout.artistColumnWidth, alignment: .leading)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Spacer()
+                    Color.clear
+                        .frame(width: Layout.playingIndicatorColumnWidth)
 
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
                         .fill(placeholderColor)
-                        .frame(width: 34, height: 11)
+                        .frame(width: 32, height: 11)
+                        .frame(width: Layout.durationColumnWidth, alignment: .trailing)
+
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(placeholderColor)
+                        .frame(width: 14, height: 3)
+                        .frame(width: Layout.trailingMenuHitSize, height: Layout.trailingMenuHitSize)
                 }
-                .padding(.vertical, 4)
-                .padding(.horizontal, 8)
+                .padding(.vertical, Constants.Layout.TrackRow.verticalPadding)
+                .padding(.horizontal, Constants.Layout.TrackRow.horizontalPadding)
+                .frame(height: Constants.Layout.TrackRow.height)
             }
         }
     }
