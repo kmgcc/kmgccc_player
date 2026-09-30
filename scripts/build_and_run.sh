@@ -12,6 +12,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$REPO_ROOT/build/DerivedData}"
 APP_BUNDLE="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/$APP_NAME.app"
+PREBUILT_APP="${KMGCCC_PREBUILT_APP:-}"
+if [[ -n "$PREBUILT_APP" ]]; then
+    APP_BUNDLE="$PREBUILT_APP"
+    [[ -d "$APP_BUNDLE" ]] || { echo "error: packaged App not found: $APP_BUNDLE" >&2; exit 1; }
+fi
 APP_BINARY="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 # Export log level for the app, defaulting to info
@@ -142,6 +147,7 @@ acquire_run_lock
 # end exact matching app processes before building and again before launching.
 prepare_for_test
 
+if [[ -z "$PREBUILT_APP" ]]; then
 echo "========================================"
 echo "Building $APP_NAME ($CONFIGURATION) via xcodebuild..."
 echo "========================================"
@@ -164,6 +170,9 @@ fi
 
 echo "Build log: $BUILD_LOG"
 "$DEPENDENCY_PREFLIGHT" "$(dependency_preflight_args)" --build-log "$BUILD_LOG"
+else
+    echo "Using packaged App: $APP_BUNDLE"
+fi
 
 if [ ! -d "$APP_BUNDLE" ]; then
     echo "error: build succeeded but App Bundle not found at: $APP_BUNDLE" >&2
