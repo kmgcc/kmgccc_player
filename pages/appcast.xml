@@ -4,16 +4,16 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
   <channel>
     <title>kmgccc_player</title>
     <item>
-      <title>kmgccc_player 2.3.2</title>
-      <sparkle:version>13</sparkle:version>
-      <sparkle:shortVersionString>2.3.2</sparkle:shortVersionString>
+      <title>kmgccc_player 2.3.3</title>
+      <sparkle:version>14</sparkle:version>
+      <sparkle:shortVersionString>2.3.3</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://github.com/kmgcc/kmgccc_player/releases/tag/v2.3.2</sparkle:releaseNotesLink>
+      <sparkle:releaseNotesLink>https://kmgcc.github.io/kmgccc_player/release-notes/v2.3.3.md</sparkle:releaseNotesLink>
       <pubDate>2026-09-30T00:00:00Z</pubDate>
-      <enclosure url="https://github.com/kmgcc/kmgccc_player/releases/download/v2.3.2/kmgccc_player_2.3.2_13.dmg" length="104254197" type="application/x-apple-diskimage" sparkle:version="13" sparkle:shortVersionString="2.3.2" sparkle:edSignature="hGVR8JDZ707ti6YC0Mwf30N7or8FKcnJoIg284OALd83YqbvRlBJA+cu79/KGb/T7Trd8/i7EwEVzOaqAmdWDg=="></enclosure>
+      <enclosure url="https://github.com/kmgcc/kmgccc_player/releases/download/v2.3.3/kmgccc_player_2.3.3_14.dmg" length="104257526" type="application/x-apple-diskimage" sparkle:version="14" sparkle:shortVersionString="2.3.3" sparkle:edSignature="biZhnugPzYiZiYEEWRRdkmMQrp2HDCca/mymUBTSmhLlGzOW4TrGS0wUZ/sACFkfR/dpX4wC24WS3cXa68vABA=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: k8UD/WvtJDBIYkPSokzxSYHU9wOzTYn1PgZwhp02DYUZ8iJ7lG19AMJmObACNDdl4Z1+r03D1SbovRljSescDg==
-length: 1250
+edSignature: BuhOu8ndSR3XH22u2I+aBcq+01x6+/pymQuLRMRoOY1njbGHJaqDdZcYGilOj47xs6G4vUSqvytRFjy2K229Cw==
+length: 1253
 -->
