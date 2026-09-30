@@ -121,6 +121,38 @@ final class UpdatePreferencesTests: XCTestCase {
         )
     }
 
+    func testGitHubReleaseNotesUseReleaseBodyInsteadOfWebPage() throws {
+        let page = try XCTUnwrap(URL(string: "https://github.com/kmgcc/kmgccc_player/releases/tag/v2.3.2"))
+        let api = UpdateReleaseNotesSource.requestURL(for: page)
+        XCTAssertEqual(api.absoluteString, "https://api.github.com/repos/kmgcc/kmgccc_player/releases/tags/v2.3.2")
+        let data = try JSONSerialization.data(withJSONObject: [
+            "body": "## 2.3.2\n- **性能优化**：改善播放流畅度。\n- **Agent MCP 接入**：支持智能助手。",
+            "name": "kmgccc_player 2.3.2"
+        ])
+        XCTAssertEqual(UpdateReleaseNotesSource.parseResponse(data, from: api), [
+            "性能优化：改善播放流畅度。", "Agent MCP 接入：支持智能助手。"
+        ])
+    }
+
+    func testPlainReleaseNotesKeepTheirSourceURL() throws {
+        let url = try XCTUnwrap(URL(string: "https://updates.example.com/release-notes/v2.3.3.md"))
+        XCTAssertEqual(UpdateReleaseNotesSource.requestURL(for: url), url)
+        XCTAssertEqual(UpdateReleaseNotesSource.parseResponse(Data("- 修正更新日志。".utf8), from: url), ["修正更新日志。"])
+    }
+
+    func testReleaseNotesRejectMultilineWebDocument() {
+        let page = "<!DOCTYPE html>\n<html\nlang=\"en\"\ndata-color-mode=\"auto\"\n>\n<script>{\"imports\":{}}</script></html>"
+        XCTAssertTrue(UpdateReleaseNotesParser.containsHTMLDocument(page))
+        XCTAssertEqual(UpdateReleaseNotesParser.parse(page), [])
+    }
+
+    func testCachedWebDocumentDoesNotAppearInUpdateNotice() {
+        withDefaults { defaults in
+            UpdateReleaseNotesStore.save(version: "2.3.2", build: "13", notes: ["<html", "lang=\"en\"", "data-color-mode=\"auto\""], defaults: defaults)
+            XCTAssertEqual(UpdateReleaseNotesStore.notice(forBuild: "13", defaults: defaults)?.notes, ["包含改进和修复。"])
+        }
+    }
+
     func testOmittedChannelResolvesAsProduction() throws {
         let environment = try UpdateEnvironment.resolve(info: productionEnvironmentInfo())
 

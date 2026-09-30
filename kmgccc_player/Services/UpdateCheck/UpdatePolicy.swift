@@ -338,25 +338,65 @@ enum UpdateReleaseNotesStore {
     private static func makeNotice(
         from metadata: UpdateReleaseNotesMetadata
     ) -> UpdateReleaseNotesNotice {
-        UpdateReleaseNotesNotice(
+        let notes = UpdateReleaseNotesParser.containsHTMLDocument(
+            metadata.notes.joined(separator: "\n")
+        ) ? [] : metadata.notes
+        return UpdateReleaseNotesNotice(
             version: metadata.version,
             build: metadata.build,
-            notes: metadata.notes.isEmpty ? ["包含改进和修复。"] : metadata.notes
+            notes: notes.isEmpty ? ["包含改进和修复。"] : notes
         )
     }
 }
 
+enum UpdateReleaseNotesSource {
+    static func requestURL(for url: URL) -> URL {
+        let path = url.path.split(separator: "/")
+        guard url.host?.lowercased() == "github.com", path.count == 5,
+              path[2] == "releases", path[3] == "tag" else { return url }
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "api.github.com"
+        components.path = "/repos/\(path[0])/\(path[1])/releases/tags/\(path[4])"
+        return components.url ?? url
+    }
+
+    static func parseResponse(_ data: Data, from url: URL) -> [String] {
+        let text: String
+        if url.host?.lowercased() == "api.github.com" {
+            struct Release: Decodable { let body: String? }
+            guard let release = try? JSONDecoder().decode(Release.self, from: data),
+                  let body = release.body else { return [] }
+            text = body
+        } else {
+            guard let body = String(data: data, encoding: .utf8) else { return [] }
+            text = body
+        }
+        return UpdateReleaseNotesParser.parse(text)
+    }
+}
+
 enum UpdateReleaseNotesParser {
+    static func containsHTMLDocument(_ text: String) -> Bool {
+        text.range(
+            of: "<(?:!doctype|html|head|script)\\b",
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+    }
+
     static func parse(_ text: String, limit: Int = 8) -> [String] {
-        guard limit > 0 else { return [] }
+        guard limit > 0, !containsHTMLDocument(text) else { return [] }
+        let plainText = text.replacingOccurrences(
+            of: "<[^>]+>", with: "", options: .regularExpression
+        )
         return Array<String>(
-            text
+            plainText
                 .components(separatedBy: .newlines)
                 .map { line in
                     line
                         .replacingOccurrences(
-                            of: "<[^>]+>",
-                            with: "",
+                            of: "\\*\\*(.*?)\\*\\*|__(.*?)__",
+                            with: "$1$2",
                             options: .regularExpression
                         )
                         .replacingOccurrences(of: "&amp;", with: "&")

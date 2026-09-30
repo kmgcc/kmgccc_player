@@ -504,18 +504,17 @@ final class UpdateCoordinator: NSObject, ObservableObject {
         releaseNotesTask?.cancel()
         releaseNotesTask = nil
         guard let notesURL = item.releaseNotesURL else { return }
+        let requestURL = UpdateReleaseNotesSource.requestURL(for: notesURL)
 
         releaseNotesTask = Task { [weak self] in
-            guard let (data, response) = try? await URLSession.shared.data(from: notesURL),
+            guard let (data, response) = try? await URLSession.shared.data(from: requestURL),
                   let httpResponse = response as? HTTPURLResponse,
                   (200..<300).contains(httpResponse.statusCode),
                   !Task.isCancelled else {
                 return
             }
 
-            let notes = UpdateReleaseNotesParser.parse(
-                String(decoding: data, as: UTF8.self)
-            )
+            let notes = UpdateReleaseNotesSource.parseResponse(data, from: requestURL)
             guard !notes.isEmpty, !Task.isCancelled else { return }
 
             await MainActor.run {
