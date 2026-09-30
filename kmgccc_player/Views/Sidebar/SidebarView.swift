@@ -478,7 +478,7 @@ struct SidebarView: View {
             }
         }
         .sheet(isPresented: $showSettings, onDismiss: {
-            FeatureTipPresentationCoordinator.shared.setSuspended(false)
+            FeatureTipPresentationCoordinator.shared.setSuspended(false, reason: .settingsSheet)
         }) {
             SettingsView(hasActiveLibrarySession: true)
                 .environment(settings)
@@ -954,7 +954,7 @@ struct SidebarView: View {
     }
 
     private func openSettings() {
-        FeatureTipPresentationCoordinator.shared.setSuspended(true)
+        FeatureTipPresentationCoordinator.shared.setSuspended(true, reason: .settingsSheet)
         settingsRotateTrigger += 1
         showSettings = true
     }

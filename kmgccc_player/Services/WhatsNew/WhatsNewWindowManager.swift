@@ -38,6 +38,7 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
 
     /// Show the What's New window with specific content.
     private func show(whatsNew: WhatsNew) {
+        FeatureTipPresentationCoordinator.shared.setSuspended(true, reason: .whatsNew)
         let whatsNewView = WhatsNewView(whatsNew: whatsNew)
 
         let panel = NSPanel(
@@ -112,6 +113,7 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
 
     func windowWillClose(_ notification: Notification) {
         WhatsNewConfig.markAsSeen()
+        FeatureTipPresentationCoordinator.shared.setSuspended(false, reason: .whatsNew)
         whatsNewWindow = nil
         isPresented = false
     }

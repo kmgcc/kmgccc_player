@@ -20,6 +20,11 @@ import Foundation
 final class FeatureTipPresentationCoordinator {
     static let shared = FeatureTipPresentationCoordinator()
 
+    enum SuspensionReason: Hashable {
+        case settingsSheet
+        case whatsNew
+    }
+
     private struct PendingTip {
         let key: String
         let present: () -> Bool
@@ -27,7 +32,11 @@ final class FeatureTipPresentationCoordinator {
 
     private var activeKey: String?
     private var pending: [PendingTip] = []
-    private var isSuspended = false
+    private var suspensionReasons = Set<SuspensionReason>()
+
+    private var isSuspended: Bool {
+        !suspensionReasons.isEmpty
+    }
 
     private init() {}
 
@@ -52,11 +61,15 @@ final class FeatureTipPresentationCoordinator {
         pending.append(PendingTip(key: key, present: present))
     }
 
-    /// Suspends/resumes the queue. While suspended, no queued tip will start even
-    /// if the active tip has ended. Used e.g. while the settings sheet is open so
-    /// a main-window tip does not appear over it.
-    func setSuspended(_ suspended: Bool) {
-        isSuspended = suspended
+    /// Suspends/resumes the queue for one presentation surface. Independent
+    /// surfaces keep their own reason so one closing cannot resume another.
+    func setSuspended(_ suspended: Bool, reason: SuspensionReason) {
+        if suspended {
+            suspensionReasons.insert(reason)
+        } else {
+            suspensionReasons.remove(reason)
+        }
+
         if !isSuspended && activeKey == nil {
             drainNext()
         }
