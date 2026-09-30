@@ -194,6 +194,14 @@ artifact_risk() {
       ;;
   esac
 
+  # codesign adds these generated integrity records to the approved encrypted
+  # artwork bundle. They contain signature metadata, not artwork source or payload.
+  case "$lower" in
+    contents/resources/bkart.bundle/contents/_codesignature/*)
+      return
+      ;;
+  esac
+
   path_risk "$path"
 }
 
