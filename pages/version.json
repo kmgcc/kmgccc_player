@@ -1,4 +1,8 @@
 {
+  "latestVersion": "2.3.2",
+  "build_number": 13,
+  "releaseURL": "https://github.com/kmgcc/kmgccc_player/releases/tag/v2.3.2",
+  "notes": "## [v2.3.2] - 2026-09-30\n\n- **性能优化**：改善歌曲切换、主页浏览与曲库滚动的流畅度；调整缓存使用与资源释放，尝试缓解内存占用偏高，并处理歌词组件异常消耗资源的问题。\n- **Agent MCP 接入**：新增本机 MCP 配置，可让支持的智能助手查询歌曲、歌词与播放列表，并按播放器的权限规则执行受支持的资料库操作。",
   "version": "2.3.2",
   "build": "13",
   "channel": "production",
