@@ -32,7 +32,7 @@ flowchart LR
 
 | 组件 | 运行边界 | 用途 | 失败时的降级 |
 | --- | --- | --- | --- |
-| AMLL | WKWebView 中的 JavaScript 与 DOM（兼容回退通道） | 兼容模式下的 TTML 解析与逐词歌词渲染（生产环境默认由纯原生 Swift 组件 NativeLyrics 承载） | AMLL Web 兼容回退不可用，原生 NativeLyrics 渲染不受影响 |
+| AMLL background | 隔离的背景 WKWebView | Now Playing 的网格背景动画 | 背景不可用，歌词与其他播放功能不受影响 |
 | LDDC Fetch Core | 本机回环 HTTP 服务 | 多来源歌词搜索、获取和格式处理 | LDDC 搜索不可用，本地 AMLL DB 仍可用 |
 | QQ Music Helper | stdin/stdout JSON 子进程 | QQ 音乐元数据和封面候选 | QQ 候选不可用，其他来源独立 |
 | MediaRemoteAdapter | 原生 framework 与流式 JSON | 系统 Now Playing 状态和控制 | 系统外部播放不可用，本地与 Apple Music 独立 |
@@ -42,9 +42,9 @@ flowchart LR
 
 ## AMLL
 
-[applemusic-like-lyrics](https://github.com/amll-dev/applemusic-like-lyrics) 在早期版本中为应用提供了基于前端技术的逐词歌词渲染能力。随着纯原生 Swift 歌词引擎（`NativeLyrics`，见 [原生 Swift 歌词系统](native-lyrics.md)）落地并成为默认渲染路径，AMLL 目前保留作为可选的兼容回退通道。项目仍通过固定 submodule 版本构建普通 DOM `LyricPlayer`、TTML parser 和背景渲染 bundle，供特定视窗或用户自选回退时由 WKWebView 加载。
+[applemusic-like-lyrics](https://github.com/amll-dev/applemusic-like-lyrics) 的资源目前只用于 Now Playing 的网格背景。歌词已经完全由原生 Swift/MelismaKit 组件渲染，不再构建或加载 AMLL 的歌词 DOM、TTML parser、bridge 或歌词 WebView fallback。
 
-AMLL 资源分为两层：上游或集成层构建生成 JavaScript 与 CSS，App 适配层负责 bridge、surface 配置、时间预处理和原生状态投递。生成文件不作为手工编辑入口。
+AMLL 集成层只从固定 submodule 版本构建 `amll-background.js`，由 bundle 内的 `background.html` 加载；Inter 字体仍作为 App 资源注册。生成 JavaScript 不作为手工编辑入口。
 
 许可证：AGPL-3.0-only。宿主调度边界和时间算法见 [歌词渲染系统](lyric-rendering.md)。
 
@@ -84,8 +84,10 @@ bootstrap 使用固定的 macOS ARM64 预编译产物并校验归档，不在本
 
 工程通过 Swift Package Manager 使用以下编译期依赖，由 Xcode 根据已固定的 package resolution 解析；它们不进入 bootstrap 的外部进程构建链：
 
+- [MelismaKit](https://github.com/kmgcc/melismakit)：原生 Swift 歌词排版度量与动效渲染引擎。
 - [WhatsNewKit](https://github.com/SvenTiigi/WhatsNewKit)：更新说明展示。
 - [PLCrashReporter](https://github.com/microsoft/plcrashreporter)：在主 App 进程发生异常退出时生成 crash-safe pending report；App 只在下一次正常启动时导入和处理报告。
+- [Sparkle](https://github.com/sparkle-project/Sparkle)：应用自动更新检查与交付框架。
 
 ## 可复现构建
 
@@ -102,8 +104,11 @@ bootstrap 把下载、源码、中间工作目录、最终产品和日志分开�
 | 组件 | 许可证 |
 | --- | --- |
 | AMLL | AGPL-3.0-only |
+| MelismaKit | AGPL-3.0-only |
 | LDDC Fetch Core | GPL-3.0-only |
 | QQMusicApi | GPL-3.0-or-later |
 | MediaRemoteAdapter | BSD-3-Clause |
 | SACAD | MPL-2.0 |
+| WhatsNewKit | MIT |
 | PLCrashReporter | MIT；内含 protobuf-c Apache-2.0 部分 |
+| Sparkle | MIT |

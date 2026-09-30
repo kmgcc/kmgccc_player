@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct TrackRowModel: Identifiable, Equatable {
@@ -66,6 +67,12 @@ struct TrackRowModel: Identifiable, Equatable {
             && lhs.isMissing == rhs.isMissing
             && lhs.artworkTrackID == rhs.artworkTrackID
     }
+
+    var highArtworkCacheKey: String {
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let side = max(1, Constants.Layout.artworkSmallSize) * max(1, scale)
+        return "\(artworkIdentity)|rowHigh|\(Int(side))x\(Int(side))"
+    }
 }
 
 struct TrackRowSelectionContinuity: Equatable {
@@ -120,9 +127,20 @@ struct TrackRowView<MenuContent: View>: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(LibraryCacheServices.self) private var cacheServices
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     private var artistColumnWidth: CGFloat { 164 }
     private var playingIndicatorColumnWidth: CGFloat { 20 }
+
+    private var artworkReadyAnimation: Animation? {
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: reduceMotion
+        )
+        let spec = motionTokens.phaseSpec(for: .contentReplacement, duration: 0.05)
+        return policy.animation(for: spec)
+    }
 
     init(
         model: TrackRowModel,
@@ -160,6 +178,10 @@ struct TrackRowView<MenuContent: View>: View {
         self.rowSecondaryColor = rowSecondaryColor
         self.rowTertiaryColor = rowTertiaryColor
         self.menuContent = menuContent
+
+        let fastCached = FastArtworkMemoryCache.shared.image(forKey: model.highArtworkCacheKey)
+        _artworkImage = State(initialValue: fastCached)
+        _isArtworkReady = State(initialValue: fastCached != nil)
     }
 
     var body: some View {
@@ -182,28 +204,47 @@ struct TrackRowView<MenuContent: View>: View {
 
             HStack(alignment: .center, spacing: Constants.Layout.TrackRow.textColumnSpacing) {
                 VStack(alignment: .leading, spacing: Constants.Layout.TrackRow.textVerticalSpacing) {
-                    SeamlessMarqueeText(
-                        text: model.title,
-                        fontSize: Constants.Layout.TrackRow.titleFontSize,
-                        fontWeight: isPlaying ? .semibold : .regular,
-                        color: textPrimaryColor,
-                        shouldAnimate: isPlaying || isHovering
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(1)
+                    if isPlaying {
+                        SeamlessMarqueeText(
+                            text: model.title,
+                            fontSize: Constants.Layout.TrackRow.titleFontSize,
+                            fontWeight: isPlaying ? .semibold : .regular,
+                            color: textPrimaryColor,
+                            shouldAnimate: true
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .layoutPriority(1)
+                    } else {
+                        Text(model.title)
+                            .font(.system(size: Constants.Layout.TrackRow.titleFontSize, weight: isPlaying ? .semibold : .regular))
+                            .foregroundStyle(textPrimaryColor)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .layoutPriority(1)
+                    }
 
                     lyricSnippetView
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                SeamlessMarqueeText(
-                    text: artistText,
-                    fontSize: Constants.Layout.TrackRow.subtitleFontSize,
-                    fontWeight: .regular,
-                    color: textSecondaryColor,
-                    shouldAnimate: isPlaying || isHovering
-                )
-                .frame(width: artistColumnWidth, alignment: .leading)
+                if isPlaying {
+                    SeamlessMarqueeText(
+                        text: artistText,
+                        fontSize: Constants.Layout.TrackRow.subtitleFontSize,
+                        fontWeight: .regular,
+                        color: textSecondaryColor,
+                        shouldAnimate: true
+                    )
+                    .frame(width: artistColumnWidth, alignment: .leading)
+                } else {
+                    Text(artistText)
+                        .font(.system(size: Constants.Layout.TrackRow.subtitleFontSize, weight: .regular))
+                        .foregroundStyle(textSecondaryColor)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(width: artistColumnWidth, alignment: .leading)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -438,8 +479,17 @@ struct TrackRowView<MenuContent: View>: View {
             try? await Task.sleep(for: .milliseconds(15))
             guard !Task.isCancelled else { return }
 
-            // Phase 1: Rise - quick attack with an ease-out curve.
-            revealCurrentAnimation = .easeOut(duration: RevealHighlightTiming.riseDuration)
+            // Phase 1: Rise - quick attack with a short, critically damped spring.
+            let policy = configuredMotionPolicy.resolving(
+                accessibilityReduceMotion: reduceMotion
+            )
+            revealCurrentAnimation = policy.animation(
+                for: motionTokens.phaseSpec(
+                    for: .contentReplacement,
+                    duration: RevealHighlightTiming.riseDuration,
+                    bounce: 0
+                )
+            )
             revealHighlightOpacity = RevealHighlightTiming.peakOpacity
 
             // Wait for rise + brief hold at peak.
@@ -449,8 +499,14 @@ struct TrackRowView<MenuContent: View>: View {
             ))
             guard !Task.isCancelled else { return }
 
-            // Phase 2: Fall - slower decay with an ease-in curve.
-            revealCurrentAnimation = .easeIn(duration: RevealHighlightTiming.fallDuration)
+            // Phase 2: Fall - slower decay with a critically damped spring.
+            revealCurrentAnimation = policy.animation(
+                for: motionTokens.phaseSpec(
+                    for: .contentReplacement,
+                    duration: RevealHighlightTiming.fallDuration,
+                    bounce: 0
+                )
+            )
             revealHighlightOpacity = 0
 
             try? await Task.sleep(for: .milliseconds(
@@ -516,12 +572,18 @@ struct TrackRowView<MenuContent: View>: View {
     }
 
     private var placeholderArtwork: some View {
-        ArtworkPlaceholderView.trackRow(isGrayscale: model.isMissing)
+        RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.artworkCornerRadius, style: .continuous)
+            .fill(Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.035))
+            .frame(
+                width: Constants.Layout.artworkSmallSize,
+                height: Constants.Layout.artworkSmallSize
+            )
     }
 
     @MainActor
     private func loadArtwork() async {
         guard enableArtworkLoading else { return }
+        if artworkImage != nil { return }
 
         let hasData = model.artworkData != nil && !model.artworkData!.isEmpty
         let hasFileURL = model.artworkFileURL != nil
@@ -558,22 +620,15 @@ struct TrackRowView<MenuContent: View>: View {
 
         guard !Task.isCancelled else { return }
 
-        if let lowImage = await pipeline.load(lowRequest) {
+        if let image = await pipeline.load(highRequest) {
+            guard !Task.isCancelled else { return }
+            artworkImage = image
+            isArtworkReady = true
+        } else if let lowImage = await pipeline.load(lowRequest) {
+            guard !Task.isCancelled else { return }
             artworkImage = lowImage
             isArtworkReady = true
-        }
-
-        guard !Task.isCancelled else { return }
-
-        try? await Task.sleep(nanoseconds: 120_000_000)
-        guard !Task.isCancelled else { return }
-
-        if let highImage = await pipeline.load(highRequest) {
-            artworkImage = highImage
-            withAnimation(.easeInOut(duration: 0.05)) {
-                isArtworkReady = true
-            }
-        } else if artworkImage == nil {
+        } else {
             artworkImage = nil
             isArtworkReady = false
         }
@@ -584,7 +639,7 @@ private struct TrackRowSelectionBackgroundShape: Shape {
     let continuity: TrackRowSelectionContinuity
     let cornerRadius: CGFloat
 
-    func path(in rect: CGRect) -> Path {
+    nonisolated func path(in rect: CGRect) -> Path {
         let radius = min(cornerRadius, rect.width / 2, rect.height / 2)
         let topRadius = continuity.connectsToPrevious ? 0 : radius
         let bottomRadius = continuity.connectsToNext ? 0 : radius
@@ -623,7 +678,7 @@ private struct TrackRowSelectionBackgroundShape: Shape {
         return path
     }
 
-    private func addCorner(
+    nonisolated private func addCorner(
         to path: inout Path,
         radius: CGFloat,
         lineEnd: CGPoint,
@@ -639,7 +694,7 @@ private struct TrackRowSelectionBackgroundShape: Shape {
 
 extension TrackRowView: Equatable where MenuContent: View {
     static func == (lhs: TrackRowView<MenuContent>, rhs: TrackRowView<MenuContent>) -> Bool {
-            lhs.model == rhs.model
+        lhs.model == rhs.model
             && lhs.isPlaying == rhs.isPlaying
             && lhs.isSelected == rhs.isSelected
             && lhs.selectionContinuity == rhs.selectionContinuity

@@ -24,6 +24,10 @@ nonisolated struct LibraryPaths: Sendable, Equatable {
     var librarySettingsURL: URL { settingsRootURL.appendingPathComponent("library-settings.json") }
     var libraryOrderingURL: URL { settingsRootURL.appendingPathComponent("ordering.json") }
     var upgradeJournalURL: URL { settingsRootURL.appendingPathComponent("library-upgrade.json") }
+    /// Durable observation state for App-owned automation Jobs. This is not a
+    /// second source of library truth; it only stores Job progress/history and
+    /// the narrow retry payload needed by supported automation operations.
+    var automationJobsURL: URL { settingsRootURL.appendingPathComponent("automation-jobs.json") }
     var writerLockURL: URL { settingsRootURL.appendingPathComponent(".writer.lock") }
 
     var transactionsRootURL: URL { directory("Transactions") }

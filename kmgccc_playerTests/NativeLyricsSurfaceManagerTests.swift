@@ -1,5 +1,5 @@
 import XCTest
-import NativeLyrics
+import MelismaKit
 import SwiftUI
 import QuartzCore
 @testable import kmgccc_player
@@ -215,21 +215,43 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
         manager.shutdownAll()
         defer { manager.shutdownAll() }
 
+        let originalTrackID = UUID()
+        let latestTrackID = UUID()
+        let latestTTML = mainTTML.replacingOccurrences(of: "Main", with: "Latest")
         manager.updatePlaybackSnapshot(
-            trackID: UUID(),
+            trackID: originalTrackID,
             lyricsTTML: mainTTML,
             currentTime: 1,
             isPlaying: true
         )
         let surface = manager.surface(for: .main)
         XCTAssertFalse(surface.isRenderingActive)
+        XCTAssertNil(surface.lastTrackID)
 
         manager.activate(role: .main)
         XCTAssertTrue(surface.isRenderingActive)
+        XCTAssertEqual(surface.lastTrackID, originalTrackID)
+        XCTAssertEqual(surface.lastTTML, mainTTML)
 
         manager.deactivate(role: .main)
         XCTAssertFalse(surface.isRenderingActive)
         XCTAssertIdentical(manager.existingSurface(for: .main), surface)
+
+        manager.updatePlaybackSnapshot(
+            trackID: latestTrackID,
+            lyricsTTML: latestTTML,
+            currentTime: 3,
+            isPlaying: false
+        )
+        XCTAssertEqual(surface.lastTrackID, originalTrackID)
+        XCTAssertEqual(surface.lastTTML, mainTTML)
+
+        manager.activate(role: .main)
+        XCTAssertTrue(surface.isRenderingActive)
+        XCTAssertEqual(surface.lastTrackID, latestTrackID)
+        XCTAssertEqual(surface.lastTTML, latestTTML)
+        XCTAssertEqual(surface.currentTime, 3)
+        XCTAssertFalse(surface.isPlaying)
     }
 
     @MainActor
@@ -393,10 +415,21 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
         XCTAssertEqual(configuration.alignOffset, 18, accuracy: 0.0001)
         XCTAssertEqual(configuration.alignAnchor, .bottom)
         XCTAssertEqual(configuration.interludeDotScale, 1.45, accuracy: 0.0001)
-        XCTAssertEqual(configuration.renderScale, 1, accuracy: 0.0001)
+        XCTAssertEqual(
+            configuration.renderScale,
+            AppSettings.shared.amllLyricsRenderQualityScale,
+            accuracy: 0.0001
+        )
         let expectedSpring = SpringParameters.positionOverride(duration: 0.55, bounce: 0.75)
         XCTAssertEqual(configuration.positionSpring, expectedSpring)
         XCTAssertNotEqual(configuration.positionSpring, .position)
+    }
+
+    @MainActor
+    func testAMLLRenderQualityMapsToExpectedNativeResolutionScale() {
+        XCTAssertEqual(AppSettings.AMLLLyricsRenderQuality.low.renderScale, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(AppSettings.AMLLLyricsRenderQuality.medium.renderScale, 0.75, accuracy: 0.0001)
+        XCTAssertEqual(AppSettings.AMLLLyricsRenderQuality.high.renderScale, 1.0, accuracy: 0.0001)
     }
 
     @MainActor
@@ -590,6 +623,126 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
         let configuration = try XCTUnwrap(native.configuration(for: .main))
         XCTAssertEqual(configuration.palette.mainActive.red, 242.0 / 255.0, accuracy: 0.0001)
         XCTAssertEqual(configuration.palette.mainActive.green, 192.0 / 255.0, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testGlyphCacheBudgetIsStrictlyClampedToRoleBudget() throws {
+        let native = NativeLyricsSurfaceManager.shared
+        native.shutdownAll()
+        defer { native.shutdownAll() }
+
+        var largeConfig = LyricsConfiguration()
+        largeConfig.cacheBudgetBytes = 64 * 1024 * 1024
+        native.applyConfiguration(largeConfig, for: .main)
+
+        let resolved = try XCTUnwrap(native.configuration(for: .main))
+        XCTAssertLessThanOrEqual(resolved.cacheBudgetBytes, LyricsSurfaceRole.main.glyphCacheBudgetBytes)
+        XCTAssertEqual(resolved.cacheBudgetBytes, 3 * 1024 * 1024)
+
+        let jsonMapped = try XCTUnwrap(NativeLyricsConfigurationMapper.fromJSON(
+            "{\"cacheBudgetBytes\": 104857600}",
+            role: .fullscreen
+        ))
+        XCTAssertLessThanOrEqual(jsonMapped.cacheBudgetBytes, LyricsSurfaceRole.fullscreen.glyphCacheBudgetBytes)
+        XCTAssertEqual(jsonMapped.cacheBudgetBytes, 6 * 1024 * 1024)
+    }
+
+    @MainActor
+    func testPurgeInactiveRenderingResourcesOnlyReleasesInactiveSurfaces() throws {
+        let native = NativeLyricsSurfaceManager.shared
+        native.shutdownAll()
+        defer { native.shutdownAll() }
+
+        native.activate(role: .main)
+        let mainSurface = native.surface(for: .main)
+        mainSurface.view.frame = NSRect(x: 0, y: 0, width: 400, height: 600)
+        mainSurface.applyTrack(trackID: UUID(), ttml: mainTTML, currentTime: 2, isPlaying: true)
+
+        let standaloneSurface = native.surface(for: .standalone)
+        standaloneSurface.view.frame = NSRect(x: 0, y: 0, width: 400, height: 600)
+        standaloneSurface.applyTrack(trackID: UUID(), ttml: previewTTML, currentTime: 3, isPlaying: false)
+
+        XCTAssertNotNil(mainSurface.view.document)
+        XCTAssertNotNil(standaloneSurface.view.document)
+
+        native.purgeInactiveRenderingResources()
+
+        XCTAssertNotNil(mainSurface.view.document)
+        XCTAssertFalse(standaloneSurface.isRenderingActive)
+    }
+
+    @MainActor
+    func testInvalidTTMLDoesNotDestroyExistingRenderingLayers() throws {
+        let native = NativeLyricsSurfaceManager.shared
+        native.shutdownAll()
+        defer { native.shutdownAll() }
+
+        native.activate(role: .main)
+        let surface = native.surface(for: .main)
+        surface.view.frame = NSRect(x: 0, y: 0, width: 400, height: 600)
+        let validID = UUID()
+        surface.applyTrack(trackID: validID, ttml: mainTTML, currentTime: 2, isPlaying: true)
+
+        let originalDoc = surface.view.document
+        XCTAssertNotNil(originalDoc)
+
+        surface.applyTrack(trackID: UUID(), ttml: "<<bad-ttml>>", currentTime: 2.5, isPlaying: true)
+
+        XCTAssertEqual(surface.view.document, originalDoc)
+        XCTAssertEqual(surface.lastTrackID, validID)
+        XCTAssertEqual(surface.lastTTML, mainTTML)
+        XCTAssertNotNil(surface.lastError)
+    }
+
+    /// A skin switch remounts the fullscreen presentation layers and a memory
+    /// reclaim can drop the surface's layer tree while the document stays
+    /// installed. A visible surface must rebuild its rows in place instead of
+    /// staying blank until the next fullscreen entry.
+    @MainActor
+    func testReassertRenderingRebuildsReleasedLayerTreeInPlace() throws {
+        let native = NativeLyricsSurfaceManager.shared
+        native.shutdownAll()
+        defer { native.shutdownAll() }
+
+        native.activate(role: .fullscreen)
+        let surface = native.surface(for: .fullscreen)
+        surface.view.frame = NSRect(x: 0, y: 0, width: 640, height: 480)
+        surface.view.layoutSubtreeIfNeeded()
+        surface.applyTrack(trackID: UUID(), ttml: mainTTML, currentTime: 2, isPlaying: false)
+
+        XCTAssertNotNil(surface.view.document)
+        XCTAssertTrue(surface.isRenderingActive)
+        XCTAssertGreaterThan(
+            renderedRowLayerCount(of: surface),
+            0,
+            "an installed document renders at least one row layer"
+        )
+
+        surface.releaseRenderingResources()
+        XCTAssertEqual(
+            renderedRowLayerCount(of: surface),
+            0,
+            "a released surface keeps no row layers"
+        )
+        XCTAssertNotNil(surface.view.document, "releasing resources keeps the decoded document")
+
+        surface.reassertRendering()
+
+        XCTAssertGreaterThan(
+            renderedRowLayerCount(of: surface),
+            0,
+            "reassertRendering must rebuild the released layer tree in place"
+        )
+        XCTAssertTrue(surface.isRenderingActive)
+    }
+
+    /// `LyricsView` adds one content layer to its own layer; lyric rows,
+    /// interlude dots and the bottom text are sublayers of it, so the row count
+    /// is the content's children minus the dots and the bottom text.
+    @MainActor
+    private func renderedRowLayerCount(of surface: NativeLyricsSurface) -> Int {
+        guard let content = surface.view.layer?.sublayers?.first else { return 0 }
+        return max(0, (content.sublayers?.count ?? 0) - 2)
     }
 
 }

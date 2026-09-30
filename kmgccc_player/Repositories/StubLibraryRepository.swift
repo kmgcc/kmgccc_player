@@ -322,8 +322,8 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
 
     func fetchArtistEntries() async -> [ArtistEntry] { [] }
     func fetchAlbumEntries() async -> [AlbumEntry] { [] }
-    func updateArtistEntry(_ entry: ArtistEntry) async throws {}
-    func updateAlbumEntry(_ entry: AlbumEntry) async throws {}
+    func updateArtistEntry(_ entry: ArtistEntry) async throws -> ArtistEntry { entry }
+    func updateAlbumEntry(_ entry: AlbumEntry) async throws -> AlbumEntry { entry }
     func applyArtistEdits(original _: ArtistEntry, updated _: ArtistEntry) async throws {}
     func applyAlbumEdits(original _: AlbumEntry, updated _: AlbumEntry) async throws {}
     func deleteArtist(_ entry: ArtistEntry) async throws {}

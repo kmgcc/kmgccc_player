@@ -7,19 +7,18 @@
 //
 
 import Foundation
-import SwiftData
+import Observation
 
-@Model
-final class Playlist {
-    @Attribute(.unique) var id: UUID
+@Observable
+final class Playlist: Identifiable, Hashable, Equatable {
+    var id: UUID
 
     var name: String
     var userDescription: String = ""
     var createdAt: Date
 
     /// Tracks in this playlist (ordered).
-    /// Using array for ordered relationship.
-    @Relationship var tracks: [Track] = []
+    var tracks: [Track] = []
 
     init(
         id: UUID = UUID(),
@@ -33,6 +32,14 @@ final class Playlist {
         self.userDescription = userDescription
         self.createdAt = createdAt
         self.tracks = tracks
+    }
+
+    static func == (lhs: Playlist, rhs: Playlist) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
     }
 
     // MARK: - Computed Properties

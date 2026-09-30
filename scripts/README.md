@@ -29,6 +29,8 @@ CONFIGURATION=Release ./scripts/build_and_run.sh
 ### `build_app.sh`
 
 在新的 DerivedData 中构建可由 clean clone 复现的 App，并执行 bundle 完整性检查。该入口显式禁用本机构建扩展。
+构建前后都会检查 MelismaKit 的依赖来源；本机默认要求本地 NativeLyrics，干净 checkout 的远程构建需显式设置
+`MELISMAKIT_EXPECTED_SOURCE=remote`。
 
 用户协议和隐私政策位于受版本控制的 `kmgccc_player/LegalDocuments/`，属于公开且必需的运行资源；不要用本机忽略目录替代它们。
 
@@ -37,11 +39,28 @@ CONFIGURATION=Release ./scripts/build_and_run.sh
 ./scripts/build_app.sh Release
 ```
 
+要生成 Developer ID 发行签名 App，显式提供本机签名身份；脚本会把这些参数传给
+`xcodebuild`，避免 Release 配置中的开发签名默认值被误用：
+
+```sh
+CODE_SIGNING_ALLOWED=YES \
+CODE_SIGN_IDENTITY='Developer ID Application: Your Name (TEAMID)' \
+CODE_SIGN_STYLE=Manual \
+DEVELOPMENT_TEAM=TEAMID \
+CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
+OUTPUT_DIR=/tmp/kmgccc-player-release \
+./scripts/build_app.sh Release
+```
+
+这一步只负责生成并检查签名 App；公证、staple、Gatekeeper 和实际安装启动仍是独立的发布验收门禁。
+
 可通过 `OUTPUT_DIR` 将最终 App 复制到指定目录。
 
 ### `verify.sh`
 
 PR 前统一门禁：bootstrap、ARM64 无签名 Debug 构建、LRC 回归、XCTest 和 App bundle 检查。构建与测试阶段显式禁用本机构建扩展。
+它会检查每次 App/XCTest 构建的 MelismaKit 来源；远程依赖门禁需显式设置
+`MELISMAKIT_EXPECTED_SOURCE=remote`。
 
 ```sh
 ./scripts/verify.sh
@@ -56,6 +75,42 @@ PR 前统一门禁：bootstrap、ARM64 无签名 Debug 构建、LRC 回归、XCT
 ```sh
 ./scripts/check-app-bundle.sh /path/to/kmgccc_player.app
 ```
+
+### check-app-process-state.sh
+
+默认只读检查当前是否已有 kmgccc_player 进程，并输出 PID、父进程、启动时间和实际命令路径。
+发现进程时返回失败码。传入 --terminate-existing 后，只处理精确匹配的 kmgccc_player 进程：
+先发送 TERM，等待退出，必要时发送 KILL。
+
+    ./scripts/check-app-process-state.sh
+    ./scripts/check-app-process-state.sh --terminate-existing
+
+### check-melismakit-dependency.sh
+
+检查 App 的 Swift Package 依赖图和实际编译日志。默认的本机测试要求工程指向相邻的
+`NativeLyrics` 本地 checkout；远程 `Package.resolved` 中的旧 pin 不会因为修改组件源码而自动更新。
+
+```sh
+./scripts/check-melismakit-dependency.sh --require-local
+./scripts/check-melismakit-dependency.sh --require-local --build-log /path/to/xcodebuild.log
+./scripts/check-melismakit-dependency.sh --require-remote
+```
+
+`build_and_run.sh` 默认执行本地检查并保存 verbose build log；只有明确进行远程依赖构建时才设置
+`MELISMAKIT_EXPECTED_SOURCE=remote`。构建日志必须显示 `NativeLyrics/Sources/MelismaKit`，不能只显示
+`SourcePackages/checkouts/melismakit`。
+
+### check-ui-consistency.sh
+
+检查本次新增或修改的 SwiftUI/AppKit UI 代码是否引入已知的局部样式漂移。默认只检查变更
+行和未跟踪的新文件，不会把历史遗留问题混入当前任务；--all 用于一次性审计指定 UI
+目录。涉及新增用户文案时使用 --strict-copy，把明显的反向解释交给门禁处理。
+
+运行方式：
+
+    ./scripts/check-ui-consistency.sh
+    ./scripts/check-ui-consistency.sh --strict-copy
+    ./scripts/check-ui-consistency.sh --all
 
 ## Xcode 构建支持
 
@@ -73,18 +128,19 @@ Xcode 的 `Run Optional Build Hook` Build Phase 调用此适配器。默认设�
 
 ### `sync-amll-from-fork.sh`
 
-从 `Dependencies/Submodules/AMLLIntegration/` 构建 AMLL bundle，并同步到 `kmgccc_player/Resources/AMLL/`。修改 fork 后运行此脚本，再执行完整歌词回归和 `verify.sh`。
+从 `Dependencies/Submodules/AMLLIntegration/` 只构建网格背景 bundle，并同步 `amll-background.js` 到 `kmgccc_player/Resources/AMLL/`。修改 fork 后运行此脚本，再检查网格背景资源和匹配的 Debug Build。
 
 `components/` 包含各组件 bootstrap 子脚本，`lib/common.sh` 提供共享函数；它们由 `bootstrap.sh` 调用，不应作为独立入口。
 
 ## 发布与仓库审计
 
 ```sh
-./scripts/audit_release_contents.sh --all-refs --reflogs
-./scripts/verify_repository_hygiene.sh
+./scripts/verify_textual_hygiene.sh
+FROZEN_SHA="$(git rev-parse HEAD)"
+./scripts/audit_release_contents.sh --ref origin/main --ref "$FROZEN_SHA" --reflogs
 ```
 
-`audit_release_contents.sh` 检查跟踪路径、所选 Git 历史和可选 App bundle。准备推送或发布时，应在只含待发布 refs 的干净克隆中运行上面的命令；它不会把不随 refs 传输的本机不可达对象误算进发布范围。需要对当前本机对象库做取证时，额外传入 `--unreachable`；`verify_repository_hygiene.sh` 会先运行文本卫生检查，再自动包含该取证检查。
+`audit_release_contents.sh` 检查跟踪路径、所选 Git 历史和可选 App bundle。准备推送或发布时，应在只含待发布 refs 的干净克隆中运行上面的命令；它不会把不随 refs 传输的本机不可达对象误算进发布范围。需要对当前本机对象库做取证时，才额外传入 `--unreachable`；`verify_repository_hygiene.sh` 是包含所有本机 refs 和不可达对象的全面取证入口，不是发布线的默认命令。
 
 最终 App 中受控路径下的加密素材容器和编译后 Metal library 属于可分发运行产物；源码、明文素材、脚本，以及这些运行产物出现在公开工作树或 Git 历史中仍会阻断发布。它们不属于 `verify.sh` 的 PR 门禁。
 

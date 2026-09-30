@@ -8,6 +8,7 @@
 import AppKit
 import Foundation
 import ImageIO
+import UniformTypeIdentifiers
 
 private final class ArtworkDerivativeImageBox: NSObject {
     let image: NSImage
@@ -20,15 +21,17 @@ private final class ArtworkDerivativeImageBox: NSObject {
 actor ArtworkDerivativeCacheStore {
     private let memoryCache = NSCache<NSString, ArtworkDerivativeImageBox>()
     private let fileManager = FileManager.default
-    private let maxDiskBytes: Int64 = 220 * 1024 * 1024
+    private let maxDiskBytes: Int64 = DiskCacheBudget.playlistDerivatives.maxBytes
     private let decodeGate = ArtworkDecodeGate(maxConcurrent: 2)
     private var writeCounter = 0
+    private var didScheduleInitialDiskTrim = false
+    private var memoryGeneration: UInt64 = 0
     private nonisolated let diskRootURL: URL
 
     init(diskRootURL: URL) {
         self.diskRootURL = diskRootURL
-        memoryCache.countLimit = 720
-        memoryCache.totalCostLimit = 96 * 1024 * 1024
+        memoryCache.countLimit = 32
+        memoryCache.totalCostLimit = 4 * 1024 * 1024
 
         try? fileManager.createDirectory(at: diskRootURL, withIntermediateDirectories: true)
     }
@@ -38,6 +41,9 @@ actor ArtworkDerivativeCacheStore {
         artworkData: Data,
         targetPixelSize: CGSize
     ) async -> NSImage? {
+        scheduleInitialDiskTrimIfNeeded()
+        let requestGeneration = memoryGeneration
+
         if let memImage = memoryCache.object(forKey: cacheKey as NSString)?.image {
             return memImage
         }
@@ -52,16 +58,80 @@ actor ArtworkDerivativeCacheStore {
 
         let (acquired, _) = await decodeGate.acquire()
         guard acquired else { return nil }
+        guard !Task.isCancelled, memoryGeneration == requestGeneration else {
+            await decodeGate.release()
+            return nil
+        }
         let token = FirstUseHitchDiagnostics.begin(
             "ArtworkDerivative.decode",
             detail: "target=\(Int(targetPixelSize.width))x\(Int(targetPixelSize.height))"
         )
-        let decoded = await Task.detached(priority: .utility) {
-            downsampledImage(data: artworkData, targetPixelSize: targetPixelSize)
-        }.value
+        let decodeTask = Task.detached(priority: .utility) { () -> NSImage? in
+            guard !Task.isCancelled else { return nil }
+            return autoreleasepool {
+                let image = downsampledImage(data: artworkData, targetPixelSize: targetPixelSize)
+                return Task.isCancelled ? nil : image
+            }
+        }
+        let decoded = await withTaskCancellationHandler {
+            await decodeTask.value
+        } onCancel: {
+            decodeTask.cancel()
+        }
         await decodeGate.release()
         FirstUseHitchDiagnostics.end(token, detail: "success=\(decoded != nil)")
-        guard let decoded else { return nil }
+        guard !Task.isCancelled, memoryGeneration == requestGeneration, let decoded else { return nil }
+
+        setMemoryImage(decoded, cacheKey: cacheKey)
+        persist(image: decoded, to: diskURL)
+        return decoded
+    }
+
+    func image(
+        for cacheKey: String,
+        sourceURL: URL,
+        targetPixelSize: CGSize
+    ) async -> NSImage? {
+        scheduleInitialDiskTrimIfNeeded()
+        let requestGeneration = memoryGeneration
+
+        if let memImage = memoryCache.object(forKey: cacheKey as NSString)?.image {
+            return memImage
+        }
+
+        let diskURL = fileURL(for: cacheKey)
+        let maxPixel = max(1, Int(max(targetPixelSize.width, targetPixelSize.height)))
+        if let diskImage = readImage(at: diskURL, maxPixelSize: maxPixel) {
+            setMemoryImage(diskImage, cacheKey: cacheKey)
+            touchItem(at: diskURL)
+            return diskImage
+        }
+
+        let (acquired, _) = await decodeGate.acquire()
+        guard acquired else { return nil }
+        guard !Task.isCancelled, memoryGeneration == requestGeneration else {
+            await decodeGate.release()
+            return nil
+        }
+        let token = FirstUseHitchDiagnostics.begin(
+            "ArtworkDerivative.decode",
+            detail: "target=\(Int(targetPixelSize.width))x\(Int(targetPixelSize.height))"
+        )
+        let decodeTask = Task.detached(priority: .utility) { () -> NSImage? in
+            guard !Task.isCancelled else { return nil }
+            return autoreleasepool {
+                downsampledImage(fileURL: sourceURL, targetPixelSize: targetPixelSize)
+                    .flatMap { Task.isCancelled ? nil : $0 }
+            }
+        }
+        let decoded = await withTaskCancellationHandler {
+            await decodeTask.value
+        } onCancel: {
+            decodeTask.cancel()
+        }
+        await decodeGate.release()
+        FirstUseHitchDiagnostics.end(token, detail: "success=\(decoded != nil)")
+        guard !Task.isCancelled, memoryGeneration == requestGeneration, let decoded else { return nil }
 
         setMemoryImage(decoded, cacheKey: cacheKey)
         persist(image: decoded, to: diskURL)
@@ -73,6 +143,9 @@ actor ArtworkDerivativeCacheStore {
         artworkData: Data,
         maxPixelSize: Int
     ) async -> NSImage? {
+        scheduleInitialDiskTrimIfNeeded()
+        let requestGeneration = memoryGeneration
+
         if let memImage = memoryCache.object(forKey: cacheKey as NSString)?.image {
             return memImage
         }
@@ -86,16 +159,29 @@ actor ArtworkDerivativeCacheStore {
 
         let (acquired, _) = await decodeGate.acquire()
         guard acquired else { return nil }
+        guard !Task.isCancelled, memoryGeneration == requestGeneration else {
+            await decodeGate.release()
+            return nil
+        }
         let token = FirstUseHitchDiagnostics.begin(
             "ArtworkDerivative.decode",
             detail: "maxPixel=\(maxPixelSize)"
         )
-        let decoded = await Task.detached(priority: .utility) {
-            downsampledImage(data: artworkData, maxPixelSize: maxPixelSize)
-        }.value
+        let decodeTask = Task.detached(priority: .utility) { () -> NSImage? in
+            guard !Task.isCancelled else { return nil }
+            return autoreleasepool {
+                let image = downsampledImage(data: artworkData, maxPixelSize: maxPixelSize)
+                return Task.isCancelled ? nil : image
+            }
+        }
+        let decoded = await withTaskCancellationHandler {
+            await decodeTask.value
+        } onCancel: {
+            decodeTask.cancel()
+        }
         await decodeGate.release()
         FirstUseHitchDiagnostics.end(token, detail: "success=\(decoded != nil)")
-        guard let decoded else { return nil }
+        guard !Task.isCancelled, memoryGeneration == requestGeneration, let decoded else { return nil }
 
         setMemoryImage(decoded, cacheKey: cacheKey)
         persist(image: decoded, to: diskURL)
@@ -103,12 +189,14 @@ actor ArtworkDerivativeCacheStore {
     }
 
     func clearAll() {
+        memoryGeneration &+= 1
         memoryCache.removeAllObjects()
         try? fileManager.removeItem(at: diskRootURL)
         try? fileManager.createDirectory(at: diskRootURL, withIntermediateDirectories: true)
     }
 
     func clearMemory() {
+        memoryGeneration &+= 1
         memoryCache.removeAllObjects()
     }
 
@@ -121,13 +209,21 @@ actor ArtworkDerivativeCacheStore {
     }
 
     private func persist(image: NSImage, to url: URL) {
-        guard let png = pngData(for: image) else { return }
+        guard let encoded = encodedImageData(for: image) else { return }
         try? fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? png.write(to: url, options: .atomic)
+        try? encoded.write(to: url, options: .atomic)
 
         writeCounter += 1
-        if writeCounter.isMultiple(of: 26) {
+        if writeCounter.isMultiple(of: 16) {
             trimDiskIfNeeded()
+        }
+    }
+
+    private func scheduleInitialDiskTrimIfNeeded() {
+        guard !didScheduleInitialDiskTrim else { return }
+        didScheduleInitialDiskTrim = true
+        Task { [weak self] in
+            await self?.trimDiskIfNeeded()
         }
     }
 
@@ -153,40 +249,26 @@ actor ArtworkDerivativeCacheStore {
     }
 
     private func trimDiskIfNeeded() {
-        guard
-            let urls = try? fileManager.contentsOfDirectory(
-                at: diskRootURL,
-                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
-                options: .skipsHiddenFiles
-            )
-        else { return }
+        let result = DiskCacheRetention.trim(
+            at: diskRootURL,
+            maxBytes: maxDiskBytes,
+            targetFraction: DiskCacheBudget.playlistDerivatives.targetFraction,
+            maxAge: DiskCacheBudget.playlistDerivatives.maxAge,
+            fileManager: fileManager
+        )
+        guard result.removedFileCount > 0 else { return }
+        Log.debug(
+            "[ArtworkDerivativeCache] disk trim removedFiles=\(result.removedFileCount) removedBytes=\(result.removedBytes)",
+            category: .perf
+        )
+    }
 
-        var records: [(url: URL, size: Int64, modified: Date)] = []
-        records.reserveCapacity(urls.count)
-
-        var totalSize: Int64 = 0
-        for url in urls {
-            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
-            let size = Int64(values?.fileSize ?? 0)
-            totalSize += size
-            records.append((url: url, size: size, modified: values?.contentModificationDate ?? .distantPast))
-        }
-
-        guard totalSize > maxDiskBytes else { return }
-        let target = Int64(Double(maxDiskBytes) * 0.88)
-        let sorted = records.sorted { $0.modified < $1.modified }
-        var current = totalSize
-        for item in sorted where current > target {
-            try? fileManager.removeItem(at: item.url)
-            current -= item.size
-        }
+    private func encodedImageData(for image: NSImage) -> Data? {
+        ArtworkDataNormalizer.encodedDerivativeData(for: image, lossyCompressionQuality: 0.85)
     }
 
     private func pngData(for image: NSImage) -> Data? {
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff)
-        else { return nil }
-        return rep.representation(using: .png, properties: [:])
+        encodedImageData(for: image)
     }
 
     private func estimatedCost(for image: NSImage) -> Int {
@@ -216,6 +298,17 @@ private nonisolated func downsampledImage(data: Data, targetPixelSize: CGSize) -
 private nonisolated func downsampledImage(data: Data, maxPixelSize: Int) -> NSImage? {
     guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
     return downsampledImage(source: source, maxPixelSize: maxPixelSize)
+}
+
+private nonisolated func downsampledImage(fileURL: URL, targetPixelSize: CGSize) -> NSImage? {
+    guard let source = CGImageSourceCreateWithURL(
+        fileURL as CFURL,
+        [kCGImageSourceShouldCache: false] as CFDictionary
+    ) else { return nil }
+    return downsampledImage(
+        source: source,
+        maxPixelSize: max(1, Int(max(targetPixelSize.width, targetPixelSize.height)))
+    )
 }
 
 private nonisolated func downsampledImage(source: CGImageSource, maxPixelSize: Int) -> NSImage? {

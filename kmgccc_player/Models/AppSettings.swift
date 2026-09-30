@@ -363,11 +363,69 @@ public final class AppSettings {
         static let deferImportEnrichment = "deferImportEnrichment"
     }
 
+    private enum AutomationKeys {
+        static let endpointEnabled = "automationEndpointEnabled"
+        static let mcpEnabled = "automationMCPEnabled"
+        static let cliEnabled = "automationCLIEnabled"
+    }
+
     private enum PlaybackOrderKeys {
         static let mode = "playbackOrderMode"
         static let shuffleEnabled = "shuffleEnabled"
         static let repeatMode = "repeatMode"
         static let stopAfterTrack = "stopAfterTrack"
+    }
+
+    // MARK: - Automation Settings
+
+    /// Enables the local App-owned automation endpoint used by MCP, CLI and
+    /// future in-process Agent callers. Existing installations stay enabled
+    /// when this key is absent so the automation feature is backwards compatible.
+    var automationEndpointEnabled: Bool {
+        get {
+            access(keyPath: \.automationEndpointEnabled)
+            if UserDefaults.standard.object(forKey: AutomationKeys.endpointEnabled) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: AutomationKeys.endpointEnabled)
+        }
+        set {
+            withMutation(keyPath: \.automationEndpointEnabled) {
+                UserDefaults.standard.set(newValue, forKey: AutomationKeys.endpointEnabled)
+            }
+        }
+    }
+
+    /// Allows the MCP stdio adapter to invoke the local endpoint.
+    var automationMCPEnabled: Bool {
+        get {
+            access(keyPath: \.automationMCPEnabled)
+            if UserDefaults.standard.object(forKey: AutomationKeys.mcpEnabled) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: AutomationKeys.mcpEnabled)
+        }
+        set {
+            withMutation(keyPath: \.automationMCPEnabled) {
+                UserDefaults.standard.set(newValue, forKey: AutomationKeys.mcpEnabled)
+            }
+        }
+    }
+
+    /// Allows the bundled CLI and local scripts to invoke the endpoint.
+    var automationCLIEnabled: Bool {
+        get {
+            access(keyPath: \.automationCLIEnabled)
+            if UserDefaults.standard.object(forKey: AutomationKeys.cliEnabled) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: AutomationKeys.cliEnabled)
+        }
+        set {
+            withMutation(keyPath: \.automationCLIEnabled) {
+                UserDefaults.standard.set(newValue, forKey: AutomationKeys.cliEnabled)
+            }
+        }
     }
 
     /// Whether global accent/tint follows current artwork dominant color.
@@ -643,11 +701,11 @@ public final class AppSettings {
             switch self {
             case .low: return "0.5x 分辨率"
             case .medium: return "0.75x 分辨率"
-            case .high: return "原生分辨率"
+            case .high: return "1.0x 分辨率"
             }
         }
 
-        var webViewScale: Double {
+        var renderScale: Double {
             switch self {
             case .low: return 0.5
             case .medium: return 0.75
@@ -727,7 +785,7 @@ public final class AppSettings {
         defaults.set(true, forKey: AMLLKeys.springDefaultsMigration)
     }
 
-    /// Shared render quality for AMLL lyric WebViews.
+    /// Shared render quality for user-facing AMLL lyric surfaces.
     var amllLyricsRenderQuality: AMLLLyricsRenderQuality {
         get {
             access(keyPath: \.amllLyricsRenderQuality)
@@ -754,9 +812,9 @@ public final class AppSettings {
         }
     }
 
-    /// Shared WebView backing scale for user-facing AMLL lyric surfaces.
+    /// Shared backing scale for user-facing AMLL lyric surfaces.
     var amllLyricsRenderQualityScale: Double {
-        amllLyricsRenderQuality.webViewScale
+        amllLyricsRenderQuality.renderScale
     }
 
     /// Whether word-by-word AMLL highlighting should jump by whole words instead of sweeping left-to-right.

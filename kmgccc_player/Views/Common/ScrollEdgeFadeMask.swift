@@ -6,6 +6,7 @@
 //  their clipped edges without changing layout.
 //
 
+import MotionKit
 import SwiftUI
 
 struct ScrollEdgeFadeState: Equatable {
@@ -60,13 +61,45 @@ struct ScrollEdgeFadeState: Equatable {
     }
 }
 
+/// Keeps scroll-driven fade updates local to the scroll view instead of
+/// invalidating the screen that owns a large lazy list on every scroll frame.
+struct ScrollEdgeFadeTrackingMask: ViewModifier {
+    let topFadeHeight: CGFloat
+    let bottomFadeHeight: CGFloat
+    var topChromeInset: CGFloat = 0
+
+    @State private var state = ScrollEdgeFadeState()
+    func body(content: Content) -> some View {
+        content
+            .onScrollGeometryChange(for: ScrollEdgeFadeState.self) { geometry in
+                ScrollEdgeFadeState(
+                    geometry: geometry,
+                    topFadeDistance: max(topFadeHeight, topChromeInset),
+                    bottomFadeDistance: bottomFadeHeight
+                )
+            } action: { _, newState in
+                guard state != newState else { return }
+                state = newState
+            }
+            .mask {
+                ScrollEdgeFadeMask(
+                    topOpacity: state.topOpacity,
+                    bottomOpacity: state.bottomOpacity,
+                    topFadeHeight: topFadeHeight,
+                    bottomFadeHeight: bottomFadeHeight,
+                    topChromeInset: topChromeInset
+                )
+            }
+    }
+}
+
 extension View {
     func scrollEdgeFadeMask(
         _ state: ScrollEdgeFadeState,
         fadeHeight: CGFloat,
         topEnabled: Bool = true,
         bottomEnabled: Bool = true,
-        animation: Animation = .easeInOut(duration: 0.2)
+        motionToken: MotionToken = .microInteraction
     ) -> some View {
         scrollEdgeFadeMask(
             state,
@@ -74,7 +107,7 @@ extension View {
             bottomFadeHeight: fadeHeight,
             topEnabled: topEnabled,
             bottomEnabled: bottomEnabled,
-            animation: animation
+            motionToken: motionToken
         )
     }
 
@@ -85,7 +118,7 @@ extension View {
         topChromeInset: CGFloat = 0,
         topEnabled: Bool = true,
         bottomEnabled: Bool = true,
-        animation: Animation = .easeInOut(duration: 0.2)
+        motionToken: MotionToken = .microInteraction
     ) -> some View {
         mask {
             ScrollEdgeFadeMask(
@@ -95,8 +128,8 @@ extension View {
                 bottomFadeHeight: bottomFadeHeight,
                 topChromeInset: topChromeInset
             )
-            .animation(animation, value: state.topOpacity)
-            .animation(animation, value: state.bottomOpacity)
+            .motionAnimation(motionToken, value: state.topOpacity)
+            .motionAnimation(motionToken, value: state.bottomOpacity)
         }
     }
 }

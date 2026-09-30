@@ -38,6 +38,7 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
 
     /// Show the What's New window with specific content.
     private func show(whatsNew: WhatsNew) {
+        FeatureTipPresentationCoordinator.shared.setSuspended(true, reason: .whatsNew)
         let whatsNewView = WhatsNewView(whatsNew: whatsNew)
 
         let panel = NSPanel(
@@ -78,14 +79,7 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
         whatsNewWindow = panel
         isPresented = true
 
-        panel.makeKeyAndOrderFront(nil)
-        panel.orderFrontRegardless()
-
-        panel.alphaValue = 0
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.25
-            panel.animator().alphaValue = 1
-        }
+        AppDialogTokens.presentWithMotion(panel)
     }
 
     /// Apply the current app appearance to the window.
@@ -107,25 +101,19 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
         
         WhatsNewConfig.markAsSeen()
 
-        NSAnimationContext.runAnimationGroup(
-            { context in
-                context.duration = 0.2
-                window.animator().alphaValue = 0
-            },
-            completionHandler: { [weak self] in
-                guard let self else { return }
-                Task { @MainActor in
-                    self.whatsNewWindow = nil
-                    self.isPresented = false
-                }
-            }
-        )
+        AppDialogTokens.animatePanelOpacity(window, to: 0) { [weak self] in
+            guard let self else { return }
+            self.whatsNewWindow = nil
+            self.isPresented = false
+            window.close()
+        }
     }
 
     // MARK: - NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
         WhatsNewConfig.markAsSeen()
+        FeatureTipPresentationCoordinator.shared.setSuspended(false, reason: .whatsNew)
         whatsNewWindow = nil
         isPresented = false
     }

@@ -6,17 +6,18 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct HomePlaylistsSection: View {
     let playlists: [Playlist]
+    let playbackCoordinator: PlaybackCoordinator
     var mode: HomeLayoutMode = .wide
     var titleColor: Color = Color.primary
     var subtitleColor: Color = Color.secondary
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
-    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryCacheServices.self) private var cacheServices
     @State private var deletionRequest: HomePlaylistDeletionRequest?
 
@@ -92,7 +93,14 @@ struct HomePlaylistsSection: View {
         return best
     }
 
+    private func traceBodyChanges() {
+        guard HomeDebugFlags.logBodyChanges else { return }
+        let _ = Self._printChanges()
+        Log.debug("[HomePlaylistsSection/body] re-eval", category: .ui)
+    }
+
     var body: some View {
+        let _ = traceBodyChanges()
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader
             contentBlock
@@ -801,19 +809,23 @@ private struct HomePlaylistCard: View {
 
     @ViewBuilder
     private func artwork(side: CGFloat, iconSize: CGFloat) -> some View {
-        if let coverImage {
-            Image(nsImage: coverImage)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-        } else {
-            ArtworkPlaceholderView(
-                size: side,
-                cornerRadius: coverCornerRadius,
-                clipShape: .continuous,
-                iconSize: iconSize,
-                iconOpacity: 0.4
-            )
+        Group {
+            if let coverImage {
+                Image(nsImage: coverImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                ArtworkPlaceholderView(
+                    size: side,
+                    cornerRadius: coverCornerRadius,
+                    clipShape: .continuous,
+                    iconSize: iconSize,
+                    iconOpacity: 0.0,
+                    themeColor: Color.primary.opacity(0.04)
+                )
+            }
         }
+        .motionAnimation(.microInteraction, value: coverImage != nil)
     }
 
     private var trackCountLine: some View {
@@ -851,12 +863,15 @@ private struct HomePlaylistCard: View {
 
     private func loadHeaderImage(from resolved: ResolvedHeaderArtwork?) async -> NSImage? {
         guard let resolved else { return nil }
+        if let image = resolved.image {
+            return image
+        }
         let request = PlaylistArtworkPipeline.headerRequest(
             artworkIdentity: headerArtworkIdentity,
-            artworkData: resolved.image?.tiffRepresentation,
+            artworkData: nil,
             fileURL: resolved.fileURL
         )
-        return await cacheServices.playlistArtworkPipeline.load(request) ?? resolved.image
+        return await cacheServices.playlistArtworkPipeline.load(request)
     }
 
     private var headerArtworkIdentity: String {
@@ -875,39 +890,27 @@ private struct HomePlaylistCard: View {
 }
 
 /// Main-actor synchronously-readable cache for Home playlist card cover
-/// images. Mirrors `HomePlaylistPreviewArtworkStore` but keyed by the
-/// playlist's full `headerArtworkIdentity` (selection + revision/signature)
-/// so a custom-artwork edit or generated-artwork refresh invalidates the
-/// entry automatically — the next render computes a new identity and
-/// misses the cache.
+/// images. Delegates to the central `HomeArtworkMemoryStore` to avoid
+/// duplicate decoded bitmap caches.
 @MainActor
 final class HomePlaylistCardCoverStore {
     static let shared = HomePlaylistCardCoverStore()
 
-    private var cache = CostBoundedCache<String, NSImage>(
-        countLimit: 32,
-        totalCostLimit: 48 * 1024 * 1024
-    )
-
     func cachedImage(for identity: String) -> NSImage? {
-        cache.value(forKey: identity)
+        HomeArtworkMemoryStore.shared.cachedImage(
+            for: HomeArtworkMemoryStore.playlistHeaderKey(identity: identity)
+        )
     }
 
     func store(_ image: NSImage, for identity: String) {
-        cache.insert(image, forKey: identity, cost: Self.estimatedCost(for: image))
+        HomeArtworkMemoryStore.shared.store(
+            image,
+            for: HomeArtworkMemoryStore.playlistHeaderKey(identity: identity)
+        )
     }
 
     func clearMemory() {
-        cache.removeAll()
-    }
-
-    private static func estimatedCost(for image: NSImage) -> Int {
-        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
-            return max(1, cgImage.bytesPerRow * cgImage.height)
-        }
-        let width = max(1, Int(ceil(image.size.width)))
-        let height = max(1, Int(ceil(image.size.height)))
-        return width * height * 4
+        // Owned and cleared by HomeArtworkMemoryStore.shared.clearMemory()
     }
 }
 
@@ -1056,8 +1059,25 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
         let pixelSide = HomePlaylistPreviewArtworkStore.previewPixelSide
         let displayedSize = CGSize(width: pixelSide, height: pixelSide)
 
-        // Track helper handles in-memory + disk read off the main thread
-        // and caches the bytes on the model — don't reimplement here.
+        if let artworkFileURL = track.existingArtworkURL() {
+            let key = ArtworkLoader.fileCacheKey(
+                fileURL: artworkFileURL,
+                targetPixelSize: displayedSize
+            )
+            guard let loaded = await ArtworkLoader.loadImage(
+                fileURL: artworkFileURL,
+                cacheKey: key,
+                targetPixelSize: displayedSize,
+                derivativeStore: cacheServices.artworkDerivativeStore
+            ) else {
+                image = nil
+                return
+            }
+            HomePlaylistPreviewArtworkStore.shared.store(loaded, forTrackID: track.id)
+            image = loaded
+            return
+        }
+
         guard let data = await track.loadArtworkDataOffMainIfNeeded(),
               !data.isEmpty
         else {
@@ -1095,9 +1115,8 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
 }
 
 /// Main-actor synchronously-readable cache for Home featured-card preview
-/// thumbnails. Holds the decoded `NSImage` keyed by track ID so the small
-/// 4–8 covers can survive LazyVStack rematerialization without flashing
-/// the placeholder while the actor cache is hopped to.
+/// thumbnails. Delegates to the central `HomeArtworkMemoryStore` to avoid
+/// duplicate decoded bitmap caches.
 @MainActor
 final class HomePlaylistPreviewArtworkStore {
     static let shared = HomePlaylistPreviewArtworkStore()
@@ -1107,36 +1126,27 @@ final class HomePlaylistPreviewArtworkStore {
     /// derivative key per track.
     static let previewPixelSide: CGFloat = 96
 
-    private var cache = CostBoundedCache<UUID, NSImage>(
-        countLimit: 256,
-        totalCostLimit: 16 * 1024 * 1024
-    )
-
     func cachedImage(forTrackID trackID: UUID) -> NSImage? {
-        cache.value(forKey: trackID)
+        HomeArtworkMemoryStore.shared.cachedImage(
+            for: HomeArtworkMemoryStore.playlistPreviewKey(trackID: trackID)
+        )
     }
 
     func store(_ image: NSImage, forTrackID trackID: UUID) {
-        cache.insert(image, forKey: trackID, cost: Self.estimatedCost(for: image))
+        HomeArtworkMemoryStore.shared.store(
+            image,
+            for: HomeArtworkMemoryStore.playlistPreviewKey(trackID: trackID)
+        )
     }
 
     func clearMemory() {
-        cache.removeAll()
-    }
-
-    private static func estimatedCost(for image: NSImage) -> Int {
-        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
-            return max(1, cgImage.bytesPerRow * cgImage.height)
-        }
-        let width = max(1, Int(ceil(image.size.width)))
-        let height = max(1, Int(ceil(image.size.height)))
-        return width * height * 4
+        // Owned and cleared by HomeArtworkMemoryStore.shared.clearMemory()
     }
 }
 
 private extension Track {
     var hasArtworkSource: Bool {
         if let artworkData, !artworkData.isEmpty { return true }
-        return artworkFileName?.isEmpty == false
+        return existingArtworkURL() != nil
     }
 }

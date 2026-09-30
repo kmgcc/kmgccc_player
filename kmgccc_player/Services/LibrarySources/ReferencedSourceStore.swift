@@ -97,6 +97,16 @@ actor ReferencedSourceStore {
         return descriptor
     }
 
+    func updateMonitorPolicy(
+        sourceID: UUID,
+        policy: ReferencedSourceMonitorPolicy
+    ) throws -> ReferencedSourceDescriptor {
+        var descriptor = try load(id: sourceID)
+        descriptor.monitorPolicy = policy
+        try save(descriptor)
+        return descriptor
+    }
+
     func ensurePlaylistBinding(
         sourceID: UUID,
         playlistID: UUID,

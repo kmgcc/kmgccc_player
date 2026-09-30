@@ -36,6 +36,38 @@ final class PlaylistMembershipRollbackTests: XCTestCase {
         XCTAssertEqual(playlist.tracks.map(\.id), originalTracks.map(\.id))
         XCTAssertNotNil(notice)
     }
+
+    func testAutomationAddsExistingTrackAndRejectsStaleRevision() async throws {
+        let repository = StubLibraryRepository()
+        let viewModel = LibraryViewModel.preview(repository: repository)
+        let tracks = await repository.fetchTracks(in: nil)
+        let track = try XCTUnwrap(tracks.first)
+        let playlist = try await viewModel.createPlaylistForAutomation(name: "Automation target")
+        let revision = viewModel.automationPlaylistRevision(for: playlist)
+
+        try await viewModel.addTracksToPlaylistForAutomation(
+            [track],
+            playlist: playlist,
+            expectedRevision: revision
+        )
+
+        XCTAssertEqual(
+            viewModel.playlists.first { $0.id == playlist.id }?.tracks.map(\.id),
+            [track.id]
+        )
+        do {
+            try await viewModel.removeTracksFromPlaylistForAutomation(
+                [track],
+                playlist: playlist,
+                expectedRevision: revision
+            )
+            XCTFail("a stale playlist revision must not overwrite membership")
+        } catch let error as LibraryAutomationMutationError {
+            guard case .revisionConflict = error else {
+                return XCTFail("unexpected automation error: \(error)")
+            }
+        }
+    }
 }
 
 private enum TestFailure: Error {

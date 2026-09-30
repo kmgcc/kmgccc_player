@@ -29,20 +29,37 @@ struct PlaylistArtworkRequest: Sendable {
 
 actor PlaylistArtworkPipeline {
     private let memoryCache = NSCache<NSString, CachedArtworkImage>()
-    private let decodeGate = ArtworkDecodeGate(maxConcurrent: 2)
+    private let decodeGate = ArtworkDecodeGate(maxConcurrent: 4)
     private let derivativeStore: ArtworkDerivativeCacheStore
+    private var memoryGeneration: UInt64 = 0
 
     init(derivativeStore: ArtworkDerivativeCacheStore) {
         self.derivativeStore = derivativeStore
-        memoryCache.countLimit = 720
-        memoryCache.totalCostLimit = 96 * 1024 * 1024
+        memoryCache.countLimit = 32
+        memoryCache.totalCostLimit = 2 * 1024 * 1024
+    }
+
+    func preheat(requests: [PlaylistArtworkRequest]) async {
+        for request in requests {
+            guard !Task.isCancelled else { return }
+            if cachedImage(for: request) != nil { continue }
+            _ = await load(request)
+        }
     }
 
     func cachedImage(for request: PlaylistArtworkRequest) -> NSImage? {
-        memoryCache.object(forKey: request.cacheKey as NSString)?.image
+        if let fast = FastArtworkMemoryCache.shared.image(forKey: request.cacheKey) {
+            return fast
+        }
+        if let image = memoryCache.object(forKey: request.cacheKey as NSString)?.image {
+            FastArtworkMemoryCache.shared.store(image, forKey: request.cacheKey)
+            return image
+        }
+        return nil
     }
 
     func load(_ request: PlaylistArtworkRequest) async -> NSImage? {
+        let requestGeneration = memoryGeneration
         if let cached = cachedImage(for: request) {
             return cached
         }
@@ -55,11 +72,13 @@ actor PlaylistArtworkPipeline {
             let checksum = request.artworkData.flatMap { ArtworkAssetStore.checksum(for: $0) } ?? 0
             if let snapshot = await ArtworkAssetStore.shared.get(trackID: trackID, artworkChecksum: checksum),
                let thumbnail = snapshot.thumbnailImage {
+                guard !Task.isCancelled, memoryGeneration == requestGeneration else { return nil }
                 memoryCache.setObject(
                     CachedArtworkImage(thumbnail),
                     forKey: request.cacheKey as NSString,
                     cost: max(1, Int(request.pixelSize.width * request.pixelSize.height * 4))
                 )
+                FastArtworkMemoryCache.shared.store(thumbnail, forKey: request.cacheKey)
                 return thumbnail
             }
         }
@@ -91,11 +110,7 @@ actor PlaylistArtworkPipeline {
             targetPixelSize: request.pixelSize
         )
 
-        guard let image else {
-            return nil
-        }
-
-        guard !Task.isCancelled else {
+        guard !Task.isCancelled, memoryGeneration == requestGeneration, let image else {
             return nil
         }
 
@@ -104,6 +119,7 @@ actor PlaylistArtworkPipeline {
             forKey: request.cacheKey as NSString,
             cost: max(1, Int(request.pixelSize.width * request.pixelSize.height * 4))
         )
+        FastArtworkMemoryCache.shared.store(image, forKey: request.cacheKey)
 
         return image
     }
@@ -131,8 +147,14 @@ actor PlaylistArtworkPipeline {
         }
     }
 
+    nonisolated static func fastLookup(cacheKey: String) -> NSImage? {
+        FastArtworkMemoryCache.shared.image(forKey: cacheKey)
+    }
+
     func clearMemory() {
+        memoryGeneration &+= 1
         memoryCache.removeAllObjects()
+        FastArtworkMemoryCache.shared.removeAll()
     }
 
     private func sourceData(for request: PlaylistArtworkRequest) async -> Data? {

@@ -15,6 +15,7 @@ struct AlbumEntry: Identifiable {
     var primaryArtistCanonicalName: String
     var primaryArtistDisplayName: String
     var artworkFileName: String?
+    var artworkFileURL: URL?
     var description: String
     var year: Int?
     var releaseYear: Int?
@@ -27,7 +28,7 @@ struct AlbumEntry: Identifiable {
     var metadataSource: String?
     var metadataFetchedAt: Date?
     var metadataConfidence: Double?
-    var artworkData: Data?          // user-set artwork or first track's artwork (not persisted in sidecar)
+    var artworkData: Data?
     var createdAt: Date
     var updatedAt: Date
 
@@ -43,6 +44,22 @@ struct AlbumEntry: Identifiable {
         )
     }
 
+    var existingArtworkURL: URL? {
+        guard let artworkFileURL,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: artworkFileURL.path),
+              let fileType = attributes[.type] as? FileAttributeType,
+              fileType == .typeRegular,
+              let fileSize = attributes[.size] as? NSNumber,
+              fileSize.int64Value > 0,
+              FileManager.default.isReadableFile(atPath: artworkFileURL.path)
+        else { return nil }
+        return artworkFileURL
+    }
+
+    var hasArtwork: Bool {
+        artworkData?.isEmpty == false || existingArtworkURL != nil
+    }
+
     var presentationArtistDisplayName: String {
         isCompilation ? LibraryNormalization.variousArtists : primaryArtistDisplayName
     }
@@ -54,6 +71,7 @@ struct AlbumEntry: Identifiable {
         primaryArtistCanonicalName: String,
         primaryArtistDisplayName: String,
         artworkFileName: String? = nil,
+        artworkFileURL: URL? = nil,
         description: String = "",
         year: Int? = nil,
         releaseYear: Int? = nil,
@@ -79,6 +97,7 @@ struct AlbumEntry: Identifiable {
         self.primaryArtistCanonicalName = primaryArtistCanonicalName
         self.primaryArtistDisplayName = primaryArtistDisplayName
         self.artworkFileName = artworkFileName
+        self.artworkFileURL = artworkFileURL
         self.description = description
         self.year = year
         self.releaseYear = releaseYear ?? year

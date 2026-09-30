@@ -1,10 +1,14 @@
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct MusicSettingsView: View {
     @EnvironmentObject private var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     @State private var registry = MusicLibraryRegistry()
     @State private var sources: [ReferencedSourceDescriptor] = []
@@ -58,6 +62,7 @@ struct MusicSettingsView: View {
             libraryDiagnosticsSection
 
             if activeMode == .referenced {
+                trustedAudioRootSection
                 sourceSection
                 deletePolicySection
             }
@@ -202,6 +207,42 @@ struct MusicSettingsView: View {
         .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
+    private var trustedAudioRootSection: some View {
+        SettingsSection("受信任的音频目录") {
+            VStack(alignment: .leading, spacing: 12) {
+                if let path = settings.trustedAudioRootPath {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text(path)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                    }
+
+                    HStack(spacing: 10) {
+                        Button("更换目录…") { chooseTrustedAudioRoot() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        Button("移除", role: .destructive) { clearTrustedAudioRoot() }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                    }
+                } else {
+                    Text("目录内的自动化文件操作无需重复确认。")
+                        .settingsDescriptionStyle()
+                    Button("选择目录…") { chooseTrustedAudioRoot() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
+            .disabled(isWorking || isAddingMusic)
+            .opacity(isWorking || isAddingMusic ? 0.72 : 1)
+        }
+    }
+
     private var sourceSection: some View {
         SettingsSection("音乐来源", headerTrailing: {
             HStack(spacing: 4) {
@@ -264,7 +305,10 @@ struct MusicSettingsView: View {
 
                 if sources.count > Self.collapsedSourceCount {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.18)) {
+                        let policy = configuredMotionPolicy.resolving(
+                            accessibilityReduceMotion: reduceMotion
+                        )
+                        withAnimation(policy.animation(for: motionTokens[.microInteraction])) {
                             isSourceListExpanded.toggle()
                         }
                     } label: {
@@ -549,7 +593,10 @@ struct MusicSettingsView: View {
 
                     if unavailableTracks.count > Self.collapsedSourceCount {
                         Button {
-                            withAnimation(.easeInOut(duration: 0.18)) {
+                            let policy = configuredMotionPolicy.resolving(
+                                accessibilityReduceMotion: reduceMotion
+                            )
+                            withAnimation(policy.animation(for: motionTokens[.microInteraction])) {
                                 isMissingListExpanded.toggle()
                             }
                         } label: {
@@ -730,6 +777,39 @@ struct MusicSettingsView: View {
         }
     }
 
+    private func chooseTrustedAudioRoot() {
+        guard let libraryID = activeContext?.id else { return }
+        chooseDirectory(prompt: "选择") { url, access in
+            Task { @MainActor in
+                defer { access.release() }
+                do {
+                    try await appSession.setTrustedAudioRoot(
+                        url: url,
+                        selection: access,
+                        libraryID: libraryID
+                    )
+                    await reload()
+                } catch {
+                    guard activeContext?.id == libraryID else { return }
+                    errorMessage = "无法保存受信任目录。"
+                }
+            }
+        }
+    }
+
+    private func clearTrustedAudioRoot() {
+        guard let libraryID = activeContext?.id else { return }
+        Task { @MainActor in
+            do {
+                try await appSession.clearTrustedAudioRoot(libraryID: libraryID)
+                await reload()
+            } catch {
+                guard activeContext?.id == libraryID else { return }
+                errorMessage = "无法移除受信任目录。"
+            }
+        }
+    }
+
     private func addMusicPanel() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -808,7 +888,7 @@ struct MusicSettingsView: View {
                 return
             }
             do {
-                try await appSession.removeMusicLibrary(id: library.id)
+                _ = try await appSession.removeMusicLibrary(id: library.id)
                 guard flow.isCurrentOperation(operation) else { return }
                 flow.completeAndDismiss()
                 await reload()

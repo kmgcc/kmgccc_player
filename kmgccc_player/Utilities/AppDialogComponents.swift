@@ -8,6 +8,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 // MARK: - Style Tokens
@@ -128,15 +129,54 @@ extension AppDialogTokens {
         return (panel, ve)
     }
 
-    /// Centers and presents a panel with the same gentle fade-in used by the update window.
     @MainActor
-    static func presentWithFade(_ panel: NSPanel) {
+    static func presentWithMotion(_ panel: NSPanel) {
         panel.center()
-        panel.alphaValue = 0
+        panel.alphaValue = 1
+        panel.contentView?.wantsLayer = true
+        panel.contentView?.layer?.opacity = 0
         panel.makeKeyAndOrderFront(nil)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.25
-            panel.animator().alphaValue = 1
+        panel.orderFrontRegardless()
+        animatePanelOpacity(panel, to: 1)
+    }
+
+    @MainActor
+    static func animatePanelOpacity(
+        _ panel: NSPanel,
+        to opacity: Float,
+        completion: @escaping @MainActor () -> Void = {}
+    ) {
+        panel.alphaValue = 1
+        panel.contentView?.wantsLayer = true
+        guard let layer = panel.contentView?.layer else {
+            panel.alphaValue = CGFloat(opacity)
+            completion()
+            return
+        }
+
+        let fromOpacity = layer.presentation()?.opacity ?? layer.opacity
+        let policy = MotionPolicy.system(
+            accessibilityReduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
+        let delay = MotionLayerAnimator.animate(
+            layer: layer,
+            keyPath: "opacity",
+            fromValue: fromOpacity,
+            toValue: opacity,
+            spec: MotionTokens.standard[.contentReplacement],
+            policy: policy,
+            animationKey: "motionKit.panel.opacity"
+        )
+
+        guard delay > 0 else {
+            completion()
+            return
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            completion()
         }
     }
 }
@@ -415,7 +455,7 @@ struct AppDialogDropImportOverlay: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .allowsHitTesting(false)
-        .animation(.easeOut(duration: 0.16), value: isVisible)
+        .motionAnimation(.contentReplacement, value: isVisible)
     }
 }
 
@@ -502,7 +542,7 @@ struct AppDialogGlassButtonStyle: ButtonStyle {
             )
             .opacity(opacity(isPressed: configuration.isPressed))
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .motionAnimation(.microInteraction, value: configuration.isPressed)
             .contentShape(Capsule())
     }
 
@@ -540,7 +580,6 @@ struct AppDialogCapsuleSlider<Selection: Hashable>: View {
         SlidingSelector(
             segments: segments,
             selection: $selection,
-            animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
             hSpacing: 0,
             background: {
                 Color.clear

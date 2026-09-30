@@ -13,6 +13,7 @@ struct ArtistEntry: Identifiable {
     var canonicalName: String
     var displayName: String
     var artworkFileName: String?
+    var artworkFileURL: URL?
     var description: String
     var genreTags: [String]
     var region: String
@@ -21,7 +22,7 @@ struct ArtistEntry: Identifiable {
     var metadataSource: String?
     var metadataFetchedAt: Date?
     var metadataConfidence: Double?
-    var artworkData: Data?      // loaded from artwork file if artworkFileName is set
+    var artworkData: Data?
     var createdAt: Date
     var updatedAt: Date
 
@@ -31,11 +32,28 @@ struct ArtistEntry: Identifiable {
     var totalDuration: Double
     var isOrphaned: Bool        // runtime-only: true if no matching songs exist
 
+    var existingArtworkURL: URL? {
+        guard let artworkFileURL,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: artworkFileURL.path),
+              let fileType = attributes[.type] as? FileAttributeType,
+              fileType == .typeRegular,
+              let fileSize = attributes[.size] as? NSNumber,
+              fileSize.int64Value > 0,
+              FileManager.default.isReadableFile(atPath: artworkFileURL.path)
+        else { return nil }
+        return artworkFileURL
+    }
+
+    var hasArtwork: Bool {
+        artworkData?.isEmpty == false || existingArtworkURL != nil
+    }
+
     init(
         id: UUID,
         canonicalName: String,
         displayName: String,
         artworkFileName: String? = nil,
+        artworkFileURL: URL? = nil,
         description: String = "",
         genreTags: [String] = [],
         region: String = "",
@@ -56,6 +74,7 @@ struct ArtistEntry: Identifiable {
         self.canonicalName = canonicalName
         self.displayName = displayName
         self.artworkFileName = artworkFileName
+        self.artworkFileURL = artworkFileURL
         self.description = description
         self.genreTags = genreTags
         self.region = region

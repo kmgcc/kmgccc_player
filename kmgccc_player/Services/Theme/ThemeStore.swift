@@ -8,6 +8,7 @@
 
 import AppKit
 import Combine
+import MotionKit
 import SwiftUI
 
 private final class CachedArtworkBox: NSObject {
@@ -112,7 +113,8 @@ final class ThemeStore: ObservableObject {
             useArtworkTint: AppSettings.shared.globalArtworkTintEnabled
         )
 
-        dominantColorCache.countLimit = 50
+        dominantColorCache.countLimit = 12
+        dominantColorCache.totalCostLimit = 4 * 1024 * 1024
 
         // Initial palette generation
         Task {
@@ -135,7 +137,12 @@ final class ThemeStore: ObservableObject {
     /// - Falls back to default blue when artwork is missing or extraction fails.
     func updateTheme(for track: Track?) async {
         let trackID = track?.id
-        let artworkData = track?.artworkData
+        let artworkData: Data?
+        if let inlineData = track?.artworkData, !inlineData.isEmpty {
+            artworkData = inlineData
+        } else {
+            artworkData = await track?.loadArtworkDataOffMainIfNeeded()
+        }
         await updateThemeFromArtworkData(
             artworkData,
             artworkIdentity: trackID?.uuidString,
@@ -360,7 +367,8 @@ final class ThemeStore: ObservableObject {
         if let cacheKey {
             dominantColorCache.setObject(
                 CachedArtworkBox(color: resolved, analysis: resolvedAnalysis),
-                forKey: cacheKey as NSString
+                forKey: cacheKey as NSString,
+                cost: 256 * 1024
             )
         }
         rawDominantColor = resolved
@@ -468,7 +476,10 @@ final class ThemeStore: ObservableObject {
         let fillAlpha = colorScheme == .dark ? 0.20 : 0.14
         let renderedDominant = ColorRenderingAdapter.makeNSColor(rawDominantColor)
         let renderedAccent = ColorRenderingAdapter.makeNSColor(resolvedAccentNS)
-        withAnimation(.easeInOut(duration: 0.20)) {
+        let policy = MotionPolicy.system(
+            accessibilityReduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
+        withAnimation(policy.animation(for: MotionTokens.standard[.backgroundTransition])) {
             baseColor = ColorRenderingAdapter.makeSwiftUIColor(rawDominantColor)
             accentColor = ColorRenderingAdapter.makeSwiftUIColor(resolvedAccentNS)
             accentNSColor = renderedAccent

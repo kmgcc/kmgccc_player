@@ -3,9 +3,8 @@
 //  myPlayer2
 //
 //  Debug helpers for tracing the OKLCH colour pipeline at runtime. Used by
-//  `FullscreenPlayerView.applyFullscreenLyricsTheme` to dump the actual
-//  colour set being pushed to the WebView so a "grey on screen" report can
-//  be triaged as a Swift bug vs. a Web / CSS bug without rebuilding.
+//  `FullscreenPlayerView.applyFullscreenLyricsTheme` to inspect the semantic
+//  colour set applied to the native lyrics surface.
 //
 
 import AppKit

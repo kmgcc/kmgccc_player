@@ -16,6 +16,7 @@ final class BKThemeAssets: @unchecked Sendable {
         let background: Int
         let shape: Int
         let mask: Int
+        let circle: Int
     }
 
     struct ShapeLoadResult: @unchecked Sendable {
@@ -100,7 +101,19 @@ final class BKThemeAssets: @unchecked Sendable {
     private nonisolated(unsafe) let fullscreenCircleCache = NSCache<NSString, FullscreenCircleLoadResultBox>()
     private let assetLoader = ArtAssetLoader.shared
 
-    private nonisolated static let maskProcessingContext = CIContext(options: [.cacheIntermediates: false])
+    private nonisolated(unsafe) static var maskProcessingContext: CIContext?
+    private nonisolated static let maskProcessingContextLock = NSLock()
+
+    private nonisolated static func currentMaskProcessingContext() -> CIContext {
+        maskProcessingContextLock.lock()
+        defer { maskProcessingContextLock.unlock() }
+        if let existing = maskProcessingContext {
+            return existing
+        }
+        let created = CIContext(options: [.cacheIntermediates: false])
+        maskProcessingContext = created
+        return created
+    }
 
     private init() {
         let resolvedBundle = Self.resolveBundle()
@@ -130,16 +143,16 @@ final class BKThemeAssets: @unchecked Sendable {
         self.fullscreenCircleOuterEntries = fullscreenCircleEntries.outer
         self.fullscreenCircleInnerEntries = fullscreenCircleEntries.inner
 
-        backgroundCache.countLimit = 4
-        backgroundCache.totalCostLimit = 32 * 1024 * 1024
-        shapeCache.countLimit = 2
-        shapeCache.totalCostLimit = 16 * 1024 * 1024
-        maskCache.countLimit = 2
-        maskCache.totalCostLimit = 48 * 1024 * 1024
-        artworkFrameCache.countLimit = 12
-        artworkFrameCache.totalCostLimit = 24 * 1024 * 1024
-        fullscreenCircleCache.countLimit = 2
-        fullscreenCircleCache.totalCostLimit = 16 * 1024 * 1024
+        backgroundCache.countLimit = 1
+        backgroundCache.totalCostLimit = 4 * 1024 * 1024
+        shapeCache.countLimit = 1
+        shapeCache.totalCostLimit = 2 * 1024 * 1024
+        maskCache.countLimit = 1
+        maskCache.totalCostLimit = 2 * 1024 * 1024
+        artworkFrameCache.countLimit = 1
+        artworkFrameCache.totalCostLimit = 2 * 1024 * 1024
+        fullscreenCircleCache.countLimit = 1
+        fullscreenCircleCache.totalCostLimit = 1 * 1024 * 1024
     }
 
     nonisolated func backgrounds(maxPixel: Int) -> [CGImage] {
@@ -148,17 +161,24 @@ final class BKThemeAssets: @unchecked Sendable {
             return cached.images
         }
 
-        let images: [CGImage]
+        var images: [CGImage] = []
         if backgroundEntries.isEmpty {
-            images = Self.programmaticBackgroundIndices.map {
-                Self.programmaticImage(kind: .background, index: $0, maxPixel: maxPixel)
+            for index in Self.programmaticBackgroundIndices {
+                guard !Task.isCancelled else { return [] }
+                images.append(Self.programmaticImage(kind: .background, index: index, maxPixel: maxPixel))
             }
         } else {
-            images = backgroundEntries.enumerated().compactMap { index, entry in
-                downsampledImage(from: entry, maxPixel: maxPixel)
-                    ?? Self.programmaticImage(kind: .background, index: index, maxPixel: maxPixel)
+            for (index, entry) in backgroundEntries.enumerated() {
+                guard !Task.isCancelled else { return [] }
+                autoreleasepool {
+                    images.append(
+                        downsampledImage(from: entry, maxPixel: maxPixel)
+                            ?? Self.programmaticImage(kind: .background, index: index, maxPixel: maxPixel)
+                    )
+                }
             }
         }
+        guard !Task.isCancelled else { return [] }
         let box = ImageArrayBox(images: images)
         backgroundCache.setObject(box, forKey: key, cost: Self.byteCost(for: images))
         return images
@@ -198,29 +218,40 @@ final class BKThemeAssets: @unchecked Sendable {
         var fileNames: [String] = []
 
         for (index, entry) in shapeEntries.enumerated() {
-            let asset = AssetEntry(
-                logicalName: entry.logicalName,
-                plainURL: entry.plainURL,
-                fileName: entry.fileName
-            )
-            let image = downsampledImage(from: asset, maxPixel: maxPixel)
-                ?? Self.programmaticImage(kind: .shape, index: index, maxPixel: maxPixel)
-            images.append(image)
-            fileNames.append(entry.fileName)
-            if entry.sourceIndex == 10 {
-                scaleByIndex[images.count - 1] = 3.0
-                edgePinnedIndices.insert(images.count - 1)
+            guard !Task.isCancelled else {
+                return ShapeLoadResult(images: [], scaleByIndex: [:], edgePinnedIndices: [], fileNames: [])
             }
-            if entry.sourceIndex == 11 {
-                scaleByIndex[images.count - 1] = 2.0
+            autoreleasepool {
+                let asset = AssetEntry(
+                    logicalName: entry.logicalName,
+                    plainURL: entry.plainURL,
+                    fileName: entry.fileName
+                )
+                let image = downsampledImage(from: asset, maxPixel: maxPixel)
+                    ?? Self.programmaticImage(kind: .shape, index: index, maxPixel: maxPixel)
+                images.append(image)
+                fileNames.append(entry.fileName)
+                if entry.sourceIndex == 10 {
+                    scaleByIndex[images.count - 1] = 3.0
+                    edgePinnedIndices.insert(images.count - 1)
+                }
+                if entry.sourceIndex == 11 {
+                    scaleByIndex[images.count - 1] = 2.0
+                }
             }
         }
 
         if images.isEmpty {
             for index in Self.programmaticShapeIndices {
+                guard !Task.isCancelled else {
+                    return ShapeLoadResult(images: [], scaleByIndex: [:], edgePinnedIndices: [], fileNames: [])
+                }
                 images.append(Self.programmaticImage(kind: .shape, index: index, maxPixel: maxPixel))
                 fileNames.append("programmatic-shape-\(index + 1)")
             }
+        }
+        guard !Task.isCancelled else {
+            return ShapeLoadResult(images: [], scaleByIndex: [:], edgePinnedIndices: [], fileNames: [])
         }
 
         let result = ShapeLoadResult(
@@ -240,19 +271,24 @@ final class BKThemeAssets: @unchecked Sendable {
             return cached.images
         }
 
-        let frames: [CGImage]
+        var frames: [CGImage] = []
         if maskFrameEntries.isEmpty {
-            frames = Self.programmaticMaskIndices.map {
-                Self.programmaticImage(kind: .mask, index: $0, maxPixel: maxPixel)
+            for index in Self.programmaticMaskIndices {
+                guard !Task.isCancelled else { return [] }
+                frames.append(Self.programmaticImage(kind: .mask, index: index, maxPixel: maxPixel))
             }
         } else {
-            frames = maskFrameEntries.enumerated().compactMap { index, entry -> CGImage? in
-                let sampled = downsampledImage(from: entry, maxPixel: maxPixel)
-                    ?? Self.programmaticImage(kind: .mask, index: index, maxPixel: maxPixel)
-                return Self.maskAlphaImage(from: sampled) ?? sampled
+            for (index, entry) in maskFrameEntries.enumerated() {
+                guard !Task.isCancelled else { return [] }
+                autoreleasepool {
+                    let sampled = downsampledImage(from: entry, maxPixel: maxPixel)
+                        ?? Self.programmaticImage(kind: .mask, index: index, maxPixel: maxPixel)
+                    frames.append(Self.maskAlphaImage(from: sampled) ?? sampled)
+                }
             }
         }
 
+        guard !Task.isCancelled else { return [] }
         let box = ImageArrayBox(images: frames)
         maskCache.setObject(box, forKey: key, cost: Self.byteCost(for: frames))
         return frames
@@ -290,29 +326,38 @@ final class BKThemeAssets: @unchecked Sendable {
             return cached.result
         }
 
-        let outerImages: [CGImage]
+        var outerImages: [CGImage] = []
         if fullscreenCircleOuterEntries.isEmpty {
-            outerImages = Self.programmaticCircleIndices.map {
-                Self.programmaticImage(kind: .circleOuter, index: $0, maxPixel: maxPixel)
+            for index in Self.programmaticCircleIndices {
+                guard !Task.isCancelled else { return FullscreenCircleLoadResult() }
+                outerImages.append(Self.programmaticImage(kind: .circleOuter, index: index, maxPixel: maxPixel))
             }
         } else {
-            outerImages = fullscreenCircleOuterEntries.enumerated().compactMap { index, entry in
-                downsampledImage(from: entry, maxPixel: maxPixel)
-                    ?? Self.programmaticImage(kind: .circleOuter, index: index, maxPixel: maxPixel)
+            for (index, entry) in fullscreenCircleOuterEntries.enumerated() {
+                guard !Task.isCancelled else { return FullscreenCircleLoadResult() }
+                outerImages.append(
+                    downsampledImage(from: entry, maxPixel: maxPixel)
+                        ?? Self.programmaticImage(kind: .circleOuter, index: index, maxPixel: maxPixel)
+                )
             }
         }
 
-        let innerImages: [CGImage]
+        var innerImages: [CGImage] = []
         if fullscreenCircleInnerEntries.isEmpty {
-            innerImages = Self.programmaticCircleIndices.map {
-                Self.programmaticImage(kind: .circleInner, index: $0, maxPixel: maxPixel)
+            for index in Self.programmaticCircleIndices {
+                guard !Task.isCancelled else { return FullscreenCircleLoadResult() }
+                innerImages.append(Self.programmaticImage(kind: .circleInner, index: index, maxPixel: maxPixel))
             }
         } else {
-            innerImages = fullscreenCircleInnerEntries.enumerated().compactMap { index, entry in
-                downsampledImage(from: entry, maxPixel: maxPixel)
-                    ?? Self.programmaticImage(kind: .circleInner, index: index, maxPixel: maxPixel)
+            for (index, entry) in fullscreenCircleInnerEntries.enumerated() {
+                guard !Task.isCancelled else { return FullscreenCircleLoadResult() }
+                innerImages.append(
+                    downsampledImage(from: entry, maxPixel: maxPixel)
+                        ?? Self.programmaticImage(kind: .circleInner, index: index, maxPixel: maxPixel)
+                )
             }
         }
+        guard !Task.isCancelled else { return FullscreenCircleLoadResult() }
         let result = FullscreenCircleLoadResult(outerImages: outerImages, innerImages: innerImages)
         let box = FullscreenCircleLoadResultBox(result: result)
         let cost = Self.byteCost(for: outerImages) + Self.byteCost(for: innerImages)
@@ -326,7 +371,10 @@ final class BKThemeAssets: @unchecked Sendable {
         maskCache.removeAllObjects()
         artworkFrameCache.removeAllObjects()
         fullscreenCircleCache.removeAllObjects()
-        Self.maskProcessingContext.clearCaches()
+        Self.maskProcessingContextLock.lock()
+        Self.maskProcessingContext?.clearCaches()
+        Self.maskProcessingContext = nil
+        Self.maskProcessingContextLock.unlock()
         assetLoader.purgeCache()
     }
 
@@ -659,7 +707,7 @@ final class BKThemeAssets: @unchecked Sendable {
     private nonisolated static func maskAlphaImage(from image: CGImage) -> CGImage? {
         let input = CIImage(cgImage: image)
         let alphaMask = input.applyingFilter("CIMaskToAlpha")
-        return maskProcessingContext.createCGImage(alphaMask, from: alphaMask.extent)
+        return currentMaskProcessingContext().createCGImage(alphaMask, from: alphaMask.extent)
     }
 
     private static func shapeIndex(from fileName: String) -> Int? {

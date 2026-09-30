@@ -138,6 +138,26 @@ final class ReferencedSourceReconciler {
         sourceScope.authorizedRoots.mapValues(\.url)
     }
 
+    /// Returns the currently authorized roots that opt into automatic
+    /// filesystem reconciliation. Explicit `refreshSource` calls continue to
+    /// work for a manual-only Source.
+    func monitoredSourceRoots() async throws -> [UUID: URL] {
+        let automaticIDs = Set(
+            try await sourceStore.loadAll()
+                .filter { $0.monitorPolicy != .off }
+                .map(\.id)
+        )
+        return sourceRoots.filter { automaticIDs.contains($0.key) }
+    }
+
+    func automaticSourceIDs() async throws -> Set<UUID> {
+        Set(
+            try await sourceStore.loadAll()
+                .filter { $0.monitorPolicy != .off }
+                .map(\.id)
+        )
+    }
+
     func allSourceIDs() async throws -> Set<UUID> {
         Set(try await sourceStore.loadAll().map(\.id))
     }
@@ -161,7 +181,11 @@ final class ReferencedSourceReconciler {
     /// Adds explicit source-to-playlist edges for a playlist that already
     /// exists (for example the setup wizard's “selected files” grouping).
     /// Directory sources and single-file sources use the same edge model.
-    func bindSourcesToPlaylist(_ sourceIDs: Set<UUID>, playlistID: UUID) async throws {
+    func bindSourcesToPlaylist(
+        _ sourceIDs: Set<UUID>,
+        playlistID: UUID,
+        relativePath: String? = nil
+    ) async throws {
         let orderedSourceIDs = sourceIDs.sorted { $0.uuidString < $1.uuidString }
         try await runShortMutation(
             kind: .sourceReconcileCommit,
@@ -172,7 +196,8 @@ final class ReferencedSourceReconciler {
                 for sourceID in orderedSourceIDs {
                     let ensured = try await self.sourceStore.ensurePlaylistBindingWithCreation(
                         sourceID: sourceID,
-                        playlistID: playlistID
+                        playlistID: playlistID,
+                        relativePath: relativePath
                     )
                     if ensured.didCreate {
                         createdBindings.append((sourceID: sourceID, bindingID: ensured.binding.id))
@@ -809,7 +834,11 @@ final class ReferencedSourceReconciler {
             descriptor.status = intent.diff.sourceStatus
             if intent.diff.sourceStatus == .available { descriptor.lastScan = Date() }
             try await sourceStore.save(descriptor)
-            playlistMembershipChanges += try await syncBoundPlaylists(sourceID: intent.sourceID, createIfMissing: false)
+            playlistMembershipChanges += try await syncBoundPlaylists(
+                sourceID: intent.sourceID,
+                createIfMissing: false,
+                preserveMissingTrackMemberships: true
+            )
             let addedTrackIDs = Set(intent.diff.added.compactMap { added in
                 intent.proposedManifest?.entries.first {
                     $0.relativePath == added.relativePath
@@ -837,7 +866,11 @@ final class ReferencedSourceReconciler {
             }
             try await manifestStore.save(manifest)
             try await sourceStore.save(descriptor)
-            playlistMembershipChanges += try await syncBoundPlaylists(sourceID: intent.sourceID, createIfMissing: false)
+            playlistMembershipChanges += try await syncBoundPlaylists(
+                sourceID: intent.sourceID,
+                createIfMissing: false,
+                preserveMissingTrackMemberships: true
+            )
         case .sourceRemoval:
             // Source removal is intentionally idempotent. A process crash can
             // happen after the descriptor is deleted but before the reconcile
@@ -853,7 +886,8 @@ final class ReferencedSourceReconciler {
             // still contributed by another source remain intact.
             playlistMembershipChanges += try await syncBoundPlaylists(
                 sourceID: intent.sourceID,
-                createIfMissing: false
+                createIfMissing: false,
+                preserveMissingTrackMemberships: false
             )
             let candidateOrphanedTrackIDs = Set(intent.mutations.compactMap { mutation in
                 mutation.locator.allSourceMemberships.isEmpty ? mutation.trackID : nil
@@ -908,7 +942,11 @@ final class ReferencedSourceReconciler {
     /// as owning the playlist itself. A missing playlist is intentionally not
     /// recreated: deleting a playlist removes the edge through the view-model
     /// callback, and a stale descriptor must never resurrect user data.
-    private func syncBoundPlaylists(sourceID: UUID, createIfMissing: Bool) async throws -> Int {
+    private func syncBoundPlaylists(
+        sourceID: UUID,
+        createIfMissing: Bool,
+        preserveMissingTrackMemberships: Bool = false
+    ) async throws -> Int {
         var descriptor = try await sourceStore.load(id: sourceID)
         guard descriptor.mode == .directory || descriptor.mode == .file else { return 0 }
 
@@ -1014,6 +1052,21 @@ final class ReferencedSourceReconciler {
                     trackID: staleID,
                     bindingID: binding.id
                 )
+                // A normal Source reconcile is conservative: a file that
+                // disappeared is a missing Track, not a user request to
+                // remove it from a Playlist. Convert the old source-only
+                // edge into an explicit/manual edge before deciding whether
+                // the Playlist item can be removed. Source removal passes
+                // this flag as false so an explicitly removed Source keeps
+                // its existing cleanup semantics.
+                if preserveMissingTrackMemberships,
+                   let staleTrack = currentPlaylistTracks[staleID],
+                   staleTrack.availability != .available {
+                    try await playlistMembershipStore.ensureManualMemberships(
+                        playlistID: playlist.id,
+                        trackIDs: [staleID]
+                    )
+                }
                 guard let membership = try await playlistMembershipStore.membership(
                     playlistID: playlist.id,
                     trackID: staleID
@@ -1168,6 +1221,9 @@ final class ReferencedSourceReconciler {
         let allTracks = await repository.fetchTracks(in: nil)
         let tracksByID = Dictionary(uniqueKeysWithValues: allTracks.map { ($0.id, $0) })
         let isFileRoot = rootIsFile(rootURL)
+        let addedFilesByPhysicalIdentity = Dictionary(grouping: diff.added) {
+            ReferencedPhysicalIdentityKey($0.fingerprint)
+        }
         var changes: [UUID: ReferencedSourceLocatorMutation] = [:]
 
         for track in allTracks {
@@ -1197,6 +1253,36 @@ final class ReferencedSourceReconciler {
 
         for track in importedTracks {
             guard case var .referenced(locator) = track.mediaLocator else { continue }
+
+            // A missing Track keeps its last locator as recovery metadata. If
+            // the file reappears under a different name, automatic import
+            // correctly reuses the Track by physical identity, but the
+            // importer cannot know which source-relative path the scanner
+            // just observed. Prefer that scanner observation here so the
+            // bookmark, last-known path, and source membership all converge
+            // on the actual file instead of leaving the old missing path in
+            // the sidecar.
+            if let added = matchingAddedFile(
+                for: locator,
+                groupedByPhysicalIdentity: addedFilesByPhysicalIdentity
+            ) {
+                let resolvedURL = url(
+                    forRelativePath: added.relativePath,
+                    root: rootURL,
+                    rootIsFile: isFileRoot
+                )
+                refresh(
+                    locator: &locator,
+                    sourceID: diff.sourceID,
+                    url: resolvedURL,
+                    fingerprint: added.fingerprint
+                )
+                setMembership(
+                    sourceID: diff.sourceID,
+                    relativePath: added.relativePath,
+                    locator: &locator
+                )
+            }
 
             // For an NCM track the playback locator points at the generated
             // MP3/FLAC in the conversion folder, while the source membership
@@ -1278,6 +1364,19 @@ final class ReferencedSourceReconciler {
             }
         }
         return changes.values.sorted { $0.trackID.uuidString < $1.trackID.uuidString }
+    }
+
+    private func matchingAddedFile(
+        for locator: ReferencedFileLocator,
+        groupedByPhysicalIdentity: [ReferencedPhysicalIdentityKey: [ReferencedSourceAddedFile]]
+    ) -> ReferencedSourceAddedFile? {
+        let candidateGroups = locator.locations.compactMap { location -> [ReferencedSourceAddedFile]? in
+            guard let fingerprint = location.fingerprint else { return nil }
+            return groupedByPhysicalIdentity[ReferencedPhysicalIdentityKey(fingerprint)]
+        }
+        let candidates = candidateGroups.flatMap { $0 }
+        guard candidates.count == 1 else { return nil }
+        return candidates[0]
     }
 
     private func refresh(

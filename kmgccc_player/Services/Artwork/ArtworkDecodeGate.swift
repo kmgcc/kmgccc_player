@@ -18,14 +18,20 @@ import Foundation
 /// // ... perform decode ...
 /// ```
 actor ArtworkDecodeGate {
+    private struct Waiter {
+        let order: UInt64
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
     private let maxConcurrent: Int
     private var running = 0
+    private var nextWaiterOrder: UInt64 = 0
 
-    // Waiter storage: token -> continuation
+    // Waiter storage: token -> ordered continuation
     // Uses CheckedContinuation<Bool, Never> to signal:
     // - true: acquired slot successfully
     // - false: cancelled while waiting
-    private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    private var waiters: [UUID: Waiter] = [:]
 
     init(maxConcurrent: Int) {
         self.maxConcurrent = max(1, maxConcurrent)
@@ -59,10 +65,12 @@ actor ArtworkDecodeGate {
 
         // Slow path: need to wait with cancellation support
         let token = UUID()
+        nextWaiterOrder &+= 1
+        let order = nextWaiterOrder
 
         return await withTaskCancellationHandler {
             let acquired = await withCheckedContinuation { continuation in
-                waiters[token] = continuation
+                waiters[token] = Waiter(order: order, continuation: continuation)
             }
             return (acquired, token)
         } onCancel: {
@@ -76,17 +84,17 @@ actor ArtworkDecodeGate {
     /// Cancels a waiting acquire by token.
     /// Called by cancellation handler when the waiting Task is cancelled.
     private func cancelWaiter(_ token: UUID) {
-        guard let continuation = waiters.removeValue(forKey: token) else {
+        guard let waiter = waiters.removeValue(forKey: token) else {
             // Already resumed (either by release() or previous cancellation)
             return
         }
         // Resume with false = cancelled
-        continuation.resume(returning: false)
+        waiter.continuation.resume(returning: false)
     }
 
     /// Releases a decode slot.
     ///
-    /// If there are waiting tasks, wakes the next one (FIFO order by UUID).
+    /// If there are waiting tasks, wakes the earliest uncancelled waiter.
     /// Otherwise decrements the running count.
     ///
     /// ## Important
@@ -99,16 +107,15 @@ actor ArtworkDecodeGate {
             return
         }
 
-        // Wake next waiter (FIFO using UUID sort for stability)
-        // UUID is 128-bit random, sort order is effectively insertion order
-        guard let nextToken = waiters.keys.min(),
-              let continuation = waiters.removeValue(forKey: nextToken) else {
+        // Use the explicit sequence because UUID order is random.
+        guard let nextEntry = waiters.min(by: { $0.value.order < $1.value.order }),
+              let waiter = waiters.removeValue(forKey: nextEntry.key) else {
             running = max(0, running - 1)
             return
         }
 
         // Resume with true = acquired slot
-        continuation.resume(returning: true)
+        waiter.continuation.resume(returning: true)
     }
 
     /// Returns current diagnostics for debugging.

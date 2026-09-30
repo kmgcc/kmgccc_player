@@ -21,6 +21,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 @MainActor
@@ -132,6 +133,11 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
             animated: animated,
             preserveMirroredState: preserveMirroredState
         )
+        sharedController?.refreshPaneGlassBlendingModes()
+    }
+
+    func refreshPaneGlassBlendingModes() {
+        (window?.contentViewController as? AppKitMainRootViewController)?.applyWithinWindowBlendingModeToPaneGlass()
     }
 
     static func isLyricsVisible() -> Bool {
@@ -445,6 +451,7 @@ private final class AppKitMainRootViewController: NSViewController {
     private let homeFullWindowHost: PassthroughHostingView<HomeFullWindowRoot>
     private let fileDropOverlayHost: PassthroughHostingView<AppDialogDropImportOverlay>
     private var didApplyPaneGlassBlendingMode = false
+    private var fileDropOverlayHideTask: Task<Void, Never>?
 
     init(appSession: AppSessionHost, splitViewController: AppKitMainSplitViewController) {
         self.appSession = appSession
@@ -511,8 +518,13 @@ private final class AppKitMainRootViewController: NSViewController {
         splitViewController.splitView.layer?.backgroundColor = NSColor.clear.cgColor
         homeFullWindowHost.wantsLayer = true
         homeFullWindowHost.layer?.backgroundColor = NSColor.clear.cgColor
+        homeFullWindowHost.isHidden = !HomeWindowLayoutState.shared.isHomeMode
+        HomeWindowLayoutState.shared.onHomeModeChange = { [weak self] isHome in
+            self?.handleHomeModeChange(isHome)
+        }
         fileDropOverlayHost.wantsLayer = true
         fileDropOverlayHost.layer?.backgroundColor = NSColor.clear.cgColor
+        fileDropOverlayHost.isHidden = true
 
         // Z-order: art background → full-window Home host → split view → drop overlay.
         // The Home host sits BELOW the split view in subview order so that
@@ -561,42 +573,105 @@ private final class AppKitMainRootViewController: NSViewController {
 
         splitViewController.publishHomeLayoutGeometry(windowSize: view.bounds.size)
 
-        // Switch sidebar/inspector glass blendingMode to `.withinWindow` so
-        // the Home content (rendered below the split view) shows through the
-        // panes' translucent material. `.behindWindow` (the default) only
-        // samples the desktop, which would hide the Home layer completely.
-        if !didApplyPaneGlassBlendingMode {
-            didApplyPaneGlassBlendingMode = applyWithinWindowBlendingModeToPaneGlass()
-        }
+        // Keep the sidebar and center-pane glass sampling the Home layer below
+        // the split view. The lyrics inspector is handled separately: it hosts
+        // a continuously animated layer tree, so whichever backdrop it samples
+        _ = applyWithinWindowBlendingModeToPaneGlass()
     }
 
-    private func applyWithinWindowBlendingModeToPaneGlass() -> Bool {
+    /// Backdrop policy for the lyrics inspector pane.
+    ///
+    /// The pane draws a 60 Hz layer tree, so a live backdrop is never free:
+    ///
+    /// - `withinWindow` samples the window content below the pane, which makes
+    ///   AppKit treat every lyric tick as a window-wide visual change.
+    /// - `behindWindow` samples the desktop behind the window instead, so
+    ///   WindowServer re-samples everything behind the pane whenever the
+    ///   window surface updates. That cost is paid by the whole system, not by
+    ///   this process.
+    /// - `static` removes the live backdrop from the pane entirely.
+    ///
+    /// `KMGCCC_PANE_GLASS_MODE` selects a mode for A/B measurement.
+    private enum LyricsPaneGlassMode: String {
+        case withinWindow
+        case behindWindow
+        case staticBackdrop = "static"
+    }
+
+    private static var lyricsPaneGlassMode: LyricsPaneGlassMode {
+        let raw = ProcessInfo.processInfo.environment["KMGCCC_PANE_GLASS_MODE"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard let raw, let mode = LyricsPaneGlassMode(rawValue: raw) else {
+            return .staticBackdrop
+        }
+        return mode
+    }
+
+    @discardableResult
+    func applyWithinWindowBlendingModeToPaneGlass() -> Bool {
         let splitView = splitViewController.splitView
+        let lyricsPaneView = splitViewController.splitViewItems.count > 2
+            ? splitViewController.splitViewItems[2].viewController.view
+            : nil
+        let lyricsMode = Self.lyricsPaneGlassMode
         var foundEffectView = false
         for subview in splitView.subviews {
-            if let effect = subview as? NSVisualEffectView {
+            let isLyricsPane = (lyricsPaneView != nil && (subview === lyricsPaneView || lyricsPaneView?.isDescendant(of: subview) == true))
+            // Direct subview plus one nesting level, which is where the system
+            // layers the visual-effect views inside sidebar / inspector
+            // wrappers.
+            for effect in Self.paneVisualEffectViews(in: subview) {
                 foundEffectView = true
-                if effect.blendingMode != .withinWindow {
+                if isLyricsPane {
+                    switch lyricsMode {
+                    case .withinWindow:
+                        effect.isHidden = false
+                        effect.blendingMode = .withinWindow
+                    case .behindWindow:
+                        effect.isHidden = false
+                        effect.blendingMode = .behindWindow
+                    case .staticBackdrop:
+                        effect.isHidden = true
+                    }
+                } else {
+                    effect.isHidden = false
                     effect.blendingMode = .withinWindow
-                }
-            }
-            // Walk a shallow subtree to catch any nested visual-effect views
-            // the system layers inside the sidebar / inspector wrappers.
-            for nested in subview.subviews {
-                if let effect = nested as? NSVisualEffectView,
-                   effect.blendingMode != .withinWindow {
-                    foundEffectView = true
-                    effect.blendingMode = .withinWindow
-                } else if nested is NSVisualEffectView {
-                    foundEffectView = true
                 }
             }
         }
         return foundEffectView
     }
 
+    private static func paneVisualEffectViews(in subview: NSView) -> [NSVisualEffectView] {
+        var effects: [NSVisualEffectView] = []
+        if let effect = subview as? NSVisualEffectView { effects.append(effect) }
+        for nested in subview.subviews {
+            if let effect = nested as? NSVisualEffectView { effects.append(effect) }
+        }
+        return effects
+    }
+
+    private func handleHomeModeChange(_ isHome: Bool) {
+        // PagePresentation owns entry. Remove the outgoing Home surface at
+        // the route boundary so it cannot show behind another live page.
+        homeFullWindowHost.isHidden = !isHome
+    }
+
     private func setFileDropOverlayVisible(_ isVisible: Bool) {
-        fileDropOverlayHost.rootView = AppDialogDropImportOverlay(isVisible: isVisible)
+        fileDropOverlayHideTask?.cancel()
+        fileDropOverlayHideTask = nil
+        if isVisible {
+            fileDropOverlayHost.isHidden = false
+            fileDropOverlayHost.rootView = AppDialogDropImportOverlay(isVisible: true)
+        } else {
+            fileDropOverlayHost.rootView = AppDialogDropImportOverlay(isVisible: false)
+            fileDropOverlayHideTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                guard !Task.isCancelled else { return }
+                self?.fileDropOverlayHost.isHidden = true
+            }
+        }
     }
 
     private func importDroppedFileURLs(_ urls: [URL]) {

@@ -178,8 +178,8 @@ protocol LibraryRepositoryProtocol: AnyObject {
 
     func fetchArtistEntries() async -> [ArtistEntry]
     func fetchAlbumEntries() async -> [AlbumEntry]
-    func updateArtistEntry(_ entry: ArtistEntry) async throws
-    func updateAlbumEntry(_ entry: AlbumEntry) async throws
+    @discardableResult func updateArtistEntry(_ entry: ArtistEntry) async throws -> ArtistEntry
+    @discardableResult func updateAlbumEntry(_ entry: AlbumEntry) async throws -> AlbumEntry
     func applyArtistEdits(original: ArtistEntry, updated: ArtistEntry) async throws
     func applyAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async throws
     func deleteArtist(_ entry: ArtistEntry) async throws

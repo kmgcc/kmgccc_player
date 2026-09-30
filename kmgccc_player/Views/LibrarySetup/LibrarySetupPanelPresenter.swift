@@ -88,7 +88,7 @@ private final class LibrarySetupPanelController: NSObject, NSWindowDelegate {
         hosting.autoresizingMask = [.width, .height]
         result.effectView.addSubview(hosting)
         self.panel = panel
-        AppDialogTokens.presentWithFade(panel)
+        AppDialogTokens.presentWithMotion(panel)
     }
 
     var sheetAnchorPanel: NSPanel? { panel }

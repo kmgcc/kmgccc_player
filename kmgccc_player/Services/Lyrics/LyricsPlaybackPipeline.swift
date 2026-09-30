@@ -130,7 +130,7 @@ final class LyricsPlaybackPipeline {
             && presentation.effectiveLyricsIsPlaying
         if restarted {
             // A same-track replay has no content-state change, but it is still
-            // a new lyric entrance. Reinstall the document so NativeLyrics can
+            // a new lyric entrance. Reinstall the document so MelismaKit can
             // start its bottom-to-target spring instead of treating the reset
             // as an immediate seek on the settled stack.
             applyPresentation(

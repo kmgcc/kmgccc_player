@@ -69,7 +69,7 @@ final class PlaybackArtworkWarmer {
             guard seen.insert(track.id).inserted else { return nil }
             let fallbackData = track.id == currentTrack.id
                 ? presentation.artworkData
-                : track.artworkData
+                : nil
             return track.trackArtworkSource(fallbackData: fallbackData)
         }
 

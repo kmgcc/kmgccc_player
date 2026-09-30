@@ -10,6 +10,11 @@ nonisolated struct LibraryScopedSettings: Codable, Sendable, Equatable {
 
     var schemaVersion = LibraryScopedSettings.schemaVersion
     var referencedTrackDeletePolicy: ReferencedTrackDeletePolicy = .onlyLibrary
+    /// A user-selected directory whose security-scoped bookmark is retained
+    /// for trusted local automation. The bookmark is intentionally kept out
+    /// of automation responses and is only consumed by the active session.
+    var trustedAudioRootBookmarkData: Data?
+    var trustedAudioRootPath: String?
 }
 
 nonisolated enum LibraryScopedSettingsError: Error, Equatable {
@@ -81,6 +86,20 @@ actor LibraryScopedSettingsStore {
     func setReferencedTrackDeletePolicy(_ policy: ReferencedTrackDeletePolicy) throws {
         var value = try load()
         value.referencedTrackDeletePolicy = policy
+        try LibraryScopedSettingsFile.save(value, to: fileURL, fileManager: fileManager)
+    }
+
+    func setTrustedAudioRoot(bookmarkData: Data, path: String) throws {
+        var value = try load()
+        value.trustedAudioRootBookmarkData = bookmarkData
+        value.trustedAudioRootPath = path
+        try LibraryScopedSettingsFile.save(value, to: fileURL, fileManager: fileManager)
+    }
+
+    func clearTrustedAudioRoot() throws {
+        var value = try load()
+        value.trustedAudioRootBookmarkData = nil
+        value.trustedAudioRootPath = nil
         try LibraryScopedSettingsFile.save(value, to: fileURL, fileManager: fileManager)
     }
 }

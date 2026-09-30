@@ -436,7 +436,13 @@ final class MusicSettingsStateTests: XCTestCase {
         await fulfillment(of: [finished], timeout: 2)
         await fulfillment(of: [terminal], timeout: 2)
 
-        let descriptor = try XCTUnwrap(log.snapshots.last?.first)
+        let descriptor = try XCTUnwrap(
+            log.snapshots
+                .compactMap { snapshot in
+                    snapshot.first { $0.kind == .indexUpdate && $0.state == .completed }
+                }
+                .last
+        )
         XCTAssertEqual(descriptor.kind, .indexUpdate)
         XCTAssertEqual(descriptor.libraryID, libraryID)
         XCTAssertEqual(descriptor.sessionGeneration, 9)
@@ -669,6 +675,90 @@ final class MusicSettingsStateTests: XCTestCase {
         await index.close()
     }
 
+    func testSearchIndexSynchronizeDocumentsPerformsIncrementalDiff() async throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = kmgccc_player.LibraryPaths(rootURL: root)
+        try paths.createRequiredDirectories()
+        let index = LibrarySearchIndex(paths: paths)
+
+        let track1 = UUID()
+        let track2 = UUID()
+        let source1 = SearchDocumentSource(
+            trackID: track1,
+            titleRaw: "First Track",
+            artistRaw: "Artist One",
+            albumRaw: "Album One",
+            albumArtistRaw: nil,
+            ttmlLyricsFileURL: nil,
+            plainLyricsFileURL: nil,
+            inlineTTMLText: nil,
+            inlinePlainLyricsText: nil,
+            playCount: 1,
+            preferenceScore: 10,
+            lastPlayedAt: nil,
+            updatedAt: Date(timeIntervalSince1970: 1000),
+            artistCreditsRaw: nil,
+            filePathRaw: "/Music/track1.mp3",
+            formatRaw: "mp3"
+        )
+        let source2 = SearchDocumentSource(
+            trackID: track2,
+            titleRaw: "Second Track",
+            artistRaw: "Artist Two",
+            albumRaw: "Album Two",
+            albumArtistRaw: nil,
+            ttmlLyricsFileURL: nil,
+            plainLyricsFileURL: nil,
+            inlineTTMLText: nil,
+            inlinePlainLyricsText: nil,
+            playCount: 0,
+            preferenceScore: 0,
+            lastPlayedAt: nil,
+            updatedAt: Date(timeIntervalSince1970: 1000),
+            artistCreditsRaw: nil,
+            filePathRaw: "/Music/track2.mp3",
+            formatRaw: "mp3"
+        )
+
+        await index.synchronizeDocuments([source1, source2], reason: "test-initial-sync")
+        var hits = await index.search(query: "Track", fields: [.title])
+        XCTAssertEqual(hits.count, 2)
+
+        await index.synchronizeDocuments([source1, source2], reason: "test-identical-sync")
+        hits = await index.search(query: "Track", fields: [.title])
+        XCTAssertEqual(hits.count, 2)
+
+        let track3 = UUID()
+        let source3 = SearchDocumentSource(
+            trackID: track3,
+            titleRaw: "Third Track",
+            artistRaw: "Artist Three",
+            albumRaw: "Album Three",
+            albumArtistRaw: nil,
+            ttmlLyricsFileURL: nil,
+            plainLyricsFileURL: nil,
+            inlineTTMLText: nil,
+            inlinePlainLyricsText: nil,
+            playCount: 0,
+            preferenceScore: 0,
+            lastPlayedAt: nil,
+            updatedAt: Date(timeIntervalSince1970: 2000),
+            artistCreditsRaw: nil,
+            filePathRaw: "/Music/track3.mp3",
+            formatRaw: "mp3"
+        )
+        await index.synchronizeDocuments([source1, source3], reason: "test-diff-sync")
+        hits = await index.search(query: "Track", fields: [.title])
+        XCTAssertEqual(hits.count, 2)
+        let foundIDs = Set(hits.map(\.trackID))
+        XCTAssertTrue(foundIDs.contains(track1))
+        XCTAssertTrue(foundIDs.contains(track3))
+        XCTAssertFalse(foundIDs.contains(track2))
+
+        await index.close()
+    }
+
     func testDeletePolicyIsStoredInsideEachLibrary() async throws {
         let first = temporaryLibraryRoot()
         let second = temporaryLibraryRoot()
@@ -686,6 +776,25 @@ final class MusicSettingsStateTests: XCTestCase {
         XCTAssertEqual(firstSettings.referencedTrackDeletePolicy, ReferencedTrackDeletePolicy.recycleSource)
         XCTAssertEqual(secondSettings.referencedTrackDeletePolicy, ReferencedTrackDeletePolicy.onlyLibrary)
         XCTAssertTrue(FileManager.default.fileExists(atPath: kmgccc_player.LibraryPaths(rootURL: first).librarySettingsURL.path))
+    }
+
+    func testTrustedAudioRootIsStoredAndClearedInsideEachLibrary() async throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = LibraryScopedSettingsStore(paths: kmgccc_player.LibraryPaths(rootURL: root))
+
+        try await store.setTrustedAudioRoot(
+            bookmarkData: Data("bookmark".utf8),
+            path: "/Music/Trusted"
+        )
+        let saved = try await store.load()
+        XCTAssertEqual(saved.trustedAudioRootBookmarkData, Data("bookmark".utf8))
+        XCTAssertEqual(saved.trustedAudioRootPath, "/Music/Trusted")
+
+        try await store.clearTrustedAudioRoot()
+        let cleared = try await store.load()
+        XCTAssertNil(cleared.trustedAudioRootBookmarkData)
+        XCTAssertNil(cleared.trustedAudioRootPath)
     }
 
     func testInvalidSettingsPayloadDoesNotFallBackToGlobalState() async throws {
@@ -726,6 +835,134 @@ final class MusicSettingsStateTests: XCTestCase {
                 XCTAssertEqual(error as? LibraryScopedSettingsError, expected)
             }
         }
+    }
+
+    func testAutomationJobHistoryPersistsAndInterruptedJobsAreRecovered() async throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = kmgccc_player.LibraryPaths(rootURL: root)
+        try FileManager.default.createDirectory(at: paths.settingsRootURL, withIntermediateDirectories: true)
+
+        let libraryID = UUID()
+        let coordinator = LibraryOperationCoordinator(
+            libraryID: libraryID,
+            sessionGeneration: 7,
+            persistenceURL: paths.automationJobsURL
+        )
+        let started = expectation(description: "automation Job started")
+        coordinator.start(
+            {
+                started.fulfill()
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(10))
+                }
+            },
+            kind: .enrichment,
+            retrySpec: .lyricsRefresh(trackIDs: [UUID()], force: false)
+        )
+        await fulfillment(of: [started], timeout: 1)
+        let liveID = try XCTUnwrap(coordinator.taskDescriptors.first?.id)
+        XCTAssertTrue(coordinator.cancel(operationID: liveID))
+        await coordinator.cancelAndWait()
+
+        let reopened = LibraryOperationCoordinator(
+            libraryID: libraryID,
+            sessionGeneration: 7,
+            persistenceURL: paths.automationJobsURL
+        )
+        let persisted = try XCTUnwrap(
+            reopened.recentTaskDescriptors.first { $0.id == liveID }
+        )
+        XCTAssertEqual(persisted.state, .cancelled)
+        XCTAssertEqual(persisted.retrySpec?.kind, .lyricsRefresh)
+
+        struct Fixture: Codable {
+            let schemaVersion: Int
+            let jobs: [LibraryOperationTaskDescriptor]
+        }
+        let interrupted = LibraryOperationTaskDescriptor(
+            id: UUID(),
+            kind: .sourceScan,
+            libraryID: UUID(),
+            sessionGeneration: 8,
+            state: .running,
+            createdAt: Date(timeIntervalSince1970: 100),
+            startedAt: Date(timeIntervalSince1970: 101),
+            currentPhase: "source scan",
+            retrySpec: .sourceRefresh(sourceID: UUID())
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(Fixture(schemaVersion: 1, jobs: [interrupted]))
+            .write(to: paths.automationJobsURL, options: .atomic)
+
+        let recovered = LibraryOperationCoordinator(
+            libraryID: interrupted.libraryID,
+            sessionGeneration: interrupted.sessionGeneration,
+            persistenceURL: paths.automationJobsURL
+        )
+        let recoveredJob = try XCTUnwrap(
+            recovered.recentTaskDescriptors.first { $0.id == interrupted.id }
+        )
+        XCTAssertEqual(recoveredJob.state, .failed)
+        XCTAssertNotNil(recoveredJob.finishedAt)
+        XCTAssertTrue(
+            recoveredJob.partialFailureSummaries.contains {
+                $0.contains("restarted before this Job")
+            }
+        )
+        XCTAssertEqual(recoveredJob.retrySpec?.kind, .sourceRefresh)
+    }
+
+    func testAutomationStorageBackupRetentionKeepsOnlyTheNewestSnapshot() throws {
+        let root = temporaryLibraryRoot().appendingPathComponent("Backups", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let old = root.appendingPathComponent("old", isDirectory: true)
+        let middle = root.appendingPathComponent("middle", isDirectory: true)
+        let newest = root.appendingPathComponent("newest", isDirectory: true)
+        for directory in [old, middle, newest] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("snapshot".utf8).write(
+                to: directory.appendingPathComponent("automation-backup.json")
+            )
+        }
+
+        let result = AutomationStorageBackupRetention.pruneOlderBackups(
+            at: root,
+            keeping: newest
+        )
+
+        XCTAssertEqual(AutomationStorageBackupRetention.maximumBackupCount, 1)
+        XCTAssertEqual(result.removedBackupCount, 2)
+        XCTAssertTrue(result.failures.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: newest.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: middle.path))
+    }
+
+    func testDiskCacheRetentionRemovesOldestFilesToReachTarget() throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let files = ["old", "middle", "newest"].map { root.appendingPathComponent("\($0).bin") }
+        for (index, file) in files.enumerated() {
+            try Data(repeating: UInt8(index), count: 100).write(to: file)
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: TimeInterval(index))],
+                ofItemAtPath: file.path
+            )
+        }
+
+        let result = DiskCacheRetention.trim(at: root, maxBytes: 200, targetFraction: 0.75)
+
+        XCTAssertEqual(result.removedFileCount, 2)
+        XCTAssertEqual(result.removedBytes, 200)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: files[0].path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: files[1].path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: files[2].path))
     }
 
     private func bookmark(mode: kmgccc_player.MusicLibraryMode, path: String) -> kmgccc_player.MusicLibraryBookmark {

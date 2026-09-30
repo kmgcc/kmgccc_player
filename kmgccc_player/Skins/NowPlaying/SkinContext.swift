@@ -7,6 +7,8 @@
 //
 
 import AppKit
+import Foundation
+import MotionKit
 import SwiftUI
 
 struct SkinContext {
@@ -29,6 +31,7 @@ struct SkinContext {
         let duration: Double
         let artworkChecksum: UInt64
         let artworkData: Data?
+        let artworkFileURL: URL?
         let artworkImage: NSImage?
         let displayedArtworkID: UUID?
     }
@@ -43,7 +46,6 @@ struct SkinContext {
     struct ThemeTokens {
         let accentColor: Color
         let colorScheme: ColorScheme
-        let reduceMotion: Bool
         let reduceTransparency: Bool
         let glassIntensity: Double
         /// Legacy background controls.
@@ -81,6 +83,8 @@ struct SkinContext {
     let audio: AudioMetrics
     let led: LEDMeterMetrics
     let theme: ThemeTokens
+    let motionTokens: MotionTokens
+    let motionPolicy: MotionPolicy
 
     /// Full available window size for the detail column.
     let windowSize: CGSize
@@ -126,6 +130,8 @@ extension SkinContext {
             audio: audio,
             led: led,
             theme: theme,
+            motionTokens: motionTokens,
+            motionPolicy: motionPolicy,
             windowSize: windowSize,
             contentBounds: CGRect(
                 origin: contentBounds.origin,

@@ -105,7 +105,8 @@ git submodule update --init --recursive
 
 本项目在开发过程中使用并修改了以下开源项目：
 
-- **[applemusic-like-lyrics (AMLL)](https://github.com/amll-dev/applemusic-like-lyrics)** — 歌词渲染引擎，通过项目维护的 [integration fork](https://github.com/kmgcc/applemusic-like-lyrics-kmgcccplayer-integration) 集成
+- **[applemusic-like-lyrics (AMLL)](https://github.com/amll-dev/applemusic-like-lyrics)** — 歌词背景网格动效，通过项目维护的 [integration fork](https://github.com/kmgcc/applemusic-like-lyrics-kmgcccplayer-integration) 集成
+- **[MelismaKit](https://github.com/kmgcc/melismakit)** — 原生 Swift 歌词排版与动效渲染引擎
 - **[LDDC](https://github.com/chenmozhijin/LDDC)** — 歌词获取与匹配
 - **[apple-audio-visualization](https://github.com/taterboom/apple-audio-visualization)** — 音频频谱分析与可视化算法
 - **[ncmdump](https://github.com/taurusxin/ncmdump)** — NCM 格式解密
@@ -114,6 +115,7 @@ git submodule update --init --recursive
 - **[MediaRemote Adapter](https://github.com/ungive/mediaremote-adapter)** — macOS 外部播放状态读取与控制
 - **[WhatsNewKit](https://github.com/SvenTiigi/WhatsNewKit)** — 应用更新说明展示
 - **[PLCrashReporter](https://github.com/microsoft/plcrashreporter)** — 主 App 进程崩溃报告捕获
+- **[Sparkle](https://github.com/sparkle-project/Sparkle)** — 软件自动更新检查与交付框架
 
 ## 美术素材版权声明
 

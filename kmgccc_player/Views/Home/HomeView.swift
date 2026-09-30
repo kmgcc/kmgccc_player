@@ -12,19 +12,23 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct HomeView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
-    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    /// Command owner only. Keep it as a plain dependency in Home: reading the
+    /// observable coordinator from the Home root would subscribe the whole
+    /// page to its 4 Hz live presentation samples.
+    let playbackCoordinator: PlaybackCoordinator
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
 
     @Environment(HomeViewModel.self) private var homeVM
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var hasAppeared = false
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
     @State private var didPassStartupGate = false
     @State private var startupFallbackExpired = false
     @State private var layout = HomeWindowLayoutState.shared
@@ -35,31 +39,60 @@ struct HomeView: View {
     /// Insights and tank scroll smoothness. Only the AppKit ambient layer
     /// reacts to scroll motion; SwiftUI bodies stay decoupled.
     private let ambientMotion = HomeAmbientMotionState.shared
+    /// Sample playback history only when Home is activated. Keeping the store
+    /// behind a plain provider prevents its per-play revision from becoming a
+    /// Home body dependency.
+    private let listeningFootprintProvider: () -> [Date: Int]
+
+    init(
+        playbackCoordinator: PlaybackCoordinator,
+        listeningFootprintProvider: @escaping () -> [Date: Int]
+    ) {
+        self.playbackCoordinator = playbackCoordinator
+        self.listeningFootprintProvider = listeningFootprintProvider
+    }
+
+    private func traceBodyChanges() {
+        guard HomeDebugFlags.logBodyChanges else { return }
+        let _ = Self._printChanges()
+        Log.debug("[HomeView/body] re-eval homeVM.total=\(homeVM.totalTrackCount) state=\(libraryVM.state)", category: .ui)
+    }
+
+    private var motionPolicy: MotionPolicy {
+        configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
+    }
 
     var body: some View {
+        let _ = traceBodyChanges()
         HomeThemeSnapshotReader { homeTheme in
-            Group {
+            PagePresentation(
+                revision: contentTransitionKey,
+                isPresented: (layout.allowsHomeInteraction || (layout.isHomeMode && layout.isEmbeddedFullscreenActive && !layout.isHomeSearchActive)) && !shouldShowStartupLoading
+            ) {
                 if shouldShowStartupLoading {
                     startupLoadingView
-                } else if libraryVM.allTracks.isEmpty {
+                } else if homeVM.totalTrackCount == 0 {
                     emptyLibraryView(theme: homeTheme)
                 } else {
                     scrollContent(theme: homeTheme)
                 }
+            } placeholder: {
+                if shouldShowStartupLoading { startupLoadingView }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
             let token = FirstUseHitchDiagnostics.begin(
                 "HomeView.onAppear",
-                detail: "tracks=\(libraryVM.allTracks.count), state=\(libraryVM.state)"
+                detail: "tracks=\(homeVM.totalTrackCount), state=\(libraryVM.state)"
             )
             FirstUseHitchDiagnostics.end(token)
         }
-        .task(id: startupPreparationToken) {
+        .task(id: "\(startupPreparationToken)-\(layout.allowsHomeInteraction)") {
+            guard layout.allowsHomeInteraction else { return }
             let token = FirstUseHitchDiagnostics.begin(
                 "HomeView.task",
-                detail: "tracks=\(libraryVM.allTracks.count), state=\(libraryVM.state)"
+                detail: "tracks=\(homeVM.totalTrackCount), state=\(libraryVM.state)"
             )
             defer { FirstUseHitchDiagnostics.end(token) }
 
@@ -74,14 +107,11 @@ struct HomeView: View {
                 Task { await prepareStartupGate() }
             }
         }
-        .onChange(of: libraryVM.trackUpdateEvent) { _, event in
-            guard let event else { return }
-            homeVM.scheduleDeferredRefresh(
-                from: libraryVM,
-                trackIDs: [event.trackID],
-                playbackIsActive: { playbackIsActive }
-            )
-        }
+        // `trackUpdateEvent` is deliberately not observed here. It is an
+        // auxiliary-data signal for detail/lyrics owners (lyrics, artwork and
+        // preference metadata), and it can arrive while the current song is
+        // playing. Home owns an activation-time footprint snapshot and must
+        // not rebuild or re-evaluate its hierarchy for those events.
         .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
             // The home artwork preheater only fills caches. Stop it at the
             // transport boundary so it cannot compete with the new track's
@@ -110,9 +140,9 @@ struct HomeView: View {
         .onChange(of: libraryVM.albumSortOrder) { _, _ in
             homeVM.refreshArtistAlbumSort(from: libraryVM)
         }
-        .onChange(of: libraryVM.state) { old, new in
+        .onChange(of: libraryVM.state) { _, new in
             if new == .loaded {
-                Task { await prepareStartupGate(resetEntranceAnimation: old == .loading) }
+                Task { await prepareStartupGate() }
             }
         }
     }
@@ -125,7 +155,12 @@ struct HomeView: View {
         if libraryVM.state == .loading || libraryVM.loadingPhase.isLoading {
             return true
         }
-        return !libraryVM.allTracks.isEmpty && !homeVM.hasPreparedContent
+        return libraryVM.state == .loaded && !homeVM.hasPreparedContent
+    }
+
+    private var contentTransitionKey: String {
+        if shouldShowStartupLoading { return "loading" }
+        return homeVM.totalTrackCount == 0 ? "empty" : "content"
     }
 
     private var startupPreparationToken: String {
@@ -138,10 +173,10 @@ struct HomeView: View {
         } else {
             phaseToken = "settled"
         }
-        return "\(stateToken)|\(phaseToken)|tracks:\(libraryVM.allTracks.count)"
+        return "\(stateToken)|\(phaseToken)|tracks:\(homeVM.totalTrackCount)"
     }
 
-    private func prepareStartupGate(resetEntranceAnimation: Bool = false) async {
+    private func prepareStartupGate() async {
         if libraryVM.state == .loading, !didPassStartupGate {
             homeVM.invalidatePreparedContentForStartupGate()
         }
@@ -158,7 +193,10 @@ struct HomeView: View {
             }
 
             if libraryVM.allTracks.isEmpty || homeVM.hasPreparedContent || libraryVM.loadingPhase.isFailed {
-                revealStartupContent(resetEntranceAnimation: resetEntranceAnimation)
+                homeVM.refreshListeningFootprint(
+                    dailyPlayCounts: listeningFootprintProvider()
+                )
+                revealStartupContent()
                 return
             }
         }
@@ -181,31 +219,22 @@ struct HomeView: View {
             return
         }
 
+        homeVM.refreshListeningFootprint(
+            dailyPlayCounts: listeningFootprintProvider()
+        )
         startupFallbackExpired = true
-        revealStartupContent(resetEntranceAnimation: true)
+        revealStartupContent()
     }
 
     private var playbackIsActive: Bool {
-        playerVM.isPlaying || playbackCoordinator.presentation.isPlaying
+        // `PlayerViewModel.isPlaying` changes only at the transport boundary;
+        // the coordinator's live `presentation` changes several times per
+        // second and must not drive Home's deferred-refresh gate.
+        playerVM.isPlaying
     }
 
-    private func revealStartupContent(resetEntranceAnimation: Bool) {
-        if resetEntranceAnimation {
-            hasAppeared = false
-        }
+    private func revealStartupContent() {
         didPassStartupGate = true
-
-        guard !hasAppeared else { return }
-        if reduceMotion {
-            hasAppeared = true
-            return
-        }
-
-        Task {
-            try? await Task.sleep(for: .milliseconds(80))
-            guard !Task.isCancelled else { return }
-            hasAppeared = true
-        }
     }
 
     private var startupLoadingView: some View {
@@ -262,7 +291,7 @@ struct HomeView: View {
                         sourceColor: theme.semanticPalette.ambientSurface,
                         sourceAnalysis: theme.semanticPalette.analysis,
                         colorScheme: colorScheme,
-                        reduceMotion: reduceMotion
+                        motionEnabled: motionPolicy == .full
                     )
                 }
 
@@ -273,9 +302,6 @@ struct HomeView: View {
                     centerLeftPad: centerLeftPad,
                     centerRightPad: centerRightPad
                 )
-                .opacity(hasAppeared ? 1 : 0)
-                .offset(y: hasAppeared ? 0 : 12)
-                .animation(.easeOut(duration: 0.4), value: hasAppeared)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -299,33 +325,33 @@ struct HomeView: View {
         let appFgTertiary  = theme.foregroundPalette.tertiaryColor
 
         return ScrollView(.vertical, showsIndicators: true) {
-            // `LazyVStack` defers body evaluation and layout for sections
-            // that haven't intersected the scroll viewport yet — typically
-            // Insights, footer, and (in narrow modes) part of the Albums
-            // rail at first paint. Rails / hero / playlist grids already
-            // use `.frame(maxWidth: .infinity)` internally, so under-glass
-            // full-window extension and rail widths are preserved.
-            LazyVStack(spacing: mode.sectionSpacing) {
-                ForEach(settings.homeSectionOrder) { section in
-                    homeSection(
-                        section,
-                        mode: mode,
-                        contentWidth: contentWidth,
-                        centerLeftPad: centerLeftPad,
-                        centerRightPad: centerRightPad,
-                        accentColor: accentColor,
-                        titleColor: appFgPrimary,
-                        subtitleColor: appFgSecondary,
-                        tertiaryColor: appFgTertiary
-                    )
+            // `VStack` keeps the 5 dashboard sections instantiated and laid out once.
+            // Eliminates view deallocation during downward scrolling and heavy main-thread
+            // rematerialization/re-loading when scrolling back up.
+            // `GlassEffectContainer` shares backdrop sampling across adjacent glass cards.
+            GlassEffectContainer(spacing: 0) {
+                VStack(spacing: mode.sectionSpacing) {
+                    ForEach(settings.homeSectionOrder) { section in
+                        homeSection(
+                            section,
+                            mode: mode,
+                            contentWidth: contentWidth,
+                            centerLeftPad: centerLeftPad,
+                            centerRightPad: centerRightPad,
+                            accentColor: accentColor,
+                            titleColor: appFgPrimary,
+                            subtitleColor: appFgSecondary,
+                            tertiaryColor: appFgTertiary
+                        )
+                    }
+
+                    footer(theme: theme)
+                        .padding(.leading, centerLeftPad)
+                        .padding(.trailing, centerRightPad)
+
+                    // Bottom safe space so the Mini Player doesn't cover footer text.
+                    Color.clear.frame(height: 120)
                 }
-
-                footer(theme: theme)
-                    .padding(.leading, centerLeftPad)
-                    .padding(.trailing, centerRightPad)
-
-                // Bottom safe space so the Mini Player doesn't cover footer text.
-                Color.clear.frame(height: 120)
             }
             // Top safe-area inset so the Hero card clears the unified
             // titlebar/toolbar at the initial scroll position. The
@@ -372,7 +398,7 @@ struct HomeView: View {
     ) -> String {
         [
             "mode:\(mode)",
-            "tracks:\(libraryVM.allTracks.count)",
+            "tracks:\(homeVM.totalTrackCount)",
             "hero:\(homeVM.heroTrack?.id.uuidString ?? "none")",
             "albums:\(homeVM.albums.prefix(10).map { $0.id.uuidString }.joined(separator: ","))",
             "artists:\(homeVM.artists.prefix(10).map { $0.id.uuidString }.joined(separator: ","))",
@@ -404,6 +430,7 @@ struct HomeView: View {
 
                     HomeHeroView(
                         track: heroTrack,
+                        playbackCoordinator: playbackCoordinator,
                         containerWidth: contentWidth,
                         mode: mode,
                         onSwitchTrack: {
@@ -443,6 +470,7 @@ struct HomeView: View {
             if !HomeDebugFlags.disablePlaylists, !homeVM.playlists.isEmpty {
                 HomePlaylistsSection(
                     playlists: homeVM.playlists,
+                    playbackCoordinator: playbackCoordinator,
                     mode: mode,
                     titleColor: titleColor,
                     subtitleColor: subtitleColor
@@ -455,6 +483,7 @@ struct HomeView: View {
             if !HomeDebugFlags.disableInsights {
                 HomeInsightsSection(
                     homeVM: homeVM,
+                    playbackCoordinator: playbackCoordinator,
                     mode: mode,
                     containerWidth: contentWidth,
                     centerLeftPad: centerLeftPad,

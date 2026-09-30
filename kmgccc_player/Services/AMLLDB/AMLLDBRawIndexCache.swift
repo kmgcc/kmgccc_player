@@ -73,6 +73,7 @@ final class AMLLDBRawIndexCache: ObservableObject {
     init(cacheDirectory: URL) {
         self.cacheDirectory = cacheDirectory
         let config = URLSessionConfiguration.default
+        config.urlCache = nil
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = 300
         self.session = URLSession(configuration: config)

@@ -718,7 +718,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private var loadedFullscreenCircleImages = BKThemeAssets.FullscreenCircleLoadResult()
     private var loadedFullscreenCircleMaxPixel = 0
     private var loadedMaskFrames: [CGImage] = []
-    private var loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0)
+    private var loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0, circle: 0)
     private var loadedBackgroundSourceIndices: [Int] = []
     private let tintedBackgroundCache = NSCache<NSString, CGImageBox>()
     private var fromContainer: Container?
@@ -770,7 +770,6 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private static let fullscreenDiagnosticsEnabled =
         ProcessInfo.processInfo.environment["KMGCCC_FULLSCREEN_BK_DIAGNOSTICS"] == "1"
-    private nonisolated static let circleTintContext = CIContext(options: [.cacheIntermediates: false])
 
     // Style Selector State
     private var lastStyle: BackgroundStyle?
@@ -779,8 +778,8 @@ private final class BKArtBackgroundLayerView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         ensureRootLayerIfNeeded()
-        tintedBackgroundCache.countLimit = 6
-        tintedBackgroundCache.totalCostLimit = 48 * 1024 * 1024
+        tintedBackgroundCache.countLimit = 2
+        tintedBackgroundCache.totalCostLimit = 8 * 1024 * 1024
         logLifecycle("init")
     }
 
@@ -840,6 +839,10 @@ private final class BKArtBackgroundLayerView: NSView {
         backgroundController = nil
         trackID = nil
         tearDownRootLayer()
+        CATransaction.begin()
+        CATransaction.flush()
+        CATransaction.commit()
+        CacheManager.trimProcessMemory()
         FSDiagnostics.emit("BKArtBackground.prepareForDismissal END t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
     }
 
@@ -873,6 +876,9 @@ private final class BKArtBackgroundLayerView: NSView {
             backgroundClockSubscription = nil
         }
         motionProfile = profile
+        configureLayerRendering(for: profile)
+        configureTintedBackgroundCache(for: profile)
+        tintedBackgroundCache.removeAllObjects()
         logDiagnostics("motionProfile=\(profile)")
         if wasBackgroundRunning {
             startBackgroundTimerIfNeeded()
@@ -1206,8 +1212,8 @@ private final class BKArtBackgroundLayerView: NSView {
         transitionMaskLayer?.removeFromSuperlayer()
         activeTransitionMaskFrames.removeAll(keepingCapacity: false)
         let replacement = buildContainer(seed: rebuildSeed)
-        fromContainer?.layer.removeFromSuperlayer()
-        toContainer?.layer.removeFromSuperlayer()
+        release(container: fromContainer)
+        release(container: toContainer)
         transitionMaskLayer = nil
         fromContainer = replacement
         toContainer = nil
@@ -1882,7 +1888,7 @@ private final class BKArtBackgroundLayerView: NSView {
         if dotRenderStyle == .solidCircles,
            loadedFullscreenCircleImages.outerImages.count < 2
             || loadedFullscreenCircleImages.innerImages.count < 2 {
-            let budget = currentAssetBudget().background
+            let budget = currentAssetBudget().circle
             loadedFullscreenCircleImages = assets.fullscreenCircleImages(maxPixel: budget)
             loadedFullscreenCircleMaxPixel = budget
         }
@@ -1983,13 +1989,14 @@ private final class BKArtBackgroundLayerView: NSView {
         )
 
         let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
-        let rendered = circleTintContext.createCGImage(
+        let renderContext = currentBackgroundRenderContext()
+        let rendered = renderContext.createCGImage(
             tinted,
             from: input.extent,
             format: .RGBA8,
             colorSpace: outputSpace
         )
-        circleTintContext.clearCaches()
+        renderContext.clearCaches()
         return rendered
     }
 
@@ -2151,16 +2158,20 @@ private final class BKArtBackgroundLayerView: NSView {
         let shouldLoadFullscreenCircleImages = dotRenderStyle == .solidCircles
 
         assetSnapshotTask = Task { [weak self] in
-            let snapshot = await Task.detached(priority: .userInitiated) {
+            let loadTask = Task.detached(priority: .userInitiated) { () -> AssetLoadSnapshotBox? in
+                guard !Task.isCancelled else { return nil }
                 let loadedBackgroundSet = Self.loadBackgrounds(
                     assets: assets,
                     sourceIndices: backgroundSourceIndices,
                     maxPixel: budget.background
                 )
+                guard !Task.isCancelled else { return nil }
                 let shapes = assets.shapes(maxPixel: budget.shape)
+                guard !Task.isCancelled else { return nil }
                 let fullscreenCircleImages = shouldLoadFullscreenCircleImages
-                    ? assets.fullscreenCircleImages(maxPixel: budget.background)
+                    ? assets.fullscreenCircleImages(maxPixel: budget.circle)
                     : BKThemeAssets.FullscreenCircleLoadResult()
+                guard !Task.isCancelled else { return nil }
                 let maskFrames: [CGImage]
                 if includeMasks {
                     maskFrames = assets.maskFrames(maxPixel: budget.mask)
@@ -2176,9 +2187,14 @@ private final class BKArtBackgroundLayerView: NSView {
                     maskFrames: maskFrames,
                     fullscreenCircleImages: fullscreenCircleImages
                 )
-            }.value
+            }
+            let snapshot = await withTaskCancellationHandler {
+                await loadTask.value
+            } onCancel: {
+                loadTask.cancel()
+            }
 
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, let snapshot else { return }
 
             await MainActor.run {
                 guard let self else { return }
@@ -2227,7 +2243,7 @@ private final class BKArtBackgroundLayerView: NSView {
         loadedBackgroundSourceIndices = snapshot.backgroundSourceIndices
         loadedShapes = snapshot.shapes
         loadedFullscreenCircleImages = snapshot.fullscreenCircleImages
-        loadedFullscreenCircleMaxPixel = snapshot.budget.background
+        loadedFullscreenCircleMaxPixel = snapshot.budget.circle
         if maskBudgetChanged || !snapshot.maskFrames.isEmpty || loadedMaskFrames.isEmpty {
             loadedMaskFrames = snapshot.maskFrames
         }
@@ -2246,10 +2262,16 @@ private final class BKArtBackgroundLayerView: NSView {
 
         let assets = self.assets
         maskWarmupTask = Task { [weak self] in
-            let warmedFrames = await Task.detached(priority: .userInitiated) {
-                await CGImageArrayBox(images: assets.maskFrames(maxPixel: maskBudget))
-            }.value
-            guard !Task.isCancelled else { return }
+            let loadTask = Task.detached(priority: .userInitiated) { () -> CGImageArrayBox? in
+                guard !Task.isCancelled else { return nil }
+                return await CGImageArrayBox(images: assets.maskFrames(maxPixel: maskBudget))
+            }
+            let warmedFrames = await withTaskCancellationHandler {
+                await loadTask.value
+            } onCancel: {
+                loadTask.cancel()
+            }
+            guard !Task.isCancelled, let warmedFrames else { return }
             await MainActor.run {
                 guard let self else { return }
                 self.maskWarmupTask = nil
@@ -2356,6 +2378,7 @@ private final class BKArtBackgroundLayerView: NSView {
         let nextPhase = Int(floor(backgroundPhaseFloat))
         guard nextPhase != backgroundPhase else { return }
         backgroundPhase = nextPhase
+        prewarmTintedBackgroundsIfNeeded()
         applyCurrentBackgroundPhase()
     }
 
@@ -2645,8 +2668,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func abortTransitionKeepingCurrent(pendingSeed: UInt64?) {
-        toContainer?.layer.mask = nil
-        toContainer?.layer.removeFromSuperlayer()
+        release(container: toContainer)
         toContainer = nil
         transitionMaskLayer?.contents = nil
         transitionMaskLayer?.removeFromSuperlayer()
@@ -2674,7 +2696,8 @@ private final class BKArtBackgroundLayerView: NSView {
         transitionMaskLayer?.contents = nil
         transitionMaskLayer = nil
         activeTransitionMaskFrames.removeAll(keepingCapacity: false)
-        fromContainer?.layer.removeFromSuperlayer()
+        let previous = fromContainer
+        release(container: previous)
         fromContainer = next
         toContainer = nil
         commitStyleHistory(next.style)
@@ -2849,6 +2872,7 @@ private final class BKArtBackgroundLayerView: NSView {
         toneStops: [NSColor]
     ) {
         guard backgroundRenderTasks[cacheKey] == nil else { return }
+        guard backgroundRenderTasks.isEmpty else { return }
 
         let paletteSignatureAtRequest = paletteSignature
         let backgroundBudget = loadedBudget.background
@@ -2860,14 +2884,20 @@ private final class BKArtBackgroundLayerView: NSView {
 
         backgroundRenderTasks[cacheKey] = Task { [weak self] in
             let sourceImage = sourceBox.image
-            let rendered = await Task.detached(priority: .utility) {
-                Self.makeTintedBackgroundImage(
+            let renderTask = Task.detached(priority: .utility) { () -> CGImage? in
+                guard !Task.isCancelled else { return nil }
+                return Self.makeTintedBackgroundImage(
                     from: sourceImage,
                     toneStops: toneComponents,
                     tuning: tuning,
                     isDark: isDark
                 )
-            }.value
+            }
+            let rendered = await withTaskCancellationHandler {
+                await renderTask.value
+            } onCancel: {
+                renderTask.cancel()
+            }
             guard !Task.isCancelled else { return }
 
             await MainActor.run {
@@ -2887,6 +2917,7 @@ private final class BKArtBackgroundLayerView: NSView {
                     cost: max(1, rendered.bytesPerRow * rendered.height)
                 )
                 self.applyCurrentBackgroundPhase()
+                self.prewarmTintedBackgroundsIfNeeded()
             }
         }
     }
@@ -2895,12 +2926,47 @@ private final class BKArtBackgroundLayerView: NSView {
         guard !loadedBackgrounds.isEmpty else { return }
         let toneVariants = backgroundToneVariants()
         let effectiveVariants = toneVariants.isEmpty ? [BKArtBackgroundView.fallbackPalette] : toneVariants
+        let fullscreenVariantIndices = Array(
+            Set([fromContainer?.bgVariantIndex, toContainer?.bgVariantIndex].compactMap { $0 })
+                .filter { effectiveVariants.indices.contains($0) }
+        ).sorted()
+        guard motionProfile != .fullscreenBalanced || !fullscreenVariantIndices.isEmpty else { return }
+        let preferredSourceIndices: Set<Int>? = {
+            guard motionProfile == .fullscreenBalanced,
+                  loadedBackgroundSourceIndices.count > 1
+            else {
+                return nil
+            }
+            let currentLookupIndex = backgroundPhase % loadedBackgroundSourceIndices.count
+            let nextLookupIndex = (currentLookupIndex + 1) % loadedBackgroundSourceIndices.count
+            return Set([
+                loadedBackgroundSourceIndices[currentLookupIndex],
+                loadedBackgroundSourceIndices[nextLookupIndex],
+            ])
+        }()
 
         for (lookupIndex, sourceImage) in loadedBackgrounds.enumerated() {
             guard lookupIndex < loadedBackgroundSourceIndices.count else { continue }
             let sourceIndex = loadedBackgroundSourceIndices[lookupIndex]
+            if let preferredSourceIndices, !preferredSourceIndices.contains(sourceIndex) {
+                continue
+            }
 
-            for variantIndex in effectiveVariants.indices {
+            let variantIndices: [Int]
+            if motionProfile == .fullscreenBalanced {
+                let currentLookupIndex = backgroundPhase % loadedBackgroundSourceIndices.count
+                let currentSourceIndex = loadedBackgroundSourceIndices[currentLookupIndex]
+                if sourceIndex == currentSourceIndex {
+                    variantIndices = fullscreenVariantIndices
+                        + effectiveVariants.indices.filter { !fullscreenVariantIndices.contains($0) }
+                } else {
+                    variantIndices = fullscreenVariantIndices
+                }
+            } else {
+                variantIndices = Array(effectiveVariants.indices)
+            }
+
+            for variantIndex in variantIndices {
                 let cacheKey =
                     "\(paletteSignature)|bg:\(loadedBudget.background)|variant:\(variantIndex)|source:\(sourceIndex)"
                 if tintedBackgroundCache.object(forKey: cacheKey as NSString) != nil {
@@ -2912,6 +2978,16 @@ private final class BKArtBackgroundLayerView: NSView {
                     toneStops: effectiveVariants[variantIndex]
                 )
             }
+        }
+    }
+
+    private func configureTintedBackgroundCache(for profile: BKArtBackgroundView.MotionProfile) {
+        if profile == .fullscreenBalanced {
+            tintedBackgroundCache.countLimit = 3
+            tintedBackgroundCache.totalCostLimit = 12 * 1024 * 1024
+        } else {
+            tintedBackgroundCache.countLimit = 2
+            tintedBackgroundCache.totalCostLimit = 8 * 1024 * 1024
         }
     }
 
@@ -2966,19 +3042,37 @@ private final class BKArtBackgroundLayerView: NSView {
         }
         let finalImage = toneMap(image: composed, isDark: isDark)
         let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
-        let rendered = backgroundRenderContext.createCGImage(
+        let ctx = currentBackgroundRenderContext()
+        let rendered = ctx.createCGImage(
             finalImage,
             from: input.extent,
             format: .RGBA8,
             colorSpace: outputSpace
         )
-        backgroundRenderContext.clearCaches()
+        ctx.clearCaches()
         return rendered
     }
 
-    private nonisolated static let backgroundRenderContext = CIContext(
-        options: [.cacheIntermediates: false]
-    )
+    private nonisolated(unsafe) static var backgroundRenderContext: CIContext?
+    private nonisolated static let backgroundRenderContextLock = NSLock()
+
+    private nonisolated static func currentBackgroundRenderContext() -> CIContext {
+        backgroundRenderContextLock.lock()
+        defer { backgroundRenderContextLock.unlock() }
+        if let existing = backgroundRenderContext {
+            return existing
+        }
+        let created = CIContext(options: [.cacheIntermediates: false])
+        backgroundRenderContext = created
+        return created
+    }
+
+    private nonisolated static func clearBackgroundRenderContext() {
+        backgroundRenderContextLock.lock()
+        defer { backgroundRenderContextLock.unlock() }
+        backgroundRenderContext?.clearCaches()
+        backgroundRenderContext = nil
+    }
 
     private nonisolated static func toneMap(image: CIImage, isDark: Bool) -> CIImage {
         image.applyingFilter(
@@ -3277,7 +3371,7 @@ private final class BKArtBackgroundLayerView: NSView {
         let maskBudgetChanged = budget.mask != loadedBudget.mask
         let circleBudgetChanged =
             dotRenderStyle == .solidCircles
-            && budget.background != loadedFullscreenCircleMaxPixel
+            && budget.circle != loadedFullscreenCircleMaxPixel
         let backgroundSetChanged = targetBackgroundIndices != loadedBackgroundSourceIndices
 
         guard backgroundBudgetChanged
@@ -3315,8 +3409,8 @@ private final class BKArtBackgroundLayerView: NSView {
            circleBudgetChanged
             || loadedFullscreenCircleImages.outerImages.isEmpty
             || loadedFullscreenCircleImages.innerImages.isEmpty {
-            loadedFullscreenCircleImages = assets.fullscreenCircleImages(maxPixel: budget.background)
-            loadedFullscreenCircleMaxPixel = budget.background
+            loadedFullscreenCircleImages = assets.fullscreenCircleImages(maxPixel: budget.circle)
+            loadedFullscreenCircleMaxPixel = budget.circle
         }
         if let cachedMaskFrames = assets.cachedMaskFrames(maxPixel: budget.mask) {
             loadedMaskFrames = cachedMaskFrames
@@ -3343,7 +3437,8 @@ private final class BKArtBackgroundLayerView: NSView {
         return BKThemeAssets.PixelBudget(
             background: background,
             shape: fullBudget.shape,
-            mask: fullBudget.mask
+            mask: fullBudget.mask,
+            circle: fullBudget.circle
         )
     }
 
@@ -3351,17 +3446,20 @@ private final class BKArtBackgroundLayerView: NSView {
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         let longestEdge = max(bounds.width, bounds.height)
         let nativePixel = Int(max(1, (longestEdge * scale).rounded()))
-        let backgroundCap = resourceProfile == .cassetteForeground ? 1_024 : 1_536
-        let backgroundFloor = resourceProfile == .cassetteForeground ? 640 : 960
-        let shapeCap = resourceProfile == .cassetteForeground ? 320 : 512
-        let shapeFloor = resourceProfile == .cassetteForeground ? 192 : 256
-        let maskCap = resourceProfile == .cassetteForeground ? 512 : 768
-        let maskFloor = resourceProfile == .cassetteForeground ? 384 : 512
+        let backgroundCap = resourceProfile == .cassetteForeground ? 1_024 : 1_024
+        let backgroundFloor = resourceProfile == .cassetteForeground ? 640 : 768
+        let shapeCap = resourceProfile == .cassetteForeground ? 256 : 320
+        let shapeFloor = resourceProfile == .cassetteForeground ? 192 : 192
+        let maskCap = resourceProfile == .cassetteForeground ? 256 : 256
+        let maskFloor = resourceProfile == .cassetteForeground ? 160 : 160
+        let circleCap = resourceProfile == .cassetteForeground ? 256 : 256
+        let circleFloor = resourceProfile == .cassetteForeground ? 192 : 192
         let background = min(max(nativePixel, backgroundFloor), backgroundCap)
-        let shapeDivisor = resourceProfile == .cassetteForeground ? 4 : 3
+        let shapeDivisor = 4
         let shape = min(max(background / shapeDivisor, shapeFloor), shapeCap)
-        let mask = min(max(background / 2, maskFloor), maskCap)
-        return BKThemeAssets.PixelBudget(background: background, shape: shape, mask: mask)
+        let mask = min(max(background / 4, maskFloor), maskCap)
+        let circle = min(max(background / 4, circleFloor), circleCap)
+        return BKThemeAssets.PixelBudget(background: background, shape: shape, mask: mask, circle: circle)
     }
 
     private func desiredBackgroundSourceIndices() -> [Int] {
@@ -3400,6 +3498,7 @@ private final class BKArtBackgroundLayerView: NSView {
         var images: [CGImage] = []
         var resolvedIndices: [Int] = []
         for sourceIndex in sourceIndices {
+            guard !Task.isCancelled else { break }
             guard let image = assets.background(at: sourceIndex, maxPixel: maxPixel) else { continue }
             images.append(image)
             resolvedIndices.append(sourceIndex)
@@ -3482,11 +3581,11 @@ private final class BKArtBackgroundLayerView: NSView {
         loadedFullscreenCircleImages = BKThemeAssets.FullscreenCircleLoadResult()
         loadedFullscreenCircleMaxPixel = 0
         loadedMaskFrames.removeAll(keepingCapacity: false)
-        loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0)
+        loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0, circle: 0)
         backgroundAssetMode = .currentPhaseLowRes
         tintedBackgroundCache.removeAllObjects()
         assets.purgeTransientCaches()
-        Self.backgroundRenderContext.clearCaches()
+        Self.clearBackgroundRenderContext()
         layer?.removeAllAnimations()
         layer?.mask = nil
         layer?.contents = nil
@@ -3497,6 +3596,10 @@ private final class BKArtBackgroundLayerView: NSView {
             sublayer.removeFromSuperlayer()
         }
         layer?.sublayers = nil
+        CATransaction.begin()
+        CATransaction.flush()
+        CATransaction.commit()
+        CacheManager.trimProcessMemory()
     }
 
     private func ensureRootLayerIfNeeded() {
@@ -3512,6 +3615,13 @@ private final class BKArtBackgroundLayerView: NSView {
             layer?.masksToBounds = true
             layer?.backgroundColor = NSColor.black.cgColor
         }
+        configureLayerRendering(for: motionProfile)
+    }
+
+    private func configureLayerRendering(for profile: BKArtBackgroundView.MotionProfile) {
+        let backingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        layer?.shouldRasterize = false
+        layer?.rasterizationScale = backingScale
     }
 
     private func tearDownRootLayer() {
@@ -3613,11 +3723,14 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func debugBudgetDescription(_ budget: BKThemeAssets.PixelBudget) -> String {
-        "bg=\(budget.background) shape=\(budget.shape) mask=\(budget.mask)"
+        "bg=\(budget.background) shape=\(budget.shape) mask=\(budget.mask) circle=\(budget.circle)"
     }
 
     private var initialBackgroundBudgetCap: Int {
-        resourceProfile == .cassetteForeground ? 640 : 960
+        if resourceProfile == .cassetteForeground {
+            return 640
+        }
+        return 960
     }
 
     private var initialBackgroundUpgradeDelay: UInt64 {

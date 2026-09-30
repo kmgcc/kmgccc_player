@@ -69,7 +69,7 @@ struct PlaylistPageRowModel: Identifiable, Equatable {
             lyricSnippetStartTime: record.lyricSnippetStartTime,
             lyricHighlightRanges: record.lyricHighlightRanges,
             durationText: record.durationText,
-            artworkData: artworkData,
+            artworkData: record.artworkFileURL == nil ? artworkData : nil,
             artworkFileURL: record.artworkFileURL,
             artworkIdentity: record.artworkIdentity,
             isMissing: record.isMissing

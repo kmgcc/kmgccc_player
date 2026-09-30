@@ -1366,9 +1366,6 @@ struct BatchTrackEditSheet: View {
         didSuspendWindowLyricsSurface = true
         print("[BatchTrackEditSheet] Suspending window lyrics surface while batch editor is open.")
         LyricsSurfaceManager.shared.reportMainVisible(false)
-        if LyricsSurfaceManager.rendererBackend != .native {
-            LyricsSurfaceManager.shared.mainStore.setPlaying(false)
-        }
     }
 
     private func leaveBatchPreviewSession() {

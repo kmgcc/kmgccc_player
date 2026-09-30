@@ -49,17 +49,16 @@ actor ArtworkAssetStore {
 
     private let cache: NSCache<NSString, ArtworkAssetSnapshot> = {
         let cache = NSCache<NSString, ArtworkAssetSnapshot>()
-        cache.countLimit = 96
-        cache.totalCostLimit = 64 * 1024 * 1024
+        cache.countLimit = 32
+        cache.totalCostLimit = 4 * 1024 * 1024
         return cache
     }()
     private let fullImageCache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
-        // The playback preheat warms current + next2 + prev1 (4 hydrated full
-        // images); `countLimit = 2` evicted most of that window immediately, so
-        // the next track was usually cold again by the time it was displayed.
-        cache.countLimit = 6
-        cache.totalCostLimit = 64 * 1024 * 1024
+        // Keep the current playback window warm without retaining a second
+        // screenful of decoded full-size artwork after a track switch.
+        cache.countLimit = 2
+        cache.totalCostLimit = 8 * 1024 * 1024
         return cache
     }()
     private var inProgressTokens: [String: UUID] = [:]
@@ -104,7 +103,7 @@ actor ArtworkAssetStore {
     func snapshot(
         trackID: UUID,
         artworkData: Data,
-        fullImageMaxPixelSize: Int = 1_400
+        fullImageMaxPixelSize: Int = 1_024
     ) async -> ArtworkAssetSnapshot? {
         let checksum = Self.computeChecksum(artworkData)
         let snapshot = await snapshotMetadata(
@@ -122,7 +121,7 @@ actor ArtworkAssetStore {
 
     func renderingFallbackSnapshot(
         trackID: UUID,
-        fullImageMaxPixelSize: Int = 1_400
+        fullImageMaxPixelSize: Int = 1_024
     ) async -> ArtworkAssetSnapshot? {
         guard let fallbackData = ArtworkRenderingFallback.data(for: trackID) else {
             return nil

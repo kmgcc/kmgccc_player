@@ -18,14 +18,14 @@ enum WhatsNewConfiguration {
         title: "什么是新的",
         features: [
             WhatsNew.Feature(
-                image: .init(systemName: "music.note.list", foregroundColor: .indigo),
-                title: "原生 Swift 歌词引擎",
-                subtitle: "歌词全面迁移至原生 Swift 实现，带来更丝滑流畅的逐字动效与更精准的节奏同步，并大幅降低系统资源占用。"
+                image: .init(systemName: "speedometer", foregroundColor: .indigo),
+                title: "性能优化",
+                subtitle: "歌曲切换、主页浏览与播放列表滚动的流畅度均有明显提升。我们也持续调整缓存与资源释放，尝试缓解内存占用，并处理歌词组件异常消耗资源的问题。"
             ),
             WhatsNew.Feature(
-                image: .init(systemName: "arrow.down.circle.fill", foregroundColor: .green),
-                title: "无缝自动更新",
-                subtitle: "新版本支持在后台静默下载，更新完成后只需重启应用即可直接完成升级安装，无需再手动打开 DMG 镜像。"
+                image: .init(systemName: "point.3.connected.trianglepath.dotted", foregroundColor: .green),
+                title: "Agent MCP 接入",
+                subtitle: "在设置中开启本机自动化并复制 MCP 配置后，支持的智能助手可查询曲库、歌词与播放列表；需要额外授权的操作仍由播放器确认。"
             )
         ],
         primaryAction: .init(

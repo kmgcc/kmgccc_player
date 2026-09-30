@@ -39,7 +39,7 @@ private enum SvgPathMap {
 
 /// Solid play triangle, matching the demo's rounded-leading-edge outline.
 struct MediaControlPlaySymbol: Shape {
-    func path(in rect: CGRect) -> Path {
+    nonisolated func path(in rect: CGRect) -> Path {
         let vb: CGFloat = 38
         var path = Path()
         path.move(to: SvgPathMap.point(5.80762, 32.4896, in: rect, viewBox: vb))
@@ -105,7 +105,7 @@ struct MediaControlPlaySymbol: Shape {
 
 /// Solid pause bars (two rounded vertical capsules), demo outline.
 struct MediaControlPauseSymbol: Shape {
-    func path(in rect: CGRect) -> Path {
+    nonisolated func path(in rect: CGRect) -> Path {
         let vb: CGFloat = 38
         var path = Path()
 
@@ -223,7 +223,7 @@ struct MediaControlPauseSymbol: Shape {
 struct MediaControlSkipArrowSymbol: Shape {
     var mirrored: Bool = false
 
-    func path(in rect: CGRect) -> Path {
+    nonisolated func path(in rect: CGRect) -> Path {
         var path = Path()
         path.move(to: pt(62, 60.0717, rect))
         path.addCurve(to: pt(68.5677, 64.9662, rect), control1: pt(65.938, 62.3453, rect), control2: pt(67.9069, 63.4821, rect))
@@ -242,7 +242,7 @@ struct MediaControlSkipArrowSymbol: Shape {
         return path
     }
 
-    private func pt(_ x: CGFloat, _ y: CGFloat, _ rect: CGRect) -> CGPoint {
+    nonisolated private func pt(_ x: CGFloat, _ y: CGFloat, _ rect: CGRect) -> CGPoint {
         let scale = min(rect.width, rect.height) / 134
         // Arrow bbox center in the 134 viewBox (x 29...68.5677), and its
         // mirrored counterpart. y is symmetric around the viewBox middle.

@@ -18,7 +18,7 @@
 //  Architecture:
 //    HomeAmbientShapesBackground is a thin SwiftUI `NSViewRepresentable`
 //    whose only SwiftUI inputs are stable per-content values
-//    (sourceColor / analysis / colorScheme / reduceMotion). All live
+//    (sourceColor / analysis / colorScheme / motionEnabled). All live
 //    geometry and scroll-offset observation happens INSIDE the AppKit
 //    `HomeAmbientRootView`, which subscribes directly to:
 //      - `HomeWindowLayoutState.shared.geometryPublisher` (continuous
@@ -67,7 +67,7 @@ struct HomeAmbientShapesBackground: NSViewRepresentable {
     let sourceColor: NSColor?
     let sourceAnalysis: ArtworkColorAnalysis?
     let colorScheme: ColorScheme
-    let reduceMotion: Bool
+    let motionEnabled: Bool
 
     static func ambientBaseColorForStaticCache(colorScheme: ColorScheme) -> NSColor {
         HomeAmbientPalette.ambientBaseColor(from: nil, analysis: nil, colorScheme: colorScheme)
@@ -82,8 +82,13 @@ struct HomeAmbientShapesBackground: NSViewRepresentable {
             sourceColor: sourceColor,
             sourceAnalysis: sourceAnalysis,
             colorScheme: colorScheme,
-            reduceMotion: reduceMotion
+            motionEnabled: motionEnabled
         )
+    }
+
+    @MainActor
+    static func purgeCaches() {
+        HomeAmbientRootView.purgeCaches()
     }
 }
 
@@ -93,7 +98,8 @@ struct HomeAmbientShapesBackground: NSViewRepresentable {
 final class HomeAmbientRootView: NSView {
     private struct Presentation {
         let id: Int
-        let image: CGImage
+        let assetIndex: Int
+        let shapeImage: CGImage?
         let color: NSColor
         let side: CGFloat
         let sideDirection: HomeAmbientShapeSpec.Side
@@ -107,11 +113,6 @@ final class HomeAmbientRootView: NSView {
         let parallax: CGFloat
         let rotationPerPoint: CGFloat
         let rotationClampDegrees: CGFloat
-    }
-
-    private struct ShapeLayerPair {
-        let container: CALayer
-        let mask: CALayer
     }
 
     /// Rebuilding the full presentation array (specs, sizes, colors, layer
@@ -145,7 +146,7 @@ final class HomeAmbientRootView: NSView {
     private var sourceColor: NSColor?
     private var sourceAnalysis: ArtworkColorAnalysis?
     private var colorScheme: ColorScheme = .light
-    private var reduceMotion = false
+    private var motionEnabled = true
 
     private var geometry: HomeWindowLayoutState.Geometry = .empty
     private var scrollOffsetY: CGFloat = 0
@@ -158,13 +159,20 @@ final class HomeAmbientRootView: NSView {
         edgePinnedIndices: []
     )
     private var presentations: [Presentation] = []
-    private var layersByID: [Int: ShapeLayerPair] = [:]
+    private var layersByID: [Int: CALayer] = [:]
 
     private var hasLoadedShapes = false
     private let randomLayoutSeed: UInt64
     private let randomizedShapeCount: Int
 
-    private static let shapeMaxPixel = 768
+    private struct TintedShapeKey: Hashable {
+        let assetIndex: Int
+        let rgba: UInt32
+    }
+    private var tintedShapeCache: [TintedShapeKey: CGImage] = [:]
+    private static weak var currentInstance: HomeAmbientRootView?
+
+    private static let shapeMaxPixel = 256
 
     init(motion: HomeAmbientMotionState) {
         self.motion = motion
@@ -172,6 +180,7 @@ final class HomeAmbientRootView: NSView {
         randomLayoutSeed = seed
         randomizedShapeCount = Self.shapeCount(seed: seed)
         super.init(frame: .zero)
+        Self.currentInstance = self
         wantsLayer = true
         layerContentsRedrawPolicy = .duringViewResize
         layer?.masksToBounds = true
@@ -182,6 +191,15 @@ final class HomeAmbientRootView: NSView {
             colorScheme: .light
         ).homeAmbientCGColor
         layer?.addSublayer(baseLayer)
+    }
+
+    func purgeTransientCaches() {
+        tintedShapeCache.removeAll(keepingCapacity: false)
+    }
+
+    static func purgeCaches() {
+        HomeAmbientShapeSpecCache.shared.clear()
+        currentInstance?.purgeTransientCaches()
     }
 
     @available(*, unavailable)
@@ -208,9 +226,18 @@ final class HomeAmbientRootView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window == nil {
+            if Self.currentInstance === self {
+                Self.currentInstance = nil
+            }
             Log.debug("[HomeAmbient/root] viewDidMoveToWindow=nil — releasing subs", category: .ui)
             geometrySubscription = nil
             motionSubscription = nil
+            presentations = []
+            removeAllShapeLayers()
+            tintedShapeCache.removeAll(keepingCapacity: false)
+            shapeLoadResult = BKThemeAssets.ShapeLoadResult(images: [], scaleByIndex: [:], edgePinnedIndices: [])
+            hasLoadedShapes = false
+            lastLayoutSignature = nil
         } else {
             loadShapesIfNeeded()
             subscribeToLayoutState()
@@ -232,23 +259,24 @@ final class HomeAmbientRootView: NSView {
         sourceColor: NSColor?,
         sourceAnalysis: ArtworkColorAnalysis?,
         colorScheme: ColorScheme,
-        reduceMotion: Bool
+        motionEnabled: Bool
     ) {
         let paletteChanged = !colorsEqual(self.sourceColor, sourceColor)
             || self.sourceAnalysis != sourceAnalysis
             || self.colorScheme != colorScheme
-        let reduceMotionChanged = self.reduceMotion != reduceMotion
+        let motionEnabledChanged = self.motionEnabled != motionEnabled
 
         self.sourceColor = sourceColor
         self.sourceAnalysis = sourceAnalysis
         self.colorScheme = colorScheme
-        self.reduceMotion = reduceMotion
+        self.motionEnabled = motionEnabled
 
         if paletteChanged {
+            tintedShapeCache.removeAll(keepingCapacity: true)
             updateBaseLayerColor()
             rebuildOrReposition(for: geometry, forceFullRebuild: true)
         }
-        if reduceMotionChanged {
+        if motionEnabledChanged {
             applyLayerTransforms()
         }
     }
@@ -442,7 +470,8 @@ final class HomeAmbientRootView: NSView {
             built.append(
                 Presentation(
                     id: spec.id,
-                    image: image,
+                    assetIndex: assetIndex,
+                    shapeImage: image,
                     color: color,
                     side: side,
                     sideDirection: spec.side,
@@ -586,17 +615,22 @@ final class HomeAmbientRootView: NSView {
     // MARK: - Layer sync
 
     private func removeAllShapeLayers() {
-        for pair in layersByID.values {
-            pair.container.removeFromSuperlayer()
+        for layer in layersByID.values {
+            layer.mask = nil
+            layer.contents = nil
+            layer.removeFromSuperlayer()
         }
         layersByID.removeAll(keepingCapacity: true)
+        tintedShapeCache.removeAll(keepingCapacity: true)
     }
 
     private func syncShapeLayers() {
         guard let rootLayer = layer else { return }
         let activeIDs = Set(presentations.map(\.id))
-        for (id, pair) in layersByID where !activeIDs.contains(id) {
-            pair.container.removeFromSuperlayer()
+        for (id, layer) in layersByID where !activeIDs.contains(id) {
+            layer.mask = nil
+            layer.contents = nil
+            layer.removeFromSuperlayer()
             layersByID[id] = nil
         }
 
@@ -606,26 +640,82 @@ final class HomeAmbientRootView: NSView {
         CATransaction.setDisableActions(true)
 
         for presentation in presentations {
-            let pair = layerPair(for: presentation, in: rootLayer)
+            let container = shapeLayer(for: presentation, in: rootLayer)
             let bounds = CGRect(x: 0, y: 0, width: presentation.side, height: presentation.side)
-            pair.container.contentsScale = backingScale
-            pair.container.backgroundColor = presentation.color.homeAmbientCGColor
-            pair.container.bounds = bounds
-            pair.mask.contentsScale = backingScale
-            pair.mask.contents = presentation.image
-            pair.mask.contentsGravity = .resizeAspect
-            pair.mask.minificationFilter = .linear
-            pair.mask.magnificationFilter = .linear
-            pair.mask.frame = bounds
+            container.contentsScale = backingScale
+            container.bounds = bounds
+            container.backgroundColor = nil
+            if container.mask != nil {
+                container.mask = nil
+            }
+
+            if let shapeImage = presentation.shapeImage,
+               let tinted = tintedShapeImage(
+                   for: shapeImage,
+                   color: presentation.color,
+                   assetIndex: presentation.assetIndex
+               ) {
+                container.contents = tinted
+                container.contentsGravity = .resizeAspect
+            } else {
+                container.contents = nil
+            }
         }
 
         CATransaction.commit()
     }
 
-    private func layerPair(
+    private func tintedShapeImage(
+        for shapeImage: CGImage,
+        color: NSColor,
+        assetIndex: Int
+    ) -> CGImage? {
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return shapeImage }
+        let r = UInt32(min(max(rgb.redComponent, 0), 1) * 255)
+        let g = UInt32(min(max(rgb.greenComponent, 0), 1) * 255)
+        let b = UInt32(min(max(rgb.blueComponent, 0), 1) * 255)
+        let a = UInt32(min(max(rgb.alphaComponent, 0), 1) * 255)
+        let rgba = (r << 24) | (g << 16) | (b << 8) | a
+        let key = TintedShapeKey(assetIndex: assetIndex, rgba: rgba)
+        if let cached = tintedShapeCache[key] {
+            return cached
+        }
+
+        let width = shapeImage.width
+        let height = shapeImage.height
+        guard width > 0, height > 0,
+              let context = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else {
+            return shapeImage
+        }
+
+        let rect = CGRect(x: 0, y: 0, width: width, height: height)
+        context.draw(shapeImage, in: rect)
+        context.setBlendMode(.sourceIn)
+        context.setFillColor(color.homeAmbientCGColor)
+        context.fill(rect)
+
+        if let tinted = context.makeImage() {
+            if tintedShapeCache.count > 32 {
+                tintedShapeCache.removeAll(keepingCapacity: true)
+            }
+            tintedShapeCache[key] = tinted
+            return tinted
+        }
+        return shapeImage
+    }
+
+    private func shapeLayer(
         for presentation: Presentation,
         in rootLayer: CALayer
-    ) -> ShapeLayerPair {
+    ) -> CALayer {
         if let existing = layersByID[presentation.id] {
             return existing
         }
@@ -635,14 +725,9 @@ final class HomeAmbientRootView: NSView {
         container.allowsEdgeAntialiasing = true
         container.minificationFilter = .linear
         container.magnificationFilter = .linear
-
-        let mask = CALayer()
-        mask.anchorPoint = CGPoint(x: 0, y: 0)
-        container.mask = mask
         rootLayer.addSublayer(container)
-        let pair = ShapeLayerPair(container: container, mask: mask)
-        layersByID[presentation.id] = pair
-        return pair
+        layersByID[presentation.id] = container
+        return container
     }
 
     // MARK: - Animation
@@ -668,14 +753,14 @@ final class HomeAmbientRootView: NSView {
         CATransaction.setDisableActions(true)
 
         for presentation in presentations {
-            guard let pair = layersByID[presentation.id] else { continue }
+            guard let layer = layersByID[presentation.id] else { continue }
             let scroll = scrollTransform(for: presentation, scrollOffsetY: scrollOffsetY)
 
-            pair.container.position = CGPoint(
+            layer.position = CGPoint(
                 x: presentation.basePosition.x + scroll.x,
                 y: presentation.basePosition.y + scroll.y
             )
-            pair.container.transform = CATransform3DMakeRotation(
+            layer.transform = CATransform3DMakeRotation(
                 CGFloat((presentation.baseRotationDegrees + scroll.rotationDegrees) * .pi / 180),
                 0,
                 0,
@@ -694,7 +779,7 @@ final class HomeAmbientRootView: NSView {
         for presentation: Presentation,
         scrollOffsetY: CGFloat
     ) -> (x: CGFloat, y: CGFloat, rotationDegrees: Double) {
-        guard !reduceMotion else { return (0, 0, 0) }
+        guard motionEnabled else { return (0, 0, 0) }
         let virtualHeight = max(geometry.windowHeight * 2.6, geometry.windowHeight + 1400)
         return (
             x: clamp(scrollOffsetY * presentation.parallaxX, min: -8, max: 8),
@@ -1153,6 +1238,12 @@ private final class HomeAmbientShapeSpecCache {
 
     private let lock = NSLock()
     private var specsByKey: [Key: [HomeAmbientShapeSpec]] = [:]
+
+    func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        specsByKey.removeAll(keepingCapacity: false)
+    }
 
     func specs(
         count: Int,

@@ -9,6 +9,7 @@ import AppKit
 import Combine
 import CoreImage
 import CryptoKit
+import MotionKit
 import SwiftUI
 
 struct RotatingCoverSkin: NowPlayingSkin {
@@ -372,7 +373,24 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
 // inherit any actor isolation from the caller — that inheritance was the
 // remaining cause of `_dispatch_assert_queue_fail` after the previous patch.
 private enum RotatingCoverCDMotionBlurRenderer {
-    nonisolated static let ciContext = CIContext(options: nil)
+    private nonisolated(unsafe) static var ciContext: CIContext?
+    private nonisolated static let ciContextLock = NSLock()
+
+    private nonisolated static func currentCIContext() -> CIContext {
+        ciContextLock.lock()
+        defer { ciContextLock.unlock() }
+        if let ciContext { return ciContext }
+        let created = CIContext(options: [.cacheIntermediates: false])
+        ciContext = created
+        return created
+    }
+
+    nonisolated static func clearCaches() {
+        ciContextLock.lock()
+        defer { ciContextLock.unlock() }
+        ciContext?.clearCaches()
+        ciContext = nil
+    }
     nonisolated private static let angularBlurRadiusDegrees: CGFloat = 180
     nonisolated private static let angularSampleStepDegrees: CGFloat = 0.75
     nonisolated private static let angularBlurAccumulationAlpha: CGFloat = 24.0
@@ -460,7 +478,9 @@ private enum RotatingCoverCDMotionBlurRenderer {
             .clampedToExtent()
             .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 4.0])
             .cropped(to: bounds)
-        return ciContext.createCGImage(blurred, from: bounds)
+        let ctx = currentCIContext()
+        defer { ctx.clearCaches() }
+        return ctx.createCGImage(blurred, from: bounds)
     }
 
     nonisolated private static func densifiedOpaqueBlurImage(
@@ -564,13 +584,7 @@ private extension NSImage {
         if let trackID {
             return "track:\(trackID.uuidString)"
         }
-
-        if let tiffRepresentation {
-            let digest = SHA256.hash(data: tiffRepresentation)
-            return digest.prefix(12).map { String(format: "%02x", $0) }.joined()
-        }
-
-        return "size:\(Int(size.width))x\(Int(size.height))"
+        return "size:\(Int(size.width))x\(Int(size.height))-\(self.hash)"
     }
 }
 
@@ -957,14 +971,14 @@ private struct RotatingCoverArtwork: View {
     }
 
     private var artworkSignature: String? {
-        context.track?.artworkImage?.blurCacheSignature(trackID: nil)
+        context.track?.artworkImage?.blurCacheSignature(trackID: context.track?.id)
     }
 
     var body: some View {
         let usesFullscreenLayout = context.usesFullscreenPlayerLayout
         let layout = RotatingCoverLayout.metrics(for: context, isFullscreen: usesFullscreenLayout)
         let visualizerMode = usesFullscreenLayout ? fullscreenVisualizerMode : normalVisualizerMode
-        let reduceMotion = context.theme.reduceMotion
+        let motionEnabled = context.motionPolicy == .full
 
         VStack(spacing: 32) {
             RotatingCoverDiscStack(
@@ -1018,7 +1032,7 @@ private struct RotatingCoverArtwork: View {
         .onAppear {
             lastTrackID = context.track?.id
             rotation.setMode(discMode, isPlaying: context.playback.isPlaying)
-            rotation.setMotionEnabled(!reduceMotion, isPlaying: context.playback.isPlaying)
+            rotation.setMotionEnabled(motionEnabled, isPlaying: context.playback.isPlaying)
             updateCDMotionBlurCache(discSize: layout.discSize)
         }
         .onChange(of: context.playback.isPlaying) { _, isPlaying in
@@ -1028,8 +1042,8 @@ private struct RotatingCoverArtwork: View {
             rotation.setMode(discMode, isPlaying: context.playback.isPlaying)
             updateCDMotionBlurCache(discSize: layout.discSize)
         }
-        .onChange(of: reduceMotion) { _, isReduced in
-            rotation.setMotionEnabled(!isReduced, isPlaying: context.playback.isPlaying)
+        .onChange(of: motionEnabled) { _, isEnabled in
+            rotation.setMotionEnabled(isEnabled, isPlaying: context.playback.isPlaying)
         }
         .onChange(of: Int(layout.discSize.rounded())) { _, _ in
             updateCDMotionBlurCache(discSize: layout.discSize)
@@ -1277,5 +1291,12 @@ private struct PillSpectrumContainer: NSViewRepresentable {
             )
             return (resolved.fillColors, resolved.strokeColors)
         }
+    }
+}
+
+extension RotatingCoverSkin {
+    @MainActor
+    static func purgeCaches() {
+        RotatingCoverCDMotionBlurRenderer.clearCaches()
     }
 }

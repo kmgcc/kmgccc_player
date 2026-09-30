@@ -413,6 +413,13 @@ enum LibraryUpgradeSessionValidator {
         let trackIDs: Set<UUID>
         let playlistTrackIDs: Set<UUID>
         let locatorKinds: [LocalTrackStorageKind]
+        let playlistReferenceIssues: [LibraryStoragePlaylistReferenceIssue]
+    }
+
+    nonisolated struct LibraryStoragePlaylistReferenceIssue: Sendable, Equatable {
+        let playlistID: UUID
+        let playlistName: String
+        let missingTrackIDs: [UUID]
     }
 
     nonisolated static func inspectDisk(
@@ -442,6 +449,7 @@ enum LibraryUpgradeSessionValidator {
         }
 
         var playlistTrackIDs = Set<UUID>()
+        var playlistReferenceIssues: [LibraryStoragePlaylistReferenceIssue] = []
         let playlistURLs: [URL]
         do {
             playlistURLs = try fileManager.contentsOfDirectory(
@@ -459,13 +467,25 @@ enum LibraryUpgradeSessionValidator {
             ) else {
                 throw LibraryUpgradeValidationError.damagedPlaylistSidecar
             }
-            playlistTrackIDs.formUnion(sidecar.trackIDs)
+            let playlistIDs = sidecar.trackIDs
+            playlistTrackIDs.formUnion(playlistIDs)
+            let missingTrackIDs = playlistIDs.filter { !trackIDs.contains($0) }
+            if !missingTrackIDs.isEmpty {
+                playlistReferenceIssues.append(
+                    LibraryStoragePlaylistReferenceIssue(
+                        playlistID: sidecar.id,
+                        playlistName: sidecar.name,
+                        missingTrackIDs: missingTrackIDs
+                    )
+                )
+            }
         }
 
         return DiskSnapshot(
             trackIDs: trackIDs,
             playlistTrackIDs: playlistTrackIDs,
-            locatorKinds: locatorKinds
+            locatorKinds: locatorKinds,
+            playlistReferenceIssues: playlistReferenceIssues
         )
     }
 

@@ -5,6 +5,7 @@
 //  kmgccc_player - Reusable Settings Section Header Label
 //
 
+import MotionKit
 import SwiftUI
 
 enum SettingsStyleTokens {
@@ -233,6 +234,9 @@ struct CollapsibleSectionHeader: View {
 
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
     @Environment(\.settingsAppForegroundColors) private var appColors
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     init(
         _ title: LocalizedStringKey,
@@ -254,7 +258,10 @@ struct CollapsibleSectionHeader: View {
 
     var body: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.18)) {
+            let policy = configuredMotionPolicy.resolving(
+                accessibilityReduceMotion: reduceMotion
+            )
+            withAnimation(policy.animation(for: motionTokens[.microInteraction])) {
                 isExpanded.toggle()
             }
         } label: {

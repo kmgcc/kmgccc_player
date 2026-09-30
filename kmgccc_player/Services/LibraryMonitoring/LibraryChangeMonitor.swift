@@ -22,6 +22,9 @@ nonisolated struct ManagedLibraryFileEventFilter: Sendable {
 
     func shouldProcess(_ event: LibraryFileEvent) -> Bool {
         let path = URL(fileURLWithPath: event.path).standardizedFileURL.path
+        if ProcessInfo.processInfo.environment["KMGCCC_DEBUG_LIBRARY_MONITOR"] == "1" {
+            Log.debug("[LibraryMonitor] event path=\(path) fullScan=\(event.requiresFullScan)", category: .library)
+        }
         guard path.hasPrefix(rootPath + "/") else { return false }
 
         let relativePath = String(path.dropFirst(rootPath.count + 1))
@@ -32,9 +35,20 @@ nonisolated struct ManagedLibraryFileEventFilter: Sendable {
         }
 
         let fileName = URL(fileURLWithPath: path).lastPathComponent.lowercased()
+        // `meta.json` is the app's own per-track sidecar. The app writes it
+        // during ordinary operation (e.g. playback-stats checkpoints on a
+        // track switch) and refreshes the in-memory model itself; letting
+        // those writes reach the monitor would reload the entire library
+        // (state → .loading, SearchIndex rebuild ~7s) on every track change,
+        // which visibly re-renders the Home page during playback.
+        // `Data.write(.atomic)` first writes a `.sb-<pid>-<random>` temp file
+        // in the same directory and renames it, so the temp name must be
+        // filtered as well or the rename event still trips the monitor.
+        let isMetaJSON = fileName == "meta.json" || fileName.hasPrefix("meta.json.sb-")
         return !fileName.hasSuffix(".sqlite")
             && !fileName.hasSuffix(".sqlite-wal")
             && !fileName.hasSuffix(".sqlite-shm")
+            && !isMetaJSON
     }
 }
 
@@ -111,6 +125,7 @@ actor LibraryChangeMonitor {
     private let eventSource: LibraryFileEventSource
     private let debounceNanoseconds: UInt64
     private var sourcePaths: [UUID: String] = [:]
+    private var sourceWatchPaths: [UUID: [String]] = [:]
     private var dirtySourceIDs = Set<UUID>()
     private var forceFullScan = false
     private var debounceTask: Task<Void, Never>?
@@ -144,21 +159,22 @@ actor LibraryChangeMonitor {
 
     func start(
         sourceRoots: [UUID: URL],
+        watchPathsBySource: [UUID: [URL]]? = nil,
         eventFilter: @escaping EventFilter = { _ in true },
         initiallyDirty: Bool = true,
         handler: @escaping ScanHandler
     ) async throws {
         await stopAndWait()
         sourcePaths = sourceRoots.mapValues { $0.standardizedFileURL.path }
+        sourceWatchPaths = (watchPathsBySource ?? sourceRoots.mapValues { [$0] })
+            .mapValues { urls in urls.map { $0.standardizedFileURL.path } }
         sourceStates = sourceRoots.mapValues { _ in .idle }
         notifyScanStateChange()
         self.handler = handler
         self.eventFilter = eventFilter
         stopped = false
         do {
-            try eventSource.start(paths: Array(sourcePaths.values)) { [weak self] events in
-                Task { await self?.receive(events) }
-            }
+            try startEventSource()
         } catch {
             stopImmediately()
             throw error
@@ -172,13 +188,10 @@ actor LibraryChangeMonitor {
     func removeSource(_ sourceID: UUID) throws {
         guard !stopped else { return }
         sourcePaths.removeValue(forKey: sourceID)
+        sourceWatchPaths.removeValue(forKey: sourceID)
         dirtySourceIDs.remove(sourceID)
-        let currentHandler = handler
         eventSource.stop()
-        try eventSource.start(paths: Array(sourcePaths.values)) { [weak self] events in
-            Task { await self?.receive(events) }
-        }
-        handler = currentHandler
+        try startEventSource()
     }
 
     func sourceStateSnapshot() -> [UUID: ReferencedSourceScanState] { sourceStates }
@@ -199,6 +212,7 @@ actor LibraryChangeMonitor {
         await scanTask?.value
         scanTask = nil
         sourcePaths.removeAll()
+        sourceWatchPaths.removeAll()
         dirtySourceIDs.removeAll()
         sourceStates.removeAll()
         handler = nil
@@ -213,10 +227,26 @@ actor LibraryChangeMonitor {
         debounceTask = nil
         scanTask = nil
         sourcePaths.removeAll()
+        sourceWatchPaths.removeAll()
         dirtySourceIDs.removeAll()
         sourceStates.removeAll()
         handler = nil
         eventFilter = nil
+    }
+
+    private var eventWatchPaths: [String] {
+        var result: [String] = []
+        var seen = Set<String>()
+        for path in sourceWatchPaths.values.joined() where seen.insert(path).inserted {
+            result.append(path)
+        }
+        return result
+    }
+
+    private func startEventSource() throws {
+        try eventSource.start(paths: eventWatchPaths) { [weak self] events in
+            Task { await self?.receive(events) }
+        }
     }
 
     private func receive(_ events: [LibraryFileEvent]) {

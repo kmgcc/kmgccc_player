@@ -108,6 +108,7 @@ final class PlayerViewModel {
     ) {
         activeLibraryQueueSource = libraryQueueSource
         playbackService.playTracks(tracks, startingAt: index, startPolicy: startPolicy)
+        queueRevision += 1
         startLevelMeterIfNeeded()
         nowPlayingService.updateNowPlaying(force: true)
     }
@@ -126,6 +127,7 @@ final class PlayerViewModel {
             startingAt: index,
             positionSeconds: positionSeconds
         )
+        queueRevision += 1
         nowPlayingService.updateNowPlaying(force: true)
     }
 
@@ -154,6 +156,20 @@ final class PlayerViewModel {
     var currentQueueTracks: [Track] {
         _ = queueRevision
         return playbackService.currentQueueTracks()
+    }
+
+    /// Opaque queue revision for external control planes. It is intentionally
+    /// process-scoped; callers use it only to reject an intervening local
+    /// queue edit between read and write. The queue fingerprint supplements
+    /// the mutation counter because SmartPlaybackController can extend or
+    /// reshuffle its internal sequence while servicing ordinary playback
+    /// commands (for example next or a shuffle toggle).
+    var automationQueueRevision: String {
+        var hasher = Hasher()
+        for track in playbackService.currentQueueTracks() {
+            hasher.combine(track.id)
+        }
+        return "v2-\(queueRevision)-\(hasher.finalize())"
     }
 
     var currentQueueDisplayIndex: Int? {

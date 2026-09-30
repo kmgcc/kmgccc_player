@@ -9,6 +9,7 @@
 
 import AppKit
 import Foundation
+import MotionKit
 import SwiftUI
 
 struct ExpandableVolumeControl: View {
@@ -26,6 +27,8 @@ struct ExpandableVolumeControl: View {
     var foregroundProfile: FullscreenMiniPlayerForegroundProfile? = nil
     
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -126,11 +129,11 @@ struct ExpandableVolumeControl: View {
         isExpanded ? scaledExpandedWidth : scaledCollapsedWidth
     }
 
-    private var expandAnimation: Animation {
-        if reduceMotion {
-            return .easeInOut(duration: 0.18)
-        }
-        return .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
+    private var expandAnimation: Animation? {
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: reduceMotion
+        )
+        return policy.animation(for: motionTokens[.layout])
     }
 
     private func setExpanded(_ expanded: Bool) {

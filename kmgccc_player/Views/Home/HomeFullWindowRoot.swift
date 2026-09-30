@@ -15,19 +15,19 @@
 //  center pane.
 //
 
+import MotionKit
 import SwiftData
 import SwiftUI
 
 struct HomeFullWindowRoot: View {
     @ObservedObject var appSession: AppSessionHost
     @State private var settings = AppSettings.shared
-    @State private var coverDownloadService = CoverDownloadService()
-    @State private var netEaseCoverService = NetEaseCoverService()
     @State private var layout = HomeWindowLayoutState.shared
+    @State private var hasMountedHome = false
 
     var body: some View {
         Group {
-            if shouldRenderHome {
+            if hasMountedHome || shouldRenderHome {
                 if let libraryVM = appSession.libraryVM,
                    let playerVM = appSession.playerVM,
                    let playbackCoordinator = appSession.playbackCoordinator,
@@ -36,12 +36,17 @@ struct HomeFullWindowRoot: View {
                    let importEnrichmentService = appSession.importEnrichmentService,
                    let cacheServices = appSession.cacheServices,
                    let skinManager = appSession.skinManager {
-                    HomeView()
+                    let historyStore = appSession.playbackHistoryStore
+                    HomeView(
+                        playbackCoordinator: playbackCoordinator,
+                        listeningFootprintProvider: {
+                            historyStore.dailyPlayCounts()
+                        }
+                    )
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .environment(AppSettings.shared)
                         .environment(appSession.uiState)
                         .environment(appSession.homeVM)
-                        .environment(appSession.playbackHistoryStore)
                         .environment(appSession.playbackHistoryViewModel)
                         .environment(libraryVM)
                         .environment(playerVM)
@@ -51,8 +56,8 @@ struct HomeFullWindowRoot: View {
                         .environment(importEnrichmentService)
                         .environment(cacheServices)
                         .environment(skinManager)
-                        .environment(coverDownloadService)
-                        .environment(netEaseCoverService)
+                        .environment(cacheServices.coverDownloadService)
+                        .environment(cacheServices.netEaseCoverService)
                         .environmentObject(ThemeStore.shared)
                         .environment(\.libraryPresentedAccentColor, ThemeStore.shared.accentColor)
                         .modelContainer(appSession.sharedModelContainer)
@@ -66,6 +71,14 @@ struct HomeFullWindowRoot: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .all)
+        .opacity(shouldRenderHome ? 1 : 0)
+        .allowsHitTesting(shouldRenderHome)
+        .accessibilityHidden(!shouldRenderHome)
+        .transaction { $0.animation = nil }
+        .onChange(of: shouldRenderHome, initial: true) { _, active in
+            if active { hasMountedHome = true }
+        }
+        .motionEnvironment()
     }
 
     private var shouldRenderHome: Bool {

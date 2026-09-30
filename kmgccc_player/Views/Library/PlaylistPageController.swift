@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 @MainActor
@@ -67,7 +68,7 @@ final class PlaylistPageController {
         /// almost immediately (fast acceleration) then creeps the last few percent
         /// into the target row over a long deceleration. Slower and more non-linear
         /// than a plain easeOut for a silkier reveal.
-        static let animation: Animation = .timingCurve(0.1, 1.0, 0.3, 1.0, duration: 0.75)
+        static let animationDuration: Double = 0.75
         /// Delay after the scroll is triggered before the highlight pulse fires,
         /// chosen to land near the end of the scroll animation.
         static let highlightDelayMilliseconds: UInt64 = 620
@@ -84,6 +85,8 @@ final class PlaylistPageController {
     private(set) var areRowArtworkLoadsEnabled = true
     private(set) var isRowArtworkPrefetchEnabled = false
     private(set) var isHeaderEffectsEnabled = false
+    var motionTokens: MotionTokens = .standard
+    var motionPolicyOverride: MotionPolicy = .full
 
     // MARK: - Header Artwork Crossfade State
     /// Current visible artwork layer (old or placeholder)
@@ -135,6 +138,29 @@ final class PlaylistPageController {
 
     let haloState = HeaderHaloState()
 
+    private var resolvedMotionPolicy: MotionPolicy {
+        motionPolicyOverride.resolving(
+            accessibilityReduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
+    }
+
+    private func motionAnimation(for spec: MotionSpec) -> Animation? {
+        resolvedMotionPolicy.animation(for: spec)
+    }
+
+    var revealScrollPositionAnimation: Animation? {
+        guard isRevealScrollArmed, pendingRevealAnimated else { return nil }
+        return motionAnimation(for: revealScrollAnimationSpec)
+    }
+
+    private var revealScrollAnimationSpec: MotionSpec {
+        motionTokens.phaseSpec(
+            for: .navigation,
+            duration: RevealScroll.animationDuration,
+            bounce: 0
+        )
+    }
+
     private var libraryVM: LibraryViewModel?
     private var playerVM: PlayerViewModel?
     private var uiState: UIStateViewModel?
@@ -163,6 +189,12 @@ final class PlaylistPageController {
     private var didFadeHaloIdentity: String?
     @ObservationIgnored
     private var artworkPrefetchTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored
+    private var rowArtworkPrefetchTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var rowArtworkPrefetchKey: String?
+    @ObservationIgnored
+    private var isRowArtworkScrollSuspended = false
     @ObservationIgnored
     private var prefetchedArtworkKeys: Set<String> = []
     @ObservationIgnored
@@ -472,9 +504,9 @@ final class PlaylistPageController {
         }
     }
 
-    func updateHaloScroll(offset: CGFloat) {
+    func updateHaloScroll(offset: CGFloat, viewportHeight: CGFloat) {
         LyricsRuntimeProfile.increment("header.haloScrollUpdate.called")
-        if haloState.updateScroll(offset: offset) {
+        if haloState.updateScroll(offset: offset, viewportHeight: viewportHeight) {
             LyricsRuntimeProfile.increment("header.haloScrollUpdate.changed")
         } else {
             LyricsRuntimeProfile.increment("header.haloScrollUpdate.same")
@@ -484,13 +516,32 @@ final class PlaylistPageController {
     private var lastPrefetchTime: Date = .distantPast
     private let prefetchDebounceInterval: TimeInterval = 0.08
 
-    func prefetchAroundTrackID(_ trackID: UUID) {
+    func setRowArtworkScrollSuspended(_ suspended: Bool, nearbyTrackID: UUID?) {
+        guard isRowArtworkScrollSuspended != suspended else { return }
+        isRowArtworkScrollSuspended = suspended
+
+        if suspended {
+            if let rowArtworkPrefetchKey {
+                prefetchedArtworkKeys.remove(rowArtworkPrefetchKey)
+            }
+            rowArtworkPrefetchTask?.cancel()
+            rowArtworkPrefetchTask = nil
+            rowArtworkPrefetchKey = nil
+            lastPrefetchBucket = nil
+            return
+        }
+
+        guard isRowArtworkPrefetchEnabled, let nearbyTrackID else { return }
+        prefetchAroundTrackID(nearbyTrackID, bypassDebounce: true)
+    }
+
+    func prefetchAroundTrackID(_ trackID: UUID, bypassDebounce: Bool = false) {
         guard isRowArtworkPrefetchEnabled else { return }
+        guard !isRowArtworkScrollSuspended else { return }
         guard let page else { return }
-        guard let startIndex = page.rows.firstIndex(where: { $0.id == trackID }) else { return }
-        
         let now = Date()
-        guard now.timeIntervalSince(lastPrefetchTime) >= prefetchDebounceInterval else { return }
+        guard bypassDebounce || now.timeIntervalSince(lastPrefetchTime) >= prefetchDebounceInterval else { return }
+        guard let startIndex = page.rows.firstIndex(where: { $0.id == trackID }) else { return }
         lastPrefetchTime = now
         
         let bucket = startIndex / 8
@@ -499,32 +550,28 @@ final class PlaylistPageController {
 
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         
-        let start = max(0, startIndex - 12)
-        let end = min(page.rows.count, startIndex + 40)
+        let start = max(0, startIndex - 4)
+        let end = min(page.rows.count, startIndex + 20)
         guard start < end else { return }
 
         let rows = Array(page.rows[start..<end])
-        var requests = rows.map {
-            PlaylistArtworkPipeline.rowLowRequest(
-                trackID: $0.id,
-                artworkData: $0.artworkData,
-                artworkFileURL: $0.artworkFileURL,
-                artworkIdentity: $0.artworkIdentity,
+        let targetSide = Int(Constants.Layout.artworkSmallSize * scale)
+        let requests = rows.compactMap { row -> PlaylistArtworkRequest? in
+            let cacheKey = "\(row.artworkIdentity)|rowHigh|\(targetSide)x\(targetSide)"
+            if FastArtworkMemoryCache.shared.image(forKey: cacheKey) != nil {
+                return nil
+            }
+            return PlaylistArtworkPipeline.rowHighRequest(
+                trackID: row.id,
+                artworkData: row.artworkData,
+                artworkFileURL: row.artworkFileURL,
+                artworkIdentity: row.artworkIdentity,
                 logicalSize: Constants.Layout.artworkSmallSize,
                 scale: scale
             )
         }
-        requests.append(contentsOf: rows.prefix(24).map {
-            PlaylistArtworkPipeline.rowHighRequest(
-                trackID: $0.id,
-                artworkData: $0.artworkData,
-                artworkFileURL: $0.artworkFileURL,
-                artworkIdentity: $0.artworkIdentity,
-                logicalSize: Constants.Layout.artworkSmallSize,
-                scale: scale
-            )
-        })
-        startArtworkPrefetch(
+        guard !requests.isEmpty else { return }
+        startRowArtworkPrefetch(
             key: "\(page.selectionIdentity)-bucket-\(bucket)-\(page.sourceFingerprint)",
             requests: requests
         )
@@ -689,6 +736,10 @@ final class PlaylistPageController {
             task.cancel()
         }
         artworkPrefetchTasks.removeAll()
+        rowArtworkPrefetchTask?.cancel()
+        rowArtworkPrefetchTask = nil
+        rowArtworkPrefetchKey = nil
+        isRowArtworkScrollSuspended = false
         prefetchedArtworkKeys.removeAll()
         latestTrackLookup.removeAll()
         snapshotUpdateTask?.cancel()
@@ -713,7 +764,9 @@ final class PlaylistPageController {
         let firstPaintToken = FirstUseHitchDiagnostics.begin("PlaylistPageController.firstPaint", detail: "selection=\(selection)")
         phaseTask?.cancel()
         let playbackActive = playerVM?.isPlaying == true
-        areRowSecondaryInteractionsEnabled = false
+        // Mount the final row shape once. Replacing the trailing glyph with a
+        // Menu after first paint changes its native width and reloads the table.
+        areRowSecondaryInteractionsEnabled = true
         areRowArtworkLoadsEnabled = true
         isRowArtworkPrefetchEnabled = false
         let hasDetailHeader: Bool = {
@@ -731,7 +784,6 @@ final class PlaylistPageController {
         phaseTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 130_000_000)
             guard !Task.isCancelled, self.phaseToken == token else { return }
-            self.areRowSecondaryInteractionsEnabled = true
             if !playbackActive {
                 self.isRowArtworkPrefetchEnabled = true
             } else {
@@ -820,9 +872,12 @@ final class PlaylistPageController {
             sortKeyRawValue: libraryVM.trackSortKey.rawValue,
             sortOrderRawValue: sortOrderCacheComponent
         )
+        guard activeLoadToken == token, !Task.isCancelled,
+              libraryVM.currentSelection == selection else { return }
 
         if !isSearching,
            let cached = await PlaylistPageModelCacheService.shared.model(for: modelKey),
+           activeLoadToken == token, !Task.isCancelled,
            let cachedPage = hydratedPageModel(
                 selection: selection,
                 selectionIdentity: selectionIdentity,
@@ -960,7 +1015,13 @@ final class PlaylistPageController {
 
     private func applyPageModel(_ pageModel: PlaylistPageModel, restoreScroll: Bool) {
         resetArtworkPresentation(force: false, identity: pageModel.header?.artworkIdentity)
-        page = pageModel
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            page = pageModel
+            isSelectionTransitioning = false
+            phase = .ready
+        }
         LyricsRuntimeProfile.setMetadata("page.rows.count", value: "\(pageModel.rows.count)")
         LyricsRuntimeProfile.setMetadata(
             "page.header.present",
@@ -975,8 +1036,6 @@ final class PlaylistPageController {
         }
         latestTrackLookup = Dictionary(uniqueKeysWithValues: pageModel.queueTracks.map { ($0.id, $0) })
         lastPrefetchBucket = nil
-        isSelectionTransitioning = false
-        phase = .ready
 
         if revealPendingTrackIfPossible() {
             // The explicit reveal request owns the scroll target for this rebuild.
@@ -1427,6 +1486,28 @@ final class PlaylistPageController {
         }
     }
 
+    private func startRowArtworkPrefetch(
+        key: String,
+        requests: [PlaylistArtworkRequest]
+    ) {
+        guard !requests.isEmpty, !prefetchedArtworkKeys.contains(key) else { return }
+        prefetchedArtworkKeys.insert(key)
+
+        rowArtworkPrefetchTask?.cancel()
+        rowArtworkPrefetchKey = key
+
+        guard let pipeline = playlistArtworkPipeline,
+              let task = pipeline.prefetch(requests, priority: .background) else { return }
+        rowArtworkPrefetchTask = task
+
+        Task { @MainActor [weak self] in
+            await task.value
+            guard let self, self.rowArtworkPrefetchKey == key else { return }
+            self.rowArtworkPrefetchTask = nil
+            self.rowArtworkPrefetchKey = nil
+        }
+    }
+
     private var shouldDeferHeaderHeavyWork: Bool {
         guard let uiState else { return false }
         return uiState.lyricsVisible && !uiState.lyricsPanelSuppressedByModal
@@ -1598,7 +1679,14 @@ final class PlaylistPageController {
             guard self.currentArtworkPresentationIdentity == identity else { return }
 
             LyricsRuntimeProfile.increment("header.crossfade.animationStart")
-            withAnimation(.easeInOut(duration: FadeTiming.headerCrossfadeDuration)) {
+            withAnimation(
+                motionAnimation(
+                    for: motionTokens.phaseSpec(
+                        for: .contentReplacement,
+                        duration: FadeTiming.headerCrossfadeDuration
+                    )
+                )
+            ) {
                 self.headerIncomingOpacity = 1
             }
 
@@ -1643,7 +1731,14 @@ final class PlaylistPageController {
             await Task.yield()
 
             LyricsRuntimeProfile.increment("header.halo.animationStart")
-            withAnimation(.easeInOut(duration: FadeTiming.haloReadyFadeDuration)) {
+            withAnimation(
+                motionAnimation(
+                    for: motionTokens.phaseSpec(
+                        for: .backgroundTransition,
+                        duration: FadeTiming.haloReadyFadeDuration
+                    )
+                )
+            ) {
                 self.haloPresentationOpacity = 1
             }
 
@@ -1849,7 +1944,7 @@ final class PlaylistPageController {
             guard let self else { return }
 
             if animated {
-                withAnimation(RevealScroll.animation) {
+                withAnimation(motionAnimation(for: revealScrollAnimationSpec)) {
                     self.listScrollPositionID = trackID
                 }
                 self.scheduleRevealHighlight(for: trackID)
@@ -2076,7 +2171,7 @@ final class PlaylistPageController {
                     durationText: formatDuration(track.duration),
                     artworkIdentity: PlaylistArtworkPipeline.rowSourceIdentity(
                         trackID: track.id,
-                        artworkData: track.artworkData,
+                        artworkData: artworkFileURL == nil ? track.artworkData : nil,
                         artworkFileURL: artworkFileURL
                     ),
                     artworkFileURL: artworkFileURL,

@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 private struct PlaylistDeletionRequest: Identifiable {
@@ -303,10 +304,12 @@ private struct PlaylistListRow: View {
                     cornerRadius: cornerRadius,
                     clipShape: .continuous,
                     iconSize: 22,
-                    iconOpacity: 0.4
+                    iconOpacity: 0.0,
+                    themeColor: Color.primary.opacity(0.04)
                 )
             }
         }
+        .motionAnimation(.microInteraction, value: image != nil)
         .frame(width: artworkSize, height: artworkSize)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .shadow(
@@ -397,12 +400,15 @@ private struct PlaylistListRow: View {
 
     private func loadHeaderImage(from resolved: ResolvedHeaderArtwork?) async -> NSImage? {
         guard let resolved else { return nil }
+        if let image = resolved.image {
+            return image
+        }
         let request = PlaylistArtworkPipeline.headerRequest(
             artworkIdentity: artworkIdentity,
-            artworkData: resolved.image?.tiffRepresentation,
+            artworkData: nil,
             fileURL: resolved.fileURL
         )
-        return await cacheServices.playlistArtworkPipeline.load(request) ?? resolved.image
+        return await cacheServices.playlistArtworkPipeline.load(request)
     }
 
     private func formattedDuration(_ seconds: Double) -> String {

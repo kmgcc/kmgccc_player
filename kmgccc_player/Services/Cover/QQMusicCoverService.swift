@@ -33,6 +33,8 @@ actor QQMusicCoverService {
     private let cacheRootURL: URL
     private let metadataTTL: TimeInterval = 7 * 24 * 60 * 60
     private var inFlightMetadata: [String: Task<[QQMusicArtworkCandidate], Error>] = [:]
+    private var writeCounter = 0
+    private var didScheduleInitialTrim = false
 
     init(
         helper: QQMusicHelperProcess = .shared,
@@ -309,6 +311,7 @@ actor QQMusicCoverService {
     }
 
     private func imageData(for imageURLString: String) async throws -> Data {
+        scheduleInitialTrimIfNeeded()
         guard let sanitizedURLString = sanitizeImageURL(imageURLString) else {
             throw QQMusicCoverError.badURL
         }
@@ -318,6 +321,7 @@ actor QQMusicCoverService {
 
         if let data = try? Data(contentsOf: cacheURL),
            ArtworkDataNormalizer.isDecodableImage(data) {
+            touchItem(at: cacheURL)
             return data
         }
 
@@ -346,10 +350,51 @@ actor QQMusicCoverService {
                 withIntermediateDirectories: true
             )
             try data.write(to: cacheURL, options: .atomic)
+            recordDiskWriteAndTrimIfNeeded()
         } catch {
             Self.recordArtworkCacheFailure(error: error)
         }
         return data
+    }
+
+    private func touchItem(at url: URL) {
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+    }
+
+    private func scheduleInitialTrimIfNeeded() {
+        guard !didScheduleInitialTrim else { return }
+        didScheduleInitialTrim = true
+        Task { [weak self] in
+            await self?.trimDiskCaches()
+        }
+    }
+
+    private func recordDiskWriteAndTrimIfNeeded() {
+        writeCounter += 1
+        guard writeCounter.isMultiple(of: 12) else { return }
+        trimDiskCaches()
+    }
+
+    func trimDiskCaches() {
+        let imageResult = DiskCacheRetention.trim(
+            at: imageCacheDirectory(),
+            maxBytes: DiskCacheBudget.qqMusicImages.maxBytes,
+            targetFraction: DiskCacheBudget.qqMusicImages.targetFraction,
+            maxAge: DiskCacheBudget.qqMusicImages.maxAge
+        )
+        let metadataResult = DiskCacheRetention.trim(
+            at: metadataCacheDirectory(),
+            maxBytes: DiskCacheBudget.qqMusicMetadata.maxBytes,
+            targetFraction: DiskCacheBudget.qqMusicMetadata.targetFraction,
+            maxAge: DiskCacheBudget.qqMusicMetadata.maxAge
+        )
+        let removed = imageResult.removedFileCount + metadataResult.removedFileCount
+        if removed > 0 {
+            Log.debug(
+                "[QQMusicCover] disk trim removedFiles=\(removed) removedBytes=\(imageResult.removedBytes + metadataResult.removedBytes)",
+                category: .perf
+            )
+        }
     }
 
     private nonisolated static func recordArtworkCacheFailure(error: Error) {
@@ -390,6 +435,7 @@ actor QQMusicCoverService {
             try? FileManager.default.removeItem(at: url)
             return nil
         }
+        touchItem(at: url)
         return entry.candidates
     }
 
@@ -402,6 +448,7 @@ actor QQMusicCoverService {
             withIntermediateDirectories: true
         )
         try? data.write(to: url, options: .atomic)
+        recordDiskWriteAndTrimIfNeeded()
     }
 
     private func metadataKey(
@@ -657,6 +704,7 @@ actor QQMusicCoverService {
 
     private nonisolated static func makeDefaultSession() -> URLSession {
         let configuration = URLSessionConfiguration.default
+        configuration.urlCache = nil
         configuration.timeoutIntervalForRequest = 10
         configuration.timeoutIntervalForResource = CoverLookupConfiguration.qqMusicCandidatesTimeout
         return URLSession(configuration: configuration)

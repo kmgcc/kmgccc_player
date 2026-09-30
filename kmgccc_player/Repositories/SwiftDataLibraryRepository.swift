@@ -150,7 +150,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             metas: trackMetas,
             paths: paths
         )
-        let tracks = trackMetas.map { buildTrack(from: $0, existingManagedAudioPaths: existingManagedAudioPaths) }
+        let stringPool = StringInternPool()
+        let tracks = trackMetas.map { buildTrack(from: $0, existingManagedAudioPaths: existingManagedAudioPaths, stringPool: stringPool) }
         let tracksById = trackDictionaryByID(tracks)
 
         let loadedPlaylists: [Playlist] = snapshot.playlistSidecars.map { sidecar in
@@ -793,7 +794,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         albumEntries
     }
 
-    func updateArtistEntry(_ entry: ArtistEntry) async throws {
+    @discardableResult
+    func updateArtistEntry(_ entry: ArtistEntry) async throws -> ArtistEntry {
         let canonicalName = entry.canonicalName
         let displayName = entry.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? LibraryNormalization.displayArtist(entry.displayName)
@@ -801,14 +803,12 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         let target = artistEntries.first {
             $0.canonicalName == canonicalName && $0.id != entry.id
         }
-        let entryToPersist = mergedArtistEntry(
+        let entryToPersist = try writeArtistEntryToDisk(mergedArtistEntry(
             preferred: entry,
             fallback: target,
             canonicalName: canonicalName,
             displayName: displayName
-        )
-
-        try writeArtistEntryToDisk(entryToPersist)
+        ))
 
         if let target {
             try libraryService.deleteArtistEntry(id: entry.id)
@@ -823,22 +823,22 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         } else {
             artistEntries.append(entryToPersist)
         }
+        return entryToPersist
     }
 
-    func updateAlbumEntry(_ entry: AlbumEntry) async throws {
+    @discardableResult
+    func updateAlbumEntry(_ entry: AlbumEntry) async throws -> AlbumEntry {
         let target = albumEntries.first {
             $0.canonicalKey == entry.canonicalKey && $0.id != entry.id
         }
-        let entryToPersist = mergedAlbumEntry(
+        let entryToPersist = try writeAlbumEntryToDisk(mergedAlbumEntry(
             preferred: entry,
             fallback: target,
             canonicalKey: entry.canonicalKey,
             displayTitle: entry.displayTitle,
             primaryArtistCanonicalName: entry.primaryArtistCanonicalName,
             primaryArtistDisplayName: entry.primaryArtistDisplayName
-        )
-
-        try writeAlbumEntryToDisk(entryToPersist)
+        ))
 
         if let target {
             try libraryService.deleteAlbumEntry(id: entry.id)
@@ -853,6 +853,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         } else {
             albumEntries.append(entryToPersist)
         }
+        return entryToPersist
     }
 
     func applyArtistEdits(original: ArtistEntry, updated: ArtistEntry) async throws {
@@ -876,13 +877,12 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         let targetArtist = artistEntries.first {
             $0.canonicalName == newCanonicalName && $0.id != original.id
         }
-        let entryToPersist = mergedArtistEntry(
+        let entryToPersist = try writeArtistEntryToDisk(mergedArtistEntry(
             preferred: finalEntry,
             fallback: targetArtist,
             canonicalName: newCanonicalName,
             displayName: resolvedName
-        )
-        try writeArtistEntryToDisk(entryToPersist)
+        ))
         if let targetArtist {
             try libraryService.deleteArtistEntry(id: original.id)
             artistEntries.removeAll { $0.id == original.id }
@@ -907,15 +907,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             let targetAlbum = albumEntries.first {
                 $0.canonicalKey == migratedAlbum.canonicalKey && $0.id != album.id
             }
-            let albumToPersist = mergedAlbumEntry(
+            let albumToPersist = try writeAlbumEntryToDisk(mergedAlbumEntry(
                 preferred: migratedAlbum,
                 fallback: targetAlbum,
                 canonicalKey: migratedAlbum.canonicalKey,
                 displayTitle: migratedAlbum.displayTitle,
                 primaryArtistCanonicalName: newCanonicalName,
                 primaryArtistDisplayName: resolvedName
-            )
-            try writeAlbumEntryToDisk(albumToPersist)
+            ))
             if let targetAlbum {
                 try libraryService.deleteAlbumEntry(id: album.id)
                 albumEntries.removeAll { $0.id == album.id }
@@ -974,15 +973,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         let targetAlbum = albumEntries.first {
             $0.canonicalKey == newCanonicalKey && $0.id != original.id
         }
-        let entryToPersist = mergedAlbumEntry(
+        let entryToPersist = try writeAlbumEntryToDisk(mergedAlbumEntry(
             preferred: finalEntry,
             fallback: targetAlbum,
             canonicalKey: newCanonicalKey,
             displayTitle: resolvedTitle,
             primaryArtistCanonicalName: original.primaryArtistCanonicalName,
             primaryArtistDisplayName: original.primaryArtistDisplayName
-        )
-        try writeAlbumEntryToDisk(entryToPersist)
+        ))
         if let targetAlbum {
             try libraryService.deleteAlbumEntry(id: original.id)
             albumEntries.removeAll { $0.id == original.id }
@@ -1208,7 +1206,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }.value
     }
 
-    private func buildTrack(from meta: ScannedTrackMeta, existingManagedAudioPaths: Set<String>) -> Track {
+    private func buildTrack(
+        from meta: ScannedTrackMeta,
+        existingManagedAudioPaths: Set<String>,
+        stringPool: StringInternPool? = nil
+    ) -> Track {
         let availability: TrackAvailability
         switch meta.mediaLocator {
         case let .managed(relativePath):
@@ -1224,20 +1226,46 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
         preferenceStatsService.replaceStats(for: meta.id, with: persistedStats)
 
+        let intern: (String) -> String = { str in
+            stringPool?.intern(str) ?? str
+        }
+
+        let internedArtist = intern(meta.artist)
+        let internedAlbum = intern(meta.album)
+        let internedAlbumArtist = meta.albumArtist.map(intern)
+        let internedGenreTags = meta.genreTags.map(intern)
+        let internedLanguage = intern(meta.language)
+        let internedLabelOrCompany = intern(meta.labelOrCompany)
+        let internedMetadataSource = meta.metadataSource.map(intern)
+        let internedRootSnapshot = intern(paths.rootURL.path)
+
+        let internedAudioFileName = intern(meta.audioFileName)
+        let internedArtworkFileName = meta.artworkFileName.map(intern)
+        let internedLyricsFileName = meta.lyricsFileName.map(intern)
+        let internedTtmlLyricsFileName = meta.ttmlLyricsFileName.map(intern)
+        let internedArtistCredits = meta.artistCredits?.map { credit in
+            TrackCredit(
+                id: credit.id,
+                displayName: intern(credit.displayName),
+                role: credit.role,
+                canonicalName: intern(credit.canonicalName)
+            )
+        }
+
         let track = Track(
             id: meta.id,
             title: meta.title,
-            artist: meta.artist,
-            artistCredits: meta.artistCredits,
-            album: meta.album,
-            albumArtist: meta.albumArtist,
+            artist: internedArtist,
+            artistCredits: internedArtistCredits,
+            album: internedAlbum,
+            albumArtist: internedAlbumArtist,
             userDescription: meta.description,
-            genreTags: meta.genreTags,
-            language: meta.language,
-            labelOrCompany: meta.labelOrCompany,
+            genreTags: internedGenreTags,
+            language: internedLanguage,
+            labelOrCompany: internedLabelOrCompany,
             releaseDate: meta.releaseDate,
             qqMusicSongMid: meta.qqMusicSongMid,
-            metadataSource: meta.metadataSource,
+            metadataSource: internedMetadataSource,
             metadataFetchedAt: meta.metadataFetchedAt,
             metadataConfidence: meta.metadataConfidence,
             musicBrainzReleaseID: meta.musicBrainzReleaseID,
@@ -1246,25 +1274,21 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             addedAt: meta.addedAt,
             importedAt: meta.importedAt,
             lyricsTimeOffsetMs: meta.lyricsTimeOffsetMs,
-            fileBookmarkData: meta.mediaLocator.referencedFile?.fileBookmarkData ?? Data(),
-            originalFilePath: meta.originalFilePath,
-            libraryRelativePath: meta.libraryRelativePath,
             mediaLocator: meta.mediaLocator,
             availability: availability,
             artworkData: nil,
             ttmlLyricText: nil,
             lyricsText: nil,
+            libraryRootSnapshot: internedRootSnapshot,
+            audioFileName: internedAudioFileName,
+            artworkFileName: internedArtworkFileName,
+            lyricsFileName: internedLyricsFileName,
+            ttmlLyricsFileName: internedTtmlLyricsFileName,
             ncmConversionAssociation: meta.ncmConversionAssociation,
             importProvenance: meta.importProvenance,
             audioProperties: meta.audioProperties,
             enrichmentSuggestions: meta.enrichmentSuggestions
         )
-
-        track.libraryRootSnapshot = paths.rootURL.path
-        track.audioFileName = meta.audioFileName
-        track.artworkFileName = meta.artworkFileName
-        track.lyricsFileName = meta.lyricsFileName
-        track.ttmlLyricsFileName = meta.ttmlLyricsFileName
 
         return track
     }
@@ -1296,9 +1320,16 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
         let albumGrouping = LibraryNormalization.buildAlbumGrouping(tracks: allTracks)
+        var albumKeyPool: [String: String] = [:]
         for track in allTracks {
-            track.albumGroupKey = albumGrouping.albumKeyByTrackID[track.id]
+            let key = albumGrouping.albumKeyByTrackID[track.id]
                 ?? LibraryNormalization.normalizedAlbumKey(album: track.album)
+            if let existing = albumKeyPool[key] {
+                track.albumGroupKey = existing
+            } else {
+                albumKeyPool[key] = key
+                track.albumGroupKey = key
+            }
         }
         runtimeAlbums = albumGrouping.sections
     }
@@ -1365,6 +1396,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 category: .library
             )
         }
+        CacheManager.trimProcessMemory()
     }
 
     private func writePlaylistToDisk(
@@ -1377,7 +1409,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         )
     }
 
-    private func writeArtistEntryToDisk(_ entry: ArtistEntry) throws {
+    private func writeArtistEntryToDisk(_ entry: ArtistEntry) throws -> ArtistEntry {
         let sidecar = ArtistSidecar(
             id: entry.id,
             canonicalName: entry.canonicalName,
@@ -1394,10 +1426,30 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             createdAt: entry.createdAt,
             updatedAt: entry.updatedAt
         )
-        try libraryService.writeArtistSidecar(sidecar, artworkData: entry.artworkData)
+        let destinationArtworkURL = entry.artworkFileName.map {
+            libraryService.paths.artistFolderURL(for: entry.id).appendingPathComponent($0)
+        }
+        let copiedArtworkData: Data?
+        if let artworkData = entry.artworkData {
+            copiedArtworkData = artworkData
+        } else if let sourceURL = entry.artworkFileURL,
+                  let destinationArtworkURL,
+                  sourceURL.standardizedFileURL != destinationArtworkURL.standardizedFileURL,
+                  FileManager.default.isReadableFile(atPath: sourceURL.path) {
+            copiedArtworkData = try Data(contentsOf: sourceURL)
+        } else {
+            copiedArtworkData = nil
+        }
+        try libraryService.writeArtistSidecar(sidecar, artworkData: copiedArtworkData)
+        var persistedEntry = entry
+        persistedEntry.artworkFileURL = destinationArtworkURL
+        if persistedEntry.existingArtworkURL != nil {
+            persistedEntry.artworkData = nil
+        }
+        return persistedEntry
     }
 
-    private func writeAlbumEntryToDisk(_ entry: AlbumEntry) throws {
+    private func writeAlbumEntryToDisk(_ entry: AlbumEntry) throws -> AlbumEntry {
         let sidecar = AlbumSidecar(
             id: entry.id,
             canonicalKey: entry.canonicalKey,
@@ -1420,10 +1472,30 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             createdAt: entry.createdAt,
             updatedAt: entry.updatedAt
         )
+        let destinationArtworkURL = entry.artworkFileName.map {
+            libraryService.paths.albumFolderURL(for: entry.id).appendingPathComponent($0)
+        }
+        let copiedArtworkData: Data?
+        if let artworkData = entry.artworkData {
+            copiedArtworkData = artworkData
+        } else if let sourceURL = entry.artworkFileURL,
+                  let destinationArtworkURL,
+                  sourceURL.standardizedFileURL != destinationArtworkURL.standardizedFileURL,
+                  FileManager.default.isReadableFile(atPath: sourceURL.path) {
+            copiedArtworkData = try Data(contentsOf: sourceURL)
+        } else {
+            copiedArtworkData = nil
+        }
         try libraryService.writeAlbumSidecar(
             sidecar,
-            artworkData: entry.artworkFileName != nil ? entry.artworkData : nil
+            artworkData: entry.artworkFileName != nil ? copiedArtworkData : nil
         )
+        var persistedEntry = entry
+        persistedEntry.artworkFileURL = destinationArtworkURL
+        if persistedEntry.existingArtworkURL != nil {
+            persistedEntry.artworkData = nil
+        }
+        return persistedEntry
     }
 
     private func mergedArtistEntry(
@@ -1444,6 +1516,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             canonicalName: canonicalName,
             displayName: displayName,
             artworkFileName: preferred.artworkFileName ?? fallback.artworkFileName,
+            artworkFileURL: preferred.artworkFileURL ?? fallback.artworkFileURL,
             description: preferred.description.isEmpty ? fallback.description : preferred.description,
             genreTags: preferred.genreTags.isEmpty ? fallback.genreTags : preferred.genreTags,
             region: preferred.region.isEmpty ? fallback.region : preferred.region,
@@ -1486,6 +1559,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             primaryArtistCanonicalName: primaryArtistCanonicalName,
             primaryArtistDisplayName: primaryArtistDisplayName,
             artworkFileName: preferred.artworkFileName ?? fallback.artworkFileName,
+            artworkFileURL: preferred.artworkFileURL ?? fallback.artworkFileURL,
             description: preferred.description.isEmpty ? fallback.description : preferred.description,
             year: preferred.year ?? fallback.year,
             releaseYear: preferred.releaseYear ?? fallback.releaseYear ?? preferred.year ?? fallback.year,
@@ -1816,8 +1890,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 entry.totalDuration = matchingTracks.reduce(0) { $0 + $1.duration }
                 entry.isOrphaned = false
                 if entry.artworkFileName == nil {
-                    entry.artworkData = matchingTracks.first(where: { $0.artworkData != nil })?.artworkData
-                        ?? matchingTracks.first?.artworkData
+                    entry.artworkData = nil
                 }
                 nextAlbumEntries.append(entry)
                 continue
@@ -1944,11 +2017,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     private func scheduleSearchIndexRebuild(reason: String) async {
         let sources = makeSearchDocumentSources(for: allTracks)
-        // Register the rebuild on the index actor before returning to any
+        // Register the sync on the index actor before returning to any
         // caller that can immediately rebuild a search page. `search()` waits
         // for the actor's pending task; spawning a separate Task here left a
         // race where the query could observe the old/empty index first.
-        await searchIndex.scheduleFullRebuild(from: sources, reason: reason)
+        await searchIndex.scheduleSync(from: sources, reason: reason)
     }
 
     private func scheduleSearchIndexUpsert(for tracks: [Track], reason: String) {
@@ -1997,7 +2070,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
     }
 
-    private func applyPersistenceReferences(_ results: [TrackPersistenceWriteResult]) {
+    private func applyPersistenceReferences(
+        _ results: [TrackPersistenceWriteResult],
+        to requestedTracks: [Track] = []
+    ) {
         let referencesByTrackID = Dictionary(
             uniqueKeysWithValues: results.compactMap { result -> (UUID, TrackPersistenceReferences)? in
                 guard let references = result.references else { return nil }
@@ -2012,7 +2088,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             track.ttmlLyricsFileName = references.ttmlLyricsFileName
         }
 
-        for track in allTracks {
+        for track in requestedTracks + allTracks {
             if let references = referencesByTrackID[track.id] {
                 apply(references, to: track)
             }
@@ -2047,26 +2123,44 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
         let startedAt = ProcessInfo.processInfo.systemUptime
         let statsByTrackID = preferenceStatsService.getStats(for: uniqueTracks.map(\.id))
-        let snapshots = uniqueTracks.map { track in
-            TrackPersistenceSnapshot(
-                track: track,
-                preferenceStats: statsByTrackID[track.id] ?? TrackPreferenceStats()
-            )
-        }
-
         let capturedPaths = paths
-        let results = await Task.detached(priority: .utility) { @Sendable in
-            snapshots.map { snapshot in
-                autoreleasepool {
-                    LocalLibraryService.persistTrackSnapshotOnBackground(
-                        snapshot,
-                        paths: capturedPaths,
-                        mode: mode,
-                        reason: reason
-                    )
+        var results: [TrackPersistenceWriteResult] = []
+        results.reserveCapacity(uniqueTracks.count)
+        let batchSize = 24
+        for startIndex in stride(from: 0, to: uniqueTracks.count, by: batchSize) {
+            let endIndex = min(startIndex + batchSize, uniqueTracks.count)
+            let batchTracks = Array(uniqueTracks[startIndex..<endIndex])
+            let snapshots = batchTracks.map { track in
+                TrackPersistenceSnapshot(
+                    track: track,
+                    preferenceStats: statsByTrackID[track.id] ?? TrackPreferenceStats()
+                )
+            }
+            let batchResults = await Task.detached(priority: .utility) { @Sendable in
+                snapshots.map { snapshot in
+                    autoreleasepool {
+                        LocalLibraryService.persistTrackSnapshotOnBackground(
+                            snapshot,
+                            paths: capturedPaths,
+                            mode: mode,
+                            reason: reason
+                        )
+                    }
+                }
+            }.value
+            results.append(contentsOf: batchResults)
+
+            if mode == .metaAndArtwork || mode == .metaLyricsAndArtwork {
+                let tracksByID = Dictionary(uniqueKeysWithValues: batchTracks.map { ($0.id, $0) })
+                for result in batchResults where result.succeeded {
+                    guard let track = tracksByID[result.trackID] else { continue }
+                    if let references = result.references {
+                        track.artworkFileName = references.artworkFileName
+                    }
+                    track.releaseFileBackedArtworkData()
                 }
             }
-        }.value
+        }
 
         let persistedResults = results.filter(\.succeeded)
         let persistedTrackIDs = persistedResults.map(\.trackID)
@@ -2074,7 +2168,12 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         let failedTrackIDs = results.filter { !$0.succeeded }.map(\.trackID)
 
         if !persistedResults.isEmpty {
-            applyPersistenceReferences(persistedResults)
+            applyPersistenceReferences(persistedResults, to: uniqueTracks)
+            if mode == .metaAndArtwork || mode == .metaLyricsAndArtwork {
+                for track in uniqueTracks where persistedTrackIDSet.contains(track.id) {
+                    track.releaseFileBackedArtworkData()
+                }
+            }
             rebuildRuntimeDerivedState()
             let persistedTracks = allTracks.filter { persistedTrackIDSet.contains($0.id) }
             upsertTrackIndexEntries(for: persistedTracks)
@@ -2130,34 +2229,67 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 let didWrite = autoreleasepool {
                     importSidecarWriter(track, reason)
                 }
-                if didWrite { persisted.append(track.id) } else { failed.append(track.id) }
+                if didWrite {
+                    track.releaseFileBackedArtworkData()
+                    persisted.append(track.id)
+                } else {
+                    failed.append(track.id)
+                }
             }
             return LibraryTrackPersistenceResult(persistedTrackIDs: persisted, failedTrackIDs: failed)
         }
 
         let statsByTrackID = preferenceStatsService.getStats(for: uniqueTracks.map(\.id))
-        let snapshots = uniqueTracks.map { track in
-            TrackPersistenceSnapshot(
-                track: track,
-                preferenceStats: statsByTrackID[track.id] ?? TrackPreferenceStats()
-            )
-        }
         let capturedPaths = paths
-        let results = await Task.detached(priority: .utility) { @Sendable in
-            snapshots.map { snapshot in
-                autoreleasepool {
-                    LocalLibraryService.persistTrackSnapshotOnBackground(
-                        snapshot,
-                        paths: capturedPaths,
-                        mode: .metaLyricsAndArtwork,
-                        reason: reason
-                    )
-                }
+        var results: [TrackPersistenceWriteResult] = []
+        results.reserveCapacity(uniqueTracks.count)
+        let batchSize = 24
+        for startIndex in stride(from: 0, to: uniqueTracks.count, by: batchSize) {
+            let endIndex = min(startIndex + batchSize, uniqueTracks.count)
+            let batchTracks = Array(uniqueTracks[startIndex..<endIndex])
+            let snapshots = batchTracks.map { track in
+                TrackPersistenceSnapshot(
+                    track: track,
+                    preferenceStats: statsByTrackID[track.id] ?? TrackPreferenceStats()
+                )
             }
-        }.value
+            let batchResults = await Task.detached(priority: .utility) { @Sendable in
+                snapshots.map { snapshot in
+                    autoreleasepool {
+                        LocalLibraryService.persistTrackSnapshotOnBackground(
+                            snapshot,
+                            paths: capturedPaths,
+                            mode: .metaLyricsAndArtwork,
+                            reason: reason
+                        )
+                    }
+                }
+            }.value
+            results.append(contentsOf: batchResults)
 
+            let tracksByID = Dictionary(uniqueKeysWithValues: batchTracks.map { ($0.id, $0) })
+            for result in batchResults where result.succeeded {
+                guard let track = tracksByID[result.trackID] else { continue }
+                if let references = result.references {
+                    track.artworkFileName = references.artworkFileName
+                }
+                track.releaseFileBackedArtworkData()
+            }
+        }
+
+        let persistedResults = results.filter(\.succeeded)
+        let persistedTrackIDs = persistedResults.map(\.trackID)
+        let persistedTrackIDSet = Set(persistedTrackIDs)
+        if !persistedResults.isEmpty {
+            applyPersistenceReferences(persistedResults, to: uniqueTracks)
+        }
+        if !persistedResults.isEmpty {
+            for track in uniqueTracks where persistedTrackIDSet.contains(track.id) {
+                track.releaseFileBackedArtworkData()
+            }
+        }
         return LibraryTrackPersistenceResult(
-            persistedTrackIDs: results.filter(\.succeeded).map(\.trackID),
+            persistedTrackIDs: persistedTrackIDs,
             failedTrackIDs: results.filter { !$0.succeeded }.map(\.trackID)
         )
     }
@@ -2282,3 +2414,17 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
     }
 }
+
+private final class StringInternPool {
+    private var pool: [String: String] = [:]
+
+    func intern(_ str: String) -> String {
+        if str.isEmpty { return "" }
+        if let existing = pool[str] {
+            return existing
+        }
+        pool[str] = str
+        return str
+    }
+}
+

@@ -167,7 +167,13 @@ final class LibraryInitialImportIntegrationTests: XCTestCase {
         try FileManager.default.removeItem(at: fixture.wavURL)
         _ = try await session.refreshReferencedSources()
         playlists = await session.repository.fetchPlaylists()
-        XCTAssertEqual(playlists.first { $0.id == folderPlaylist.id }?.tracks.count, 1)
+        // A missing referenced file is retained in its source playlist as a
+        // missing Track. Only an explicit Source removal drops the source
+        // contribution; a transient file disappearance must not erase the
+        // user's Playlist membership.
+        XCTAssertEqual(playlists.first { $0.id == folderPlaylist.id }?.tracks.count, 2)
+        let tracksAfterMissing = await session.repository.fetchTracks(in: nil)
+        XCTAssertEqual(tracksAfterMissing.filter { $0.availability == .missing }.count, 1)
         XCTAssertEqual(playlists.first { $0.id == individualPlaylist.id }?.tracks.count, 1)
 
         await session.quiesce()

@@ -7,7 +7,8 @@
 //  The surface manager owns renderer lifetime across SwiftUI/AppKit hosts.
 //
 
-import NativeLyrics
+import MelismaKit
+import MotionKit
 import SwiftUI
 
 /// Right-side lyrics panel with the native layer-backed lyrics surface.
@@ -51,7 +52,7 @@ struct LyricsPanelView: View {
             .onAppear {
                 let token = FirstUseHitchDiagnostics.begin(
                     "LyricsPanelView.onAppear",
-                    detail: "hasTrack=\(playbackCoordinator.presentation.hasTrack), visible=\(uiState.lyricsVisible)"
+                    detail: "hasTrack=\(playbackCoordinator.stablePresentation.hasTrack), visible=\(uiState.lyricsVisible)"
                 )
                 Log.info("LyricsPanelView appeared", category: .webview)
 
@@ -65,7 +66,7 @@ struct LyricsPanelView: View {
             .onDisappear {
                 let token = FirstUseHitchDiagnostics.begin(
                     "LyricsPanelView.onDisappear",
-                    detail: "hasTrack=\(playbackCoordinator.presentation.hasTrack)"
+                    detail: "hasTrack=\(playbackCoordinator.stablePresentation.hasTrack)"
                 )
                 Log.info("LyricsPanelView disappeared", category: .webview)
                 // Report visibility to manager - manager will debounce/handle transient states
@@ -75,8 +76,8 @@ struct LyricsPanelView: View {
                 shouldHostLyricsSurface = false
                 FirstUseHitchDiagnostics.end(token)
             }
-            .onChange(of: playbackCoordinator.presentation.lyricsIdentity, handleTrackIdentityChange)
-            .onChange(of: playbackCoordinator.presentation.hasTrack) { _, hasTrack in
+            .onChange(of: playbackCoordinator.stablePresentation.lyricsIdentity, handleTrackIdentityChange)
+            .onChange(of: playbackCoordinator.stablePresentation.hasTrack) { _, hasTrack in
                 syncMainLyricsSurfaceVisibility(
                     isVisible: isLyricsSurfaceActive,
                     reason: "presentation hasTrack changed",
@@ -107,7 +108,7 @@ struct LyricsPanelView: View {
                 guard isLyricsSurfaceActive else { return }
                 guard
                     let trackID = notification.userInfo?["trackID"] as? UUID,
-                    trackID == playbackCoordinator.presentation.localTrack?.id
+                    trackID == playbackCoordinator.stablePresentation.localTrack?.id
                 else { return }
                 reloadLyricsSurface(reason: "library track enrichment update", forceLyricsReload: true)
             }
@@ -119,12 +120,6 @@ struct LyricsPanelView: View {
             }
             // Settings observation moved to modifier to reduce compiler complexity
             .modifier(LyricsSettingsObserver(lyricsVM: lyricsVM, isActive: isLyricsSurfaceActive))
-            .overlay {
-                LyricsRealtimeSyncObserver(isActive: isLyricsSurfaceActive) {
-                    reloadLyricsSurface(reason: "playback restarted", forceLyricsReload: true)
-                }
-                .allowsHitTesting(false)
-            }
     }
 
     private var isLyricsSurfaceActive: Bool {
@@ -151,7 +146,7 @@ struct LyricsPanelView: View {
                 .allowsHitTesting(false)
         case .clear:
             Rectangle()
-                .fill(.ultraThinMaterial)
+                .fill(Color.primary.opacity(themeStore.colorScheme == .dark ? 0.04 : 0.025))
                 .allowsHitTesting(false)
         }
     }
@@ -186,7 +181,7 @@ struct LyricsPanelView: View {
     private var panelContent: some View {
         ZStack {
             ZStack {
-                if !playbackCoordinator.presentation.hasTrack {
+                if !playbackCoordinator.stablePresentation.hasTrack {
                     emptyStateView
                 } else if shouldHostLyricsSurface {
                     NativeLyricsViewRepresentable(
@@ -196,7 +191,7 @@ struct LyricsPanelView: View {
                         .padding(.horizontal, 24)
                 }
 
-                if playbackCoordinator.presentation.hasTrack,
+                if playbackCoordinator.stablePresentation.hasTrack,
                    let message = emptyLyricsMessage {
                     lyricsUnavailableOverlay(message: message)
                 }
@@ -206,7 +201,7 @@ struct LyricsPanelView: View {
             WindowPlaybackQueuePanelView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .animation(.easeInOut(duration: 0.22), value: uiState.isWindowPlaybackQueueVisible)
+        .motionAnimation(.navigation, value: uiState.isWindowPlaybackQueueVisible)
     }
 
     // MARK: - Actions
@@ -232,7 +227,7 @@ struct LyricsPanelView: View {
             LyricsSurfaceManager.shared.reportMainVisible(false)
             return
         }
-        let hasTrack = hasTrackOverride ?? playbackCoordinator.presentation.hasTrack
+        let hasTrack = hasTrackOverride ?? playbackCoordinator.stablePresentation.hasTrack
         let shouldRevealExistingLyrics =
             LyricsSurfaceManager.shared.currentMode == .main
             && LyricsSurfaceManager.shared.switchState == .idle
@@ -301,7 +296,6 @@ struct LyricsPanelView: View {
 
     private func reloadLyricsSurface(
         reason: String,
-        forceWebReload: Bool = false,
         forceLyricsReload: Bool = false
     ) {
         let presentation = playbackCoordinator.presentation
@@ -312,14 +306,12 @@ struct LyricsPanelView: View {
                 currentTime: presentation.lyricsCurrentTime,
                 isPlaying: presentation.isPlaying,
                 reason: reason,
-                forceWebReload: forceWebReload,
                 forceLyricsReload: forceLyricsReload
             )
         case .appleMusic, .systemNowPlaying:
             lyricsVM.ensureExternalLyricsLoaded(
                 presentation: presentation,
                 reason: reason,
-                forceWebReload: forceWebReload,
                 forceLyricsReload: forceLyricsReload
             )
         }
@@ -346,10 +338,10 @@ struct LyricsPanelView: View {
     }
 
     private var emptyLyricsMessage: String? {
-        guard playbackCoordinator.presentation.source.isExternal else { return nil }
-        let lyricsText = playbackCoordinator.presentation.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard playbackCoordinator.stablePresentation.source.isExternal else { return nil }
+        let lyricsText = playbackCoordinator.stablePresentation.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard lyricsText.isEmpty else { return nil }
-        if let externalMessage = playbackCoordinator.presentation.externalLyricsStatusMessage {
+        if let externalMessage = playbackCoordinator.stablePresentation.externalLyricsStatusMessage {
             return externalMessage
         }
         return NSLocalizedString("lyrics.empty_state", comment: "")
@@ -387,6 +379,8 @@ struct WindowPlaybackQueuePanelView: View {
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     @State private var hasPerformedInitialScroll = false
 
@@ -399,7 +393,7 @@ struct WindowPlaybackQueuePanelView: View {
     }
 
     private var playbackMode: PlaybackOrderMode {
-        playbackCoordinator.presentation.localPlaybackOrderMode ?? settings.playbackOrderMode
+        playbackCoordinator.stablePresentation.localPlaybackOrderMode ?? settings.playbackOrderMode
     }
 
     var body: some View {
@@ -426,7 +420,7 @@ struct WindowPlaybackQueuePanelView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .animation(reduceMotion ? .none : .easeInOut(duration: 0.22), value: uiState.isWindowPlaybackQueueVisible)
+        .motionAnimation(.navigation, value: uiState.isWindowPlaybackQueueVisible)
     }
 
     private var header: some View {
@@ -569,8 +563,11 @@ struct WindowPlaybackQueuePanelView: View {
         Color.primary.opacity(0.08)
     }
 
-    private var queueScrollAnimation: Animation {
-        .timingCurve(0.22, 0.88, 0.24, 1.0, duration: 0.42)
+    private var queueScrollAnimation: Animation? {
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: reduceMotion
+        )
+        return policy.animation(for: motionTokens[.navigation])
     }
 
     private func revealCurrentTrack(using proxy: ScrollViewProxy, animated: Bool) {
@@ -741,31 +738,6 @@ private struct WindowPlaybackQueueRow: View {
     .preferredColorScheme(.dark)
 }
 
-private struct LyricsRealtimeSyncObserver: View {
-    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
-    @Environment(LyricsViewModel.self) private var lyricsVM
-
-    let isActive: Bool
-    let onPlaybackRestart: () -> Void
-
-    var body: some View {
-        Color.clear
-            .onChange(of: playbackCoordinator.presentation.currentTime) { oldTime, newTime in
-                guard isActive else { return }
-                lyricsVM.syncTime(playbackCoordinator.presentation.lyricsCurrentTime)
-                if oldTime > 1.0, newTime < 0.2 {
-                    onPlaybackRestart()
-                }
-            }
-            .onChange(of: playbackCoordinator.presentation.isPlaying) { _, newValue in
-                guard isActive else { return }
-                if !newValue {
-                    lyricsVM.syncTime(playbackCoordinator.presentation.lyricsCurrentTime)
-                }
-                lyricsVM.setPlaying(newValue)
-            }
-    }
-}
 
 // MARK: - Settings Observer Modifier
 

@@ -15,6 +15,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
     case audio
     case externalPlayback
     case data
+    case automation
     case about
 
     var id: String { rawValue }
@@ -27,6 +28,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .audio: return "音频"
         case .externalPlayback: return "外部播放"
         case .data: return "数据"
+        case .automation: return "自动化与智能"
         case .about: return "settings.section.about"
         }
     }
@@ -39,6 +41,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .audio: return "waveform"
         case .externalPlayback: return "music.note.tv"
         case .data: return "arrow.counterclockwise.circle"
+        case .automation: return "sparkles.rectangle.stack"
         case .about: return "info.circle"
         }
     }

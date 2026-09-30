@@ -5,6 +5,7 @@
 //  kmgccc_player - Data Management Settings View
 //
 
+import MotionKit
 import SwiftUI
 
 /// Data management settings split between music-library controls and app data.
@@ -35,6 +36,9 @@ private struct ApplicationDataSettingsView: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryCacheServices.self) private var cacheServices
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
     @AppStorage("telemetry.anonymousUsageEnabled") private var telemetryEnabled: Bool = true
     @AppStorage(CrashReportPreferences.automaticUploadKey) private var automaticCrashReportUploadEnabled = true
 
@@ -43,6 +47,7 @@ private struct ApplicationDataSettingsView: View {
     @State private var showClearLibraryCacheAlert: Bool = false
     @State private var isClearingLibraryCaches: Bool = false
     @State private var isMoreSettingsExpanded: Bool = false
+    @State private var cacheUsageSummary: DiskCacheUsageSummary?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -95,7 +100,10 @@ private struct ApplicationDataSettingsView: View {
             // More settings
             SettingsSection("更多设置", headerTrailing: {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
+                    let policy = configuredMotionPolicy.resolving(
+                        accessibilityReduceMotion: reduceMotion
+                    )
+                    withAnimation(policy.animation(for: motionTokens[.microInteraction])) {
                         isMoreSettingsExpanded.toggle()
                     }
                 } label: {
@@ -185,7 +193,15 @@ private struct ApplicationDataSettingsView: View {
                 externalPlaybackMetadataStore: cacheServices.externalPlaybackMetadataStore
             )
             playbackCoordinator.clearExternalPlaybackRuntimeCaches()
+            await refreshCacheUsage()
             isClearingLibraryCaches = false
+        }
+    }
+
+    private func refreshCacheUsage() async {
+        let summary = await CacheManager.calculateLibraryDiskCacheUsage(storage: cacheServices.storageLocations)
+        await MainActor.run {
+            self.cacheUsageSummary = summary
         }
     }
 
@@ -208,6 +224,13 @@ private struct ApplicationDataSettingsView: View {
                 MetricKitDiagnosticService.shared.automaticUploadPreferenceDidChange(newValue)
             }
         )
+    }
+
+    private var cacheUsageDescription: String {
+        if let summary = cacheUsageSummary {
+            return "已占用 \(summary.formattedTotalSize)（上限约 450 MB），包含封面缩略图、外部播放与歌词缓存"
+        }
+        return "包含可再生成的封面缩略图、歌词索引、外部播放自动缓存、颜色、Home 与导入暂存缓存"
     }
 
     private var cacheManagementControls: some View {
@@ -238,9 +261,12 @@ private struct ApplicationDataSettingsView: View {
                 .clipShape(Capsule())
                 .disabled(isClearingLibraryCaches)
 
-                Text("包含可再生成的封面缩略图、歌词索引、外部播放自动缓存、颜色、Home 与导入暂存缓存")
+                Text(cacheUsageDescription)
                     .settingsDescriptionStyle()
             }
+        }
+        .task {
+            await refreshCacheUsage()
         }
     }
 

@@ -12,6 +12,7 @@
 
 import Observation
 import AppKit
+import MotionKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -32,6 +33,9 @@ struct SidebarView: View {
     @EnvironmentObject private var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var currentColorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
     @ObservedObject private var updateCoordinator = UpdateCoordinator.shared
     @ObservedObject private var crashReportService = CrashReportService.shared
 
@@ -60,6 +64,18 @@ struct SidebarView: View {
     @State private var updateReleaseNotesToShow: UpdateReleaseNotesNotice?
 
     private let scrollFadeHeight: CGFloat = 28
+
+    private var motionPolicy: MotionPolicy {
+        configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
+    }
+
+    private var microInteractionAnimation: Animation? {
+        motionPolicy.animation(for: motionTokens[.microInteraction])
+    }
+
+    private var controlAnimation: Animation? {
+        motionPolicy.animation(for: motionTokens[.control])
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -267,7 +283,7 @@ struct SidebarView: View {
                     }
                 } header: {
                     Button {
-                        withAnimation {
+                        withAnimation(microInteractionAnimation) {
                             isArtistsExpanded.toggle()
                         }
                     } label: {
@@ -361,7 +377,7 @@ struct SidebarView: View {
                     }
                 } header: {
                     Button {
-                        withAnimation {
+                        withAnimation(microInteractionAnimation) {
                             isAlbumsExpanded.toggle()
                         }
                     } label: {
@@ -403,11 +419,13 @@ struct SidebarView: View {
             Divider()
 
             // Bottom controls
-            HStack(spacing: 8) {
-                settingsButton
-                appearanceSwitchButton
-                fullscreenButton
-                Spacer(minLength: 0)
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 8) {
+                    settingsButton
+                    appearanceSwitchButton
+                    fullscreenButton
+                    Spacer(minLength: 0)
+                }
             }
             .tint(themeStore.accentColor)
             .padding(.horizontal, 12)
@@ -460,7 +478,7 @@ struct SidebarView: View {
             }
         }
         .sheet(isPresented: $showSettings, onDismiss: {
-            FeatureTipPresentationCoordinator.shared.setSuspended(false)
+            FeatureTipPresentationCoordinator.shared.setSuspended(false, reason: .settingsSheet)
         }) {
             SettingsView(hasActiveLibrarySession: true)
                 .environment(settings)
@@ -515,13 +533,14 @@ struct SidebarView: View {
         }
         .onChange(of: settings.enableSystemNowPlayingMode) { _, enabled in
             if !enabled, playbackCoordinator.activeSource == .systemNowPlaying {
-                withAnimation(.snappy(duration: 0.18)) {
+                withAnimation(microInteractionAnimation) {
                     playbackCoordinator.setActiveSource(.local)
                 }
             }
         }
-        .animation(.snappy(duration: 0.2), value: importEnrichmentService.hasOutstandingWork)
-        .animation(.snappy(duration: 0.2), value: uiState.sidebarNotice?.id)
+        .motionAnimation(.microInteraction, value: importEnrichmentService.hasOutstandingWork)
+        .motionAnimation(.microInteraction, value: uiState.sidebarNotice?.id)
+        .motionAnimation(.microInteraction, value: hasSidebarTaskProgress)
         .sheet(item: $failedEnrichmentEditRequest) { request in
             // Reuses the exact multi-track metadata editor from the library
             // list so failed enrichment items can be fixed by hand.
@@ -845,12 +864,11 @@ struct SidebarView: View {
             selection: Binding(
                 get: { playbackCoordinator.activeSource },
                 set: { source in
-                    withAnimation(.snappy(duration: 0.18)) {
+                    withAnimation(microInteractionAnimation) {
                         playbackCoordinator.setActiveSource(source)
                     }
                 }
             ),
-            animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
             hSpacing: 0,
             background: {
                 Color.clear
@@ -936,7 +954,7 @@ struct SidebarView: View {
     }
 
     private func openSettings() {
-        FeatureTipPresentationCoordinator.shared.setSuspended(true)
+        FeatureTipPresentationCoordinator.shared.setSuspended(true, reason: .settingsSheet)
         settingsRotateTrigger += 1
         showSettings = true
     }
@@ -1023,7 +1041,7 @@ struct SidebarView: View {
         .contentTransition(
             .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
         )
-        .animation(.snappy(duration: 0.24), value: icon)
+        .motionAnimation(.microInteraction, value: icon)
     }
 
     private var fullscreenButton: some View {
@@ -1040,7 +1058,7 @@ struct SidebarView: View {
     }
 
     private func cycleAppearance(to target: AppSettings.ManualAppearance) {
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+        withAnimation(controlAnimation) {
             if settings.followSystemAppearance {
                 settings.followSystemAppearance = false
             }
@@ -1115,7 +1133,7 @@ struct SidebarView: View {
     }
 
     private func setPlaylistsExpanded(_ expanded: Bool) {
-        withAnimation(.snappy(duration: 0.18)) {
+        withAnimation(controlAnimation) {
             isPlaylistsExpanded = expanded
         }
         UserDefaults.standard.set(expanded, forKey: playlistsExpandedStorageKey)
@@ -1276,14 +1294,17 @@ struct SidebarView: View {
         shape: SidebarSelectionHighlightShape = .roundedRectangle
     ) -> some View {
         let fill = isSelected ? themeStore.selectionFill : Color.clear
-        switch shape {
-        case .capsule:
-            Capsule(style: .continuous)
-                .fill(fill)
-        case .roundedRectangle:
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(fill)
+        Group {
+            switch shape {
+            case .capsule:
+                Capsule(style: .continuous)
+                    .fill(fill)
+            case .roundedRectangle:
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(fill)
+            }
         }
+        .motionAnimation(.microInteraction, value: isSelected)
     }
 
     private func play(_ playlist: Playlist) {

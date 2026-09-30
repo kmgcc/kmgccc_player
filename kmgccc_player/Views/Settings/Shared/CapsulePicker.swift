@@ -29,7 +29,6 @@ struct CapsulePicker<T: Hashable & Identifiable>: View where T.ID: Hashable {
             SlidingSelector(
                 segments: options.map(\.id),
                 selection: $selection,
-                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
                 hSpacing: 0,
                 background: {
                     Color.clear

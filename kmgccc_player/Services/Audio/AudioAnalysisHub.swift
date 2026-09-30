@@ -393,7 +393,12 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     }
 
     nonisolated private func enqueue(_ buffer: AVAudioPCMBuffer) {
-        stateLock.lock()
+        // removeTap waits for this real-time callback to finish while its
+        // caller holds stateLock. Never wait for that lock from the callback.
+        guard stateLock.try() else {
+            droppedTapBuffers &+= 1
+            return
+        }
         let isExternal = isExternalFeedEnabled
         stateLock.unlock()
         guard !isExternal else { return }

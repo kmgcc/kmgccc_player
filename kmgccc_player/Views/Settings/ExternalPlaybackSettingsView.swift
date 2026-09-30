@@ -5,6 +5,7 @@
 //  External playback source management and cache settings.
 //
 
+import MotionKit
 import SwiftUI
 
 @MainActor
@@ -30,6 +31,9 @@ struct ExternalPlaybackSettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.settingsAppForegroundColors) private var appColors
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     @State private var sourceStore = ExternalPlaybackSourceStore.shared
     @State private var showClearCacheAlert = false
@@ -64,6 +68,20 @@ struct ExternalPlaybackSettingsView: View {
     private let dragHorizontalLimit: CGFloat = 28
 
     private var sourceRowStride: CGFloat { sourceRowHeight + sourceRowSpacing }
+
+    private func reorderAnimation(initialVelocity: Double = 0) -> Animation? {
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: reduceMotion
+        )
+        return policy.animation(
+            for: motionTokens[.microInteraction],
+            initialVelocity: initialVelocity
+        )
+    }
+
+    private var motionPolicy: MotionPolicy {
+        configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -363,14 +381,14 @@ struct ExternalPlaybackSettingsView: View {
                     moveSource(source.id, toDisabledSection: target.isDisabled, index: target.index)
                 }
             }
-            .onEnded { _ in
+            .onEnded { value in
                 moveSource(
                     source.id,
                     toDisabledSection: dragLastTargetSectionIsDisabled,
                     index: dragLastTargetIndex
                 )
                 saveSourceSections()
-                settleSourceDrag(source.id)
+                settleSourceDrag(source.id, releaseVelocity: value.velocity.height)
             }
     }
 
@@ -405,13 +423,13 @@ struct ExternalPlaybackSettingsView: View {
             active.insert(id, at: max(0, min(active.count, index)))
         }
         guard active != activeSourceIDs || disabled != disabledSourceIDs else { return }
-        withAnimation(.snappy(duration: 0.16)) {
+        withAnimation(reorderAnimation()) {
             activeSourceIDs = active
             disabledSourceIDs = disabled
         }
     }
 
-    private func settleSourceDrag(_ id: String) {
+    private func settleSourceDrag(_ id: String, releaseVelocity: CGFloat = 0) {
         let isDisabled = disabledSourceIDs.contains(id)
         let index = (isDisabled ? disabledSourceIDs : activeSourceIDs).firstIndex(of: id) ?? dragStartIndex
         let metrics = sourceSectionMetrics(
@@ -420,15 +438,34 @@ struct ExternalPlaybackSettingsView: View {
         )
         let finalY = (isDisabled ? metrics.disabledRowsStart : metrics.activeRowsStart)
             + CGFloat(index) * sourceRowStride
+        let initialVelocity = MotionSpec.clampedInitialVelocity(
+            MotionSpec.normalizedInitialVelocity(
+                from: dragFloatingY,
+                to: finalY,
+                velocity: Double(releaseVelocity)
+            )
+        )
         isFinishingDrag = true
-        withAnimation(.snappy(duration: 0.16)) {
+        withAnimation(reorderAnimation(initialVelocity: initialVelocity)) {
             dragFloatingX = 0
             dragFloatingY = finalY
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+        let cleanupDelay = motionPolicy.visualCompletionDelay(
+            for: motionTokens[.microInteraction],
+            initialVelocity: initialVelocity
+        )
+        let clearDrag = {
             guard isFinishingDrag, draggingSourceID == id else { return }
             draggingSourceID = nil
             isFinishingDrag = false
+        }
+        if cleanupDelay <= .leastNonzeroMagnitude {
+            clearDrag()
+        } else {
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + cleanupDelay,
+                execute: clearDrag
+            )
         }
     }
 

@@ -25,6 +25,7 @@ final class ExternalPlaybackMetadataStore {
     private var overrides: [String: ExternalPlaybackMatchOverride] = [:]
     private var records: [String: ExternalPlaybackCacheRecord] = [:]
     private var lastCacheLogAt: [String: Date] = [:]
+    private var artworkWriteCounter = 0
 
     init(
         storage: LibraryStorageLocations,
@@ -231,6 +232,7 @@ final class ExternalPlaybackMetadataStore {
         guard let fileName = records[stableKey]?.networkArtworkFileName else { return nil }
         let currentURL = artworkCacheDirectory().appendingPathComponent(fileName)
         if let data = try? Data(contentsOf: currentURL) {
+            touchItem(at: currentURL)
             return data
         }
         return nil
@@ -246,11 +248,55 @@ final class ExternalPlaybackMetadataStore {
         let fileName = "\(sanitize(stableKey))-\(ArtworkAssetStore.checksum(for: data)).img"
         let directory = artworkCacheDirectory()
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? data.write(to: directory.appendingPathComponent(fileName), options: .atomic)
+        let fileURL = directory.appendingPathComponent(fileName)
+        try? data.write(to: fileURL, options: .atomic)
         updateRecord(stableKey: stableKey) { record in
             record.networkArtworkFileName = fileName
             record.artworkSource = source
         }
+        recordArtworkWriteAndTrimIfNeeded()
+    }
+
+    private func touchItem(at url: URL) {
+        try? fileManager.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+    }
+
+    private func recordArtworkWriteAndTrimIfNeeded() {
+        artworkWriteCounter += 1
+        guard artworkWriteCounter.isMultiple(of: 10) else { return }
+        trimDiskCaches()
+    }
+
+    func trimDiskCaches() {
+        let manualArtworkFileNames = Set(records.values.compactMap { record in
+            record.artworkSource == "manualOverride" ? record.networkArtworkFileName : nil
+        })
+        let result = DiskCacheRetention.trim(
+            at: artworkCacheDirectory(),
+            maxBytes: DiskCacheBudget.externalPlaybackArtwork.maxBytes,
+            targetFraction: DiskCacheBudget.externalPlaybackArtwork.targetFraction,
+            maxAge: DiskCacheBudget.externalPlaybackArtwork.maxAge,
+            preservedFileNames: manualArtworkFileNames,
+            fileManager: fileManager
+        )
+        if result.removedFileCount > 0 {
+            Log.debug(
+                "[ExternalPlayback] artwork trim removedFiles=\(result.removedFileCount) removedBytes=\(result.removedBytes)",
+                category: .perf
+            )
+        }
+    }
+
+    nonisolated static func loadManualArtworkFileNames(from recordsURL: URL) -> Set<String> {
+        guard let data = try? Data(contentsOf: recordsURL) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let records = try? decoder.decode([String: ExternalPlaybackCacheRecord].self, from: data) else {
+            return []
+        }
+        return Set(records.values.compactMap { record in
+            record.artworkSource == "manualOverride" ? record.networkArtworkFileName : nil
+        })
     }
 
     // MARK: - Lyrics Cache (Manual Locked + Auto)

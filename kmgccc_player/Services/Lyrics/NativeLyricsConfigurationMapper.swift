@@ -3,12 +3,12 @@
 //  myPlayer2
 //
 //  Translates the existing public lyrics settings payload into the reusable
-//  NativeLyrics configuration. The JSON shape is kept as an input bridge for
+//  MelismaKit configuration. The JSON shape is kept as an input bridge for
 //  fullscreen skin adapters, but the renderer never depends on that payload.
 //
 
 import Foundation
-import NativeLyrics
+import MelismaKit
 import SwiftUI
 
 enum NativeLyricsConfigurationMapper {
@@ -58,11 +58,13 @@ enum NativeLyricsConfigurationMapper {
         )
         config.spring = role.enableSpring && settings.amllLyricsSpringEnabled
         config.blur = role.enableBlur
-        // NativeLyrics owns its layer-backed rasterization and is fast enough
-        // to stay at the display's full backing resolution. The old AMLL
-        // quality preference remains a compatibility value for the rollback
-        // WebView path, but must not downsample the native surface.
-        config.renderScale = role == .batchPreview ? role.renderScale : 1
+        config.bakeSettledBlur = role.bakeSettledBlur
+        // MelismaKit rasterizes glyph masks at the display backing scale.
+        // Reuse the user-facing quality setting for every interactive surface
+        // so a 5K display does not implicitly force the most expensive path.
+        config.renderScale = role.supportsAMLLRenderQuality
+            ? settings.amllLyricsRenderQualityScale
+            : role.renderScale
         config.fpsCap = role.fpsCap
         config.overscan = Double(role.overscanPx)
         return config
@@ -73,11 +75,15 @@ enum NativeLyricsConfigurationMapper {
         configuration.profile = .currentPlayer
         configuration.surface = .window
         configuration.blur = role.enableBlur
+        configuration.bakeSettledBlur = role.bakeSettledBlur
         configuration.spring = role.enableSpring
-        configuration.renderScale = role == .batchPreview ? role.renderScale : 1
+        configuration.renderScale = role.supportsAMLLRenderQuality
+            ? AppSettings.shared.amllLyricsRenderQualityScale
+            : role.renderScale
         configuration.fpsCap = role.fpsCap
         configuration.overscan = Double(role.overscanPx)
         configuration.wordFadeWidth = role.wordFadeWidth
+        configuration.cacheBudgetBytes = role.glyphCacheBudgetBytes
         // The package default is intentionally conservative for the standalone
         // demo. Keep the player marker legible without letting the breathing
         // transform dominate the compact lyric column.
@@ -142,6 +148,7 @@ enum NativeLyricsConfigurationMapper {
         if let value = string(values["fontFamilyTranslation"]) { configuration.translationFontName = firstFontName(value, fallback: configuration.translationFontName) }
         if let value = double(values["renderScale"]) { configuration.renderScale = max(0.35, min(1, value)) }
         if let value = int(values["fpsCap"]) { configuration.fpsCap = max(0, value) }
+        if let value = int(values["cacheBudgetBytes"]) { configuration.cacheBudgetBytes = min(max(1024 * 1024, value), role.glyphCacheBudgetBytes) }
         if let value = double(values["overscanPx"]) { configuration.overscan = max(0, value) }
         if let value = double(values["wordFadeWidth"]) { configuration.wordFadeWidth = max(0.05, value) }
         if let value = string(values["wordHighlightMode"]) { configuration.highlightMode = value == "discrete" ? .discrete : .smooth }
@@ -156,6 +163,7 @@ enum NativeLyricsConfigurationMapper {
         }
         if let value = double(values["blendOpacity"]) { configuration.blendOpacity = value }
         if let value = bool(values["enableBlur"]) { configuration.blur = value }
+        if let value = bool(values["bakeSettledBlur"]) { configuration.bakeSettledBlur = value }
         if let value = bool(values["enableSpring"]) { configuration.spring = value }
         if double(values["springDuration"]) != nil || double(values["springBounce"]) != nil {
             let springDuration = double(values["springDuration"])
@@ -262,6 +270,7 @@ enum NativeLyricsConfigurationMapper {
                     && (configuration.surface == .coverBlurLight || configuration.surface == .coverBlurDark) {
             configuration.coverBlurRenderLayer = .base
         }
+        configuration.cacheBudgetBytes = min(configuration.cacheBudgetBytes, role.glyphCacheBudgetBytes)
     }
 
     static func paletteForWindow(_ palette: ThemePalette) -> LyricsPalette {

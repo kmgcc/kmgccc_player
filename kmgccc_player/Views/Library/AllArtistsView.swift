@@ -14,6 +14,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 // MARK: - Deletion Request
@@ -371,10 +372,12 @@ private struct ArtistListRow: View {
                     cornerRadius: artworkSize / 2,
                     clipShape: .circle,
                     iconSize: 22,
-                    iconOpacity: 0.4
+                    iconOpacity: 0.0,
+                    themeColor: Color.primary.opacity(0.04)
                 )
             }
         }
+        .motionAnimation(.microInteraction, value: image != nil)
         .frame(width: artworkSize, height: artworkSize)
         .clipShape(Circle())
         .shadow(
@@ -477,17 +480,31 @@ private struct ArtistListRow: View {
     }
 
     private func loadPersistedArtwork(from entry: ArtistEntry) async -> Bool {
-        guard let data = entry.artworkData, !data.isEmpty else { return false }
-        let checksum = ArtworkLoader.checksum(for: data)
-        let key = ArtworkLoader.cacheKey(
-            trackID: entry.id,
-            checksum: checksum,
-            targetPixelSize: CGSize(width: 132, height: 132)
+        let targetSize = CGSize(width: 132, height: 132)
+        if let data = entry.artworkData, !data.isEmpty {
+            let checksum = ArtworkLoader.checksum(for: data)
+            let key = ArtworkLoader.cacheKey(
+                trackID: entry.id,
+                checksum: checksum,
+                targetPixelSize: targetSize
+            )
+            image = await ArtworkLoader.loadImage(
+                artworkData: data,
+                cacheKey: key,
+                targetPixelSize: targetSize,
+                derivativeStore: cacheServices.artworkDerivativeStore
+            )
+            return image != nil
+        }
+        guard let artworkFileURL = entry.artworkFileURL else { return false }
+        let key = ArtworkLoader.fileCacheKey(
+            fileURL: artworkFileURL,
+            targetPixelSize: targetSize
         )
         image = await ArtworkLoader.loadImage(
-            artworkData: data,
+            fileURL: artworkFileURL,
             cacheKey: key,
-            targetPixelSize: CGSize(width: 132, height: 132),
+            targetPixelSize: targetSize,
             derivativeStore: cacheServices.artworkDerivativeStore
         )
         return image != nil

@@ -7,6 +7,7 @@
 //  Uses the same Liquid Glass material system as FullscreenMiniPlayerView.
 //
 
+import MotionKit
 import SwiftUI
 
 // MARK: - Fullscreen Queue View
@@ -23,6 +24,9 @@ struct FullscreenQueueView: View {
     let onTrackTap: (Track) -> Void
 
     @State private var hasPerformedInitialScroll = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     init(
         tracks: [Track],
@@ -253,8 +257,11 @@ struct FullscreenQueueView: View {
         )
     }
 
-    private var queueScrollAnimation: Animation {
-        .timingCurve(0.22, 0.88, 0.24, 1.0, duration: 0.42)
+    private var queueScrollAnimation: Animation? {
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: reduceMotion
+        )
+        return policy.animation(for: motionTokens[.navigation])
     }
 
     private func scrollToTrack(

@@ -127,7 +127,6 @@ struct FullscreenSkinTabView: View {
             SlidingSelector(
                 segments: fullscreenMiniPlayerAutoHideOptions.map(\.seconds),
                 selection: $fullscreenMiniPlayerAutoHideSeconds,
-                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
                 hSpacing: 0,
                 background: {
                     Color.clear
@@ -168,7 +167,6 @@ struct FullscreenSkinTabView: View {
             SlidingSelector(
                 segments: fullscreenMiniPlayerGlassMaterialOptions.map(\.material),
                 selection: $fullscreenMiniPlayerGlassMaterial,
-                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
                 hSpacing: 0,
                 background: {
                     Color.clear

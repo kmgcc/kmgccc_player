@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 struct FullscreenCoverGradientBlurSkin: NowPlayingSkin {
@@ -105,6 +106,9 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenBackdropReadabilityState) private var readabilityState
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
     @State private var transitionPosition: CGFloat
     @State private var centeredLayerOpacity: CGFloat
     @State private var settledCenteredLayerOpacity: CGFloat
@@ -148,6 +152,12 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     /// Read-only accessor for the base surface's source set.
     private var activeBokehSourceSet: BokehTransitionPreparedSourceSet? {
         bokehSourceSets[0]
+    }
+
+    private var motionPolicy: MotionPolicy {
+        configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: accessibilityReduceMotion
+        )
     }
 
     /// Host-specific viewport fitting belongs to `FullscreenPlayerView`.
@@ -266,6 +276,12 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             transitionTask?.cancel()
             bokehPrewarmTask?.cancel()
             bokehSourcePreparer.invalidate()
+            bokehPrewarmEnabled = false
+            bokehSourceSets = [nil, nil]
+            bokehPreparedSourceSet = nil
+            leadingRenderedFrame = nil
+            centeredRenderedFrame = nil
+            transitionRenderedFrame = nil
         }
     }
 
@@ -443,6 +459,10 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             bokehPreparedSourceSet = sourceSet
             if !isTransitionActive {
                 bokehSourceSets[0] = sourceSet
+                bokehPrewarmEnabled = false
+                leadingRenderedFrame = nil
+                centeredRenderedFrame = nil
+                transitionRenderedFrame = nil
             }
             // Do NOT swap mid-transition. The artwork swap is deferred to
             // retirement so it runs in the transitionTask (no separate
@@ -472,7 +492,8 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             transitionCanvasOffsetRatio: size.width > 1 ? coverCenterShift(for: size) / size.width : 0,
             configuration: BokehTransitionConfig(),
             tier: sourceSet?.identity.tier ?? .balanced,
-            reduceMotion: context.theme.reduceMotion
+            motionPolicy: motionPolicy,
+            motionTokens: motionTokens
         )
     }
 
@@ -517,42 +538,47 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         return .gaussianFallback(reason: "Bokeh source not ready")
     }
 
-    private var blurRiseAnimation: Animation {
-        if context.theme.reduceMotion {
-            return .easeInOut(duration: 0.16)
+    private func transitionAnimation(
+        duration: Double,
+        token: MotionToken
+    ) -> Animation? {
+        let spec = motionTokens.phaseSpec(for: token, duration: duration, bounce: 0)
+        return motionPolicy.animation(for: spec)
+    }
+
+    private var blurRiseAnimation: Animation? {
+        transitionAnimation(duration: 0.34, token: .contentReplacement)
+    }
+
+    private var coverSpringAnimation: Animation? {
+        return motionPolicy.animation(for: motionTokens[.backgroundTransition])
+    }
+
+    private var backgroundCrossfadeAnimation: Animation? {
+        transitionAnimation(duration: 0.72, token: .backgroundTransition)
+    }
+
+    private var transitionLayerFadeInAnimation: Animation? {
+        transitionAnimation(duration: 0.22, token: .contentReplacement)
+    }
+
+    private var transitionLayerFadeOutAnimation: Animation? {
+        transitionAnimation(duration: 0.32, token: .contentReplacement)
+    }
+
+    private var blurFallAnimation: Animation? {
+        transitionAnimation(duration: 0.78, token: .backgroundTransition)
+    }
+
+    private func motionDelay(full: UInt64, reduced: UInt64) -> UInt64 {
+        switch motionPolicy {
+        case .full:
+            full
+        case .reduced:
+            reduced
+        case .disabled:
+            0
         }
-        return .timingCurve(0.22, 0.0, 0.24, 1.0, duration: 0.34)
-    }
-
-    private var coverSpringAnimation: Animation {
-        if context.theme.reduceMotion {
-            return .easeInOut(duration: 0.36)
-        }
-        return .spring(response: 0.74, dampingFraction: 0.78, blendDuration: 0.14)
-    }
-
-    private var backgroundCrossfadeAnimation: Animation {
-        context.theme.reduceMotion
-            ? .easeInOut(duration: 0.34)
-            : .timingCurve(0.36, 0.0, 0.64, 1.0, duration: 0.72)
-    }
-
-    private var transitionLayerFadeInAnimation: Animation {
-        context.theme.reduceMotion
-            ? .easeInOut(duration: 0.12)
-            : .easeInOut(duration: 0.22)
-    }
-
-    private var transitionLayerFadeOutAnimation: Animation {
-        context.theme.reduceMotion
-            ? .easeInOut(duration: 0.18)
-            : .timingCurve(0.24, 0.72, 0.22, 1.0, duration: 0.32)
-    }
-
-    private var blurFallAnimation: Animation {
-        context.theme.reduceMotion
-            ? .easeInOut(duration: 0.28)
-            : .timingCurve(0.20, 0.78, 0.22, 1.0, duration: 0.78)
     }
 
     @ViewBuilder
@@ -761,6 +787,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             // startTransitionEffect raises the base again.
             bokehSourceSets[0] = bokehPreparedSourceSet
             bokehSourceSets[1] = nil
+            bokehPreparedSourceSet = nil
             withoutSwiftUIAnimation {
                 bokehOpticalOpacities[0] = 0
                 bokehOpticalOpacities[1] = 0
@@ -815,11 +842,11 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     }
 
     private var movementSettleDelay: UInt64 {
-        context.theme.reduceMotion ? 380_000_000 : 720_000_000
+        motionDelay(full: 720_000_000, reduced: 380_000_000)
     }
 
     private var transitionCompletionDelay: UInt64 {
-        context.theme.reduceMotion ? 320_000_000 : 820_000_000
+        motionDelay(full: 820_000_000, reduced: 320_000_000)
     }
 
     /// Matches the renderer's blur-fall duration (TimedTransitionScalar
@@ -827,25 +854,25 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     /// waits this long so the full blur decrease is visible before the surface
     /// is hidden.
     private var bokehBlurFallDuration: UInt64 {
-        context.theme.reduceMotion ? 280_000_000 : 780_000_000
+        motionDelay(full: 780_000_000, reduced: 280_000_000)
     }
 
     /// Matches the renderer's optical-opacity fade-out duration (0.60 s normal,
     /// 0.10 s reduce-motion). The retirement waits this long after the overlay
     /// swap so the fade-out is not cut short by cleanup.
     private var bokehOverlayFadeDuration: UInt64 {
-        context.theme.reduceMotion ? 100_000_000 : 600_000_000
+        motionDelay(full: 600_000_000, reduced: 100_000_000)
     }
 
     /// Publish one display frame before the blur-fall curve reaches radius 8
     /// (about 0.281 s normal / 0.101 s reduce-motion), so the renderer receives
     /// the timed-handoff target at the intended radius without an alpha jump.
     private var bokehHandoffFadeLeadDelay: UInt64 {
-        context.theme.reduceMotion ? 84_000_000 : 264_000_000
+        motionDelay(full: 264_000_000, reduced: 84_000_000)
     }
 
     private var bokehHandoffFadeDuration: UInt64 {
-        context.theme.reduceMotion ? 100_000_000 : 600_000_000
+        motionDelay(full: 600_000_000, reduced: 100_000_000)
     }
 
     private func retargetTransition(to targetPosition: CGFloat) {
@@ -896,9 +923,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     private func scheduleBokehPrewarm() {
         bokehPrewarmTask?.cancel()
         bokehPrewarmTask = Task { @MainActor in
-            let delay: UInt64 = context.theme.reduceMotion
-                ? 420_000_000
-                : 900_000_000
+            let delay = motionDelay(full: 900_000_000, reduced: 420_000_000)
             guard await waitForTransitionStage(nanoseconds: delay) else { return }
             guard !Task.isCancelled, !isTransitionActive else { return }
             bokehPrewarmEnabled = true
@@ -1130,7 +1155,6 @@ private struct CoverGradientBlurSettingsView: View {
                     get: { currentEdgeFillMode },
                     set: { edgeFillMode = $0.rawValue }
                 ),
-                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
                 hSpacing: 0,
                 background: {
                     Color.clear

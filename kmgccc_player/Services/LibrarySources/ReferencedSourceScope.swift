@@ -12,6 +12,18 @@ nonisolated enum ReferencedSourceScopeIssue: Error, Equatable, Sendable {
     case statusPersistenceFailed(UUID)
 }
 
+nonisolated enum ReferencedTrustedAutomationRootError: Error, Equatable, Sendable {
+    case bookmarkResolutionFailed
+    case notDirectory
+    case permissionDenied
+    case inTrash
+}
+
+nonisolated struct ReferencedTrustedAutomationRootConfiguration: Sendable {
+    let url: URL
+    let refreshedBookmarkData: Data?
+}
+
 @MainActor
 final class AuthorizedSourceRootsProvider {
     private var roots: [UUID: AuthorizedSourceRoot] = [:]
@@ -26,6 +38,8 @@ final class AuthorizedSourceRootsProvider {
 final class ReferencedSourceScope {
     let rootsProvider: AuthorizedSourceRootsProvider
     private var leases: [UUID: SecurityScopedResourceLease] = [:]
+    private var trustedAutomationRootURL: URL?
+    private var trustedAutomationRootLease: SecurityScopedResourceLease?
 
     init(rootsProvider: AuthorizedSourceRootsProvider = AuthorizedSourceRootsProvider()) {
         self.rootsProvider = rootsProvider
@@ -37,16 +51,74 @@ final class ReferencedSourceScope {
     /// root. Equality is intentionally excluded so a single-file source does
     /// not grant write access to its parent directory.
     func authorizedDirectorySourceID(containing url: URL) -> UUID? {
-        let candidatePath = url.resolvingSymlinksInPath().standardizedFileURL.path
+        let candidatePath = Self.canonicalPath(url)
         return authorizedRoots
             .filter { _, root in
-                let rootPath = root.url.resolvingSymlinksInPath().standardizedFileURL.path
-                return candidatePath.hasPrefix(rootPath + "/")
+                Self.isDescendant(candidatePath, of: Self.canonicalPath(root.url))
             }
             .max { lhs, rhs in
                 lhs.value.url.path.count < rhs.value.url.path.count
             }?
             .key
+    }
+
+    var trustedAutomationRoot: URL? { trustedAutomationRootURL }
+
+    /// A trusted root is a user-selected directory whose retained bookmark is
+    /// already active for the session. Equality is allowed here because the
+    /// setting represents the root itself, not a source's descendant coverage.
+    func isTrustedAutomationPath(_ url: URL) -> Bool {
+        guard let root = trustedAutomationRootURL else { return false }
+        return Self.isWithin(
+            Self.canonicalPath(url),
+            root: Self.canonicalPath(root)
+        )
+    }
+
+    @discardableResult
+    func configureTrustedAutomationRoot(
+        bookmarkData: Data,
+        bookmarkResolver: any BookmarkResolving = SystemBookmarkResolver(),
+        requiresSecurityScope: Bool = false
+    ) throws -> ReferencedTrustedAutomationRootConfiguration {
+        let resolved: (url: URL, isStale: Bool)
+        do {
+            resolved = try bookmarkResolver.resolve(bookmarkData)
+        } catch {
+            throw ReferencedTrustedAutomationRootError.bookmarkResolutionFailed
+        }
+        guard !Self.isInTrash(resolved.url) else {
+            throw ReferencedTrustedAutomationRootError.inTrash
+        }
+        guard Self.isDirectory(resolved.url) else {
+            throw ReferencedTrustedAutomationRootError.notDirectory
+        }
+
+        let didStart = bookmarkResolver.startAccessing(resolved.url)
+        guard didStart || (!requiresSecurityScope && FileManager.default.isReadableFile(atPath: resolved.url.path)) else {
+            throw ReferencedTrustedAutomationRootError.permissionDenied
+        }
+        let lease = didStart
+            ? SecurityScopedResourceLease { bookmarkResolver.stopAccessing(resolved.url) }
+            : .none
+        let refreshedBookmarkData = resolved.isStale
+            ? try? bookmarkResolver.refreshBookmark(for: resolved.url)
+            : nil
+
+        let previousLease = trustedAutomationRootLease
+        trustedAutomationRootURL = resolved.url.standardizedFileURL
+        trustedAutomationRootLease = lease
+        previousLease?.release()
+        return ReferencedTrustedAutomationRootConfiguration(
+            url: resolved.url,
+            refreshedBookmarkData: refreshedBookmarkData
+        )
+    }
+
+    func clearTrustedAutomationRoot() {
+        trustedAutomationRootURL = nil
+        trustedAutomationRootLease?.release()
+        trustedAutomationRootLease = nil
     }
 
     func start(
@@ -215,6 +287,7 @@ final class ReferencedSourceScope {
         let activeLeases = leases.values
         leases.removeAll()
         for lease in activeLeases { lease.release() }
+        clearTrustedAutomationRoot()
     }
 
     private func persistFailureStatus(
@@ -236,7 +309,34 @@ final class ReferencedSourceScope {
         return components.contains(".Trash") || components.contains(".Trashes")
     }
 
+    private nonisolated static func isDirectory(_ url: URL) -> Bool {
+        url.hasDirectoryPath
+            || (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+    }
+
+    private nonisolated static func canonicalPath(_ url: URL) -> String {
+        let standardized = url.standardizedFileURL
+        var current = standardized
+        var suffix: [String] = []
+        while !FileManager.default.fileExists(atPath: current.path), current.path != "/" {
+            suffix.insert(current.lastPathComponent, at: 0)
+            current.deleteLastPathComponent()
+        }
+        let resolved = current.resolvingSymlinksInPath().standardizedFileURL.path
+        guard !suffix.isEmpty else { return resolved }
+        return resolved + "/" + suffix.joined(separator: "/")
+    }
+
+    private nonisolated static func isDescendant(_ candidatePath: String, of rootPath: String) -> Bool {
+        candidatePath != rootPath && candidatePath.hasPrefix(rootPath + "/")
+    }
+
+    private nonisolated static func isWithin(_ candidatePath: String, root: String) -> Bool {
+        candidatePath == root || isDescendant(candidatePath, of: root)
+    }
+
     deinit {
         for lease in leases.values { lease.release() }
+        trustedAutomationRootLease?.release()
     }
 }

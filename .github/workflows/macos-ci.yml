@@ -54,6 +54,19 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Install ripgrep
+        run: brew list ripgrep >/dev/null 2>&1 || brew install ripgrep
+
+      - name: Check out the pinned local MelismaKit package
+        env:
+          MELISMAKIT_REVISION: 1a46e8a8305a9ba4edc419372d489717481c8b04
+        run: |
+          git init ../NativeLyrics
+          git -C ../NativeLyrics remote add origin https://github.com/kmgcc/melismakit.git
+          git -C ../NativeLyrics fetch --depth 1 origin "$MELISMAKIT_REVISION"
+          git -C ../NativeLyrics checkout --detach FETCH_HEAD
+          test "$(git -C ../NativeLyrics rev-parse HEAD)" = "$MELISMAKIT_REVISION"
+
       - name: Environment
         run: |
           uname -m

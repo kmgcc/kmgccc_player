@@ -47,4 +47,10 @@ enum HomeDebugFlags {
     static var disableInsights: Bool {
         UserDefaults.standard.bool(forKey: "home.debug.disableInsights")
     }
+
+    /// Log the SwiftUI-observed property changes that re-evaluate a Home body
+    /// (`Self._printChanges()`), to find what invalidates Home during playback.
+    static var logBodyChanges: Bool {
+        UserDefaults.standard.bool(forKey: "home.debug.logBodyChanges")
+    }
 }

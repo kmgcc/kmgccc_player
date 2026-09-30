@@ -252,7 +252,7 @@ struct TrackEditSheet: View {
                 if artworkData == nil {
                     artworkData = loadedArtwork
                 }
-                if track.artworkData == nil {
+                if track.artworkData == nil, track.existingArtworkURL() == nil {
                     track.artworkData = loadedArtwork
                 }
             }
