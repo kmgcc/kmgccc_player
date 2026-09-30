@@ -138,8 +138,9 @@ run_step "XCTest" 1800 \
     BUILD_EXTENSION_MODE=disabled \
     CODE_SIGNING_ALLOWED=NO \
     test
-"$ROOT/scripts/check-melismakit-dependency.sh" "$MELISMAKIT_DEPENDENCY_FLAG" \
-  --build-log "$LOG_DIR/XCTest.log"
+# The Debug build above proves the package compiler input; XCTest may reuse that
+# package build and emit no new MelismaKit source command in its own log.
+"$ROOT/scripts/check-melismakit-dependency.sh" "$MELISMAKIT_DEPENDENCY_FLAG"
 
 APP="$DERIVED_DATA/Build/Products/Debug/kmgccc_player.app"
 run_step "Required App bundle components" 120 \
