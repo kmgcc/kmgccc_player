@@ -261,7 +261,7 @@ final class AppKitMainSplitViewController: NSSplitViewController {
             suspendedSidebarVisibilityForEmbeddedFullscreen = isSidebarVisible
             isEmbeddedFullscreenPaneSuppressionActive = true
             if isSidebarVisible {
-                setSidebarVisible(false, preserveMirroredState: true)
+                setSidebarVisible(false, animated: false, preserveMirroredState: true)
             }
             return
         }

@@ -257,6 +257,8 @@ struct FullscreenPlayerView: View {
     /// can advance ahead of artwork decoding, so this remains stable until a
     /// complete image for the current display track is ready.
     @State private var artworkSnapshot: ArtworkAssetSnapshot?
+    @State private var preparedArtworkTaskKey: String?
+    @State private var embeddedPresentationComplete = false
     @State private var coverBlurLyricsTheme: FullscreenCoverBlurLyricsTheme?
     @State private var deferredTrackUpdateDeadline: Date?
     @State private var autoHiddenFullscreenLyricsForEmptyContent = false
@@ -423,7 +425,7 @@ struct FullscreenPlayerView: View {
         colorScheme == .light ? 0 : effectiveDimmingIntensity
     }
 
-    var body: some View {
+    private var fullscreenScene: some View {
         GeometryReader { proxy in
             fullscreenContent(for: proxy)
         }
@@ -433,7 +435,7 @@ struct FullscreenPlayerView: View {
                 configure: { window in
                     fullscreenPointerOcclusionMonitor.setWindow(window)
                     if hostContext == .embeddedWindow {
-                        let contentSize = window.contentLayoutRect.size
+                        let contentSize = window.contentView?.bounds.size ?? window.contentLayoutRect.size
                         if contentSize.width > 1, contentSize.height > 1 {
                             DispatchQueue.main.async {
                                 handleEmbeddedFullscreenViewportChange(
@@ -552,8 +554,57 @@ struct FullscreenPlayerView: View {
             guard bkController.lyricsColorTrackID == currentArtworkTrackID else { return }
             scheduleFullscreenLyricsRefresh(preferLiveSurface: true)
         }
-        .task(id: currentArtworkTaskKey) {
-            await loadArtworkSnapshot()
+    }
+
+    var body: some View {
+        fullscreenScene
+        .task(id: embeddedArtworkPreparationKey) {
+            await prepareFullscreenArtwork()
+        }
+        .task(id: embeddedPresentationPreparationKey) {
+            await prepareEmbeddedFullscreenPresentation()
+        }
+        .transaction(configureEmbeddedPresentationTransaction)
+    }
+
+    private func configureEmbeddedPresentationTransaction(_ transaction: inout Transaction) {
+        guard hostContext == .embeddedWindow, !embeddedPresentationComplete else { return }
+        transaction.animation = nil
+        transaction.disablesAnimations = true
+    }
+
+    private var embeddedArtworkPreparationKey: String {
+        "\(currentArtworkTaskKey)-\(currentDisplayContext.isArtworkLoading)"
+    }
+
+    private var embeddedPresentationPreparationKey: String {
+        "\(embeddedArtworkPreparationKey)-\(embeddedInitialThemeUnlocked)-\(preparedArtworkTaskKey ?? "pending")"
+    }
+
+    private func prepareFullscreenArtwork() async {
+        let key = currentArtworkTaskKey
+        await loadArtworkSnapshot()
+        guard !Task.isCancelled, key == currentArtworkTaskKey,
+              !currentDisplayContext.isArtworkLoading else { return }
+        preparedArtworkTaskKey = key
+    }
+
+    private func prepareEmbeddedFullscreenPresentation() async {
+        guard isEmbeddedFullscreenPresentationActive, embeddedInitialThemeUnlocked,
+              preparedArtworkTaskKey == currentArtworkTaskKey else { return }
+        // Native lyric installation is synchronous. Wait for its mounted host
+        // and final canvas before allowing the complete frame to rise.
+        while !Task.isCancelled && isEmbeddedFullscreenPresentationActive {
+            let lyricsReady = !fullscreenLyricsHostMounted
+                || (!suppressFullscreenLyricsViewport
+                    && NativeLyricsSurfaceManager.shared.existingSurface(for: .fullscreen)?.isRenderingActive == true)
+            if lyricsReady && isValidEmbeddedFullscreenGeometry(fullscreenViewportSize, scale: currentFullscreenScale) {
+                FullscreenWindowManager.shared.revealPreparedEmbeddedFullscreen(tokens: motionTokens, policy: motionPolicy) {
+                    embeddedPresentationComplete = true
+                }
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(16))
         }
     }
 
@@ -663,12 +714,18 @@ struct FullscreenPlayerView: View {
         setVolumeExpanded(false, reason: "fullscreen-disappear")
         clearFullscreenLyricsTheme()
 
-        let cacheServices = self.cacheServices
-        Task { @MainActor in
-            await CacheManager.purgePresentationMemoryCaches(
-                reason: "fullscreen-player-view-disappeared-\(hostContext.rawValue)",
-                cacheServices: cacheServices
-            )
+        // Embedded fullscreen shares the current track with the still-mounted
+        // main player. Its bounded artwork caches must survive this handoff.
+        // Destroying them here both reloads the next entry and invalidates the
+        // main cover while it is returning to view.
+        if hostContext == .systemFullscreenSpace {
+            let cacheServices = self.cacheServices
+            Task { @MainActor in
+                await CacheManager.purgePresentationMemoryCaches(
+                    reason: "fullscreen-player-view-disappeared-\(hostContext.rawValue)",
+                    cacheServices: cacheServices
+                )
+            }
         }
 
         // Always report disappearance, including an embedded surface that was
@@ -4437,9 +4494,10 @@ struct FullscreenPlayerView: View {
 
     private func handleEmbeddedFullscreenViewportChange(_ size: CGSize, reason: String) {
         let previousViewportSize = fullscreenViewportSize
-        fullscreenViewportSize = size
-
-        guard hostContext == .embeddedWindow else { return }
+        guard hostContext == .embeddedWindow else {
+            fullscreenViewportSize = size
+            return
+        }
         guard isEmbeddedFullscreenPresentationActive else {
             if EmbeddedFullscreenTrace.enabled {
                 Log.info(
@@ -4449,6 +4507,10 @@ struct FullscreenPlayerView: View {
             }
             return
         }
+        // The outgoing scene remains alive while it slides down. Restoring
+        // the main toolbar must not publish its smaller layout rect into that
+        // scene and rebuild the cover/theme halfway through the exit.
+        fullscreenViewportSize = size
         guard size.width > 1, size.height > 1 else { return }
 
         currentFullscreenScale = min(
@@ -4507,7 +4569,7 @@ struct FullscreenPlayerView: View {
 
         let candidateWindow = NSApp.keyWindow ?? NSApp.mainWindow
         guard let window = candidateWindow else { return nil }
-        let contentSize = window.contentLayoutRect.size
+        let contentSize = window.contentView?.bounds.size ?? window.contentLayoutRect.size
         guard contentSize.width > 1, contentSize.height > 1 else { return nil }
         return contentSize
     }
@@ -4557,7 +4619,8 @@ struct FullscreenPlayerView: View {
 
     private var isEmbeddedFullscreenPresentationActive: Bool {
         hostContext == .embeddedWindow
-            && FullscreenWindowManager.shared.presentationMode == .embeddedInWindow
+            && (FullscreenWindowManager.shared.isPreparingEmbeddedFullscreen
+                || FullscreenWindowManager.shared.presentationMode == .embeddedInWindow)
     }
 
     private func isValidEmbeddedFullscreenGeometry(_ size: CGSize, scale: CGFloat) -> Bool {

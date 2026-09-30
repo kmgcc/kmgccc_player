@@ -781,15 +781,16 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, isRefetchingLyrics ? 20 * scale : 0)
 
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(activityIndicatorColor)
-                    .foregroundStyle(activityIndicatorColor)
-                    .frame(width: 12, height: 12)
-                    .scaleEffect(scale)
-                    .opacity(isRefetchingLyrics ? 1 : 0)
-                    .allowsHitTesting(false)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                if isRefetchingLyrics {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(activityIndicatorColor)
+                        .foregroundStyle(activityIndicatorColor)
+                        .scaleEffect(scale)
+                        .allowsHitTesting(false)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                        .transition(.opacity)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

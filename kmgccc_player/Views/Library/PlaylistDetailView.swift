@@ -181,7 +181,6 @@ struct PlaylistDetailView: View {
                 errorView(message: libraryVM.lastLoadingError ?? "未知错误")
             } else if pageController.isSelectionTransitioning || activePage == nil {
                 PlaylistDetailSkeletonView(showHeader: false)
-                    .transition(.opacity)
             } else if playableSourceTrackCount == 0 {
                 emptyStateView
             } else if currentRows.isEmpty && isFiltering {
@@ -189,13 +188,8 @@ struct PlaylistDetailView: View {
             } else {
                 trackListView
                     .id("rows-\(selectionIdentity)")
-                    .transition(.opacity)
             }
         }
-        .animation(
-            MotionPolicy.full.animation(for: MotionTokens.standard[.contentReplacement]) ?? .easeInOut(duration: 0.28),
-            value: pageController.isSelectionTransitioning || activePage == nil
-        )
     }
 
     @ViewBuilder
@@ -210,19 +204,11 @@ struct PlaylistDetailView: View {
                 || activePage == nil
             {
                 PlaylistDetailSkeletonView(showHeader: true)
-                    .transition(.opacity)
             } else {
                 detailScrollView
                     .id("rows-\(selectionIdentity)")
-                    .transition(.opacity)
             }
         }
-        .animation(
-            MotionPolicy.full.animation(for: MotionTokens.standard[.contentReplacement]) ?? .easeInOut(duration: 0.28),
-            value: pageController.isSelectionTransitioning
-                || (libraryVM.state == .loading && pageController.page == nil)
-                || activePage == nil
-        )
     }
 
     // MARK: - Computed Properties
@@ -1052,6 +1038,14 @@ private struct PlaylistScrollPositionModifier: ViewModifier {
                 try? await Task.sleep(for: .milliseconds(900))
                 guard !Task.isCancelled else { return }
                 usesRevealScrollAnchor = false
+            }
+            // Locate scrolling owns its animation independently of page motion.
+            // Re-assert it outside `.scrollPosition`, where the scroll offset
+            // animation is resolved, only while a reveal is actually armed.
+            .transaction { transaction in
+                if let animation = pageController.revealScrollPositionAnimation {
+                    transaction.animation = animation
+                }
             }
     }
 

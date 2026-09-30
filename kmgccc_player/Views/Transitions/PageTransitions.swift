@@ -15,127 +15,43 @@ extension MotionTokens {
     var pageSwitch: MotionSpec {
         phaseSpec(
             for: .navigation,
-            duration: 0.30,
+            duration: 0.36,
             bounce: 0,
             blendDuration: 0.04
         )
     }
 }
 
-/// One presentation boundary per page. Replacement never keeps a live outgoing
-/// page around or animates the destination's initial size and column layout.
+/// A fixed-size presentation surface shared by Home and center-pane routes.
+/// The native compositor owns motion; descendant layout and interaction
+/// animations stay independent of navigation.
 struct PagePresentation<Content: View, Placeholder: View>: View {
     let revision: String
     var isPresented = true
     @ViewBuilder let content: () -> Content
     @ViewBuilder let placeholder: () -> Placeholder
 
+    @Environment(\.self) private var environment
     @Environment(\.motionTokens) private var tokens
     @Environment(\.motionPolicy) private var policy
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var laidOutRevision: String?
-
-    private var isRevealed: Bool { isPresented && laidOutRevision == revision }
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack(alignment: .topLeading) {
-                placeholder()
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .opacity(isRevealed ? 0 : 1)
-                    .allowsHitTesting(false)
-
-                content()
+            NativePagePresentation(
+                revision: revision,
+                isPresented: isPresented,
+                spec: policy.resolving(accessibilityReduceMotion: reduceMotion).resolve(tokens.pageSwitch),
+                usesSpatialMotion: !reduceMotion && policy == .full,
+                content: AnyView(content()
+                    .environment(\.self, environment)
                     .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
-                    .background {
-                        PageLayoutCompletion(revision: revision) { completedRevision in
-                            guard isPresented, completedRevision == revision else { return }
-                            laidOutRevision = completedRevision
-                        }
-                    }
-                    .transaction { transaction in
-                        transaction.animation = nil
-                        if !isRevealed { transaction.disablesAnimations = true }
-                    }
-                    .opacity(isRevealed ? 1 : 0)
-                    .allowsHitTesting(isRevealed)
-                    .accessibilityHidden(!isRevealed)
-            }
-            .clipped()
-            .animation(
-                isRevealed ? policy.resolvedAnimation(for: tokens.pageSwitch, accessibilityReduceMotion: reduceMotion) : nil,
-                value: isRevealed
+                    .ignoresSafeArea(.container, edges: .all)),
+                placeholder: AnyView(placeholder()
+                    .environment(\.self, environment)
+                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+                    .ignoresSafeArea(.container, edges: .all))
             )
-        }
-        .transaction { $0.animation = nil }
-        .onChange(of: revision) { _, _ in laidOutRevision = nil }
-        .onChange(of: isPresented) { _, presented in
-            if !presented { laidOutRevision = nil }
-        }
-    }
-}
-
-/// Wait for the destination to receive its real AppKit bounds and finish a
-/// layout turn. A revision check discards callbacks from rapid navigation.
-private struct PageLayoutCompletion: NSViewRepresentable {
-    let revision: String
-    let onReady: (String) -> Void
-
-    func makeNSView(context: Context) -> LayoutView { LayoutView() }
-
-    func updateNSView(_ view: LayoutView, context: Context) {
-        view.revision = revision
-        view.onReady = onReady
-        view.scheduleCompletion()
-    }
-
-    final class LayoutView: NSView {
-        var revision = "" {
-            didSet {
-                guard oldValue != revision else { return }
-                generation &+= 1
-                deliveredRevision = nil
-                scheduledRevision = nil
-            }
-        }
-        var onReady: ((String) -> Void)?
-        private var generation: UInt = 0
-        private var scheduledRevision: String?
-        private var deliveredRevision: String?
-
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            scheduleCompletion()
-        }
-
-        override func layout() {
-            super.layout()
-            scheduleCompletion()
-        }
-
-        override func setFrameSize(_ newSize: NSSize) {
-            super.setFrameSize(newSize)
-            scheduleCompletion()
-        }
-
-        func scheduleCompletion() {
-            guard window != nil, bounds.width > 0, bounds.height > 0,
-                  deliveredRevision != revision, scheduledRevision != revision else { return }
-            let expected = revision
-            let expectedGeneration = generation
-            scheduledRevision = expected
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.generation == expectedGeneration else { return }
-                self.superview?.layoutSubtreeIfNeeded()
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, self.window != nil, self.generation == expectedGeneration else { return }
-                    self.deliveredRevision = expected
-                    self.scheduledRevision = nil
-                    self.onReady?(expected)
-                }
-            }
         }
     }
 }

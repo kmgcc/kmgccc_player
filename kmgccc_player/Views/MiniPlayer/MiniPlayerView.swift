@@ -802,12 +802,13 @@ private struct MiniPlayerLeftSection: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.trailing, isRefetchingLyrics ? 20 : 0)
 
-            ProgressView()
-                .controlSize(.small)
-                .frame(width: 12, height: 12)
-                .opacity(isRefetchingLyrics ? 1 : 0)
-                .allowsHitTesting(false)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            if isRefetchingLyrics {
+                ProgressView()
+                    .controlSize(.small)
+                    .allowsHitTesting(false)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .transition(.opacity)
+            }
         }
         .frame(
             minWidth: trackInfoMinWidth,

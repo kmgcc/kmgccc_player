@@ -251,9 +251,9 @@ struct AppKitMainContentPaneRoot: View {
             && !pageController.isSelectionTransitioning
         let isDetail = destinationIdentity == "library-detail" || homeSearchActive
         let readiness = isDetail
-            ? detailReady
+            ? (detailReady || libraryVM.loadingPhase.isFailed)
             : (uiState.contentMode != .playbackHistory || !appSession.playbackHistoryViewModel.isLoading)
-        let presentationRevision = "\(destinationIdentity)-\(selectionIdentity)-\(readiness)-\(fullscreenWindowManager.isWindowedFullscreenActive)"
+        let presentationRevision = "\(destinationIdentity)-\(selectionIdentity)"
 
         let base = ZStack(alignment: .bottomLeading) {
             // Transparent center-rect probe. Reports the center pane's
@@ -266,19 +266,9 @@ struct AppKitMainContentPaneRoot: View {
 
             PagePresentation(
                 revision: presentationRevision,
-                isPresented: (!homeMode || homeSearchActive) && (!isDetail || detailReady)
+                isPresented: (!homeMode || homeSearchActive) && readiness
             ) {
               Group {
-              if fullscreenWindowManager.isWindowedFullscreenActive {
-                // Embedded fullscreen presents an opaque, full-pane overlay
-                // (see `FullscreenPlayerView` zIndex(1) below). The heavy detail
-                // content beneath it is fully occluded, so tear it down while
-                // embedded fullscreen is active: it saves the cost of keeping
-                // `PlaylistDetailView` / `NowPlayingHostView` live, and removes
-                // the layer that showed through during cover-switch transients.
-                // It is re-rendered automatically when embedded fullscreen exits.
-                Color.clear
-              } else {
                 switch uiState.contentMode {
                 case .library:
                     switch libraryVM.currentSelection {
@@ -336,15 +326,13 @@ struct AppKitMainContentPaneRoot: View {
                     .id("appkit-main-nowplaying")
                 }
               }
-              }
             } placeholder: {
                 if destinationIdentity == "library-detail" || homeSearchActive {
                     PlaylistDetailSkeletonView(showHeader: libraryVM.currentSelection != .allSongs && !homeSearchActive)
                 }
             }
 
-            if !FullscreenWindowManager.shared.isWindowedFullscreenActive {
-                GeometryReader { proxy in
+            GeometryReader { proxy in
                     MiniPlayerView()
                         .onGeometryChange(for: CGRect.self) { geometry in
                             geometry.frame(in: .global)
@@ -357,20 +345,17 @@ struct AppKitMainContentPaneRoot: View {
                         .padding(.bottom, 12)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 }
-                .allowsHitTesting(true)
-            }
+                .opacity(fullscreenWindowManager.isWindowedFullscreenActive ? 0 : 1)
+                .allowsHitTesting(!fullscreenWindowManager.isWindowedFullscreenActive)
+                .accessibilityHidden(fullscreenWindowManager.isWindowedFullscreenActive)
 
-            if fullscreenWindowManager.isWindowedFullscreenActive {
-                FullscreenPlayerView(hostContext: .embeddedWindow) {
-                    fullscreenWindowManager.closeFullscreenPlayerInWindow()
+            if fullscreenWindowManager.isEmbeddedFullscreenSurfaceMounted {
+                EmbeddedFullscreenSurface {
+                    FullscreenPlayerView(hostContext: .embeddedWindow) {
+                        fullscreenWindowManager.closeFullscreenPlayerInWindow()
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .transition(
-                    .asymmetric(
-                        insertion: .move(edge: .bottom).combined(with: .opacity),
-                        removal: .move(edge: .bottom).combined(with: .opacity)
-                    )
-                )
                 .zIndex(1)
                 .environment(AppSettings.shared)
                 .environment(appSession.uiState)
@@ -389,10 +374,6 @@ struct AppKitMainContentPaneRoot: View {
                 .modelContainer(appSession.sharedModelContainer)
             }
         }
-        .animation(
-            MotionPolicy.full.animation(for: MotionTokens.standard[.emphasis]) ?? .spring(response: 0.40, dampingFraction: 0.86),
-            value: fullscreenWindowManager.isWindowedFullscreenActive
-        )
 
         let withAppear: some View = base
             .onAppear {
@@ -477,10 +458,6 @@ struct AppKitMainContentPaneRoot: View {
             }
 
         return withEvents
-            .motionAnimation(
-                .navigation,
-                value: fullscreenWindowManager.isWindowedFullscreenActive
-            )
             .environment(AppSettings.shared)
             .environment(appSession.uiState)
             .environment(appSession.homeVM)

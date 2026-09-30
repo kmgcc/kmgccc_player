@@ -66,8 +66,8 @@ struct HomeView: View {
         let _ = traceBodyChanges()
         HomeThemeSnapshotReader { homeTheme in
             PagePresentation(
-                revision: "\(contentTransitionKey)-\(layout.allowsHomeInteraction)",
-                isPresented: layout.allowsHomeInteraction
+                revision: contentTransitionKey,
+                isPresented: (layout.allowsHomeInteraction || (layout.isHomeMode && layout.isEmbeddedFullscreenActive && !layout.isHomeSearchActive)) && !shouldShowStartupLoading
             ) {
                 if shouldShowStartupLoading {
                     startupLoadingView
