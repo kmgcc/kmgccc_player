@@ -1,24 +1,19 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
 IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
---><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
   <channel>
-    <title>kmgccc_player Updates</title>
-    <link>https://github.com/kmgcc/kmgccc_player</link>
-    <description>kmgccc_player signed update feed</description>
-    <language>zh-CN</language>
+    <title>kmgccc_player</title>
     <item>
-      <title>kmgccc_player 2.3.1</title>
-      <pubDate>Fri, 11 Sep 2026 12:30:19 +0000</pubDate>
+      <title>kmgccc_player 2.3.2</title>
+      <sparkle:version>13</sparkle:version>
+      <sparkle:shortVersionString>2.3.2</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-      <description>## [v2.3.1] - 2026-09-11
-
-- **原生 Swift 歌词引擎**：歌词系统全面迁移至原生 Swift 实现，带来更丝滑流畅的逐字动效、更精准的节奏同步，以及显著降低的系统能耗与资源占用。
-- **无缝自动更新**：新版本支持在后台静默下载，更新完成后只需重启应用即可直接完成升级安装，无需再手动打开 DMG 镜像。</description>
-      <sparkle:releaseNotesLink>https://github.com/kmgcc/kmgccc_player/releases/tag/v2.3.1</sparkle:releaseNotesLink>
-      <enclosure url="https://github.com/kmgcc/kmgccc_player/releases/download/v2.3.1/kmgccc_player_2.3.1_11.dmg" length="94552782" type="application/x-apple-diskimage" sparkle:version="11" sparkle:shortVersionString="2.3.1" sparkle:edSignature="xrSGh/gEJGw4xpEn5mlatpQ+n7PhxRDEGTWzPFbGk4+7VWBnKHH0mX6mJwTH1SaBCMXM97Fq4AMcP8XEZ/AWCQ=="></enclosure>
+      <sparkle:releaseNotesLink>https://github.com/kmgcc/kmgccc_player/releases/tag/v2.3.2</sparkle:releaseNotesLink>
+      <pubDate>2026-09-30T00:00:00Z</pubDate>
+      <enclosure url="https://github.com/kmgcc/kmgccc_player/releases/download/v2.3.2/kmgccc_player_2.3.2_13.dmg" length="104254197" type="application/x-apple-diskimage" sparkle:version="13" sparkle:shortVersionString="2.3.2" sparkle:edSignature="hGVR8JDZ707ti6YC0Mwf30N7or8FKcnJoIg284OALd83YqbvRlBJA+cu79/KGb/T7Trd8/i7EwEVzOaqAmdWDg=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: 5JP8ORPrY4KXPLpZ3VkROYxPE1+HW+AXJAjHEb99YMq5aRCda5eiCffd5bfk2asIETOpnI/mjhGQgvNJpV/yBw==
-length: 1690
+edSignature: k8UD/WvtJDBIYkPSokzxSYHU9wOzTYn1PgZwhp02DYUZ8iJ7lG19AMJmObACNDdl4Z1+r03D1SbovRljSescDg==
+length: 1250
 -->
