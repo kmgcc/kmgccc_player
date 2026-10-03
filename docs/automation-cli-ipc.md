@@ -47,6 +47,7 @@ App 会按生命周期事务切换，并要求调用方确认和前台交互。
 | library list | library.list | 返回已注册资料库摘要和 active library ID |
 | library create/open/switch | library.create/open/switch | 通过 App-owned picker/session transaction 创建、登记或切换 active Library |
 | library rename/relocate/remove | library.rename/relocate/remove | 修改显示名、迁移完整资料库或移入 macOS 废纸篓；remove 额外受 `library.delete` scope 保护 |
+| library import | library.import | 文件／目录导入（含 NCM）、可选歌单归入，返回含补全状态与结果的 Job |
 | library tracks | library.tracks | 按组合 predicate、Source/Playlist membership、日期、技术字段和状态查询 Track |
 | playlist list | playlist.list | 返回 Playlist、统计值和不透明 revision |
 | source list | source.list | 返回原位来源、路径、绑定 Playlist 和扫描状态 |

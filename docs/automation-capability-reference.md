@@ -28,7 +28,7 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 | Domain | Methods | Notes |
 | --- | --- | --- |
 | System | `system.ping`, `system.info` | 不切换 active Library |
-| Library / Lifecycle / Query | `library.list`, `library.create/open/switch/rename/relocate/remove`, `library.tracks` | 资料库可由 App-owned 生命周期事务创建、打开、切换、重命名、迁移和移入废纸篓；查询支持结构化过滤、组合 predicate、排序、offset 分页，并返回 opaque snapshot revision |
+| Library / Lifecycle / Query | `library.list`, `library.create/open/switch/rename/relocate/remove`, `library.tracks`, `library.import` | 资料库可由 App-owned 生命周期事务创建、打开、切换、重命名、迁移和移入废纸篓；查询支持结构化过滤、组合 predicate、排序、offset 分页，并返回 opaque snapshot revision |
 | Playlist | `playlist.list/get/create/rename/delete/addTracks/removeTracks/replaceTracks/reorder` | Track identity 先解析；membership mutation 不删文件 |
 | Source | `source.list/create/bindPlaylist/setExcludedPath/setMonitorPolicy/remove/refresh` | 新 Source 由 App picker 创建 security-scoped bookmark；授权后的 create/import 与 refresh 返回 Job；排除目录不会删除既有 Track，monitor policy 可设 on/off |
 | Playback | `playback.state/play/pause/next/previous/seek/setVolume/setMode` | 统一进入 PlaybackCoordinator |
@@ -177,3 +177,24 @@ Artwork/Metadata mutation。Storage backup 是 metadata-only：它不复制
 目录会被回收，因此需要在同一次调用结果中保存新的 `backupPath`。`storage.diff` 比较当前可观测文件与该 manifest，`storage.reload`
 在受控底层修改后重新载入 App-owned Library。底层 JSON write 仍不是普通 Tool，必须由高级用户
 依据当前版本源码自行执行，并在修改前备份、修改后 validate/reload。
+
+## Audio import
+
+`library.import` 接受非空 `filePaths` 数组（绝对路径或 `~/` 路径；文件、文件夹可混合）、
+可选 `targetPlaylistID` 和 `dryRun`。托管与原位资料库共用手动导入的 FileImportService，
+包含 NCM 转换、重复识别、歌单归入、嵌入标签／封面／歌词读取，以及在线补全。
+补全遵循 App 当前设置及缺失字段策略，已有用户内容沿用 UI 的保护规则。
+
+返回 `libraryID`、`mode`、`filePaths` 和 `job`。调用 `jobs.get` 至终态后检查 `result`：
+`trackIDs`、`importedTrackCount`、`reusedTrackCount`、`playlistMembershipAdditions`、
+`alreadyInPlaylistCount`、`pendingNCMCount`（本批发现的 NCM 数）、逐文件 `failures`、
+`enrichmentCompleted` 和 `enrichmentWarnings`。导入结果可在补全进行中查询，终态 Job
+及结果保存在资料库内；provider 无匹配会留下补全提示，不撤销已经导入的音频。
+即时补全模式的匹配情况继续由曲目实际 metadata/artwork/lyrics 状态核验。
+
+普通导入要求 `library.read/write`；指定歌单追加 `playlist.write`，原位模式追加
+`source.write`。dry-run 只要求 `library.read`，不扫描、不解密、不补全，也不打开授权面板。
+App 已能访问的文件直接导入；缺少访问权限时使用 App 的文件选择器，选择应与请求路径对应。
+导入 Job 可以取消；已提交曲目保留，尚未结束的本批新增曲目后台补全会取消。
+导入 Job 不保存跨重启的外部路径授权重试规格，`retryable` 为 false；重新授权后可再次导入，
+已入库文件按既有 identity 规则复用。重新执行时应使用新的 idempotency key。

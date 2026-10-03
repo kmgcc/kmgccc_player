@@ -1,4 +1,5 @@
 import Foundation
+import PlayerAutomationProtocol
 
 nonisolated enum LibraryOperationError: Error, Equatable {
     case sessionQuiescing
@@ -81,6 +82,7 @@ nonisolated struct LibraryOperationTaskDescriptor: Codable, Equatable, Sendable,
     var partialFailureSummaries: [String]
     var failedItemIDs: [UUID]
     let retrySpec: LibraryOperationRetrySpec?
+    var result: AutomationJSONValue? = nil
 
     init(
         id: UUID,
@@ -121,7 +123,7 @@ nonisolated struct LibraryOperationTaskDescriptor: Codable, Equatable, Sendable,
     private enum CodingKeys: String, CodingKey {
         case id, kind, libraryID, sessionGeneration, state, createdAt, startedAt, finishedAt
         case lastCheckpointLabel, lastCheckpointAt, completedCount, totalCount, currentPhase
-        case partialFailureSummaries, failedItemIDs, retrySpec
+        case partialFailureSummaries, failedItemIDs, retrySpec, result
     }
 
     init(from decoder: Decoder) throws {
@@ -144,6 +146,7 @@ nonisolated struct LibraryOperationTaskDescriptor: Codable, Equatable, Sendable,
             forKey: .partialFailureSummaries
         ) ?? []
         failedItemIDs = try container.decodeIfPresent([UUID].self, forKey: .failedItemIDs) ?? []
+        result = try container.decodeIfPresent(AutomationJSONValue.self, forKey: .result)
         retrySpec = try container.decodeIfPresent(
             LibraryOperationRetrySpec.self,
             forKey: .retrySpec
@@ -474,6 +477,12 @@ final class LibraryOperationCoordinator {
                 phase: phase
             )
         }
+    }
+
+    /// Stores the current structured outcome in the library-scoped Job history.
+    func recordResult(_ result: AutomationJSONValue) {
+        guard let operationID = LibraryOperationContext.current?.operationID else { return }
+        mutateDescriptor(id: operationID) { $0.result = result }
     }
 
     /// Cancels one live operation without affecting unrelated work.

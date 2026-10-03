@@ -1089,6 +1089,9 @@ struct FullscreenPlayerView: View {
                 trackID: currentArtworkTrackID,
                 artworkData: renderingArtworkData,
                 isPlaying: currentDisplayContext.isPlaying,
+                artworkFileURL: currentDisplayContext.source == .local
+                    ? playbackCoordinator.presentation.localTrack?.existingArtworkURL()
+                    : nil,
                 avoidanceRect: nil,
                 resourceProfile: settings.fullscreen.skinID == "kmgccc.cassette"
                     ? .cassetteForeground
@@ -1096,8 +1099,7 @@ struct FullscreenPlayerView: View {
                 dotRenderStyle: .solidCircles,
                 motionProfile: .fullscreenBalanced,
                 initialPalette: fullscreenArtBackgroundSeedPalette,
-                holdPaletteWhenArtworkMissing: currentDisplayContext.isArtworkLoading
-                    && renderingArtworkData == nil
+                isArtworkLoading: currentDisplayContext.isArtworkLoading
             )
             .ignoresSafeArea()
 
@@ -5100,6 +5102,9 @@ struct FullscreenPlayerView: View {
         let display = currentDisplayContext
         if let artworkData = display.artworkData, !artworkData.isEmpty {
             return artworkData
+        }
+        if display.source == .local, playbackCoordinator.presentation.localTrack?.existingArtworkURL() != nil {
+            return nil
         }
         let fallbackTrackID = display.artworkTrackID
         guard artworkSnapshot?.artworkChecksum == ArtworkRenderingFallback.checksum(for: fallbackTrackID) else {

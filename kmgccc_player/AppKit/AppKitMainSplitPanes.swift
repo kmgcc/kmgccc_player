@@ -440,9 +440,11 @@ struct AppKitMainContentPaneRoot: View {
             .onChange(of: uiState.contentMode) { (_: ContentMode, newValue: ContentMode) in
                 handleContentModeChange(newValue, playbackCoordinator: playbackCoordinator, uiState: uiState)
             }
-            .onChange(of: playerVM.currentTrack?.id) { (_: UUID?, _: UUID?) in
+            .onChange(of: playerVM.currentTrack?.id) { (_: UUID?, newTrackID: UUID?) in
                 if shouldTriggerArtBackgroundTransition(playbackCoordinator: playbackCoordinator, uiState: uiState) {
-                    artBackgroundController.triggerTransition()
+                    artBackgroundController.triggerTransition(
+                        for: playbackCoordinator.stablePresentation.source == .local ? newTrackID : nil
+                    )
                 }
             }
             .onChange(of: settings.nowPlayingArtBackgroundEnabled) { (_: Bool, enabled: Bool) in
@@ -723,14 +725,16 @@ struct AppKitMainWindowArtBackgroundLayer: View {
                         trackID: artworkBackgroundTrackID(playbackCoordinator: playbackCoordinator),
                         artworkData: renderingArtworkData(playbackCoordinator: playbackCoordinator),
                         isPlaying: playbackCoordinator.stablePresentation.isPlaying,
+                        artworkFileURL: playbackCoordinator.stablePresentation.source == .local
+                            ? playbackCoordinator.stablePresentation.localTrack?.existingArtworkURL()
+                            : nil,
                         animationEnabled: appSession.uiState.contentMode == .nowPlaying
                             && !fullscreenWindowManager.usesFullscreenPlayerUI,
                         resourceProfile: settings.selectedNowPlayingSkinID == "kmgccc.cassette"
                             ? .cassetteForeground
                             : .standard,
                         initialPalette: [themeStore.accentNSColor],
-                        holdPaletteWhenArtworkMissing: playbackCoordinator.stablePresentation.isArtworkLoading
-                            && renderingArtworkData(playbackCoordinator: playbackCoordinator) == nil
+                        isArtworkLoading: playbackCoordinator.stablePresentation.isArtworkLoading
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .ignoresSafeArea(.container, edges: .all)
@@ -805,6 +809,11 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         let presentation = playbackCoordinator.stablePresentation
         if let artworkData = presentation.artworkData, !artworkData.isEmpty {
             return artworkData
+        }
+        // A file-backed cover is a real source even when its inline bytes were
+        // released. Let BKArt resolve that file instead of coloring a fallback.
+        if presentation.source == .local, presentation.localTrack?.existingArtworkURL() != nil {
+            return nil
         }
         guard ArtworkRenderingFallback.shouldUse(
             for: presentation.artworkData,

@@ -809,3 +809,32 @@ func secretStoreCreatesPrivateStableCredential() throws {
     #expect(lstat(try AutomationIPCSecretStore.url(forSocketPath: socketURL.path).path, &info) == 0)
     #expect((info.st_mode & mode_t(0o077)) == 0)
 }
+
+@Test
+func importCapabilityAndJobResultPreserveContract() throws {
+    let tool = try #require(AutomationToolCatalog.descriptor(for: AutomationMethod.libraryImport))
+    #expect(!tool.readOnly)
+    #expect(tool.supportsDryRun && tool.supportsJobs)
+    #expect(tool.scopes == [.libraryRead, .libraryWrite])
+    #expect(AutomationToolCatalog.unknownParameterKeys(for: tool.name, params: .object([
+        "filePaths": .array([.string("/tmp/song.ncm")]),
+        "targetPlaylistID": .string(UUID().uuidString), "dryRun": .boolean(true)
+    ])).isEmpty)
+    #expect(AutomationToolCatalog.unknownParameterKeys(for: tool.name, params: .object([
+        "playlistID": .string(UUID().uuidString)
+    ])) == ["playlistID"])
+    let job = AutomationJobSummary(id: UUID(), kind: "importFiles", libraryID: UUID(),
+        state: .completed, createdAt: Date(timeIntervalSince1970: 1_800_000_000), result: .object([
+            "trackIDs": .array([.string(UUID().uuidString)]),
+            "importedTrackCount": .number(1), "enrichmentCompleted": .boolean(true)
+        ]))
+    let response = AutomationLibraryImportResult(libraryID: UUID(), mode: "managed",
+        filePaths: ["/tmp/song.ncm"], job: job, message: "Import started")
+    let data = try AutomationWireCoding.encoder().encode(response)
+    #expect(try AutomationWireCoding.decoder().decode(AutomationLibraryImportResult.self, from: data) == response)
+    let oldJSON = """
+    {"id":"\(UUID().uuidString)","kind":"other","state":"completed","createdAt":"2026-10-03T00:00:00Z"}
+    """
+    let oldJob = try AutomationWireCoding.decoder().decode(AutomationJobSummary.self, from: Data(oldJSON.utf8))
+    #expect(oldJob.result == nil)
+}

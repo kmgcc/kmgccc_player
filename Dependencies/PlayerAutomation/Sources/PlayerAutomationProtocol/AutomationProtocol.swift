@@ -265,6 +265,7 @@ public enum AutomationMethod {
     public static let libraryRelocate = "library.relocate"
     public static let libraryRemove = "library.remove"
     public static let libraryTracks = "library.tracks"
+    public static let libraryImport = "library.import"
     public static let playlistList = "playlist.list"
     public static let playlistCreate = "playlist.create"
     public static let playlistAddTracks = "playlist.addTracks"
@@ -386,6 +387,28 @@ public struct AutomationLibrarySummary: Codable, Equatable, Sendable, Identifiab
         self.displayName = displayName
         self.mode = mode
         self.isActive = isActive
+    }
+}
+
+public struct AutomationLibraryImportResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID
+    public let mode: String
+    public let filePaths: [String]
+    public let targetPlaylistID: UUID?
+    public let dryRun: Bool
+    public let job: AutomationJobSummary?
+    public let message: String
+
+    public init(libraryID: UUID, mode: String, filePaths: [String],
+                targetPlaylistID: UUID? = nil, dryRun: Bool = false,
+                job: AutomationJobSummary? = nil, message: String) {
+        self.libraryID = libraryID
+        self.mode = mode
+        self.filePaths = filePaths
+        self.targetPlaylistID = targetPlaylistID
+        self.dryRun = dryRun
+        self.job = job
+        self.message = message
     }
 }
 
@@ -1902,6 +1925,7 @@ public struct AutomationJobSummary: Codable, Equatable, Sendable, Identifiable {
     public let failures: [String]
     public let failedItemIDs: [UUID]
     public let retryable: Bool
+    public let result: AutomationJSONValue?
 
     public init(
         id: UUID,
@@ -1917,7 +1941,8 @@ public struct AutomationJobSummary: Codable, Equatable, Sendable, Identifiable {
         currentPhase: String? = nil,
         failures: [String] = [],
         failedItemIDs: [UUID] = [],
-        retryable: Bool = false
+        retryable: Bool = false,
+        result: AutomationJSONValue? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -1933,11 +1958,12 @@ public struct AutomationJobSummary: Codable, Equatable, Sendable, Identifiable {
         self.failures = failures
         self.failedItemIDs = failedItemIDs
         self.retryable = retryable
+        self.result = result
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, kind, libraryID, state, createdAt, startedAt, finishedAt, checkpoint
-        case completedCount, totalCount, currentPhase, failures, failedItemIDs, retryable
+        case completedCount, totalCount, currentPhase, failures, failedItemIDs, retryable, result
     }
 
     public init(from decoder: Decoder) throws {
@@ -1956,6 +1982,7 @@ public struct AutomationJobSummary: Codable, Equatable, Sendable, Identifiable {
         failures = try container.decodeIfPresent([String].self, forKey: .failures) ?? []
         failedItemIDs = try container.decodeIfPresent([UUID].self, forKey: .failedItemIDs) ?? []
         retryable = try container.decodeIfPresent(Bool.self, forKey: .retryable) ?? false
+        result = try container.decodeIfPresent(AutomationJSONValue.self, forKey: .result)
     }
 }
 
@@ -2282,6 +2309,7 @@ public enum AutomationDocumentation {
     - Removing a Track from a Playlist does not remove it from the Library or delete its file. Deleting a Playlist also retains Tracks and files.
     - When a referenced Source file disappears, the default is to preserve the Track, metadata, history and Playlist membership while marking it missing/unavailable.
     - Low-risk mutations may execute directly after authorization. Use dryRun for impact inspection. High-risk file deletion, destructive mirroring, mass deletion, history clearing and direct storage writes require App-owned foreground confirmation.
+    - Import new audio files or folders with library.import(filePaths, targetPlaylistID?). It supports managed/referenced libraries and NCM through the manual import pipeline. Poll jobs.get until terminal and inspect result, failures and enrichmentWarnings; no provider match is not an import failure. playlist.addTracks only accepts existing Track IDs. Never handcraft sidecars or decrypt NCM externally for this workflow.
     - Prefer the formal Automation API, then diagnostics/repair, then the current-version source and storage documentation. Back up before any controlled storage fallback and validate/reload afterward.
     - Query first, preserve the returned revision, apply with expectedRevision when offered, and verify the result. Use idempotencyKey when retrying a mutation.
     - Metadata is App-owned and sidecar-backed: `metadata.get`/`metadata.patch` cover editable Track, Artist, Album and Playlist fields, while embedded audio-file tags remain a separate capability. Use `dryRun` before a batch; batches of 10 or more require `confirm` plus foreground confirmation.
@@ -2428,6 +2456,17 @@ public enum AutomationToolCatalog {
             risk: .high,
             supportsDryRun: true,
             inputSchema: libraryRemoveInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.libraryImport,
+            title: "Import Audio",
+            description: "Import local audio files or folders into the active managed or referenced library using the same pipeline as manual UI import, including NCM conversion, duplicate handling, metadata, artwork and lyrics enrichment. Optionally add imported and reused Tracks to targetPlaylistID. Returns an App-owned Job immediately; poll jobs.get for persisted Track IDs, counts, failures and enrichment completion. Requests App file authorization only when access is missing. Never write library sidecars yourself.",
+            readOnly: false,
+            scopes: [.libraryRead, .libraryWrite],
+            risk: .low,
+            supportsDryRun: true,
+            supportsJobs: true,
+            inputSchema: libraryImportInputSchema
         ),
         AutomationToolDescriptor(
             name: AutomationMethod.libraryTracks,
@@ -3136,6 +3175,22 @@ public enum AutomationToolCatalog {
             "expectedRevision": .object([
                 "type": .string("string")
             ])
+        ])
+    ])
+
+    private static let libraryImportInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("filePaths")]),
+        "properties": .object([
+            "filePaths": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "maxItems": .number(5_000),
+                "items": .object(["type": .string("string"), "minLength": .number(1)])
+            ]),
+            "targetPlaylistID": .object(["type": .string("string"), "format": .string("uuid")]),
+            "dryRun": .object(["type": .string("boolean")])
         ])
     ])
 

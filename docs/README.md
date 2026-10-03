@@ -20,6 +20,7 @@
 | [资料库写入 authority matrix](library-write-authority.md) | Phase 0 的函数级持久化 owner、提交顺序、失败补偿与生命周期合同 |
 | [Automation CLI / 本地 IPC / MCP](automation-cli-ipc.md) | 共享 Automation contract、CLI、AF_UNIX IPC、MCP stdio、文件管理和安全边界 |
 | [AI Agent Automation 实施计划](ai-agent-automation-plan.md) | 面向外部 Agent 的持续实施计划、阶段状态、Source/文件验收和安全边界 |
+| [Automation 计划实现审计（2026-10-03）](automation-plan-audit-2026-10-03.md) | 逐领域实现差距、导入闭环修复与实际验收边界 |
 | [Automation Capability Reference](automation-capability-reference.md) | 当前可用的领域能力（含 Metadata/Artwork 控制）、组合查询、文件操作、风险、scope、revision 和 Jobs |
 | [Agent Behavior Guide](agent-behavior-guide.md) | Agent 的领域语义、安全规则、推荐 workflow 和 Storage fallback |
 | [Automation CLI Reference](automation-cli-reference.md) | 人、脚本和 Agent 可用的命令、JSON、exit code 和 batch 约定 |

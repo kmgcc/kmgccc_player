@@ -171,7 +171,7 @@ private struct AutomationCLI {
             params = nil
         case "library":
             guard let action = args.first else {
-                writeDiagnostic("usage error: library requires list, tracks, create, open, switch, rename, relocate or remove")
+                writeDiagnostic("usage error: library requires list, tracks, import, create, open, switch, rename, relocate or remove")
                 return .usage
             }
             args.removeFirst()
@@ -190,6 +190,20 @@ private struct AutomationCLI {
                 }
                 method = AutomationMethod.libraryTracks
                 params = libraryTracksParameters(from: options)
+            case "import":
+                guard !args.isEmpty else {
+                    writeDiagnostic("usage error: library import requires file or folder paths")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [
+                    "filePaths": .array(args.map { .string($0) }),
+                    "dryRun": .boolean(options.dryRun)
+                ]
+                if let playlistID = options.targetPlaylistID ?? options.playlistID {
+                    values["targetPlaylistID"] = .string(playlistID)
+                }
+                method = AutomationMethod.libraryImport
+                params = .object(values)
             case "create":
                 guard args.count == 2 || args.count == 3 else {
                     writeDiagnostic("usage error: library create requires mode, display name and optional parent path")
@@ -1269,6 +1283,8 @@ private struct AutomationCLI {
           system info             Read protocol and capability information
           library list            List registered libraries and active ID
           library tracks          Query tracks with filters, sorting and pagination
+          library import <path>... [--playlist-id <id>]
+                                   Import audio/folders (including NCM); returns a Job
           library create <mode> <name> [parent]
                                    Create and activate a library
           library open [path]     Open and activate an existing library

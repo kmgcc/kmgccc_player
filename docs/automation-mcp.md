@@ -142,3 +142,15 @@ identity 和 secret rotation，不能把本地 shared secret 当作远程授权�
 默认 adapter 会尝试启动 App，然后等待 socket/secret；`--no-launch` 用于测试和明确只连接
 现有实例的场景。App 未完成 Library setup、正在切库或 endpoint 不可用时，MCP tool result
 会保留结构化 `serverUnavailable`/`libraryNotActive` 错误，不应反复写入旧库。
+
+## Import workflow
+
+`library.import` 使用 App 的手动导入流程，支持 managed/referenced、文件／目录、NCM，
+以及自动歌词、封面和元数据补全。可访问文件直接执行，权限不足时由 App 请求选择。
+
+```json
+{"name":"library.import","arguments":{"filePaths":["/path/to/song.ncm","/path/to/folder"],"targetPlaylistID":"<playlist-uuid>"}}
+```
+
+将上述参数放进当前 host 的 `tools/call` 请求；收到 Job 后通过 `jobs.get` 查询终态及
+`result`。导入成功数量与补全缺失分别报告，不保证网络补全耗时。

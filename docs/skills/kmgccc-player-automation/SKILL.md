@@ -7,6 +7,14 @@ description: Operate kmgccc_player through its shared CLI/MCP automation contrac
 
 Use the App-owned automation capability catalog before inventing a workflow.
 
+## New audio import
+
+Use `library.import` with `filePaths` and optional `targetPlaylistID` for files/folders in
+managed or referenced libraries, including NCM. The App runs manual import and enrichment.
+Poll `jobs.get` to a terminal state, inspect its `result`, import failures and enrichment
+warnings, then verify Tracks and Playlist membership. Do not handcraft sidecars, copy Tracks
+folders, externally decrypt NCM, or substitute `playlist.addTracks` for new-file import.
+
 ## Required semantics
 
 - Track, File, Library membership, Playlist membership and Source membership are different.

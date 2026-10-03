@@ -17,6 +17,7 @@ import SwiftUI
 @MainActor
 final class BKArtBackgroundController: ObservableObject {
     @Published private(set) var transitionID: Int = 0
+    @Published private(set) var requestedTransitionTrackID: UUID?
     @Published private(set) var lyricsColorTrackID: UUID?
     @Published private(set) var primaryBackgroundColor: NSColor?
     @Published private(set) var currentSurfaceBackgroundColor: NSColor?
@@ -25,7 +26,8 @@ final class BKArtBackgroundController: ObservableObject {
     @Published private(set) var isUltraDarkActive: Bool = false
     @Published private(set) var lyricsColorSampleRevision: Int = 0
 
-    func triggerTransition() {
+    func triggerTransition(for trackID: UUID? = nil) {
+        requestedTransitionTrackID = trackID
         transitionID &+= 1
     }
 
@@ -133,13 +135,14 @@ struct BKArtBackgroundView: View {
     let trackID: UUID?
     let artworkData: Data?
     let isPlaying: Bool
+    var artworkFileURL: URL? = nil
     var animationEnabled: Bool = true
     var avoidanceRect: CGRect? = nil
     var resourceProfile: ResourceProfile = .standard
     var dotRenderStyle: DotRenderStyle = .dotGrid
     var motionProfile: MotionProfile = .window
     var initialPalette: [NSColor]? = nil
-    var holdPaletteWhenArtworkMissing: Bool = false
+    var isArtworkLoading: Bool = false
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var palette: [NSColor] = Self.fallbackPalette
@@ -149,11 +152,13 @@ struct BKArtBackgroundView: View {
     @State private var paletteRefreshTask: Task<Void, Never>?
     @State private var paletteRefreshToken = UUID()
     @State private var currentAnalysis: ArtworkColorAnalysis? = nil
+    @State private var resolvedPaletteTrackID: UUID?
+    @State private var hasResolvedPalette = false
 
     var body: some View {
         BKArtBackgroundRepresentable(
             controller: controller,
-            trackID: trackID,
+            trackID: hasResolvedPalette ? resolvedPaletteTrackID : trackID,
             transitionID: controller.transitionID,
             seed: seedValue,
             palette: displayPalette,
@@ -164,7 +169,13 @@ struct BKArtBackgroundView: View {
             resourceProfile: resourceProfile,
             dotRenderStyle: dotRenderStyle,
             motionProfile: motionProfile,
-            analysis: currentAnalysis
+            analysis: currentAnalysis,
+            paletteReadyForCurrentArtwork: hasResolvedPalette
+                && (!isArtworkLoading || artworkFileURL != nil)
+                && resolvedPaletteTrackID == trackID
+                && lastArtworkSignature == artworkSignature
+                && (controller.requestedTransitionTrackID == nil
+                    || controller.requestedTransitionTrackID == resolvedPaletteTrackID)
         )
         .allowsHitTesting(false)
         .onAppear {
@@ -176,6 +187,12 @@ struct BKArtBackgroundView: View {
         .onChange(of: artworkSignature) { _, _ in
             refreshPalette()
         }
+        .onChange(of: artworkFileURL) { _, _ in
+            refreshPalette()
+        }
+        .onChange(of: isArtworkLoading) { _, _ in
+            refreshPalette()
+        }
         .onDisappear {
             paletteRefreshTask?.cancel()
             paletteRefreshTask = nil
@@ -183,12 +200,14 @@ struct BKArtBackgroundView: View {
     }
 
     private var seedValue: UInt64 {
-        guard let id = trackID else { return 0xA17D_4C59_10F3_778D }
+        guard let id = hasResolvedPalette ? resolvedPaletteTrackID : trackID else {
+            return 0xA17D_4C59_10F3_778D
+        }
         return UInt64(bitPattern: Int64(id.uuidString.hashValue))
     }
 
     private var artworkSignature: Int {
-        artworkData?.hashValue ?? 0
+        artworkData?.hashValue ?? artworkFileURL?.hashValue ?? 0
     }
 
     private var displayPalette: [NSColor] {
@@ -206,19 +225,21 @@ struct BKArtBackgroundView: View {
 
     private func refreshPalette() {
         paletteRefreshTask?.cancel()
+        paletteRefreshTask = nil
+        let token = UUID()
+        paletteRefreshToken = token
 
-        guard let data = artworkData else {
-            if holdPaletteWhenArtworkMissing {
-                Log.debug(
-                    "[BKArt/palette] holding previous palette while artwork data is pending",
-                    category: .ui
-                )
-                return
-            }
-            controller.beginLyricsColorSampling(for: trackID)
-            palette = Self.fallbackPalette
-            controller.setPrimaryBackgroundColor(Self.fallbackPalette.first, for: trackID)
-            controller.setCurrentSurfaceBackgroundColor(nil, for: trackID)
+        // Loading may still expose the preceding track's artwork bytes. Keep
+        // its complete palette and transition seed until the new source settles.
+        guard !isArtworkLoading || artworkFileURL != nil else { return }
+
+        guard artworkData != nil || artworkFileURL != nil else {
+            applyResolvedPalette(
+                basePalette: Self.fallbackPalette,
+                richPalette: [],
+                signature: artworkSignature,
+                trackID: trackID
+            )
             controller.setCurrentSurfaceDescriptor(
                 usesDotBackground: false,
                 variantIndex: nil,
@@ -230,24 +251,32 @@ struct BKArtBackgroundView: View {
 
         let currentSignature = artworkSignature
         let currentTrackID = trackID
-        controller.beginLyricsColorSampling(for: currentTrackID)
-        applySeededPrimaryColorIfNeeded(for: currentTrackID)
 
         if currentSignature == lastArtworkSignature, !cachedBasePalette.isEmpty || !cachedRichPalette.isEmpty
         {
             applyResolvedPalette(
                 basePalette: cachedBasePalette,
                 richPalette: cachedRichPalette,
+                analysis: currentAnalysis,
                 signature: currentSignature,
                 trackID: currentTrackID
             )
             return
         }
 
-        let token = UUID()
-        paletteRefreshToken = token
-
         paletteRefreshTask = Task(priority: .userInitiated) {
+            let data: Data
+            if let artworkData {
+                data = artworkData
+            } else if let artworkFileURL {
+                let loaded = await Task.detached(priority: .userInitiated) {
+                    try? Data(contentsOf: artworkFileURL, options: .mappedIfSafe)
+                }.value
+                guard !Task.isCancelled, let loaded, !loaded.isEmpty else { return }
+                data = loaded
+            } else {
+                return
+            }
             let extracted: (base: [NSColor], rich: [NSColor])
             let analysis: ArtworkColorAnalysis?
 
@@ -275,6 +304,7 @@ struct BKArtBackgroundView: View {
             guard !Task.isCancelled else { return }
 
             await MainActor.run {
+                guard !Task.isCancelled else { return }
                 guard paletteRefreshToken == token else { return }
                 applyResolvedPalette(
                     basePalette: extracted.base,
@@ -288,20 +318,6 @@ struct BKArtBackgroundView: View {
         }
     }
 
-    private func applySeededPrimaryColorIfNeeded(for trackID: UUID?) {
-        guard !seededPalette.isEmpty else { return }
-        let harmonized = BKColorEngine.make(
-            extracted: seededPalette,
-            fallback: Self.fallbackPalette,
-            isDark: colorScheme == .dark
-        )
-        let primaryBackgroundColor = predictedInitialBackgroundColor(from: harmonized)
-            ?? seededPalette.first
-            ?? Self.fallbackPalette.first
-        controller.setPrimaryBackgroundColor(primaryBackgroundColor, for: trackID)
-        controller.setUltraDarkActive(colorScheme == .dark && isUltraDarkPalette(harmonized), for: trackID)
-    }
-
     private func applyResolvedPalette(
         basePalette: [NSColor],
         richPalette: [NSColor],
@@ -313,6 +329,8 @@ struct BKArtBackgroundView: View {
         cachedBasePalette = basePalette
         cachedRichPalette = richPalette
         lastArtworkSignature = signature
+        resolvedPaletteTrackID = trackID
+        hasResolvedPalette = true
 
         let resolvedPalette = BKExtractedPalettePolicy.select(
             analysis: analysis,
@@ -320,7 +338,9 @@ struct BKArtBackgroundView: View {
             richPalette: richPalette,
             fallbackPalette: Self.fallbackPalette
         )
-        controller.setCurrentSurfaceBackgroundColor(nil, for: trackID)
+        // Publish sampling state only with a complete result, including cached
+        // analysis. Pending requests must not reset the displayed darkness.
+        controller.beginLyricsColorSampling(for: trackID)
         palette = resolvedPalette
         let harmonized = BKColorEngine.make(
             extracted: resolvedPalette,
@@ -441,6 +461,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
     let dotRenderStyle: BKArtBackgroundView.DotRenderStyle
     let motionProfile: BKArtBackgroundView.MotionProfile
     let analysis: ArtworkColorAnalysis?
+    let paletteReadyForCurrentArtwork: Bool
 
     func makeNSView(context: Context) -> BKArtBackgroundLayerView {
         FSDiagnostics.emit("BKArtBackground.makeNSView BEGIN t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
@@ -472,7 +493,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
         nsView.ensureBaseContainer(seed: seed)
         nsView.setPlayback(isPlaying: isPlaying)
 
-        if nsView.currentTransitionID != transitionID {
+        if paletteReadyForCurrentArtwork, nsView.currentTransitionID != transitionID {
             nsView.currentTransitionID = transitionID
             nsView.triggerTransition(seed: seed &+ UInt64(truncatingIfNeeded: transitionID))
         }
@@ -1064,6 +1085,11 @@ private final class BKArtBackgroundLayerView: NSView {
             "near:\(nearFlag)|trusted:\(trustedFlag)|ultra:\(ultraFlag)|display:\(displaySignature)"
         let signature = "\(colorSignature)|dark:\(isDark ? 1 : 0)|\(analysisSignature)"
         guard signature != paletteSignature else { return }
+
+        // Commit tone, image, overlays, dots and shapes in the same layer update.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
 
         harmonized = BKColorEngine.make(
             extracted: converted,

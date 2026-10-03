@@ -559,6 +559,17 @@ final class AutomationIPCServer {
                case .boolean(true) = values["dryRun"] {
                 required.remove(.artworkWrite)
             }
+            if request.method == AutomationMethod.libraryImport,
+               case .object(let values) = request.params {
+                if case .boolean(true) = values["dryRun"] {
+                    required.remove(.libraryWrite)
+                } else {
+                    if values["targetPlaylistID"] != nil { required.insert(.playlistWrite) }
+                    if appSession?.activeLibraryBinding.context?.mode == .referenced {
+                        required.insert(.sourceWrite)
+                    }
+                }
+            }
             if !granted.isSuperset(of: required) {
                 let denied = required.subtracting(granted)
                 return .failure(
@@ -1172,6 +1183,83 @@ final class AutomationIPCServer {
                 )
             } catch {
                 return libraryLifecycleFailure(for: request, error: error)
+            }
+
+        case AutomationMethod.libraryImport:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                guard case .array(let paths) = parameters.values["filePaths"],
+                      !paths.isEmpty, paths.count <= 5_000 else {
+                    throw AutomationParameterError.invalidValue("filePaths")
+                }
+                var urls: [URL] = []
+                var seen = Set<String>()
+                for value in paths {
+                    guard case .string(let rawPath) = value,
+                          !rawPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                          (rawPath as NSString).expandingTildeInPath.hasPrefix("/") else {
+                        throw AutomationParameterError.invalidValue("filePaths")
+                    }
+                    let url = URL(fileURLWithPath: expandPath(rawPath))
+                    if seen.insert(url.resolvingSymlinksInPath().path).inserted { urls.append(url) }
+                }
+                let playlistID = try parameters.uuid("targetPlaylistID")
+                if let playlistID,
+                   !session.libraryViewModel.playlists.contains(where: { $0.id == playlistID }) {
+                    throw AutomationParameterError.missingResource("targetPlaylistID")
+                }
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                if dryRun {
+                    return encodeResult(AutomationLibraryImportResult(
+                        libraryID: session.context.id, mode: session.context.mode.rawValue,
+                        filePaths: urls.map(\.path), targetPlaylistID: playlistID,
+                        dryRun: true,
+                        message: "Preview only; no scan, conversion, authorization, import or enrichment has started."
+                    ), for: request)
+                }
+                // Directly readable paths use the App's existing access. A
+                // sandboxed App requests the same system picker as UI import.
+                // Missing files are reported individually by the import pipeline.
+                let inaccessible = urls.filter {
+                    FileManager.default.fileExists(atPath: $0.path)
+                        && !FileManager.default.isReadableFile(atPath: $0.path)
+                }
+                var selectedURLs = urls
+                if !inaccessible.isEmpty {
+                    guard let picked = await session.fileImportService.pickImportURLs(triggeredAt: Date()) else {
+                        return interactionCancelled(for: request)
+                    }
+                    let pickedPaths = Set(picked.map { $0.resolvingSymlinksInPath().standardizedFileURL.path })
+                    guard inaccessible.allSatisfy({ pickedPaths.contains($0.resolvingSymlinksInPath().path) }) else {
+                        return permissionDenied(for: request, path: inaccessible[0].path)
+                    }
+                    selectedURLs = urls.map { url in
+                        picked.first { $0.resolvingSymlinksInPath().path == url.resolvingSymlinksInPath().path } ?? url
+                    }
+                }
+                let selection = LibraryInitialImportSelection(urls: selectedURLs)
+                defer { selection.release() }
+                if let denied = selectedURLs.first(where: {
+                    FileManager.default.fileExists(atPath: $0.path)
+                        && !FileManager.default.isReadableFile(atPath: $0.path)
+                }) {
+                    return permissionDenied(for: request, path: denied.path)
+                }
+                guard activeSession(for: request) === session,
+                      let job = session.startAutomationImport(selection: selection, playlistID: playlistID) else {
+                    return noActiveLibraryResponse(for: request)
+                }
+                return encodeResult(AutomationLibraryImportResult(
+                    libraryID: session.context.id, mode: session.context.mode.rawValue,
+                    filePaths: selectedURLs.map(\.path), targetPlaylistID: playlistID,
+                    job: makeJobSummary(job),
+                    message: "Import started. Poll jobs.get for Track IDs, Playlist additions, failures and enrichment completion."
+                ), for: request)
+            } catch {
+                return invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.libraryTracks:
@@ -6236,7 +6324,8 @@ final class AutomationIPCServer {
              AutomationMethod.librarySwitch,
              AutomationMethod.libraryRename,
              AutomationMethod.libraryRelocate,
-             AutomationMethod.libraryRemove: return "library"
+             AutomationMethod.libraryRemove,
+             AutomationMethod.libraryImport: return "library"
         case AutomationMethod.libraryTracks: return "selection"
         case AutomationMethod.playlistAddTracks,
              AutomationMethod.playlistRemoveTracks,
@@ -6455,7 +6544,8 @@ final class AutomationIPCServer {
             retryable: descriptor.retrySpec != nil
                 && (descriptor.state == .failed
                     || descriptor.state == .partialFailure
-                    || descriptor.state == .cancelled)
+                    || descriptor.state == .cancelled),
+            result: descriptor.result
         )
     }
 

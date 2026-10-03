@@ -1,4 +1,5 @@
 import Foundation
+import PlayerAutomationProtocol
 import SwiftData
 
 struct LibraryAutomationLyricsApplyOutcome: Sendable {
@@ -723,6 +724,81 @@ final class LibrarySession: LibrarySessionLifecycle {
         _ work: @escaping @MainActor () async -> Void
     ) -> Bool {
         operationCoordinator.start(work, kind: .importFiles)
+    }
+
+    /// The same destination, duplicate, conversion and enrichment pipeline as
+    /// manual import, retained by this session rather than the IPC request.
+    @discardableResult
+    func startAutomationImport(
+        selection: LibraryInitialImportSelection,
+        playlistID: UUID? = nil
+    ) -> LibraryOperationTaskDescriptor? {
+        guard !isClosed else { return nil }
+        let ownedSelection = selection.retainedCopy()
+        let importContext = LibraryImportContext(
+            libraryID: context.id,
+            sessionGeneration: context.generation,
+            destination: playlistID.map { .playlist($0) } ?? .libraryOnly,
+            origin: .automation
+        )
+        let started = operationCoordinator.start({ [weak self] in
+            defer { ownedSelection.release() }
+            guard let self else { return }
+            let previousTrackCount = playlistID.flatMap { id in
+                self.libraryViewModel.playlists.first { $0.id == id }?.trackCount
+            } ?? 0
+            let outcome = await self.fileImportService.importSelectedURLs(
+                ownedSelection.urls, context: importContext
+            )
+            await self.libraryViewModel.publishImportResult(
+                outcome, playlistID: playlistID, previousTrackCount: previousTrackCount
+            )
+            var values: [String: AutomationJSONValue] = [
+                "libraryID": .string(self.context.id.uuidString),
+                "mode": .string(self.context.mode.rawValue),
+                "trackIDs": .array(outcome.trackIDs.map { .string($0.uuidString) }),
+                "importedTrackCount": .number(Double(outcome.importedTrackCount)),
+                "reusedTrackCount": .number(Double(outcome.reusedTrackCount)),
+                "playlistMembershipAdditions": .number(Double(outcome.playlistMembershipAdditions)),
+                "alreadyInPlaylistCount": .number(Double(outcome.alreadyInPlaylistCount)),
+                "pendingNCMCount": .number(Double(outcome.pendingNCMCount)),
+                "failures": .array(outcome.failures.map { .object([
+                    "path": .string($0.url.path), "message": .string($0.message)
+                ]) }),
+                "enrichmentCompleted": .boolean(false)
+            ]
+            if let playlistID { values["targetPlaylistID"] = .string(playlistID.uuidString) }
+            self.operationCoordinator.recordResult(.object(values))
+            self.operationCoordinator.recordProgress(
+                completedCount: outcome.affectedTrackCount,
+                totalCount: outcome.affectedTrackCount + outcome.failures.count,
+                phase: "import enrichment"
+            )
+            for failure in outcome.failures.prefix(50) {
+                self.operationCoordinator.recordPartialFailure("\(failure.url.path): \(failure.message)")
+            }
+            if outcome.wasRejectedAsStale {
+                self.operationCoordinator.recordPartialFailure("Import rejected: library session changed")
+            }
+            let newTrackIDs = Set(outcome.newTrackIDs)
+            do {
+                let warnings = try await self.importEnrichmentService.waitForEnrichment(for: newTrackIDs)
+                await self.libraryViewModel.syncVisibleStateFromRepositoryAfterImport()
+                values["enrichmentCompleted"] = .boolean(true)
+                values["enrichmentWarnings"] = .array(warnings.map { .string($0) })
+                self.operationCoordinator.recordResult(.object(values))
+                self.operationCoordinator.recordCheckpoint("Import and enrichment complete")
+            } catch is CancellationError {
+                await self.fileImportService.cancelEnrichment(for: newTrackIDs)
+            } catch {
+                self.operationCoordinator.recordPartialFailure("Enrichment failed: \(error)")
+            }
+        }, kind: .importFiles)
+        guard started else {
+            ownedSelection.release()
+            return nil
+        }
+        return operationCoordinator.taskDescriptors.last
     }
 
     /// Starts an automation-owned referenced Source import without keeping the

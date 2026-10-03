@@ -291,6 +291,7 @@ final class ImportEnrichmentService {
     private var activeTasks: [ImportEnrichmentPartRequest: Task<Void, Never>] = [:]
     private var trackByID: [UUID: Track] = [:]
     private var itemStates: [UUID: ImportEnrichmentItemState] = [:]
+    private var completedPartWarnings: [UUID: [String]] = [:]
     private var pendingFlushPatches: [UUID: PendingTrackEnrichmentPatch] = [:]
     private var flushTask: Task<Void, Never>?
     private var isFlushing = false
@@ -388,6 +389,27 @@ final class ImportEnrichmentService {
         )
     }
 
+    /// Waits only for this import's queued work, including sidecar flushes.
+    /// Existing UI imports and unrelated enrichment are not part of the wait.
+    func waitForEnrichment(for trackIDs: Set<UUID>) async throws -> [String] {
+        while trackIDs.contains(where: { itemStates[$0]?.hasOutstandingWork == true }) {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        try Task.checkCancellation()
+        return trackIDs.sorted { $0.uuidString < $1.uuidString }.flatMap { id in
+            guard let state = itemStates[id] else { return completedPartWarnings[id] ?? [] }
+            return Self.enrichmentWarnings(for: state)
+        }
+    }
+
+    private static func enrichmentWarnings(for state: ImportEnrichmentItemState) -> [String] {
+        ImportEnrichmentPart.allCases.compactMap { part in
+            guard state.state(for: part).countsAsFailure else { return nil }
+            return "\(state.trackID.uuidString): \(part.rawValue) unavailable"
+        }
+    }
+
     func enqueueTracks(_ tracks: [Track]) async {
         completionSummary = nil
         if hasOutstandingWork == false {
@@ -404,6 +426,7 @@ final class ImportEnrichmentService {
         )
 
         for track in tracks {
+            completedPartWarnings[track.id] = nil
             guard let itemState = makeInitialItemState(
                 for: track,
                 artistEntriesByCanonical: artistEntriesByCanonical,
@@ -2161,6 +2184,11 @@ final class ImportEnrichmentService {
         guard itemStates.values.allSatisfy(\.isTerminal) else { return }
         let finishedStates = Array(itemStates.values)
         if finishedStates.isEmpty == false {
+            // Keep the most recent completion's value snapshots after releasing
+            // Track references, so automation can collect provider outcomes.
+            completedPartWarnings = Dictionary(uniqueKeysWithValues: finishedStates.map {
+                ($0.trackID, Self.enrichmentWarnings(for: $0))
+            })
             let failedTrackIDs = finishedStates.filter(\.hasTerminalFailure).map(\.trackID)
             completionSummary = ImportEnrichmentCompletionSummary(
                 totalCount: finishedStates.count,

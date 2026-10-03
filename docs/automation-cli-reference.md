@@ -17,7 +17,7 @@ swift run player-automation library tracks \
 ```text
 system ping|info
 automation capabilities|scopes|call <method>
-library list|tracks|create|open|switch|rename|relocate|remove
+library list|tracks|import|create|open|switch|rename|relocate|remove
 playlist list|get|create|rename|delete|add|remove|replace|reorder
 source list|create|bind|exclude|include|watch|unwatch|remove|refresh
 metadata get|patch
@@ -187,3 +187,15 @@ Lyrics 的候选工作流可以拆成可组合的调用：`lyrics search`/`lyric
 ```text
 lyrics refresh -> jobs.get(Job ID) -> jobs.retry/jobs.cancel（必要时） -> 验证 library.tracks/lyrics.get
 ```
+
+## 导入音频与歌单归入
+
+```sh
+player-automation library import /path/to/song.mp3 /path/to/song.ncm /path/to/folder \
+  --playlist-id <playlist-id> --dry-run --json
+player-automation library import /path/to/folder --playlist-id <playlist-id> --json
+player-automation jobs get <job-id> --json
+```
+
+MCP 同名工具为 `library.import`，参数是 `filePaths`、可选 `targetPlaylistID` 和 `dryRun`。
+结果和权限语义见 [Audio import](automation-capability-reference.md#audio-import)。

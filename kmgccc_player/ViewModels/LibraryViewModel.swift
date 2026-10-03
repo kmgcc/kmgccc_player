@@ -1516,17 +1516,26 @@ final class LibraryViewModel {
             return 0
         }
 
-        // Only refresh if tracks were actually imported
-        if result.affectedTrackCount > 0 {
-            await syncVisibleStateFromRepositoryAfterImport()
-            if let playlistID = target.playlistID {
-                await refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
-                    playlistID: playlistID,
-                    previousTrackCount: previousTrackCount
-                )
-            }
-        }
+        await publishImportResult(
+            result, playlistID: target.playlistID, previousTrackCount: previousTrackCount
+        )
         return result.affectedTrackCount
+    }
+
+    /// Shared UI/automation completion: publish repository state and generate
+    /// the initial Playlist artwork through the existing owner.
+    func publishImportResult(
+        _ result: LibraryImportResult,
+        playlistID: UUID?,
+        previousTrackCount: Int
+    ) async {
+        guard result.affectedTrackCount > 0 else { return }
+        await syncVisibleStateFromRepositoryAfterImport()
+        if let playlistID {
+            await refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
+                playlistID: playlistID, previousTrackCount: previousTrackCount
+            )
+        }
     }
 
     /// Plan §11: a stale import request must be cancelled AND explained to
@@ -3723,7 +3732,7 @@ final class LibraryViewModel {
         }
     }
 
-    private func syncVisibleStateFromRepositoryAfterImport() async {
+    func syncVisibleStateFromRepositoryAfterImport() async {
         await syncVisibleStateFromRepository(reason: "import", invalidatedSelectionIdentities: [])
     }
 

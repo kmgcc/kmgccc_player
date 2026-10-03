@@ -11,6 +11,23 @@ MCP Resources 应引用它；它不是安全边界，真正的 scope 和确认 p
 4. 对 medium/high risk mutation 先 `dryRun`，检查影响摘要、skipped、missing、conflict 和 Job。
 5. 只在正式接口不能表达需求时才进入 Storage fallback。
 
+## 导入新音频
+
+外部文件或文件夹使用 `library.import`，可同时提供 `targetPlaylistID`。managed 与
+referenced 均支持，NCM 由 App 转换。`playlist.addTracks` 仅用于已有 Track ID。
+
+```text
+library.import(filePaths, targetPlaylistID?)
+    -> jobs.get 至终态
+    -> result / failures / enrichmentWarnings
+    -> library.tracks / playlist.get / artwork.get / lyrics.get 核验
+```
+
+导入与在线补全可能超过一次请求时限；收到 Job 不代表全部完成。按 App 设置自动补全
+歌词、封面、曲目／歌手／专辑信息，provider 无结果应报告缺失项。不要为导入手写
+`meta.json`、复制 Tracks 目录或外部解密 NCM。取消或重启中断后的导入需要重新调用
+`library.import`，使用新 idempotency key，并核验已有 Track 与歌单关系。
+
 ## 主 App 启动与实测前置
 
 kmgccc_player 的资料库是独占资源。所有主 App 实测都必须先完成进程状态检查：

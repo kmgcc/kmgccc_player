@@ -8,16 +8,15 @@
 Pi runtime 和远程聊天 provider；本轮先把播放器本身建设成一个稳定、丰富、可组合、
 可审计的 Application Automation 平台。
 
-## 1. 当前状态与工作树
+## 1. 原实施基线与当前状态
 
 - 工作树：独立工作树 `myPlayer2-ai-agent-automation`
 - 分支：`codex/ai-agent-automation-next`
 - 基线：`main/origin/main`，commit `236a1b5d`
-- 已完成：Phase A–K 的共享协议、Tool Catalog、CLI、AF_UNIX IPC、MCP stdio，以及
-  Library / Playlist / 已授权 Referenced Source 的第一条垂直切片
-- 当前阶段：Phase E/F 收尾与 P0 验收；共享合同和高价值基础能力已落地，本轮继续补齐
-  durable Jobs、Lyrics 候选工作流与可重试批处理，随后仍需完成真实 Host、授权拒绝和前台
-  高风险确认验收，不把能力目录数量当作完成度
+- 历史完成范围：共享协议、Tool Catalog、CLI、AF_UNIX IPC、MCP stdio，以及部分领域能力。
+  Phase A–K 的基础落地不表示第 5 节所有目标都已完成。
+- 当前阶段（2026-10-03）：补齐遗漏的跨模式音频导入；逐项差距与验收边界见
+  [计划实现审计](automation-plan-audit-2026-10-03.md)。下文各日期 checkpoint 为历史证据。
 - 暂缓：Built-in Agent runtime 和任何独立模型数据层
 
 公开仓库地址以当前 `git remote -v` 为准，当前已验证为
@@ -546,3 +545,17 @@ checkpoint 为准；新能力必须先更新这里，再更新 CLI/MCP/Skill 的
 - 普通代码修改做匹配的增量 Debug Build；完整 `verify.sh` 只在用户要求或最终门禁运行。
 - 真实 App、权限、冷启动、切库、重启、signed build 和 filesystem 行为不能用单元测试
   冒充；交付时分别列出已验证、未验证和建议人工检查。
+
+## 16. 当前 checkpoint（2026-10-03，导入闭环）
+
+原计划第 5 节的 Library import 未由 Source create/refresh 完整覆盖：此前它们仅允许
+referenced，managed 没有正式外部导入入口。这是实现遗漏，并非计划取消。
+
+本轮新增 `library.import` 与 CLI `library import`，复用手动导入的 destination context、
+FileImportService、NCM 转换和 enrichment owner。支持文件／目录及可选歌单；立即返回
+Job，结构化结果持久化到 Job 历史，区分入库失败和后台补全无匹配。无需独立转换工具即可
+处理 NCM 导入。跨重启外部路径授权重试仍未实现；重新授权后再次导入沿用 identity 去重。
+
+详细状态与实际验收记录维护于 [计划实现审计](automation-plan-audit-2026-10-03.md)。
+旧文档中的“Artwork candidate mutation 未开放”需结合后续 `artwork.search/apply` checkpoint
+阅读；已可搜索并应用图片，尚缺独立候选 ID／质量策略合同。

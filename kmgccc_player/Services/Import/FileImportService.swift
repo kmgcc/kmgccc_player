@@ -341,7 +341,9 @@ final class FileImportService: FileImportServiceProtocol {
             wasRejectedAsStale: false,
             possibleDuplicatesCount: lastImportPossibleDuplicateCount,
             pendingNCMCount: lastImportPendingNCMCount,
-            alreadyInPlaylistCount: lastImportAlreadyInPlaylistCount
+            alreadyInPlaylistCount: lastImportAlreadyInPlaylistCount,
+            trackIDs: tracks.map(\.id),
+            newTrackIDs: tracks.filter { !beforeTrackIDs.contains($0.id) }.map(\.id)
         )
         publishImportFailuresIfNeeded(result.failures, origin: context.origin)
         return result
@@ -603,9 +605,9 @@ final class FileImportService: FileImportServiceProtocol {
             return []
         }
 
-        if presentation == .interactive { uiPresentationObserver?() }
+        if presentation == .interactive, origin != .automation { uiPresentationObserver?() }
         let progressController = BatchImportProgressDialogController(
-            presentsWindow: presentation == .interactive,
+            presentsWindow: presentation == .interactive && origin != .automation,
             onCancelRequested: {
                 Task {
                     await cancellationToken.requestCancel()
