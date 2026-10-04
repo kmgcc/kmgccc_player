@@ -18,14 +18,14 @@ enum WhatsNewConfiguration {
         title: "什么是新的",
         features: [
             WhatsNew.Feature(
-                image: .init(systemName: "speedometer", foregroundColor: .indigo),
-                title: "性能优化",
-                subtitle: "歌曲切换、主页浏览与播放列表滚动的流畅度均有明显提升。我们也持续调整缓存与资源释放，尝试缓解内存占用，并处理歌词组件异常消耗资源的问题。"
+                image: .init(systemName: "sparkles", foregroundColor: .indigo),
+                title: "边缘模糊修复",
+                subtitle: "修复皮肤边缘与封面边缘的模糊问题。"
             ),
             WhatsNew.Feature(
                 image: .init(systemName: "point.3.connected.trianglepath.dotted", foregroundColor: .green),
-                title: "Agent MCP 接入",
-                subtitle: "在设置中开启本机自动化并复制 MCP 配置后，支持的智能助手可查询曲库、歌词与播放列表；需要额外授权的操作仍由播放器确认。"
+                title: "自动化与 MCP 导入升级",
+                subtitle: "本机自动化与 MCP 的导入功能升级，扩展曲库导入、元数据与标签能力。"
             )
         ],
         primaryAction: .init(
