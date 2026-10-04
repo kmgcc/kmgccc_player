@@ -1,0 +1,77 @@
+#compdef player-automation
+
+_player-automation() {
+  local state
+  _arguments -C \
+    '1:command:->command' \
+    '2:action:->action' \
+    '*:argument:->argument' \
+    '--json[Emit the stable JSON response envelope]' \
+    '--dry-run[Preview a mutation without applying it]' \
+    '--expected-revision[Require the current entity revision]:revision:' \
+    '--params-json[Supply a JSON object]:parameters:' \
+    '--params-file[Read a JSON object from a file]:json file:' \
+    '--playlist-id[Choose a destination Playlist]:playlist ID:' \
+    '--track-id[Filter or target a Track]:track ID:' \
+    '--query[Search matching text]:query:' \
+    '--limit[Maximum result count]:count:' \
+    '--offset[Skip results before this page]:count:' \
+    '--from[Inclusive ISO-8601 start time]:date:' \
+    '--to[Exclusive ISO-8601 end time]:date:' \
+    '--confirm[Acknowledge a guarded operation]' \
+    '--yes[Acknowledge a guarded operation]'
+
+  case $state in
+    command)
+      _values 'command' \
+        'automation:List capabilities or call a method' \
+        'system:Check the local App endpoint' \
+        'library:Read, import, and manage libraries' \
+        'playlist:Manage playlist membership' \
+        'source:Manage referenced sources' \
+        'files:Reveal or export authorized audio' \
+        'playback:Control playback' \
+        'queue:Control the playback queue' \
+        'history:Read or clear listening history' \
+        'metadata:Read, search, or update metadata' \
+        'artwork:Search or update artwork' \
+        'lyrics:Read, search, or update lyrics' \
+        'jobs:Inspect or control long-running jobs' \
+        'diagnostics:Inspect library health' \
+        'settings:Read or update persistent settings' \
+        'audio:Read or update audio scheduling settings' \
+        'storage:Inspect and validate app-owned storage' \
+        'mcp-stdio:Serve the MCP endpoint over stdio'
+      ;;
+    action)
+      case $words[2] in
+        automation) _values 'action' 'capabilities' 'scopes' 'call' ;;
+        system) _values 'action' 'ping' 'info' ;;
+        library) _values 'action' 'list' 'get' 'tracks' 'stats' 'report' 'bundle-export' 'selection-list' 'selection-create' 'selection-get' 'selection-delete' 'import' 'create' 'open' 'switch' 'rename' 'relocate' 'remove' ;;
+        playlist) _values 'action' 'list' 'get' 'create' 'rename' 'delete' 'add' 'add-selection' 'remove' 'replace' 'reorder' 'diff' 'import' 'export' ;;
+        source) _values 'action' 'list' 'get' 'config-export' 'config-import' 'rename' 'create' 'bind' 'exclude' 'include' 'watch' 'unwatch' 'remove' 'refresh' ;;
+        files) _values 'action' 'reveal' 'export' ;;
+        playback) _values 'action' 'state' 'play' 'play-playlist' 'toggle' 'pause' 'next' 'previous' 'seek' 'volume' 'mode' ;;
+        queue) _values 'action' 'get' 'upcoming' 'replace' 'enqueue' 'enqueue-next' 'remove' 'reorder' 'clear' ;;
+        history) _values 'action' 'list' 'stats' 'clear' ;;
+        metadata) _values 'action' 'get' 'embedded-get' 'embedded-patch' 'export' 'import' 'search' 'apply-candidate' 'patch' ;;
+        artwork) _values 'action' 'search' 'get' 'apply' 'apply-candidate' ;;
+        lyrics) _values 'action' 'get' 'clean' 'search' 'candidates' 'compare' 'apply' 'refresh' ;;
+        jobs) _values 'action' 'list' 'get' 'cancel' 'retry' ;;
+        diagnostics) _values 'action' 'health' ;;
+        settings) _values 'action' 'schema' 'get' 'patch' 'validate' 'reset' ;;
+        audio) _values 'action' 'get' 'patch' ;;
+        storage) _values 'action' 'inspect' 'validate' 'orphans' 'backup' 'diff' 'reload' 'repair' ;;
+      esac
+      ;;
+    argument)
+      case $words[2] in
+        library|playlist|source|files|playback|queue|history|metadata|artwork|lyrics|jobs|settings|audio|storage)
+          _files
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_player-automation "$@"

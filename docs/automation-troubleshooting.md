@@ -54,8 +54,10 @@ jobs.cancel -> 请求协作式取消
 
 Job 历史按资料库写入 `Settings/automation-jobs.json`，最多保留有界数量。App 重启时未完成
 的 Job 会以 recovery failure 变成 `failed`；安全可重建的 Lyrics/Source Job 可以通过
-`jobs.retry` 新建 Job。取消是协作式的，不会撤销已经提交的 domain data；不要把旧 Job 的
-取消误解为事务回滚。
+`jobs.retry` 新建 Job。导入 Job 重启后可用 `jobs.retry` 恢复目标 Playlist，并重新提供
+`filePaths` 让 App 重新取得文件访问授权；retry spec 不保存路径或书签，逐文件失败结果可能包含
+诊断路径。取消是协作式的，
+不会撤销已经提交的 domain data；不要把旧 Job 的取消误解为事务回滚。
 
 ## Build / helper
 

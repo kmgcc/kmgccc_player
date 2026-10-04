@@ -169,7 +169,12 @@ func setSocketTimeout(_ fd: Int32, seconds: TimeInterval) {
     }
 }
 
-func connectSocket(_ fd: Int32, path: String, timeout: TimeInterval) throws {
+func connectSocket(
+    _ fd: Int32,
+    path: String,
+    timeout: TimeInterval,
+    cancellation: AutomationIPCCancellationToken? = nil
+) throws {
     var address = try AutomationSocketAddress.makeSockaddr(path: path)
     let addressLength = AutomationSocketAddress.length(of: address)
     let originalFlags = fcntl(fd, F_GETFL, 0)
@@ -193,10 +198,18 @@ func connectSocket(_ fd: Int32, path: String, timeout: TimeInterval) throws {
         throw AutomationIPCError.connectionFailed(code)
     }
 
+    let deadline = Date().addingTimeInterval(timeout)
     var descriptor = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-    let milliseconds = Int32(min(max(timeout * 1_000, 1), Double(Int32.max)))
-    guard Darwin.poll(&descriptor, 1, milliseconds) > 0 else {
-        throw AutomationIPCError.timeout
+    while true {
+        if cancellation?.isCancelled == true { throw CancellationError() }
+        let remaining = max(0, deadline.timeIntervalSinceNow)
+        guard remaining > 0 else { throw AutomationIPCError.timeout }
+        let milliseconds = Int32(min(max(remaining * 1_000, 1), 100))
+        let pollResult = Darwin.poll(&descriptor, 1, milliseconds)
+        if pollResult > 0 { break }
+        if pollResult == 0 { continue }
+        if errno == EINTR { continue }
+        throw AutomationIPCError.connectionFailed(errno)
     }
     var socketError: Int32 = 0
     var socketErrorLength = socklen_t(MemoryLayout<Int32>.size)
@@ -316,6 +329,39 @@ func readFrame(
     return try readExact(bodyLength, from: fd)
 }
 
+private enum AutomationIPCConnectionOutcome: Sendable {
+    case response(AutomationResponse)
+    case peerDisconnected
+}
+
+private func waitForPeerDisconnect(_ fd: Int32) async -> Bool {
+    while !Task.isCancelled {
+        var descriptor = pollfd(
+            fd: fd,
+            events: Int16(POLLIN | POLLHUP | POLLERR),
+            revents: 0
+        )
+        let pollResult = Darwin.poll(&descriptor, 1, 100)
+        guard pollResult >= 0 else {
+            if errno == EINTR { continue }
+            return true
+        }
+        guard pollResult > 0 else { continue }
+        if descriptor.revents & Int16(POLLHUP | POLLERR | POLLNVAL) != 0 {
+            return true
+        }
+        if descriptor.revents & Int16(POLLIN) != 0 {
+            var byte: UInt8 = 0
+            let readCount = Darwin.recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
+            if readCount <= 0 { return true }
+            // This IPC contract is one request per connection. Additional
+            // client data means the peer no longer follows that response flow.
+            return true
+        }
+    }
+    return false
+}
+
 fileprivate func prepareSocketPath(_ path: String) throws {
     try AutomationSocketAddress.validate(path: path)
     let fileManager = FileManager.default
@@ -349,6 +395,10 @@ fileprivate func prepareSocketPath(_ path: String) throws {
 
 public actor AutomationIPCListener {
     public typealias RequestHandler = @MainActor @Sendable (AutomationRequest) async -> AutomationResponse
+    public typealias CancellableRequestHandler = @MainActor @Sendable (
+        AutomationRequest,
+        AutomationIPCCancellationToken
+    ) async -> AutomationResponse
 
     private let socketPath: String
     private let configuration: AutomationIPCConfiguration
@@ -364,6 +414,10 @@ public actor AutomationIPCListener {
     }
 
     public func start(handler: @escaping RequestHandler) throws {
+        try start(cancellableHandler: { request, _ in await handler(request) })
+    }
+
+    public func start(cancellableHandler handler: @escaping CancellableRequestHandler) throws {
         guard listenerFD == nil else { return }
         let parentURL = URL(fileURLWithPath: socketPath, isDirectory: false)
             .deletingLastPathComponent()
@@ -518,8 +572,36 @@ public actor AutomationIPCListener {
                                 try writeResponse(response, to: clientFD, codec: codec)
                                 return
                             }
-                            let response = await handler(request)
-                            try writeResponse(response, to: clientFD, codec: codec)
+                            let (outcomes, outcomeContinuation) = AsyncStream<AutomationIPCConnectionOutcome>.makeStream(
+                                bufferingPolicy: .bufferingNewest(1)
+                            )
+                            let cancellation = AutomationIPCCancellationToken()
+                            let handlerTask = Task { @MainActor in
+                                let response = await handler(request, cancellation)
+                                outcomeContinuation.yield(.response(response))
+                            }
+                            let disconnectTask = Task.detached(priority: .utility) {
+                                guard await waitForPeerDisconnect(clientFD) else { return }
+                                cancellation.cancel()
+                                outcomeContinuation.yield(.peerDisconnected)
+                            }
+                            var iterator = outcomes.makeAsyncIterator()
+                            if let outcome = await iterator.next() {
+                                handlerTask.cancel()
+                                disconnectTask.cancel()
+                                outcomeContinuation.finish()
+                                if case .response(let response) = outcome {
+                                    do {
+                                        try writeResponse(response, to: clientFD, codec: codec)
+                                        cancellation.finish()
+                                    } catch {
+                                        cancellation.cancel()
+                                        throw error
+                                    }
+                                } else {
+                                    cancellation.cancel()
+                                }
+                            }
                         } catch {
                             // A disconnected or malformed client is isolated to
                             // this connection; the listener remains available.

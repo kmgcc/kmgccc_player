@@ -37,6 +37,7 @@ private struct CLIOptions {
     var offset: Int?
     var from: String?
     var to: String?
+    var dimension: String?
     var expectedRevision: String?
     var idempotencyKey: String?
     /// Normal playlist/source mutations are direct. Callers can opt into an
@@ -171,7 +172,7 @@ private struct AutomationCLI {
             params = nil
         case "library":
             guard let action = args.first else {
-                writeDiagnostic("usage error: library requires list, tracks, import, create, open, switch, rename, relocate or remove")
+                writeDiagnostic("usage error: library requires list, get, tracks, stats, report, bundle-export, selection-list, selection-create, selection-get, selection-delete, import, create, open, switch, rename, relocate or remove")
                 return .usage
             }
             args.removeFirst()
@@ -183,13 +184,101 @@ private struct AutomationCLI {
                 }
                 method = AutomationMethod.libraryList
                 params = nil
+            case "get":
+                guard args.count == 1 else { writeDiagnostic("usage error: library get requires one library ID"); return .usage }
+                method = AutomationMethod.libraryGet
+                params = .object(["libraryID": .string(args[0])])
             case "tracks":
                 guard args.isEmpty else {
                     writeDiagnostic("usage error: library tracks uses named options only")
                     return .usage
                 }
+                if let paramsJSON = options.paramsJSON {
+                    guard case .object = paramsJSON else {
+                        writeDiagnostic("usage error: library tracks --params-json must be an object")
+                        return .usage
+                    }
+                }
                 method = AutomationMethod.libraryTracks
                 params = libraryTracksParameters(from: options)
+            case "stats":
+                guard args.isEmpty else { writeDiagnostic("usage error: library stats does not accept positional arguments"); return .usage }
+                method = AutomationMethod.libraryStats
+                params = nil
+            case "report":
+                guard args.isEmpty else { writeDiagnostic("usage error: library report uses named options only"); return .usage }
+                var values: [String: AutomationJSONValue] = [
+                    "limit": .number(Double(options.limit ?? 100)),
+                    "offset": .number(Double(options.offset ?? 0))
+                ]
+                if let paramsJSON = options.paramsJSON {
+                    guard case .object(let extra) = paramsJSON else {
+                        writeDiagnostic("usage error: library report --params-json must be an object")
+                        return .usage
+                    }
+                    values.merge(extra) { _, incoming in incoming }
+                }
+                if let expectedRevision = options.expectedRevision {
+                    values["expectedRevision"] = .string(expectedRevision)
+                }
+                method = AutomationMethod.libraryReport
+                params = .object(values)
+            case "bundle-export":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: library bundle-export does not accept positional arguments")
+                    return .usage
+                }
+                method = AutomationMethod.libraryBundleExport
+                params = .object([
+                    "dryRun": .boolean(options.dryRun),
+                    "confirm": .boolean(options.confirm)
+                ])
+            case "selection-list":
+                guard args.isEmpty else { writeDiagnostic("usage error: library selection-list does not accept positional arguments"); return .usage }
+                method = AutomationMethod.librarySelectionList
+                params = nil
+            case "selection-create":
+                guard args.count <= 10_000 else {
+                    writeDiagnostic("usage error: library selection-create accepts at most 10000 Track IDs")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [:]
+                if let paramsJSON = options.paramsJSON {
+                    guard case .object(let extra) = paramsJSON else {
+                        writeDiagnostic("usage error: library selection-create --params-json must be an object")
+                        return .usage
+                    }
+                    values.merge(extra) { _, incoming in incoming }
+                }
+                if args.isEmpty {
+                    guard values["filter"] != nil, values["trackIDs"] == nil else {
+                        writeDiagnostic("usage error: library selection-create requires Track IDs or --params-json with a filter")
+                        return .usage
+                    }
+                } else {
+                    guard values["filter"] == nil, values["trackIDs"] == nil else {
+                        writeDiagnostic("usage error: pass Track IDs or a filter, not both")
+                        return .usage
+                    }
+                    values["trackIDs"] = .array(args.map { .string($0) })
+                }
+                values["dryRun"] = .boolean(options.dryRun)
+                if let expectedRevision = options.expectedRevision {
+                    values["expectedRevision"] = .string(expectedRevision)
+                }
+                method = AutomationMethod.librarySelectionCreate
+                params = .object(values)
+            case "selection-get":
+                guard args.count == 1 else { writeDiagnostic("usage error: library selection-get requires one selection ID"); return .usage }
+                method = AutomationMethod.librarySelectionGet
+                params = .object(["selectionID": .string(args[0])])
+            case "selection-delete":
+                guard args.count == 1 else { writeDiagnostic("usage error: library selection-delete requires one selection ID"); return .usage }
+                method = AutomationMethod.librarySelectionDelete
+                params = .object([
+                    "selectionID": .string(args[0]),
+                    "dryRun": .boolean(options.dryRun)
+                ])
             case "import":
                 guard !args.isEmpty else {
                     writeDiagnostic("usage error: library import requires file or folder paths")
@@ -288,7 +377,7 @@ private struct AutomationCLI {
             }
         case "playlist":
             guard let action = args.first else {
-                writeDiagnostic("usage error: playlist requires list, get, create, rename, delete, add, remove, replace or reorder")
+                writeDiagnostic("usage error: playlist requires list, get, create, rename, delete, add, add-selection, remove, replace, reorder or diff")
                 return .usage
             }
             args.removeFirst()
@@ -318,6 +407,30 @@ private struct AutomationCLI {
                 }
                 method = AutomationMethod.playlistGet
                 params = .object(["playlistID": .string(args[0])])
+            case "diff":
+                guard args.count >= 3 else { writeDiagnostic("usage error: playlist diff requires an operation and at least two playlist IDs"); return .usage }
+                let operation = args.removeFirst()
+                method = AutomationMethod.playlistDiff
+                params = .object([
+                    "operation": .string(operation),
+                    "playlistIDs": .array(args.map { .string($0) }),
+                    "limit": .number(Double(options.limit ?? 100)),
+                    "offset": .number(Double(options.offset ?? 0))
+                ])
+            case "export":
+                guard args.count == 1 else { writeDiagnostic("usage error: playlist export requires one playlist ID"); return .usage }
+                method = AutomationMethod.playlistExport
+                params = .object(["playlistID": .string(args[0])])
+            case "import":
+                guard args.count == 1, case .object(var values)? = options.paramsJSON else {
+                    writeDiagnostic("usage error: playlist import requires a playlist ID and --params-json containing m3uText")
+                    return .usage
+                }
+                values["playlistID"] = .string(args[0])
+                values["dryRun"] = .boolean(options.dryRun)
+                if let expectedRevision = options.expectedRevision { values["expectedRevision"] = .string(expectedRevision) }
+                method = AutomationMethod.playlistImport
+                params = .object(values)
             case "rename":
                 guard args.count >= 2 else {
                     writeDiagnostic("usage error: playlist rename requires an ID and a name")
@@ -390,13 +503,34 @@ private struct AutomationCLI {
                     values["expectedRevision"] = .string(expectedRevision)
                 }
                 params = .object(values)
+            case "add-selection":
+                guard args.count == 2 else {
+                    writeDiagnostic("usage error: playlist add-selection requires a playlist ID and selection ID")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [:]
+                if let paramsJSON = options.paramsJSON {
+                    guard case .object(let extra) = paramsJSON else {
+                        writeDiagnostic("usage error: playlist add-selection --params-json must be an object")
+                        return .usage
+                    }
+                    values.merge(extra) { _, incoming in incoming }
+                }
+                values["playlistID"] = .string(args[0])
+                values["selectionID"] = .string(args[1])
+                values["dryRun"] = .boolean(options.dryRun)
+                if let expectedRevision = options.expectedRevision {
+                    values["expectedRevision"] = .string(expectedRevision)
+                }
+                method = AutomationMethod.playlistAddSelection
+                params = .object(values)
             default:
                 writeDiagnostic("usage error: unknown playlist action \(action)")
                 return .usage
             }
         case "source":
             guard let action = args.first else {
-                writeDiagnostic("usage error: source requires list, refresh, create, bind, exclude, include, watch, unwatch or remove")
+                writeDiagnostic("usage error: source requires list, get, config-export, config-import, rename, refresh, create, bind, exclude, include, watch, unwatch or remove")
                 return .usage
             }
             args.removeFirst()
@@ -408,6 +542,41 @@ private struct AutomationCLI {
                 }
                 method = AutomationMethod.sourceList
                 params = nil
+            case "get":
+                guard args.count == 1 else { writeDiagnostic("usage error: source get requires one source ID"); return .usage }
+                method = AutomationMethod.sourceGet
+                params = .object(["sourceID": .string(args[0])])
+            case "config-export":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: source config-export does not accept positional arguments")
+                    return .usage
+                }
+                method = AutomationMethod.sourceConfigExport
+                params = nil
+            case "config-import":
+                guard args.isEmpty,
+                      let paramsJSON = options.paramsJSON,
+                      case .object(let suppliedValues) = paramsJSON,
+                      suppliedValues["document"] != nil else {
+                    writeDiagnostic("usage error: source config-import requires --params-json with a document object")
+                    return .usage
+                }
+                var values = suppliedValues
+                values["dryRun"] = .boolean(options.dryRun)
+                values["confirm"] = .boolean(options.confirm)
+                if let expectedRevision = options.expectedRevision {
+                    values["expectedRevision"] = .string(expectedRevision)
+                }
+                method = AutomationMethod.sourceConfigImport
+                params = .object(values)
+            case "rename":
+                guard args.count == 2 else { writeDiagnostic("usage error: source rename requires a source ID and display name"); return .usage }
+                method = AutomationMethod.sourceRename
+                params = .object([
+                    "sourceID": .string(args[0]),
+                    "displayName": .string(args[1]),
+                    "dryRun": .boolean(options.dryRun)
+                ])
             case "refresh":
                 guard args.count == 1 else {
                     writeDiagnostic("usage error: source refresh requires exactly one source ID")
@@ -482,9 +651,30 @@ private struct AutomationCLI {
                 writeDiagnostic("usage error: unknown source action \(action)")
                 return .usage
             }
+        case "files":
+            guard let action = args.first, action == "reveal" || action == "export" else {
+                writeDiagnostic("usage error: files supports reveal or export")
+                return .usage
+            }
+            args.removeFirst()
+            let maximum = action == "reveal" ? 50 : 500
+            guard (1...maximum).contains(args.count) else {
+                writeDiagnostic("usage error: files \(action) requires 1 to \(maximum) Track IDs")
+                return .usage
+            }
+            if action == "export" && options.dryRun {
+                writeDiagnostic("usage error: files export does not support --dry-run; it requires choosing an output folder")
+                return .usage
+            }
+            method = action == "reveal" ? AutomationMethod.filesReveal : AutomationMethod.filesExport
+            var values: [String: AutomationJSONValue] = [
+                "trackIDs": .array(args.map(AutomationJSONValue.string))
+            ]
+            if action == "reveal" { values["dryRun"] = .boolean(options.dryRun) }
+            params = .object(values)
         case "playback":
             guard let action = args.first else {
-                writeDiagnostic("usage error: playback requires state, play, pause, next, previous, seek, volume or mode")
+                writeDiagnostic("usage error: playback requires state, play, play-playlist, toggle, pause, next, previous, seek, volume or mode")
                 return .usage
             }
             args.removeFirst()
@@ -499,6 +689,15 @@ private struct AutomationCLI {
                     params = .object(["trackIDs": .array(trackIDs.map { .string($0) })])
                 }
                 method = AutomationMethod.playbackPlay
+            case "play-playlist":
+                guard args.count == 1 || args.count == 2 else { writeDiagnostic("usage error: playback play-playlist requires a playlist ID and optional start index"); return .usage }
+                let playlistID = args[0]
+                let startIndex = args.count == 2 ? Int(args[1]) : (options.offset ?? 0)
+                guard let startIndex, startIndex >= 0 else { writeDiagnostic("usage error: start index must be non-negative"); return .usage }
+                method = AutomationMethod.playbackPlayPlaylist
+                params = .object(["playlistID": .string(playlistID), "startIndex": .number(Double(startIndex))])
+                args.removeAll()
+            case "toggle": method = AutomationMethod.playbackToggle; params = nil
             case "pause": method = AutomationMethod.playbackPause; params = nil
             case "next": method = AutomationMethod.playbackNext; params = nil
             case "previous": method = AutomationMethod.playbackPrevious; params = nil
@@ -516,12 +715,21 @@ private struct AutomationCLI {
             }
             guard args.isEmpty else { writeDiagnostic("usage error: unexpected playback arguments"); return .usage }
         case "queue":
-            guard let action = args.first else { writeDiagnostic("usage error: queue requires get, replace, enqueue, enqueue-next or clear"); return .usage }
+            guard let action = args.first else { writeDiagnostic("usage error: queue requires get, upcoming, replace, enqueue, enqueue-next, remove, reorder or clear"); return .usage }
             args.removeFirst()
             switch action {
             case "get": method = AutomationMethod.queueGet; params = nil
+            case "upcoming":
+                guard args.isEmpty else { writeDiagnostic("usage error: queue upcoming does not accept positional arguments"); return .usage }
+                var values: [String: AutomationJSONValue] = [
+                    "limit": .number(Double(options.limit ?? 100)),
+                    "offset": .number(Double(options.offset ?? 0))
+                ]
+                if let expectedRevision = options.expectedRevision { values["expectedRevision"] = .string(expectedRevision) }
+                method = AutomationMethod.queueUpcoming
+                params = .object(values)
             case "clear": method = AutomationMethod.queueClear; params = .object(["dryRun": .boolean(options.dryRun)])
-            case "replace", "enqueue", "enqueue-next":
+            case "replace", "enqueue", "enqueue-next", "remove", "reorder":
                 guard !args.isEmpty else {
                     writeDiagnostic("usage error: queue \(action) requires at least one track ID")
                     return .usage
@@ -531,12 +739,18 @@ private struct AutomationCLI {
                     "dryRun": .boolean(options.dryRun)
                 ]
                 if let expectedRevision = options.expectedRevision { values["expectedRevision"] = .string(expectedRevision) }
-                method = action == "replace" ? AutomationMethod.queueReplace : (action == "enqueue" ? AutomationMethod.queueEnqueue : AutomationMethod.queueEnqueueNext)
+                switch action {
+                case "replace": method = AutomationMethod.queueReplace
+                case "enqueue": method = AutomationMethod.queueEnqueue
+                case "enqueue-next": method = AutomationMethod.queueEnqueueNext
+                case "remove": method = AutomationMethod.queueRemove
+                default: method = AutomationMethod.queueReorder
+                }
                 params = .object(values)
             default: writeDiagnostic("usage error: unknown queue action \(action)"); return .usage
             }
         case "history":
-            guard let action = args.first else { writeDiagnostic("usage error: history requires list or clear"); return .usage }
+            guard let action = args.first else { writeDiagnostic("usage error: history requires list, stats or clear"); return .usage }
             args.removeFirst()
             guard args.isEmpty else {
                 writeDiagnostic("usage error: history action does not accept positional arguments")
@@ -544,12 +758,21 @@ private struct AutomationCLI {
             }
             switch action {
             case "list":
-                guard options.offset == nil else {
-                    writeDiagnostic("usage error: history list does not support --offset")
-                    return .usage
+                if let paramsJSON = options.paramsJSON {
+                    guard case .object = paramsJSON else {
+                        writeDiagnostic("usage error: history list --params-json must be an object")
+                        return .usage
+                    }
                 }
                 method = AutomationMethod.historyList
                 params = historyParameters(from: options)
+            case "stats":
+                var values: [String: AutomationJSONValue] = ["limit": .number(Double(options.limit ?? 20))]
+                if let from = options.from { values["from"] = .string(from) }
+                if let to = options.to { values["to"] = .string(to) }
+                if let dimension = options.dimension { values["dimension"] = .string(dimension) }
+                method = AutomationMethod.historyStats
+                params = .object(values)
             case "clear":
                 guard options.from == nil, options.to == nil else {
                     writeDiagnostic("usage error: history clear does not support --from or --to")
@@ -560,7 +783,7 @@ private struct AutomationCLI {
             default: writeDiagnostic("usage error: unknown history action \(action)"); return .usage
             }
         case "metadata":
-            guard let action = args.first else { writeDiagnostic("usage error: metadata requires get or patch"); return .usage }
+            guard let action = args.first else { writeDiagnostic("usage error: metadata requires get, embedded-get, embedded-patch, export, import, search, apply-candidate or patch"); return .usage }
             args.removeFirst()
             switch action {
             case "get":
@@ -583,6 +806,97 @@ private struct AutomationCLI {
                         ? .object(targets)
                         : .object(["trackIDs": .array(args.map { .string($0) })])
                 }
+            case "embedded-get":
+                guard !args.isEmpty, args.count <= 100,
+                      entityTargetValues(from: options).isEmpty,
+                      options.entityType == nil else {
+                    writeDiagnostic("usage error: metadata embedded-get requires 1...100 Track IDs")
+                    return .usage
+                }
+                method = AutomationMethod.metadataEmbeddedGet
+                params = .object(["trackIDs": .array(args.map { .string($0) })])
+            case "embedded-patch":
+                guard !args.isEmpty, args.count <= 100,
+                      entityTargetValues(from: options).isEmpty,
+                      options.entityType == nil,
+                      case .object(let supplied)? = options.paramsJSON,
+                      case .object = supplied["fields"],
+                      case .object = supplied["expectedRevisions"] else {
+                    writeDiagnostic("usage error: metadata embedded-patch requires Track IDs and --params-file/--params-json with fields and expectedRevisions")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = supplied
+                values["trackIDs"] = .array(args.map { .string($0) })
+                values["dryRun"] = .boolean(options.dryRun)
+                values["confirm"] = .boolean(options.confirm)
+                method = AutomationMethod.metadataEmbeddedPatch
+                params = .object(values)
+            case "export":
+                guard options.entityType == nil,
+                      options.trackTargetID == nil,
+                      options.artistID == nil,
+                      options.albumKey == nil,
+                      options.playlistID == nil,
+                      args.count <= 100,
+                      options.limit.map({ (1...100).contains($0) }) ?? true,
+                      args.isEmpty || (options.limit == nil && options.offset == nil) else {
+                    writeDiagnostic("usage error: metadata export accepts up to 100 Track IDs or --limit/--offset")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [:]
+                if !args.isEmpty {
+                    values["trackIDs"] = .array(args.map { .string($0) })
+                }
+                if let limit = options.limit { values["limit"] = .number(Double(limit)) }
+                if let offset = options.offset { values["offset"] = .number(Double(offset)) }
+                method = AutomationMethod.metadataExport
+                params = .object(values)
+            case "import":
+                guard args.isEmpty,
+                      options.entityType == nil,
+                      entityTargetValues(from: options).isEmpty,
+                      case .object(var values)? = options.paramsJSON,
+                      values["document"] != nil else {
+                    writeDiagnostic("usage error: metadata import requires --params-json/--params-file with a document object")
+                    return .usage
+                }
+                values["dryRun"] = .boolean(options.dryRun)
+                values["confirm"] = .boolean(options.confirm)
+                if let expectedRevision = options.expectedRevision {
+                    values["expectedRevision"] = .string(expectedRevision)
+                }
+                method = AutomationMethod.metadataImport
+                params = .object(values)
+            case "search":
+                guard args.count == 1, entityTargetValues(from: options).isEmpty else {
+                    writeDiagnostic("usage error: metadata search requires one Track ID")
+                    return .usage
+                }
+                method = AutomationMethod.metadataSearch
+                params = .object(["trackID": .string(args[0])])
+            case "apply-candidate":
+                guard args.count == 2, entityTargetValues(from: options).isEmpty else {
+                    writeDiagnostic("usage error: metadata apply-candidate requires a Track ID and candidate ID")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [
+                    "trackID": .string(args[0]),
+                    "candidateID": .string(args[1]),
+                    "dryRun": .boolean(options.dryRun)
+                ]
+                if let expectedRevision = options.expectedRevision {
+                    values["expectedRevision"] = .string(expectedRevision)
+                }
+                if let paramsJSON = options.paramsJSON {
+                    guard case .object(let extra) = paramsJSON,
+                          Set(extra.keys).isSubset(of: ["overwriteExistingFields"]) else {
+                        writeDiagnostic("usage error: metadata apply-candidate --params-json only accepts overwriteExistingFields")
+                        return .usage
+                    }
+                    values.merge(extra) { _, incoming in incoming }
+                }
+                method = AutomationMethod.metadataApplyCandidate
+                params = .object(values)
             case "patch":
                 guard options.entityType == nil else {
                     writeDiagnostic("usage error: metadata patch does not accept --entity-type")
@@ -612,7 +926,7 @@ private struct AutomationCLI {
             }
         case "artwork":
             guard let action = args.first else {
-                writeDiagnostic("usage error: artwork requires search, get or apply")
+                writeDiagnostic("usage error: artwork requires search, get, apply or apply-candidate")
                 return .usage
             }
             args.removeFirst()
@@ -673,6 +987,27 @@ private struct AutomationCLI {
                     values["expectedRevision"] = .string(expectedRevision)
                 }
                 method = AutomationMethod.artworkApply
+                params = .object(values)
+            case "apply-candidate":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: artwork apply-candidate requires one candidate ID")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [:]
+                if let paramsJSON = options.paramsJSON {
+                    guard case .object(let extra) = paramsJSON else {
+                        writeDiagnostic("usage error: artwork apply-candidate --params-json must be an object")
+                        return .usage
+                    }
+                    values.merge(extra) { _, incoming in incoming }
+                }
+                values["candidateID"] = .string(args[0])
+                values["dryRun"] = .boolean(options.dryRun)
+                values["confirm"] = .boolean(options.confirm)
+                if let expectedRevision = options.expectedRevision {
+                    values["expectedRevision"] = .string(expectedRevision)
+                }
+                method = AutomationMethod.artworkApplyCandidate
                 params = .object(values)
             default:
                 writeDiagnostic("usage error: unknown artwork action \(action)")
@@ -751,7 +1086,15 @@ private struct AutomationCLI {
                 method = action == "get"
                     ? AutomationMethod.jobsGet
                     : (action == "cancel" ? AutomationMethod.jobsCancel : AutomationMethod.jobsRetry)
-                params = .object(["jobID": .string(args[0])])
+                var values: [String: AutomationJSONValue] = ["jobID": .string(args[0])]
+                if let paramsJSON = options.paramsJSON {
+                    guard action == "retry", case .object(let extra) = paramsJSON else {
+                        writeDiagnostic("usage error: --params-json is supported for jobs retry only and must be an object")
+                        return .usage
+                    }
+                    values.merge(extra) { existing, _ in existing }
+                }
+                params = .object(values)
             default: writeDiagnostic("usage error: unknown jobs action \(action)"); return .usage
             }
         case "diagnostics":
@@ -760,11 +1103,15 @@ private struct AutomationCLI {
             params = nil
         case "settings":
             guard let action = args.first else {
-                writeDiagnostic("usage error: settings requires get or patch")
+                writeDiagnostic("usage error: settings requires schema, get, patch, validate or reset")
                 return .usage
             }
             args.removeFirst()
             switch action {
+            case "schema":
+                guard args.isEmpty else { writeDiagnostic("usage error: settings schema takes no arguments"); return .usage }
+                method = AutomationMethod.settingsSchema
+                params = nil
             case "get":
                 guard args.isEmpty else {
                     writeDiagnostic("usage error: settings get does not accept positional arguments")
@@ -787,8 +1134,39 @@ private struct AutomationCLI {
                     parameters["expectedRevision"] = .string(expectedRevision)
                 }
                 params = .object(parameters)
+            case "validate":
+                guard args.isEmpty, let values = options.paramsJSON else {
+                    writeDiagnostic("usage error: settings validate requires --params-json values object")
+                    return .usage
+                }
+                method = AutomationMethod.settingsValidate
+                params = .object(["values": values])
+            case "reset":
+                guard args.isEmpty else { writeDiagnostic("usage error: settings reset takes no positional arguments"); return .usage }
+                method = AutomationMethod.settingsReset
+                var values: [String: AutomationJSONValue] = ["dryRun": .boolean(options.dryRun)]
+                if let revision = options.expectedRevision { values["expectedRevision"] = .string(revision) }
+                params = .object(values)
             default:
                 writeDiagnostic("usage error: unknown settings action \(action)")
+                return .usage
+            }
+        case "audio":
+            guard let action = args.first else { writeDiagnostic("usage error: audio requires get or patch"); return .usage }
+            args.removeFirst()
+            switch action {
+            case "get":
+                guard args.isEmpty else { writeDiagnostic("usage error: audio get takes no arguments"); return .usage }
+                method = AutomationMethod.audioGet
+                params = nil
+            case "patch":
+                guard args.isEmpty, let values = options.paramsJSON else { writeDiagnostic("usage error: audio patch requires --params-json values object"); return .usage }
+                method = AutomationMethod.audioPatch
+                var parameters: [String: AutomationJSONValue] = ["values": values, "dryRun": .boolean(options.dryRun)]
+                if let revision = options.expectedRevision { parameters["expectedRevision"] = .string(revision) }
+                params = .object(parameters)
+            default:
+                writeDiagnostic("usage error: unknown audio action \(action)")
                 return .usage
             }
         case "storage":
@@ -1027,14 +1405,28 @@ private struct AutomationCLI {
         if let expectedRevision = options.expectedRevision {
             values["expectedRevision"] = .string(expectedRevision)
         }
+        if let paramsJSON = options.paramsJSON {
+            if case .object(let extra) = paramsJSON {
+                values.merge(extra) { _, incoming in incoming }
+            }
+        }
         return values.isEmpty ? nil : .object(values)
     }
 
     private func historyParameters(from options: CLIOptions) -> AutomationJSONValue? {
         var values: [String: AutomationJSONValue] = [:]
+        if let query = options.query { values["query"] = .string(query) }
+        if let trackID = options.trackTargetID { values["trackID"] = .string(trackID) }
         if let limit = options.limit { values["limit"] = .number(Double(limit)) }
+        if let offset = options.offset { values["offset"] = .number(Double(offset)) }
         if let from = options.from { values["from"] = .string(from) }
         if let to = options.to { values["to"] = .string(to) }
+        if let paramsJSON = options.paramsJSON, case .object(let extra) = paramsJSON {
+            values.merge(extra) { _, incoming in incoming }
+        }
+        if let expectedRevision = options.expectedRevision {
+            values["expectedRevision"] = .string(expectedRevision)
+        }
         return values.isEmpty ? nil : .object(values)
     }
 
@@ -1173,6 +1565,20 @@ private struct AutomationCLI {
                 guard index + 1 < args.count else { throw CLIError.missingValue("--params-json") }
                 options.paramsJSON = try decodeJSON(args[index + 1], option: "--params-json")
                 args.removeSubrange(index...(index + 1))
+            case "--params-file":
+                guard index + 1 < args.count else { throw CLIError.missingValue("--params-file") }
+                let fileURL = URL(fileURLWithPath: args[index + 1]).standardizedFileURL
+                guard let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+                      let fileSize = attributes[.size] as? NSNumber,
+                      fileSize.intValue <= 750_000 else {
+                    throw CLIError.invalidValue("--params-file (maximum size 750000 bytes)")
+                }
+                guard let data = try? Data(contentsOf: fileURL),
+                      let raw = String(data: data, encoding: .utf8) else {
+                    throw CLIError.invalidValue("--params-file")
+                }
+                options.paramsJSON = try decodeJSON(raw, option: "--params-file")
+                args.removeSubrange(index...(index + 1))
             case "--limit":
                 guard index + 1 < args.count,
                       let limit = Int(args[index + 1]),
@@ -1199,6 +1605,13 @@ private struct AutomationCLI {
                 } else {
                     options.to = args[index + 1]
                 }
+                args.removeSubrange(index...(index + 1))
+            case "--dimension":
+                guard index + 1 < args.count,
+                      ["all", "track", "artist", "album"].contains(args[index + 1]) else {
+                    throw CLIError.invalidValue("--dimension")
+                }
+                options.dimension = args[index + 1]
                 args.removeSubrange(index...(index + 1))
             case "--expected-revision":
                 guard index + 1 < args.count else {
@@ -1282,7 +1695,13 @@ private struct AutomationCLI {
           system ping             Check the App automation socket
           system info             Read protocol and capability information
           library list            List registered libraries and active ID
+          library get <id>        Read registered library name, mode and active status
           library tracks          Query tracks with filters, sorting and pagination
+          library stats           Summarize library contents and media coverage
+          library report          Export a paginated machine-readable Library report
+          library bundle-export   Export metadata, playlists and media; returns a Job
+          library selection-list|selection-get|selection-create|selection-delete
+                                  Save and reuse Track ID or filter selections
           library import <path>... [--playlist-id <id>]
                                    Import audio/folders (including NCM); returns a Job
           library create <mode> <name> [parent]
@@ -1296,43 +1715,70 @@ private struct AutomationCLI {
           library remove <id>     Move a library to macOS Trash
           playlist list            List playlists and revisions
           playlist get <id>        Read ordered playlist membership
+          playlist export <id>     Export M3U8 text with stable Track IDs
+          playlist import <id> --params-json '{"m3uText":"..."}'
+                                   Preview or import an M3U8 payload
+          playlist diff <union|intersection|difference> <id> <id>...
           playlist create <name>   Create a playlist (use --dry-run to preview)
           playlist rename <id> <name> [description]
           playlist delete <id>     Delete a playlist (App confirmation required)
           playlist replace <id> <track-id>...
           playlist reorder <id> <track-id>...
           playlist add <playlist-id> <track-id>...
-                                   Add existing library tracks (use --dry-run to preview)
+                           Add existing library tracks (use --dry-run to preview)
+          playlist add-selection <playlist-id> <selection-id>
+                           Add a saved selection to a playlist
           playlist remove <playlist-id> <track-id>...
                                    Remove playlist membership (use --dry-run to preview)
           source list              List referenced-library sources
+          source get <id>          Read one source policy and status
+          source config-export     Export portable Source policies as JSON
+          source config-import --params-json '{"document":{...}}'
+                                   Preview/apply policies to existing Sources
+          source rename <id> <name>
+                                   Rename a source without changing its authority
           source refresh <id>      Refresh one authorized source (use --dry-run to preview)
           source create [path]     Request a folder/file Source through the App picker
           source bind <source-id> <playlist-id> [relative-path]
           source exclude|include <source-id> <relative-path>
           source watch|unwatch <source-id>
           source remove <id>       Remove a Source (App confirmation required)
-          playback state|play|pause|next|previous|seek|volume|mode
-          queue get|replace|enqueue|enqueue-next|clear
-          history list|clear       Read or clear listening history
+          files reveal <track-id>... Reveal authorized files in Finder
+          files export <track-id>... Copy audio through an App folder picker
+          playback state|play|play-playlist|toggle|pause|next|previous|seek|volume|mode
+          queue get|upcoming|replace|enqueue|enqueue-next|remove|reorder|clear
+          history list|stats|clear Read, aggregate or clear listening history
+                                   list accepts date/query/Track filters and pagination
           metadata get <track-id>... | --track-id/--artist-id/--album-key/--playlist-id
                                   or --entity-type artist|album|playlist [--query]
+          metadata embedded-get <track-id>...  Read tags from audio files
+          metadata embedded-patch <track-id>... --params-file <json-file>
+                                  Preview or write MP3 ID3 tags; App confirmation required
+          metadata export [<track-id>...] [--limit <count> --offset <count>] (max 100 per page)
+          metadata import --params-file <json-file> [--dry-run] [--confirm]
+          metadata search <track-id>
+          metadata apply-candidate <track-id> <candidate-id> [--dry-run]
           metadata patch <track-id>... --params-json '{"title":"..."}'
                                   or an entity target flag
           artwork search <track-id> | --track-id/--artist-id/--album-key
           artwork get <track-id>... | an entity target flag
           artwork apply <track-id>... | an entity target flag
                                   --params-json '{"imagePath":"/path/cover.jpg"}'
+          artwork apply-candidate <candidate-id> [--dry-run]
           lyrics get <track-id>
           lyrics clean <track-id> [--dry-run]
           lyrics search|candidates <track-id> [--params-json '{...}']
           lyrics compare|apply <track-id> --params-json '{...}'
           lyrics refresh <track-id>... [--force] (returns a Job)
-          jobs list|get|cancel|retry
-                                   Inspect, cancel or retry long-running library jobs
+          jobs list               Inspect recent library jobs
+          jobs get|cancel|retry <job-id>
+                                   Inspect, cancel or retry a library job
+          jobs retry <job-id> --params-json '{"filePaths":[...]}'
+                                   Retry an import with newly authorized input files
           diagnostics health      Collect actionable Library/Source health evidence
-          settings get            Read supported persistent automation settings
-          settings patch          Update settings with --params-json
+          settings schema|get|patch|validate|reset
+                                   Inspect, validate, update or reset persistent settings
+          audio get|patch          Read audio state or update scheduling and App output routing
           storage inspect         Inspect Library storage layout and schema
           storage validate        Run App-owned storage integrity validation
           storage orphans         Report Playlist references to missing Tracks
@@ -1369,6 +1815,7 @@ private struct AutomationCLI {
                                   Require a matching library/playlist revision
           --idempotency-key <id>  Safely retry the same mutation
           --params-json <json>    Parameters for automation call
+          --params-file <path>    Read a JSON parameter object from a file
           --dry-run               Preview a mutation without applying it
           --force                 Allow a lyrics refresh/apply policy to replace lower-quality lyrics
           --yes                   Acknowledge a high-risk request; App policy still confirms

@@ -912,6 +912,28 @@ final class MusicSettingsStateTests: XCTestCase {
             }
         )
         XCTAssertEqual(recoveredJob.retrySpec?.kind, .sourceRefresh)
+
+        let retryPlaylistID = UUID()
+        let importRetrySpec = LibraryOperationRetrySpec.libraryImport(
+            targetPlaylistID: retryPlaylistID
+        )
+        let encodedRetrySpec = try encoder.encode(importRetrySpec)
+        let decodedRetrySpec = try JSONDecoder().decode(
+            LibraryOperationRetrySpec.self,
+            from: encodedRetrySpec
+        )
+        XCTAssertEqual(decodedRetrySpec.kind, .libraryImport)
+        XCTAssertEqual(decodedRetrySpec.targetPlaylistID, retryPlaylistID)
+        XCTAssertFalse(String(decoding: encodedRetrySpec, as: UTF8.self).contains("filePaths"))
+
+        let legacyRetrySpec = try JSONDecoder().decode(
+            LibraryOperationRetrySpec.self,
+            from: Data("""
+            {"kind":"sourceRefresh","trackIDs":[],"sourceID":"\(UUID().uuidString)","force":false}
+            """.utf8)
+        )
+        XCTAssertEqual(legacyRetrySpec.kind, .sourceRefresh)
+        XCTAssertNil(legacyRetrySpec.targetPlaylistID)
     }
 
     func testAutomationStorageBackupRetentionKeepsOnlyTheNewestSnapshot() throws {

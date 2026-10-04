@@ -75,7 +75,9 @@ scope、dry-run 和 job hints 来自 `AutomationToolCatalog`。MCP annotations �
 当前 Resources：
 
 - `kmgccc://capabilities`：共享能力和组合查询概览；
-- `kmgccc://agent-guide`：Track/Playlist/Source、安全和 Storage fallback 语义。
+- `kmgccc://agent-guide`：Track/Playlist/Source、安全和 Storage fallback 语义；
+- `kmgccc://jobs`：当前资料库的持久 Job 列表，可用 `resources/read` 读取，也可由现代 MCP
+  客户端通过 `subscriptions/listen` 订阅变化。
 
 `tools/call.params.arguments` 是对应的 domain 参数对象。需要指定 Library 或安全重试
 mutation 时，可以在 `tools/call.params` 旁带本项目扩展的 `context` 对象，例如
@@ -103,7 +105,9 @@ Agent 需要先发现 Artist、Album 或 Playlist 时，可调用 `metadata.get`
 `artwork.search` 同样接受 Track、Artist 或 Album 目标，复用 App 的多 provider 搜索并返回带
 `imageBase64` 的候选；Playlist 没有 provider search，但四类目标都可用 `artwork.get` 读取摘要，
 并用 `artwork.apply` 接受 App picker、`imagePath` 路径提示、`imageBase64` 或 `clear`。这些操作
-不会改写原始音频文件的 embedded tags。
+`metadata.patch` 与 Artwork sidecar mutation 不改写原始音频标签。要读写文件内标签，请使用
+`metadata.embedded.get/patch`；写入限 MP3 ID3v2.3/v2.4，需逐首 revision、dry-run、`confirm=true`
+和 App 前台确认，并以 Job 报告逐首结果。其他格式只提供系统可读取的标签投影。
 过大的搜索图片会被压缩为受本地 IPC frame 限制的 inline JPEG，候选仍会保留原始大小提示。
 对 10 首及以上 Track，先调用 `dryRun` 观察 targets/conflicts，再传 `confirm=true`；
 App 会在前台弹出确认框，MCP 的 acknowledgement 不能绕过它。应用后应重新 query 验证。
@@ -117,14 +121,24 @@ App-owned lyrics repository 直接持久化，仍支持 `dryRun` 与 `expectedRe
 返回包含 Job ID 的结构化结果；调用方应使用 `jobs.get` 轮询并在 Job 完成后重新查询
 Source/Track 状态。这个项目扩展与 MCP Tasks 是两个不同层次的能力。
 
-当前内部 Job abstraction 通过 `jobs.list/get/cancel/retry` 暴露；它还没有被错误地冒充成
-MCP Tasks capability。Job 历史按资料库持久化，重启恢复和可重建的 Lyrics/Source retry
-仍由 App-owned Job contract 管理。等 Swift MCP SDK/协议映射和 MCP Tasks 语义稳定后再增加
-Tasks 映射。
+当前内部 Job abstraction 通过 `jobs.list/get/cancel/retry` 暴露。2026-07-28 MCP 客户端
+可逐请求声明 Tasks capability，长 Job Tool 会返回映射到 App-owned Job 的 Task；未声明时
+仍返回原 Job 结果。Job 历史按资料库持久化。歌词和 Source retry 使用原 Job 的稳定输入，
+导入 retry 需调用方重新传入 `filePaths`，由 App 重新取得文件授权；retry spec 不保存外部路径或书签，
+逐文件失败结果可能包含诊断路径。
 
-当前 stdio reader 是顺序同步 reader，不会把 legacy `notifications/cancelled` 虚报成已
-完成的底层取消。长任务应使用返回的 Job 与 `jobs.cancel`；MCP Tasks、transport-close
-取消传播和更细的 request cancellation 是明确的后续工作。
+现代 stdio `subscriptions/listen` 支持订阅 `kmgccc://jobs`，也支持为已创建的 Task 订阅 `taskIds`。
+服务端先确认订阅，再以约 2 秒间隔读取已有 Jobs 接口；Job 快照变化时发送
+`notifications/resources/updated`，Task 状态或进度变化时发送完整的 `notifications/tasks`。
+客户端收到资源通知后重新读取资源。轮询不会为订阅自动启动 App。取消订阅会关闭对应的 listen 请求；
+请求 Task 状态通知时，客户端必须在该请求中声明 Tasks 扩展。legacy 客户端继续轮询 `jobs.get`。
+stdio 的 `notifications/cancelled` 会终止对应在途请求并关闭其 App IPC 连接；如果取消发生在新 Job
+返回前，App 会尝试取消该 Job。已经返回的持久 Job 使用 MCP `tasks/cancel` 或 `jobs.cancel`。
+长操作仍可先返回 Job/Task 句柄，再通过这些接口查询和取消。
+
+`audio.get` 返回 Core Audio 可用输出设备的 opaque ID、当前系统默认输出及 App 实际路由；
+`audio.patch.values.outputDeviceID` 可选择 App 输出设备，传 `null` 则跟随系统默认。若已选设备暂时不可用，
+`activeOutput.available` 为 `false`，配置仍保留，设备恢复后可继续使用。该接口不会改变 macOS 系统默认输出。
 
 当前 catalog 也包含 Source 排除规则、受限持久设置以及
 `storage.inspect`/`storage.validate`/`storage.orphans`/`storage.backup`/`storage.diff`/

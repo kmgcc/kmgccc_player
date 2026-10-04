@@ -5,6 +5,152 @@ import Testing
 @testable import PlayerAutomationProtocol
 
 @Test
+func metadataCandidateQualityIsProviderNeutralAndBackwardCompatible() throws {
+    let exact = AutomationMetadataQualityEvaluator.score(
+        queryTitle: "Déjà Vu",
+        queryArtist: "Björk",
+        queryAlbum: "Homogenic",
+        queryDurationSeconds: 217,
+        candidateTitle: "Deja-Vu",
+        candidateArtist: "Bjork",
+        candidateAlbum: "Homogenic",
+        candidateDurationSeconds: 219
+    )
+    #expect(exact == 1)
+
+    let weaker = AutomationMetadataQualityEvaluator.score(
+        queryTitle: "Déjà Vu",
+        queryArtist: "Björk",
+        queryAlbum: "Homogenic",
+        queryDurationSeconds: 217,
+        candidateTitle: "Deja",
+        candidateArtist: "Other Artist",
+        candidateAlbum: nil,
+        candidateDurationSeconds: 250
+    )
+    #expect(weaker != nil && weaker! < exact!)
+
+    let oldCandidate = try AutomationWireCoding.decoder().decode(
+        AutomationMetadataCandidate.self,
+        from: Data(
+            """
+            {"provider":"QQMusic","title":"T","artist":"A","album":"B",
+             "durationSeconds":180,"confidence":0.9,"imageURL":null}
+            """.replacingOccurrences(of: "\n", with: "").utf8
+        )
+    )
+    #expect(oldCandidate.matchQuality == nil)
+
+    let oldSearchResult = try AutomationWireCoding.decoder().decode(
+        AutomationMetadataSearchResult.self,
+        from: Data(
+            """
+            {"trackID":"\(UUID().uuidString)","queryTitle":"T","queryArtist":"A",
+             "queryAlbum":"B","candidates":[],"revision":"v1","message":"old"}
+            """.replacingOccurrences(of: "\n", with: "").utf8
+        )
+    )
+    #expect(oldSearchResult.providerWarnings == nil)
+}
+
+@Test
+func artworkQualityIsProviderNeutralAndKeepsProviderConfidenceSeparate() throws {
+    let exact = AutomationArtworkQualityEvaluator.score(
+        queryTitle: "Blue Train",
+        queryArtist: "John Coltrane",
+        queryAlbum: "Blue Train",
+        candidateTitle: "Blue Train",
+        candidateArtist: "John Coltrane",
+        candidateAlbum: "Blue Train",
+        width: 1200,
+        height: 1200
+    )
+    let mismatched = AutomationArtworkQualityEvaluator.score(
+        queryTitle: "Blue Train",
+        queryArtist: "John Coltrane",
+        queryAlbum: "Blue Train",
+        candidateTitle: "Red Train",
+        candidateArtist: "Another Artist",
+        candidateAlbum: "Different Album",
+        width: 500,
+        height: 250
+    )
+    #expect(exact > mismatched)
+
+    let oldCandidate = try AutomationWireCoding.decoder().decode(
+        AutomationArtworkCandidate.self,
+        from: Data("""
+        {"source":"NetEase","imageBase64":"","byteCount":0,
+         "width":0,"height":0,"resolution":0,"confidence":0.7}
+        """.utf8)
+    )
+    #expect(oldCandidate.matchQuality == nil)
+}
+
+@Test
+func metadataDocumentAndImportResultRoundTrip() throws {
+    let sourceTrackID = UUID()
+    let targetTrackID = UUID()
+    let sourceLibraryID = UUID()
+    let fields: [String: AutomationJSONValue] = [
+        "title": .string("Track title"),
+        "artist": .string("Artist"),
+        "albumArtist": .null,
+        "genreTags": .array([.string("ambient"), .string("electronic")]),
+        "lyricsTimeOffsetMs": .number(-125)
+    ]
+    let document = AutomationMetadataDocument(
+        sourceLibraryID: sourceLibraryID,
+        exportedAt: Date(timeIntervalSince1970: 1_700_000_000),
+        revision: "v1-library",
+        offset: 100,
+        limit: 1,
+        total: 101,
+        nextOffset: 101,
+        tracks: [AutomationMetadataDocumentTrack(
+            id: sourceTrackID,
+            revision: "v1-track",
+            title: "Track title",
+            artist: "Artist",
+            album: "Album",
+            duration: 184.5,
+            fields: fields
+        )]
+    )
+    let encodedDocument = try AutomationWireCoding.encoder().encode(document)
+    let decodedDocument = try AutomationWireCoding.decoder().decode(
+        AutomationMetadataDocument.self,
+        from: encodedDocument
+    )
+    #expect(decodedDocument == document)
+    #expect(decodedDocument.schemaVersion == 1)
+    #expect(decodedDocument.nextOffset == 101)
+    #expect(decodedDocument.tracks[0].fields["albumArtist"] == .null)
+
+    let result = AutomationMetadataImportResult(
+        libraryID: UUID(),
+        sourceLibraryID: sourceLibraryID,
+        dryRun: true,
+        applied: false,
+        items: [AutomationMetadataImportItem(
+            sourceTrackID: sourceTrackID,
+            targetTrackID: targetTrackID,
+            status: "ready",
+            fields: ["title", "genreTags"],
+            message: "Preview only"
+        )],
+        revision: "v1-target",
+        message: "Preview only"
+    )
+    let encodedResult = try AutomationWireCoding.encoder().encode(result)
+    let decodedResult = try AutomationWireCoding.decoder().decode(
+        AutomationMetadataImportResult.self,
+        from: encodedResult
+    )
+    #expect(decodedResult == result)
+}
+
+@Test
 func wireRoundTripPreservesRequestAndUnknownJSONFields() throws {
     let requestID = UUID()
     let request = AutomationRequest(
@@ -22,6 +168,28 @@ func wireRoundTripPreservesRequestAndUnknownJSONFields() throws {
     let data = try AutomationWireCoding.encoder().encode(request)
     let decoded = try AutomationWireCoding.decoder().decode(AutomationRequest.self, from: data)
     #expect(decoded == request)
+}
+
+@Test
+func selectionSummaryDecodesOlderSnapshotsWithoutDynamicFlag() throws {
+    let summary = AutomationSelectionSummary(
+        id: UUID(),
+        name: "dynamic",
+        trackCount: 2,
+        revision: "selection-v1",
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+        expiresAt: Date(timeIntervalSince1970: 1_800_000_000),
+        isDynamic: true
+    )
+    let encoded = try AutomationWireCoding.encoder().encode(summary)
+    var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    #expect(object["isDynamic"] as? Bool == true)
+    object.removeValue(forKey: "isDynamic")
+    let legacy = try AutomationWireCoding.decoder().decode(
+        AutomationSelectionSummary.self,
+        from: JSONSerialization.data(withJSONObject: object)
+    )
+    #expect(!legacy.isDynamic)
 }
 
 @Test
@@ -73,6 +241,8 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     #expect(names.contains(AutomationMethod.libraryTracks))
     #expect(names.contains(AutomationMethod.playlistAddTracks))
     #expect(names.contains(AutomationMethod.sourceList))
+    #expect(names.contains(AutomationMethod.sourceConfigExport))
+    #expect(names.contains(AutomationMethod.sourceConfigImport))
     #expect(names.contains(AutomationMethod.sourceRefresh))
     #expect(names.contains(AutomationMethod.filesInspect))
     #expect(names.contains(AutomationMethod.filesRename))
@@ -87,6 +257,85 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     #expect(names.contains(AutomationMethod.artworkSearch))
     #expect(names.contains(AutomationMethod.artworkGet))
     #expect(names.contains(AutomationMethod.artworkApply))
+    #expect(names.contains(AutomationMethod.artworkApplyCandidate))
+    #expect(names.contains(AutomationMethod.libraryReport))
+    #expect(names.contains(AutomationMethod.libraryBundleExport))
+    #expect(names.contains(AutomationMethod.librarySelectionList))
+    #expect(names.contains(AutomationMethod.librarySelectionCreate))
+    #expect(names.contains(AutomationMethod.librarySelectionGet))
+    #expect(names.contains(AutomationMethod.librarySelectionDelete))
+    #expect(names.contains(AutomationMethod.playlistAddSelection))
+    #expect(names.contains(AutomationMethod.metadataExport))
+    #expect(names.contains(AutomationMethod.metadataImport))
+    #expect(names.contains(AutomationMethod.metadataEmbeddedGet))
+    #expect(names.contains(AutomationMethod.metadataEmbeddedPatch))
+
+    let sourceConfigExport = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.sourceConfigExport)
+    )
+    #expect(sourceConfigExport.readOnly)
+    #expect(sourceConfigExport.scopes == [.sourceRead])
+    let sourceConfigImport = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.sourceConfigImport)
+    )
+    #expect(!sourceConfigImport.readOnly)
+    #expect(sourceConfigImport.requiresConfirmation)
+    #expect(sourceConfigImport.supportsDryRun)
+    #expect(sourceConfigImport.scopes == [.sourceRead, .sourceWrite].sorted { $0.rawValue < $1.rawValue })
+    guard case .object(let sourceConfigSchema) = sourceConfigImport.inputSchema,
+          case .object(let sourceConfigProperties) = sourceConfigSchema["properties"] else {
+        Issue.record("source.config.import must expose its versioned document inputs")
+        return
+    }
+    #expect(sourceConfigSchema["required"] == .array([.string("document")]))
+    #expect(sourceConfigProperties["sourceIDMap"] != nil)
+    #expect(sourceConfigProperties["expectedRevision"] != nil)
+
+    let metadataExport = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.metadataExport)
+    )
+    #expect(metadataExport.readOnly)
+    #expect(metadataExport.scopes == [.libraryRead, .metadataRead])
+    let metadataImport = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.metadataImport)
+    )
+    #expect(!metadataImport.readOnly)
+    #expect(metadataImport.requiresConfirmation)
+    #expect(metadataImport.supportsDryRun)
+    #expect(metadataImport.scopes == [.libraryRead, .metadataWrite])
+    guard case .object(let metadataImportSchema) = metadataImport.inputSchema,
+          case .object(let metadataImportProperties) = metadataImportSchema["properties"] else {
+        Issue.record("metadata.import must expose its versioned document and safety controls")
+        return
+    }
+    #expect(metadataImportSchema["required"] == .array([.string("document")]))
+    #expect(metadataImportProperties["trackIDMap"] != nil)
+    #expect(metadataImportProperties["expectedRevision"] != nil)
+
+    let libraryBundleExport = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.libraryBundleExport)
+    )
+    #expect(!libraryBundleExport.readOnly)
+    #expect(libraryBundleExport.requiresConfirmation)
+    #expect(libraryBundleExport.supportsDryRun)
+    #expect(libraryBundleExport.supportsJobs)
+    #expect(libraryBundleExport.supportsTasks)
+    #expect(libraryBundleExport.scopes == [.artworkRead, .filesRead, .libraryRead, .lyricsRead, .metadataRead, .playlistRead])
+
+    let embeddedRead = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.metadataEmbeddedGet)
+    )
+    #expect(embeddedRead.readOnly)
+    #expect(embeddedRead.scopes == [.filesRead, .libraryRead, .metadataRead])
+    let embeddedPatch = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.metadataEmbeddedPatch)
+    )
+    #expect(!embeddedPatch.readOnly)
+    #expect(embeddedPatch.requiresConfirmation)
+    #expect(embeddedPatch.supportsDryRun)
+    #expect(embeddedPatch.supportsJobs)
+    #expect(embeddedPatch.supportsTasks)
+    #expect(embeddedPatch.scopes == [.filesRead, .filesWrite, .libraryRead, .metadataWrite])
 
     let metadataGet = try #require(
         AutomationToolCatalog.descriptor(for: AutomationMethod.metadataGet)
@@ -128,7 +377,67 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     )
     #expect(!sourceRefresh.requiresConfirmation)
     #expect(sourceRefresh.supportsJobs)
-    #expect(!sourceRefresh.supportsTasks)
+    #expect(sourceRefresh.supportsTasks)
+    let libraryImport = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.libraryImport)
+    )
+    #expect(libraryImport.supportsJobs)
+    #expect(libraryImport.supportsTasks)
+
+    let selectionCreate = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.librarySelectionCreate)
+    )
+    #expect(!selectionCreate.readOnly)
+    #expect(selectionCreate.supportsDryRun)
+    #expect(selectionCreate.scopes.contains(.selectionWrite))
+    guard case .object(let selectionSchema) = selectionCreate.inputSchema,
+          case .array(let selectionAlternatives) = selectionSchema["oneOf"],
+          case .object(let selectionProperties) = selectionSchema["properties"] else {
+        Issue.record("selection.create must accept either Track IDs or a structured filter")
+        return
+    }
+    #expect(selectionAlternatives.count == 2)
+    #expect(selectionProperties["trackIDs"] != nil)
+    #expect(selectionProperties["filter"] != nil)
+    let addSelection = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.playlistAddSelection)
+    )
+    #expect(!addSelection.readOnly)
+    #expect(addSelection.supportsDryRun)
+    #expect(addSelection.scopes.contains(.selectionWrite))
+    #expect(addSelection.scopes.contains(.playlistWrite))
+    let libraryReport = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.libraryReport)
+    )
+    #expect(libraryReport.readOnly)
+    #expect(libraryReport.scopes == [.libraryRead])
+    guard case .object(let reportSchema) = libraryReport.inputSchema,
+          case .object(let reportProperties) = reportSchema["properties"] else {
+        Issue.record("library.report must expose paging and optional path properties")
+        return
+    }
+    #expect(reportProperties["limit"] != nil)
+    #expect(reportProperties["offset"] != nil)
+    #expect(reportProperties["playlistLimit"] != nil)
+    #expect(reportProperties["playlistOffset"] != nil)
+    #expect(reportProperties["expectedRevision"] != nil)
+    #expect(reportProperties["includeFilePaths"] != nil)
+    guard case .object(let reportLimit) = reportProperties["limit"] else {
+        Issue.record("library.report limit must be bounded")
+        return
+    }
+    #expect(reportLimit["maximum"] == .number(100))
+
+    let playlistAdd = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.playlistAddTracks)
+    )
+    guard case .object(let playlistSchema) = playlistAdd.inputSchema,
+          case .object(let playlistProperties) = playlistSchema["properties"],
+          case .object(let trackIDsSchema) = playlistProperties["trackIDs"] else {
+        Issue.record("playlist.addTracks must expose its bounded Track ID input")
+        return
+    }
+    #expect(trackIDsSchema["maxItems"] == .number(10_000))
 
     let filesInspect = try #require(
         AutomationToolCatalog.descriptor(for: AutomationMethod.filesInspect)
@@ -227,6 +536,7 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     )
 
     let artworkCandidate = AutomationArtworkCandidate(
+        candidateID: "art-v1-test-handle",
         source: "qqmusic",
         sourceItemID: "album-mid",
         imageBase64: "aW1hZ2U=",
@@ -257,6 +567,7 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     )
     #expect(decodedArtwork == artworkResult)
     #expect(decodedArtwork.candidates.first?.originalByteCount == 120_000)
+    #expect(decodedArtwork.candidates.first?.id == "art-v1-test-handle")
 
     let artworkApply = try #require(
         AutomationToolCatalog.descriptor(for: AutomationMethod.artworkApply)
@@ -284,6 +595,31 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
         ) == ["unexpected"]
     )
 
+    let artworkApplyCandidate = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.artworkApplyCandidate)
+    )
+    #expect(!artworkApplyCandidate.readOnly)
+    #expect(artworkApplyCandidate.supportsDryRun)
+    #expect(artworkApplyCandidate.scopes == [.artworkWrite, .libraryRead].sorted { $0.rawValue < $1.rawValue })
+    guard case .object(let candidateSchema) = artworkApplyCandidate.inputSchema,
+          case .object(let candidateProperties) = candidateSchema["properties"] else {
+        Issue.record("artwork.applyCandidate must expose its candidate and revision inputs")
+        return
+    }
+    #expect(candidateSchema["required"] == .array([.string("candidateID")]))
+    #expect(candidateProperties["expectedRevision"] != nil)
+    #expect(candidateProperties["dryRun"] != nil)
+    #expect(
+        AutomationToolCatalog.unknownParameterKeys(
+            for: AutomationMethod.artworkApplyCandidate,
+            params: .object([
+                "candidateID": .string("art-v1-test-handle"),
+                "dryRun": .boolean(true),
+                "unexpected": .boolean(false)
+            ])
+        ) == ["unexpected"]
+    )
+
     for method in [
         AutomationMethod.sourceSetExcludedPath,
         AutomationMethod.sourceSetMonitorPolicy,
@@ -301,6 +637,76 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
         }
         #expect(!descriptor.scopes.isEmpty || method == AutomationMethod.settingsGet)
     }
+}
+
+@Test
+func libraryBundleExportResultRoundTripsJobAndPreview() throws {
+    let job = AutomationJobSummary(
+        id: UUID(),
+        kind: "libraryBundleExport",
+        libraryID: UUID(),
+        state: .queued,
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+        retryable: false
+    )
+    let result = AutomationLibraryBundleExportResult(
+        libraryID: UUID(),
+        dryRun: false,
+        applied: true,
+        confirmed: true,
+        trackCount: 50,
+        estimatedBytes: 1_024,
+        outputDirectory: "/Users/test/Exports",
+        job: job,
+        message: "started"
+    )
+    let data = try AutomationWireCoding.encoder().encode(result)
+    let decoded = try AutomationWireCoding.decoder().decode(
+        AutomationLibraryBundleExportResult.self,
+        from: data
+    )
+    #expect(decoded == result)
+}
+
+@Test
+func embeddedTagResultsRoundTripWithPathSafeFileSummariesAndJob() throws {
+    let job = AutomationJobSummary(
+        id: UUID(),
+        kind: "embeddedTagWrite",
+        libraryID: UUID(),
+        state: .running,
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+        startedAt: nil,
+        finishedAt: nil,
+        checkpoint: "writing embedded tags",
+        completedCount: 0,
+        totalCount: 2,
+        currentPhase: "writing embedded tags",
+        failures: [],
+        failedItemIDs: [],
+        retryable: false,
+        result: nil
+    )
+    let value = AutomationEmbeddedTagsResult(
+        dryRun: false,
+        applied: false,
+        libraryRevision: "library-r1",
+        tracks: [AutomationEmbeddedTagTrack(
+            id: UUID(),
+            fileName: "song.mp3",
+            format: "mp3",
+            supportedForWrite: true,
+            trackRevision: "track-r1",
+            values: ["title": "Song"],
+            status: "ready"
+        )],
+        job: job,
+        message: "Job started"
+    )
+    let data = try AutomationWireCoding.encoder().encode(value)
+    let decoded = try AutomationWireCoding.decoder().decode(AutomationEmbeddedTagsResult.self, from: data)
+    #expect(decoded == value)
+    #expect(!String(decoding: data, as: UTF8.self).contains("/Users/"))
 }
 
 @Test
@@ -334,6 +740,65 @@ func artworkAutomationResultRoundTripsAndMetadataFieldsDecodeDefaults() throws {
     #expect(summary.userDescription.isEmpty)
     #expect(summary.lyricsTimeOffsetMs == 0)
     #expect(summary.artworkFileName == nil)
+    #expect(summary.embeddedMetadataSnapshot == nil)
+    #expect(summary.preferenceStats == nil)
+
+    let embeddedSnapshot = AutomationEmbeddedMetadataSnapshot(
+        title: "Original file title",
+        artistDisplay: "Original file artist",
+        album: "Original file album",
+        releaseYear: 2024,
+        musicBrainzReleaseID: UUID().uuidString,
+        capturedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    let summaryWithEmbeddedSnapshot = AutomationTrackSummary(
+        id: trackID,
+        title: "T",
+        artist: "A",
+        album: "B",
+        duration: 1,
+        availability: "available",
+        addedAt: Date(timeIntervalSince1970: 1_700_000_000),
+        importedAt: nil,
+        embeddedMetadataSnapshot: embeddedSnapshot
+    )
+    let snapshotData = try AutomationWireCoding.encoder().encode(summaryWithEmbeddedSnapshot)
+    let decodedSnapshotSummary = try AutomationWireCoding.decoder().decode(
+        AutomationTrackSummary.self,
+        from: snapshotData
+    )
+    #expect(decodedSnapshotSummary.embeddedMetadataSnapshot == embeddedSnapshot)
+
+    let preferenceStats = AutomationTrackPreferenceSummary(
+        playCount: 12,
+        completePlayCount: 8,
+        skipCount: 3,
+        quickSkipCount: 1,
+        totalPlayedSeconds: 2_880,
+        lastPlayedAt: Date(timeIntervalSince1970: 1_750_000_000),
+        lastCompletedAt: nil,
+        lastSkippedAt: Date(timeIntervalSince1970: 1_740_000_000),
+        likeState: "liked",
+        preferenceScore: 0.82,
+        effectiveWeight: 1.2
+    )
+    let summaryWithPreferenceStats = AutomationTrackSummary(
+        id: trackID,
+        title: "T",
+        artist: "A",
+        album: "B",
+        duration: 1,
+        availability: "available",
+        addedAt: Date(timeIntervalSince1970: 1_700_000_000),
+        importedAt: nil,
+        preferenceStats: preferenceStats
+    )
+    let preferenceData = try AutomationWireCoding.encoder().encode(summaryWithPreferenceStats)
+    let decodedPreferenceSummary = try AutomationWireCoding.decoder().decode(
+        AutomationTrackSummary.self,
+        from: preferenceData
+    )
+    #expect(decodedPreferenceSummary.preferenceStats == preferenceStats)
 
     let oldArtwork = try AutomationWireCoding.decoder().decode(
         AutomationArtworkMutationResult.self,
@@ -478,6 +943,23 @@ func lyricsAutomationContractExposesSelectionAndRetrySemantics() throws {
             continue
         }
     }
+
+    let jobsRetry = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.jobsRetry)
+    )
+    guard case .object(let jobsRetrySchema) = jobsRetry.inputSchema,
+          case .object(let jobsRetryProperties)? = jobsRetrySchema["properties"] else {
+        Issue.record("jobs.retry must expose its optional import retry inputs")
+        return
+    }
+    #expect(jobsRetryProperties["filePaths"] != nil)
+    #expect(AutomationToolCatalog.unknownParameterKeys(
+        for: AutomationMethod.jobsRetry,
+        params: .object([
+            "jobID": .string(UUID().uuidString),
+            "filePaths": .array([.string("/Music/retry.mp3")])
+        ])
+    ).isEmpty)
 
     let lyricsApply = try #require(
         AutomationToolCatalog.descriptor(for: AutomationMethod.lyricsApply)
@@ -635,6 +1117,9 @@ func diagnosticsResultRemainsBackwardCompatibleWithoutExtendedEvidence() throws 
     )
     #expect(result.healthy)
     #expect(result.failedJobCount == 0)
+    #expect(result.missingLyricsTrackCount == 0)
+    #expect(result.missingArtworkTrackCount == 0)
+    #expect(result.incompleteMetadataTrackCount == 0)
     #expect(result.playlistReferenceIssues.isEmpty)
     #expect(result.storageValidation == "notRun")
 }
@@ -679,6 +1164,33 @@ func sourceSummaryRemainsBackwardCompatibleWithoutExclusionField() throws {
     )
     #expect(summary.id == id)
     #expect(summary.excludedRelativePaths.isEmpty)
+}
+
+@Test
+func sourceConfigurationDocumentRoundTripsWithoutLocalPathsOrBookmarks() throws {
+    let configuration = AutomationSourceConfiguration(
+        sourceID: UUID(),
+        displayName: "Archive",
+        monitorPolicy: "off",
+        excludedRelativePaths: ["Private", "Cache"]
+    )
+    let document = AutomationSourceConfigurationDocument(
+        originLibraryID: UUID(),
+        sources: [configuration]
+    )
+    let data = try AutomationWireCoding.encoder().encode(document)
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(Set(object.keys) == Set(["schemaVersion", "originLibraryID", "sources"]))
+    let sources = try #require(object["sources"] as? [[String: Any]])
+    #expect(sources.count == 1)
+    #expect(Set(try #require(sources.first).keys) == Set([
+        "sourceID", "displayName", "monitorPolicy", "excludedRelativePaths"
+    ]))
+    let decoded = try AutomationWireCoding.decoder().decode(
+        AutomationSourceConfigurationDocument.self,
+        from: data
+    )
+    #expect(decoded == document)
 }
 
 @Test
@@ -837,4 +1349,20 @@ func importCapabilityAndJobResultPreserveContract() throws {
     """
     let oldJob = try AutomationWireCoding.decoder().decode(AutomationJobSummary.self, from: Data(oldJSON.utf8))
     #expect(oldJob.result == nil)
+}
+
+@Test
+func libraryTrackPreferenceQuerySchemaIsAdvertised() {
+    let tracks = AutomationToolCatalog.descriptor(for: AutomationMethod.libraryTracks)
+    let report = AutomationToolCatalog.descriptor(for: AutomationMethod.libraryReport)
+    #expect(tracks != nil)
+    #expect(report != nil)
+    #expect(AutomationToolCatalog.unknownParameterKeys(
+        for: AutomationMethod.libraryTracks,
+        params: .object(["includePreferenceStats": .boolean(true)])
+    ).isEmpty)
+    #expect(AutomationToolCatalog.unknownParameterKeys(
+        for: AutomationMethod.libraryReport,
+        params: .object(["includePreferenceStats": .boolean(true)])
+    ).isEmpty)
 }

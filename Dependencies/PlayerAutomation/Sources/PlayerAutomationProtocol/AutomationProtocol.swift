@@ -164,6 +164,7 @@ public enum AutomationScope: String, Codable, CaseIterable, Sendable {
     case libraryWrite = "library.write"
     case libraryManage = "library.manage"
     case libraryDelete = "library.delete"
+    case selectionWrite = "selection.write"
     case sourceRead = "source.read"
     case sourceWrite = "source.write"
     case playlistRead = "playlist.read"
@@ -258,6 +259,7 @@ public enum AutomationMethod {
     public static let systemPing = "system.ping"
     public static let systemInfo = "system.info"
     public static let libraryList = "library.list"
+    public static let libraryGet = "library.get"
     public static let libraryCreate = "library.create"
     public static let libraryOpen = "library.open"
     public static let librarySwitch = "library.switch"
@@ -266,11 +268,23 @@ public enum AutomationMethod {
     public static let libraryRemove = "library.remove"
     public static let libraryTracks = "library.tracks"
     public static let libraryImport = "library.import"
+    public static let libraryStats = "library.stats"
+    public static let libraryReport = "library.report"
+    public static let libraryBundleExport = "library.bundle.export"
+    public static let librarySelectionList = "library.selection.list"
+    public static let librarySelectionCreate = "library.selection.create"
+    public static let librarySelectionGet = "library.selection.get"
+    public static let librarySelectionDelete = "library.selection.delete"
     public static let playlistList = "playlist.list"
     public static let playlistCreate = "playlist.create"
     public static let playlistAddTracks = "playlist.addTracks"
+    public static let playlistAddSelection = "playlist.addSelection"
     public static let playlistRemoveTracks = "playlist.removeTracks"
     public static let sourceList = "source.list"
+    public static let sourceGet = "source.get"
+    public static let sourceConfigExport = "source.config.export"
+    public static let sourceConfigImport = "source.config.import"
+    public static let sourceRename = "source.rename"
     public static let sourceRefresh = "source.refresh"
     public static let sourceCreate = "source.create"
     public static let sourceBindPlaylist = "source.bindPlaylist"
@@ -278,6 +292,8 @@ public enum AutomationMethod {
     public static let sourceSetMonitorPolicy = "source.setMonitorPolicy"
     public static let sourceRemove = "source.remove"
     public static let filesInspect = "files.inspect"
+    public static let filesReveal = "files.reveal"
+    public static let filesExport = "files.export"
     public static let filesRename = "files.rename"
     public static let filesMove = "files.move"
     public static let filesDelete = "files.delete"
@@ -286,8 +302,13 @@ public enum AutomationMethod {
     public static let playlistDelete = "playlist.delete"
     public static let playlistReplaceTracks = "playlist.replaceTracks"
     public static let playlistReorder = "playlist.reorder"
+    public static let playlistDiff = "playlist.diff"
+    public static let playlistImport = "playlist.import"
+    public static let playlistExport = "playlist.export"
     public static let playbackState = "playback.state"
     public static let playbackPlay = "playback.play"
+    public static let playbackPlayPlaylist = "playback.playPlaylist"
+    public static let playbackToggle = "playback.toggle"
     public static let playbackPause = "playback.pause"
     public static let playbackNext = "playback.next"
     public static let playbackPrevious = "playback.previous"
@@ -299,13 +320,24 @@ public enum AutomationMethod {
     public static let queueEnqueue = "queue.enqueue"
     public static let queueEnqueueNext = "queue.enqueueNext"
     public static let queueClear = "queue.clear"
+    public static let queueRemove = "queue.remove"
+    public static let queueReorder = "queue.reorder"
+    public static let queueUpcoming = "queue.upcoming"
     public static let historyList = "history.list"
+    public static let historyStats = "history.stats"
     public static let historyClear = "history.clear"
     public static let metadataGet = "metadata.get"
+    public static let metadataEmbeddedGet = "metadata.embedded.get"
+    public static let metadataEmbeddedPatch = "metadata.embedded.patch"
+    public static let metadataExport = "metadata.export"
+    public static let metadataImport = "metadata.import"
+    public static let metadataSearch = "metadata.search"
+    public static let metadataApplyCandidate = "metadata.applyCandidate"
     public static let metadataPatch = "metadata.patch"
     public static let artworkSearch = "artwork.search"
     public static let artworkGet = "artwork.get"
     public static let artworkApply = "artwork.apply"
+    public static let artworkApplyCandidate = "artwork.applyCandidate"
     public static let lyricsGet = "lyrics.get"
     public static let lyricsSearch = "lyrics.search"
     public static let lyricsCandidates = "lyrics.candidates"
@@ -319,7 +351,12 @@ public enum AutomationMethod {
     public static let jobsRetry = "jobs.retry"
     public static let diagnosticsHealth = "diagnostics.health"
     public static let settingsGet = "settings.get"
+    public static let settingsSchema = "settings.schema"
     public static let settingsPatch = "settings.patch"
+    public static let settingsValidate = "settings.validate"
+    public static let settingsReset = "settings.reset"
+    public static let audioGet = "audio.get"
+    public static let audioPatch = "audio.patch"
     public static let storageInspect = "storage.inspect"
     public static let storageValidate = "storage.validate"
     public static let storageRepair = "storage.repair"
@@ -431,6 +468,16 @@ public struct AutomationLibraryListResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct AutomationLibraryGetResult: Codable, Equatable, Sendable {
+    public let library: AutomationLibrarySummary
+    public let activeLibraryID: UUID?
+
+    public init(library: AutomationLibrarySummary, activeLibraryID: UUID?) {
+        self.library = library
+        self.activeLibraryID = activeLibraryID
+    }
+}
+
 public struct AutomationLibraryLifecycleResult: Codable, Equatable, Sendable {
     public let operation: String
     public let applied: Bool
@@ -497,6 +544,82 @@ public struct AutomationTrackCredit: Codable, Equatable, Sendable, Identifiable 
     }
 }
 
+/// The file-tag values captured at import time. This is a historical snapshot,
+/// not a live read of a file that may have been edited outside the App.
+public struct AutomationEmbeddedMetadataSnapshot: Codable, Equatable, Sendable {
+    public let title: String?
+    public let artistDisplay: String?
+    public let album: String?
+    public let albumArtist: String?
+    public let releaseYear: Int?
+    public let compilation: Bool?
+    public let musicBrainzReleaseID: String?
+    public let durationSeconds: Double?
+    public let capturedAt: Date
+
+    public init(
+        title: String? = nil,
+        artistDisplay: String? = nil,
+        album: String? = nil,
+        albumArtist: String? = nil,
+        releaseYear: Int? = nil,
+        compilation: Bool? = nil,
+        musicBrainzReleaseID: String? = nil,
+        durationSeconds: Double? = nil,
+        capturedAt: Date
+    ) {
+        self.title = title
+        self.artistDisplay = artistDisplay
+        self.album = album
+        self.albumArtist = albumArtist
+        self.releaseYear = releaseYear
+        self.compilation = compilation
+        self.musicBrainzReleaseID = musicBrainzReleaseID
+        self.durationSeconds = durationSeconds
+        self.capturedAt = capturedAt
+    }
+}
+
+public struct AutomationTrackPreferenceSummary: Codable, Equatable, Sendable {
+    public let playCount: Int
+    public let completePlayCount: Int
+    public let skipCount: Int
+    public let quickSkipCount: Int
+    public let totalPlayedSeconds: Double
+    public let lastPlayedAt: Date?
+    public let lastCompletedAt: Date?
+    public let lastSkippedAt: Date?
+    public let likeState: String
+    public let preferenceScore: Double
+    public let effectiveWeight: Double
+
+    public init(
+        playCount: Int,
+        completePlayCount: Int,
+        skipCount: Int,
+        quickSkipCount: Int,
+        totalPlayedSeconds: Double,
+        lastPlayedAt: Date?,
+        lastCompletedAt: Date?,
+        lastSkippedAt: Date?,
+        likeState: String,
+        preferenceScore: Double,
+        effectiveWeight: Double
+    ) {
+        self.playCount = playCount
+        self.completePlayCount = completePlayCount
+        self.skipCount = skipCount
+        self.quickSkipCount = quickSkipCount
+        self.totalPlayedSeconds = totalPlayedSeconds
+        self.lastPlayedAt = lastPlayedAt
+        self.lastCompletedAt = lastCompletedAt
+        self.lastSkippedAt = lastSkippedAt
+        self.likeState = likeState
+        self.preferenceScore = preferenceScore
+        self.effectiveWeight = effectiveWeight
+    }
+}
+
 public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable {
     public let id: UUID
     public let title: String
@@ -506,6 +629,7 @@ public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable
     public let availability: String
     public let addedAt: Date
     public let importedAt: Date?
+    public let embeddedMetadataSnapshot: AutomationEmbeddedMetadataSnapshot?
     public let sourceMemberships: [AutomationTrackSourceMembership]
     public let artistCredits: [AutomationTrackCredit]
     public let albumArtist: String?
@@ -530,6 +654,7 @@ public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable
     public let channelCount: Int?
     public let filePath: String?
     public let playlistIDs: [UUID]
+    public let preferenceStats: AutomationTrackPreferenceSummary?
 
     public init(
         id: UUID,
@@ -540,6 +665,7 @@ public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable
         availability: String,
         addedAt: Date,
         importedAt: Date?,
+        embeddedMetadataSnapshot: AutomationEmbeddedMetadataSnapshot? = nil,
         sourceMemberships: [AutomationTrackSourceMembership] = [],
         artistCredits: [AutomationTrackCredit] = [],
         albumArtist: String? = nil,
@@ -563,7 +689,8 @@ public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable
         bitDepth: Int? = nil,
         channelCount: Int? = nil,
         filePath: String? = nil,
-        playlistIDs: [UUID] = []
+        playlistIDs: [UUID] = [],
+        preferenceStats: AutomationTrackPreferenceSummary? = nil
     ) {
         self.id = id
         self.title = title
@@ -573,6 +700,7 @@ public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable
         self.availability = availability
         self.addedAt = addedAt
         self.importedAt = importedAt
+        self.embeddedMetadataSnapshot = embeddedMetadataSnapshot
         self.sourceMemberships = sourceMemberships
         self.artistCredits = artistCredits
         self.albumArtist = albumArtist
@@ -597,16 +725,18 @@ public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable
         self.channelCount = channelCount
         self.filePath = filePath
         self.playlistIDs = playlistIDs
+        self.preferenceStats = preferenceStats
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, title, artist, album, duration, availability, addedAt, importedAt
+        case embeddedMetadataSnapshot
         case sourceMemberships, artistCredits, albumArtist, userDescription
         case genreTags, language, labelOrCompany, releaseDate, qqMusicSongMid
         case metadataSource, metadataFetchedAt, metadataConfidence, musicBrainzReleaseID
         case lyricsTimeOffsetMs, lyricsStatus, artworkAvailable, artworkFileName
         case format, codec
-        case sampleRateHz, bitDepth, channelCount, filePath, playlistIDs
+        case sampleRateHz, bitDepth, channelCount, filePath, playlistIDs, preferenceStats
     }
 
     public init(from decoder: Decoder) throws {
@@ -619,6 +749,10 @@ public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable
         availability = try container.decode(String.self, forKey: .availability)
         addedAt = try container.decode(Date.self, forKey: .addedAt)
         importedAt = try container.decodeIfPresent(Date.self, forKey: .importedAt)
+        embeddedMetadataSnapshot = try container.decodeIfPresent(
+            AutomationEmbeddedMetadataSnapshot.self,
+            forKey: .embeddedMetadataSnapshot
+        )
         sourceMemberships = try container.decodeIfPresent(
             [AutomationTrackSourceMembership].self,
             forKey: .sourceMemberships
@@ -649,6 +783,10 @@ public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable
         channelCount = try container.decodeIfPresent(Int.self, forKey: .channelCount)
         filePath = try container.decodeIfPresent(String.self, forKey: .filePath)
         playlistIDs = try container.decodeIfPresent([UUID].self, forKey: .playlistIDs) ?? []
+        preferenceStats = try container.decodeIfPresent(
+            AutomationTrackPreferenceSummary.self,
+            forKey: .preferenceStats
+        )
     }
 }
 
@@ -696,6 +834,384 @@ public struct AutomationLibraryTracksResult: Codable, Equatable, Sendable {
         limit = try container.decode(Int.self, forKey: .limit)
         nextOffset = try container.decodeIfPresent(Int.self, forKey: .nextOffset)
         revision = try container.decodeIfPresent(String.self, forKey: .revision) ?? "v1-unknown"
+    }
+}
+
+public struct AutomationLibraryStatsResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID
+    public let mode: String
+    public let trackCount: Int
+    public let availableTrackCount: Int
+    public let missingTrackCount: Int
+    public let recoverableTrackCount: Int
+    public let playlistCount: Int
+    public let linkedSourceCount: Int
+    public let artistCount: Int
+    public let albumCount: Int
+    public let lyricsTrackCount: Int
+    public let artworkTrackCount: Int
+    public let totalDurationSeconds: Double
+    public let revision: String
+
+    public init(libraryID: UUID, mode: String, trackCount: Int, availableTrackCount: Int,
+                missingTrackCount: Int, recoverableTrackCount: Int, playlistCount: Int,
+                linkedSourceCount: Int, artistCount: Int, albumCount: Int, lyricsTrackCount: Int,
+                artworkTrackCount: Int, totalDurationSeconds: Double, revision: String) {
+        self.libraryID = libraryID
+        self.mode = mode
+        self.trackCount = trackCount
+        self.availableTrackCount = availableTrackCount
+        self.missingTrackCount = missingTrackCount
+        self.recoverableTrackCount = recoverableTrackCount
+        self.playlistCount = playlistCount
+        self.linkedSourceCount = linkedSourceCount
+        self.artistCount = artistCount
+        self.albumCount = albumCount
+        self.lyricsTrackCount = lyricsTrackCount
+        self.artworkTrackCount = artworkTrackCount
+        self.totalDurationSeconds = totalDurationSeconds
+        self.revision = revision
+    }
+}
+
+public struct AutomationLibraryReportResult: Codable, Equatable, Sendable {
+    public let schemaVersion: Int
+    public let generatedAt: Date
+    public let stats: AutomationLibraryStatsResult
+    public let tracks: [AutomationTrackSummary]
+    public let playlists: [AutomationPlaylistSummary]
+    public let offset: Int
+    public let limit: Int
+    public let nextOffset: Int?
+    public let playlistOffset: Int
+    public let playlistLimit: Int
+    public let nextPlaylistOffset: Int?
+    public let revision: String
+
+    public init(
+        schemaVersion: Int = 1,
+        generatedAt: Date = Date(),
+        stats: AutomationLibraryStatsResult,
+        tracks: [AutomationTrackSummary],
+        playlists: [AutomationPlaylistSummary],
+        offset: Int,
+        limit: Int,
+        nextOffset: Int?,
+        playlistOffset: Int = 0,
+        playlistLimit: Int = 100,
+        nextPlaylistOffset: Int? = nil,
+        revision: String
+    ) {
+        self.schemaVersion = schemaVersion
+        self.generatedAt = generatedAt
+        self.stats = stats
+        self.tracks = tracks
+        self.playlists = playlists
+        self.offset = offset
+        self.limit = limit
+        self.nextOffset = nextOffset
+        self.playlistOffset = playlistOffset
+        self.playlistLimit = playlistLimit
+        self.nextPlaylistOffset = nextPlaylistOffset
+        self.revision = revision
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, generatedAt, stats, tracks, playlists
+        case offset, limit, nextOffset, playlistOffset, playlistLimit, nextPlaylistOffset, revision
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        generatedAt = try container.decodeIfPresent(Date.self, forKey: .generatedAt) ?? Date(timeIntervalSince1970: 0)
+        stats = try container.decode(AutomationLibraryStatsResult.self, forKey: .stats)
+        tracks = try container.decode([AutomationTrackSummary].self, forKey: .tracks)
+        playlists = try container.decode([AutomationPlaylistSummary].self, forKey: .playlists)
+        offset = try container.decode(Int.self, forKey: .offset)
+        limit = try container.decode(Int.self, forKey: .limit)
+        nextOffset = try container.decodeIfPresent(Int.self, forKey: .nextOffset)
+        playlistOffset = try container.decodeIfPresent(Int.self, forKey: .playlistOffset) ?? 0
+        playlistLimit = try container.decodeIfPresent(Int.self, forKey: .playlistLimit) ?? max(1, playlists.count)
+        nextPlaylistOffset = try container.decodeIfPresent(Int.self, forKey: .nextPlaylistOffset)
+        revision = try container.decodeIfPresent(String.self, forKey: .revision) ?? "v1-unknown"
+    }
+}
+
+public struct AutomationLibraryBundleExportResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID
+    public let dryRun: Bool
+    public let applied: Bool
+    public let confirmed: Bool
+    public let trackCount: Int
+    public let estimatedBytes: Int64
+    public let copiedFileCount: Int
+    public let copiedBytes: Int64
+    public let outputDirectory: String?
+    public let job: AutomationJobSummary?
+    public let failures: [String]
+    public let message: String
+
+    public init(
+        libraryID: UUID,
+        dryRun: Bool,
+        applied: Bool = false,
+        confirmed: Bool = false,
+        trackCount: Int,
+        estimatedBytes: Int64 = 0,
+        copiedFileCount: Int = 0,
+        copiedBytes: Int64 = 0,
+        outputDirectory: String? = nil,
+        job: AutomationJobSummary? = nil,
+        failures: [String] = [],
+        message: String
+    ) {
+        self.libraryID = libraryID
+        self.dryRun = dryRun
+        self.applied = applied
+        self.confirmed = confirmed
+        self.trackCount = trackCount
+        self.estimatedBytes = estimatedBytes
+        self.copiedFileCount = copiedFileCount
+        self.copiedBytes = copiedBytes
+        self.outputDirectory = outputDirectory
+        self.job = job
+        self.failures = failures
+        self.message = message
+    }
+}
+
+public struct AutomationSelectionSummary: Codable, Equatable, Sendable, Identifiable {
+    public let id: UUID
+    public let name: String?
+    public let trackCount: Int
+    public let revision: String
+    public let createdAt: Date
+    public let expiresAt: Date
+    public let isDynamic: Bool
+
+    public init(
+        id: UUID,
+        name: String?,
+        trackCount: Int,
+        revision: String,
+        createdAt: Date,
+        expiresAt: Date,
+        isDynamic: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.trackCount = trackCount
+        self.revision = revision
+        self.createdAt = createdAt
+        self.expiresAt = expiresAt
+        self.isDynamic = isDynamic
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, trackCount, revision, createdAt, expiresAt, isDynamic
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        trackCount = try container.decode(Int.self, forKey: .trackCount)
+        revision = try container.decode(String.self, forKey: .revision)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        expiresAt = try container.decode(Date.self, forKey: .expiresAt)
+        isDynamic = try container.decodeIfPresent(Bool.self, forKey: .isDynamic) ?? false
+    }
+}
+
+public struct AutomationSelectionListResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID
+    public let currentRevision: String
+    public let selections: [AutomationSelectionSummary]
+
+    public init(libraryID: UUID, currentRevision: String, selections: [AutomationSelectionSummary]) {
+        self.libraryID = libraryID
+        self.currentRevision = currentRevision
+        self.selections = selections.sorted { $0.createdAt > $1.createdAt }
+    }
+}
+
+public struct AutomationSelectionDetailResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID
+    public let selection: AutomationSelectionSummary
+    public let trackIDs: [UUID]
+    public let filter: AutomationJSONValue?
+
+    public init(
+        libraryID: UUID,
+        selection: AutomationSelectionSummary,
+        trackIDs: [UUID],
+        filter: AutomationJSONValue? = nil
+    ) {
+        self.libraryID = libraryID
+        self.selection = selection
+        self.trackIDs = trackIDs
+        self.filter = filter
+    }
+}
+
+public struct AutomationSelectionCreateResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID
+    public let selection: AutomationSelectionSummary
+    public let trackIDs: [UUID]
+    public let applied: Bool
+    public let dryRun: Bool
+
+    public init(
+        libraryID: UUID,
+        selection: AutomationSelectionSummary,
+        trackIDs: [UUID],
+        applied: Bool,
+        dryRun: Bool
+    ) {
+        self.libraryID = libraryID
+        self.selection = selection
+        self.trackIDs = trackIDs
+        self.applied = applied
+        self.dryRun = dryRun
+    }
+}
+
+public struct AutomationSelectionDeleteResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID
+    public let selectionID: UUID
+    public let deleted: Bool
+    public let dryRun: Bool
+
+    public init(libraryID: UUID, selectionID: UUID, deleted: Bool, dryRun: Bool) {
+        self.libraryID = libraryID
+        self.selectionID = selectionID
+        self.deleted = deleted
+        self.dryRun = dryRun
+    }
+}
+
+public struct AutomationPlaylistSelectionMutationResult: Codable, Equatable, Sendable {
+    public let selectionID: UUID
+    public let selectionRevision: String
+    public let mutation: AutomationPlaylistMutationResult
+
+    public init(selectionID: UUID, selectionRevision: String, mutation: AutomationPlaylistMutationResult) {
+        self.selectionID = selectionID
+        self.selectionRevision = selectionRevision
+        self.mutation = mutation
+    }
+}
+
+public struct AutomationPlaylistDiffResult: Codable, Equatable, Sendable {
+    public let operation: String
+    public let inputPlaylistIDs: [UUID]
+    public let trackIDs: [UUID]
+    public let total: Int
+    public let revision: String
+
+    public init(operation: String, inputPlaylistIDs: [UUID], trackIDs: [UUID], total: Int, revision: String) {
+        self.operation = operation
+        self.inputPlaylistIDs = inputPlaylistIDs
+        self.trackIDs = trackIDs
+        self.total = total
+        self.revision = revision
+    }
+}
+
+public struct AutomationPlaylistExportResult: Codable, Equatable, Sendable {
+    public let playlist: AutomationPlaylistSummary
+    public let format: String
+    public let m3uText: String
+    public let exportedTrackCount: Int
+    public let filePathEntryCount: Int
+
+    public init(playlist: AutomationPlaylistSummary, m3uText: String, exportedTrackCount: Int, filePathEntryCount: Int) {
+        self.playlist = playlist
+        self.format = "m3u8"
+        self.m3uText = m3uText
+        self.exportedTrackCount = exportedTrackCount
+        self.filePathEntryCount = filePathEntryCount
+    }
+}
+
+public struct AutomationPlaylistImportResult: Codable, Equatable, Sendable {
+    public let playlist: AutomationPlaylistSummary
+    public let operation: String
+    public let applied: Bool
+    public let dryRun: Bool
+    public let matchedTrackIDs: [UUID]
+    public let unmatchedEntries: [String]
+
+    public init(playlist: AutomationPlaylistSummary, operation: String, applied: Bool, dryRun: Bool, matchedTrackIDs: [UUID], unmatchedEntries: [String]) {
+        self.playlist = playlist
+        self.operation = operation
+        self.applied = applied
+        self.dryRun = dryRun
+        self.matchedTrackIDs = matchedTrackIDs
+        self.unmatchedEntries = unmatchedEntries
+    }
+}
+
+public struct AutomationHistoryDimensionSummary: Codable, Equatable, Sendable, Identifiable {
+    public let key: String
+    public let name: String
+    public let playCount: Int
+    public let playedSeconds: Double
+    public var id: String { key }
+
+    public init(key: String, name: String, playCount: Int, playedSeconds: Double) {
+        self.key = key
+        self.name = name
+        self.playCount = playCount
+        self.playedSeconds = playedSeconds
+    }
+}
+
+public struct AutomationHistoryStatsResult: Codable, Equatable, Sendable {
+    public let from: Date?
+    public let to: Date?
+    public let playCount: Int
+    public let distinctTrackCount: Int
+    public let distinctArtistCount: Int
+    public let distinctAlbumCount: Int
+    public let playedSeconds: Double
+    public let topTracks: [AutomationHistoryDimensionSummary]
+    public let topArtists: [AutomationHistoryDimensionSummary]
+    public let topAlbums: [AutomationHistoryDimensionSummary]
+    public let revision: String
+
+    public init(from: Date?, to: Date?, playCount: Int, distinctTrackCount: Int,
+                distinctArtistCount: Int, distinctAlbumCount: Int, playedSeconds: Double,
+                topTracks: [AutomationHistoryDimensionSummary], topArtists: [AutomationHistoryDimensionSummary],
+                topAlbums: [AutomationHistoryDimensionSummary], revision: String) {
+        self.from = from
+        self.to = to
+        self.playCount = playCount
+        self.distinctTrackCount = distinctTrackCount
+        self.distinctArtistCount = distinctArtistCount
+        self.distinctAlbumCount = distinctAlbumCount
+        self.playedSeconds = playedSeconds
+        self.topTracks = topTracks
+        self.topArtists = topArtists
+        self.topAlbums = topAlbums
+        self.revision = revision
+    }
+}
+
+public struct AutomationQueueUpcomingResult: Codable, Equatable, Sendable {
+    public let currentTrackID: UUID?
+    public let trackIDs: [UUID]
+    public let offset: Int
+    public let total: Int
+    public let revision: String
+
+    public init(currentTrackID: UUID?, trackIDs: [UUID], offset: Int, total: Int, revision: String) {
+        self.currentTrackID = currentTrackID
+        self.trackIDs = trackIDs
+        self.offset = offset
+        self.total = total
+        self.revision = revision
     }
 }
 
@@ -949,6 +1465,124 @@ public struct AutomationSourceListResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct AutomationSourceGetResult: Codable, Equatable, Sendable {
+    public let source: AutomationSourceSummary
+
+    public init(source: AutomationSourceSummary) {
+        self.source = source
+    }
+}
+
+/// Portable Source policy only. Security-scoped bookmarks, filesystem paths,
+/// scan state and Playlist binding edges intentionally remain local.
+public struct AutomationSourceConfiguration: Codable, Equatable, Sendable, Identifiable {
+    public let sourceID: UUID
+    public let displayName: String
+    public let monitorPolicy: String
+    public let excludedRelativePaths: [String]
+
+    public var id: UUID { sourceID }
+
+    public init(
+        sourceID: UUID,
+        displayName: String,
+        monitorPolicy: String,
+        excludedRelativePaths: [String]
+    ) {
+        self.sourceID = sourceID
+        self.displayName = displayName
+        self.monitorPolicy = monitorPolicy
+        self.excludedRelativePaths = Array(Set(excludedRelativePaths)).sorted()
+    }
+}
+
+public struct AutomationSourceConfigurationDocument: Codable, Equatable, Sendable {
+    public let schemaVersion: Int
+    public let originLibraryID: UUID
+    public let sources: [AutomationSourceConfiguration]
+
+    public init(
+        schemaVersion: Int = 1,
+        originLibraryID: UUID,
+        sources: [AutomationSourceConfiguration]
+    ) {
+        self.schemaVersion = schemaVersion
+        self.originLibraryID = originLibraryID
+        self.sources = sources.sorted { $0.sourceID.uuidString < $1.sourceID.uuidString }
+    }
+}
+
+public struct AutomationSourceConfigurationExportResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID
+    public let revision: String
+    public let document: AutomationSourceConfigurationDocument
+
+    public init(
+        libraryID: UUID,
+        revision: String,
+        document: AutomationSourceConfigurationDocument
+    ) {
+        self.libraryID = libraryID
+        self.revision = revision
+        self.document = document
+    }
+}
+
+public struct AutomationSourceConfigurationFailure: Codable, Equatable, Sendable, Identifiable {
+    public let sourceID: UUID
+    public let message: String
+
+    public var id: UUID { sourceID }
+
+    public init(sourceID: UUID, message: String) {
+        self.sourceID = sourceID
+        self.message = message
+    }
+}
+
+public struct AutomationSourceConfigurationImportResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID
+    public let applied: Bool
+    public let dryRun: Bool
+    public let revision: String
+    public let configurations: [AutomationSourceConfiguration]
+    public let updatedSourceIDs: [UUID]
+    public let unchangedSourceIDs: [UUID]
+    public let failures: [AutomationSourceConfigurationFailure]
+
+    public init(
+        libraryID: UUID,
+        applied: Bool,
+        dryRun: Bool,
+        revision: String,
+        configurations: [AutomationSourceConfiguration],
+        updatedSourceIDs: [UUID] = [],
+        unchangedSourceIDs: [UUID] = [],
+        failures: [AutomationSourceConfigurationFailure] = []
+    ) {
+        self.libraryID = libraryID
+        self.applied = applied
+        self.dryRun = dryRun
+        self.revision = revision
+        self.configurations = configurations.sorted { $0.sourceID.uuidString < $1.sourceID.uuidString }
+        self.updatedSourceIDs = updatedSourceIDs.sorted { $0.uuidString < $1.uuidString }
+        self.unchangedSourceIDs = unchangedSourceIDs.sorted { $0.uuidString < $1.uuidString }
+        self.failures = failures.sorted { $0.sourceID.uuidString < $1.sourceID.uuidString }
+    }
+}
+
+public struct AutomationSourceRenameResult: Codable, Equatable, Sendable {
+    public let source: AutomationSourceSummary
+    public let applied: Bool
+    public let dryRun: Bool
+
+    public init(source: AutomationSourceSummary, applied: Bool, dryRun: Bool) {
+        self.source = source
+        self.applied = applied
+        self.dryRun = dryRun
+    }
+}
+
 public struct AutomationSourceRefreshResult: Codable, Equatable, Sendable {
     public let sourceID: UUID
     public let applied: Bool
@@ -1138,10 +1772,25 @@ public struct AutomationHistoryItem: Codable, Equatable, Sendable, Identifiable 
 public struct AutomationHistoryListResult: Codable, Equatable, Sendable {
     public let items: [AutomationHistoryItem]
     public let revision: String
+    public let total: Int?
+    public let offset: Int?
+    public let limit: Int?
+    public let nextOffset: Int?
 
-    public init(items: [AutomationHistoryItem], revision: String) {
+    public init(
+        items: [AutomationHistoryItem],
+        revision: String,
+        total: Int? = nil,
+        offset: Int? = nil,
+        limit: Int? = nil,
+        nextOffset: Int? = nil
+    ) {
         self.items = items
         self.revision = revision
+        self.total = total
+        self.offset = offset
+        self.limit = limit
+        self.nextOffset = nextOffset
     }
 }
 
@@ -1410,6 +2059,392 @@ public struct AutomationMetadataGetResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct AutomationEmbeddedTagTrack: Codable, Equatable, Sendable, Identifiable {
+    public let id: UUID
+    public let fileName: String
+    public let format: String
+    public let supportedForWrite: Bool
+    public let trackRevision: String
+    public let values: [String: String]
+    public let status: String
+    public let message: String?
+
+    public init(
+        id: UUID,
+        fileName: String,
+        format: String,
+        supportedForWrite: Bool,
+        trackRevision: String,
+        values: [String: String] = [:],
+        status: String,
+        message: String? = nil
+    ) {
+        self.id = id
+        self.fileName = fileName
+        self.format = format
+        self.supportedForWrite = supportedForWrite
+        self.trackRevision = trackRevision
+        self.values = values
+        self.status = status
+        self.message = message
+    }
+}
+
+public struct AutomationEmbeddedTagsResult: Codable, Equatable, Sendable {
+    public let dryRun: Bool
+    public let applied: Bool
+    public let libraryRevision: String
+    public let tracks: [AutomationEmbeddedTagTrack]
+    public let job: AutomationJobSummary?
+    public let message: String
+
+    public init(
+        dryRun: Bool,
+        applied: Bool,
+        libraryRevision: String,
+        tracks: [AutomationEmbeddedTagTrack],
+        job: AutomationJobSummary? = nil,
+        message: String
+    ) {
+        self.dryRun = dryRun
+        self.applied = applied
+        self.libraryRevision = libraryRevision
+        self.tracks = tracks
+        self.job = job
+        self.message = message
+    }
+}
+
+public struct AutomationMetadataCandidate: Codable, Equatable, Sendable, Identifiable {
+    public let candidateID: String?
+    public let provider: String
+    public let title: String?
+    public let artist: String?
+    public let album: String?
+    public let durationSeconds: Int?
+    public let confidence: Double?
+    /// Provider-neutral field match score in the range 0...1.
+    public let matchQuality: Double?
+    public let imageURL: String?
+
+    public var id: String { candidateID ?? "\(provider):unselectable" }
+
+    public init(
+        candidateID: String?,
+        provider: String,
+        title: String?,
+        artist: String?,
+        album: String?,
+        durationSeconds: Int?,
+        confidence: Double?,
+        matchQuality: Double? = nil,
+        imageURL: String?
+    ) {
+        self.candidateID = candidateID
+        self.provider = provider
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.durationSeconds = durationSeconds
+        self.confidence = confidence
+        self.matchQuality = matchQuality
+        self.imageURL = imageURL
+    }
+}
+
+/// Provider-neutral scoring for metadata candidates. Provider confidence is
+/// retained separately because providers use different scales and meanings.
+public enum AutomationMetadataQualityEvaluator {
+    public static func score(
+        queryTitle: String,
+        queryArtist: String,
+        queryAlbum: String,
+        queryDurationSeconds: Double?,
+        candidateTitle: String?,
+        candidateArtist: String?,
+        candidateAlbum: String?,
+        candidateDurationSeconds: Double?
+    ) -> Double? {
+        var weightedScore = 0.0
+        var totalWeight = 0.0
+        add(queryTitle, candidateTitle, weight: 0.45)
+        add(queryArtist, candidateArtist, weight: 0.30)
+        add(queryAlbum, candidateAlbum, weight: 0.15)
+        if let queryDurationSeconds, let candidateDurationSeconds,
+           queryDurationSeconds.isFinite, candidateDurationSeconds.isFinite,
+           queryDurationSeconds > 0, candidateDurationSeconds > 0 {
+            let delta = abs(queryDurationSeconds - candidateDurationSeconds)
+            let durationScore: Double
+            switch delta {
+            case ...2: durationScore = 1
+            case ...5: durationScore = 0.85
+            case ...10: durationScore = 0.60
+            case ...20: durationScore = 0.25
+            default: durationScore = 0
+            }
+            weightedScore += durationScore * 0.10
+            totalWeight += 0.10
+        }
+        guard totalWeight > 0 else { return nil }
+        return min(1, max(0, (weightedScore / totalWeight * 1_000).rounded() / 1_000))
+
+        func add(_ query: String, _ candidate: String?, weight: Double) {
+            let normalizedQuery = normalize(query)
+            guard !normalizedQuery.isEmpty,
+                  let candidate,
+                  !normalize(candidate).isEmpty else { return }
+            weightedScore += similarity(normalizedQuery, normalize(candidate)) * weight
+            totalWeight += weight
+        }
+    }
+
+    private static func normalize(_ value: String) -> String {
+        value
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: Locale(identifier: "en_US_POSIX")
+            )
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+    }
+
+    private static func similarity(_ lhs: String, _ rhs: String) -> Double {
+        guard lhs != rhs else { return 1 }
+        let left = Array(lhs.prefix(160))
+        let right = Array(rhs.prefix(160))
+        guard !left.isEmpty, !right.isEmpty else { return 0 }
+        var previous = Array(0...right.count)
+        for (leftIndex, leftCharacter) in left.enumerated() {
+            var current = [leftIndex + 1] + Array(repeating: 0, count: right.count)
+            for (rightIndex, rightCharacter) in right.enumerated() {
+                let substitutionCost = leftCharacter == rightCharacter ? 0 : 1
+                current[rightIndex + 1] = min(
+                    previous[rightIndex + 1] + 1,
+                    min(current[rightIndex] + 1, previous[rightIndex] + substitutionCost)
+                )
+            }
+            previous = current
+        }
+        return 1 - Double(previous[right.count]) / Double(max(left.count, right.count))
+    }
+}
+
+/// Provider-neutral artwork ranking. Metadata similarity, usable image size,
+/// and square-crop suitability are combined without treating provider
+/// confidence values as globally comparable.
+public enum AutomationArtworkQualityEvaluator {
+    public static func score(
+        queryTitle: String?,
+        queryArtist: String?,
+        queryAlbum: String?,
+        candidateTitle: String?,
+        candidateArtist: String?,
+        candidateAlbum: String?,
+        width: Int,
+        height: Int
+    ) -> Double {
+        let metadataScore = AutomationMetadataQualityEvaluator.score(
+            queryTitle: queryTitle ?? "",
+            queryArtist: queryArtist ?? "",
+            queryAlbum: queryAlbum ?? "",
+            queryDurationSeconds: nil,
+            candidateTitle: candidateTitle,
+            candidateArtist: candidateArtist,
+            candidateAlbum: candidateAlbum,
+            candidateDurationSeconds: nil
+        )
+        let largestDimension = max(width, height)
+        let resolutionScore = min(Double(max(largestDimension, 0)), 2_000) / 2_000
+        let shapeScore: Double
+        if width > 0, height > 0 {
+            shapeScore = 1 - min(Double(abs(width - height)) / Double(max(width, height)), 1)
+        } else {
+            shapeScore = 0
+        }
+        let score: Double
+        if let metadataScore {
+            score = metadataScore * 0.70 + resolutionScore * 0.20 + shapeScore * 0.10
+        } else {
+            score = resolutionScore * 0.70 + shapeScore * 0.30
+        }
+        return min(1, max(0, (score * 1_000).rounded() / 1_000))
+    }
+}
+
+public struct AutomationMetadataSearchResult: Codable, Equatable, Sendable {
+    public let trackID: UUID
+    public let queryTitle: String
+    public let queryArtist: String
+    public let queryAlbum: String
+    public let candidates: [AutomationMetadataCandidate]
+    public let revision: String
+    public let message: String
+    /// Search failures are reported per provider so one unavailable catalog
+    /// does not hide successful candidates from another provider.
+    public let providerWarnings: [String: String]?
+
+    public init(
+        trackID: UUID,
+        queryTitle: String,
+        queryArtist: String,
+        queryAlbum: String,
+        candidates: [AutomationMetadataCandidate],
+        revision: String,
+        message: String,
+        providerWarnings: [String: String]? = nil
+    ) {
+        self.trackID = trackID
+        self.queryTitle = queryTitle
+        self.queryArtist = queryArtist
+        self.queryAlbum = queryAlbum
+        self.candidates = candidates
+        self.revision = revision
+        self.message = message
+        self.providerWarnings = providerWarnings
+    }
+}
+
+public struct AutomationMetadataCandidateApplyResult: Codable, Equatable, Sendable {
+    public let trackID: UUID
+    public let candidateID: String
+    public let dryRun: Bool
+    public let overwriteExistingFields: Bool
+    public let previewPatch: [String: AutomationJSONValue]
+    public let mutation: AutomationMetadataMutationResult
+
+    public init(
+        trackID: UUID,
+        candidateID: String,
+        dryRun: Bool,
+        overwriteExistingFields: Bool,
+        previewPatch: [String: AutomationJSONValue],
+        mutation: AutomationMetadataMutationResult
+    ) {
+        self.trackID = trackID
+        self.candidateID = candidateID
+        self.dryRun = dryRun
+        self.overwriteExistingFields = overwriteExistingFields
+        self.previewPatch = previewPatch
+        self.mutation = mutation
+    }
+}
+
+public struct AutomationMetadataDocumentTrack: Codable, Equatable, Sendable, Identifiable {
+    public let id: UUID
+    public let revision: String
+    public let title: String
+    public let artist: String
+    public let album: String
+    public let duration: Double
+    public let fields: [String: AutomationJSONValue]
+
+    public init(
+        id: UUID,
+        revision: String,
+        title: String,
+        artist: String,
+        album: String,
+        duration: Double,
+        fields: [String: AutomationJSONValue]
+    ) {
+        self.id = id
+        self.revision = revision
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.duration = duration
+        self.fields = fields
+    }
+}
+
+/// Portable Track metadata exchange. Paths, audio bytes, artwork, lyrics,
+/// Source bookmarks and runtime state are deliberately outside this document.
+public struct AutomationMetadataDocument: Codable, Equatable, Sendable {
+    public let schemaVersion: Int
+    public let sourceLibraryID: UUID
+    public let exportedAt: Date
+    public let revision: String
+    public let offset: Int
+    public let limit: Int
+    public let total: Int
+    public let nextOffset: Int?
+    public let tracks: [AutomationMetadataDocumentTrack]
+
+    public init(
+        schemaVersion: Int = 1,
+        sourceLibraryID: UUID,
+        exportedAt: Date = Date(),
+        revision: String,
+        offset: Int,
+        limit: Int,
+        total: Int,
+        nextOffset: Int?,
+        tracks: [AutomationMetadataDocumentTrack]
+    ) {
+        self.schemaVersion = schemaVersion
+        self.sourceLibraryID = sourceLibraryID
+        self.exportedAt = exportedAt
+        self.revision = revision
+        self.offset = offset
+        self.limit = limit
+        self.total = total
+        self.nextOffset = nextOffset
+        self.tracks = tracks
+    }
+}
+
+public struct AutomationMetadataImportItem: Codable, Equatable, Sendable, Identifiable {
+    public let sourceTrackID: UUID
+    public let targetTrackID: UUID?
+    public let status: String
+    public let fields: [String]
+    public let message: String
+
+    public var id: UUID { sourceTrackID }
+
+    public init(
+        sourceTrackID: UUID,
+        targetTrackID: UUID?,
+        status: String,
+        fields: [String],
+        message: String
+    ) {
+        self.sourceTrackID = sourceTrackID
+        self.targetTrackID = targetTrackID
+        self.status = status
+        self.fields = fields.sorted()
+        self.message = message
+    }
+}
+
+public struct AutomationMetadataImportResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID
+    public let sourceLibraryID: UUID
+    public let dryRun: Bool
+    public let applied: Bool
+    public let items: [AutomationMetadataImportItem]
+    public let revision: String
+    public let message: String
+
+    public init(
+        libraryID: UUID,
+        sourceLibraryID: UUID,
+        dryRun: Bool,
+        applied: Bool,
+        items: [AutomationMetadataImportItem],
+        revision: String,
+        message: String
+    ) {
+        self.libraryID = libraryID
+        self.sourceLibraryID = sourceLibraryID
+        self.dryRun = dryRun
+        self.applied = applied
+        self.items = items
+        self.revision = revision
+        self.message = message
+    }
+}
+
 public struct AutomationArtworkInfo: Codable, Equatable, Sendable, Identifiable {
     public let targetType: String?
     public let trackID: UUID?
@@ -1466,6 +2501,7 @@ public struct AutomationArtworkGetResult: Codable, Equatable, Sendable {
 }
 
 public struct AutomationArtworkCandidate: Codable, Equatable, Sendable, Identifiable {
+    public let candidateID: String?
     public let source: String
     public let sourceItemID: String?
     public let imageBase64: String
@@ -1479,16 +2515,20 @@ public struct AutomationArtworkCandidate: Codable, Equatable, Sendable, Identifi
     public let height: Int
     public let resolution: Int
     public let confidence: Double
+    /// Cross-provider match and image suitability score in the range 0...1.
+    /// `confidence` remains the source provider's original value.
+    public let matchQuality: Double?
     public let matchedTitle: String?
     public let matchedArtist: String?
     public let matchedAlbum: String?
     public let imageURL: String?
 
     public var id: String {
-        "\(source):\(sourceItemID ?? "unknown")"
+        candidateID ?? "\(source):\(sourceItemID ?? "unknown")"
     }
 
     public init(
+        candidateID: String? = nil,
         source: String,
         sourceItemID: String? = nil,
         imageBase64: String,
@@ -1499,11 +2539,13 @@ public struct AutomationArtworkCandidate: Codable, Equatable, Sendable, Identifi
         height: Int,
         resolution: Int,
         confidence: Double,
+        matchQuality: Double? = nil,
         matchedTitle: String? = nil,
         matchedArtist: String? = nil,
         matchedAlbum: String? = nil,
         imageURL: String? = nil
     ) {
+        self.candidateID = candidateID
         self.source = source
         self.sourceItemID = sourceItemID
         self.imageBase64 = imageBase64
@@ -1514,6 +2556,7 @@ public struct AutomationArtworkCandidate: Codable, Equatable, Sendable, Identifi
         self.height = height
         self.resolution = resolution
         self.confidence = confidence
+        self.matchQuality = matchQuality
         self.matchedTitle = matchedTitle
         self.matchedArtist = matchedArtist
         self.matchedAlbum = matchedAlbum
@@ -2023,6 +3066,12 @@ public struct AutomationDiagnosticsResult: Codable, Equatable, Sendable {
     public let playlistCount: Int
     public let missingTrackCount: Int
     public let unavailableTrackCount: Int
+    /// Tracks with no persisted local or downloaded lyrics.
+    public let missingLyricsTrackCount: Int
+    /// Tracks without App-owned artwork.
+    public let missingArtworkTrackCount: Int
+    /// Tracks missing one or more identity fields (title, artist, album).
+    public let incompleteMetadataTrackCount: Int
     public let sourceCount: Int
     public let sourceIssues: [String]
     public let runningJobCount: Int
@@ -2040,6 +3089,9 @@ public struct AutomationDiagnosticsResult: Codable, Equatable, Sendable {
         playlistCount: Int,
         missingTrackCount: Int,
         unavailableTrackCount: Int,
+        missingLyricsTrackCount: Int = 0,
+        missingArtworkTrackCount: Int = 0,
+        incompleteMetadataTrackCount: Int = 0,
         sourceCount: Int,
         sourceIssues: [String] = [],
         runningJobCount: Int = 0,
@@ -2056,6 +3108,9 @@ public struct AutomationDiagnosticsResult: Codable, Equatable, Sendable {
         self.playlistCount = playlistCount
         self.missingTrackCount = missingTrackCount
         self.unavailableTrackCount = unavailableTrackCount
+        self.missingLyricsTrackCount = missingLyricsTrackCount
+        self.missingArtworkTrackCount = missingArtworkTrackCount
+        self.incompleteMetadataTrackCount = incompleteMetadataTrackCount
         self.sourceCount = sourceCount
         self.sourceIssues = sourceIssues.sorted()
         self.runningJobCount = runningJobCount
@@ -2069,7 +3124,8 @@ public struct AutomationDiagnosticsResult: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case healthy, libraryID, trackCount, playlistCount, missingTrackCount
-        case unavailableTrackCount, sourceCount, sourceIssues, runningJobCount, checks
+        case unavailableTrackCount, missingLyricsTrackCount, missingArtworkTrackCount
+        case incompleteMetadataTrackCount, sourceCount, sourceIssues, runningJobCount, checks
         case failedJobCount, failedJobSummaries, playlistReferenceIssues
         case storageValidation, storageValidationMessage
     }
@@ -2082,6 +3138,9 @@ public struct AutomationDiagnosticsResult: Codable, Equatable, Sendable {
         playlistCount = try container.decode(Int.self, forKey: .playlistCount)
         missingTrackCount = try container.decode(Int.self, forKey: .missingTrackCount)
         unavailableTrackCount = try container.decode(Int.self, forKey: .unavailableTrackCount)
+        missingLyricsTrackCount = try container.decodeIfPresent(Int.self, forKey: .missingLyricsTrackCount) ?? 0
+        missingArtworkTrackCount = try container.decodeIfPresent(Int.self, forKey: .missingArtworkTrackCount) ?? 0
+        incompleteMetadataTrackCount = try container.decodeIfPresent(Int.self, forKey: .incompleteMetadataTrackCount) ?? 0
         sourceCount = try container.decode(Int.self, forKey: .sourceCount)
         sourceIssues = try container.decodeIfPresent([String].self, forKey: .sourceIssues) ?? []
         runningJobCount = try container.decodeIfPresent(Int.self, forKey: .runningJobCount) ?? 0
@@ -2312,7 +3371,7 @@ public enum AutomationDocumentation {
     - Import new audio files or folders with library.import(filePaths, targetPlaylistID?). It supports managed/referenced libraries and NCM through the manual import pipeline. Poll jobs.get until terminal and inspect result, failures and enrichmentWarnings; no provider match is not an import failure. playlist.addTracks only accepts existing Track IDs. Never handcraft sidecars or decrypt NCM externally for this workflow.
     - Prefer the formal Automation API, then diagnostics/repair, then the current-version source and storage documentation. Back up before any controlled storage fallback and validate/reload afterward.
     - Query first, preserve the returned revision, apply with expectedRevision when offered, and verify the result. Use idempotencyKey when retrying a mutation.
-    - Metadata is App-owned and sidecar-backed: `metadata.get`/`metadata.patch` cover editable Track, Artist, Album and Playlist fields, while embedded audio-file tags remain a separate capability. Use `dryRun` before a batch; batches of 10 or more require `confirm` plus foreground confirmation.
+    - `metadata.get`/`metadata.patch` cover App-owned Track, Artist, Album and Playlist fields. Use `metadata.embedded.get` for live file tags; `metadata.embedded.patch` currently writes MP3 ID3v2.3/v2.4 only and always requires `dryRun`, `confirm` and App foreground confirmation.
     - Artwork is App-owned and sidecar-backed: `artwork.search/get/apply` use one target from Track, Artist, Album or Playlist where the operation supports it. `artwork.get` reports availability and a digest without returning image bytes; `artwork.apply` accepts an App picker, an image path hint, base64 image data, or an explicit clear. Batches of 10 or more require `confirm` plus foreground confirmation.
     """
 
@@ -2393,6 +3452,15 @@ public enum AutomationToolCatalog {
             inputSchema: emptyInputSchema
         ),
         AutomationToolDescriptor(
+            name: AutomationMethod.libraryGet,
+            title: "Get Library",
+            description: "Read one registered Library's display name, mode and active status without switching it or exposing its path.",
+            readOnly: true,
+            scopes: [.libraryRead],
+            risk: .low,
+            inputSchema: libraryIDInputSchema
+        ),
+        AutomationToolDescriptor(
             name: AutomationMethod.libraryCreate,
             title: "Create Library",
             description: "Create and activate a new managed or referenced music library through the App-owned lifecycle transaction. The parent path is only a picker hint; the App owns authorization and destination validation.",
@@ -2466,17 +3534,87 @@ public enum AutomationToolCatalog {
             risk: .low,
             supportsDryRun: true,
             supportsJobs: true,
+            supportsTasks: true,
             inputSchema: libraryImportInputSchema
         ),
         AutomationToolDescriptor(
             name: AutomationMethod.libraryTracks,
             title: "Find Tracks",
-            description: "Compose ID, text, source, playlist, availability, date, technical and metadata filters, then page and sort tracks.",
+            description: "Compose ID, text, source, playlist, availability, date, technical, metadata and playback-preference filters, then page and sort tracks. Playback-preference filters and includePreferenceStats require history.read.",
             readOnly: true,
             requiresConfirmation: false,
             scopes: [.libraryRead],
             risk: .low,
             inputSchema: libraryTracksInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.libraryStats,
+            title: "Library Statistics",
+            description: "Read counts and duration for Tracks, availability, playlists, Artists, Albums, lyrics, artwork and authorized Sources in the active Library.",
+            readOnly: true,
+            scopes: [.libraryRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.libraryReport,
+            title: "Read Library Report",
+            description: "Read a versioned, paginated machine-readable snapshot of Library statistics, Track metadata and Playlist membership. Send expectedRevision on each page to detect changes; includeFilePaths requires files.read and includePreferenceStats requires history.read.",
+            readOnly: true,
+            scopes: [.libraryRead],
+            risk: .low,
+            inputSchema: libraryReportInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.libraryBundleExport,
+            title: "Export Complete Library Bundle",
+            description: "Create a path-free package containing Track metadata, Playlist membership, available audio files, artwork and lyrics. Destination is selected in the App; large exports run as a cancellable Job and require foreground confirmation.",
+            readOnly: false,
+            requiresConfirmation: true,
+            scopes: [.artworkRead, .filesRead, .libraryRead, .lyricsRead, .metadataRead, .playlistRead],
+            risk: .high,
+            supportsDryRun: true,
+            supportsJobs: true,
+            supportsTasks: true,
+            inputSchema: libraryBundleExportInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.librarySelectionList,
+            title: "List Selection Snapshots",
+            description: "List bounded, persistent Track ID snapshots and re-evaluable filter selections in the active Library. Snapshots expire after 30 days and contain no file paths or media content.",
+            readOnly: true,
+            scopes: [.libraryRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.librarySelectionCreate,
+            title: "Save Selection Snapshot",
+            description: "Persist either an ordered set of Track IDs or a re-evaluable structured filter for later playlist operations. An optional expectedRevision protects capture from a stale library query.",
+            readOnly: false,
+            scopes: [.libraryRead, .selectionWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: librarySelectionCreateInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.librarySelectionGet,
+            title: "Get Selection Snapshot",
+            description: "Read the current Track IDs for one active-Library selection. Filter selections are re-evaluated against current metadata and Playlist membership.",
+            readOnly: true,
+            scopes: [.libraryRead],
+            risk: .low,
+            inputSchema: librarySelectionIDInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.librarySelectionDelete,
+            title: "Delete Selection Snapshot",
+            description: "Delete one saved selection snapshot without changing Tracks, playlists or files.",
+            readOnly: false,
+            scopes: [.libraryRead, .selectionWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: librarySelectionDeleteInputSchema
         ),
         AutomationToolDescriptor(
             name: AutomationMethod.playlistList,
@@ -2511,6 +3649,16 @@ public enum AutomationToolCatalog {
             inputSchema: playlistTrackMutationInputSchema
         ),
         AutomationToolDescriptor(
+            name: AutomationMethod.playlistAddSelection,
+            title: "Add Selection to Playlist",
+            description: "Add an ordered saved selection to a Playlist. It reuses existing Library Tracks, skips duplicate membership, and supports preview and expected Playlist/selection revisions.",
+            readOnly: false,
+            scopes: [.playlistWrite, .libraryRead, .selectionWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: playlistAddSelectionInputSchema
+        ),
+        AutomationToolDescriptor(
             name: AutomationMethod.playlistRemoveTracks,
             title: "Remove Tracks from Playlist",
             description: "Preview or remove playlist membership without deleting library tracks or files.",
@@ -2532,6 +3680,45 @@ public enum AutomationToolCatalog {
             inputSchema: emptyInputSchema
         ),
         AutomationToolDescriptor(
+            name: AutomationMethod.sourceGet,
+            title: "Get Source",
+            description: "Read one authorized referenced-library Source, including its monitor policy, exclusions, playlist bindings and scan status.",
+            readOnly: true,
+            scopes: [.sourceRead],
+            risk: .low,
+            inputSchema: sourceIDInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.sourceConfigExport,
+            title: "Export Source Configuration",
+            description: "Export portable Source display names, monitor policies and excluded relative paths. Filesystem paths, security bookmarks, scan state and Playlist bindings stay local.",
+            readOnly: true,
+            scopes: [.sourceRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.sourceConfigImport,
+            title: "Apply Source Configuration",
+            description: "Preview or apply a versioned Source policy document to existing authorized Sources. Cross-Library imports require an explicit sourceIDMap; excluded paths may trigger reconciliation. The App asks for foreground confirmation before applying changes.",
+            readOnly: false,
+            requiresConfirmation: true,
+            scopes: [.sourceRead, .sourceWrite],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: sourceConfigImportInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.sourceRename,
+            title: "Rename Source",
+            description: "Change a Source display name while preserving its bookmark, identity, playlist bindings, scan state and monitoring policy.",
+            readOnly: false,
+            scopes: [.sourceWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: sourceRenameInputSchema
+        ),
+        AutomationToolDescriptor(
             name: AutomationMethod.sourceRefresh,
             title: "Refresh Source",
             description: "Start a Job that scans an authorized Source and reconciles added, renamed and missing files; existing Track identities are reused and missing Tracks are preserved.",
@@ -2541,6 +3728,7 @@ public enum AutomationToolCatalog {
             risk: .low,
             supportsDryRun: true,
             supportsJobs: true,
+            supportsTasks: true,
             inputSchema: sourceRefreshInputSchema
         ),
         AutomationToolDescriptor(
@@ -2603,6 +3791,34 @@ public enum AutomationToolCatalog {
             inputSchema: playlistReplaceInputSchema
         ),
         AutomationToolDescriptor(
+            name: AutomationMethod.playlistDiff,
+            title: "Compare Playlists",
+            description: "Compare two or more Playlist memberships as an ordered union, intersection or directional difference without changing any Playlist.",
+            readOnly: true,
+            scopes: [.playlistRead],
+            risk: .low,
+            inputSchema: playlistDiffInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playlistImport,
+            title: "Import Playlist",
+            description: "Import an M3U8 text payload into an existing Playlist by matching stable player-track IDs or paths of Tracks already in the active Library. Unmatched paths are reported; no audio is imported.",
+            readOnly: false,
+            scopes: [.playlistWrite, .libraryRead],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: playlistImportInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playlistExport,
+            title: "Export Playlist",
+            description: "Export an M3U8 text payload. Stable player-track IDs are used by default; absolute file paths are included only when explicitly requested and files.read is granted.",
+            readOnly: true,
+            scopes: [.playlistRead],
+            risk: .low,
+            inputSchema: playlistExportInputSchema
+        ),
+        AutomationToolDescriptor(
             name: AutomationMethod.sourceCreate,
             title: "Add Source",
             description: "Request an authorized folder or file Source through the App picker, then start an import/reconcile Job. The Agent can initiate the whole permission flow.",
@@ -2611,6 +3827,7 @@ public enum AutomationToolCatalog {
             risk: .medium,
             supportsDryRun: true,
             supportsJobs: true,
+            supportsTasks: true,
             inputSchema: sourceCreateInputSchema
         ),
         AutomationToolDescriptor(
@@ -2664,6 +3881,24 @@ public enum AutomationToolCatalog {
             inputSchema: fileInspectInputSchema
         ),
         AutomationToolDescriptor(
+            name: AutomationMethod.filesReveal,
+            title: "Reveal Track Files",
+            description: "Reveal authorized Track files in Finder. Managed-library paths are resolved under the active Library; referenced paths require an active authorized Source.",
+            readOnly: false,
+            scopes: [.filesRead, .libraryRead],
+            risk: .low,
+            inputSchema: fileRevealInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.filesExport,
+            title: "Export Track Files",
+            description: "Copy selected audio files to a folder chosen in the App. Managed files and currently authorized referenced files are supported; originals and Library membership remain unchanged.",
+            readOnly: false,
+            scopes: [.filesRead, .libraryRead],
+            risk: .low,
+            inputSchema: fileExportInputSchema
+        ),
+        AutomationToolDescriptor(
             name: AutomationMethod.filesRename,
             title: "Rename Track Files",
             description: "Rename authorized referenced audio files in place. A single rename is direct; bulk renames require a preview and App foreground confirmation, then trigger Source reconciliation.",
@@ -2672,6 +3907,7 @@ public enum AutomationToolCatalog {
             risk: .medium,
             supportsDryRun: true,
             supportsJobs: true,
+            supportsTasks: true,
             inputSchema: fileRenameInputSchema
         ),
         AutomationToolDescriptor(
@@ -2683,6 +3919,7 @@ public enum AutomationToolCatalog {
             risk: .medium,
             supportsDryRun: true,
             supportsJobs: true,
+            supportsTasks: true,
             inputSchema: fileMoveInputSchema
         ),
         AutomationToolDescriptor(
@@ -2695,6 +3932,7 @@ public enum AutomationToolCatalog {
             risk: .high,
             supportsDryRun: true,
             supportsJobs: true,
+            supportsTasks: true,
             inputSchema: fileDeleteInputSchema
         ),
         AutomationToolDescriptor(
@@ -2714,6 +3952,24 @@ public enum AutomationToolCatalog {
             scopes: [.playbackControl, .libraryRead],
             risk: .low,
             inputSchema: playbackPlayInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playbackPlayPlaylist,
+            title: "Play Playlist",
+            description: "Start playback from an existing Playlist and optional zero-based start index through PlaybackCoordinator.",
+            readOnly: false,
+            scopes: [.playbackControl, .playlistRead, .libraryRead],
+            risk: .low,
+            inputSchema: playbackPlaylistInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playbackToggle,
+            title: "Toggle Playback",
+            description: "Toggle play/pause through the active playback owner.",
+            readOnly: false,
+            scopes: [.playbackControl],
+            risk: .low,
+            inputSchema: emptyInputSchema
         ),
         AutomationToolDescriptor(
             name: AutomationMethod.playbackPause,
@@ -2807,6 +4063,35 @@ public enum AutomationToolCatalog {
             inputSchema: queueMutationInputSchema
         ),
         AutomationToolDescriptor(
+            name: AutomationMethod.queueRemove,
+            title: "Remove from Queue",
+            description: "Remove selected existing Track occurrences from the upcoming local queue using an optional expected queue revision.",
+            readOnly: false,
+            scopes: [.queueWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: queueMutationInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.queueReorder,
+            title: "Reorder Queue",
+            description: "Reorder all queued Track occurrences while preserving queue membership and the current playback item.",
+            readOnly: false,
+            scopes: [.queueWrite, .libraryRead],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: queueMutationInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.queueUpcoming,
+            title: "Upcoming Queue",
+            description: "Read a stable page of upcoming local queue items with the current Track and queue revision.",
+            readOnly: true,
+            scopes: [.queueRead],
+            risk: .low,
+            inputSchema: queueUpcomingInputSchema
+        ),
+        AutomationToolDescriptor(
             name: AutomationMethod.queueClear,
             title: "Clear Queue",
             description: "Clear the local queue. The currently playing item may remain provider-defined.",
@@ -2819,11 +4104,20 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.historyList,
             title: "List History",
-            description: "Read recent listening history with optional limit and date bounds.",
+            description: "Read listening history with optional date bounds, text/Track/Artist/Album filters, stable limit/offset pagination, and expectedRevision conflict detection. Results include total and nextOffset.",
             readOnly: true,
             scopes: [.historyRead],
             risk: .low,
             inputSchema: historyListInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.historyStats,
+            title: "History Statistics",
+            description: "Aggregate play counts and listened seconds by Track, Artist and Album in the requested time window.",
+            readOnly: true,
+            scopes: [.historyRead],
+            risk: .low,
+            inputSchema: historyStatsInputSchema
         ),
         AutomationToolDescriptor(
             name: AutomationMethod.historyClear,
@@ -2844,6 +4138,67 @@ public enum AutomationToolCatalog {
             scopes: [.metadataRead, .libraryRead],
             risk: .low,
             inputSchema: metadataGetInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.metadataEmbeddedGet,
+            title: "Read Embedded Audio Tags",
+            description: "Read tags directly from authorized audio files. Supported MP3 files expose ID3v2.3/v2.4 fields; other formats return App metadata extraction where available and identify write support explicitly.",
+            readOnly: true,
+            scopes: [.filesRead, .libraryRead, .metadataRead],
+            risk: .low,
+            inputSchema: metadataEmbeddedGetInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.metadataEmbeddedPatch,
+            title: "Write Embedded Audio Tags",
+            description: "Write selected ID3v2.3/v2.4 fields into MP3 files with an atomic staged replacement. Other formats and ID3 features that cannot be preserved safely are rejected. Requires an expected Track revision, dry-run review, confirm=true and App foreground confirmation; large batches run as Jobs.",
+            readOnly: false,
+            requiresConfirmation: true,
+            scopes: [.filesRead, .filesWrite, .libraryRead, .metadataWrite],
+            risk: .high,
+            supportsDryRun: true,
+            supportsJobs: true,
+            supportsTasks: true,
+            inputSchema: metadataEmbeddedPatchInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.metadataExport,
+            title: "Export Track Metadata",
+            description: "Export a bounded, versioned, path-free JSON page of editable Track metadata for backup or migration. Each page contains at most 100 Tracks to fit the local IPC frame.",
+            readOnly: true,
+            scopes: [.metadataRead, .libraryRead],
+            risk: .low,
+            inputSchema: metadataExportInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.metadataImport,
+            title: "Import Track Metadata",
+            description: "Preview or apply a versioned Track metadata document to existing Tracks through the App metadata owner.",
+            readOnly: false,
+            requiresConfirmation: true,
+            scopes: [.metadataWrite, .libraryRead],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: metadataImportInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.metadataSearch,
+            title: "Search Metadata Candidates",
+            description: "Search QQMusic and MusicBrainz for metadata candidates for one Track. Returns provider-neutral field match quality, provider warnings and the Track revision without changing the Library.",
+            readOnly: true,
+            scopes: [.metadataRead, .libraryRead],
+            risk: .low,
+            inputSchema: metadataSearchInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.metadataApplyCandidate,
+            title: "Apply Metadata Candidate",
+            description: "Revalidate and fetch a selected QQMusic or MusicBrainz candidate, preview its field patch, and apply it through the App metadata owner. Existing values are preserved unless overwriteExistingFields is true; expectedRevision prevents stale writes.",
+            readOnly: false,
+            scopes: [.metadataWrite, .libraryRead],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: metadataApplyCandidateInputSchema
         ),
         AutomationToolDescriptor(
             name: AutomationMethod.metadataPatch,
@@ -2884,6 +4239,16 @@ public enum AutomationToolCatalog {
             risk: .medium,
             supportsDryRun: true,
             inputSchema: artworkApplyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.artworkApplyCandidate,
+            title: "Apply Artwork Candidate",
+            description: "Apply a candidate returned by artwork.search through the App artwork owner. The opaque candidate ID is bound to its Library, target and artwork revision; stale or expired candidates are rejected. Supports dry-run preview and App foreground confirmation for qualifying batches.",
+            readOnly: false,
+            scopes: [.artworkWrite, .libraryRead],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: artworkApplyCandidateInputSchema
         ),
         AutomationToolDescriptor(
             name: AutomationMethod.lyricsGet,
@@ -2950,6 +4315,7 @@ public enum AutomationToolCatalog {
             risk: .medium,
             supportsDryRun: true,
             supportsJobs: true,
+            supportsTasks: true,
             inputSchema: lyricsRefreshInputSchema
         ),
         AutomationToolDescriptor(
@@ -2982,11 +4348,11 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.jobsRetry,
             title: "Retry Job",
-            description: "Retry a failed, partially failed or cancelled Source scan or lyrics refresh when the App has a durable retry specification.",
+            description: "Retry a failed, partially failed or cancelled Source scan or lyrics refresh from its durable specification. To retry an import after restart, provide filePaths again so the App can reacquire access; file paths and bookmarks are never stored in Job history.",
             readOnly: false,
             scopes: [.diagnosticsRepair],
             risk: .medium,
-            inputSchema: jobIDInputSchema
+            inputSchema: jobRetryInputSchema
         ),
         AutomationToolDescriptor(
             name: AutomationMethod.diagnosticsHealth,
@@ -3000,7 +4366,16 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.settingsGet,
             title: "Get Automation Settings",
-            description: "Read the small set of persistent library settings currently safe to automate, including referenced-track deletion policy.",
+            description: "Read supported persistent App and Library settings, including import enrichment timing, appearance and referenced-track deletion policy.",
+            readOnly: true,
+            scopes: [.settingsRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.settingsSchema,
+            title: "Settings Schema",
+            description: "Read the supported persistent App and Library settings, allowed values, defaults and applicability.",
             readOnly: true,
             scopes: [.settingsRead],
             risk: .low,
@@ -3009,12 +4384,50 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.settingsPatch,
             title: "Patch Automation Settings",
-            description: "Preview or update supported persistent library settings. Unsupported UI-only preferences are rejected instead of being guessed.",
+            description: "Preview or update supported persistent App and Library preferences. Unsupported UI-only preferences are rejected instead of being guessed.",
             readOnly: false,
             scopes: [.settingsWrite],
             risk: .medium,
             supportsDryRun: true,
             inputSchema: settingsPatchInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.settingsValidate,
+            title: "Validate Settings",
+            description: "Validate a supported settings patch and return normalized values without writing them.",
+            readOnly: true,
+            scopes: [.settingsRead],
+            risk: .low,
+            inputSchema: settingsPatchInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.settingsReset,
+            title: "Reset Supported Settings",
+            description: "Preview or reset supported persistent App settings and applicable Library settings to their documented defaults.",
+            readOnly: false,
+            scopes: [.settingsWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: settingsResetInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.audioGet,
+            title: "Get Audio Settings",
+            description: "Read persistent audio scheduling and output preferences, available output devices, and live system and App output telemetry.",
+            readOnly: true,
+            scopes: [.audioRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.audioPatch,
+            title: "Patch Audio Settings",
+            description: "Preview or update gapless scheduling options and the App's preferred output device; pass null to follow the system default.",
+            readOnly: false,
+            scopes: [.audioWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: audioPatchInputSchema
         ),
         AutomationToolDescriptor(
             name: AutomationMethod.storageInspect,
@@ -3151,14 +4564,21 @@ public enum AutomationToolCatalog {
             ]),
             "filter": .object([
                 "type": .string("object"),
-                "description": .string("Composable filter object: all/any/not plus id, ids, text, titleContains, artistContains, albumContains, genreContains, sourceID, playlistID, availability, missing, addedAfter, addedBefore, releaseAfter, releaseBefore, durationMin, durationMax, hasLyrics, lyricsStatus, hasArtwork, metadataConfidenceMin, codec, format, sampleRateHz and bitDepth.")
+                "description": .string("Composable filter object: all/any/not plus id, ids, text, titleContains, artistContains, albumContains, genreContains, sourceID, playlistID, availability, missing, addedAfter, addedBefore, releaseAfter, releaseBefore, durationMin, durationMax, hasLyrics, lyricsStatus, hasArtwork, metadataConfidenceMin, codec, format, sampleRateHz and bitDepth. Playback-history predicates like likeState, playCountMin/Max, completePlayCountMin, skipCountMin, lastPlayedAfter/Before, totalPlayedSecondsMin and preferenceScoreMin require history.read.")
+            ]),
+            "includePreferenceStats": .object([
+                "type": .string("boolean"),
+                "description": .string("Include per-Track playback preference counters, like state and preference score; requires history.read.")
             ]),
             "sort": .object([
                 "type": .string("array"),
                 "items": .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "field": .object(["type": .string("string")]),
+                        "field": .object([
+                            "type": .string("string"),
+                            "description": .string("Track field or playback preference: title, artist, album, duration, addedAt, releaseDate, availability, codec, sampleRateHz, filePath, likeState, playCount, completePlayCount, skipCount, lastPlayedAt, totalPlayedSeconds or preferenceScore. Preference fields require history.read.")
+                        ]),
                         "direction": .object(["type": .string("string"), "enum": .array([.string("asc"), .string("desc")])])
                     ])
                 ])
@@ -3178,6 +4598,32 @@ public enum AutomationToolCatalog {
         ])
     ])
 
+    private static let libraryReportInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "limit": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(100)]),
+            "offset": .object(["type": .string("integer"), "minimum": .number(0)]),
+            "playlistLimit": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(100)]),
+            "playlistOffset": .object(["type": .string("integer"), "minimum": .number(0)]),
+            "expectedRevision": .object(["type": .string("string")]),
+            "includeFilePaths": .object(["type": .string("boolean")]),
+            "includePreferenceStats": .object([
+                "type": .string("boolean"),
+                "description": .string("Include per-Track playback preference counters, like state and preference score; requires history.read.")
+            ])
+        ])
+    ])
+
+    private static let libraryBundleExportInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
     private static let libraryImportInputSchema: AutomationJSONValue = .object([
         "type": .string("object"),
         "additionalProperties": .boolean(false),
@@ -3191,6 +4637,124 @@ public enum AutomationToolCatalog {
             ]),
             "targetPlaylistID": .object(["type": .string("string"), "format": .string("uuid")]),
             "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let librarySelectionCreateInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "oneOf": .array([
+            .object(["required": .array([.string("trackIDs")])]),
+            .object(["required": .array([.string("filter")])])
+        ]),
+        "properties": .object([
+            "trackIDs": .object([
+                "type": .string("array"),
+                "minItems": .number(0),
+                "maxItems": .number(10_000),
+                "items": .object(["type": .string("string"), "format": .string("uuid")])
+            ]),
+            "filter": .object([
+                "type": .string("object"),
+                "description": .string("Same structured predicate accepted by library.tracks.filter; it is re-evaluated when the selection is read or used.")
+            ]),
+            "name": .object(["type": .string("string"), "maxLength": .number(120)]),
+            "expectedRevision": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let librarySelectionIDInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("selectionID")]),
+        "properties": .object([
+            "selectionID": .object(["type": .string("string"), "format": .string("uuid")])
+        ])
+    ])
+
+    private static let librarySelectionDeleteInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("selectionID")]),
+        "properties": .object([
+            "selectionID": .object(["type": .string("string"), "format": .string("uuid")]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let playlistAddSelectionInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("playlistID"), .string("selectionID")]),
+        "properties": .object([
+            "playlistID": .object(["type": .string("string"), "format": .string("uuid")]),
+            "selectionID": .object(["type": .string("string"), "format": .string("uuid")]),
+            "expectedRevision": .object(["type": .string("string")]),
+            "expectedSelectionRevision": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let playlistDiffInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"), "additionalProperties": .boolean(false),
+        "required": .array([.string("playlistIDs"), .string("operation")]),
+        "properties": .object([
+            "playlistIDs": .object(["type": .string("array"), "minItems": .number(2), "maxItems": .number(100), "items": .object(["type": .string("string"), "format": .string("uuid")])]),
+            "operation": .object(["type": .string("string"), "enum": .array([.string("union"), .string("intersection"), .string("difference")])]),
+            "limit": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(500)]),
+            "offset": .object(["type": .string("integer"), "minimum": .number(0)])
+        ])
+    ])
+
+    private static let playlistImportInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("playlistID"), .string("m3uText")]),
+        "properties": .object([
+            "playlistID": .object(["type": .string("string")]),
+            "m3uText": .object(["type": .string("string"), "maxLength": .number(5_000_000)]),
+            "operation": .object(["type": .string("string"), "enum": .array([.string("append"), .string("replace")])]),
+            "expectedRevision": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let playlistExportInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("playlistID")]),
+        "properties": .object([
+            "playlistID": .object(["type": .string("string")]),
+            "includePaths": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let playbackPlaylistInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"), "additionalProperties": .boolean(false),
+        "required": .array([.string("playlistID")]),
+        "properties": .object([
+            "playlistID": .object(["type": .string("string"), "format": .string("uuid")]),
+            "startIndex": .object(["type": .string("integer"), "minimum": .number(0)])
+        ])
+    ])
+
+    private static let queueUpcomingInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"), "additionalProperties": .boolean(false),
+        "properties": .object([
+            "limit": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(500)]),
+            "offset": .object(["type": .string("integer"), "minimum": .number(0)]),
+            "expectedRevision": .object(["type": .string("string")])
+        ])
+    ])
+
+    private static let historyStatsInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"), "additionalProperties": .boolean(false),
+        "properties": .object([
+            "from": .object(["type": .string("string"), "format": .string("date-time")]),
+            "to": .object(["type": .string("string"), "format": .string("date-time")]),
+            "limit": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(100)]),
+            "dimension": .object(["type": .string("string"), "enum": .array([.string("all"), .string("track"), .string("artist"), .string("album")])])
         ])
     ])
 
@@ -3230,6 +4794,13 @@ public enum AutomationToolCatalog {
             "dryRun": .object(["type": .string("boolean")]),
             "confirm": .object(["type": .string("boolean")])
         ])
+    ])
+
+    private static let libraryIDInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("libraryID")]),
+        "properties": .object(["libraryID": .object(["type": .string("string")])])
     ])
 
     private static let libraryRenameInputSchema: AutomationJSONValue = .object([
@@ -3286,6 +4857,7 @@ public enum AutomationToolCatalog {
             "trackIDs": .object([
                 "type": .string("array"),
                 "minItems": .number(1),
+                "maxItems": .number(10_000),
                 "items": .object(["type": .string("string")])
             ]),
             "expectedRevision": .object(["type": .string("string")]),
@@ -3301,6 +4873,24 @@ public enum AutomationToolCatalog {
         "properties": .object([
             "sourceID": .object(["type": .string("string")]),
             "dryRun": .object(["type": .string("boolean")]),
+        ])
+    ])
+
+    private static let sourceIDInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("sourceID")]),
+        "properties": .object(["sourceID": .object(["type": .string("string")])])
+    ])
+
+    private static let sourceRenameInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("sourceID"), .string("displayName")]),
+        "properties": .object([
+            "sourceID": .object(["type": .string("string")]),
+            "displayName": .object(["type": .string("string"), "minLength": .number(1), "maxLength": .number(120)]),
+            "dryRun": .object(["type": .string("boolean")])
         ])
     ])
 
@@ -3342,6 +4932,44 @@ public enum AutomationToolCatalog {
         ])
     ])
 
+    private static let metadataEmbeddedGetInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "trackID": .object(["type": .string("string")]),
+            "trackIDs": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "maxItems": .number(100),
+                "items": .object(["type": .string("string")])
+            ])
+        ])
+    ])
+
+    private static let metadataEmbeddedPatchInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("fields")]),
+        "properties": .object([
+            "trackID": .object(["type": .string("string")]),
+            "trackIDs": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "maxItems": .number(100),
+                "items": .object(["type": .string("string")])
+            ]),
+            "fields": .object([
+                "type": .string("object"),
+                "additionalProperties": .object([
+                    "type": .array([.string("string"), .string("null")])
+                ])
+            ]),
+            "expectedRevisions": .object(["type": .string("object")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
     private static let metadataPatchInputSchema: AutomationJSONValue = .object([
         "type": .string("object"),
         "additionalProperties": .boolean(false),
@@ -3361,6 +4989,57 @@ public enum AutomationToolCatalog {
             "expectedRevision": .object(["type": .string("string")]),
             "dryRun": .object(["type": .string("boolean")]),
             "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let metadataSearchInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackID")]),
+        "properties": .object([
+            "trackID": .object(["type": .string("string")])
+        ])
+    ])
+
+    private static let metadataExportInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "trackIDs": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "maxItems": .number(100),
+                "items": .object(["type": .string("string")])
+            ]),
+            "limit": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(100)]),
+            "offset": .object(["type": .string("integer"), "minimum": .number(0)])
+        ])
+    ])
+
+    private static let metadataImportInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("document")]),
+        "properties": .object([
+            "document": .object(["type": .string("object")]),
+            "trackIDMap": .object(["type": .string("object")]),
+            "expectedRevision": .object(["type": .string("string")]),
+            "overwriteExistingFields": .object(["type": .string("boolean")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let metadataApplyCandidateInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackID"), .string("candidateID")]),
+        "properties": .object([
+            "trackID": .object(["type": .string("string")]),
+            "candidateID": .object(["type": .string("string"), "minLength": .number(1)]),
+            "expectedRevision": .object(["type": .string("string")]),
+            "overwriteExistingFields": .object(["type": .string("boolean")]),
+            "dryRun": .object(["type": .string("boolean")])
         ])
     ])
 
@@ -3412,6 +5091,18 @@ public enum AutomationToolCatalog {
             "imageBase64": .object(["type": .string("string")]),
             "clear": .object(["type": .string("boolean")]),
             "expectedRevisions": .object(["type": .string("object")]),
+            "expectedRevision": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let artworkApplyCandidateInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("candidateID")]),
+        "properties": .object([
+            "candidateID": .object(["type": .string("string")]),
             "expectedRevision": .object(["type": .string("string")]),
             "dryRun": .object(["type": .string("boolean")]),
             "confirm": .object(["type": .string("boolean")])
@@ -3617,6 +5308,45 @@ public enum AutomationToolCatalog {
         ])
     ])
 
+    private static let sourceConfigImportInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("document")]),
+        "properties": .object([
+            "document": .object([
+                "type": .string("object"),
+                "required": .array([.string("schemaVersion"), .string("originLibraryID"), .string("sources")]),
+                "properties": .object([
+                    "schemaVersion": .object(["type": .string("integer"), "const": .number(1)]),
+                    "originLibraryID": .object(["type": .string("string"), "format": .string("uuid")]),
+                    "sources": .object([
+                        "type": .string("array"), "maxItems": .number(100),
+                        "items": .object([
+                            "type": .string("object"),
+                            "required": .array([.string("sourceID"), .string("displayName"), .string("monitorPolicy"), .string("excludedRelativePaths")]),
+                            "properties": .object([
+                                "sourceID": .object(["type": .string("string"), "format": .string("uuid")]),
+                                "displayName": .object(["type": .string("string"), "minLength": .number(1), "maxLength": .number(120)]),
+                                "monitorPolicy": .object(["type": .string("string"), "enum": .array([.string("inherit"), .string("on"), .string("off")])]),
+                                "excludedRelativePaths": .object([
+                                    "type": .string("array"), "maxItems": .number(100),
+                                    "items": .object(["type": .string("string"), "minLength": .number(1), "maxLength": .number(1024)])
+                                ])
+                            ])
+                        ])
+                    ])
+                ])
+            ]),
+            "sourceIDMap": .object([
+                "type": .string("object"), "maxProperties": .number(100),
+                "additionalProperties": .object(["type": .string("string"), "format": .string("uuid")])
+            ]),
+            "expectedRevision": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
     private static let sourceBindPlaylistInputSchema: AutomationJSONValue = .object([
         "type": .string("object"),
         "additionalProperties": .boolean(false),
@@ -3664,6 +5394,35 @@ public enum AutomationToolCatalog {
                 "type": .string("array"),
                 "minItems": .number(1),
                 "maxItems": .number(5_000),
+                "items": .object(["type": .string("string")])
+            ])
+        ])
+    ])
+
+    private static let fileRevealInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackIDs")]),
+        "properties": .object([
+            "trackIDs": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "maxItems": .number(50),
+                "items": .object(["type": .string("string")])
+            ]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let fileExportInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackIDs")]),
+        "properties": .object([
+            "trackIDs": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "maxItems": .number(500),
                 "items": .object(["type": .string("string")])
             ])
         ])
@@ -3739,11 +5498,42 @@ public enum AutomationToolCatalog {
         "properties": .object([
             "values": .object([
                 "type": .string("object"),
-                "description": .string("Currently supported: referencedTrackDeletePolicy = onlyLibrary or recycleSource.")
+                "description": .string("Supported keys: referencedTrackDeletePolicy, deferImportEnrichment, globalArtworkTintEnabled, audioVisualizationHDREnabled, dockProgressVisible, appearanceMode.")
             ]),
             "expectedRevision": .object(["type": .string("string")]),
             "dryRun": .object(["type": .string("boolean")]),
             "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let settingsResetInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "expectedRevision": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let audioPatchInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("values")]),
+        "properties": .object([
+            "values": .object([
+                "type": .string("object"),
+                "additionalProperties": .boolean(false),
+                "properties": .object([
+                    "gaplessSchedulingEnabled": .object(["type": .string("boolean")]),
+                    "aacGaplessTrimEnabled": .object(["type": .string("boolean")]),
+                    "outputDeviceID": .object([
+                        "type": .array([.string("string"), .string("null")]),
+                        "description": .string("An id from audio.get.availableOutputDevices, or null to follow the system default.")
+                    ])
+                ])
+            ]),
+            "expectedRevision": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")])
         ])
     ])
 
@@ -3826,9 +5616,15 @@ public enum AutomationToolCatalog {
         "type": .string("object"),
         "additionalProperties": .boolean(false),
         "properties": .object([
+            "query": .object(["type": .string("string")]),
+            "trackID": .object(["type": .string("string")]),
+            "artistContains": .object(["type": .string("string")]),
+            "albumContains": .object(["type": .string("string")]),
             "limit": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(500)]),
+            "offset": .object(["type": .string("integer"), "minimum": .number(0)]),
             "from": .object(["type": .string("string")]),
-            "to": .object(["type": .string("string")])
+            "to": .object(["type": .string("string")]),
+            "expectedRevision": .object(["type": .string("string")])
         ])
     ])
 
@@ -3847,6 +5643,24 @@ public enum AutomationToolCatalog {
         "required": .array([.string("jobID")]),
         "properties": .object([
             "jobID": .object(["type": .string("string")])
+        ])
+    ])
+
+    private static let jobRetryInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("jobID")]),
+        "properties": .object([
+            "jobID": .object(["type": .string("string")]),
+            "filePaths": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "maxItems": .number(5_000),
+                "items": .object([
+                    "type": .string("string"),
+                    "minLength": .number(1)
+                ])
+            ])
         ])
     ])
 }

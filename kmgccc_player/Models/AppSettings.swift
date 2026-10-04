@@ -932,6 +932,11 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("audioLookaheadEnabled") var audioLookaheadEnabled: Bool = true
 
+    /// Optional Core Audio output route for the App-owned spatial renderer.
+    /// Nil follows the user's system default output device.
+    @ObservationIgnored
+    @AppStorage("audioOutputDeviceUID") var audioOutputDeviceUID: String?
+
     /// Legacy lookahead delay preference. The current playback graph uses a
     /// fixed 180ms target; this stored value is preserved for compatibility and
     /// future UI work.

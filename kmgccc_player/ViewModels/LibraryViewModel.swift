@@ -942,6 +942,10 @@ final class LibraryViewModel {
         preferenceStatsService.getStats(for: trackID)
     }
 
+    func preferenceStats(for trackIDs: [UUID]) -> [UUID: TrackPreferenceStats] {
+        preferenceStatsService.getStats(for: trackIDs)
+    }
+
     func resetMusicPreferences(
         tracks: [Track],
         options: ResetMusicPreferenceOptions,
@@ -3594,6 +3598,21 @@ final class LibraryViewModel {
         }
     }
 
+    func searchTrackMetadataCandidatesForAutomation(
+        title: String,
+        artist: String,
+        album: String,
+        duration: Double?
+    ) async throws -> [QQMusicArtworkCandidate] {
+        try await QQMusicHelperProcess.shared.searchTrackArtwork(
+            title: title,
+            artist: artist,
+            album: album,
+            duration: duration.map { Int($0.rounded()) },
+            limit: 5
+        )
+    }
+
     func fetchTrackMetadataDetailForMid(
         _ songMid: String,
         title: String,
@@ -3617,6 +3636,22 @@ final class LibraryViewModel {
             )
             return nil
         }
+    }
+
+    func fetchTrackMetadataDetailForAutomation(
+        _ songMid: String,
+        title: String,
+        artist: String,
+        album: String,
+        duration: Double?
+    ) async throws -> TrackMetadataDetail {
+        try await metadataDetailCoordinator.fetchTrackDetail(
+            title: title,
+            artist: artist,
+            album: album,
+            songMid: songMid,
+            duration: duration.map { Int($0.rounded()) }
+        )
     }
 
     func clearIndexCacheAndRebuild() async {

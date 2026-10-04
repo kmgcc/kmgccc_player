@@ -89,6 +89,9 @@
 		C22000000000000000000001 /* kmgccc_playerTests/ReferencedSourceStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C22000000000000000000011 /* kmgccc_playerTests/ReferencedSourceStoreTests.swift */; };
 		C23000000000000000000001 /* kmgccc_playerTests/ReferencedSourceScopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C23000000000000000000011 /* kmgccc_playerTests/ReferencedSourceScopeTests.swift */; };
 		C24000000000000000000001 /* kmgccc_playerTests/CoverGradientBlurRenderStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C24000000000000000000011 /* kmgccc_playerTests/CoverGradientBlurRenderStoreTests.swift */; };
+		C25000000000000000000001 /* kmgccc_playerTests/LibraryBundleExportServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C25000000000000000000011 /* kmgccc_playerTests/LibraryBundleExportServiceTests.swift */; };
+		C26000000000000000000001 /* kmgccc_playerTests/MP3EmbeddedTagServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C26000000000000000000011 /* kmgccc_playerTests/MP3EmbeddedTagServiceTests.swift */; };
+		C27000000000000000000001 /* kmgccc_playerTests/AutomationTrackPreferenceQueryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C27000000000000000000011 /* kmgccc_playerTests/AutomationTrackPreferenceQueryTests.swift */; };
 		D20000000000000000000001 /* MelismaKit in Frameworks */ = {isa = PBXBuildFile; productRef = D20000000000000000000003 /* MelismaKit */; };
 		D30000000000000000000001 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */; };
 		D40000000000000000000001 /* kmgccc_playerTests/DisplayHDRCapabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000011 /* kmgccc_playerTests/DisplayHDRCapabilityTests.swift */; };
@@ -191,6 +194,9 @@
 		C22000000000000000000011 /* kmgccc_playerTests/ReferencedSourceStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/ReferencedSourceStoreTests.swift; sourceTree = "<group>"; };
 		C23000000000000000000011 /* kmgccc_playerTests/ReferencedSourceScopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/ReferencedSourceScopeTests.swift; sourceTree = "<group>"; };
 		C24000000000000000000011 /* kmgccc_playerTests/CoverGradientBlurRenderStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/CoverGradientBlurRenderStoreTests.swift; sourceTree = "<group>"; };
+		C25000000000000000000011 /* kmgccc_playerTests/LibraryBundleExportServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/LibraryBundleExportServiceTests.swift; sourceTree = "<group>"; };
+		C26000000000000000000011 /* kmgccc_playerTests/MP3EmbeddedTagServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/MP3EmbeddedTagServiceTests.swift; sourceTree = "<group>"; };
+		C27000000000000000000011 /* kmgccc_playerTests/AutomationTrackPreferenceQueryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/AutomationTrackPreferenceQueryTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift; sourceTree = "<group>"; };
 		D40000000000000000000011 /* kmgccc_playerTests/DisplayHDRCapabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/DisplayHDRCapabilityTests.swift; sourceTree = "<group>"; };
 		E01000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = kmgccc_player/AppDelegate.swift; sourceTree = "<group>"; };
@@ -427,6 +433,9 @@
 				C22000000000000000000011 /* kmgccc_playerTests/ReferencedSourceStoreTests.swift */,
 				C23000000000000000000011 /* kmgccc_playerTests/ReferencedSourceScopeTests.swift */,
 				C24000000000000000000011 /* kmgccc_playerTests/CoverGradientBlurRenderStoreTests.swift */,
+				C25000000000000000000011 /* kmgccc_playerTests/LibraryBundleExportServiceTests.swift */,
+				C26000000000000000000011 /* kmgccc_playerTests/MP3EmbeddedTagServiceTests.swift */,
+				C27000000000000000000011 /* kmgccc_playerTests/AutomationTrackPreferenceQueryTests.swift */,
 			);
 			name = Tests;
 			sourceTree = "<group>";
@@ -794,6 +803,9 @@
 				C22000000000000000000001 /* kmgccc_playerTests/ReferencedSourceStoreTests.swift in Sources */,
 				C23000000000000000000001 /* kmgccc_playerTests/ReferencedSourceScopeTests.swift in Sources */,
 				C24000000000000000000001 /* kmgccc_playerTests/CoverGradientBlurRenderStoreTests.swift in Sources */,
+				C25000000000000000000001 /* kmgccc_playerTests/LibraryBundleExportServiceTests.swift in Sources */,
+				C26000000000000000000001 /* kmgccc_playerTests/MP3EmbeddedTagServiceTests.swift in Sources */,
+				C27000000000000000000001 /* kmgccc_playerTests/AutomationTrackPreferenceQueryTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

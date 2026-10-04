@@ -36,6 +36,8 @@ nonisolated enum LibraryTaskKind: String, Codable, Equatable, Sendable {
     case ncmConversion
     case enrichment
     case indexUpdate
+    case libraryBundleExport
+    case embeddedTagWrite
     case other
 }
 
@@ -46,19 +48,43 @@ nonisolated struct LibraryOperationRetrySpec: Codable, Equatable, Sendable {
     enum Kind: String, Codable, Equatable, Sendable {
         case lyricsRefresh
         case sourceRefresh
+        case libraryImport
     }
 
     let kind: Kind
     let trackIDs: [UUID]
     let sourceID: UUID?
     let force: Bool
+    let targetPlaylistID: UUID?
 
     static func lyricsRefresh(trackIDs: [UUID], force: Bool) -> Self {
-        Self(kind: .lyricsRefresh, trackIDs: trackIDs, sourceID: nil, force: force)
+        Self(
+            kind: .lyricsRefresh,
+            trackIDs: trackIDs,
+            sourceID: nil,
+            force: force,
+            targetPlaylistID: nil
+        )
     }
 
     static func sourceRefresh(sourceID: UUID) -> Self {
-        Self(kind: .sourceRefresh, trackIDs: [], sourceID: sourceID, force: false)
+        Self(
+            kind: .sourceRefresh,
+            trackIDs: [],
+            sourceID: sourceID,
+            force: false,
+            targetPlaylistID: nil
+        )
+    }
+
+    static func libraryImport(targetPlaylistID: UUID?) -> Self {
+        Self(
+            kind: .libraryImport,
+            trackIDs: [],
+            sourceID: nil,
+            force: false,
+            targetPlaylistID: targetPlaylistID
+        )
     }
 }
 

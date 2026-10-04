@@ -497,10 +497,14 @@ final class AppSessionHost: ObservableObject {
     }
 
     @discardableResult
-    func retryLibraryJob(id: UUID, libraryID: UUID? = nil) -> LibraryOperationTaskDescriptor? {
+    func retryLibraryJob(
+        id: UUID,
+        libraryID: UUID? = nil,
+        importSelection: LibraryInitialImportSelection? = nil
+    ) -> LibraryOperationTaskDescriptor? {
         guard let session = activeLibraryBinding.activeSession,
               libraryID == nil || session.context.id == libraryID else { return nil }
-        return session.retryAutomationJob(id: id)
+        return session.retryAutomationJob(id: id, importSelection: importSelection)
     }
 
     @discardableResult
@@ -672,6 +676,60 @@ final class AppSessionHost: ObservableObject {
     func referencedSources() async throws -> [ReferencedSourceDescriptor] {
         guard let store = activeLibraryBinding.activeSession?.referencedSourceStore else { return [] }
         return try await store.loadAll()
+    }
+
+    func renameReferencedSource(
+        id: UUID,
+        displayName: String,
+        libraryID: UUID? = nil
+    ) async throws -> ReferencedSourceDescriptor {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.mode == .referenced,
+              let store = session.referencedSourceStore else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        if let libraryID, session.context.id != libraryID {
+            throw LibraryOperationError.sessionQuiescing
+        }
+        return try await session.runLibraryOperation {
+            try await store.updateDisplayName(sourceID: id, displayName: displayName)
+        }
+    }
+
+    func automationAudioSettings() -> (
+        gaplessSchedulingEnabled: Bool,
+        aacGaplessTrimEnabled: Bool,
+        outputDeviceUID: String?
+    ) {
+        let settings = AppSettings.shared
+        return (
+            settings.audioGaplessSchedulingEnabled,
+            settings.audioAACGaplessTrimEnabled,
+            settings.audioOutputDeviceUID
+        )
+    }
+
+    func updateAutomationAudioSettings(
+        gaplessSchedulingEnabled: Bool?,
+        aacGaplessTrimEnabled: Bool?,
+        outputDeviceUID: String?? = nil
+    ) -> (
+        gaplessSchedulingEnabled: Bool,
+        aacGaplessTrimEnabled: Bool,
+        outputDeviceUID: String?
+    ) {
+        let settings = AppSettings.shared
+        if let gaplessSchedulingEnabled {
+            settings.audioGaplessSchedulingEnabled = gaplessSchedulingEnabled
+        }
+        if let aacGaplessTrimEnabled {
+            settings.audioAACGaplessTrimEnabled = aacGaplessTrimEnabled
+        }
+        if let outputDeviceUID, settings.audioOutputDeviceUID != outputDeviceUID {
+            settings.audioOutputDeviceUID = outputDeviceUID
+            NotificationCenter.default.post(name: .audioOutputDevicePreferenceDidChange, object: nil)
+        }
+        return automationAudioSettings()
     }
 
     func refreshReferencedSource(

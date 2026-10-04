@@ -155,6 +155,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private static let outputLatencyRefreshInterval: TimeInterval = 0.25
     private var outputLatencySnapshot = AudioOutputLatencySnapshot.zero
     private var lastOutputLatencyRefreshUptime: TimeInterval = 0
+    private var routedOutputDeviceUID: String?
 
     var audioOutputDelay: Double {
         // This value is intentionally limited to the application's own
@@ -308,6 +309,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // Engine is now lazily initialized on first access (see `engine` property)
         setupSmartController()
         setupRendererPipeline()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleOutputDevicePreferenceChange),
+            name: .audioOutputDevicePreferenceDidChange,
+            object: nil
+        )
         refreshOutputLatency(force: true)
         Log.info(
             "[PlaybackPipeline] AVAudioPlaybackService init id=\(ObjectIdentifier(self)) engine=deferred",
@@ -455,9 +462,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         let snapshot = AudioOutputLatencyMonitor.currentSnapshot()
         let snapshotChanged = snapshot != outputLatencySnapshot
-        let outputDeviceChanged = snapshot.deviceID != outputLatencySnapshot.deviceID
-            || snapshot.deviceUID != outputLatencySnapshot.deviceUID
+        let selectedOutputUID = AppSettings.shared.audioOutputDeviceUID ?? snapshot.deviceUID
+        let outputDeviceChanged = selectedOutputUID != routedOutputDeviceUID
         outputLatencySnapshot = snapshot
+        routedOutputDeviceUID = selectedOutputUID
         if snapshotChanged {
             Log.info(
                 "[AudioClock] output=\(snapshot.deviceName) uid=\(snapshot.deviceUID ?? "default") transport=\(snapshot.transportType) deviceFrames=\(snapshot.deviceLatencyFrames) streamFrames=\(snapshot.streamLatencyFrames) reportedSeconds=\(String(format: "%.4f", snapshot.seconds)) presentationOffset=0",
@@ -465,7 +473,13 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             )
         }
         if outputDeviceChanged {
-            rendererPipeline.setAudioOutputDeviceUniqueID(snapshot.deviceUID)
+            rendererPipeline.setAudioOutputDeviceUniqueID(selectedOutputUID)
+        }
+    }
+
+    @objc nonisolated private func handleOutputDevicePreferenceChange(_ notification: Notification) {
+        Task { @MainActor [weak self] in
+            self?.refreshOutputLatency(force: true)
         }
     }
 
@@ -1628,7 +1642,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     // MARK: - Queue Management
 
     func updateQueueTracks(_ tracks: [Track]) {
-        guard !tracks.isEmpty else { return }
         smartController.updateQueue(tracks: tracks, preservePosition: true)
     }
 
