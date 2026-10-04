@@ -7,6 +7,17 @@ description: Operate kmgccc_player through its shared CLI/MCP automation contrac
 
 Use the App-owned automation capability catalog before inventing a workflow.
 
+## New audio import
+
+Use `library.import` with `filePaths` and optional `targetPlaylistID` for files/folders in
+managed or referenced libraries, including NCM. The App runs manual import and enrichment.
+Poll `jobs.get` to a terminal state, inspect its `result`, import failures and enrichment
+warnings, then verify Tracks and Playlist membership. Do not handcraft sidecars, copy Tracks
+folders, externally decrypt NCM, or substitute `playlist.addTracks` for new-file import.
+After an interrupted import, `jobs.retry` preserves the original target Playlist but requires
+fresh `filePaths` so the App can reacquire access; the retry specification never persists paths
+or security-scoped bookmarks.
+
 ## Required semantics
 
 - Track, File, Library membership, Playlist membership and Source membership are different.
@@ -47,7 +58,11 @@ Artist or Album. Playlist artwork has no provider search, but can still be read/
 use `metadata.patch` or `artwork.apply` with that target's returned revision. Metadata patch covers
 Track fields plus Artist, Album and Playlist sidecar fields; artwork apply accepts App picker, an image
 path hint, base64 image data, or `clear`. These operations write App-owned sidecars, not embedded tags
-in the original audio file. For 10 or more Tracks, preview first, send `confirm=true`, and wait for
+in the original audio file. Embedded tags have separate tools: `metadata.embedded.get` reads the
+authorized file, and `metadata.embedded.patch` currently writes MP3 ID3v2.3/v2.4 after per-Track
+revision checks, preview, `confirm=true`, and App foreground confirmation. It returns a Job; check
+per-file completion and failures with `jobs.get`. Other formats are readable where AVFoundation
+supports them but are not writable. For 10 or more Tracks, preview first, send `confirm=true`, and wait for
 the App foreground confirmation; `--yes` never bypasses it.
 
 For lyrics, use `lyrics.search`/`lyrics.compare` before applying a provider candidate, or pass

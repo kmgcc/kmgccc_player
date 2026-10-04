@@ -76,6 +76,11 @@ nonisolated enum PerAudioFileImportTask {
                     for: candidate.fileURL,
                     durationSeconds: candidate.metadata.duration
                 )
+            // Managed NCM progress IDs retain the encrypted source path;
+            // fileURL points to a temporary decrypted audio product.
+            let originalSourceURL = placement.storageKind == .managed
+                && URL(fileURLWithPath: candidate.progressID).pathExtension.lowercased() == "ncm"
+                ? URL(fileURLWithPath: candidate.progressID) : candidate.fileURL
             let mediaLocator: TrackMediaLocator
             switch placement {
             case .managed(_, let relativePath):
@@ -100,7 +105,7 @@ nonisolated enum PerAudioFileImportTask {
                     albumArtist: candidate.metadata.albumArtist,
                     duration: candidate.metadata.duration,
                     importedAt: importedAt,
-                    originalFilePath: candidate.fileURL.path,
+                    originalFilePath: originalSourceURL.path,
                     mediaLocator: mediaLocator,
                     stagedAudioURL: {
                         if case .managed(let stagedURL, _) = placement { return stagedURL }
@@ -118,7 +123,9 @@ nonisolated enum PerAudioFileImportTask {
                         // a future import cannot be resolved otherwise.
                         guard placement.storageKind == .managed else { return nil }
                         return ImportProvenance(
-                            originalFingerprint: candidate.discoveredFile.fingerprint,
+                            originalFingerprint: originalSourceURL == candidate.discoveredFile.url
+                                ? candidate.discoveredFile.fingerprint
+                                : try? ReferencedFileIdentityProvider().fingerprint(for: originalSourceURL),
                             contentDigest: nil
                         )
                     }(),

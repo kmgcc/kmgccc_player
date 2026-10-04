@@ -17,6 +17,7 @@ nonisolated enum LibraryImportOrigin: String, Sendable, Equatable {
     case playlistDrop
     case setup
     case sourceMonitor
+    case automation
 }
 
 /// Immutable context captured at the instant an import starts. The target is
@@ -61,6 +62,8 @@ nonisolated struct LibraryImportResult: Sendable, Equatable {
     /// Processed tracks that were already members of the destination playlist
     /// before this import started.
     var alreadyInPlaylistCount: Int = 0
+    var trackIDs: [UUID] = []
+    var newTrackIDs: [UUID] = []
 
     static let staleContext = LibraryImportResult(
         importedTrackCount: 0,

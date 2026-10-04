@@ -368,7 +368,13 @@ final class ImportPlanner {
                 )
             }
             for output in results {
-                guard let result = output.result else { continue }
+                guard let result = output.result else {
+                    failures.append(.init(
+                        url: output.sourceURL,
+                        message: output.errorDescription ?? NCMConverterError.invalidFile.localizedDescription
+                    ))
+                    continue
+                }
                 resolvedFiles.append(
                     ResolvedImportFile(
                         progressID: output.sourceURL.path,

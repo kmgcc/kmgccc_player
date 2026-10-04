@@ -357,8 +357,8 @@ final class ArtRuntimeLoader: @unchecked Sendable {
 
         if let linkEditSegment {
             let linkEditSize = payloadEnd - linkEditSegment.fileOffset
-            // Signing can enlarge both the file and virtual sizes of __LINKEDIT.
-            // Hash only its payload, excluding the allocation for the signature.
+            // Signing can grow both the file and virtual size of __LINKEDIT.
+            // Normalize both fields to the payload represented by the manifest.
             if header.is64Bit {
                 writeUInt64LittleEndian(
                     linkEditSize,

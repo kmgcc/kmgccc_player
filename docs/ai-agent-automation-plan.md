@@ -8,16 +8,15 @@
 Pi runtime 和远程聊天 provider；本轮先把播放器本身建设成一个稳定、丰富、可组合、
 可审计的 Application Automation 平台。
 
-## 1. 当前状态与工作树
+## 1. 原实施基线与当前状态
 
 - 工作树：独立工作树 `myPlayer2-ai-agent-automation`
 - 分支：`codex/ai-agent-automation-next`
 - 基线：`main/origin/main`，commit `236a1b5d`
-- 已完成：Phase A–K 的共享协议、Tool Catalog、CLI、AF_UNIX IPC、MCP stdio，以及
-  Library / Playlist / 已授权 Referenced Source 的第一条垂直切片
-- 当前阶段：Phase E/F 收尾与 P0 验收；共享合同和高价值基础能力已落地，本轮继续补齐
-  durable Jobs、Lyrics 候选工作流与可重试批处理，随后仍需完成真实 Host、授权拒绝和前台
-  高风险确认验收，不把能力目录数量当作完成度
+- 历史完成范围：共享协议、Tool Catalog、CLI、AF_UNIX IPC、MCP stdio，以及部分领域能力。
+  Phase A–K 的基础落地不表示第 5 节所有目标都已完成。
+- 当前阶段（2026-10-04）：跨模式导入、跨来源元数据、Source/Metadata 文档交换、Artwork 质量、Library bundle、MP3 embedded-tag 写回、持久播放偏好查询、导入 Job 重试、History 分页检索、音频输出状态与 App 路由控制、现代 MCP Jobs 资源订阅已实现；逐项验收与格式边界见
+  [计划实现审计](automation-plan-audit-2026-10-03.md)。下文各日期 checkpoint 为历史证据。
 - 暂缓：Built-in Agent runtime 和任何独立模型数据层
 
 公开仓库地址以当前 `git remote -v` 为准，当前已验证为
@@ -117,7 +116,7 @@ application capabilities；适配器只负责输入解析、输出渲染、连�
 - ID、title、artist、album、genre、path、Source、Playlist；
 - codec、format、sample rate、bit depth、duration、date added；
 - missing、Lyrics status、Artwork status、metadata quality；
-- history、rating、favorite 等真实存在的字段；
+- 真实持久的播放偏好字段：手动 `likeState`、播放／完成／跳过计数、总聆听时间、最近播放时间和偏好分数；当前没有数值星级字段；
 - text、enum、range、date、path、membership；
 - `AND`、`OR`、`NOT` 和稳定排序、分页。
 
@@ -137,23 +136,23 @@ revision，避免长任务期间悄悄改变目标集合。
 | Playlist | list/get/create/rename/delete/add/remove/replace/reorder/diff/union/intersection/import/export | membership 与 Library/File 解耦，删除/清空需风险 policy |
 | Query / Selection | 结构化 predicate、组合、排序、分页、selection snapshot | 不做不可维护的 SQL clone |
 | Lyrics | status/search/candidates/score/compare/preview/apply/refresh/batch/retry | 当前 provider、TTML/LRC、quality policy、长任务 |
-| Metadata | read/patch/batch/candidates/quality/preview/apply | App metadata 与嵌入文件标签分开，后者风险更高 |
+| Metadata | read/patch/batch/candidates/quality/preview/apply；实时读 embedded tags，安全写 MP3 ID3v2 | App metadata 与嵌入文件标签分开；其他容器目前只读，文件写入需 revision、preview、前台确认和原子替换 |
 | Artwork | current/candidates/search/quality/preview/apply/batch | 不覆盖更好的手工结果，真实 provider 优先 |
 | Playback | state/play/pause/toggle/next/previous/seek/play Track/Playlist/repeat/shuffle/volume | 统一进入 PlaybackCoordinator |
 | Queue | get/replace/enqueue/next/remove/reorder/clear/upcoming/revision | 保留手动队列，stale write 冲突 |
 | History | query、时间范围、统计、Track/Artist/Album 维度 | 隐私；清空必须高风险确认 |
 | Settings | schema/get/patch/validate/reset/preview | 当前只开放有明确 App 合同的持久配置；不开放 hover/动画等临时状态 |
-| Audio | 真实存在的 EQ、ReplayGain、output、device、gapless 等 | 不伪造当前没有的 DSP 能力 |
+| Audio | 真实存在的 EQ、ReplayGain、output、device、gapless 等；支持枚举并持久选择 App 输出设备 | 不伪造当前没有的 DSP 能力；App 路由不修改系统默认设备 |
 | Diagnostics | library/source/playlist/lyrics/storage/automation/MCP health、report、repair | repair 只做可证明安全的动作 |
 | Jobs | create/status/progress/result/retry/cancel、durable/transient、restart 行为 | 扫描、导入、批量歌词/Metadata/Artwork 不阻塞同步 Tool |
-| Files | inspect/existence/rename/move/delete | 已实现的物理操作只允许授权 Referenced Source；reveal/copy/export 尚未开放，delete 独立为高风险 |
+| Files | inspect/existence/reveal/export/rename/move/delete | reveal/export 仅访问 App 已授权路径；export 通过 App picker 复制且保留原件；delete 独立为高风险 |
 | Storage | inspect/schema/version/validate/repair/backup/diff/orphan/reload | 当前 inspect/validate/repair 仅覆盖 App-owned scaffolding；不把任意 JSON write 暴露成普通 Tool |
 | Import/Export | playlist、metadata、library report、source config、diagnostics machine-readable | 输出不得泄露 secret |
 
 ## 6. Permission、Audit、Revision 和 Idempotency
 
 统一 scope 目录，不允许每个 Tool 自己发明权限。首批 scope 以实际开放能力为准，
-方向包括：`library.read/write`、`source.read/write`、`playlist.read/write`、
+方向包括：`library.read/write`、`selection.write`、`source.read/write`、`playlist.read/write`、
 `lyrics.read/write`、`metadata.read/write`、`artwork.read/write`、
 `playback.read/control`、`queue.read/write`、`history.read/write`、
 `settings.read/write`、`audio.read/write`、`diagnostics.read/repair`、
@@ -178,15 +177,21 @@ MCP adapter 使用独立 executable，通过稳定的本用户 AF_UNIX IPC 调�
 Library business logic，也不通过 CLI subprocess 绕行。stdio 是第一 transport；
 之后按真实需求评估 loopback HTTP / Streamable HTTP、XPC 和远程授权。
 
-当前 adapter 已提供 `server/discover`、`tools/list`、`tools/call`、resources 和 `ping`。
+当前 adapter 已提供 `server/discover`、`tools/list`、`tools/call`、resources、现代 Jobs 资源订阅和 `ping`。
 2026-07-28 路径使用无 session 的 per-request `_meta` version；2025-11-25 路径保留
-`initialize` / `notifications/initialized` compatibility lifecycle。MCP Tasks、Prompts
-和真正的 request cancellation 仍明确列为后续工作；协议行为继续以官方 lifecycle、tools、
-resources、errors 和 transports 为准，不得把自定义 wire contract 冒充 MCP。
+`initialize` / `notifications/initialized` compatibility lifecycle。Resources、Prompts 和
+MCP Tasks (`tasks/get/update/cancel`) 已接入；只有现代协议请求逐次声明
+`io.modelcontextprotocol/tasks` 时，长 Job Tool 才返回 Task 句柄。Task 与 App 持久 Job
+共享生命周期；Task cancellation 复用协作式 Job 取消。现代 stdio 可订阅 `kmgccc://jobs`，也可按
+`taskIds` 接收标准 `notifications/tasks` 状态通知。stdio 通过 `notifications/cancelled` 取消在途请求，
+并将 IPC 连接关闭传播至 App handler；若已取消的请求刚创建 Job 且没有共享的幂等等待者，App 会请求取消该 Job。
+已返回的持久 Job 仍通过 `tasks/cancel` 或 `jobs.cancel` 显式取消。Streamable HTTP/XPC/远程授权仍未开放；
+这些 transport 在本计划中属于按实际需求评估的范围。
+协议行为继续以官方 lifecycle、tools、resources、errors 和 transports 为准，不得把
+自定义 wire contract 冒充 MCP。
 
-MCP 未来可暴露的 Resources 包括 capability catalog、schema、Agent behavior guide、
-player state、Jobs、diagnostics 和 Source 状态；只有能改善 Agent discoverability
-的内容才加入。Prompts 不是安全机制。
+MCP Resources 已提供 capability catalog、Agent behavior guide 和当前 Jobs；后续可按 Agent
+discoverability 增加 schema、player state、diagnostics 和 Source 状态。Prompts 不是安全机制。
 
 Tool 描述必须说明：查询是否只读、是否改变原文件、是否需要确认、分页、错误、
 Job 和 membership 语义。不要机械把每个 CLI 子命令都变成一个 Tool。
@@ -275,8 +280,8 @@ storage 等高风险动作必须可 preview、cancel、confirm、recover。当�
 ### Phase E：Jobs / Batch
 
 建立 App-owned Job abstraction：ID、status、phase、progress、completed/total、failures、
-retry、cancel、result、timestamps、durable/transient 和 restart 行为，再映射到 CLI 和
-MCP Tasks（若 SDK/协议适合）。当前已将有界历史持久化到每个资料库的
+retry、cancel、result、timestamps、durable/transient 和 restart 行为，并映射到 CLI 与 MCP Tasks。
+当前已将有界历史持久化到每个资料库的
 `Settings/automation-jobs.json`，重启时把未终态 Job 恢复为带 recovery failure 的 failed
 记录，并对 Lyrics/Source 提供安全重建；Source scan/import、歌词、Metadata、Artwork、repair
 不得用无限等待的同步 Tool。
@@ -394,11 +399,11 @@ membership、Metadata 和 History，并在重新出现后尽可能恢复可用�
 - Phase J/K：Capability Reference、Agent Behavior Guide、CLI/MCP/troubleshooting 文档和可加载
   Skill 已落盘，并由 `docs/README.md` 统一索引。
 
-当前明确未宣称已实现：文件 reveal/copy/export、embedded tag 写入、完整 Artwork candidate
-apply、超出当前合同的复杂持久 Settings patch、远程 HTTP transport、MCP Tasks 映射、任意
-JSON write。文件
-`inspect/rename/move/delete` 已有正式 capability，但真实 delete 仍受默认 denied scope 和
-App 前台确认保护；本轮没有删除用户真实文件。
+2026-09-12 时的阶段记录没有覆盖后续加入的 MCP Tasks、文件 reveal/export 和设置扩展；这些
+历史边界已分别在 2026-10-03 checkpoints 更新。当时记录的限制包括原音频 embedded tag 写入、
+统一跨 provider metadata/artwork quality policy、可重新求值的持久筛选 predicate、包含媒体文件的
+完整资料库 bundle 导出、远程 HTTP transport 和任意 JSON write。真实文件 delete 仍受默认 denied scope 和 App 前台
+确认保护；历史验证未删除用户真实文件。
 
 最近验证（2026-09-12）：PlayerAutomation SwiftPM 测试 16/16 通过；Xcode
 `MusicSettingsStateTests` 全部通过（含 durable Job history/restart recovery）；从当前工作树
@@ -546,3 +551,189 @@ checkpoint 为准；新能力必须先更新这里，再更新 CLI/MCP/Skill 的
 - 普通代码修改做匹配的增量 Debug Build；完整 `verify.sh` 只在用户要求或最终门禁运行。
 - 真实 App、权限、冷启动、切库、重启、signed build 和 filesystem 行为不能用单元测试
   冒充；交付时分别列出已验证、未验证和建议人工检查。
+
+## 16. 当前 checkpoint（2026-10-03，导入闭环）
+
+原计划第 5 节的 Library import 未由 Source create/refresh 完整覆盖：此前它们仅允许
+referenced，managed 没有正式外部导入入口。这是实现遗漏，并非计划取消。
+
+本轮新增 `library.import` 与 CLI `library import`，复用手动导入的 destination context、
+FileImportService、NCM 转换和 enrichment owner。支持文件／目录及可选歌单；立即返回
+Job，结构化结果持久化到 Job 历史，区分入库失败和后台补全无匹配。无需独立转换工具即可
+处理 NCM 导入。该 checkpoint 当时尚未支持跨重启重试；后续 §23 增加 `jobs.retry`，由调用方重新
+提交 `filePaths` 并由 App 再次取得授权，identity 去重继续生效。
+
+详细状态与实际验收记录维护于 [计划实现审计](automation-plan-audit-2026-10-03.md)。
+旧文档中的“Artwork candidate mutation 未开放”需结合后续 `artwork.search/apply` checkpoint
+阅读；后续已加入 15 分钟、Library/target/revision 绑定的候选 ID 直用合同；跨 provider 统一质量
+策略仍待实现。
+
+## 17. 当前 checkpoint（2026-10-03，读取、播放列表和队列控制扩展）
+
+按第 5 节与第 12 节的路线补上低风险且有现存业务 owner 的组合能力：
+
+- `library.stats` 汇总活动库曲目可用性、实体数、来源关联、补全覆盖和时长。
+- `playlist.diff` 以首个歌单的稳定次序返回多个歌单的 union、intersection 或 directional difference，支持分页。
+- `playback.toggle`、`playback.playPlaylist` 通过 PlaybackCoordinator 统一处理。
+- `queue.remove/reorder/upcoming` 使用队列 revision；重排按多重集合校验以保留重复条目语义。
+- 队列清空现在能把空集合送到 SmartPlaybackController，同时保留已载入的当前音频。
+- `history.stats` 按时间范围汇总播放次数、聆听秒数以及 Track/Artist/Album 聚合。
+- `source.get` 与 `source.rename` 提供单条策略读取和保留授权状态的显示名修改。
+- `settings.schema/validate/reset` 与 `audio.get/patch` 补齐受支持设置的发现、无副作用校验、gapless 控制和 App 输出路由选择。
+- `playlist.import/export` 通过有序 M3U8 文本交换歌单；绝对路径导出受 `files.read` scope 控制。
+
+截至该 checkpoint，CLI、Capability Reference 和 Agent Behavior Guide 已同步新增合同。原始音频 embedded-tag 写回、
+跨 provider metadata/artwork quality policy、可重新求值的持久筛选 predicate、Source/Metadata 文件交换、
+完整 Library bundle 导出、更多 Settings／真实 Audio 控制、跨重启路径授权恢复及更广的
+诊断报告仍需按 owner 逐项补齐；逐项状态见计划实现审计。无可复用 owner 的硬件音频路由、
+内置模型运行时或远程授权不会伪装成已实现能力。
+
+## 18. 当前 checkpoint（2026-10-03，Tasks、Metadata 候选和文件操作）
+
+- MCP 2026-07-28 Tasks 扩展现映射 App 的持久 Job；`tools/list` 按 capability 标记可异步工具，
+  `tools/call` 只在客户端逐请求声明扩展且 Job 已可读取时返回 Task。新增 `tasks/get`、
+  `tasks/update`、`tasks/cancel`，Library/Job 复合句柄支持切库隔离。该 checkpoint 当时尚未实现
+  Task 通知订阅；后续已在 §26 补齐。通用在途请求取消仍未实现。
+- `metadata.search/applyCandidate` 复用 QQMusic helper 与 App 的 detail/persistence owner。候选
+  返回 Track revision 和实际 `previewPatch`；默认仅补空字段，覆盖必须显式启用。原音频标签写入
+  仍没有安全的 App-owned persistence owner。
+- `files.reveal` 通过授权的 Managed/Referenced 路径在 Finder 定位；`files.export` 通过 App picker
+  获得目标目录，复制音频且避免覆盖重名文件，不修改资料库原件。文件导出未复制 metadata sidecars。
+- `artwork.search` 为每个候选生成 Library/target/revision 绑定的稳定 `candidateID`；
+  `artwork.applyCandidate` 可直接 dry-run 或应用候选，15 分钟过期、切库和 revision 冲突时拒绝写入。
+- MCP 已有 Resources/Prompts，本轮再加入 `import_audio_workflow`。审计同步至 [计划实现审计](automation-plan-audit-2026-10-03.md)。
+
+PlayerAutomation package build、modern MCP catalog/Prompt/Tasks capability smoke、MelismaKit 本地
+依赖检查、主 App Debug build 均通过。未启动主 App；Finder picker、sandbox 授权、真实 QQMusic
+provider 和物理文件 export 未做运行验收。完整剩余项与 transport 评估边界见审计表。
+
+## 19. 当前 checkpoint（2026-10-03，Artwork 候选直用与持久 Selection）
+
+- `artwork.search` 候选增加由 Library、实体目标、provider item 和图片 digest 组成的稳定 opaque
+  `candidateID`；`artwork.applyCandidate` 支持 dry-run 与直接应用，候选在 App 内存保留 15 分钟，
+  绑定搜索时的 artwork revision，并校验活动 Library 与目标。
+- 新增 `library.selection.list/create/get/delete` 和 `playlist.addSelection`。selection 可持久保存
+  有序 Track IDs，或保存 `library.tracks.filter` 结构化 predicate；不存媒体或路径。每 Library 最多
+  100 个、每次最多解析 10,000 首、30 天后过期，文件使用 App Support 私有权限。predicate 在读取和
+  加入歌单时按当前 Library 重算；可用 `expectedRevision` 与 `expectedSelectionRevision` 拒绝过期结果，
+  并继续复用原 Playlist mutation owner 和 expected playlist revision。
+- 新增 `library.report` 版本化分页读取，把 Library stats、Track metadata 投影和 Playlist 摘要合并为
+  machine-readable JSON；Track 与 Playlist 可独立分页、每页上限 100，并共用集合 revision。文件路径需
+  显式请求且要求 `files.read`。报告不包含图片、歌词正文或音频；完整含媒体 Library bundle 导出仍未实现。
+- CLI alias、Zsh completion、Capability Reference、Agent Guide 和本计划已同步。embedded tags、
+  Source/Metadata 文件交换和包含媒体文件的完整 Library bundle 导出仍有明确 owner/格式边界，
+  后续按审计表处理。
+
+## 20. 当前 checkpoint（2026-10-03，Source 配置交换）
+
+- 新增 `source.config.export/import`，用 schema-versioned JSON 迁移 Referenced Source 的显示名、
+  自动监听策略与排除路径；不导出文件路径、security-scoped bookmark、扫描状态或 Playlist binding。
+- 跨库导入必须把每个来源映射到目标资料库已有 Source；支持 dry-run、当前配置 revision 和 App 前台确认，
+  写入复用 AppSessionHost 的 Source owner。CLI 与 Zsh completion 已提供对应入口。
+- PlayerAutomation 21 项协议／传输测试、CLI Debug build、MelismaKit 本地依赖检查和 App Debug
+  build 均通过；主 App 未启动，picker／授权／磁盘持久化尚未做真实运行验收。
+- Track metadata 投影新增导入时 `embeddedMetadataSnapshot`，经 `metadata.get`、`library.tracks` 和
+  `library.report` 一并读取；它是历史快照，不会重新打开音频文件。
+
+Source policy exchange 已实现。后续缺口收窄为原音频 embedded tags、Metadata 文件包、跨 provider
+Artwork 质量流程、完整 Library media bundle 与 Diagnostics 深化；HTTP/XPC/远程授权仍按原计划
+基于真实需求评估。
+
+### 21. Metadata 跨来源候选与质量排序（2026-10-03）
+
+- `metadata.search` 现聚合 bundled QQMusic helper 与 MusicBrainz recording search。结果分别包含
+  provider 原生 `confidence`、provider-neutral `matchQuality` 与逐 provider 错误；字段匹配分数按
+  标题 45%、艺人 30%、专辑 15%、时长 10% 计算，缺失字段按剩余权重归一化。该值表达文本／时长
+  相似程度，用于候选排序，不表示 provider 成功概率。
+- MusicBrainz 使用 App 版本和项目 URL 构成 User-Agent，所有 search/lookup 请求经单 actor 排队，
+  平均不超过每秒一个请求。MusicBrainz 候选以 `musicbrainz:<recording UUID>` 标识；应用前重做
+  搜索并 lookup 录音详情，可补标题、艺人、专辑、流派标签、发行日期及 release ID。写入仍走现有
+  Metadata patch owner、默认只填空字段、dry-run 与 Track revision 冲突保护。
+- PlayerAutomation 22 项测试、CLI Debug build、MelismaKit 本地源检查和 App Debug build 通过。
+  尚未通过主 App 运行流程验证真实 MusicBrainz 网络结果与候选质量；新的 MCP 客户端需重新发现工具。
+
+## 22. 当前 checkpoint（2026-10-03，文件内标签读写与完整 Library bundle）
+
+- 新增 `metadata.embedded.get/patch`。读取重新打开当前受授权的音频文件；MP3 直接解析 ID3v2，
+  其他容器使用 AVFoundation 可提取的字段，并明确标记不可写。App sidecar metadata 与文件内标签
+  维持独立 owner。
+- 写入目前支持 MP3 ID3v2.3/v2.4 的标题、艺人、专辑、专辑艺人、作曲、流派、年份、曲目号、
+  碟号、评论和歌词字段。先用 `dryRun` 检查目标与 Track revision；正式写入要求
+  `confirm=true` 和 App 前台确认，每文件在同目录暂存、标签读回校验后原子替换，批次用可取消
+  Job 顺序执行并逐首报告。其他格式、损坏文件、或带有当前 writer 无法安全保留的 ID3 特性会拒绝，
+  原文件保持不变；这条路径不转码。
+- `library.bundle.export` 以可取消 Job 输出 path-free Track Metadata、Playlist membership、
+  可用音频/Artwork/Lyrics 与 SHA-256 manifest；destination 由 App picker 授权，导出不含本机路径、
+  security-scoped bookmark 和 Source 授权。
+- `diagnostics.health` 增加 Lyrics、Artwork、关键 Metadata 覆盖率；Artwork 候选有统一质量排序，
+  文档交换和跨 provider 元数据搜索均已落地。CLI alias、completion、Agent Guide、Capability
+  Reference 和 MCP catalog/schema 均已同步。
+- 代码验证包括 PlayerAutomation SwiftPM 26/26 测试、MP3 writer 与 Library bundle 定向 XCTest 4/4、
+  App ARM64 Debug build、MelismaKit 本地编译输入检查和 UI strict-copy 门禁；主 App 未启动。
+  真实授权、前台确认、不同 MP3 encoder 标签变体和 signed/sandbox 文件替换仍需真实 App 验收。
+
+当前代码层剩余边界是非 MP3 容器 embedded-tag 写回以及无持久 owner 的复杂全局 Settings。
+AudioFile API 对 MP3、WAV 和 M4A 的写入探测均返回不可写，因此没有复用它；后续需引入
+经过审查的容器专用 writer 并分别验证。导入 Job 重启后可用 retry spec 恢复目标 Playlist，但要求
+调用方重新提供文件并重新取得系统授权；retry spec 不保存输入路径或 bookmark，逐文件失败结果
+仍可能包含用于诊断的路径。stdio request cancellation 已贯通 MCP 与 AF_UNIX IPC；HTTP/XPC/远程授权
+仍需单独的 transport 与身份边界设计。内置 Agent/runtime 继续暂缓，不作为本地 stdio automation 的缺失实现。
+
+## 23. 当前 checkpoint（2026-10-03，播放偏好查询与导入 Job 重试）
+
+- Query / Selection 现在读取持久化 `TrackPreferenceStats`：可按手动 like、播放／完成／跳过计数、
+  总聆听时间、最近播放时间和偏好分数过滤、排序，并可选择返回统计投影。查询、动态 predicate、
+  报告和加入歌单会按实际字段依赖检查 `history.read`；默认的纯 metadata 查询不会读取历史。
+- Preference predicate 可嵌套 `all/any/not`，并参与 Selection revision；统计投影属于 revision
+  内容，旧 Track DTO 缺少 `preferenceStats` 时继续解码为 nil。CLI 的 `library tracks --params-json`
+  可组合使用新增字段。
+- `jobs.retry` 新增导入重试：retry spec 只持久保存目标 Playlist ID，不保存输入路径或书签；跨重启后
+  由调用方重新提供 `filePaths`，App 重新获取所需授权，再通过相同导入／去重／补全 owner 启动新 Job。
+- 当前验证：PlayerAutomation SwiftPM 27 项通过；Query、MP3 embedded tags、Library bundle 与
+  Job restart/retry spec 定向 XCTest 8 项通过；MelismaKit 本地依赖来源、CLI 无启动解析 smoke 和
+  `git diff --check` 均通过。主 App 未启动。App picker／系统授权、真实 provider 与播放器硬件路径仍属运行验收边界。
+
+## 24. 当前 checkpoint（2026-10-03，历史查询分页）
+
+`history.list` 补上时间窗之外的组合检索和续页能力：支持全文本、Track ID、艺人片段与专辑片段筛选，
+返回 `total`、`offset`、`limit`、`nextOffset`，并接受 `expectedRevision` 检测翻页期间的新播放记录。
+CLI 现开放 `--offset`、`--query`、`--track-id`、`--params-json` 与 `--expected-revision`。历史由 App-owned
+PlaybackHistoryStore 提供；查询只读，不改变播放器或 History。此增量遵照当前不启动真实 App／第三方 Agent
+的要求，只完成源码与文档检查，未新增编译或运行验收证据。
+
+## 25. 当前 checkpoint（2026-10-04，音频输出状态读取）
+
+`audio.get` 读取 Core Audio 系统默认与 App 实际输出状态，并列出可用设备；`audio.patch` 支持 gapless
+设置与持久化 App 输出路由选择，设备 UID 使用稳定 opaque ID 对外呈现。输出选择沿用现有 renderer route
+owner，不修改系统默认设备。此阶段只审阅源码与文档，未启动 App 或运行编译／测试。
+
+## 26. 当前 checkpoint（2026-10-04，MCP Jobs 资源订阅）
+
+新增 `kmgccc://jobs` 动态 Resource，读取当前资料库的 Job 快照；现代 stdio MCP 客户端可用
+`subscriptions/listen` 订阅该 URI，也可按 `taskIds` 订阅 Tasks 扩展的 `notifications/tasks`。
+服务端确认受理的过滤器后，在后台约每 2 秒读取既有 `jobs.list` 接口：Job 列表变化时发资源变更通知，
+Task 状态或进度变化时发完整 Task 状态通知。Task 通知要求请求逐次声明 Tasks 扩展；通知均带关联订阅 ID，
+取消通知会结束对应 listen 请求。订阅轮询不会自动启动 App。legacy 客户端仍可通过 `jobs.get` 轮询。
+通用 MCP 在途请求取消见 §28。
+
+此增量只完成源码与文档审阅及 `git diff --check`，未运行编译、测试、主 App 或第三方 Agent 实测。
+
+## 27. 当前 checkpoint（2026-10-04，App 输出设备控制）
+
+`audio.get` 增加可用输出设备清单和 App 实际输出快照；对外设备 ID 是由 Core Audio UID 派生的稳定 opaque
+标识，不返回原始 UID。`audio.patch.values.outputDeviceID` 接受该清单中的设备 ID，`null` 表示跟随系统默认；
+偏好写入 AppSettings，通过 `AVAudioPlaybackService` 连接现有 `RendererPlaybackPipeline` 路由能力，并纳入
+`expectedRevision` 与 dry-run。系统默认输出保持由用户和 macOS 管理。此增量只做源码与文档复核，遵照用户要求，
+未运行构建、测试或真实音频设备验收。
+
+## 28. 当前 checkpoint（2026-10-04，MCP 在途请求取消）
+
+stdio adapter 将有 request ID 的 MCP 请求交由并发处理，读循环可继续接收 `notifications/cancelled`。
+取消会关闭该请求拥有的 AF_UNIX socket；App listener 观察到 peer disconnect 后取消对应 handler，并通过
+cancellation token 通知 AutomationIPCServer。若已取消的请求返回了新建 Job，且没有同幂等键的其他等待者，
+App 会调用现有 Job cancel owner；已发出的 Task/Job handle 仍使用 `tasks/cancel`/`jobs.cancel`。
+CLI/stdin 结束时也会取消所有尚未完成的请求。当前范围限于本地 stdio + AF_UNIX；阻塞中的 AppKit 面板、
+外部 provider 和 HTTP/XPC transport 需要各自的取消 owner，未在本 checkpoint 宣称覆盖。
+
+PlayerAutomation SwiftPM build、App ARM64 Debug build、依赖 preflight 与 `git diff --check` 通过；
+没有启动主 App，也没有第三方 Agent 实测。

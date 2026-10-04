@@ -47,6 +47,7 @@ App 会按生命周期事务切换，并要求调用方确认和前台交互。
 | library list | library.list | 返回已注册资料库摘要和 active library ID |
 | library create/open/switch | library.create/open/switch | 通过 App-owned picker/session transaction 创建、登记或切换 active Library |
 | library rename/relocate/remove | library.rename/relocate/remove | 修改显示名、迁移完整资料库或移入 macOS 废纸篓；remove 额外受 `library.delete` scope 保护 |
+| library import | library.import | 文件／目录导入（含 NCM）、可选歌单归入，返回含补全状态与结果的 Job |
 | library tracks | library.tracks | 按组合 predicate、Source/Playlist membership、日期、技术字段和状态查询 Track |
 | playlist list | playlist.list | 返回 Playlist、统计值和不透明 revision |
 | source list | source.list | 返回原位来源、路径、绑定 Playlist 和扫描状态 |
@@ -59,7 +60,7 @@ App 会按生命周期事务切换，并要求调用方确认和前台交互。
 | files move | files.move | 在已授权 Referenced Source 内移动文件；支持 preview，批量移动需 App 确认 |
 | files delete | files.delete | 预览并将真实文件移入 macOS 废纸篓；始终需要 scope 和 App 前台确认 |
 | playback / queue | playback.* / queue.* | 控制本地播放和查询/插播/替换 Queue |
-| metadata | metadata.get/patch | 读取或批量修改 App-owned metadata（含 credits、语言、厂牌、provider IDs、置信度、抓取时间和歌词偏移）；10 首及以上需要确认；不写 embedded file tags |
+| metadata | metadata.get/patch、metadata.embedded.get/patch | 读写 App-owned metadata 与文件内标签；embedded 写入限 MP3 ID3v2.3/v2.4，使用逐首 revision、暂存校验、原子替换、App 前台确认和 Job 结果 |
 | artwork | artwork.search/get/apply | 搜索并返回带 `imageBase64` 的候选，读取封面摘要，或通过 App picker、路径提示、base64、clear 写入 App-owned artwork；10 首及以上需要确认 |
 | lyrics | lyrics.get/search/candidates/compare/apply/refresh | 查询候选、比较/应用；批量刷新返回 Job，逐字优先且只应用质量更高结果 |
 | jobs / diagnostics | jobs.list/get/cancel/retry / diagnostics.health | 查看进度、重试/取消 Job 和收集 Source/Library evidence |

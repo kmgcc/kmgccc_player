@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import PlayerAutomationIPC
 import PlayerAutomationProtocol
 
@@ -9,7 +10,7 @@ private enum MCPProtocolVersion {
     static let handshakeSupported = [legacy]
 }
 
-private enum MCPJSONRPCID: Codable, Equatable {
+private enum MCPJSONRPCID: Codable, Equatable, Hashable, Sendable {
     case string(String)
     case number(Double)
     case null
@@ -24,6 +25,14 @@ private enum MCPJSONRPCID: Codable, Equatable {
             self = .number(value)
         } else {
             throw MCPProtocolError.invalidRequest
+        }
+    }
+
+    init?(value: AutomationJSONValue) {
+        switch value {
+        case .string(let value): self = .string(value)
+        case .number(let value): self = .number(value)
+        case .null, .boolean, .array, .object: return nil
         }
     }
 
@@ -49,9 +58,17 @@ private enum MCPJSONRPCID: Codable, Equatable {
         case .null: return "null"
         }
     }
+
+    var subscriptionMetaValue: AutomationJSONValue? {
+        switch self {
+        case .string(let value): return .string(value)
+        case .number(let value): return .number(value)
+        case .null: return nil
+        }
+    }
 }
 
-private struct MCPRequest: Decodable {
+private struct MCPRequest: Decodable, Sendable {
     let jsonrpc: String?
     let id: MCPJSONRPCID?
     let method: String?
@@ -92,8 +109,223 @@ private struct MCPResponse: Encodable {
     }
 }
 
-private struct MCPConnectionState {
-    enum Phase: Equatable {
+private struct MCPServerNotification: Encodable, Sendable {
+    let jsonrpc = "2.0"
+    let method: String
+    let params: AutomationJSONValue
+}
+
+private final class MCPStdioOutput: @unchecked Sendable {
+    private let lock = NSLock()
+
+    func write<Value: Encodable>(_ value: Value) {
+        do {
+            let data = try AutomationWireCoding.encoder().encode(value)
+            lock.lock()
+            defer { lock.unlock() }
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data([0x0A]))
+        } catch {
+            let diagnostic = "MCP response encoding failed: \(error.localizedDescription)\n"
+            FileHandle.standardError.write(Data(diagnostic.utf8))
+        }
+    }
+}
+
+private final class MCPInFlightRequests: @unchecked Sendable {
+    private let lock = NSLock()
+    private var requests: [MCPJSONRPCID: AutomationIPCCancellationToken] = [:]
+
+    func insert(_ token: AutomationIPCCancellationToken, for requestID: MCPJSONRPCID) {
+        lock.lock()
+        requests[requestID] = token
+        lock.unlock()
+    }
+
+    func cancel(_ requestID: MCPJSONRPCID) {
+        lock.lock()
+        let token = requests[requestID]
+        lock.unlock()
+        token?.cancel()
+    }
+
+    func remove(_ requestID: MCPJSONRPCID, token: AutomationIPCCancellationToken) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard requests[requestID] === token else { return }
+        requests.removeValue(forKey: requestID)
+    }
+
+    func cancelAll() {
+        lock.lock()
+        let active = Array(requests.values)
+        requests.removeAll()
+        lock.unlock()
+        active.forEach { $0.cancel() }
+    }
+}
+
+private final class MCPJobResourceSubscriptions: @unchecked Sendable {
+    private struct Subscription {
+        let subscriptionID: MCPJSONRPCID
+        let resourceURIs: Set<String>
+        let taskIDs: Set<String>
+        var lastJobs: AutomationJSONValue?
+        var hasSnapshot: Bool
+        var lastTaskSnapshots: [String: AutomationJSONValue]
+    }
+
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "com.kmgccc.player.mcp-job-subscriptions", qos: .utility)
+    private let output: MCPStdioOutput
+    private let readJobs: @Sendable () -> AutomationJSONValue?
+    private let taskNotificationValue: @Sendable (AutomationJobSummary) -> AutomationJSONValue?
+    private var subscriptions: [String: Subscription] = [:]
+    private var isPolling = false
+    private var isStopped = false
+
+    init(
+        output: MCPStdioOutput,
+        readJobs: @escaping @Sendable () -> AutomationJSONValue?,
+        taskNotificationValue: @escaping @Sendable (AutomationJobSummary) -> AutomationJSONValue?
+    ) {
+        self.output = output
+        self.readJobs = readJobs
+        self.taskNotificationValue = taskNotificationValue
+    }
+
+    func register(
+        requestID: MCPJSONRPCID,
+        subscriptionID: MCPJSONRPCID,
+        resourceURIs: [String],
+        taskIDs: [String],
+        initialJobs: AutomationJSONValue?,
+        initialTaskSnapshots: [String: AutomationJSONValue]
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isStopped else { return false }
+        let key = requestID.idempotencyComponent
+        guard subscriptions[key] == nil else { return false }
+        subscriptions[key] = Subscription(
+            subscriptionID: subscriptionID,
+            resourceURIs: Set(resourceURIs),
+            taskIDs: Set(taskIDs),
+            lastJobs: initialJobs,
+            hasSnapshot: initialJobs != nil,
+            lastTaskSnapshots: initialTaskSnapshots
+        )
+        return true
+    }
+
+    func activate() {
+        lock.lock()
+        let shouldStart = !isStopped
+            && !isPolling
+            && subscriptions.values.contains {
+                $0.resourceURIs.contains(Self.jobsURI) || !$0.taskIDs.isEmpty
+            }
+        if shouldStart { isPolling = true }
+        lock.unlock()
+        if shouldStart {
+            queue.async { [weak self] in self?.pollLoop() }
+        }
+    }
+
+    func cancel(requestID: MCPJSONRPCID) {
+        lock.lock()
+        defer { lock.unlock() }
+        _ = subscriptions.removeValue(forKey: requestID.idempotencyComponent)
+    }
+
+    func stop() {
+        lock.lock()
+        isStopped = true
+        subscriptions.removeAll()
+        lock.unlock()
+    }
+
+    static let jobsURI = "kmgccc://jobs"
+    static let subscriptionIDMetaKey = "io.modelcontextprotocol/subscriptionId"
+
+    private func pollLoop() {
+        while true {
+            lock.lock()
+            let shouldContinue = !isStopped
+                && subscriptions.values.contains {
+                    $0.resourceURIs.contains(Self.jobsURI) || !$0.taskIDs.isEmpty
+                }
+            if !shouldContinue {
+                isPolling = false
+                lock.unlock()
+                return
+            }
+            lock.unlock()
+
+            if let currentJobs = readJobs() {
+                let summaries = Self.jobSummaries(in: currentJobs)
+                lock.lock()
+                for key in Array(subscriptions.keys) {
+                    guard var subscription = subscriptions[key] else { continue }
+                    if subscription.resourceURIs.contains(Self.jobsURI) {
+                        let changed = !subscription.hasSnapshot || subscription.lastJobs != currentJobs
+                        subscription.lastJobs = currentJobs
+                        subscription.hasSnapshot = true
+                        if changed {
+                            output.write(MCPServerNotification(
+                                method: "notifications/resources/updated",
+                                params: .object([
+                                    "uri": .string(Self.jobsURI),
+                                    "_meta": .object([
+                                        Self.subscriptionIDMetaKey: subscription.subscriptionID.subscriptionMetaValue ?? .null
+                                    ])
+                                ])
+                            ))
+                        }
+                    }
+                    for taskID in subscription.taskIDs {
+                        guard let job = summaries.first(where: {
+                            MCPTaskIdentity(job: $0)?.rawValue == taskID
+                        }),
+                        let taskValue = taskNotificationValue(job) else { continue }
+                        let changed = subscription.lastTaskSnapshots[taskID] != taskValue
+                        subscription.lastTaskSnapshots[taskID] = taskValue
+                        if changed {
+                            var params: [String: AutomationJSONValue]
+                            if case .object(let fields) = taskValue {
+                                params = fields
+                            } else {
+                                params = [:]
+                            }
+                            params["_meta"] = .object([
+                                Self.subscriptionIDMetaKey: subscription.subscriptionID.subscriptionMetaValue ?? .null
+                            ])
+                            output.write(MCPServerNotification(
+                                method: "notifications/tasks",
+                                params: .object(params)
+                            ))
+                        }
+                    }
+                    subscriptions[key] = subscription
+                }
+                lock.unlock()
+            }
+            Thread.sleep(forTimeInterval: 2)
+        }
+    }
+
+    private static func jobSummaries(in value: AutomationJSONValue) -> [AutomationJobSummary] {
+        guard case .object(let fields) = value,
+              case .array(let jobs) = fields["jobs"] else { return [] }
+        return jobs.compactMap { rawJob in
+            guard let data = try? AutomationWireCoding.encoder().encode(rawJob) else { return nil }
+            return try? AutomationWireCoding.decoder().decode(AutomationJobSummary.self, from: data)
+        }
+    }
+}
+
+private struct MCPConnectionState: Sendable {
+    enum Phase: Equatable, Sendable {
         case undecided
         case legacyAwaitingInitialize
         case legacyAwaitingInitializedNotification
@@ -105,12 +337,42 @@ private struct MCPConnectionState {
     var protocolVersion: String?
 }
 
+/// App Jobs are library-scoped. Encoding both IDs keeps an MCP task handle
+/// bound to the library that created it, including across library switches.
+private struct MCPTaskIdentity {
+    let libraryID: UUID
+    let jobID: UUID
+
+    var rawValue: String {
+        "\(libraryID.uuidString):\(jobID.uuidString)"
+    }
+
+    init?(rawValue: String) {
+        let parts = rawValue.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let libraryID = UUID(uuidString: String(parts[0])),
+              let jobID = UUID(uuidString: String(parts[1])) else {
+            return nil
+        }
+        self.libraryID = libraryID
+        self.jobID = jobID
+    }
+
+    init?(job: AutomationJobSummary) {
+        guard let libraryID = job.libraryID else { return nil }
+        self.libraryID = libraryID
+        self.jobID = job.id
+    }
+}
+
 private enum MCPProtocolError: Error, LocalizedError {
     case invalidRequest
     case invalidParams(String)
     case methodNotFound(String)
     case notInitialized
     case alreadyInitialized
+    case missingTasksCapability
+    case taskUnavailable(String)
 
     var code: Int {
         switch self {
@@ -122,6 +384,10 @@ private enum MCPProtocolError: Error, LocalizedError {
             return -32_601
         case .notInitialized, .alreadyInitialized:
             return -32_600
+        case .missingTasksCapability:
+            return -32_021
+        case .taskUnavailable:
+            return -32_001
         }
     }
 
@@ -137,22 +403,44 @@ private enum MCPProtocolError: Error, LocalizedError {
             return "The MCP session must be initialized before this operation."
         case .alreadyInitialized:
             return "The MCP session has already been initialized."
+        case .missingTasksCapability:
+            return "The client must declare the io.modelcontextprotocol/tasks extension for this request."
+        case .taskUnavailable(let message):
+            return message
         }
+    }
+
+    var data: AutomationJSONValue? {
+        guard case .missingTasksCapability = self else { return nil }
+        return .object([
+            "requiredCapabilities": .object([
+                "extensions": .object([
+                    "io.modelcontextprotocol/tasks": .object([:])
+                ])
+            ])
+        ])
     }
 }
 
-struct AutomationMCPStdioOptions {
+struct AutomationMCPStdioOptions: Sendable {
     let socketPath: String
     let noLaunch: Bool
     let timeout: TimeInterval
 }
 
-struct AutomationMCPStdioServer {
+struct AutomationMCPStdioServer: Sendable {
     let options: AutomationMCPStdioOptions
 
     func run() -> Int32 {
         var client: AutomationIPCClient?
         var state = MCPConnectionState()
+        let output = MCPStdioOutput()
+        let inFlight = MCPInFlightRequests()
+        let subscriptions = MCPJobResourceSubscriptions(
+            output: output,
+            readJobs: { [self] in readJobsForSubscription() },
+            taskNotificationValue: { [self] job in taskNotificationValue(for: job) }
+        )
         while let line = readLine(strippingNewline: true) {
             guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 continue
@@ -172,25 +460,90 @@ struct AutomationMCPStdioServer {
                 }
                 isNotification = request.id == nil
                 requestID = request.id
-                if let response = try handle(request, client: &client, state: &state) {
-                    write(response)
+                if request.method == "subscriptions/listen" {
+                    try openSubscription(request, state: &state, subscriptions: subscriptions, output: output)
+                } else if request.method == "notifications/cancelled", request.id == nil {
+                    cancelSubscription(request, subscriptions: subscriptions)
+                    if let cancelledID = cancelledRequestID(request) {
+                        inFlight.cancel(cancelledID)
+                    }
+                } else if request.method == "initialize"
+                    || request.method == "notifications/initialized"
+                    || request.id == nil {
+                    if let response = try handle(
+                        request,
+                        client: &client,
+                        state: &state
+                    ) {
+                        output.write(response)
+                    }
+                } else if let requestID = request.id {
+                    if requestProtocolVersion(request) != nil {
+                        try negotiateRequest(request, state: &state)
+                    }
+                    let cancellation = AutomationIPCCancellationToken()
+                    inFlight.insert(cancellation, for: requestID)
+                    let stateSnapshot = state
+                    DispatchQueue.global(qos: .userInitiated).async { [self] in
+                        defer { inFlight.remove(requestID, token: cancellation) }
+                        var requestClient: AutomationIPCClient?
+                        var requestState = stateSnapshot
+                        do {
+                            if let response = try handle(
+                                request,
+                                client: &requestClient,
+                                state: &requestState,
+                                cancellation: cancellation
+                            ), !cancellation.isCancelled {
+                                output.write(response)
+                            }
+                        } catch let error as MCPProtocolError {
+                            guard !cancellation.isCancelled else { return }
+                            output.write(
+                                MCPResponse(
+                                    id: requestID,
+                                    result: nil,
+                                    error: MCPError(
+                                        code: error.code,
+                                        message: error.localizedDescription,
+                                        data: error.data
+                                    )
+                                )
+                            )
+                        } catch {
+                            guard !cancellation.isCancelled else { return }
+                            output.write(
+                                MCPResponse(
+                                    id: requestID,
+                                    result: nil,
+                                    error: MCPError(
+                                        code: -32_000,
+                                        message: error.localizedDescription,
+                                        data: nil
+                                    )
+                                )
+                            )
+                        }
+                    }
+                } else if let response = try handle(request, client: &client, state: &state) {
+                    output.write(response)
                 }
             } catch let error as MCPProtocolError {
                 if isNotification { continue }
-                write(
+                output.write(
                     MCPResponse(
                         id: requestID,
                         result: nil,
                         error: MCPError(
                             code: error.code,
                             message: error.localizedDescription,
-                            data: nil
+                            data: error.data
                         )
                     )
                 )
             } catch {
                 if isNotification { continue }
-                write(
+                output.write(
                     MCPResponse(
                         id: nil,
                         result: nil,
@@ -203,13 +556,123 @@ struct AutomationMCPStdioServer {
                 )
             }
         }
+        inFlight.cancelAll()
+        subscriptions.stop()
         return 0
+    }
+
+    private func openSubscription(
+        _ request: MCPRequest,
+        state: inout MCPConnectionState,
+        subscriptions: MCPJobResourceSubscriptions,
+        output: MCPStdioOutput
+    ) throws {
+        try negotiateRequest(request, state: &state)
+        try requireReady(state)
+        guard isModernRequest(request) else {
+            throw MCPProtocolError.methodNotFound("subscriptions/listen")
+        }
+        guard let requestID = request.id,
+              let subscriptionID = requestID.subscriptionMetaValue else {
+            throw MCPProtocolError.invalidRequest
+        }
+        guard case .object(let values) = request.params,
+              case .object(let notifications)? = values["notifications"] else {
+            throw MCPProtocolError.invalidParams("subscriptions/listen requires a notifications filter object.")
+        }
+        let requestedURIs: [String]
+        if let rawURIs = notifications["resourceSubscriptions"] {
+            guard case .array(let values) = rawURIs,
+                  values.allSatisfy({ if case .string = $0 { return true }; return false }) else {
+                throw MCPProtocolError.invalidParams("notifications.resourceSubscriptions must be an array of resource URI strings.")
+            }
+            requestedURIs = values.compactMap { if case .string(let uri) = $0 { return uri }; return nil }
+        } else {
+            requestedURIs = []
+        }
+        let requestedTaskIDs: [String]
+        if let rawTaskIDs = notifications["taskIds"] {
+            guard case .array(let values) = rawTaskIDs,
+                  values.allSatisfy({ if case .string = $0 { return true }; return false }) else {
+                throw MCPProtocolError.invalidParams("notifications.taskIds must be an array of task ID strings.")
+            }
+            requestedTaskIDs = values.compactMap { if case .string(let taskID) = $0 { return taskID }; return nil }
+            if !requestedTaskIDs.isEmpty { try requireTasksCapability(request) }
+        } else {
+            requestedTaskIDs = []
+        }
+        let acceptedURIs = Array(Set(requestedURIs.filter { $0 == MCPJobResourceSubscriptions.jobsURI })).sorted()
+        let initialJobs = acceptedURIs.contains(MCPJobResourceSubscriptions.jobsURI)
+            || !requestedTaskIDs.isEmpty
+            ? readJobsForSubscription()
+            : nil
+        let visibleJobs = jobSummaries(from: initialJobs)
+        let visibleTaskIDs = Set(visibleJobs.compactMap { MCPTaskIdentity(job: $0)?.rawValue })
+        let acceptedTaskIDs = Array(Set(requestedTaskIDs.filter { visibleTaskIDs.contains($0) })).sorted()
+        var initialTaskSnapshots: [String: AutomationJSONValue] = [:]
+        for taskID in acceptedTaskIDs {
+            guard let job = visibleJobs.first(where: { MCPTaskIdentity(job: $0)?.rawValue == taskID }),
+                  let value = taskNotificationValue(for: job) else { continue }
+            initialTaskSnapshots[taskID] = value
+        }
+        guard subscriptions.register(
+            requestID: requestID,
+            subscriptionID: requestID,
+            resourceURIs: acceptedURIs,
+            taskIDs: acceptedTaskIDs,
+            initialJobs: initialJobs,
+            initialTaskSnapshots: initialTaskSnapshots
+        ) else {
+            throw MCPProtocolError.invalidRequest
+        }
+
+        var acknowledgedFilter: [String: AutomationJSONValue] = [:]
+        if notifications["resourceSubscriptions"] != nil {
+            acknowledgedFilter["resourceSubscriptions"] = .array(
+                acceptedURIs.map(AutomationJSONValue.string)
+            )
+        }
+        if notifications["taskIds"] != nil {
+            acknowledgedFilter["taskIds"] = .array(acceptedTaskIDs.map(AutomationJSONValue.string))
+        }
+
+        output.write(MCPServerNotification(
+            method: "notifications/subscriptions/acknowledged",
+            params: .object([
+                "notifications": .object(acknowledgedFilter),
+                "_meta": .object([
+                    MCPJobResourceSubscriptions.subscriptionIDMetaKey: subscriptionID
+                ])
+            ])
+        ))
+        subscriptions.activate()
+    }
+
+    private func cancelSubscription(
+        _ request: MCPRequest,
+        subscriptions: MCPJobResourceSubscriptions
+    ) {
+        guard case .object(let params) = request.params,
+              let rawRequestID = params["requestId"],
+              let requestID = MCPJSONRPCID(value: rawRequestID) else {
+            return
+        }
+        subscriptions.cancel(requestID: requestID)
+    }
+
+    private func cancelledRequestID(_ request: MCPRequest) -> MCPJSONRPCID? {
+        guard case .object(let params) = request.params,
+              let rawRequestID = params["requestId"] else {
+            return nil
+        }
+        return MCPJSONRPCID(value: rawRequestID)
     }
 
     private func handle(
         _ request: MCPRequest,
         client: inout AutomationIPCClient?,
-        state: inout MCPConnectionState
+        state: inout MCPConnectionState,
+        cancellation: AutomationIPCCancellationToken? = nil
     ) throws -> MCPResponse? {
         guard let method = request.method else {
             throw MCPProtocolError.invalidRequest
@@ -259,6 +722,65 @@ struct AutomationMCPStdioServer {
             guard request.id == nil else { throw MCPProtocolError.invalidRequest }
             return nil
 
+        case "tasks/get":
+            try negotiateRequest(request, state: &state)
+            try requireReady(state)
+            try requireTasksCapability(request)
+            guard case .object(let values) = request.params,
+                  case .string(let rawTaskID) = values["taskId"],
+                  let taskIdentity = MCPTaskIdentity(rawValue: rawTaskID) else {
+                throw MCPProtocolError.invalidParams("tasks/get requires a taskId returned by this server.")
+            }
+            guard request.id != nil else { return nil }
+            let job = try fetchJob(taskIdentity, client: &client, cancellation: cancellation)
+            return success(id: request.id, result: taskValue(job, resultType: "complete", identity: taskIdentity), modern: isModernRequest(request))
+
+        case "tasks/update":
+            try negotiateRequest(request, state: &state)
+            try requireReady(state)
+            try requireTasksCapability(request)
+            guard case .object(let values) = request.params,
+                  case .string(let rawTaskID) = values["taskId"],
+                  let taskIdentity = MCPTaskIdentity(rawValue: rawTaskID),
+                  case .object? = values["inputResponses"] else {
+                throw MCPProtocolError.invalidParams("tasks/update requires a taskId returned by this server and an inputResponses object.")
+            }
+            guard request.id != nil else { return nil }
+            _ = try fetchJob(taskIdentity, client: &client, cancellation: cancellation)
+            return success(id: request.id, result: .object(["resultType": .string("complete")]), modern: isModernRequest(request))
+
+        case "tasks/cancel":
+            try negotiateRequest(request, state: &state)
+            try requireReady(state)
+            try requireTasksCapability(request)
+            guard case .object(let values) = request.params,
+                  case .string(let rawTaskID) = values["taskId"],
+                  let taskIdentity = MCPTaskIdentity(rawValue: rawTaskID) else {
+                throw MCPProtocolError.invalidParams("tasks/cancel requires a taskId returned by this server.")
+            }
+            guard request.id != nil else { return nil }
+            let cancelRequest = AutomationRequest(
+                method: AutomationMethod.jobsCancel,
+                params: .object(["jobID": .string(taskIdentity.jobID.uuidString)]),
+                context: AutomationRequestContext(libraryID: taskIdentity.libraryID, caller: "mcp-tasks")
+            )
+            let response: AutomationResponse
+            do {
+                if client == nil { client = try makeClient() }
+                response = try send(
+                    cancelRequest,
+                    client: client!,
+                    timeout: options.timeout,
+                    cancellation: cancellation
+                )
+            } catch {
+                throw MCPProtocolError.taskUnavailable("Unable to cancel the task: \(error.localizedDescription)")
+            }
+            guard response.error == nil else {
+                throw MCPProtocolError.taskUnavailable(response.error?.message ?? "The task could not be cancelled.")
+            }
+            return success(id: request.id, result: .object(["resultType": .string("complete")]), modern: isModernRequest(request))
+
         case "ping":
             try negotiateRequest(request, state: &state)
             try requireReady(state)
@@ -280,7 +802,7 @@ struct AutomationMCPStdioServer {
             guard request.id != nil else { return nil }
             return success(
                 id: request.id,
-                result: toolsListResult(),
+                result: toolsListResult(modern: isModernRequest(request)),
                 modern: isModernRequest(request)
             )
 
@@ -335,9 +857,37 @@ struct AutomationMCPStdioServer {
                 let response = try send(
                     automationRequest,
                     client: client!,
-                    timeout: options.timeout
+                    timeout: options.timeout,
+                    cancellation: cancellation
                 )
-                toolResult = makeToolResult(response)
+                if let descriptor = AutomationToolCatalog.descriptor(for: toolName),
+                   descriptor.supportsTasks,
+                   isModernRequest(request),
+                   clientRequestsTasks(request),
+                   response.error == nil,
+                    let job = jobSummary(from: response.result) {
+                    let identity = MCPTaskIdentity(job: job)
+                    if let identity {
+                        // Verify that the durable handle is immediately readable before
+                        // advertising CreateTaskResult to the client.
+                        do {
+                            let storedJob = try fetchJob(
+                                identity,
+                                client: &client,
+                                cancellation: cancellation
+                            )
+                            toolResult = taskValue(storedJob, resultType: "task", identity: identity)
+                        } catch {
+                            // The ordinary Job payload still contains its ID and remains
+                            // usable through jobs.get if the durability probe is transiently unavailable.
+                            toolResult = makeToolResult(response)
+                        }
+                    } else {
+                        toolResult = makeToolResult(response)
+                    }
+                } else {
+                    toolResult = makeToolResult(response)
+                }
             } catch {
                 toolResult = makeToolExecutionError(
                     code: "serverUnavailable",
@@ -373,7 +923,11 @@ struct AutomationMCPStdioServer {
             guard request.id != nil else { return nil }
             return success(
                 id: request.id,
-                result: try resourceReadResult(uri: uri),
+                result: try resourceReadResult(
+                    uri: uri,
+                    client: &client,
+                    cancellation: cancellation
+                ),
                 modern: isModernRequest(request)
             )
 
@@ -432,7 +986,7 @@ struct AutomationMCPStdioServer {
             "supportedVersions": .array(
                 MCPProtocolVersion.supported.map { .string($0) }
             ),
-            "capabilities": capabilitiesValue,
+            "capabilities": capabilitiesValue(modern: modern),
             "instructions": .string(
                 "Use read-only tools to inspect the active library, then compose authorized low-risk mutations. Use dryRun for an explicit preview; only high-risk operations require caller acknowledgement plus App foreground confirmation. Removing playlist membership never deletes the library Track or audio file."
             )
@@ -446,7 +1000,7 @@ struct AutomationMCPStdioServer {
     private func initializeResult(protocolVersion: String) -> AutomationJSONValue {
         return .object([
             "protocolVersion": .string(protocolVersion),
-            "capabilities": capabilitiesValue,
+            "capabilities": capabilitiesValue(modern: false),
             "serverInfo": serverInfoValue,
             "instructions": .string(
                 AutomationDocumentation.agentBehaviorGuide
@@ -454,9 +1008,9 @@ struct AutomationMCPStdioServer {
         ])
     }
 
-    private func toolsListResult() -> AutomationJSONValue {
+    private func toolsListResult(modern: Bool) -> AutomationJSONValue {
         .object([
-            "tools": .array(AutomationToolCatalog.all.map(toolValue))
+            "tools": .array(AutomationToolCatalog.all.map { toolValue($0, modern: modern) })
         ])
     }
 
@@ -476,18 +1030,35 @@ struct AutomationMCPStdioServer {
                     "title": .string("Agent Behavior Guide"),
                     "description": .string("Stable Track, Playlist, Source, safety and storage semantics."),
                     "mimeType": .string("text/plain")
+                ]),
+                .object([
+                    "uri": .string(MCPJobResourceSubscriptions.jobsURI),
+                    "name": .string("jobs"),
+                    "title": .string("Library Jobs"),
+                    "description": .string("Current library import, enrichment, conversion, scan, export and write jobs."),
+                    "mimeType": .string("application/json")
                 ])
             ])
         ])
     }
 
-    private func resourceReadResult(uri: String) throws -> AutomationJSONValue {
+    private func resourceReadResult(
+        uri: String,
+        client: inout AutomationIPCClient?,
+        cancellation: AutomationIPCCancellationToken? = nil
+    ) throws -> AutomationJSONValue {
         let text: String
+        let mimeType: String
         switch uri {
         case "kmgccc://capabilities":
             text = AutomationDocumentation.capabilityOverview
+            mimeType = "text/plain"
         case "kmgccc://agent-guide":
             text = AutomationDocumentation.agentBehaviorGuide
+            mimeType = "text/plain"
+        case MCPJobResourceSubscriptions.jobsURI:
+            text = jsonText(try currentJobs(client: &client, cancellation: cancellation))
+            mimeType = "application/json"
         default:
             throw MCPProtocolError.invalidParams("Unknown resource URI: \(uri)")
         }
@@ -495,7 +1066,7 @@ struct AutomationMCPStdioServer {
             "contents": .array([
                 .object([
                     "uri": .string(uri),
-                    "mimeType": .string("text/plain"),
+                    "mimeType": .string(mimeType),
                     "text": .string(text)
                 ])
             ])
@@ -528,6 +1099,24 @@ struct AutomationMCPStdioServer {
                             "name": .string("trackID"),
                             "description": .string("Track UUID to upgrade lyrics for."),
                             "required": .boolean(true)
+                        ])
+                    ])
+                ]),
+                .object([
+                    "name": .string("import_audio_workflow"),
+                    "description": .string(
+                        "Import user-selected audio through the same App pipeline as manual import, including NCM conversion, duplicate handling and automatic metadata, artwork and lyrics enrichment."
+                    ),
+                    "arguments": .array([
+                        .object([
+                            "name": .string("filePaths"),
+                            "description": .string("One absolute file or folder path per line."),
+                            "required": .boolean(true)
+                        ]),
+                        .object([
+                            "name": .string("targetPlaylistID"),
+                            "description": .string("Optional destination Playlist UUID."),
+                            "required": .boolean(false)
                         ])
                     ])
                 ])
@@ -615,6 +1204,32 @@ Follow this structured workflow to ensure lyrics quality:
                 ])
             ])
 
+        case "import_audio_workflow":
+            let paths = arguments["filePaths"] ?? "<one absolute path per line>"
+            let playlist = arguments["targetPlaylistID"]
+                .map { "\n4. Add `targetPlaylistID: \"\($0)\"` to the import call." } ?? ""
+            let text = """
+# Import Audio into the Active Library
+
+1. Convert the `filePaths` argument into an array of absolute paths, one entry per line. Include folders when the user selected a folder.
+2. Check the active Library and target Playlist with `library.get` and `playlist.get` when those IDs or the destination are ambiguous.
+3. Call `library.import(filePaths: \(paths))`. The App owns authorization, managed or referenced placement, NCM conversion, duplicate reuse, Playlist membership and metadata/artwork/lyrics enrichment. Do not write sidecars or decrypt files outside the App.\(playlist)
+4. Poll the returned MCP task with `tasks/get` when the request negotiated Tasks; otherwise poll its App Job with `jobs.get`. Report per-file failures separately from enrichment warnings.
+5. Confirm persisted Track IDs and Playlist membership after completion. Provider no-match warnings are not import failures and do not guarantee enrichment for every song.
+"""
+            return .object([
+                "description": .string("Safe import workflow for MP3, lossless audio and NCM sources."),
+                "messages": .array([
+                    .object([
+                        "role": .string("user"),
+                        "content": .object([
+                            "type": .string("text"),
+                            "text": .string(text)
+                        ])
+                    ])
+                ])
+            ])
+
         default:
             throw MCPProtocolError.invalidParams("Unknown prompt: \(name)")
         }
@@ -675,6 +1290,156 @@ Follow this structured workflow to ensure lyrics quality:
         requestProtocolVersion(request) == MCPProtocolVersion.current
     }
 
+    private func clientRequestsTasks(_ request: MCPRequest) -> Bool {
+        guard case .object(let values) = request.params,
+              case .object(let meta) = values["_meta"],
+              case .object(let clientCapabilities) = meta["io.modelcontextprotocol/clientCapabilities"],
+              case .object(let extensions) = clientCapabilities["extensions"],
+              case .object? = extensions["io.modelcontextprotocol/tasks"] else {
+            return false
+        }
+        return true
+    }
+
+    private func requireTasksCapability(_ request: MCPRequest) throws {
+        guard isModernRequest(request), clientRequestsTasks(request) else {
+            throw MCPProtocolError.missingTasksCapability
+        }
+    }
+
+    private func jobSummary(from value: AutomationJSONValue?) -> AutomationJobSummary? {
+        guard let value else { return nil }
+        if case .object(let fields) = value {
+            if let nested = fields["job"], let summary = decodeJobSummary(nested) {
+                return summary
+            }
+            if case .array(let jobs) = fields["jobs"], jobs.count == 1 {
+                return decodeJobSummary(jobs[0])
+            }
+        }
+        return decodeJobSummary(value)
+    }
+
+    private func decodeJobSummary(_ value: AutomationJSONValue) -> AutomationJobSummary? {
+        guard let data = try? AutomationWireCoding.encoder().encode(value) else { return nil }
+        return try? AutomationWireCoding.decoder().decode(AutomationJobSummary.self, from: data)
+    }
+
+    private func jobSummaries(from value: AutomationJSONValue?) -> [AutomationJobSummary] {
+        guard case .object(let fields)? = value,
+              case .array(let jobs)? = fields["jobs"] else { return [] }
+        return jobs.compactMap(decodeJobSummary)
+    }
+
+    private func taskNotificationValue(for job: AutomationJobSummary) -> AutomationJSONValue? {
+        guard let identity = MCPTaskIdentity(job: job),
+              case .object(var fields) = taskValue(
+                job,
+                resultType: "complete",
+                identity: identity
+              ) else { return nil }
+        fields.removeValue(forKey: "resultType")
+        return .object(fields)
+    }
+
+    private func fetchJob(
+        _ identity: MCPTaskIdentity,
+        client: inout AutomationIPCClient?,
+        cancellation: AutomationIPCCancellationToken? = nil
+    ) throws -> AutomationJobSummary {
+        let response: AutomationResponse
+        do {
+            if client == nil { client = try makeClient() }
+            let request = AutomationRequest(
+                method: AutomationMethod.jobsGet,
+                params: .object(["jobID": .string(identity.jobID.uuidString)]),
+                context: AutomationRequestContext(libraryID: identity.libraryID, caller: "mcp-tasks")
+            )
+            response = try send(
+                request,
+                client: client!,
+                timeout: options.timeout,
+                cancellation: cancellation
+            )
+        } catch {
+            throw MCPProtocolError.taskUnavailable("Unable to read the task: \(error.localizedDescription)")
+        }
+        guard response.error == nil, let result = response.result,
+              let job = decodeJobSummary(result),
+              job.id == identity.jobID,
+              job.libraryID == identity.libraryID else {
+            throw MCPProtocolError.taskUnavailable(
+                response.error?.message ?? "The task is not available in its originating library."
+            )
+        }
+        return job
+    }
+
+    private func taskValue(
+        _ job: AutomationJobSummary,
+        resultType: String,
+        identity: MCPTaskIdentity
+    ) -> AutomationJSONValue {
+        let status: String
+        switch job.state {
+        case .queued, .running, .checkpointed:
+            status = "working"
+        case .completed, .partialFailure, .failed:
+            status = "completed"
+        case .cancelled:
+            status = "cancelled"
+        }
+
+        let createdAt = taskTimestamp(job.createdAt)
+        let lastUpdatedAt = taskTimestamp(job.finishedAt ?? job.startedAt ?? job.createdAt)
+        var fields: [String: AutomationJSONValue] = [
+            "resultType": .string(resultType),
+            "taskId": .string(identity.rawValue),
+            "status": .string(status),
+            "createdAt": .string(createdAt),
+            "lastUpdatedAt": .string(lastUpdatedAt),
+            "ttlMs": .null,
+            "pollIntervalMs": .number(1_500)
+        ]
+
+        let statusMessage: String? = {
+            if let total = job.totalCount, total > 0 {
+                let phase = job.currentPhase ?? job.checkpoint ?? "Working"
+                return "\(phase) (\(job.completedCount)/\(total))"
+            }
+            return job.currentPhase ?? job.checkpoint ?? job.failures.first
+        }()
+        if let statusMessage {
+            fields["statusMessage"] = .string(statusMessage)
+        }
+
+        if status == "completed" {
+            let summary = encodeJSONValue(job) ?? .object([:])
+            let error = job.state == .partialFailure || job.state == .failed
+            let message = job.failures.first ?? jsonText(summary)
+            fields["result"] = .object([
+                "content": .array([
+                    .object(["type": .string("text"), "text": .string(message)])
+                ]),
+                "isError": .boolean(error),
+                "structuredContent": summary
+            ])
+        }
+
+        return .object(fields)
+    }
+
+    private func taskTimestamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    private func encodeJSONValue<Value: Encodable>(_ value: Value) -> AutomationJSONValue? {
+        guard let data = try? AutomationWireCoding.encoder().encode(value) else { return nil }
+        return try? AutomationWireCoding.decoder().decode(AutomationJSONValue.self, from: data)
+    }
+
     /// MCP tool arguments remain the domain payload. This small optional
     /// extension carries the shared App request context without smuggling
     /// transport metadata into every tool schema.
@@ -725,8 +1490,8 @@ Follow this structured workflow to ensure lyrics quality:
         )
     }
 
-    private func toolValue(_ descriptor: AutomationToolDescriptor) -> AutomationJSONValue {
-        .object([
+    private func toolValue(_ descriptor: AutomationToolDescriptor, modern: Bool) -> AutomationJSONValue {
+        var values: [String: AutomationJSONValue] = [
             "name": .string(descriptor.name),
             "title": .string(descriptor.title),
             "description": .string(descriptor.description),
@@ -742,21 +1507,30 @@ Follow this structured workflow to ensure lyrics quality:
                 "x-kmgccc-supports-jobs": .boolean(descriptor.supportsJobs),
                 "x-kmgccc-supports-mcp-tasks": .boolean(descriptor.supportsTasks)
             ]),
-            "execution": .object([
-                "taskSupport": .string("forbidden")
+        ]
+        if modern {
+            values["execution"] = .object([
+                "taskSupport": .string(modern && descriptor.supportsTasks ? "optional" : "forbidden")
             ])
-        ])
+        }
+        return .object(values)
     }
 
-    private var capabilitiesValue: AutomationJSONValue {
-        .object([
+    private func capabilitiesValue(modern: Bool) -> AutomationJSONValue {
+        var capabilities: [String: AutomationJSONValue] = [
             "tools": .object(["listChanged": .boolean(false)]),
             "resources": .object([
-                "subscribe": .boolean(false),
+                "subscribe": .boolean(modern),
                 "listChanged": .boolean(false)
             ]),
             "prompts": .object(["listChanged": .boolean(false)])
-        ])
+        ]
+        if modern {
+            capabilities["extensions"] = .object([
+                "io.modelcontextprotocol/tasks": .object([:])
+            ])
+        }
+        return .object(capabilities)
     }
 
     private var serverInfoValue: AutomationJSONValue {
@@ -769,21 +1543,25 @@ Follow this structured workflow to ensure lyrics quality:
         ])
     }
 
-    private func makeClient() throws -> AutomationIPCClient {
+    private func makeClient(
+        allowLaunch: Bool = true,
+        timeout: TimeInterval? = nil
+    ) throws -> AutomationIPCClient {
+        let clientTimeout = timeout ?? options.timeout
         let socketExists = FileManager.default.fileExists(atPath: options.socketPath)
         let isCustomSocket = options.socketPath != AutomationToolDefaults.socketPath
-        if !options.noLaunch && !socketExists && !isCustomSocket {
+        if allowLaunch && !options.noLaunch && !socketExists && !isCustomSocket {
             launchAppIfNeeded()
         }
         let secretURL = try AutomationIPCSecretStore.url(forSocketPath: options.socketPath)
-        let deadline = Date().addingTimeInterval(options.timeout)
+        let deadline = Date().addingTimeInterval(clientTimeout)
         while Date() < deadline {
             if FileManager.default.fileExists(atPath: secretURL.path) {
                 let secret = try AutomationIPCSecretStore.load(
                     forSocketPath: options.socketPath
                 )
                 let configuration = try AutomationIPCConfiguration(
-                    ioTimeout: options.timeout,
+                    ioTimeout: clientTimeout,
                     sharedSecret: secret
                 )
                 return try AutomationIPCClient(
@@ -798,17 +1576,63 @@ Follow this structured workflow to ensure lyrics quality:
         throw AutomationIPCError.sharedSecretUnavailable
     }
 
+    private func currentJobs(
+        client: inout AutomationIPCClient?,
+        cancellation: AutomationIPCCancellationToken? = nil
+    ) throws -> AutomationJSONValue {
+        if client == nil { client = try makeClient() }
+        let request = AutomationRequest(
+            method: AutomationMethod.jobsList,
+            params: nil,
+            context: AutomationRequestContext(caller: "mcp-resource")
+        )
+        let response = try send(
+            request,
+            client: client!,
+            timeout: options.timeout,
+            cancellation: cancellation
+        )
+        guard response.error == nil else {
+            throw MCPProtocolError.taskUnavailable(
+                response.error?.message ?? "Library jobs are unavailable."
+            )
+        }
+        return response.result ?? .object(["jobs": .array([])])
+    }
+
+    private func readJobsForSubscription() -> AutomationJSONValue? {
+        do {
+            let timeout = min(max(options.timeout, 0.5), 2)
+            let client = try makeClient(allowLaunch: false, timeout: timeout)
+            let request = AutomationRequest(
+                method: AutomationMethod.jobsList,
+                params: nil,
+                context: AutomationRequestContext(caller: "mcp-subscription")
+            )
+            let response = try client.send(request)
+            guard response.error == nil else { return nil }
+            return response.result ?? .object(["jobs": .array([])])
+        } catch {
+            return nil
+        }
+    }
+
     private func send(
         _ request: AutomationRequest,
         client: AutomationIPCClient,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        cancellation: AutomationIPCCancellationToken? = nil
     ) throws -> AutomationResponse {
         let deadline = Date().addingTimeInterval(timeout)
         var lastError: Error?
         while Date() < deadline {
+            if cancellation?.isCancelled == true { throw CancellationError() }
             do {
-                return try client.send(request)
+                return try client.send(request, cancellation: cancellation)
             } catch {
+                if cancellation?.isCancelled == true || error is CancellationError {
+                    throw CancellationError()
+                }
                 lastError = error
                 Thread.sleep(forTimeInterval: 0.1)
             }
@@ -928,17 +1752,6 @@ Follow this structured workflow to ensure lyrics quality:
             return "{}"
         }
         return String(decoding: data, as: UTF8.self)
-    }
-
-    private func write(_ response: MCPResponse) {
-        do {
-            let data = try AutomationWireCoding.encoder().encode(response)
-            FileHandle.standardOutput.write(data)
-            FileHandle.standardOutput.write(Data([0x0A]))
-        } catch {
-            let diagnostic = "MCP response encoding failed: \(error.localizedDescription)\n"
-            FileHandle.standardError.write(Data(diagnostic.utf8))
-        }
     }
 
     private func launchAppIfNeeded() {

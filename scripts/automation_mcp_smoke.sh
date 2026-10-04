@@ -6,11 +6,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PACKAGE_ROOT="$REPO_ROOT/Dependencies/PlayerAutomation"
 SMOKE_SCRATCH="${PLAYER_AUTOMATION_SMOKE_SCRATCH:-${TMPDIR:-/tmp}/kmgccc-player-automation-mcp-smoke}"
 MCP_TIMEOUT="${PLAYER_AUTOMATION_MCP_TIMEOUT:-15}"
-MCP_BIN="${PLAYER_AUTOMATION_BIN:-$SMOKE_SCRATCH/arm64-apple-macosx/debug/player-automation}"
+MCP_BIN="${PLAYER_AUTOMATION_BIN:-}"
 
-if [[ ! -x "$MCP_BIN" ]]; then
+if [[ -z "$MCP_BIN" || ! -x "$MCP_BIN" ]]; then
     swift build --package-path "$PACKAGE_ROOT" --scratch-path "$SMOKE_SCRATCH" -c debug >/dev/stderr
-    MCP_BIN="$SMOKE_SCRATCH/arm64-apple-macosx/debug/player-automation"
+    MCP_BIN="$(swift build --package-path "$PACKAGE_ROOT" --scratch-path "$SMOKE_SCRATCH" -c debug --show-bin-path)/player-automation"
 fi
 
 mcp_args=(mcp-stdio --no-launch --timeout "$MCP_TIMEOUT")
@@ -43,6 +43,8 @@ assert_jq "modern discovery" "$discover_result" '.jsonrpc == "2.0" and .result.c
 tools_result="$(request "$modern_tools")"
 assert_jq "modern tools/list" "$tools_result" '.result.tools | length >= 40'
 assert_jq "job annotations" "$tools_result" '(.result.tools[] | select(.name == "source.refresh") | .annotations["x-kmgccc-supports-jobs"]) == true'
+
+assert_jq "audio import contract" "$tools_result" '(.result.tools[] | select(.name == "library.import") | .annotations["x-kmgccc-supports-jobs"] == true and .inputSchema.required == ["filePaths"] and .inputSchema.properties.targetPlaylistID.type == "string")'
 
 resources_result="$(request "$modern_resources")"
 assert_jq "modern resources/list" "$resources_result" '.result.resources | length >= 2'

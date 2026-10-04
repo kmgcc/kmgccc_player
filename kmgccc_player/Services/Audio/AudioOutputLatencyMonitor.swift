@@ -8,6 +8,7 @@
 //
 
 import CoreAudio
+import CryptoKit
 import Foundation
 
 nonisolated struct AudioOutputLatencySnapshot: Equatable, Sendable {
@@ -42,10 +43,45 @@ nonisolated struct AudioOutputLatencySnapshot: Equatable, Sendable {
     )
 }
 
+nonisolated struct AudioOutputDeviceDescriptor: Equatable, Sendable {
+    let deviceID: AudioDeviceID
+    let uniqueID: String
+    let name: String
+    let transportType: UInt32
+    let sampleRate: Double
+    let isDefault: Bool
+
+    var id: String {
+        AudioOutputLatencyMonitor.stableDeviceID(for: uniqueID)
+    }
+
+    var isBluetooth: Bool {
+        transportType == kAudioDeviceTransportTypeBluetooth
+            || transportType == kAudioDeviceTransportTypeBluetoothLE
+    }
+}
+
+extension Notification.Name {
+    static let audioOutputDevicePreferenceDidChange = Notification.Name(
+        "com.kmgccc.player.audioOutputDevicePreferenceDidChange"
+    )
+}
+
 enum AudioOutputLatencyMonitor {
 
-    static func currentSnapshot() -> AudioOutputLatencySnapshot {
-        guard let deviceID = defaultOutputDeviceID(),
+    static func currentSnapshot(forDeviceUID preferredUID: String? = nil) -> AudioOutputLatencySnapshot {
+        let selectedDeviceID: AudioDeviceID?
+        if let preferredUID {
+            // A persisted App route can refer to a device that is temporarily
+            // disconnected. Report that route as unavailable instead of
+            // presenting the system default as if it were the active route.
+            selectedDeviceID = availableOutputDevices()
+                .first(where: { $0.uniqueID == preferredUID })?.deviceID
+            guard selectedDeviceID != nil else { return .zero }
+        } else {
+            selectedDeviceID = defaultOutputDeviceID()
+        }
+        guard let deviceID = selectedDeviceID,
               let sampleRate: Double = read(
                   deviceID,
                   selector: kAudioDevicePropertyNominalSampleRate
@@ -94,6 +130,63 @@ enum AudioOutputLatencyMonitor {
             streamLatencyFrames: streamLatency,
             seconds: seconds
         )
+    }
+
+    static func availableOutputDevices() -> [AudioOutputDeviceDescriptor] {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let systemObject = AudioObjectID(kAudioObjectSystemObject)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(systemObject, &address, 0, nil, &size) == noErr,
+              size >= UInt32(MemoryLayout<AudioDeviceID>.size) else { return [] }
+        let count = Int(size) / MemoryLayout<AudioDeviceID>.size
+        var deviceIDs = [AudioDeviceID](repeating: kAudioObjectUnknown, count: count)
+        let status = deviceIDs.withUnsafeMutableBufferPointer { buffer in
+            guard let baseAddress = buffer.baseAddress else { return kAudioHardwareBadObjectError }
+            var dataSize = size
+            return AudioObjectGetPropertyData(
+                systemObject,
+                &address,
+                0,
+                nil,
+                &dataSize,
+                baseAddress
+            )
+        }
+        guard status == noErr else { return [] }
+        let defaultID = defaultOutputDeviceID()
+        return deviceIDs.compactMap { deviceID in
+            guard !outputStreamIDs(for: deviceID).isEmpty,
+                  let uniqueID = stringValue(deviceID, selector: kAudioDevicePropertyDeviceUID),
+                  let sampleRate: Double = read(deviceID, selector: kAudioDevicePropertyNominalSampleRate),
+                  sampleRate > 0 else { return nil }
+            return AudioOutputDeviceDescriptor(
+                deviceID: deviceID,
+                uniqueID: uniqueID,
+                name: deviceName(for: deviceID),
+                transportType: read(deviceID, selector: kAudioDevicePropertyTransportType)
+                    ?? kAudioDeviceTransportTypeUnknown,
+                sampleRate: sampleRate,
+                isDefault: deviceID == defaultID
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.isDefault != rhs.isDefault { return lhs.isDefault }
+            let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+            if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+            return lhs.uniqueID < rhs.uniqueID
+        }
+    }
+
+    nonisolated static func stableDeviceID(for uniqueID: String) -> String {
+        let digest = SHA256.hash(data: Data(uniqueID.utf8))
+            .prefix(12)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "audio-device-\(digest)"
     }
 
     private static func defaultOutputDeviceID() -> AudioDeviceID? {

@@ -942,6 +942,10 @@ final class LibraryViewModel {
         preferenceStatsService.getStats(for: trackID)
     }
 
+    func preferenceStats(for trackIDs: [UUID]) -> [UUID: TrackPreferenceStats] {
+        preferenceStatsService.getStats(for: trackIDs)
+    }
+
     func resetMusicPreferences(
         tracks: [Track],
         options: ResetMusicPreferenceOptions,
@@ -1516,17 +1520,26 @@ final class LibraryViewModel {
             return 0
         }
 
-        // Only refresh if tracks were actually imported
-        if result.affectedTrackCount > 0 {
-            await syncVisibleStateFromRepositoryAfterImport()
-            if let playlistID = target.playlistID {
-                await refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
-                    playlistID: playlistID,
-                    previousTrackCount: previousTrackCount
-                )
-            }
-        }
+        await publishImportResult(
+            result, playlistID: target.playlistID, previousTrackCount: previousTrackCount
+        )
         return result.affectedTrackCount
+    }
+
+    /// Shared UI/automation completion: publish repository state and generate
+    /// the initial Playlist artwork through the existing owner.
+    func publishImportResult(
+        _ result: LibraryImportResult,
+        playlistID: UUID?,
+        previousTrackCount: Int
+    ) async {
+        guard result.affectedTrackCount > 0 else { return }
+        await syncVisibleStateFromRepositoryAfterImport()
+        if let playlistID {
+            await refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
+                playlistID: playlistID, previousTrackCount: previousTrackCount
+            )
+        }
     }
 
     /// Plan §11: a stale import request must be cancelled AND explained to
@@ -3585,6 +3598,21 @@ final class LibraryViewModel {
         }
     }
 
+    func searchTrackMetadataCandidatesForAutomation(
+        title: String,
+        artist: String,
+        album: String,
+        duration: Double?
+    ) async throws -> [QQMusicArtworkCandidate] {
+        try await QQMusicHelperProcess.shared.searchTrackArtwork(
+            title: title,
+            artist: artist,
+            album: album,
+            duration: duration.map { Int($0.rounded()) },
+            limit: 5
+        )
+    }
+
     func fetchTrackMetadataDetailForMid(
         _ songMid: String,
         title: String,
@@ -3608,6 +3636,22 @@ final class LibraryViewModel {
             )
             return nil
         }
+    }
+
+    func fetchTrackMetadataDetailForAutomation(
+        _ songMid: String,
+        title: String,
+        artist: String,
+        album: String,
+        duration: Double?
+    ) async throws -> TrackMetadataDetail {
+        try await metadataDetailCoordinator.fetchTrackDetail(
+            title: title,
+            artist: artist,
+            album: album,
+            songMid: songMid,
+            duration: duration.map { Int($0.rounded()) }
+        )
     }
 
     func clearIndexCacheAndRebuild() async {
@@ -3723,7 +3767,7 @@ final class LibraryViewModel {
         }
     }
 
-    private func syncVisibleStateFromRepositoryAfterImport() async {
+    func syncVisibleStateFromRepositoryAfterImport() async {
         await syncVisibleStateFromRepository(reason: "import", invalidatedSelectionIdentities: [])
     }
 

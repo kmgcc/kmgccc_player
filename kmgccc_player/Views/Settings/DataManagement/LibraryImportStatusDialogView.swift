@@ -143,6 +143,8 @@ struct LibraryImportStatusDialogView: View {
     private func taskTitle(_ kind: LibraryTaskKind) -> String {
         switch kind {
         case .importFiles: return "正在导入歌曲"
+        case .libraryBundleExport: return "正在导出资料库"
+        case .embeddedTagWrite: return "正在写入音频标签"
         case .sourceScan: return "正在扫描来源"
         case .ncmConversion: return "正在转换歌曲"
         case .enrichment: return "正在补全信息"

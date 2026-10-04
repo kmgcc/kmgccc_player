@@ -14,6 +14,27 @@ import XCTest
 
 @MainActor
 final class ImportPlannerCommitterTests: XCTestCase {
+    func testManagedNCMConversionFailureIsReportedInsteadOfDiscarded() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let source = fixture.root.appendingPathComponent("broken.ncm")
+        try Data("not an NCM file".utf8).write(to: source)
+        let outcome = await fixture.planner.resolveConversions(
+            filesToImport: [],
+            eligibleNCMFiles: [ImportDiscoveredFile(
+                url: source, memberships: [], primarySourceID: nil, fingerprint: nil
+            )],
+            reusedTracks: [], reusedTrackIDs: [],
+            session: fixture.session, cancellationToken: ImportCancellationToken(),
+            progressController: BatchImportProgressDialogController(presentsWindow: false)
+        )
+        XCTAssertTrue(outcome.resolvedFiles.isEmpty)
+        XCTAssertEqual(outcome.failures.count, 1)
+        XCTAssertEqual(outcome.failures.first?.url, source)
+        XCTAssertFalse(outcome.failures.first?.message.isEmpty ?? true)
+        XCTAssertFalse(outcome.cancelledAfterManagedConversion)
+    }
+
     // MARK: - Planner golden plan
 
     func testPlannerProducesGoldenCandidatePlanAndPlacementsForFixedInput() async throws {

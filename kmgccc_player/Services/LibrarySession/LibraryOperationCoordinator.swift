@@ -1,4 +1,5 @@
 import Foundation
+import PlayerAutomationProtocol
 
 nonisolated enum LibraryOperationError: Error, Equatable {
     case sessionQuiescing
@@ -35,6 +36,8 @@ nonisolated enum LibraryTaskKind: String, Codable, Equatable, Sendable {
     case ncmConversion
     case enrichment
     case indexUpdate
+    case libraryBundleExport
+    case embeddedTagWrite
     case other
 }
 
@@ -45,19 +48,43 @@ nonisolated struct LibraryOperationRetrySpec: Codable, Equatable, Sendable {
     enum Kind: String, Codable, Equatable, Sendable {
         case lyricsRefresh
         case sourceRefresh
+        case libraryImport
     }
 
     let kind: Kind
     let trackIDs: [UUID]
     let sourceID: UUID?
     let force: Bool
+    let targetPlaylistID: UUID?
 
     static func lyricsRefresh(trackIDs: [UUID], force: Bool) -> Self {
-        Self(kind: .lyricsRefresh, trackIDs: trackIDs, sourceID: nil, force: force)
+        Self(
+            kind: .lyricsRefresh,
+            trackIDs: trackIDs,
+            sourceID: nil,
+            force: force,
+            targetPlaylistID: nil
+        )
     }
 
     static func sourceRefresh(sourceID: UUID) -> Self {
-        Self(kind: .sourceRefresh, trackIDs: [], sourceID: sourceID, force: false)
+        Self(
+            kind: .sourceRefresh,
+            trackIDs: [],
+            sourceID: sourceID,
+            force: false,
+            targetPlaylistID: nil
+        )
+    }
+
+    static func libraryImport(targetPlaylistID: UUID?) -> Self {
+        Self(
+            kind: .libraryImport,
+            trackIDs: [],
+            sourceID: nil,
+            force: false,
+            targetPlaylistID: targetPlaylistID
+        )
     }
 }
 
@@ -81,6 +108,7 @@ nonisolated struct LibraryOperationTaskDescriptor: Codable, Equatable, Sendable,
     var partialFailureSummaries: [String]
     var failedItemIDs: [UUID]
     let retrySpec: LibraryOperationRetrySpec?
+    var result: AutomationJSONValue? = nil
 
     init(
         id: UUID,
@@ -121,7 +149,7 @@ nonisolated struct LibraryOperationTaskDescriptor: Codable, Equatable, Sendable,
     private enum CodingKeys: String, CodingKey {
         case id, kind, libraryID, sessionGeneration, state, createdAt, startedAt, finishedAt
         case lastCheckpointLabel, lastCheckpointAt, completedCount, totalCount, currentPhase
-        case partialFailureSummaries, failedItemIDs, retrySpec
+        case partialFailureSummaries, failedItemIDs, retrySpec, result
     }
 
     init(from decoder: Decoder) throws {
@@ -144,6 +172,7 @@ nonisolated struct LibraryOperationTaskDescriptor: Codable, Equatable, Sendable,
             forKey: .partialFailureSummaries
         ) ?? []
         failedItemIDs = try container.decodeIfPresent([UUID].self, forKey: .failedItemIDs) ?? []
+        result = try container.decodeIfPresent(AutomationJSONValue.self, forKey: .result)
         retrySpec = try container.decodeIfPresent(
             LibraryOperationRetrySpec.self,
             forKey: .retrySpec
@@ -474,6 +503,12 @@ final class LibraryOperationCoordinator {
                 phase: phase
             )
         }
+    }
+
+    /// Stores the current structured outcome in the library-scoped Job history.
+    func recordResult(_ result: AutomationJSONValue) {
+        guard let operationID = LibraryOperationContext.current?.operationID else { return }
+        mutateDescriptor(id: operationID) { $0.result = result }
     }
 
     /// Cancels one live operation without affecting unrelated work.

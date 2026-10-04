@@ -1,4 +1,5 @@
 import Foundation
+import PlayerAutomationProtocol
 import SwiftData
 
 struct LibraryAutomationLyricsApplyOutcome: Sendable {
@@ -335,7 +336,10 @@ final class LibrarySession: LibrarySessionLifecycle {
     /// carries a durable, safe retry specification. Unsupported Jobs remain
     /// observable but cannot be guessed or reconstructed from arbitrary data.
     @discardableResult
-    func retryAutomationJob(id: UUID) -> LibraryOperationTaskDescriptor? {
+    func retryAutomationJob(
+        id: UUID,
+        importSelection: LibraryInitialImportSelection? = nil
+    ) -> LibraryOperationTaskDescriptor? {
         guard let descriptor = operationCoordinator.taskDescriptor(operationID: id),
               descriptor.state == .failed
                 || descriptor.state == .partialFailure
@@ -354,6 +358,18 @@ final class LibrarySession: LibrarySessionLifecycle {
         case .sourceRefresh:
             guard let sourceID = retrySpec.sourceID else { return nil }
             return startAutomationSourceRefresh(sourceID: sourceID)
+        case .libraryImport:
+            guard let importSelection,
+                  retrySpec.targetPlaylistID.map({ playlistID in
+                      libraryViewModel.playlists.contains { $0.id == playlistID }
+                  }) ?? true else {
+                return nil
+            }
+            return startAutomationImport(
+                selection: importSelection,
+                playlistID: retrySpec.targetPlaylistID,
+                retryEnrichment: true
+            )
         }
     }
 
@@ -723,6 +739,234 @@ final class LibrarySession: LibrarySessionLifecycle {
         _ work: @escaping @MainActor () async -> Void
     ) -> Bool {
         operationCoordinator.start(work, kind: .importFiles)
+    }
+
+    /// The same destination, duplicate, conversion and enrichment pipeline as
+    /// manual import, retained by this session rather than the IPC request.
+    @discardableResult
+    func startAutomationImport(
+        selection: LibraryInitialImportSelection,
+        playlistID: UUID? = nil,
+        retryEnrichment: Bool = false
+    ) -> LibraryOperationTaskDescriptor? {
+        guard !isClosed else { return nil }
+        let ownedSelection = selection.retainedCopy()
+        let importContext = LibraryImportContext(
+            libraryID: context.id,
+            sessionGeneration: context.generation,
+            destination: playlistID.map { .playlist($0) } ?? .libraryOnly,
+            origin: .automation
+        )
+        let started = operationCoordinator.start({ [weak self] in
+            defer { ownedSelection.release() }
+            guard let self else { return }
+            let previousTrackCount = playlistID.flatMap { id in
+                self.libraryViewModel.playlists.first { $0.id == id }?.trackCount
+            } ?? 0
+            let outcome = await self.fileImportService.importSelectedURLs(
+                ownedSelection.urls, context: importContext
+            )
+            await self.libraryViewModel.publishImportResult(
+                outcome, playlistID: playlistID, previousTrackCount: previousTrackCount
+            )
+            var values: [String: AutomationJSONValue] = [
+                "libraryID": .string(self.context.id.uuidString),
+                "mode": .string(self.context.mode.rawValue),
+                "trackIDs": .array(outcome.trackIDs.map { .string($0.uuidString) }),
+                "importedTrackCount": .number(Double(outcome.importedTrackCount)),
+                "reusedTrackCount": .number(Double(outcome.reusedTrackCount)),
+                "playlistMembershipAdditions": .number(Double(outcome.playlistMembershipAdditions)),
+                "alreadyInPlaylistCount": .number(Double(outcome.alreadyInPlaylistCount)),
+                "pendingNCMCount": .number(Double(outcome.pendingNCMCount)),
+                "failures": .array(outcome.failures.map { .object([
+                    "path": .string($0.url.path), "message": .string($0.message)
+                ]) }),
+                "enrichmentCompleted": .boolean(false)
+            ]
+            if let playlistID { values["targetPlaylistID"] = .string(playlistID.uuidString) }
+            self.operationCoordinator.recordResult(.object(values))
+            self.operationCoordinator.recordProgress(
+                completedCount: outcome.affectedTrackCount,
+                totalCount: outcome.affectedTrackCount + outcome.failures.count,
+                phase: "import enrichment"
+            )
+            for failure in outcome.failures.prefix(50) {
+                self.operationCoordinator.recordPartialFailure("\(failure.url.path): \(failure.message)")
+            }
+            if outcome.wasRejectedAsStale {
+                self.operationCoordinator.recordPartialFailure("Import rejected: library session changed")
+            }
+            let newTrackIDs = Set(outcome.newTrackIDs)
+            let affectedTrackIDs = Set(outcome.trackIDs)
+            let enrichmentTrackIDs: Set<UUID>
+            if retryEnrichment {
+                let reusedTrackIDs = affectedTrackIDs.subtracting(newTrackIDs)
+                let reusedTracks = self.libraryViewModel.allTracks.filter {
+                    reusedTrackIDs.contains($0.id)
+                }
+                await self.importEnrichmentService.enqueueTracks(reusedTracks)
+                enrichmentTrackIDs = affectedTrackIDs
+            } else {
+                enrichmentTrackIDs = newTrackIDs
+            }
+            do {
+                let warnings = try await self.importEnrichmentService.waitForEnrichment(
+                    for: enrichmentTrackIDs
+                )
+                await self.libraryViewModel.syncVisibleStateFromRepositoryAfterImport()
+                values["enrichmentCompleted"] = .boolean(true)
+                values["enrichmentWarnings"] = .array(warnings.map { .string($0) })
+                self.operationCoordinator.recordResult(.object(values))
+                self.operationCoordinator.recordCheckpoint("Import and enrichment complete")
+            } catch is CancellationError {
+                let cancelledEnrichmentIDs = retryEnrichment
+                    ? affectedTrackIDs
+                    : newTrackIDs
+                await self.fileImportService.cancelEnrichment(for: cancelledEnrichmentIDs)
+            } catch {
+                self.operationCoordinator.recordPartialFailure("Enrichment failed: \(error)")
+            }
+        }, kind: .importFiles, retrySpec: .libraryImport(targetPlaylistID: playlistID))
+        guard started else {
+            ownedSelection.release()
+            return nil
+        }
+        return operationCoordinator.taskDescriptors.last
+    }
+
+    /// Exports a portable, path-free Library snapshot while retaining the
+    /// selected destination's security scope and this Library session until
+    /// every media asset has been copied or reported unavailable.
+    @discardableResult
+    func startAutomationLibraryBundleExport(
+        destinationDirectory: URL,
+        destinationScopeStarted: Bool,
+        revision: String,
+        tracks: [LibraryBundleExportTrackInput],
+        playlists: [LibraryBundleExportPlaylistInput]
+    ) -> LibraryOperationTaskDescriptor? {
+        guard !isClosed else {
+            if destinationScopeStarted { destinationDirectory.stopAccessingSecurityScopedResource() }
+            return nil
+        }
+        let started = operationCoordinator.start({ [weak self] in
+            defer {
+                if destinationScopeStarted {
+                    destinationDirectory.stopAccessingSecurityScopedResource()
+                }
+            }
+            guard let self else { return }
+            do {
+                let outcome = try await LibraryBundleExportService.export(
+                    libraryID: self.context.id,
+                    mode: self.context.mode.rawValue,
+                    revision: revision,
+                    destinationDirectory: destinationDirectory,
+                    tracks: tracks,
+                    playlists: playlists,
+                    progress: { [weak self] completed, total, phase in
+                        self?.operationCoordinator.recordProgress(
+                            completedCount: completed,
+                            totalCount: total,
+                            phase: phase
+                        )
+                    }
+                )
+                self.operationCoordinator.recordResult(.object([
+                    "libraryID": .string(self.context.id.uuidString),
+                    "outputDirectory": .string(outcome.outputDirectory.path),
+                    "trackCount": .number(Double(outcome.trackCount)),
+                    "playlistCount": .number(Double(outcome.playlistCount)),
+                    "copiedFileCount": .number(Double(outcome.copiedFileCount)),
+                    "copiedBytes": .number(Double(outcome.copiedBytes)),
+                    "failures": .array(outcome.failures.map(AutomationJSONValue.string))
+                ]))
+                for failure in outcome.failures.prefix(50) {
+                    self.operationCoordinator.recordPartialFailure(failure)
+                }
+                self.operationCoordinator.recordCheckpoint("Library bundle export complete")
+            } catch is CancellationError {
+                self.operationCoordinator.recordCheckpoint("Library bundle export cancelled")
+            } catch {
+                self.operationCoordinator.recordPartialFailure("Library bundle export failed")
+            }
+        }, kind: .libraryBundleExport)
+        guard started else {
+            if destinationScopeStarted { destinationDirectory.stopAccessingSecurityScopedResource() }
+            return nil
+        }
+        return operationCoordinator.taskDescriptors.last
+    }
+
+    /// Writes ID3 tags on staged MP3 copies, verifies each copy, then atomically
+    /// replaces the matching file. The App Job serializes work with other
+    /// Library operations and rechecks Track revisions immediately before each
+    /// file mutation.
+    @discardableResult
+    func startAutomationEmbeddedTagWrite(
+        requests: [MP3EmbeddedTagService.WriteRequest]
+    ) -> LibraryOperationTaskDescriptor? {
+        guard !isClosed else { return nil }
+        let started = operationCoordinator.start({ [weak self] in
+            guard let self else { return }
+            var updatedTrackIDs: [UUID] = []
+            var conflictedTrackIDs: [UUID] = []
+            var failedTrackIDs: [UUID] = []
+            for (index, request) in requests.enumerated() {
+                guard !Task.isCancelled else { break }
+                guard let track = self.libraryViewModel.allTracks.first(where: { $0.id == request.trackID }),
+                      self.libraryViewModel.automationTrackRevision(for: track) == request.expectedTrackRevision else {
+                    conflictedTrackIDs.append(request.trackID)
+                    self.operationCoordinator.recordPartialFailure(
+                        "\(request.trackID.uuidString): metadata changed before embedded-tag write",
+                        itemID: request.trackID
+                    )
+                    self.operationCoordinator.recordProgress(
+                        completedCount: index + 1,
+                        totalCount: requests.count,
+                        phase: "writing embedded tags"
+                    )
+                    continue
+                }
+                do {
+                    let writeTask = Task.detached(priority: .utility) {
+                        _ = try MP3EmbeddedTagService.patch(at: request.fileURL, fields: request.fields)
+                    }
+                    try await withTaskCancellationHandler {
+                        try await writeTask.value
+                    } onCancel: {
+                        writeTask.cancel()
+                    }
+                    updatedTrackIDs.append(request.trackID)
+                    self.operationCoordinator.recordCheckpoint("wrote embedded tags \(request.trackID.uuidString)")
+                } catch {
+                    failedTrackIDs.append(request.trackID)
+                    self.operationCoordinator.recordPartialFailure(
+                        "\(request.trackID.uuidString): \(MP3EmbeddedTagService.publicMessage(for: error))",
+                        itemID: request.trackID
+                    )
+                }
+                self.operationCoordinator.recordProgress(
+                    completedCount: index + 1,
+                    totalCount: requests.count,
+                    phase: "writing embedded tags"
+                )
+            }
+            let cancelled = Task.isCancelled
+            self.operationCoordinator.recordResult(.object([
+                "updatedTrackIDs": .array(updatedTrackIDs.map { .string($0.uuidString) }),
+                "conflictedTrackIDs": .array(conflictedTrackIDs.map { .string($0.uuidString) }),
+                "failedTrackIDs": .array(failedTrackIDs.map { .string($0.uuidString) }),
+                "cancelled": .boolean(cancelled),
+                "completedCount": .number(Double(updatedTrackIDs.count + conflictedTrackIDs.count + failedTrackIDs.count)),
+                "totalCount": .number(Double(requests.count))
+            ]))
+            self.operationCoordinator.recordCheckpoint(
+                cancelled ? "embedded-tag write cancelled" : "embedded-tag write complete"
+            )
+        }, kind: .embeddedTagWrite)
+        guard started else { return nil }
+        return operationCoordinator.taskDescriptors.last
     }
 
     /// Starts an automation-owned referenced Source import without keeping the

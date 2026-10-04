@@ -820,7 +820,14 @@ struct SidebarView: View {
     private var activeLibraryImportTask: LibraryOperationTaskDescriptor? {
         appSession.activeLibraryTasks.reversed().first { task in
             !task.state.isTerminal
-                && [.importFiles, .sourceScan, .ncmConversion, .enrichment].contains(task.kind)
+                && [
+                    .importFiles,
+                    .sourceScan,
+                    .ncmConversion,
+                    .enrichment,
+                    .libraryBundleExport,
+                    .embeddedTagWrite
+                ].contains(task.kind)
         }
     }
 
@@ -828,6 +835,8 @@ struct SidebarView: View {
         if let task = activeLibraryImportTask {
             let title: String
             switch task.kind {
+            case .libraryBundleExport: title = "正在导出资料库"
+            case .embeddedTagWrite: title = "正在写入音频标签"
             case .sourceScan: title = "正在扫描来源"
             case .ncmConversion: title = "正在转换歌曲"
             case .enrichment: title = "正在补全信息"

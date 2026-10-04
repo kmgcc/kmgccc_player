@@ -28,20 +28,20 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 | Domain | Methods | Notes |
 | --- | --- | --- |
 | System | `system.ping`, `system.info` | 不切换 active Library |
-| Library / Lifecycle / Query | `library.list`, `library.create/open/switch/rename/relocate/remove`, `library.tracks` | 资料库可由 App-owned 生命周期事务创建、打开、切换、重命名、迁移和移入废纸篓；查询支持结构化过滤、组合 predicate、排序、offset 分页，并返回 opaque snapshot revision |
-| Playlist | `playlist.list/get/create/rename/delete/addTracks/removeTracks/replaceTracks/reorder` | Track identity 先解析；membership mutation 不删文件 |
-| Source | `source.list/create/bindPlaylist/setExcludedPath/setMonitorPolicy/remove/refresh` | 新 Source 由 App picker 创建 security-scoped bookmark；授权后的 create/import 与 refresh 返回 Job；排除目录不会删除既有 Track，monitor policy 可设 on/off |
-| Playback | `playback.state/play/pause/next/previous/seek/setVolume/setMode` | 统一进入 PlaybackCoordinator |
-| Queue | `queue.get/replace/enqueue/enqueueNext/clear` | 返回 opaque queue revision |
-| History | `history.list/clear` | 清空 History 是 App confirmation 的高风险操作 |
-| Metadata | `metadata.get/patch` | Track、Artist、Album、Playlist 都是一等目标；Track 支持批量字段写回，Artist/Album 支持 sidecar 元数据和名称重整，Playlist 支持名称/描述；不写原始文件 embedded tags；Track 批量 10 首及以上需 `confirm` 与 App 前台确认 |
-| Artwork | `artwork.search/get/apply` | Track、Artist、Album 可搜索候选；Track、Artist、Album、Playlist 都可读写 App-owned artwork。支持 App 选图、路径提示、base64 或 `clear`；Track 批量 10 首及以上需 `confirm` 与 App 前台确认 |
+| Library / Lifecycle / Query | `library.list/get`, `library.create/open/switch/rename/relocate/remove`, `library.tracks/stats/report/import`, `library.bundle.export`, `library.selection.list/create/get/delete` | 资料库可由 App-owned 生命周期事务创建、打开、切换、重命名、迁移和移入废纸篓；Track 查询支持结构化过滤、排序、分页和 revision；`library.report` 提供版本化分页 machine JSON；`library.bundle.export` 以 Job 打包 path-free metadata、Playlist membership、可用媒体、封面和歌词；有序 selection snapshot 可持久保存并复用 |
+| Playlist | `playlist.list/get/create/rename/delete/addTracks/addSelection/removeTracks/replaceTracks/reorder/diff/import/export` | Track identity 先解析；membership mutation 不删文件；`addSelection` 复用持久快照；`diff` 支持保序 union/intersection/difference 与分页；M3U8 exchange 保留顺序并报告未匹配项 |
+| Source | `source.list/get/config.export/config.import/create/rename/bindPlaylist/setExcludedPath/setMonitorPolicy/remove/refresh` | 新 Source 由 App picker 创建 security-scoped bookmark；授权后的 create/import 与 refresh 返回 Job；配置交换只迁移已存在 Source 的显示名、监听策略和排除路径，不携带路径、bookmark、扫描状态或 Playlist 绑定；导入支持 dry-run、revision 和 App 前台确认 |
+| Playback | `playback.state/play/playPlaylist/toggle/pause/next/previous/seek/setVolume/setMode` | 统一进入 PlaybackCoordinator；Playlist 播放保留当前排序 |
+| Queue | `queue.get/upcoming/replace/enqueue/enqueueNext/remove/reorder/clear` | 返回 opaque queue revision；重排保留重复项语义，清空队列保留当前正在播放的音频 |
+| History | `history.list/stats/clear` | `history.list` 支持时间窗、文本／Track／Artist／Album 筛选、limit/offset 分页和 revision 冲突检测；`history.stats` 可按 Track／Artist／Album 汇总播放次数与聆听时长；清空 History 是 App confirmation 的高风险操作 |
+| Metadata | `metadata.get/export/import/search/applyCandidate/patch`、`metadata.embedded.get/patch` | App metadata 与文件内标签分开读写；文件标签读取使用当前授权音频文件，MP3 写入支持 ID3v2.3/v2.4、逐首原子替换和 Job；其他格式可读的字段由 AVFoundation 提供但当前不可写；跨库 Track 文档分页、QQMusic + MusicBrainz 候选排序和 revision 冲突保护继续复用 App owner |
+| Artwork | `artwork.search/get/apply/applyCandidate` | Track、Artist、Album 可搜索候选并以绑定 Library/目标/revision 的候选 ID 直接预览或应用；候选提供跨 provider `matchQuality`、provider 原始 `confidence`、图片分辨率和匹配字段；Track、Artist、Album、Playlist 都可读写 App-owned artwork。支持 App 选图、路径提示、base64 或 `clear`；Track 批量 10 首及以上需 `confirm` 与 App 前台确认 |
 | Lyrics | `lyrics.get/search/candidates/compare/apply/refresh` | 候选可比较和明确应用；`lyrics.apply` 也可直接写入校验过的 `ttmlText`；refresh 返回 App-owned Job，逐字优先 |
-| Jobs | `jobs.list/get/cancel/retry` | 每个资料库保留有界历史；支持可重建的 Lyrics/Source Job 重试 |
-| Diagnostics | `diagnostics.health` | Library/Source/missing/Job/storage/Playlist-reference evidence |
-| Settings | `settings.get/patch` | 当前只开放持久的 referenced Track deletion policy，并带 revision |
+| Jobs | `jobs.list/get/cancel/retry`；MCP `tasks/get/update/cancel`；Resource `kmgccc://jobs` | 每个资料库保留有界历史；支持可重建的 Lyrics/Source Job 重试；现代 stdio MCP 可订阅 Jobs 资源变化，也可逐请求声明 Tasks 后接收 Task 状态通知、轮询与取消 |
+| Diagnostics | `diagnostics.health` | 返回机器可读的 Library/Source/missing/Job/storage/Playlist-reference 健康报告，并统计缺歌词、缺封面和关键 Metadata 字段覆盖率 |
+| Settings / Audio | `settings.schema/get/patch/validate/reset`, `audio.get/patch` | Settings 覆盖导入补全时序、外观、封面着色、可视化 HDR、Dock 进度及 referenced 删除策略；支持 schema、无副作用校验、revision 和默认值 reset；Audio 读取 gapless scheduling/AAC trim、可用输出设备及系统／App 路由状态，并控制 gapless scheduling/AAC trim 和 App 输出设备选择 |
 | Storage | `storage.inspect/validate/orphans/backup/diff/reload/repair` | inspect/validate/orphans/diff 只读；backup 只复制 JSON/sidecar/enrichment 文件；reload 重新载入当前存储；repair 仅补齐 App-owned scaffolding，不改 domain data |
-| Files | `files.inspect/rename/move/delete` | inspect 只读；rename/move 遵守 Source 授权和路径 containment，批量需 preview/App confirmation；delete 默认 scope 拒绝且始终前台确认 |
+| Files | `files.inspect/reveal/export/rename/move/delete` | reveal 使用已授权路径；export 经 App folder picker 把音频拷贝到用户选择的目录并保留原件；rename/move 遵守 Source 授权和路径 containment，批量需 preview/App confirmation；delete 默认 scope 拒绝且始终前台确认 |
 | Policy | `automation.capabilities/scopes/grantScope/revokeScope` | scope 状态由 App 持久化并执行 |
 
 `library.tracks` 仍返回 Track 的 `artworkAvailable` 和 `artworkFileName`，而 `artwork.get`
@@ -59,10 +59,39 @@ Agent 需要发现实体时，可用 `metadata.get` 的 `entityType`（`artist`�
 分页列出对应实体，并用 `query` 按名称、canonical key 或描述筛选；每一页返回 `offset`、`limit`、
 `nextOffset` 和集合 revision。单个目标查询仍使用四选一 ID/key，不与 `entityType` 混用。
 
+`metadata.search(trackID)` 同时查询 bundled QQMusic helper 与 MusicBrainz，返回跨 provider 的
+`matchQuality`（0–1）、provider 自有 `confidence`、当前 Track revision 和逐 provider 失败提示。
+统一匹配分数按标题 45%、艺人 30%、专辑 15%、时长 10% 加权；缺少的字段会从权重总和中剔除。
+它是用于比较和排序的字段相似度，不是 provider 成功概率。MusicBrainz 候选 ID 使用
+`musicbrainz:<recording UUID>`；应用前会重新确认它仍匹配当前 Track，再读取录音详情。
+`metadata.export/import` 提供版本化的 Track metadata JSON 文档交换。导出可按显式 Track IDs
+选择，也可用 `limit/offset` 分页，附带来源 Library、集合 revision、逐 Track revision 和可编辑字段；
+不包含文件路径、音频、封面、歌词正文、Source 授权或实时运行状态。导入和导出每页最多 100 首，
+限制单帧体积；CLI `--params-file` 输入最多 750,000 字节；
+跨 Library 必须显式提供完整 `trackIDMap`，不会靠模糊标题自动匹配。先 dry-run 查看逐曲目状态，
+实际写入要求 metadataWrite scope、`confirm:true` 和 App 前台确认。默认仅填空字段，覆盖需显式设置；
+同库导入使用逐曲目 revision 检查，所有写入仍经 App-owned metadata persistence。
+`metadata.applyCandidate` 返回实际 `previewPatch`；默认只补空字段，只有显式设置
+`overwriteExistingFields:true` 才覆盖现有值。Dry-run 不写 sidecar；应用会用查询开始时的 Track
+revision 检查并发修改，并经 LibraryViewModel persistence owner 落盘。它不写原音频 embedded tags。
+
+`metadata.embedded.get` 实时读取活动音频文件标签；其他容器使用 AVFoundation 可提取字段，响应会
+明确标记 `supportedForWrite=false`。`metadata.embedded.patch` 当前只写 MP3 ID3v2.3/v2.4，接受
+`title`、`artist`、`album`、`albumArtist`、`composer`、`genre`、`year`、`trackNumber`、
+`discNumber`、`comment` 和 `lyrics`；显式 `null` 用于移除对应标签。写入前必须携带每首 Track 的
+`expectedRevisions` 并先执行 `dryRun=true`；实际写入还要求 `confirm=true` 与 App 前台确认。
+每个文件先写同目录暂存副本并读回校验，再原子替换；批次作为 Job 执行，单曲失败不会改动其原文件。
+遇到非 MP3、损坏标签或无法安全保留的 ID3 变体会逐首报告为不支持，不会尝试转码。
+MusicBrainz 请求使用可识别的 User-Agent 并由 App 端按每秒至多一个请求节流，遵守
+[MusicBrainz API rate limits](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting)。
+
 `artwork.search` 复用 App 的 NetEase、Sacad 和 QQMusic provider 聚合/排序，支持 Track、Artist、
-Album；Playlist 没有联网搜索语义，但支持 `artwork.get/apply`。每个候选返回候选元数据与
-`imageBase64`，便于 Agent 直接审阅；审阅后可把候选 `imageBase64` 传给 `artwork.apply`。
-为适应本地 IPC frame 上限，过大的候选会生成受限尺寸的 inline JPEG，并在
+Album；Playlist 没有联网搜索语义，但支持 `artwork.get/apply`。每个候选返回稳定的
+`candidateID`、候选元数据、跨 provider `matchQuality` 与 `imageBase64`，便于 Agent 直接审阅；
+分数结合匹配字段、像素尺寸和方形裁切适配度，不替代 provider 原生 `confidence`；审阅后可用
+`artwork.applyCandidate` 直接预览或应用，不必回传图片字节。候选在内存中保留 15 分钟，绑定
+资料库、目标与封面 revision；过期、切库或并发修改会拒绝写入。为适应本地 IPC frame 上限，
+过大的候选会生成受限尺寸的 inline JPEG，并在
 `originalByteCount` 保留 provider 原始大小提示。所有 apply 都写入资料库 App-owned artwork
 sidecar；它不会改写音频文件内部的 embedded artwork/tag。
 
@@ -94,11 +123,34 @@ sidecar；它不会改写音频文件内部的 embedded artwork/tag。
 `albumContains`、`genreContains`、`sourceID`、`playlistID`、`availability`、`missing`、
 `hasLyrics`、`lyricsStatus`、`hasArtwork`、`addedAfter`、`addedBefore`、`releaseAfter`、
 `releaseBefore`、`durationMin`、`durationMax`、`metadataConfidenceMin`、`codec`、`format`、
-`sampleRateHz` 和 `bitDepth`。`all` 是 AND，`any` 是 OR，`not` 是 NOT。
+`sampleRateHz` 和 `bitDepth`。播放偏好字段还支持 `likeState`（`none/liked/disliked`）、
+`playCountMin/Max`、`completePlayCountMin`、`skipCountMin`、`lastPlayedAfter/Before`、
+`totalPlayedSecondsMin` 和 `preferenceScoreMin`。播放偏好筛选、对应排序以及
+`includePreferenceStats:true` 需要 `history.read`；当前没有独立的数值星级字段。
+`all` 是 AND，`any` 是 OR，`not` 是 NOT。
+
+`library.tracks` 与 `library.report` 可以通过 `includePreferenceStats:true` 读取每首歌的播放／
+完成／跳过次数、总聆听时间、最近播放时间、手动 like 状态和偏好分数。此时结果 revision
+也纳入这些值，保证跨页读取期间的播放偏好变化会触发 `conflict`。CLI 可用
+`library tracks --params-json '{"includePreferenceStats":true}'` 或在 `library report` 使用同一字段。
 
 响应包含 `total`、`offset`、`limit`、`nextOffset`、`revision` 和每首歌的
 source/playlist membership。下一页可带上上一页的 `revision` 作为 `expectedRevision`；如果
 Library 或 Playlist membership 在分页期间改变，会返回 `conflict`，调用方应重新查询。
+
+`library.report` 将资料库统计、一页 Playlist 摘要和一页完整 Track metadata 投影合并为版本化
+JSON。Track 与 Playlist 使用独立 `offset/limit` 和 `playlistOffset/playlistLimit` 分页，单页各最多
+100 项，并共用同一集合 revision。只有显式传 `includeFilePaths:true` 且已授予 `files.read` 时才
+附加本地路径。报告不嵌入图片、歌词正文或音频数据；要保存报告文件，调用方可将各页 JSON 输出写入
+自己的目标位置。
+
+`library.selection.create` 可保存有序 `trackIDs` 快照，也可保存 `library.tracks.filter` 支持的
+结构化 predicate。创建时可传 `expectedRevision` 检查来源查询是否仍新鲜。静态快照保留原 ID 顺序；
+predicate 快照在 `get`、`list` 和 `playlist.addSelection` 时按当前元数据、技术信息、播放偏好和
+Playlist membership 重新求值；包含播放偏好条件的调用需要 `history.read`。快照不保存媒体或路径，
+最多保留 100 个、每个最多解析 10,000 首，30 天后过期。
+`playlist.addSelection` 返回本次实际使用的 selection revision，并支持 Playlist revision 与 dry-run；
+它不会导入、复制或删除文件。
 
 ## Risk and scope
 
@@ -152,18 +204,28 @@ entries、`failedItemIDs` 和 `retryable`。
 每个资料库的有界 Job 历史写在其 `Settings/automation-jobs.json`。App 重启时，未到达终态
 的旧 Job 会恢复为带 recovery failure 的 `failed` 记录；已经到达终态的记录可以继续由
 `jobs.list/get` 观察。`jobs.cancel` 是协作式取消，已提交的 domain data 不会回滚；对带有
-安全 retry spec 的失败、部分失败或取消 Job，`jobs.retry` 会创建新的 Job，歌词批处理优先
-使用原 Job 的 `failedItemIDs`，避免重复处理整批。Source refresh 也可以安全重建。
+安全 retry spec 的失败、部分失败或取消 Job，`jobs.retry` 会创建新的 Job。歌词批处理优先
+使用原 Job 的 `failedItemIDs`；Source refresh 使用原 Source ID。导入重试保留目标 Playlist ID，
+但 retry spec 不保存输入路径或 security-scoped bookmark。跨重启后，调用方必须用
+`jobs.retry` 重新提供 `filePaths`，由 App 重新取得必要的系统授权；导入身份去重避免重复建 Track。
+Job 的逐文件失败结果仍可能包含失败文件路径，供调用方诊断。
 Source 授权 UI 本身仍属于前台交互，只有用户完成授权后才会返回 `completed:false` 的
 import Job。
 
-## Not yet exposed
+MCP 2026-07-28 clients 可在每个 `tools/call` 的 `_meta.io.modelcontextprotocol/clientCapabilities`
+声明 `io.modelcontextprotocol/tasks`。具备 `supportsTasks` 的 Job Tool 随后返回可用
+`tasks/get` 读取的 Task；`tasks/update` 对当前没有 input request 的任务作空确认，
+`tasks/cancel` 映射到 App 的协作式 `jobs.cancel`。Task ID 绑定 Library ID 和 Job ID；原 Library
+未 active 时需先切回。未声明扩展的请求保留原 `CallToolResult`/Job 响应。CLI 一直通过
+`jobs.get/cancel/retry` 管理 Job。
 
-当前代码没有足够稳定、独立的 owner 时，不开放伪 capability。文件级 reveal/copy/export、
-embedded tag 写入、远程 HTTP transport、MCP Tasks 映射、复杂 Settings patch 和任意 JSON
-write 仍需沿用后续阶段的专门设计。Artist/Album 批量 selection orchestration、Playlist
-联网 artwork search 也没有伪装成已有能力；当前可以逐实体读取/写入，并可对 Track 做批量
-Artwork/Metadata mutation。Storage backup 是 metadata-only：它不复制
+## Remaining plan boundaries
+
+当前仍需专门 owner 或产品决策的范围包括：MP3 以外的 embedded tag 写入、未纳入 schema 的复杂全局
+Settings，以及远程 HTTP/XPC transport。远程 transport 按真实需求评估，不属于当前 stdio 阶段承诺。
+这里保留的是明确的计划边界，不能据此推断当前能力不可用。Artist/Album 可逐实体处理；Playlist
+联网 artwork search 暂无 provider。
+Storage backup 是 metadata-only：它不复制
 音频、缓存、索引或 live SQLite；`storage.diff` 只接受本 App 为当前资料库创建的 backup 路径。
 高级 Agent 可按 [Agent Behavior Guide](agent-behavior-guide.md) 使用诊断、backup/diff、源码审查
 和 validate/reload 进行受控 fallback。
@@ -177,3 +239,25 @@ Artwork/Metadata mutation。Storage backup 是 metadata-only：它不复制
 目录会被回收，因此需要在同一次调用结果中保存新的 `backupPath`。`storage.diff` 比较当前可观测文件与该 manifest，`storage.reload`
 在受控底层修改后重新载入 App-owned Library。底层 JSON write 仍不是普通 Tool，必须由高级用户
 依据当前版本源码自行执行，并在修改前备份、修改后 validate/reload。
+
+## Audio import
+
+`library.import` 接受非空 `filePaths` 数组（绝对路径或 `~/` 路径；文件、文件夹可混合）、
+可选 `targetPlaylistID` 和 `dryRun`。托管与原位资料库共用手动导入的 FileImportService，
+包含 NCM 转换、重复识别、歌单归入、嵌入标签／封面／歌词读取，以及在线补全。
+补全遵循 App 当前设置及缺失字段策略，已有用户内容沿用 UI 的保护规则。
+
+返回 `libraryID`、`mode`、`filePaths` 和 `job`。调用 `jobs.get` 至终态后检查 `result`：
+`trackIDs`、`importedTrackCount`、`reusedTrackCount`、`playlistMembershipAdditions`、
+`alreadyInPlaylistCount`、`pendingNCMCount`（本批发现的 NCM 数）、逐文件 `failures`、
+`enrichmentCompleted` 和 `enrichmentWarnings`。导入结果可在补全进行中查询，终态 Job
+及结果保存在资料库内；provider 无匹配会留下补全提示，不撤销已经导入的音频。
+即时补全模式的匹配情况继续由曲目实际 metadata/artwork/lyrics 状态核验。
+
+普通导入要求 `library.read/write`；指定歌单追加 `playlist.write`，原位模式追加
+`source.write`。dry-run 只要求 `library.read`，不扫描、不解密、不补全，也不打开授权面板。
+App 已能访问的文件直接导入；缺少访问权限时使用 App 的文件选择器，选择应与请求路径对应。
+导入 Job 可以取消；已提交曲目保留，尚未结束的本批新增曲目后台补全会取消。失败、部分失败或
+取消的导入 Job 可重试，retry spec 保留目标 Playlist ID；调用方重新提供 `filePaths`，App 再次
+检查并取得所需授权，已入库文件按既有 identity 规则复用。retry spec 不保存路径或书签，逐文件失败
+结果仍可能包含诊断路径。新的独立导入请求应使用新的 idempotency key。

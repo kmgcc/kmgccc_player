@@ -70,6 +70,18 @@ private struct AutomationIdempotencyFile: Codable {
     }
 }
 
+private struct AutomationSelectionSnapshot: Codable, Equatable {
+    let libraryID: UUID
+    let summary: AutomationSelectionSummary
+    let trackIDs: [UUID]
+    let filter: AutomationJSONValue?
+}
+
+private struct AutomationSelectionStoreFile: Codable {
+    let schemaVersion: Int
+    let snapshots: [AutomationSelectionSnapshot]
+}
+
 private nonisolated struct AutomationStorageBackupManifest: Codable {
     let schemaVersion: Int
     let libraryID: UUID
@@ -290,6 +302,79 @@ private final class AutomationIdempotencyStore {
     }
 }
 
+/// Selection snapshots retain only ordered Track IDs and a content revision.
+/// They are bounded per Library and contain no names, paths, or media data.
+private final class AutomationSelectionStore {
+    private let appSupportURL: URL
+    private let bundleIdentifier: String
+    private let fileManager: FileManager
+    private let maximumSnapshotCount = 100
+
+    init(
+        fileManager: FileManager = .default,
+        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier
+    ) {
+        self.fileManager = fileManager
+        self.bundleIdentifier = bundleIdentifier
+        appSupportURL = fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+    }
+
+    func load(libraryID: UUID, now: Date = Date()) throws -> [AutomationSelectionSnapshot] {
+        let url = fileURL(for: libraryID)
+        guard fileManager.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        let payload = try AutomationWireCoding.decoder().decode(
+            AutomationSelectionStoreFile.self,
+            from: data
+        )
+        guard payload.schemaVersion == 1,
+              payload.snapshots.allSatisfy({ $0.libraryID == libraryID }) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return payload.snapshots.filter { $0.summary.expiresAt > now }
+    }
+
+    func save(
+        _ snapshots: [AutomationSelectionSnapshot],
+        libraryID: UUID,
+        now: Date = Date()
+    ) throws {
+        let normalized = snapshots
+            .filter { $0.libraryID == libraryID && $0.summary.expiresAt > now }
+            .sorted { $0.summary.createdAt > $1.summary.createdAt }
+            .prefix(maximumSnapshotCount)
+        let payload = AutomationSelectionStoreFile(
+            schemaVersion: 1,
+            snapshots: Array(normalized)
+        )
+        let directoryURL = fileURL(for: libraryID).deletingLastPathComponent()
+        try fileManager.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: directoryURL.path
+        )
+        let data = try AutomationWireCoding.encoder().encode(payload)
+        let url = fileURL(for: libraryID)
+        try data.write(to: url, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private func fileURL(for libraryID: UUID) -> URL {
+        appSupportURL
+            .appendingPathComponent(bundleIdentifier, isDirectory: true)
+            .appendingPathComponent("Automation", isDirectory: true)
+            .appendingPathComponent("Selections", isDirectory: true)
+            .appendingPathComponent("\(libraryID.uuidString).json", isDirectory: false)
+    }
+}
+
 /// The App-owned automation endpoint. It exposes DTOs only; no repository or
 /// sidecar parser crosses the process boundary. CLI, MCP and future in-process
 /// AI callers all reach the same App-owned capability handler.
@@ -307,6 +392,15 @@ final class AutomationIPCServer {
             case .artist: return "artist"
             case .album: return "album"
             case .playlist: return "playlist"
+            }
+        }
+
+        var stableIdentity: String {
+            switch self {
+            case .track(let track): return "track:\(track.id.uuidString)"
+            case .artist(let artist): return "artist:\(artist.id.uuidString)"
+            case .album(let album): return "album:\(album.canonicalKey)"
+            case .playlist(let playlist): return "playlist:\(playlist.id.uuidString)"
             }
         }
     }
@@ -330,13 +424,17 @@ final class AutomationIPCServer {
     private weak var appSession: AppSessionHost?
     private let scopePolicyStore: AutomationScopePolicyStore
     private let idempotencyStore: AutomationIdempotencyStore
+    private let selectionStore: AutomationSelectionStore
     private var cachedGrantedScopes: Set<AutomationScope>?
     private var idempotencyCache: [String: (fingerprint: String, response: AutomationResponse)] = [:]
     private var idempotencyOrder: [String] = []
     private var pendingIdempotency: [String: PendingIdempotency] = [:]
     private var lyricsCandidateCache: [UUID: CachedLyricsCandidates] = [:]
+    private var artworkCandidateCache: [String: CachedArtworkCandidate] = [:]
+    private var artworkCandidateOrder: [String] = []
     private let idempotencyCacheLimit = 256
     private let lyricsCandidateCacheLimit = 256
+    private let artworkCandidateCacheLimit = 64
     private(set) var isRunning = false
 
     private struct CachedLyricsCandidates {
@@ -345,11 +443,33 @@ final class AutomationIPCServer {
         let result: LyricsSearchHelper.SearchResult
     }
 
+    private struct CachedArtworkCandidate {
+        let libraryID: UUID
+        let targetIdentity: String
+        let trackID: UUID?
+        let artistID: UUID?
+        let albumKey: String?
+        let revision: String
+        let candidate: AutomationArtworkCandidate
+        let expiresAt: Date
+    }
+
+    private struct PlannedMetadataImport {
+        let record: AutomationMetadataDocumentTrack
+        let targetTrackID: UUID?
+        let patch: LibraryAutomationMetadataPatch?
+        let expectedRevision: String?
+        let fields: [String]
+        var status: String
+        var message: String
+    }
+
     init(appSession: AppSessionHost) throws {
         self.appSession = appSession
         let bundleIdentifier = AutomationAppIdentity.bundleIdentifier
         scopePolicyStore = AutomationScopePolicyStore(bundleIdentifier: bundleIdentifier)
         idempotencyStore = AutomationIdempotencyStore(bundleIdentifier: bundleIdentifier)
+        selectionStore = AutomationSelectionStore(bundleIdentifier: bundleIdentifier)
         let socketPath = Self.defaultSocketURL.path
         let sharedSecret = try AutomationIPCSecretStore.loadOrCreate(
             forSocketPath: socketPath
@@ -386,7 +506,7 @@ final class AutomationIPCServer {
 
     func start() async throws {
         guard !isRunning else { return }
-        try await listener.start { [weak self] request in
+        try await listener.start(cancellableHandler: { [weak self] request, cancellation in
             guard let self else {
                 return AutomationResponse.failure(
                     for: request,
@@ -397,8 +517,8 @@ final class AutomationIPCServer {
                     )
                 )
             }
-            return await self.handle(request)
-        }
+            return await self.handle(request, cancellation: cancellation)
+        })
         isRunning = true
         Log.info("[Automation] automation IPC server started", category: .library)
     }
@@ -409,7 +529,10 @@ final class AutomationIPCServer {
         Log.info("[Automation] IPC server stopped", category: .library)
     }
 
-    private func handle(_ request: AutomationRequest) async -> AutomationResponse {
+    private func handle(
+        _ request: AutomationRequest,
+        cancellation: AutomationIPCCancellationToken? = nil
+    ) async -> AutomationResponse {
         if let key = request.context.idempotencyKey,
            !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let cacheKey = "\(request.method):\(key)"
@@ -459,6 +582,14 @@ final class AutomationIPCServer {
                 waiters: []
             )
             let response = await execute(request)
+            let waiters = pendingIdempotency[cacheKey]?.waiters ?? []
+            if waiters.isEmpty {
+                cancelJobReturnedByCancelledRequest(
+                    response,
+                    request: request,
+                    cancellation: cancellation
+                )
+            }
             if response.error == nil,
                AutomationToolCatalog.descriptor(for: request.method)?.readOnly == false {
                 idempotencyCache[cacheKey] = (fingerprint, response)
@@ -469,8 +600,8 @@ final class AutomationIPCServer {
                 }
                 try? idempotencyStore.save(idempotencyCache, order: idempotencyOrder)
             }
-            let waiters = pendingIdempotency.removeValue(forKey: cacheKey)?.waiters ?? []
-            for waiter in waiters {
+            let completedWaiters = pendingIdempotency.removeValue(forKey: cacheKey)?.waiters ?? []
+            for waiter in completedWaiters {
                 waiter.continuation.resume(
                     returning: responseForRequest(response, requestID: waiter.requestID)
                 )
@@ -480,8 +611,48 @@ final class AutomationIPCServer {
         }
 
         let response = await execute(request)
+        cancelJobReturnedByCancelledRequest(
+            response,
+            request: request,
+            cancellation: cancellation
+        )
         recordAudit(for: request, response: response)
         return response
+    }
+
+    private func cancelJobReturnedByCancelledRequest(
+        _ response: AutomationResponse,
+        request: AutomationRequest,
+        cancellation: AutomationIPCCancellationToken?
+    ) {
+        guard let cancellation,
+              response.error == nil,
+              AutomationToolCatalog.descriptor(for: request.method)?.supportsJobs == true,
+              let summary = jobSummary(in: response.result),
+              let libraryID = summary.libraryID ?? request.context.libraryID,
+              let appSession else {
+            return
+        }
+        cancellation.onCancel { [weak appSession] in
+            Task { @MainActor in
+                guard let appSession else { return }
+                _ = appSession.cancelLibraryJob(id: summary.id, libraryID: libraryID)
+            }
+        }
+    }
+
+    private func jobSummary(in value: AutomationJSONValue?) -> AutomationJobSummary? {
+        guard let value else { return nil }
+        if case .object(let fields) = value {
+            if let nested = fields["job"], let summary = jobSummary(in: nested) {
+                return summary
+            }
+            if case .array(let jobs) = fields["jobs"], jobs.count == 1 {
+                return jobSummary(in: jobs[0])
+            }
+        }
+        guard let data = try? AutomationWireCoding.encoder().encode(value) else { return nil }
+        return try? AutomationWireCoding.decoder().decode(AutomationJobSummary.self, from: data)
     }
 
     private func execute(_ request: AutomationRequest) async -> AutomationResponse {
@@ -554,10 +725,55 @@ final class AutomationIPCServer {
                case .boolean(true) = values["dryRun"] {
                 required.remove(.metadataWrite)
             }
+            if request.method == AutomationMethod.metadataEmbeddedPatch,
+               case .object(let values) = request.params,
+               case .boolean(true) = values["dryRun"] {
+                required.remove(.metadataWrite)
+                required.remove(.filesWrite)
+            }
+            if request.method == AutomationMethod.metadataImport,
+               case .object(let values) = request.params,
+               case .boolean(true) = values["dryRun"] {
+                required.remove(.metadataWrite)
+            }
             if request.method == AutomationMethod.artworkApply,
                case .object(let values) = request.params,
                case .boolean(true) = values["dryRun"] {
                 required.remove(.artworkWrite)
+            }
+            if request.method == AutomationMethod.sourceConfigImport,
+               case .object(let values) = request.params,
+               case .boolean(true) = values["dryRun"] {
+                required.remove(.sourceWrite)
+            }
+            if request.method == AutomationMethod.libraryImport,
+               case .object(let values) = request.params {
+                if case .boolean(true) = values["dryRun"] {
+                    required.remove(.libraryWrite)
+                } else {
+                    if values["targetPlaylistID"] != nil { required.insert(.playlistWrite) }
+                    if appSession?.activeLibraryBinding.context?.mode == .referenced {
+                        required.insert(.sourceWrite)
+                    }
+                }
+            }
+            if request.method == AutomationMethod.jobsRetry,
+               case .object(let values) = request.params,
+               case .string(let rawJobID)? = values["jobID"],
+               let jobID = UUID(uuidString: rawJobID),
+               let retrySpec = appSession?.libraryJobDescriptors()
+                   .first(where: {
+                       $0.id == jobID && $0.libraryID == request.context.libraryID
+                   })?.retrySpec,
+               retrySpec.kind == .libraryImport {
+                required.insert(.libraryWrite)
+                if retrySpec.targetPlaylistID != nil { required.insert(.playlistWrite) }
+                if appSession?.activeLibraryBinding.context?.mode == .referenced {
+                    required.insert(.sourceWrite)
+                }
+            }
+            if requiresHistoryRead(for: request) {
+                required.insert(.historyRead)
             }
             if !granted.isSuperset(of: required) {
                 let denied = required.subtracting(granted)
@@ -627,6 +843,25 @@ final class AutomationIPCServer {
                 ),
                 for: request
             )
+
+        case AutomationMethod.libraryGet:
+            guard let appSession else {
+                return .failure(for: request, error: AutomationError(code: .serverUnavailable, message: "The player App is no longer available.", retryable: true))
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let libraryID = try parameters.uuid("libraryID", required: true)!
+                let registry = await appSession.musicLibraryRegistrySnapshot()
+                guard let bookmark = registry.libraries.first(where: { $0.id == libraryID }) else {
+                    return .failure(for: request, error: AutomationError(code: .invalidRequest, message: "The requested Library is not registered.", details: .object(["libraryID": .string(libraryID.uuidString)])))
+                }
+                return encodeResult(AutomationLibraryGetResult(
+                    library: makeLibrarySummary(bookmark, activeLibraryID: registry.activeLibraryID),
+                    activeLibraryID: registry.activeLibraryID
+                ), for: request)
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
 
         case AutomationMethod.libraryCreate:
             guard let appSession else {
@@ -1174,6 +1409,83 @@ final class AutomationIPCServer {
                 return libraryLifecycleFailure(for: request, error: error)
             }
 
+        case AutomationMethod.libraryImport:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                guard case .array(let paths) = parameters.values["filePaths"],
+                      !paths.isEmpty, paths.count <= 5_000 else {
+                    throw AutomationParameterError.invalidValue("filePaths")
+                }
+                var urls: [URL] = []
+                var seen = Set<String>()
+                for value in paths {
+                    guard case .string(let rawPath) = value,
+                          !rawPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                          (rawPath as NSString).expandingTildeInPath.hasPrefix("/") else {
+                        throw AutomationParameterError.invalidValue("filePaths")
+                    }
+                    let url = URL(fileURLWithPath: expandPath(rawPath))
+                    if seen.insert(url.resolvingSymlinksInPath().path).inserted { urls.append(url) }
+                }
+                let playlistID = try parameters.uuid("targetPlaylistID")
+                if let playlistID,
+                   !session.libraryViewModel.playlists.contains(where: { $0.id == playlistID }) {
+                    throw AutomationParameterError.missingResource("targetPlaylistID")
+                }
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                if dryRun {
+                    return encodeResult(AutomationLibraryImportResult(
+                        libraryID: session.context.id, mode: session.context.mode.rawValue,
+                        filePaths: urls.map(\.path), targetPlaylistID: playlistID,
+                        dryRun: true,
+                        message: "Preview only; no scan, conversion, authorization, import or enrichment has started."
+                    ), for: request)
+                }
+                // Directly readable paths use the App's existing access. A
+                // sandboxed App requests the same system picker as UI import.
+                // Missing files are reported individually by the import pipeline.
+                let inaccessible = urls.filter {
+                    FileManager.default.fileExists(atPath: $0.path)
+                        && !FileManager.default.isReadableFile(atPath: $0.path)
+                }
+                var selectedURLs = urls
+                if !inaccessible.isEmpty {
+                    guard let picked = await session.fileImportService.pickImportURLs(triggeredAt: Date()) else {
+                        return interactionCancelled(for: request)
+                    }
+                    let pickedPaths = Set(picked.map { $0.resolvingSymlinksInPath().standardizedFileURL.path })
+                    guard inaccessible.allSatisfy({ pickedPaths.contains($0.resolvingSymlinksInPath().path) }) else {
+                        return permissionDenied(for: request, path: inaccessible[0].path)
+                    }
+                    selectedURLs = urls.map { url in
+                        picked.first { $0.resolvingSymlinksInPath().path == url.resolvingSymlinksInPath().path } ?? url
+                    }
+                }
+                let selection = LibraryInitialImportSelection(urls: selectedURLs)
+                defer { selection.release() }
+                if let denied = selectedURLs.first(where: {
+                    FileManager.default.fileExists(atPath: $0.path)
+                        && !FileManager.default.isReadableFile(atPath: $0.path)
+                }) {
+                    return permissionDenied(for: request, path: denied.path)
+                }
+                guard activeSession(for: request) === session,
+                      let job = session.startAutomationImport(selection: selection, playlistID: playlistID) else {
+                    return noActiveLibraryResponse(for: request)
+                }
+                return encodeResult(AutomationLibraryImportResult(
+                    libraryID: session.context.id, mode: session.context.mode.rawValue,
+                    filePaths: selectedURLs.map(\.path), targetPlaylistID: playlistID,
+                    job: makeJobSummary(job),
+                    message: "Import started. Poll jobs.get for Track IDs, Playlist additions, failures and enrichment completion."
+                ), for: request)
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
         case AutomationMethod.libraryTracks:
             guard let session = activeSession(for: request) else {
                 return noActiveLibraryResponse(for: request)
@@ -1188,7 +1500,13 @@ final class AutomationIPCServer {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 let requestedIDs = try parameters.uuidArray("ids")
                 let filter = try parameters.object("filter")
+                if let filter {
+                    try validateTrackFilter(.object(filter))
+                }
                 let sort = try parameters.array("sort")
+                let includePreferenceStats = try parameters.boolean(
+                    "includePreferenceStats", default: false
+                )
                 let limit = try parameters.integer("limit", default: 100)
                 let offset = try parameters.integer("offset", default: 0)
                 let expectedRevision = try parameters.string("expectedRevision")
@@ -1198,6 +1516,12 @@ final class AutomationIPCServer {
 
                 let viewModel = session.libraryViewModel
                 let allTracks = viewModel.allTracks
+                let usesPreferenceData = includePreferenceStats
+                    || filter.map { AutomationTrackPreferenceQuery.requiresHistoryRead(in: .object($0)) } == true
+                    || AutomationTrackPreferenceQuery.requiresHistoryRead(sort: sort)
+                let preferenceStatsByTrackID = usesPreferenceData
+                    ? viewModel.preferenceStats(for: allTracks.map(\.id))
+                    : [:]
                 let playlistTrackIDs: Set<UUID>?
                 if let playlistID {
                     guard let playlist = viewModel.playlists.first(where: { $0.id == playlistID }) else {
@@ -1217,7 +1541,8 @@ final class AutomationIPCServer {
 
                 let revision = libraryTracksRevision(
                     tracks: allTracks,
-                    playlists: viewModel.playlists
+                    playlists: viewModel.playlists,
+                    preferenceStatsByTrackID: usesPreferenceData ? preferenceStatsByTrackID : nil
                 )
                 if let expectedRevision, expectedRevision != revision {
                     return libraryTracksRevisionConflict(
@@ -1253,20 +1578,27 @@ final class AutomationIPCServer {
                        try !matchesTrackFilter(
                            track,
                            filter: .object(filter),
-                           playlists: viewModel.playlists
+                           playlists: viewModel.playlists,
+                           preferenceStatsByTrackID: preferenceStatsByTrackID
                        ) {
                         continue
                     }
                     filteredTracks.append(track)
                 }
-                let orderedTracks = try sortTracks(filteredTracks, using: sort)
+                let orderedTracks = try sortTracks(
+                    filteredTracks,
+                    using: sort,
+                    preferenceStatsByTrackID: preferenceStatsByTrackID
+                )
                 let pageStart = min(offset, orderedTracks.count)
                 let pageEnd = min(pageStart + limit, orderedTracks.count)
                 let page = Array(orderedTracks[pageStart..<pageEnd]).map {
                     makeTrackSummary(
                         $0,
                         playlists: viewModel.playlists,
-                        includeFilePath: grantedScopes().contains(.filesRead)
+                        includeFilePath: grantedScopes().contains(.filesRead),
+                        includePreferenceStats: includePreferenceStats,
+                        preferenceStats: preferenceStatsByTrackID[$0.id]
                     )
                 }
                 return encodeResult(
@@ -1282,6 +1614,508 @@ final class AutomationIPCServer {
                 )
             } catch {
                 return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.libraryStats:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard isEmptyParameters(request.params) else {
+                return invalidParameters(for: request)
+            }
+            let viewModel = session.libraryViewModel
+            let tracks = viewModel.allTracks
+            let revision = libraryTracksRevision(tracks: tracks, playlists: viewModel.playlists)
+            let linkedSourceIDs = Set(tracks.flatMap { track in
+                track.mediaLocator.referencedFile?.allSourceMemberships.map(\.sourceID) ?? []
+            })
+            return encodeResult(AutomationLibraryStatsResult(
+                libraryID: session.context.id,
+                mode: session.context.mode.rawValue,
+                trackCount: tracks.count,
+                availableTrackCount: tracks.filter { $0.availability == .available }.count,
+                missingTrackCount: tracks.filter { $0.availability == .missing }.count,
+                recoverableTrackCount: tracks.filter { $0.availability.isRecoverable }.count,
+                playlistCount: viewModel.playlists.count,
+                linkedSourceCount: linkedSourceIDs.count,
+                artistCount: viewModel.runtimeArtists.count,
+                albumCount: viewModel.runtimeAlbums.count,
+                lyricsTrackCount: tracks.filter { $0.ttmlLyricsFileName != nil || $0.lyricsFileName != nil }.count,
+                artworkTrackCount: tracks.filter { $0.artworkFileName != nil }.count,
+                totalDurationSeconds: tracks.reduce(0) { $0 + max(0, $1.duration) },
+                revision: revision
+            ), for: request)
+
+        case AutomationMethod.libraryReport:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let limit = try parameters.integer("limit", default: 100)
+                let offset = try parameters.integer("offset", default: 0)
+                let playlistLimit = try parameters.integer("playlistLimit", default: 100)
+                let playlistOffset = try parameters.integer("playlistOffset", default: 0)
+                let expectedRevision = try parameters.string("expectedRevision")
+                let includeFilePaths = try parameters.boolean("includeFilePaths", default: false)
+                let includePreferenceStats = try parameters.boolean(
+                    "includePreferenceStats", default: false
+                )
+                guard (1...100).contains(limit), offset >= 0,
+                      (1...100).contains(playlistLimit), playlistOffset >= 0 else {
+                    throw AutomationParameterError.outOfRange("limit/offset")
+                }
+                guard !includeFilePaths || grantedScopes().contains(.filesRead) else {
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .authorizationRequired,
+                            message: "Including local file paths requires the files.read scope.",
+                            details: .object(["requiredScope": .string(AutomationScope.filesRead.rawValue)])
+                        )
+                    )
+                }
+                let viewModel = session.libraryViewModel
+                let allTracks = viewModel.allTracks
+                let playlists = viewModel.playlists
+                let preferenceStatsByTrackID = includePreferenceStats
+                    ? viewModel.preferenceStats(for: allTracks.map(\.id))
+                    : [:]
+                let revision = libraryTracksRevision(
+                    tracks: allTracks,
+                    playlists: playlists,
+                    preferenceStatsByTrackID: includePreferenceStats
+                        ? preferenceStatsByTrackID
+                        : nil
+                )
+                if let expectedRevision, expectedRevision != revision {
+                    return libraryTracksRevisionConflict(
+                        for: request,
+                        expected: expectedRevision,
+                        actual: revision
+                    )
+                }
+                let start = min(offset, allTracks.count)
+                let end = min(start + limit, allTracks.count)
+                let trackPage = Array(allTracks[start..<end]).map {
+                    makeTrackSummary(
+                        $0,
+                        playlists: playlists,
+                        includeFilePath: includeFilePaths,
+                        includePreferenceStats: includePreferenceStats,
+                        preferenceStats: preferenceStatsByTrackID[$0.id]
+                    )
+                }
+                let playlistStart = min(playlistOffset, playlists.count)
+                let playlistEnd = min(playlistStart + playlistLimit, playlists.count)
+                let playlistPage = Array(playlists[playlistStart..<playlistEnd])
+                let linkedSourceIDs = Set(allTracks.flatMap { track in
+                    track.mediaLocator.referencedFile?.allSourceMemberships.map(\.sourceID) ?? []
+                })
+                let stats = AutomationLibraryStatsResult(
+                    libraryID: session.context.id,
+                    mode: session.context.mode.rawValue,
+                    trackCount: allTracks.count,
+                    availableTrackCount: allTracks.filter { $0.availability == .available }.count,
+                    missingTrackCount: allTracks.filter { $0.availability == .missing }.count,
+                    recoverableTrackCount: allTracks.filter { $0.availability.isRecoverable }.count,
+                    playlistCount: playlists.count,
+                    linkedSourceCount: linkedSourceIDs.count,
+                    artistCount: viewModel.runtimeArtists.count,
+                    albumCount: viewModel.runtimeAlbums.count,
+                    lyricsTrackCount: allTracks.filter { $0.ttmlLyricsFileName != nil || $0.lyricsFileName != nil }.count,
+                    artworkTrackCount: allTracks.filter { $0.artworkFileName != nil }.count,
+                    totalDurationSeconds: allTracks.reduce(0) { $0 + max(0, $1.duration) },
+                    revision: revision
+                )
+                return encodeResult(
+                    AutomationLibraryReportResult(
+                        stats: stats,
+                        tracks: trackPage,
+                        playlists: playlistPage.map(makePlaylistSummary),
+                        offset: offset,
+                        limit: limit,
+                        nextOffset: end < allTracks.count ? end : nil,
+                        playlistOffset: playlistOffset,
+                        playlistLimit: playlistLimit,
+                        nextPlaylistOffset: playlistEnd < playlists.count ? playlistEnd : nil,
+                        revision: revision
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.libraryBundleExport:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let confirm = try parameters.boolean("confirm", default: false)
+                let viewModel = session.libraryViewModel
+                let libraryTracks = viewModel.allTracks
+                let libraryPlaylists = viewModel.playlists
+                let revision = libraryTracksRevision(tracks: libraryTracks, playlists: libraryPlaylists)
+                var failures: [String] = []
+                let tracks: [LibraryBundleExportTrackInput] = libraryTracks.map { track in
+                    let audioURL: URL?
+                    do {
+                        if case .referenced = track.mediaLocator {
+                            audioURL = try currentAuthorizedFile(for: track, session: session).url
+                        } else {
+                            audioURL = automationTrackFileURL(track, in: session)
+                        }
+                    } catch {
+                        audioURL = nil
+                    }
+                    let existingAudio = audioURL.flatMap {
+                        FileManager.default.isReadableFile(atPath: $0.path) ? $0 : nil
+                    }
+                    var trackFailures: [String] = []
+                    if existingAudio == nil {
+                        let failure = "\(track.id.uuidString): audio unavailable"
+                        trackFailures.append(failure)
+                        failures.append(failure)
+                    }
+                    func existingAsset(_ url: URL?) -> URL? {
+                        guard let url,
+                              FileManager.default.fileExists(atPath: url.path),
+                              FileManager.default.isReadableFile(atPath: url.path) else { return nil }
+                        return url
+                    }
+                    return LibraryBundleExportTrackInput(
+                        metadata: makeMetadataDocumentTrack(
+                            track,
+                            revision: viewModel.automationTrackRevision(for: track)
+                        ),
+                        audioURL: existingAudio,
+                        artworkURL: existingAsset(track.existingArtworkURL()),
+                        lyricsURL: existingAsset(track.resolvedLyricsURL()),
+                        ttmlURL: existingAsset(track.resolvedTTMLURL()),
+                        failures: trackFailures
+                    )
+                }
+                let playlists = libraryPlaylists.map {
+                    LibraryBundleExportPlaylistInput(
+                        id: $0.id,
+                        name: $0.name,
+                        description: $0.userDescription,
+                        trackIDs: $0.tracks.map(\.id)
+                    )
+                }
+                let estimatedBytes = LibraryBundleExportService.estimatedBytes(for: tracks)
+                if dryRun {
+                    return encodeResult(
+                        AutomationLibraryBundleExportResult(
+                            libraryID: session.context.id,
+                            dryRun: true,
+                            trackCount: tracks.count,
+                            estimatedBytes: estimatedBytes,
+                            failures: failures,
+                            message: "Preview only. The package will include path-free Track metadata, Playlist membership, and available audio, artwork and lyrics files."
+                        ),
+                        for: request
+                    )
+                }
+                guard confirm else {
+                    return confirmationRequired(
+                        for: request,
+                        message: "Export a complete Library bundle?",
+                        details: .object([
+                            "trackCount": .number(Double(tracks.count)),
+                            "estimatedBytes": .number(Double(estimatedBytes)),
+                            "requiresForegroundConfirmation": .boolean(true)
+                        ])
+                    )
+                }
+                guard await confirmDestructiveOperation(
+                    title: "导出完整资料库？",
+                    message: "将把 \(tracks.count) 首歌曲及可用封面、歌词复制到新资料库包，估算 \(ByteCountFormatter.string(fromByteCount: estimatedBytes, countStyle: .file))。"
+                ) else {
+                    return interactionCancelled(for: request)
+                }
+                guard let destinationURL = await requestExportDirectory() else {
+                    return interactionCancelled(for: request)
+                }
+                let destination = destinationURL.standardizedFileURL
+                let libraryRoot = session.context.rootURL.standardizedFileURL
+                guard destination.path != libraryRoot.path,
+                      !destination.path.hasPrefix(libraryRoot.path + "/") else {
+                    throw AutomationParameterError.invalidValue("destination folder inside active Library")
+                }
+                let hasScopedAccess = destinationURL.startAccessingSecurityScopedResource()
+                guard activeSession(for: request) === session else {
+                    if hasScopedAccess { destinationURL.stopAccessingSecurityScopedResource() }
+                    return noActiveLibraryResponse(for: request)
+                }
+                guard let job = session.startAutomationLibraryBundleExport(
+                        destinationDirectory: destinationURL,
+                        destinationScopeStarted: hasScopedAccess,
+                        revision: revision,
+                        tracks: tracks,
+                        playlists: playlists
+                      ) else {
+                    return noActiveLibraryResponse(for: request)
+                }
+                return encodeResult(
+                    AutomationLibraryBundleExportResult(
+                        libraryID: session.context.id,
+                        dryRun: false,
+                        applied: true,
+                        confirmed: true,
+                        trackCount: tracks.count,
+                        estimatedBytes: estimatedBytes,
+                        outputDirectory: destination.path,
+                        job: makeJobSummary(job),
+                        failures: failures,
+                        message: "Library bundle export started. Poll the returned Job for progress and the completed package location."
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.librarySelectionList:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard isEmptyParameters(request.params) else {
+                return invalidParameters(for: request)
+            }
+            do {
+                let snapshots = try selectionStore.load(libraryID: session.context.id)
+                let viewModel = session.libraryViewModel
+                let usesPreferenceData = snapshots.contains { snapshot in
+                    snapshot.filter.map(AutomationTrackPreferenceQuery.requiresHistoryRead(in:)) == true
+                }
+                let preferenceStatsByTrackID = usesPreferenceData
+                    ? viewModel.preferenceStats(for: viewModel.allTracks.map(\.id))
+                    : [:]
+                let currentRevision = libraryTracksRevision(
+                    tracks: viewModel.allTracks,
+                    playlists: viewModel.playlists,
+                    preferenceStatsByTrackID: usesPreferenceData ? preferenceStatsByTrackID : nil
+                )
+                let selections = try snapshots.map {
+                    try resolveSelection($0, viewModel: viewModel).summary
+                }
+                return encodeResult(
+                    AutomationSelectionListResult(
+                        libraryID: session.context.id,
+                        currentRevision: currentRevision,
+                        selections: selections
+                    ),
+                    for: request
+                )
+            } catch {
+                return selectionStoreFailure(for: request, error: error)
+            }
+
+        case AutomationMethod.librarySelectionCreate:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let hasTrackIDs = parameters.values["trackIDs"] != nil
+                let filter = parameters.values["filter"]
+                guard hasTrackIDs != (filter != nil) else {
+                    throw AutomationParameterError.invalidValue("trackIDs/filter")
+                }
+                let requestedTrackIDs = try parameters.uuidArray(
+                    "trackIDs",
+                    allowEmpty: true,
+                    maximumCount: 10_000
+                )
+                let name = try parameters.string("name")?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let expectedRevision = try parameters.string("expectedRevision")
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                guard requestedTrackIDs.count <= 10_000,
+                      Set(requestedTrackIDs).count == requestedTrackIDs.count else {
+                    throw AutomationParameterError.invalidValue("trackIDs")
+                }
+                if let name, (name.isEmpty || name.count > 120) {
+                    throw AutomationParameterError.invalidValue("name")
+                }
+                let viewModel = session.libraryViewModel
+                let usesPreferenceData = filter.map {
+                    AutomationTrackPreferenceQuery.requiresHistoryRead(in: $0)
+                } == true
+                let preferenceStatsByTrackID = usesPreferenceData
+                    ? viewModel.preferenceStats(for: viewModel.allTracks.map(\.id))
+                    : [:]
+                let currentRevision = libraryTracksRevision(
+                    tracks: viewModel.allTracks,
+                    playlists: viewModel.playlists,
+                    preferenceStatsByTrackID: usesPreferenceData ? preferenceStatsByTrackID : nil
+                )
+                if let expectedRevision, expectedRevision != currentRevision {
+                    return libraryTracksRevisionConflict(
+                        for: request,
+                        expected: expectedRevision,
+                        actual: currentRevision
+                    )
+                }
+                if let filter {
+                    try validateTrackFilter(filter)
+                }
+                let selectedTrackIDs: [UUID]
+                if let filter {
+                    selectedTrackIDs = try viewModel.allTracks.compactMap { track in
+                        try matchesTrackFilter(
+                            track,
+                            filter: filter,
+                            playlists: viewModel.playlists,
+                            preferenceStatsByTrackID: preferenceStatsByTrackID
+                        ) ? track.id : nil
+                    }
+                    guard selectedTrackIDs.count <= 10_000 else {
+                        throw AutomationParameterError.outOfRange("filter.resultCount")
+                    }
+                } else {
+                    selectedTrackIDs = requestedTrackIDs
+                }
+                let availableIDs = Set(viewModel.allTracks.map(\.id))
+                let missingIDs = selectedTrackIDs.filter { !availableIDs.contains($0) }
+                guard missingIDs.isEmpty else {
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .invalidRequest,
+                            message: "A selection snapshot can contain only Tracks in the active Library.",
+                            details: .object([
+                                "missingTrackIDs": .array(missingIDs.map { .string($0.uuidString) })
+                            ])
+                        )
+                    )
+                }
+                let now = Date()
+                let selectionID = UUID()
+                let summary = AutomationSelectionSummary(
+                    id: selectionID,
+                    name: name?.isEmpty == true ? nil : name,
+                    trackCount: selectedTrackIDs.count,
+                    revision: selectionRevision(
+                        libraryID: session.context.id,
+                        trackIDs: selectedTrackIDs
+                    ),
+                    createdAt: now,
+                    expiresAt: now.addingTimeInterval(30 * 24 * 60 * 60),
+                    isDynamic: filter != nil
+                )
+                guard !dryRun else {
+                    return encodeResult(
+                        AutomationSelectionCreateResult(
+                            libraryID: session.context.id,
+                            selection: summary,
+                            trackIDs: selectedTrackIDs,
+                            applied: false,
+                            dryRun: true
+                        ),
+                        for: request
+                    )
+                }
+                var snapshots = try selectionStore.load(libraryID: session.context.id)
+                snapshots.append(
+                    AutomationSelectionSnapshot(
+                        libraryID: session.context.id,
+                        summary: summary,
+                        trackIDs: filter == nil ? selectedTrackIDs : [],
+                        filter: filter
+                    )
+                )
+                try selectionStore.save(snapshots, libraryID: session.context.id, now: now)
+                return encodeResult(
+                    AutomationSelectionCreateResult(
+                        libraryID: session.context.id,
+                        selection: summary,
+                        trackIDs: selectedTrackIDs,
+                        applied: true,
+                        dryRun: false
+                    ),
+                    for: request
+                )
+            } catch let error as AutomationParameterError {
+                return invalidParameters(for: request, error: error)
+            } catch {
+                return selectionStoreFailure(for: request, error: error)
+            }
+
+        case AutomationMethod.librarySelectionGet:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let selectionID = try parameters.uuid("selectionID", required: true)!
+                let snapshots = try selectionStore.load(libraryID: session.context.id)
+                guard let snapshot = snapshots.first(where: { $0.summary.id == selectionID }) else {
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .invalidRequest,
+                            message: "The requested selection snapshot does not exist or has expired.",
+                            details: .object(["selectionID": .string(selectionID.uuidString)])
+                        )
+                    )
+                }
+                let resolved = try resolveSelection(snapshot, viewModel: session.libraryViewModel)
+                return encodeResult(
+                    AutomationSelectionDetailResult(
+                        libraryID: session.context.id,
+                        selection: resolved.summary,
+                        trackIDs: resolved.trackIDs,
+                        filter: snapshot.filter
+                    ),
+                    for: request
+                )
+            } catch let error as AutomationParameterError {
+                return invalidParameters(for: request, error: error)
+            } catch {
+                return selectionStoreFailure(for: request, error: error)
+            }
+
+        case AutomationMethod.librarySelectionDelete:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let selectionID = try parameters.uuid("selectionID", required: true)!
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                var snapshots = try selectionStore.load(libraryID: session.context.id)
+                guard snapshots.contains(where: { $0.summary.id == selectionID }) else {
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .invalidRequest,
+                            message: "The requested selection snapshot does not exist or has expired.",
+                            details: .object(["selectionID": .string(selectionID.uuidString)])
+                        )
+                    )
+                }
+                if !dryRun {
+                    snapshots.removeAll { $0.summary.id == selectionID }
+                    try selectionStore.save(snapshots, libraryID: session.context.id)
+                }
+                return encodeResult(
+                    AutomationSelectionDeleteResult(
+                        libraryID: session.context.id,
+                        selectionID: selectionID,
+                        deleted: !dryRun,
+                        dryRun: dryRun
+                    ),
+                    for: request
+                )
+            } catch let error as AutomationParameterError {
+                return invalidParameters(for: request, error: error)
+            } catch {
+                return selectionStoreFailure(for: request, error: error)
             }
 
         case AutomationMethod.playlistList:
@@ -1333,6 +2167,332 @@ final class AutomationIPCServer {
                         details: .object(["reason": .string(String(describing: error))])
                     )
                 )
+            }
+
+        case AutomationMethod.sourceGet:
+            guard activeSession(for: request)?.context.mode == .referenced else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard let appSession else {
+                return .failure(
+                    for: request,
+                    error: AutomationError(code: .serverUnavailable, message: "The player App is no longer available.", retryable: true)
+                )
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let sourceID = try parameters.uuid("sourceID", required: true)!
+                guard let descriptor = try await appSession.referencedSources().first(where: { $0.id == sourceID }) else {
+                    return .failure(for: request, error: AutomationError(code: .invalidRequest, message: "The requested Source does not exist.", details: .object(["sourceID": .string(sourceID.uuidString)])))
+                }
+                return encodeResult(AutomationSourceGetResult(source: makeSourceSummary(descriptor)), for: request)
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.sourceConfigExport:
+            guard let session = activeSession(for: request), session.context.mode == .referenced else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard isEmptyParameters(request.params) else {
+                return invalidParameters(for: request)
+            }
+            guard let appSession else {
+                return .failure(
+                    for: request,
+                    error: AutomationError(code: .serverUnavailable, message: "The player App is no longer available.", retryable: true)
+                )
+            }
+            do {
+                let descriptors = try await appSession.referencedSources()
+                let configurations = descriptors.map(makeSourceConfiguration)
+                let document = AutomationSourceConfigurationDocument(
+                    originLibraryID: session.context.id,
+                    sources: configurations
+                )
+                return encodeResult(
+                    AutomationSourceConfigurationExportResult(
+                        libraryID: session.context.id,
+                        revision: sourceConfigurationRevision(
+                            libraryID: session.context.id,
+                            configurations: configurations
+                        ),
+                        document: document
+                    ),
+                    for: request
+                )
+            } catch {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .internalError,
+                        message: "Failed to export Source policy configuration.",
+                        details: .object(["reason": .string(String(describing: error))])
+                    )
+                )
+            }
+
+        case AutomationMethod.sourceConfigImport:
+            guard let session = activeSession(for: request), session.context.mode == .referenced else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard let appSession else {
+                return .failure(
+                    for: request,
+                    error: AutomationError(code: .serverUnavailable, message: "The player App is no longer available.", retryable: true)
+                )
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                guard let rawDocument = parameters.values["document"] else {
+                    throw AutomationParameterError.missing("document")
+                }
+                let documentData = try AutomationWireCoding.encoder().encode(rawDocument)
+                let document = try AutomationWireCoding.decoder().decode(
+                    AutomationSourceConfigurationDocument.self,
+                    from: documentData
+                )
+                guard document.schemaVersion == 1,
+                      document.sources.count <= 100,
+                      Set(document.sources.map(\.sourceID)).count == document.sources.count else {
+                    throw AutomationParameterError.invalidValue("document")
+                }
+                let sourceIDMapValues = try parameters.object("sourceIDMap") ?? [:]
+                guard sourceIDMapValues.count <= 100 else {
+                    throw AutomationParameterError.outOfRange("sourceIDMap")
+                }
+                var sourceIDMap: [UUID: UUID] = [:]
+                for (rawSourceID, rawTargetID) in sourceIDMapValues {
+                    guard let sourceID = UUID(uuidString: rawSourceID),
+                          case .string(let targetIDString) = rawTargetID,
+                          let targetID = UUID(uuidString: targetIDString) else {
+                        throw AutomationParameterError.invalidValue("sourceIDMap")
+                    }
+                    sourceIDMap[sourceID] = targetID
+                }
+                let exportedIDs = Set(document.sources.map(\.sourceID))
+                guard Set(sourceIDMap.keys).isSubset(of: exportedIDs) else {
+                    throw AutomationParameterError.invalidValue("sourceIDMap")
+                }
+                if document.originLibraryID != session.context.id,
+                   !document.sources.isEmpty,
+                   Set(sourceIDMap.keys) != exportedIDs {
+                    throw AutomationParameterError.invalidValue("sourceIDMap.crossLibraryRequired")
+                }
+
+                let currentSources = try await appSession.referencedSources()
+                let currentByID = Dictionary(uniqueKeysWithValues: currentSources.map { ($0.id, $0) })
+                let currentConfigurations = currentSources.map(makeSourceConfiguration)
+                let currentRevision = sourceConfigurationRevision(
+                    libraryID: session.context.id,
+                    configurations: currentConfigurations
+                )
+                if let expectedRevision = try parameters.string("expectedRevision"),
+                   expectedRevision != currentRevision {
+                    return revisionConflict(for: request, expected: expectedRevision, actual: currentRevision)
+                }
+
+                var targetConfigurations: [AutomationSourceConfiguration] = []
+                var usedTargetIDs = Set<UUID>()
+                var totalExcludedPathCount = 0
+                for configuration in document.sources {
+                    let displayName = configuration.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let targetID = sourceIDMap[configuration.sourceID] ?? configuration.sourceID
+                    guard !displayName.isEmpty,
+                          displayName.count <= 120,
+                          let policy = ReferencedSourceMonitorPolicy(rawValue: configuration.monitorPolicy),
+                          usedTargetIDs.insert(targetID).inserted,
+                          let current = currentByID[targetID] else {
+                        throw AutomationParameterError.invalidValue("document.sources")
+                    }
+                    guard Set(configuration.excludedRelativePaths).count == configuration.excludedRelativePaths.count,
+                          configuration.excludedRelativePaths.allSatisfy({
+                              TrackMediaLocator.isSafeRelativePath($0) && $0.count <= 1024
+                          }) else {
+                        throw AutomationParameterError.invalidValue("document.sources.excludedRelativePaths")
+                    }
+                    totalExcludedPathCount += configuration.excludedRelativePaths.count
+                    guard totalExcludedPathCount <= 1_000,
+                          current.mode == .directory || configuration.excludedRelativePaths.isEmpty else {
+                        throw AutomationParameterError.invalidValue("document.sources")
+                    }
+                    targetConfigurations.append(AutomationSourceConfiguration(
+                        sourceID: targetID,
+                        displayName: displayName,
+                        monitorPolicy: policy.rawValue,
+                        excludedRelativePaths: configuration.excludedRelativePaths
+                    ))
+                }
+                let changed = targetConfigurations.filter { configuration in
+                    guard let current = currentByID[configuration.sourceID] else { return true }
+                    return makeSourceConfiguration(current) != configuration
+                }
+                let unchangedIDs = targetConfigurations.map(\.sourceID).filter { targetID in
+                    !changed.contains(where: { $0.sourceID == targetID })
+                }
+                var previewByID = Dictionary(
+                    uniqueKeysWithValues: currentConfigurations.map { ($0.sourceID, $0) }
+                )
+                for configuration in targetConfigurations {
+                    previewByID[configuration.sourceID] = configuration
+                }
+                let previewConfigurations = Array(previewByID.values)
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                guard !dryRun else {
+                    return encodeResult(
+                        AutomationSourceConfigurationImportResult(
+                            libraryID: session.context.id,
+                            applied: false,
+                            dryRun: true,
+                            revision: currentRevision,
+                            configurations: previewConfigurations,
+                            unchangedSourceIDs: unchangedIDs
+                        ),
+                        for: request
+                    )
+                }
+                guard !changed.isEmpty else {
+                    return encodeResult(
+                        AutomationSourceConfigurationImportResult(
+                            libraryID: session.context.id,
+                            applied: false,
+                            dryRun: false,
+                            revision: currentRevision,
+                            configurations: previewConfigurations,
+                            unchangedSourceIDs: unchangedIDs
+                        ),
+                        for: request
+                    )
+                }
+                guard try parameters.boolean("confirm", default: false) else {
+                    return confirmationRequired(
+                        for: request,
+                        message: "Apply the Source policy changes from this configuration?",
+                        details: .object([
+                            "sourceCount": .number(Double(changed.count)),
+                            "expectedRevision": .string(currentRevision),
+                            "requiresForegroundConfirmation": .boolean(true)
+                        ])
+                    )
+                }
+                guard await confirmDestructiveOperation(
+                    title: "导入来源配置？",
+                    message: "这会更新来源显示名、自动监听策略和排除路径；未授权路径与书签会留在本机。"
+                ) else {
+                    return interactionCancelled(for: request)
+                }
+
+                var failures: [AutomationSourceConfigurationFailure] = []
+                for configuration in changed {
+                    guard let current = currentByID[configuration.sourceID] else { continue }
+                    do {
+                        if current.displayName != configuration.displayName {
+                            _ = try await appSession.renameReferencedSource(
+                                id: configuration.sourceID,
+                                displayName: configuration.displayName,
+                                libraryID: session.context.id
+                            )
+                        }
+                        if current.monitorPolicy.rawValue != configuration.monitorPolicy,
+                           let policy = ReferencedSourceMonitorPolicy(rawValue: configuration.monitorPolicy) {
+                            try await appSession.setReferencedSourceMonitorPolicy(
+                                id: configuration.sourceID,
+                                policy: policy,
+                                libraryID: session.context.id
+                            )
+                        }
+                        let previousExclusions = Set(current.excludedRelativePaths)
+                        let nextExclusions = Set(configuration.excludedRelativePaths)
+                        for path in previousExclusions.subtracting(nextExclusions).sorted() {
+                            try await appSession.setReferencedSourceExcludedPath(
+                                id: configuration.sourceID,
+                                relativePath: path,
+                                excluded: false,
+                                libraryID: session.context.id
+                            )
+                        }
+                        for path in nextExclusions.subtracting(previousExclusions).sorted() {
+                            try await appSession.setReferencedSourceExcludedPath(
+                                id: configuration.sourceID,
+                                relativePath: path,
+                                excluded: true,
+                                libraryID: session.context.id
+                            )
+                        }
+                    } catch {
+                        failures.append(AutomationSourceConfigurationFailure(
+                            sourceID: configuration.sourceID,
+                            message: "The Source update stopped after an App persistence error."
+                        ))
+                    }
+                }
+                let finalSources = try await appSession.referencedSources()
+                let finalConfigurations = finalSources.map(makeSourceConfiguration)
+                let finalByID = Dictionary(uniqueKeysWithValues: finalSources.map { ($0.id, $0) })
+                let updatedIDs = changed.compactMap { configuration -> UUID? in
+                    guard let before = currentByID[configuration.sourceID],
+                          let after = finalByID[configuration.sourceID],
+                          makeSourceConfiguration(before) != makeSourceConfiguration(after) else {
+                        return nil
+                    }
+                    return configuration.sourceID
+                }
+                let finalRevision = sourceConfigurationRevision(
+                    libraryID: session.context.id,
+                    configurations: finalConfigurations
+                )
+                return encodeResult(
+                    AutomationSourceConfigurationImportResult(
+                        libraryID: session.context.id,
+                        applied: !updatedIDs.isEmpty,
+                        dryRun: false,
+                        revision: finalRevision,
+                        configurations: finalConfigurations,
+                        updatedSourceIDs: updatedIDs,
+                        unchangedSourceIDs: unchangedIDs,
+                        failures: failures
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.sourceRename:
+            guard let session = activeSession(for: request), session.context.mode == .referenced else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard let appSession else {
+                return .failure(
+                    for: request,
+                    error: AutomationError(code: .serverUnavailable, message: "The player App is no longer available.", retryable: true)
+                )
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let sourceID = try parameters.uuid("sourceID", required: true)!
+                let displayName = try parameters.string("displayName", required: true)!
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !displayName.isEmpty, displayName.count <= 120 else {
+                    throw AutomationParameterError.invalidValue("displayName")
+                }
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                guard let current = try await appSession.referencedSources().first(where: { $0.id == sourceID }) else {
+                    return .failure(for: request, error: AutomationError(code: .invalidRequest, message: "The requested Source does not exist.", details: .object(["sourceID": .string(sourceID.uuidString)])))
+                }
+                if dryRun {
+                    var preview = current
+                    preview.displayName = displayName
+                    return encodeResult(AutomationSourceRenameResult(source: makeSourceSummary(preview), applied: false, dryRun: true), for: request)
+                }
+                let renamed = try await appSession.renameReferencedSource(
+                    id: sourceID,
+                    displayName: displayName,
+                    libraryID: session.context.id
+                )
+                return encodeResult(AutomationSourceRenameResult(source: makeSourceSummary(renamed), applied: true, dryRun: false), for: request)
+            } catch {
+                return invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.sourceRefresh:
@@ -1447,7 +2607,11 @@ final class AutomationIPCServer {
             do {
                 let parameters = try AutomationParameters(request)
                 let playlistID = try parameters.uuid("playlistID", required: true)!
-                let requestedTrackIDs = try parameters.uuidArray("trackIDs", required: true)
+                let requestedTrackIDs = try parameters.uuidArray(
+                    "trackIDs",
+                    required: true,
+                    maximumCount: 10_000
+                )
                 let expectedRevision = try parameters.string("expectedRevision")
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 guard let playlist = session.libraryViewModel.playlists.first(where: { $0.id == playlistID }) else {
@@ -1539,6 +2703,99 @@ final class AutomationIPCServer {
                 return invalidParameters(for: request, error: error)
             }
 
+        case AutomationMethod.playlistAddSelection:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let playlistID = try parameters.uuid("playlistID", required: true)!
+                let selectionID = try parameters.uuid("selectionID", required: true)!
+                let expectedRevision = try parameters.string("expectedRevision")
+                let expectedSelectionRevision = try parameters.string("expectedSelectionRevision")
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let snapshots = try selectionStore.load(libraryID: session.context.id)
+                guard let snapshot = snapshots.first(where: { $0.summary.id == selectionID }) else {
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .invalidRequest,
+                            message: "The requested selection snapshot does not exist or has expired.",
+                            details: .object(["selectionID": .string(selectionID.uuidString)])
+                        )
+                    )
+                }
+                let resolved = try resolveSelection(snapshot, viewModel: session.libraryViewModel)
+                if let expectedSelectionRevision,
+                   expectedSelectionRevision != resolved.summary.revision {
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .conflict,
+                            message: "The saved selection changed after it was read.",
+                            details: .object([
+                                "expectedRevision": .string(expectedSelectionRevision),
+                                "actualRevision": .string(resolved.summary.revision)
+                            ])
+                        )
+                    )
+                }
+                let availableIDs = Set(session.libraryViewModel.allTracks.map(\.id))
+                let missingIDs = resolved.trackIDs.filter { !availableIDs.contains($0) }
+                guard missingIDs.isEmpty else {
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .conflict,
+                            message: "Some Tracks in the saved selection no longer exist in the active Library.",
+                            details: .object([
+                                "selectionID": .string(selectionID.uuidString),
+                                "missingTrackIDs": .array(missingIDs.map { .string($0.uuidString) })
+                            ])
+                        )
+                    )
+                }
+                var values: [String: AutomationJSONValue] = [
+                    "playlistID": .string(playlistID.uuidString),
+                    "trackIDs": .array(resolved.trackIDs.map { .string($0.uuidString) }),
+                    "dryRun": .boolean(dryRun)
+                ]
+                if let expectedRevision {
+                    values["expectedRevision"] = .string(expectedRevision)
+                }
+                let nestedRequest = AutomationRequest(
+                    method: AutomationMethod.playlistAddTracks,
+                    params: .object(values),
+                    context: request.context,
+                    requestID: request.requestID,
+                    protocolVersion: request.protocolVersion
+                )
+                let nestedResponse = await execute(nestedRequest)
+                if let error = nestedResponse.error {
+                    return .failure(for: request, error: error)
+                }
+                guard let nestedResult = nestedResponse.result else {
+                    throw AutomationParameterError.invalidValue("playlistMutationResult")
+                }
+                let resultData = try AutomationWireCoding.encoder().encode(nestedResult)
+                let mutation = try AutomationWireCoding.decoder().decode(
+                    AutomationPlaylistMutationResult.self,
+                    from: resultData
+                )
+                return encodeResult(
+                    AutomationPlaylistSelectionMutationResult(
+                        selectionID: selectionID,
+                        selectionRevision: resolved.summary.revision,
+                        mutation: mutation
+                    ),
+                    for: request
+                )
+            } catch let error as AutomationParameterError {
+                return invalidParameters(for: request, error: error)
+            } catch {
+                return selectionStoreFailure(for: request, error: error)
+            }
+
         case AutomationMethod.playlistRemoveTracks:
             guard let session = activeSession(for: request) else {
                 return noActiveLibraryResponse(for: request)
@@ -1546,7 +2803,11 @@ final class AutomationIPCServer {
             do {
                 let parameters = try AutomationParameters(request)
                 let playlistID = try parameters.uuid("playlistID", required: true)!
-                let requestedTrackIDs = try parameters.uuidArray("trackIDs", required: true)
+                let requestedTrackIDs = try parameters.uuidArray(
+                    "trackIDs",
+                    required: true,
+                    maximumCount: 10_000
+                )
                 let expectedRevision = try parameters.string("expectedRevision")
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 guard let playlist = session.libraryViewModel.playlists.first(where: { $0.id == playlistID }) else {
@@ -1657,6 +2918,175 @@ final class AutomationIPCServer {
                 )
             } catch {
                 return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.playlistDiff:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let playlistIDs = try parameters.uuidArray("playlistIDs", required: true)
+                guard (2...100).contains(playlistIDs.count), Set(playlistIDs).count == playlistIDs.count else {
+                    throw AutomationParameterError.invalidValue("playlistIDs")
+                }
+                let operation = try parameters.string("operation", required: true)!
+                guard ["union", "intersection", "difference"].contains(operation) else {
+                    throw AutomationParameterError.invalidValue("operation")
+                }
+                let limit = try parameters.integer("limit", default: 100)
+                let offset = try parameters.integer("offset", default: 0)
+                guard (1...500).contains(limit), offset >= 0 else {
+                    throw AutomationParameterError.outOfRange("limit/offset")
+                }
+                let playlistsByID = Dictionary(uniqueKeysWithValues: session.libraryViewModel.playlists.map { ($0.id, $0) })
+                guard playlistIDs.allSatisfy({ playlistsByID[$0] != nil }) else {
+                    throw AutomationParameterError.missingResource("playlistIDs")
+                }
+                let orderedMemberships = playlistIDs.map { id in playlistsByID[id]!.tracks.map(\.id) }
+                let membershipSets = orderedMemberships.map(Set.init)
+                let resultIDs: [UUID]
+                switch operation {
+                case "union":
+                    var seen = Set<UUID>()
+                    resultIDs = orderedMemberships.flatMap { $0 }.filter { seen.insert($0).inserted }
+                case "intersection":
+                    resultIDs = orderedMemberships[0].filter { id in membershipSets.dropFirst().allSatisfy { $0.contains(id) } }
+                default:
+                    let excluded = membershipSets.dropFirst().reduce(into: Set<UUID>()) { $0.formUnion($1) }
+                    resultIDs = orderedMemberships[0].filter { !excluded.contains($0) }
+                }
+                let summaries = playlistIDs.compactMap { id in playlistsByID[id].map(makePlaylistSummary) }
+                let revision = "v1-" + summaries.map(\.revision).joined(separator: ":")
+                let start = min(offset, resultIDs.count)
+                let page = Array(resultIDs[start..<min(start + limit, resultIDs.count)])
+                return encodeResult(AutomationPlaylistDiffResult(
+                    operation: operation, inputPlaylistIDs: playlistIDs,
+                    trackIDs: page, total: resultIDs.count, revision: revision
+                ), for: request)
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.playlistExport:
+            guard let session = activeSession(for: request) else { return noActiveLibraryResponse(for: request) }
+            do {
+                let parameters = try AutomationParameters(request)
+                let playlistID = try parameters.uuid("playlistID", required: true)!
+                let includePaths = try parameters.boolean("includePaths", default: false)
+                guard !includePaths || grantedScopes().contains(.filesRead) else {
+                    return .failure(for: request, error: AutomationError(code: .authorizationRequired, message: "Absolute file paths require the files.read scope."))
+                }
+                guard let playlist = session.libraryViewModel.playlists.first(where: { $0.id == playlistID }) else {
+                    throw AutomationParameterError.missingResource("playlistID")
+                }
+                var rows = ["#EXTM3U"]
+                var pathCount = 0
+                for track in playlist.tracks {
+                    let duration = track.duration.isFinite ? max(0, Int(track.duration)) : 0
+                    let label = [track.artist, track.title].filter { !$0.isEmpty }.joined(separator: " - ")
+                    rows.append("#EXTINF:\(duration),\(label)")
+                    if includePaths, let fileURL = automationTrackFileURL(track, in: session) {
+                        rows.append(fileURL.absoluteString)
+                        pathCount += 1
+                    } else {
+                        rows.append("player-track://\(track.id.uuidString)")
+                    }
+                }
+                return encodeResult(AutomationPlaylistExportResult(
+                    playlist: makePlaylistSummary(playlist),
+                    m3uText: rows.joined(separator: "\n") + "\n",
+                    exportedTrackCount: playlist.tracks.count,
+                    filePathEntryCount: pathCount
+                ), for: request)
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.playlistImport:
+            guard let session = activeSession(for: request) else { return noActiveLibraryResponse(for: request) }
+            do {
+                let parameters = try AutomationParameters(request)
+                let playlistID = try parameters.uuid("playlistID", required: true)!
+                let m3uText = try parameters.string("m3uText", required: true)!
+                guard m3uText.utf8.count <= 5_000_000 else { throw AutomationParameterError.outOfRange("m3uText") }
+                let operation = try parameters.string("operation") ?? "append"
+                guard operation == "append" || operation == "replace" else { throw AutomationParameterError.invalidValue("operation") }
+                let expectedRevision = try parameters.string("expectedRevision")
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                guard let playlist = session.libraryViewModel.playlists.first(where: { $0.id == playlistID }) else {
+                    throw AutomationParameterError.missingResource("playlistID")
+                }
+                let summary = makePlaylistSummary(playlist)
+                if let expectedRevision, expectedRevision != summary.revision {
+                    return revisionConflict(for: request, expected: expectedRevision, actual: summary.revision)
+                }
+                let tracks = session.libraryViewModel.allTracks
+                let tracksByID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+                var trackIDByPath: [String: UUID] = [:]
+                var managedIDByRelativePath: [String: UUID] = [:]
+                for track in tracks {
+                    if let fileURL = automationTrackFileURL(track, in: session) {
+                        let path = fileURL.standardizedFileURL.path
+                        if trackIDByPath[path] == nil { trackIDByPath[path] = track.id }
+                    }
+                    if let relativePath = track.mediaLocator.managedLibraryRelativePath {
+                        managedIDByRelativePath[relativePath] = track.id
+                    }
+                }
+                let entries = m3uText.components(separatedBy: .newlines)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+                guard entries.count <= 10_000 else { throw AutomationParameterError.outOfRange("m3uText") }
+                var matchedTrackIDs: [UUID] = []
+                var unmatchedEntries: [String] = []
+                for entry in entries {
+                    if let url = URL(string: entry), url.scheme == "player-track",
+                       let id = UUID(uuidString: url.host ?? url.path), tracksByID[id] != nil {
+                        matchedTrackIDs.append(id)
+                        continue
+                    }
+                    let entryURL = URL(string: entry).flatMap { $0.isFileURL ? $0 : nil }
+                    let path = entryURL?.path ?? (entry.removingPercentEncoding ?? entry)
+                    if let id = trackIDByPath[URL(fileURLWithPath: path).standardizedFileURL.path]
+                        ?? managedIDByRelativePath[path] {
+                        matchedTrackIDs.append(id)
+                    } else {
+                        unmatchedEntries.append(entry)
+                    }
+                }
+                var seen = Set<UUID>()
+                let uniqueMatched = matchedTrackIDs.filter { seen.insert($0).inserted }
+                let targetIDs: [UUID]
+                if operation == "append" {
+                    var allSeen = Set<UUID>()
+                    targetIDs = (playlist.tracks.map(\.id) + uniqueMatched).filter { allSeen.insert($0).inserted }
+                } else {
+                    targetIDs = uniqueMatched
+                }
+                guard dryRun || targetIDs != playlist.tracks.map(\.id) else {
+                    return encodeResult(AutomationPlaylistImportResult(
+                        playlist: summary, operation: operation, applied: false, dryRun: false,
+                        matchedTrackIDs: matchedTrackIDs, unmatchedEntries: unmatchedEntries
+                    ), for: request)
+                }
+                if !dryRun {
+                    try await session.libraryViewModel.replacePlaylistTracksForAutomation(
+                        targetIDs.compactMap { tracksByID[$0] }, playlist: playlist,
+                        expectedRevision: expectedRevision
+                    )
+                }
+                let updatedPlaylist = session.libraryViewModel.playlists.first { $0.id == playlistID } ?? playlist
+                return encodeResult(AutomationPlaylistImportResult(
+                    playlist: makePlaylistSummary(dryRun ? playlist : updatedPlaylist),
+                    operation: operation,
+                    applied: !dryRun,
+                    dryRun: dryRun,
+                    matchedTrackIDs: matchedTrackIDs,
+                    unmatchedEntries: unmatchedEntries
+                ), for: request)
+            } catch {
+                return mutationFailure(for: request, error: error)
             }
 
         case AutomationMethod.playlistRename:
@@ -2280,6 +3710,129 @@ final class AutomationIPCServer {
                 return invalidParameters(for: request, error: error)
             }
 
+        case AutomationMethod.filesReveal:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let trackIDs = try parameters.uuidArray("trackIDs", required: true)
+                guard trackIDs.count <= 50 else {
+                    throw AutomationParameterError.outOfRange("trackIDs")
+                }
+                let tracks = try automationTracks(ids: trackIDs, in: session.libraryViewModel.allTracks)
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                var files: [AutomationFileSummary] = []
+                var urls: [URL] = []
+                var failures: [String] = []
+                for track in tracks {
+                    do {
+                        let url: URL
+                        if case .referenced = track.mediaLocator {
+                            url = try currentAuthorizedFile(for: track, session: session).url
+                        } else if let managedURL = automationTrackFileURL(track, in: session) {
+                            url = managedURL
+                        } else {
+                            throw AutomationFileOperationError.fileUnavailable(track.id)
+                        }
+                        guard FileManager.default.fileExists(atPath: url.path) else {
+                            throw AutomationFileOperationError.fileUnavailable(track.id)
+                        }
+                        urls.append(url)
+                        files.append(makeFileSummary(track, pathOverride: url.path, existsOverride: true))
+                    } catch {
+                        failures.append("\(track.id.uuidString): \(error.localizedDescription)")
+                    }
+                }
+                if !dryRun, !urls.isEmpty {
+                    NSWorkspace.shared.activateFileViewerSelecting(urls)
+                }
+                return encodeResult(
+                    AutomationFileOperationResult(
+                        operation: AutomationMethod.filesReveal,
+                        applied: !dryRun && !urls.isEmpty,
+                        dryRun: dryRun,
+                        affectedTrackIDs: files.map(\.trackID),
+                        files: files,
+                        failures: failures,
+                        message: dryRun
+                            ? "Preview only. Authorized existing files would be revealed in Finder."
+                            : "Authorized existing files were revealed in Finder."
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.filesExport:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let trackIDs = try parameters.uuidArray("trackIDs", required: true)
+                guard trackIDs.count <= 500 else {
+                    throw AutomationParameterError.outOfRange("trackIDs")
+                }
+                let tracks = try automationTracks(ids: trackIDs, in: session.libraryViewModel.allTracks)
+                guard let destinationURL = await requestExportDirectory() else {
+                    return interactionCancelled(for: request)
+                }
+                let hasScopedAccess = destinationURL.startAccessingSecurityScopedResource()
+                defer {
+                    if hasScopedAccess { destinationURL.stopAccessingSecurityScopedResource() }
+                }
+                let destination = destinationURL.standardizedFileURL
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDirectory),
+                      isDirectory.boolValue else {
+                    throw AutomationParameterError.invalidValue("destination folder")
+                }
+                let libraryRoot = session.context.rootURL.standardizedFileURL
+                guard destination.path != libraryRoot.path,
+                      !destination.path.hasPrefix(libraryRoot.path + "/") else {
+                    throw AutomationParameterError.invalidValue("destination folder inside active Library")
+                }
+
+                var files: [AutomationFileSummary] = []
+                var failures: [String] = []
+                for track in tracks {
+                    do {
+                        let source: URL
+                        if case .referenced = track.mediaLocator {
+                            source = try currentAuthorizedFile(for: track, session: session).url
+                        } else if let managed = automationTrackFileURL(track, in: session) {
+                            source = managed
+                        } else {
+                            throw AutomationFileOperationError.fileUnavailable(track.id)
+                        }
+                        guard FileManager.default.fileExists(atPath: source.path) else {
+                            throw AutomationFileOperationError.fileUnavailable(track.id)
+                        }
+                        let output = uniqueExportURL(for: source.lastPathComponent, in: destination)
+                        try FileManager.default.copyItem(at: source, to: output)
+                        files.append(makeFileSummary(track, pathOverride: output.path, existsOverride: true))
+                    } catch {
+                        failures.append("\(track.id.uuidString): \(error.localizedDescription)")
+                    }
+                }
+                return encodeResult(
+                    AutomationFileOperationResult(
+                        operation: AutomationMethod.filesExport,
+                        applied: !files.isEmpty,
+                        dryRun: false,
+                        affectedTrackIDs: files.map(\.trackID),
+                        files: files,
+                        failures: failures,
+                        message: "Audio files were copied to the App-authorized destination; Library originals were retained."
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
         case AutomationMethod.filesRename, AutomationMethod.filesMove:
             guard let session = activeSession(for: request) else {
                 return noActiveLibraryResponse(for: request)
@@ -2508,6 +4061,8 @@ final class AutomationIPCServer {
             )
 
         case AutomationMethod.playbackPlay,
+             AutomationMethod.playbackPlayPlaylist,
+             AutomationMethod.playbackToggle,
              AutomationMethod.playbackPause,
              AutomationMethod.playbackNext,
              AutomationMethod.playbackPrevious,
@@ -2544,6 +4099,19 @@ final class AutomationIPCServer {
                     } else {
                         session.playbackCoordinator.resume()
                     }
+                case AutomationMethod.playbackPlayPlaylist:
+                    let playlistID = try parameters.uuid("playlistID", required: true)!
+                    guard let playlist = session.libraryViewModel.playlists.first(where: { $0.id == playlistID }) else {
+                        throw AutomationParameterError.missingResource("playlistID")
+                    }
+                    let tracks = playlist.tracks
+                    let startIndex = try parameters.integer("startIndex", default: 0)
+                    guard !tracks.isEmpty, (0..<tracks.count).contains(startIndex) else {
+                        throw AutomationParameterError.outOfRange("startIndex")
+                    }
+                    session.playbackCoordinator.playTracks(tracks, startingAt: startIndex)
+                case AutomationMethod.playbackToggle:
+                    session.playbackCoordinator.playPause()
                 case AutomationMethod.playbackPause:
                     guard request.params == nil || request.params == .null || isObject(request.params) else {
                         throw AutomationParameterError.invalidShape
@@ -2593,9 +4161,42 @@ final class AutomationIPCServer {
             }
             return encodeResult(makeQueueResult(session), for: request)
 
+        case AutomationMethod.queueUpcoming:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let limit = try parameters.integer("limit", default: 100)
+                let offset = try parameters.integer("offset", default: 0)
+                guard (1...500).contains(limit), offset >= 0 else {
+                    throw AutomationParameterError.outOfRange("limit/offset")
+                }
+                let revision = session.playerViewModel.automationQueueRevision
+                if let expected = try parameters.string("expectedRevision"), expected != revision {
+                    return .failure(for: request, error: AutomationError(
+                        code: .conflict,
+                        message: "The queue changed since it was queried.",
+                        retryable: true,
+                        details: .object(["expectedRevision": .string(expected), "actualRevision": .string(revision)])
+                    ))
+                }
+                let ids = session.playerViewModel.currentQueueTracks.map(\.id)
+                let start = min(offset, ids.count)
+                let page = Array(ids[start..<min(start + limit, ids.count)])
+                return encodeResult(AutomationQueueUpcomingResult(
+                    currentTrackID: session.playbackCoordinator.presentation.localTrack?.id,
+                    trackIDs: page, offset: offset, total: ids.count, revision: revision
+                ), for: request)
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
         case AutomationMethod.queueReplace,
              AutomationMethod.queueEnqueue,
              AutomationMethod.queueEnqueueNext,
+             AutomationMethod.queueRemove,
+             AutomationMethod.queueReorder,
              AutomationMethod.queueClear:
             guard let session = activeSession(for: request) else {
                 return noActiveLibraryResponse(for: request)
@@ -2643,6 +4244,30 @@ final class AutomationIPCServer {
                         currentTrackID: currentTrackID,
                         insertedIDs: mutationTracks.map(\.id)
                     )
+                case AutomationMethod.queueRemove:
+                    let requestedIDs = try parameters.uuidArray("trackIDs", required: true)
+                    var removalCounts = Dictionary(grouping: requestedIDs, by: { $0 }).mapValues(\.count)
+                    var remaining: [Track] = []
+                    for track in current {
+                        if let count = removalCounts[track.id], count > 0 {
+                            removalCounts[track.id] = count - 1
+                        } else {
+                            remaining.append(track)
+                        }
+                    }
+                    guard removalCounts.values.allSatisfy({ $0 == 0 }) else {
+                        throw AutomationParameterError.missingResource("trackIDs")
+                    }
+                    nextIDs = remaining.map(\.id)
+                    mutationTracks = []
+                case AutomationMethod.queueReorder:
+                    let requestedIDs = try parameters.uuidArray("trackIDs", required: true, allowEmpty: true)
+                    guard Dictionary(grouping: requestedIDs, by: { $0 }).mapValues(\.count)
+                        == Dictionary(grouping: current.map(\.id), by: { $0 }).mapValues(\.count) else {
+                        throw AutomationParameterError.invalidValue("trackIDs")
+                    }
+                    nextIDs = requestedIDs
+                    mutationTracks = []
                 default:
                     throw AutomationParameterError.invalidValue("method")
                 }
@@ -2657,6 +4282,8 @@ final class AutomationIPCServer {
                     )
                 }
                 switch request.method {
+                case AutomationMethod.queueRemove, AutomationMethod.queueReorder:
+                    player.updateQueueTracks(nextIDs.compactMap { id in current.first { $0.id == id } })
                 case AutomationMethod.queueEnqueueNext:
                     let inserted = session.playbackCoordinator.insertTracksAfterCurrent(mutationTracks)
                     if inserted == 0 {
@@ -2679,31 +4306,144 @@ final class AutomationIPCServer {
             do {
                 let parameters = try AutomationParameters(request)
                 let limit = try parameters.integer("limit", default: 100)
-                guard (1...500).contains(limit) else {
-                    throw AutomationParameterError.outOfRange("limit")
+                let offset = try parameters.integer("offset", default: 0)
+                guard (1...500).contains(limit), offset >= 0 else {
+                    throw AutomationParameterError.outOfRange("limit/offset")
                 }
                 let from = try parameters.date("from")
                 let to = try parameters.date("to")
                 if let from, let to, from > to {
                     throw AutomationParameterError.invalidValue("from/to")
                 }
+                let trackID = try parameters.uuid("trackID")
+                let query = try parameters.string("query")?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let artistContains = try parameters.string("artistContains")?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let albumContains = try parameters.string("albumContains")?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let expectedRevision = try parameters.string("expectedRevision")
                 let items: [PlaybackHistoryItem]
                 if from != nil || to != nil {
                     items = session.playbackHistoryStore.fetchItems(
                         from: from ?? .distantPast,
-                        to: to,
-                        limit: limit
+                        to: to
                     )
                 } else {
-                    items = session.playbackHistoryStore.fetchItems(limit: limit)
+                    items = session.playbackHistoryStore.fetchItems()
                 }
+                let orderedItems = items.sorted {
+                    if $0.playedAt != $1.playedAt { return $0.playedAt > $1.playedAt }
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+                let revision = playbackHistoryRevision(orderedItems)
+                if let expectedRevision, expectedRevision != revision {
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .conflict,
+                            message: "Playback history changed while the results were being paginated.",
+                            retryable: true,
+                            details: .object([
+                                "expectedRevision": .string(expectedRevision),
+                                "actualRevision": .string(revision)
+                            ])
+                        )
+                    )
+                }
+                let filteredItems = orderedItems.filter { item in
+                    if let trackID, item.trackID != trackID { return false }
+                    if let query, !query.isEmpty,
+                       !item.title.localizedCaseInsensitiveContains(query),
+                       !item.artist.localizedCaseInsensitiveContains(query),
+                       !item.album.localizedCaseInsensitiveContains(query) {
+                        return false
+                    }
+                    if let artistContains, !artistContains.isEmpty,
+                       !item.artist.localizedCaseInsensitiveContains(artistContains) {
+                        return false
+                    }
+                    if let albumContains, !albumContains.isEmpty,
+                       !item.album.localizedCaseInsensitiveContains(albumContains) {
+                        return false
+                    }
+                    return true
+                }
+                let pageStart = min(offset, filteredItems.count)
+                let pageEnd = min(pageStart + limit, filteredItems.count)
+                let page = Array(filteredItems[pageStart..<pageEnd])
                 return encodeResult(
                     AutomationHistoryListResult(
-                        items: items.map(makeHistoryItem),
-                        revision: "v1-\(session.playbackHistoryStore.revision)"
+                        items: page.map(makeHistoryItem),
+                        revision: revision,
+                        total: filteredItems.count,
+                        offset: offset,
+                        limit: limit,
+                        nextOffset: pageEnd < filteredItems.count ? pageEnd : nil
                     ),
                     for: request
                 )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.historyStats:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let from = try parameters.date("from")
+                let to = try parameters.date("to")
+                if let from, let to, from > to {
+                    throw AutomationParameterError.invalidValue("from/to")
+                }
+                let dimension = try parameters.string("dimension") ?? "all"
+                guard ["all", "track", "artist", "album"].contains(dimension) else {
+                    throw AutomationParameterError.invalidValue("dimension")
+                }
+                let limit = try parameters.integer("limit", default: 20)
+                guard (1...100).contains(limit) else { throw AutomationParameterError.outOfRange("limit") }
+                let items = (from != nil || to != nil)
+                    ? session.playbackHistoryStore.fetchItems(from: from ?? .distantPast, to: to)
+                    : session.playbackHistoryStore.fetchItems()
+
+                struct Aggregate {
+                    var name: String
+                    var count = 0
+                    var seconds = 0.0
+                }
+                func aggregates(_ keyPath: KeyPath<PlaybackHistoryItem, String>, unknown: String) -> [AutomationHistoryDimensionSummary] {
+                    var values: [String: Aggregate] = [:]
+                    for item in items {
+                        let name = item[keyPath: keyPath].trimmingCharacters(in: .whitespacesAndNewlines)
+                        let normalizedName = name.isEmpty ? unknown : name
+                        let key = normalizedName.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                        var value = values[key, default: Aggregate(name: normalizedName)]
+                        value.count += 1
+                        value.seconds += max(0, item.playedSeconds)
+                        values[key] = value
+                    }
+                    return values.map { key, value in
+                        AutomationHistoryDimensionSummary(key: key, name: value.name, playCount: value.count, playedSeconds: value.seconds)
+                    }.sorted {
+                        if $0.playCount != $1.playCount { return $0.playCount > $1.playCount }
+                        if $0.playedSeconds != $1.playedSeconds { return $0.playedSeconds > $1.playedSeconds }
+                        return $0.key < $1.key
+                    }.prefix(limit).map { $0 }
+                }
+                let trackStats = dimension == "all" || dimension == "track"
+                    ? aggregates(\.title, unknown: "Unknown Track") : []
+                let artistStats = dimension == "all" || dimension == "artist"
+                    ? aggregates(\.artist, unknown: "Unknown Artist") : []
+                let albumStats = dimension == "all" || dimension == "album"
+                    ? aggregates(\.album, unknown: "Unknown Album") : []
+                return encodeResult(AutomationHistoryStatsResult(
+                    from: from, to: to, playCount: items.count,
+                    distinctTrackCount: Set(items.map(\.trackID)).count,
+                    distinctArtistCount: Set(items.map { $0.artist.lowercased() }).count,
+                    distinctAlbumCount: Set(items.map { $0.album.lowercased() }).count,
+                    playedSeconds: items.reduce(0) { $0 + max(0, $1.playedSeconds) },
+                    topTracks: trackStats, topArtists: artistStats, topAlbums: albumStats,
+                    revision: playbackHistoryRevision(items)
+                ), for: request)
             } catch {
                 return invalidParameters(for: request, error: error)
             }
@@ -2768,6 +4508,7 @@ final class AutomationIPCServer {
                     session: session,
                     allowPlaylist: false
                 )
+                let targetRevision = artworkRevision(for: target, session: session)
                 let candidates: [CoverCandidate]
                 let queryTitle: String?
                 let queryArtist: String?
@@ -2814,6 +4555,23 @@ final class AutomationIPCServer {
                 case .playlist:
                     throw AutomationParameterError.invalidValue("playlistID")
                 }
+                let rankedCandidates = candidates.map {
+                    cacheArtworkCandidate(
+                        $0,
+                        target: target,
+                        revision: targetRevision,
+                        session: session,
+                        queryTitle: queryTitle,
+                        queryArtist: queryArtist,
+                        queryAlbum: queryAlbum
+                    )
+                }.sorted { lhs, rhs in
+                    let leftQuality = lhs.matchQuality ?? 0
+                    let rightQuality = rhs.matchQuality ?? 0
+                    if leftQuality != rightQuality { return leftQuality > rightQuality }
+                    if lhs.resolution != rhs.resolution { return lhs.resolution > rhs.resolution }
+                    return lhs.id < rhs.id
+                }
                 return encodeResult(
                     AutomationArtworkSearchResult(
                         targetType: target.type,
@@ -2823,12 +4581,107 @@ final class AutomationIPCServer {
                         queryTitle: queryTitle,
                         queryArtist: queryArtist,
                         queryAlbum: queryAlbum,
-                        candidates: candidates.map(makeArtworkCandidate),
-                        message: candidates.isEmpty
+                        candidates: rankedCandidates,
+                        message: rankedCandidates.isEmpty
                             ? "No artwork candidates were returned by the configured providers."
-                            : "Artwork candidates were searched and ranked by the existing App provider pipeline. Inline imageBase64 is provided for Agent review."
+                            : "Artwork candidates include provider-neutral metadata/image matchQuality alongside each provider's own confidence. Results are ordered by matchQuality, then resolution and stable ID. Each candidate has a Library- and artwork-revision-bound ID for preview and direct apply. Inline imageBase64 remains available for Agent review."
                     ),
                     for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.artworkApplyCandidate:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let candidateID = try parameters.string("candidateID", required: true)!
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !candidateID.isEmpty else {
+                    throw AutomationParameterError.invalidValue("candidateID")
+                }
+                let expectedRevision = try parameters.string("expectedRevision")
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let confirm = try parameters.boolean("confirm", default: false)
+                pruneArtworkCandidateCache(now: Date())
+                guard let cached = artworkCandidateCache[candidateID],
+                      cached.expiresAt > Date(),
+                      cached.libraryID == session.context.id else {
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .invalidRequest,
+                            message: "The artwork candidate is unknown, expired, or belongs to another Library. Search artwork again to obtain a current candidate ID.",
+                            details: .object(["candidateID": .string(candidateID)])
+                        )
+                    )
+                }
+                if let expectedRevision, expectedRevision != cached.revision {
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .conflict,
+                            message: "The supplied revision does not match the revision captured when this artwork candidate was searched.",
+                            details: .object([
+                                "expectedRevision": .string(expectedRevision),
+                                "candidateRevision": .string(cached.revision)
+                            ])
+                        )
+                    )
+                }
+
+                var resolvedValues: [String: AutomationJSONValue] = [
+                    "imageBase64": .string(cached.candidate.imageBase64),
+                    "expectedRevision": .string(cached.revision),
+                    "dryRun": .boolean(dryRun),
+                    "confirm": .boolean(confirm)
+                ]
+                if let trackID = cached.trackID {
+                    resolvedValues["trackID"] = .string(trackID.uuidString)
+                } else if let artistID = cached.artistID {
+                    resolvedValues["artistID"] = .string(artistID.uuidString)
+                } else if let albumKey = cached.albumKey {
+                    resolvedValues["albumKey"] = .string(albumKey)
+                } else {
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .invalidRequest,
+                            message: "The artwork candidate no longer has a supported target.",
+                            details: .object(["candidateID": .string(candidateID)])
+                        )
+                    )
+                }
+                let applyRequest = AutomationRequest(
+                    method: AutomationMethod.artworkApply,
+                    params: .object(resolvedValues),
+                    context: request.context,
+                    requestID: request.requestID,
+                    protocolVersion: request.protocolVersion
+                )
+                let applyParameters = try AutomationParameters(applyRequest)
+                let resolvedTarget = try resolveArtworkTarget(
+                    from: applyParameters,
+                    session: session,
+                    allowPlaylist: false
+                )
+                guard resolvedTarget.stableIdentity == cached.targetIdentity else {
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .conflict,
+                            message: "The artwork candidate target changed after search.",
+                            details: .object(["candidateID": .string(candidateID)])
+                        )
+                    )
+                }
+                return try await applyArtworkToSingleTarget(
+                    parameters: applyParameters,
+                    request: request,
+                    session: session
                 )
             } catch {
                 return invalidParameters(for: request, error: error)
@@ -3161,6 +5014,856 @@ final class AutomationIPCServer {
                             tracks: session.libraryViewModel.allTracks,
                             playlists: session.libraryViewModel.playlists
                         )
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.metadataEmbeddedGet:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                var trackIDs = try parameters.uuidArray("trackIDs", maximumCount: 100)
+                if let trackID = try parameters.uuid("trackID") {
+                    guard trackIDs.isEmpty else {
+                        throw AutomationParameterError.invalidValue("trackID/trackIDs")
+                    }
+                    trackIDs = [trackID]
+                }
+                guard !trackIDs.isEmpty, Set(trackIDs).count == trackIDs.count else {
+                    throw AutomationParameterError.missing("trackID or trackIDs")
+                }
+                let tracksByID = Dictionary(
+                    uniqueKeysWithValues: session.libraryViewModel.allTracks.map { ($0.id, $0) }
+                )
+                guard trackIDs.allSatisfy({ tracksByID[$0] != nil }) else {
+                    throw AutomationParameterError.invalidValue("trackIDs")
+                }
+                var results: [AutomationEmbeddedTagTrack] = []
+                for trackID in trackIDs {
+                    guard let track = tracksByID[trackID] else { continue }
+                    do {
+                        let fileURL = try embeddedAudioFileURL(for: track, session: session)
+                        let snapshot = await readEmbeddedTags(from: fileURL)
+                        results.append(AutomationEmbeddedTagTrack(
+                            id: track.id,
+                            fileName: fileURL.lastPathComponent,
+                            format: fileURL.pathExtension.lowercased(),
+                            supportedForWrite: snapshot.supportedForWrite,
+                            trackRevision: session.libraryViewModel.automationTrackRevision(for: track),
+                            values: snapshot.values,
+                            status: snapshot.status,
+                            message: snapshot.message
+                        ))
+                    } catch {
+                        results.append(AutomationEmbeddedTagTrack(
+                            id: track.id,
+                            fileName: "",
+                            format: "",
+                            supportedForWrite: false,
+                            trackRevision: session.libraryViewModel.automationTrackRevision(for: track),
+                            status: "unavailable",
+                            message: "The active audio file is unavailable or not authorized."
+                        ))
+                    }
+                }
+                return encodeResult(
+                    AutomationEmbeddedTagsResult(
+                        dryRun: false,
+                        applied: false,
+                        libraryRevision: libraryTracksRevision(
+                            tracks: session.libraryViewModel.allTracks,
+                            playlists: session.libraryViewModel.playlists
+                        ),
+                        tracks: results,
+                        message: "Tags were read from the active audio files; App metadata was not changed."
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.metadataEmbeddedPatch:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                var trackIDs = try parameters.uuidArray("trackIDs", maximumCount: 100)
+                if let trackID = try parameters.uuid("trackID") {
+                    guard trackIDs.isEmpty else {
+                        throw AutomationParameterError.invalidValue("trackID/trackIDs")
+                    }
+                    trackIDs = [trackID]
+                }
+                guard !trackIDs.isEmpty, Set(trackIDs).count == trackIDs.count else {
+                    throw AutomationParameterError.missing("trackID or trackIDs")
+                }
+                guard let rawFields = try parameters.object("fields"), !rawFields.isEmpty,
+                      rawFields.count <= 16 else {
+                    throw AutomationParameterError.missing("fields")
+                }
+                var fields: [String: String?] = [:]
+                for (name, value) in rawFields {
+                    guard MP3EmbeddedTagService.supportedFields.contains(name) else {
+                        throw AutomationParameterError.invalidValue("fields.\(name)")
+                    }
+                    switch value {
+                    case .string(let text) where text.count <= 16_384:
+                        fields.updateValue(text, forKey: name)
+                    case .null:
+                        fields.updateValue(nil, forKey: name)
+                    default:
+                        throw AutomationParameterError.invalidValue("fields.\(name)")
+                    }
+                }
+                let expectedRevisions = try makeTrackRevisions(
+                    from: parameters.object("expectedRevisions")
+                )
+                guard trackIDs.allSatisfy({ expectedRevisions[$0] != nil }) else {
+                    throw AutomationParameterError.missing("expectedRevisions for every Track")
+                }
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let confirm = try parameters.boolean("confirm", default: false)
+                let tracksByID = Dictionary(
+                    uniqueKeysWithValues: session.libraryViewModel.allTracks.map { ($0.id, $0) }
+                )
+                guard trackIDs.allSatisfy({ tracksByID[$0] != nil }) else {
+                    throw AutomationParameterError.invalidValue("trackIDs")
+                }
+                var previews: [AutomationEmbeddedTagTrack] = []
+                var writeRequests: [MP3EmbeddedTagService.WriteRequest] = []
+                for trackID in trackIDs {
+                    guard let track = tracksByID[trackID] else { continue }
+                    let trackRevision = session.libraryViewModel.automationTrackRevision(for: track)
+                    guard expectedRevisions[trackID] == trackRevision else {
+                        previews.append(AutomationEmbeddedTagTrack(
+                            id: trackID,
+                            fileName: "",
+                            format: "",
+                            supportedForWrite: false,
+                            trackRevision: trackRevision,
+                            status: "conflict",
+                            message: "Track metadata changed after the write was reviewed."
+                        ))
+                        continue
+                    }
+                    do {
+                        let fileURL = try embeddedAudioFileURL(for: track, session: session)
+                        guard fileURL.pathExtension.lowercased() == "mp3" else {
+                            previews.append(AutomationEmbeddedTagTrack(
+                                id: trackID,
+                                fileName: fileURL.lastPathComponent,
+                                format: fileURL.pathExtension.lowercased(),
+                                supportedForWrite: false,
+                                trackRevision: trackRevision,
+                                status: "unsupported",
+                                message: "Only MP3 files with safely editable ID3v2 tags can be written."
+                            ))
+                            continue
+                        }
+                        let currentTags = try MP3EmbeddedTagService.read(from: fileURL)
+                        let currentValues = embeddedTagValues(currentTags)
+                        previews.append(AutomationEmbeddedTagTrack(
+                            id: trackID,
+                            fileName: fileURL.lastPathComponent,
+                            format: "mp3",
+                            supportedForWrite: true,
+                            trackRevision: trackRevision,
+                            values: currentValues,
+                            status: "ready"
+                        ))
+                        writeRequests.append(MP3EmbeddedTagService.WriteRequest(
+                            trackID: trackID,
+                            fileURL: fileURL,
+                            fileName: fileURL.lastPathComponent,
+                            expectedTrackRevision: trackRevision,
+                            fields: fields
+                        ))
+                    } catch {
+                        previews.append(AutomationEmbeddedTagTrack(
+                            id: trackID,
+                            fileName: "",
+                            format: "mp3",
+                            supportedForWrite: false,
+                            trackRevision: trackRevision,
+                            status: "unsupported",
+                            message: MP3EmbeddedTagService.publicMessage(for: error)
+                        ))
+                    }
+                }
+                let libraryRevision = libraryTracksRevision(
+                    tracks: session.libraryViewModel.allTracks,
+                    playlists: session.libraryViewModel.playlists
+                )
+                guard !writeRequests.isEmpty else {
+                    return encodeResult(
+                        AutomationEmbeddedTagsResult(
+                            dryRun: dryRun,
+                            applied: false,
+                            libraryRevision: libraryRevision,
+                            tracks: previews,
+                            message: "No eligible MP3 files were found; no files were changed."
+                        ),
+                        for: request
+                    )
+                }
+                guard !dryRun else {
+                    return encodeResult(
+                        AutomationEmbeddedTagsResult(
+                            dryRun: true,
+                            applied: false,
+                            libraryRevision: libraryRevision,
+                            tracks: previews,
+                            message: "Preview only. The listed ID3 fields are ready for an atomic MP3 update."
+                        ),
+                        for: request
+                    )
+                }
+                guard confirm else {
+                    return confirmationRequired(
+                        for: request,
+                        message: "写入原音频标签需要 confirm=true，并由播放器在前台确认。",
+                        details: .object([
+                            "trackCount": .number(Double(writeRequests.count)),
+                            "fields": .array(fields.keys.sorted().map(AutomationJSONValue.string)),
+                            "requiresForegroundConfirmation": .boolean(true)
+                        ])
+                    )
+                }
+                guard await confirmDestructiveOperation(
+                    title: "写入 \(writeRequests.count) 个 MP3 文件标签？",
+                    message: "将按预览写入 ID3 标签并替换原音频文件；每首歌曲分别校验，失败的文件保持原样。"
+                ) else {
+                    return interactionCancelled(for: request)
+                }
+                guard let descriptor = session.startAutomationEmbeddedTagWrite(requests: writeRequests) else {
+                    throw AutomationParameterError.invalidValue("library session is closing")
+                }
+                return encodeResult(
+                    AutomationEmbeddedTagsResult(
+                        dryRun: false,
+                        applied: false,
+                        libraryRevision: libraryRevision,
+                        tracks: previews,
+                        job: makeJobSummary(descriptor),
+                        message: "The embedded-tag Job was started. Query jobs.get for per-file completion and failures."
+                    ),
+                    for: request
+                )
+            } catch {
+                return mutationFailure(for: request, error: error)
+            }
+
+        case AutomationMethod.metadataExport:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let requestedTrackIDs = try parameters.uuidArray(
+                    "trackIDs",
+                    maximumCount: 100
+                )
+                let allTracks = session.libraryViewModel.allTracks
+                let revision = libraryTracksRevision(
+                    tracks: allTracks,
+                    playlists: session.libraryViewModel.playlists
+                )
+                let pageTracks: [Track]
+                let offset: Int
+                let limit: Int
+                let total: Int
+                if !requestedTrackIDs.isEmpty {
+                    guard Set(requestedTrackIDs).count == requestedTrackIDs.count,
+                          parameters.values["offset"] == nil,
+                          parameters.values["limit"] == nil else {
+                        throw AutomationParameterError.invalidValue("trackIDs/limit/offset")
+                    }
+                    let tracksByID = Dictionary(uniqueKeysWithValues: allTracks.map { ($0.id, $0) })
+                    guard requestedTrackIDs.allSatisfy({ tracksByID[$0] != nil }) else {
+                        throw AutomationParameterError.missingResource("trackIDs")
+                    }
+                    pageTracks = requestedTrackIDs.compactMap { tracksByID[$0] }
+                    offset = 0
+                    limit = pageTracks.count
+                    total = pageTracks.count
+                } else {
+                    limit = try parameters.integer("limit", default: 100)
+                    offset = try parameters.integer("offset", default: 0)
+                    guard (1...100).contains(limit), offset >= 0 else {
+                        throw AutomationParameterError.outOfRange("limit/offset")
+                    }
+                    let ordered = allTracks.sorted {
+                        if $0.addedAt != $1.addedAt { return $0.addedAt < $1.addedAt }
+                        return $0.id.uuidString < $1.id.uuidString
+                    }
+                    total = ordered.count
+                    pageTracks = Array(ordered.dropFirst(min(offset, ordered.count)).prefix(limit))
+                }
+                let nextOffset = offset + pageTracks.count < total
+                    ? offset + pageTracks.count
+                    : nil
+                return encodeResult(
+                    AutomationMetadataDocument(
+                        sourceLibraryID: session.context.id,
+                        revision: revision,
+                        offset: offset,
+                        limit: limit,
+                        total: total,
+                        nextOffset: nextOffset,
+                        tracks: pageTracks.map { track in
+                            makeMetadataDocumentTrack(
+                                track,
+                                revision: session.libraryViewModel.automationTrackRevision(for: track)
+                            )
+                        }
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.metadataImport:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                guard let rawDocument = parameters.values["document"] else {
+                    throw AutomationParameterError.missing("document")
+                }
+                let documentData = try AutomationWireCoding.encoder().encode(rawDocument)
+                let document = try AutomationWireCoding.decoder().decode(
+                    AutomationMetadataDocument.self,
+                    from: documentData
+                )
+                guard document.schemaVersion == 1,
+                      (1...100).contains(document.tracks.count),
+                      Set(document.tracks.map(\.id)).count == document.tracks.count else {
+                    throw AutomationParameterError.invalidValue("document")
+                }
+                let expectedRevision = try parameters.string("expectedRevision")
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let overwriteExistingFields = try parameters.boolean("overwriteExistingFields", default: false)
+                let currentTracks = session.libraryViewModel.allTracks
+                let currentRevision = libraryTracksRevision(
+                    tracks: currentTracks,
+                    playlists: session.libraryViewModel.playlists
+                )
+                if let expectedRevision, expectedRevision != currentRevision {
+                    return revisionConflict(for: request, expected: expectedRevision, actual: currentRevision)
+                }
+
+                let sourceIDs = Set(document.tracks.map(\.id))
+                let rawIDMap = try parameters.object("trackIDMap") ?? [:]
+                guard rawIDMap.count <= 500 else {
+                    throw AutomationParameterError.outOfRange("trackIDMap")
+                }
+                var trackIDMap: [UUID: UUID] = [:]
+                for (sourceIDValue, targetIDValue) in rawIDMap {
+                    guard let sourceID = UUID(uuidString: sourceIDValue),
+                          sourceIDs.contains(sourceID),
+                          case .string(let targetValue) = targetIDValue,
+                          let targetID = UUID(uuidString: targetValue) else {
+                        throw AutomationParameterError.invalidValue("trackIDMap")
+                    }
+                    trackIDMap[sourceID] = targetID
+                }
+                if document.sourceLibraryID != session.context.id,
+                   Set(trackIDMap.keys) != sourceIDs {
+                    throw AutomationParameterError.invalidValue("trackIDMap.crossLibraryRequired")
+                }
+                let targetIDs = document.tracks.compactMap { record in
+                    trackIDMap[record.id] ?? (document.sourceLibraryID == session.context.id ? record.id : nil)
+                }
+                guard Set(targetIDs).count == targetIDs.count else {
+                    throw AutomationParameterError.invalidValue("trackIDMap.duplicateTargets")
+                }
+                let currentByID = Dictionary(uniqueKeysWithValues: currentTracks.map { ($0.id, $0) })
+                var planned: [PlannedMetadataImport] = []
+                for record in document.tracks {
+                    _ = try makeMetadataPatch(record.fields)
+                    let targetID = trackIDMap[record.id]
+                        ?? (document.sourceLibraryID == session.context.id ? record.id : nil)
+                    guard let targetID, let track = currentByID[targetID] else {
+                        planned.append(PlannedMetadataImport(
+                            record: record,
+                            targetTrackID: targetID,
+                            patch: nil,
+                            expectedRevision: nil,
+                            fields: [],
+                            status: "missing",
+                            message: "No active-library Track matches this document entry."
+                        ))
+                        continue
+                    }
+                    let trackRevision = session.libraryViewModel.automationTrackRevision(for: track)
+                    if document.sourceLibraryID == session.context.id,
+                       record.revision != trackRevision {
+                        planned.append(PlannedMetadataImport(
+                            record: record,
+                            targetTrackID: targetID,
+                            patch: nil,
+                            expectedRevision: trackRevision,
+                            fields: [],
+                            status: "conflict",
+                            message: "The Track metadata changed after this document was exported."
+                        ))
+                        continue
+                    }
+                    let values = metadataImportFields(
+                        record.fields,
+                        currentTrack: track,
+                        overwriteExistingFields: overwriteExistingFields
+                    )
+                    let patch = try makeMetadataPatch(values)
+                    let changes = metadataPatchChanges(track, patch: patch)
+                    planned.append(PlannedMetadataImport(
+                        record: record,
+                        targetTrackID: targetID,
+                        patch: patch,
+                        expectedRevision: trackRevision,
+                        fields: changes ? Array(patch.fields) : [],
+                        status: changes ? "ready" : "unchanged",
+                        message: changes ? "Metadata fields are ready to apply." : "No eligible metadata fields would change."
+                    ))
+                }
+                var items = planned.map {
+                    AutomationMetadataImportItem(
+                        sourceTrackID: $0.record.id,
+                        targetTrackID: $0.targetTrackID,
+                        status: $0.status,
+                        fields: $0.fields,
+                        message: $0.message
+                    )
+                }
+                if dryRun || planned.contains(where: { $0.status == "missing" }) {
+                    return encodeResult(
+                        AutomationMetadataImportResult(
+                            libraryID: session.context.id,
+                            sourceLibraryID: document.sourceLibraryID,
+                            dryRun: dryRun,
+                            applied: false,
+                            items: items,
+                            revision: currentRevision,
+                            message: dryRun
+                                ? "Preview only; no metadata was written."
+                                : "No metadata was written because one or more target Tracks are missing."
+                        ),
+                        for: request
+                    )
+                }
+                let readyCount = planned.filter { $0.status == "ready" }.count
+                guard readyCount > 0 else {
+                    return encodeResult(
+                        AutomationMetadataImportResult(
+                            libraryID: session.context.id,
+                            sourceLibraryID: document.sourceLibraryID,
+                            dryRun: false,
+                            applied: false,
+                            items: items,
+                            revision: currentRevision,
+                            message: "No eligible metadata fields required an update."
+                        ),
+                        for: request
+                    )
+                }
+                guard try parameters.boolean("confirm", default: false) else {
+                    return confirmationRequired(
+                        for: request,
+                        message: "Import this Track metadata document?",
+                        details: .object([
+                            "trackCount": .number(Double(readyCount)),
+                            "sourceLibraryID": .string(document.sourceLibraryID.uuidString),
+                            "expectedRevision": .string(currentRevision),
+                            "requiresForegroundConfirmation": .boolean(true)
+                        ])
+                    )
+                }
+                guard await confirmDestructiveOperation(
+                    title: "导入曲目元数据？",
+                    message: "要为 \(readyCount) 首歌曲写入元数据吗？默认只补充空字段。"
+                ) else {
+                    return interactionCancelled(for: request)
+                }
+
+                var itemBySourceID = Dictionary(uniqueKeysWithValues: items.map { ($0.sourceTrackID, $0) })
+                for item in planned where item.status == "ready" {
+                    guard let targetID = item.targetTrackID,
+                          let patch = item.patch,
+                          let expectedTrackRevision = item.expectedRevision else {
+                        continue
+                    }
+                    do {
+                        let outcome = try await session.libraryViewModel.applyMetadataPatchForAutomation(
+                            trackIDs: [targetID],
+                            patch: patch,
+                            expectedRevisions: [targetID: expectedTrackRevision]
+                        )
+                        let status: String
+                        let message: String
+                        if outcome.updatedTrackIDs.contains(targetID) {
+                            status = "updated"
+                            message = "Metadata was written through the App-owned persistence path."
+                        } else if outcome.conflictedTrackIDs.contains(targetID) {
+                            status = "conflict"
+                            message = "The Track changed after preview; no metadata was written."
+                        } else {
+                            status = "unchanged"
+                            message = "The Track already had these metadata values."
+                        }
+                        itemBySourceID[item.record.id] = AutomationMetadataImportItem(
+                            sourceTrackID: item.record.id,
+                            targetTrackID: targetID,
+                            status: status,
+                            fields: item.fields,
+                            message: message
+                        )
+                    } catch {
+                        itemBySourceID[item.record.id] = AutomationMetadataImportItem(
+                            sourceTrackID: item.record.id,
+                            targetTrackID: targetID,
+                            status: "failed",
+                            fields: item.fields,
+                            message: "The App could not persist this Track's metadata."
+                        )
+                    }
+                }
+                items = planned.compactMap { itemBySourceID[$0.record.id] }
+                let applied = items.contains { $0.status == "updated" }
+                let hasFailure = items.contains { ["failed", "conflict", "missing"].contains($0.status) }
+                return encodeResult(
+                    AutomationMetadataImportResult(
+                        libraryID: session.context.id,
+                        sourceLibraryID: document.sourceLibraryID,
+                        dryRun: false,
+                        applied: applied,
+                        items: items,
+                        revision: libraryTracksRevision(
+                            tracks: session.libraryViewModel.allTracks,
+                            playlists: session.libraryViewModel.playlists
+                        ),
+                        message: hasFailure
+                            ? "Metadata import finished with conflicts or item failures; inspect each item status."
+                            : "Track metadata import completed through the App-owned persistence path."
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.metadataSearch:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let trackID = try parameters.uuid("trackID", required: true)!
+                guard let track = session.libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
+                    throw AutomationParameterError.missingResource("trackID")
+                }
+                var providerWarnings: [String: String] = [:]
+                var candidates: [AutomationMetadataCandidate] = []
+                do {
+                    let qqCandidates = try await session.libraryViewModel.searchTrackMetadataCandidatesForAutomation(
+                        title: track.title,
+                        artist: track.artist,
+                        album: track.album,
+                        duration: track.duration
+                    )
+                    candidates.append(contentsOf: qqCandidates.map { candidate in
+                        let artist = candidate.artist ?? candidate.artistName
+                        return AutomationMetadataCandidate(
+                            candidateID: candidate.songMid,
+                            provider: candidate.source,
+                            title: candidate.title,
+                            artist: artist,
+                            album: candidate.album,
+                            durationSeconds: candidate.duration,
+                            confidence: candidate.confidence,
+                            matchQuality: AutomationMetadataQualityEvaluator.score(
+                                queryTitle: track.title,
+                                queryArtist: track.artist,
+                                queryAlbum: track.album,
+                                queryDurationSeconds: track.duration,
+                                candidateTitle: candidate.title,
+                                candidateArtist: artist,
+                                candidateAlbum: candidate.album,
+                                candidateDurationSeconds: candidate.duration.map(Double.init)
+                            ),
+                            imageURL: candidate.imageURL
+                        )
+                    })
+                } catch {
+                    providerWarnings["QQMusic"] = error.localizedDescription
+                }
+                do {
+                    let musicBrainzCandidates = try await MusicBrainzAutomationProvider.shared.search(
+                        title: track.title,
+                        artist: track.artist,
+                        album: track.album,
+                        durationSeconds: track.duration
+                    )
+                    candidates.append(contentsOf: musicBrainzCandidates.map { candidate in
+                        AutomationMetadataCandidate(
+                            candidateID: "musicbrainz:\(candidate.recordingID)",
+                            provider: "MusicBrainz",
+                            title: candidate.title,
+                            artist: candidate.artist,
+                            album: candidate.album,
+                            durationSeconds: candidate.durationSeconds,
+                            confidence: nil,
+                            matchQuality: AutomationMetadataQualityEvaluator.score(
+                                queryTitle: track.title,
+                                queryArtist: track.artist,
+                                queryAlbum: track.album,
+                                queryDurationSeconds: track.duration,
+                                candidateTitle: candidate.title,
+                                candidateArtist: candidate.artist,
+                                candidateAlbum: candidate.album,
+                                candidateDurationSeconds: candidate.durationSeconds.map(Double.init)
+                            ),
+                            imageURL: nil
+                        )
+                    })
+                } catch {
+                    providerWarnings["MusicBrainz"] = error.localizedDescription
+                }
+                candidates.sort {
+                    let leftQuality = $0.matchQuality ?? -1
+                    let rightQuality = $1.matchQuality ?? -1
+                    if leftQuality != rightQuality { return leftQuality > rightQuality }
+                    if $0.provider != $1.provider { return $0.provider < $1.provider }
+                    return ($0.candidateID ?? "") < ($1.candidateID ?? "")
+                }
+                return encodeResult(
+                    AutomationMetadataSearchResult(
+                        trackID: track.id,
+                        queryTitle: track.title,
+                        queryArtist: track.artist,
+                        queryAlbum: track.album,
+                        candidates: candidates,
+                        revision: session.libraryViewModel.automationTrackRevision(for: track),
+                        message: candidates.isEmpty
+                            ? (providerWarnings.isEmpty
+                                ? "Metadata providers returned no candidates."
+                                : "No provider returned candidates; inspect providerWarnings for failures.")
+                            : (providerWarnings.isEmpty
+                                ? "Candidates were ranked with provider-neutral field matching; no metadata was changed."
+                                : "Candidates are available from some providers; inspect providerWarnings for incomplete results."),
+                        providerWarnings: providerWarnings.isEmpty ? nil : providerWarnings
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.metadataApplyCandidate:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let trackID = try parameters.uuid("trackID", required: true)!
+                let candidateID = try parameters.string("candidateID", required: true)!
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !candidateID.isEmpty,
+                      let initialTrack = session.libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
+                    throw AutomationParameterError.missingResource("trackID/candidateID")
+                }
+                let initialRevision = session.libraryViewModel.automationTrackRevision(for: initialTrack)
+                let expectedRevision = try parameters.string("expectedRevision")
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let overwriteExistingFields = try parameters.boolean("overwriteExistingFields", default: false)
+                if let expectedRevision, expectedRevision != initialRevision {
+                    let mutation = AutomationMetadataMutationResult(
+                        applied: false,
+                        dryRun: dryRun,
+                        conflictedTrackIDs: [trackID],
+                        message: "The Track changed after the candidate was selected. Search again before applying."
+                    )
+                    return encodeResult(
+                        AutomationMetadataCandidateApplyResult(
+                            trackID: trackID,
+                            candidateID: candidateID,
+                            dryRun: dryRun,
+                            overwriteExistingFields: overwriteExistingFields,
+                            previewPatch: [:],
+                            mutation: mutation
+                        ),
+                        for: request
+                    )
+                }
+
+                var titleValue: String?
+                var artistValue: String?
+                var albumValue: String?
+                var descriptionValue: String?
+                var genreTags: [String] = []
+                var languageValue: String?
+                var labelValue: String?
+                var releaseDateValue: Date?
+                var qqMusicSongMID: String?
+                var metadataSource: String
+                var metadataFetchedAt = Date()
+                var metadataConfidence: Double?
+                var musicBrainzReleaseID: String?
+
+                if candidateID.hasPrefix("musicbrainz:") {
+                    let recordingID = String(candidateID.dropFirst("musicbrainz:".count))
+                    let candidates: [MusicBrainzAutomationCandidate]
+                    do {
+                        candidates = try await MusicBrainzAutomationProvider.shared.search(
+                            title: initialTrack.title,
+                            artist: initialTrack.artist,
+                            album: initialTrack.album,
+                            durationSeconds: initialTrack.duration
+                        )
+                    } catch {
+                        return metadataProviderUnavailable(error, provider: "MusicBrainz", for: request)
+                    }
+                    guard candidates.contains(where: { $0.recordingID == recordingID }) else {
+                        throw AutomationParameterError.missingResource("candidateID")
+                    }
+                    let detail: MusicBrainzAutomationCandidate?
+                    do {
+                        detail = try await MusicBrainzAutomationProvider.shared.recording(id: recordingID)
+                    } catch {
+                        return metadataProviderUnavailable(error, provider: "MusicBrainz", for: request)
+                    }
+                    guard let detail else {
+                        throw AutomationParameterError.missingResource("metadata candidate detail")
+                    }
+                    titleValue = detail.title
+                    artistValue = detail.artist
+                    albumValue = detail.album
+                    genreTags = detail.genreTags
+                    releaseDateValue = Self.musicBrainzReleaseDate(detail.releaseDate)
+                    musicBrainzReleaseID = detail.releaseID
+                    metadataSource = MetadataDetailSource.musicbrainz.rawValue
+                } else {
+                    let candidates: [QQMusicArtworkCandidate]
+                    do {
+                        candidates = try await session.libraryViewModel.searchTrackMetadataCandidatesForAutomation(
+                            title: initialTrack.title,
+                            artist: initialTrack.artist,
+                            album: initialTrack.album,
+                            duration: initialTrack.duration
+                        )
+                    } catch {
+                        return metadataProviderUnavailable(error, provider: "QQMusic", for: request)
+                    }
+                    guard candidates.contains(where: { $0.songMid == candidateID }) else {
+                        throw AutomationParameterError.missingResource("candidateID")
+                    }
+                    let detail: TrackMetadataDetail
+                    do {
+                        detail = try await session.libraryViewModel.fetchTrackMetadataDetailForAutomation(
+                            candidateID,
+                            title: initialTrack.title,
+                            artist: initialTrack.artist,
+                            album: initialTrack.album,
+                            duration: initialTrack.duration
+                        )
+                    } catch {
+                        return metadataProviderUnavailable(error, provider: "QQMusic", for: request)
+                    }
+                    titleValue = detail.title
+                    artistValue = detail.artist
+                    albumValue = detail.album
+                    descriptionValue = detail.description
+                    genreTags = detail.genreTags
+                    languageValue = detail.language
+                    labelValue = detail.labelOrCompany
+                    releaseDateValue = detail.releaseDate
+                    qqMusicSongMID = detail.qqMusicSongMid
+                    metadataSource = detail.source.rawValue
+                    metadataFetchedAt = detail.fetchedAt ?? Date()
+                    metadataConfidence = detail.confidence
+                }
+                guard let track = session.libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
+                    throw AutomationParameterError.missingResource("trackID")
+                }
+
+                var patchValues: [String: AutomationJSONValue] = [:]
+                func addString(_ key: String, value: String?, current: String) {
+                    guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty,
+                          overwriteExistingFields || current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        return
+                    }
+                    patchValues[key] = .string(value)
+                }
+                addString("title", value: titleValue, current: track.title)
+                addString("artist", value: artistValue, current: track.artist)
+                addString("album", value: albumValue, current: track.album)
+                addString("description", value: descriptionValue, current: track.userDescription)
+                if !genreTags.isEmpty && (overwriteExistingFields || track.genreTags.isEmpty) {
+                    patchValues["genreTags"] = .array(genreTags.map(AutomationJSONValue.string))
+                }
+                addString("language", value: languageValue, current: track.language)
+                addString("labelOrCompany", value: labelValue, current: track.labelOrCompany)
+                if let releaseDate = releaseDateValue,
+                   overwriteExistingFields || track.releaseDate == nil {
+                    patchValues["releaseDate"] = .string(ISO8601DateFormatter().string(from: releaseDate))
+                }
+                if let qqMusicSongMID {
+                    patchValues["qqMusicSongMid"] = .string(qqMusicSongMID)
+                }
+                addString("musicBrainzReleaseID", value: musicBrainzReleaseID, current: track.musicBrainzReleaseID ?? "")
+                patchValues["metadataSource"] = .string(metadataSource)
+                patchValues["metadataFetchedAt"] = .string(
+                    ISO8601DateFormatter().string(from: metadataFetchedAt)
+                )
+                if let metadataConfidence, metadataConfidence.isFinite {
+                    patchValues["metadataConfidence"] = .number(metadataConfidence)
+                }
+
+                let currentRevision = session.libraryViewModel.automationTrackRevision(for: track)
+                let conflicted = currentRevision != initialRevision
+                    || (expectedRevision != nil && expectedRevision != currentRevision)
+                let patch = try makeMetadataPatch(patchValues)
+                let changed = !conflicted && metadataPatchChanges(track, patch: patch)
+                let outcome: LibraryAutomationMetadataMutationOutcome
+                if dryRun || conflicted || !changed {
+                    outcome = LibraryAutomationMetadataMutationOutcome(
+                        updatedTrackIDs: [],
+                        skippedTrackIDs: !conflicted && !changed ? [trackID] : [],
+                        conflictedTrackIDs: conflicted ? [trackID] : []
+                    )
+                } else {
+                    outcome = try await session.libraryViewModel.applyMetadataPatchForAutomation(
+                        trackIDs: [trackID],
+                        patch: patch,
+                        expectedRevisions: [trackID: initialRevision]
+                    )
+                }
+                let mutation = AutomationMetadataMutationResult(
+                    applied: !dryRun && !outcome.updatedTrackIDs.isEmpty,
+                    dryRun: dryRun,
+                    updatedTrackIDs: outcome.updatedTrackIDs,
+                    skippedTrackIDs: outcome.skippedTrackIDs,
+                    conflictedTrackIDs: outcome.conflictedTrackIDs,
+                    message: dryRun
+                        ? "Preview only. Existing values are preserved unless overwriteExistingFields is true."
+                        : "The selected metadata candidate was applied through the App-owned metadata persistence path."
+                )
+                return encodeResult(
+                    AutomationMetadataCandidateApplyResult(
+                        trackID: trackID,
+                        candidateID: candidateID,
+                        dryRun: dryRun,
+                        overwriteExistingFields: overwriteExistingFields,
+                        previewPatch: patchValues,
+                        mutation: mutation
                     ),
                     for: request
                 )
@@ -3779,7 +6482,7 @@ final class AutomationIPCServer {
                     )
                 )
             }
-            guard activeSession(for: request) != nil else {
+            guard let session = activeSession(for: request) else {
                 return noActiveLibraryResponse(for: request)
             }
             do {
@@ -3797,9 +6500,73 @@ final class AutomationIPCServer {
                     || descriptor.state == .cancelled else {
                     throw AutomationParameterError.invalidValue("jobID")
                 }
+                let importSelection: LibraryInitialImportSelection?
+                if descriptor.retrySpec?.kind == .libraryImport {
+                    if let playlistID = descriptor.retrySpec?.targetPlaylistID,
+                       !session.libraryViewModel.playlists.contains(where: { $0.id == playlistID }) {
+                        throw AutomationParameterError.missingResource("targetPlaylistID")
+                    }
+                    guard case .array(let paths)? = parameters.values["filePaths"],
+                          !paths.isEmpty, paths.count <= 5_000 else {
+                        throw AutomationParameterError.invalidValue("filePaths")
+                    }
+                    var urls: [URL] = []
+                    var seen = Set<String>()
+                    for value in paths {
+                        guard case .string(let rawPath) = value,
+                              !rawPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                              (rawPath as NSString).expandingTildeInPath.hasPrefix("/") else {
+                            throw AutomationParameterError.invalidValue("filePaths")
+                        }
+                        let url = URL(fileURLWithPath: expandPath(rawPath))
+                        if seen.insert(url.resolvingSymlinksInPath().path).inserted {
+                            urls.append(url)
+                        }
+                    }
+                    let inaccessible = urls.filter {
+                        FileManager.default.fileExists(atPath: $0.path)
+                            && !FileManager.default.isReadableFile(atPath: $0.path)
+                    }
+                    var selectedURLs = urls
+                    if !inaccessible.isEmpty {
+                        guard let picked = await session.fileImportService.pickImportURLs(
+                            triggeredAt: Date()
+                        ) else {
+                            return interactionCancelled(for: request)
+                        }
+                        let pickedPaths = Set(picked.map {
+                            $0.resolvingSymlinksInPath().standardizedFileURL.path
+                        })
+                        guard inaccessible.allSatisfy({
+                            pickedPaths.contains($0.resolvingSymlinksInPath().path)
+                        }) else {
+                            return permissionDenied(for: request, path: inaccessible[0].path)
+                        }
+                        selectedURLs = urls.map { url in
+                            picked.first {
+                                $0.resolvingSymlinksInPath().path
+                                    == url.resolvingSymlinksInPath().path
+                            } ?? url
+                        }
+                    }
+                    if let denied = selectedURLs.first(where: {
+                        FileManager.default.fileExists(atPath: $0.path)
+                            && !FileManager.default.isReadableFile(atPath: $0.path)
+                    }) {
+                        return permissionDenied(for: request, path: denied.path)
+                    }
+                    importSelection = LibraryInitialImportSelection(urls: selectedURLs)
+                } else {
+                    guard parameters.values["filePaths"] == nil else {
+                        throw AutomationParameterError.invalidValue("filePaths")
+                    }
+                    importSelection = nil
+                }
+                defer { importSelection?.release() }
                 guard let retryJob = appSession.retryLibraryJob(
                     id: jobID,
-                    libraryID: request.context.libraryID
+                    libraryID: request.context.libraryID,
+                    importSelection: importSelection
                 ) else {
                     throw AutomationParameterError.invalidValue("jobID")
                 }
@@ -3808,7 +6575,9 @@ final class AutomationIPCServer {
                         originalJobID: jobID,
                         accepted: true,
                         job: makeJobSummary(retryJob),
-                        message: "Job retry accepted; query jobs.get for the new Job's progress."
+                        message: descriptor.retrySpec?.kind == .libraryImport
+                            ? "Import retry accepted with the caller-supplied file paths; query jobs.get for the new Job's progress."
+                            : "Job retry accepted; query jobs.get for the new Job's progress."
                     ),
                     for: request
                 )
@@ -3834,6 +6603,13 @@ final class AutomationIPCServer {
                 let tracks = session.libraryViewModel.allTracks
                 let missing = tracks.filter { $0.availability == .missing }.count
                 let unavailable = tracks.filter { $0.availability != .available }.count
+                let missingLyrics = tracks.filter { trackLyricsStatus($0) == "none" }.count
+                let missingArtwork = tracks.filter { !$0.hasArtwork }.count
+                let incompleteMetadata = tracks.filter { track in
+                    [track.title, track.artist, track.album].contains {
+                        $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    }
+                }.count
                 let sources = try await appSession.referencedSources()
                 let sourceIssues = sources
                     .filter { $0.status != .available }
@@ -3882,6 +6658,9 @@ final class AutomationIPCServer {
                     "sources": sourceIssues.isEmpty ? "ok" : "attention",
                     "missingTracks": missing == 0 ? "ok" : "attention",
                     "unavailableTracks": unavailable == 0 ? "ok" : "attention",
+                    "lyricsCoverage": missingLyrics == 0 ? "complete" : "partial",
+                    "artworkCoverage": missingArtwork == 0 ? "complete" : "partial",
+                    "metadataCoverage": incompleteMetadata == 0 ? "complete" : "partial",
                     "jobs": runningJobs == 0 ? (failedJobs.isEmpty ? "idle" : "attention") : "running",
                     "playlistReferences": playlistReferenceIssues.isEmpty ? "ok" : "attention",
                     "storage": storageValidation == "passed" ? "ok" : "attention"
@@ -3898,6 +6677,9 @@ final class AutomationIPCServer {
                         playlistCount: session.libraryViewModel.playlists.count,
                         missingTrackCount: missing,
                         unavailableTrackCount: unavailable,
+                        missingLyricsTrackCount: missingLyrics,
+                        missingArtworkTrackCount: missingArtwork,
+                        incompleteMetadataTrackCount: incompleteMetadata,
                         sourceCount: sources.count,
                         sourceIssues: sourceIssues,
                         runningJobCount: runningJobs,
@@ -3973,17 +6755,17 @@ final class AutomationIPCServer {
                 )
             }
             do {
-                guard session.context.mode == .referenced else {
-                    throw AutomationParameterError.invalidValue("values")
-                }
                 let parameters = try AutomationParameters(request)
                 let requestedValues = try parameters.object("values") ?? [:]
                 guard !requestedValues.isEmpty else {
                     throw AutomationParameterError.invalidValue("values")
                 }
-                let supportedKeys: Set<String> = ["referencedTrackDeletePolicy"]
-                guard Set(requestedValues.keys).isSubset(of: supportedKeys) else {
-                    throw AutomationParameterError.invalidValue("values")
+                let normalized = normalizeAutomationSettings(
+                    requestedValues,
+                    referencedLibrary: session.context.mode == .referenced
+                )
+                guard normalized.issues.isEmpty else {
+                    throw AutomationParameterError.invalidValue(normalized.issues[0])
                 }
                 let current = try await appSession.libraryScopedSettings()
                 let currentValues = automationSettingsValues(current)
@@ -3996,21 +6778,13 @@ final class AutomationIPCServer {
                         actual: currentRevision
                     )
                 }
-                let requestedPolicy: ReferencedTrackDeletePolicy?
-                if let rawValue = requestedValues["referencedTrackDeletePolicy"] {
-                    guard case .string(let rawPolicy) = rawValue,
-                          let policy = ReferencedTrackDeletePolicy(rawValue: rawPolicy) else {
-                        throw AutomationParameterError.invalidValue("values.referencedTrackDeletePolicy")
+                let requestedPolicy = normalized.values["referencedTrackDeletePolicy"]
+                    .flatMap { value -> ReferencedTrackDeletePolicy? in
+                        guard case .string(let rawValue) = value else { return nil }
+                        return ReferencedTrackDeletePolicy(rawValue: rawValue)
                     }
-                    requestedPolicy = policy
-                } else {
-                    requestedPolicy = nil
-                }
-                var next = current
-                if let requestedPolicy {
-                    next.referencedTrackDeletePolicy = requestedPolicy
-                }
-                let nextValues = automationSettingsValues(next)
+                var nextValues = currentValues
+                for (key, value) in normalized.values { nextValues[key] = value }
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 if dryRun {
                     return encodeResult(
@@ -4025,7 +6799,8 @@ final class AutomationIPCServer {
                         for: request
                     )
                 }
-                if requestedPolicy == .recycleSource {
+                if requestedPolicy == .recycleSource,
+                   requestedPolicy != current.referencedTrackDeletePolicy {
                     let confirm = try parameters.boolean("confirm", default: false)
                     guard confirm else {
                         return confirmationRequired(
@@ -4050,6 +6825,7 @@ final class AutomationIPCServer {
                         libraryID: session.context.id
                     )
                 }
+                applyGlobalAutomationSettings(normalized.values)
                 return encodeResult(
                     AutomationSettingsResult(
                         libraryID: session.context.id,
@@ -4060,6 +6836,260 @@ final class AutomationIPCServer {
                     ),
                     for: request
                 )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.settingsSchema:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard isEmptyParameters(request.params) else { return invalidParameters(for: request) }
+            return encodeResult(AutomationJSONValue.object([
+                "libraryID": .string(session.context.id.uuidString),
+                "settings": .object([
+                    "referencedTrackDeletePolicy": .object([
+                        "type": .string("string"),
+                        "allowedValues": .array([
+                            .string(ReferencedTrackDeletePolicy.onlyLibrary.rawValue),
+                            .string(ReferencedTrackDeletePolicy.recycleSource.rawValue)
+                        ]),
+                        "default": .string(ReferencedTrackDeletePolicy.onlyLibrary.rawValue),
+                        "appliesTo": .string("referenced library"),
+                        "risk": .string("recycleSource may move original files to Trash when tracks are deleted")
+                    ]),
+                    "deferImportEnrichment": .object([
+                        "type": .string("boolean"),
+                        "default": .boolean(true),
+                        "appliesTo": .string("app"),
+                        "description": .string("When true, imported Tracks become visible while enrichment continues in the background.")
+                    ]),
+                    "globalArtworkTintEnabled": .object([
+                        "type": .string("boolean"),
+                        "default": .boolean(true),
+                        "appliesTo": .string("app")
+                    ]),
+                    "audioVisualizationHDREnabled": .object([
+                        "type": .string("boolean"),
+                        "default": .boolean(true),
+                        "appliesTo": .string("app")
+                    ]),
+                    "dockProgressVisible": .object([
+                        "type": .string("boolean"),
+                        "default": .boolean(true),
+                        "appliesTo": .string("app")
+                    ]),
+                    "appearanceMode": .object([
+                        "type": .string("string"),
+                        "allowedValues": .array([.string("system"), .string("light"), .string("dark")]),
+                        "default": .string("system"),
+                        "appliesTo": .string("app")
+                    ])
+                ])
+            ]), for: request)
+
+        case AutomationMethod.settingsValidate:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard let appSession else {
+                return .failure(for: request, error: AutomationError(code: .serverUnavailable, message: "The player App is no longer available.", retryable: true))
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let requested = try parameters.object("values") ?? [:]
+                let validation = normalizeAutomationSettings(
+                    requested,
+                    referencedLibrary: session.context.mode == .referenced
+                )
+                let current = try await appSession.libraryScopedSettings()
+                let currentValues = automationSettingsValues(current)
+                return encodeResult(AutomationJSONValue.object([
+                    "valid": .boolean(validation.issues.isEmpty),
+                    "libraryID": .string(session.context.id.uuidString),
+                    "currentRevision": .string(automationSettingsRevision(currentValues)),
+                    "normalizedValues": .object(validation.values),
+                    "issues": .array(validation.issues.map(AutomationJSONValue.string))
+                ]), for: request)
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.settingsReset:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard let appSession else {
+                return .failure(for: request, error: AutomationError(code: .serverUnavailable, message: "The player App is no longer available.", retryable: true))
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let current = try await appSession.libraryScopedSettings()
+                let currentValues = automationSettingsValues(current)
+                let currentRevision = automationSettingsRevision(currentValues)
+                if let expected = try parameters.string("expectedRevision"), expected != currentRevision {
+                    return settingsRevisionConflict(for: request, expected: expected, actual: currentRevision)
+                }
+                var nextValues = defaultAutomationGlobalSettings
+                if session.context.mode == .referenced {
+                    nextValues["referencedTrackDeletePolicy"] = .string(ReferencedTrackDeletePolicy.onlyLibrary.rawValue)
+                } else {
+                    nextValues["referencedTrackDeletePolicy"] = currentValues["referencedTrackDeletePolicy"]
+                }
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                if !dryRun {
+                    if session.context.mode == .referenced {
+                        try await appSession.setReferencedTrackDeletePolicy(.onlyLibrary, libraryID: session.context.id)
+                    }
+                    applyGlobalAutomationSettings(defaultAutomationGlobalSettings)
+                }
+                return encodeResult(AutomationSettingsResult(
+                    libraryID: session.context.id,
+                    values: nextValues,
+                    revision: automationSettingsRevision(nextValues),
+                    applied: !dryRun,
+                    dryRun: dryRun,
+                    message: dryRun ? "Preview only. No persistent setting was changed." : "Supported settings were reset to their documented defaults."
+                ), for: request)
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.audioGet:
+            guard isEmptyParameters(request.params) else { return invalidParameters(for: request) }
+            guard let appSession else {
+                return .failure(for: request, error: AutomationError(code: .serverUnavailable, message: "The player App is no longer available.", retryable: true))
+            }
+            let audio = appSession.automationAudioSettings()
+            let output = AudioOutputLatencyMonitor.currentSnapshot()
+            let activeOutput = AudioOutputLatencyMonitor.currentSnapshot(
+                forDeviceUID: audio.outputDeviceUID
+            )
+            let outputDevices = AudioOutputLatencyMonitor.availableOutputDevices().map { device in
+                AutomationJSONValue.object([
+                    "id": .string(device.id),
+                    "name": .string(device.name),
+                    "sampleRateHz": .number(device.sampleRate),
+                    "isBluetooth": .boolean(device.isBluetooth),
+                    "isSystemDefault": .boolean(device.isDefault)
+                ])
+            }
+            let values: [String: AutomationJSONValue] = [
+                "gaplessSchedulingEnabled": .boolean(audio.gaplessSchedulingEnabled),
+                "aacGaplessTrimEnabled": .boolean(audio.aacGaplessTrimEnabled),
+                "outputDeviceID": audio.outputDeviceUID.map {
+                    AutomationJSONValue.string(AudioOutputLatencyMonitor.stableDeviceID(for: $0))
+                } ?? .null,
+                "availableOutputDevices": .array(outputDevices),
+                "currentSystemOutput": .object([
+                    "available": .boolean(output.sampleRate > 0),
+                    "name": .string(output.deviceName),
+                    "sampleRateHz": .number(output.sampleRate),
+                    "reportedLatencySeconds": .number(output.seconds),
+                    "isBluetooth": .boolean(output.isBluetooth)
+                ]),
+                "activeOutput": .object([
+                    "available": .boolean(activeOutput.sampleRate > 0),
+                    "id": activeOutput.deviceUID.map {
+                        AutomationJSONValue.string(AudioOutputLatencyMonitor.stableDeviceID(for: $0))
+                    } ?? .null,
+                    "name": .string(activeOutput.deviceName),
+                    "sampleRateHz": .number(activeOutput.sampleRate),
+                    "reportedLatencySeconds": .number(activeOutput.seconds),
+                    "isBluetooth": .boolean(activeOutput.isBluetooth)
+                ])
+            ]
+            return encodeResult(AutomationSettingsResult(
+                libraryID: activeSession(for: request)?.context.id,
+                values: values,
+                revision: automationAudioRevision(
+                    audio.gaplessSchedulingEnabled,
+                    audio.aacGaplessTrimEnabled,
+                    audio.outputDeviceUID
+                ),
+                message: "Persistent audio scheduling and preferred output settings, available output devices, and current route telemetry. Device availability may change independently of the settings revision."
+            ), for: request)
+
+        case AutomationMethod.audioPatch:
+            guard let appSession else {
+                return .failure(for: request, error: AutomationError(code: .serverUnavailable, message: "The player App is no longer available.", retryable: true))
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let requested = try parameters.object("values") ?? [:]
+                guard !requested.isEmpty,
+                      Set(requested.keys).isSubset(of: ["gaplessSchedulingEnabled", "aacGaplessTrimEnabled", "outputDeviceID"]) else {
+                    throw AutomationParameterError.invalidValue("values")
+                }
+                func boolValue(_ key: String) throws -> Bool? {
+                    guard let value = requested[key] else { return nil }
+                    guard case .boolean(let enabled) = value else { throw AutomationParameterError.invalidValue("values.\(key)") }
+                    return enabled
+                }
+                let gapless = try boolValue("gaplessSchedulingEnabled")
+                let aacTrim = try boolValue("aacGaplessTrimEnabled")
+                let requestedOutputDeviceUID: String??
+                if let rawOutputDeviceID = requested["outputDeviceID"] {
+                    switch rawOutputDeviceID {
+                    case .null:
+                        requestedOutputDeviceUID = .some(nil)
+                    case .string(let deviceID) where !deviceID.isEmpty:
+                        guard let device = AudioOutputLatencyMonitor.availableOutputDevices().first(where: {
+                            $0.id == deviceID
+                        }) else {
+                            throw AutomationParameterError.invalidValue("values.outputDeviceID")
+                        }
+                        requestedOutputDeviceUID = .some(device.uniqueID)
+                    default:
+                        throw AutomationParameterError.invalidValue("values.outputDeviceID")
+                    }
+                } else {
+                    requestedOutputDeviceUID = nil
+                }
+                let current = appSession.automationAudioSettings()
+                let expectedRevision = try parameters.string("expectedRevision")
+                let currentRevision = automationAudioRevision(
+                    current.gaplessSchedulingEnabled,
+                    current.aacGaplessTrimEnabled,
+                    current.outputDeviceUID
+                )
+                if let expectedRevision, expectedRevision != currentRevision {
+                    return settingsRevisionConflict(for: request, expected: expectedRevision, actual: currentRevision)
+                }
+                let nextGapless = gapless ?? current.gaplessSchedulingEnabled
+                let nextAACTrim = aacTrim ?? current.aacGaplessTrimEnabled
+                let nextOutputDeviceUID = requestedOutputDeviceUID ?? current.outputDeviceUID
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let next = dryRun
+                    ? (
+                        gaplessSchedulingEnabled: nextGapless,
+                        aacGaplessTrimEnabled: nextAACTrim,
+                        outputDeviceUID: nextOutputDeviceUID
+                    )
+                    : appSession.updateAutomationAudioSettings(
+                        gaplessSchedulingEnabled: gapless,
+                        aacGaplessTrimEnabled: aacTrim,
+                        outputDeviceUID: requestedOutputDeviceUID
+                    )
+                let values: [String: AutomationJSONValue] = [
+                    "gaplessSchedulingEnabled": .boolean(next.gaplessSchedulingEnabled),
+                    "aacGaplessTrimEnabled": .boolean(next.aacGaplessTrimEnabled),
+                    "outputDeviceID": next.outputDeviceUID.map {
+                        AutomationJSONValue.string(AudioOutputLatencyMonitor.stableDeviceID(for: $0))
+                    } ?? .null
+                ]
+                return encodeResult(AutomationSettingsResult(
+                    libraryID: activeSession(for: request)?.context.id,
+                    values: values,
+                    revision: automationAudioRevision(
+                        next.gaplessSchedulingEnabled,
+                        next.aacGaplessTrimEnabled,
+                        next.outputDeviceUID
+                    ),
+                    applied: !dryRun,
+                    dryRun: dryRun,
+                    message: dryRun ? "Preview only. No audio setting was changed." : "Audio settings updated."
+                ), for: request)
             } catch {
                 return invalidParameters(for: request, error: error)
             }
@@ -4395,6 +7425,121 @@ final class AutomationIPCServer {
         let loaded = scopePolicyStore.load()
         cachedGrantedScopes = loaded
         return loaded
+    }
+
+    private func requiresHistoryRead(for request: AutomationRequest) -> Bool {
+        let values: [String: AutomationJSONValue]
+        if case .object(let object) = request.params {
+            values = object
+        } else {
+            values = [:]
+        }
+        switch request.method {
+        case AutomationMethod.libraryTracks, AutomationMethod.libraryReport:
+            if values["includePreferenceStats"] == .boolean(true) { return true }
+            if let filter = values["filter"],
+               AutomationTrackPreferenceQuery.requiresHistoryRead(in: filter) {
+                return true
+            }
+            if case .array(let sort)? = values["sort"],
+               AutomationTrackPreferenceQuery.requiresHistoryRead(sort: sort) {
+                return true
+            }
+            return false
+        case AutomationMethod.librarySelectionCreate:
+            guard let filter = values["filter"] else { return false }
+            return AutomationTrackPreferenceQuery.requiresHistoryRead(in: filter)
+        case AutomationMethod.librarySelectionList,
+             AutomationMethod.librarySelectionGet,
+             AutomationMethod.playlistAddSelection:
+            guard let session = activeSession(for: request),
+                  let snapshots = try? selectionStore.load(libraryID: session.context.id) else {
+                return false
+            }
+            if request.method == AutomationMethod.librarySelectionList {
+                return snapshots.contains { snapshot in
+                    snapshot.filter.map(AutomationTrackPreferenceQuery.requiresHistoryRead(in:)) == true
+                }
+            }
+            guard case .string(let rawID)? = values["selectionID"],
+                  let selectionID = UUID(uuidString: rawID),
+                  let snapshot = snapshots.first(where: { $0.summary.id == selectionID }),
+                  let filter = snapshot.filter else {
+                return false
+            }
+            return AutomationTrackPreferenceQuery.requiresHistoryRead(in: filter)
+        default:
+            return false
+        }
+    }
+
+    private static func musicBrainzReleaseDate(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        let components = value.split(separator: "-", omittingEmptySubsequences: false)
+        guard (1...3).contains(components.count),
+              components[0].count == 4,
+              let year = Int(components[0]), year > 0 else {
+            return nil
+        }
+        var dateComponents = DateComponents(year: year, month: 1, day: 1)
+        if components.count >= 2 {
+            guard components[1].count == 2,
+                  let month = Int(components[1]), (1...12).contains(month) else {
+                return nil
+            }
+            dateComponents.month = month
+        }
+        if components.count == 3 {
+            guard components[2].count == 2,
+                  let day = Int(components[2]), (1...31).contains(day) else {
+                return nil
+            }
+            dateComponents.day = day
+        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        guard let date = calendar.date(from: dateComponents) else { return nil }
+        let resolved = calendar.dateComponents([.year, .month, .day], from: date)
+        guard resolved.year == dateComponents.year,
+              resolved.month == dateComponents.month,
+              resolved.day == dateComponents.day else {
+            return nil
+        }
+        return date
+    }
+
+    private func metadataImportFields(
+        _ values: [String: AutomationJSONValue],
+        currentTrack: Track,
+        overwriteExistingFields: Bool
+    ) -> [String: AutomationJSONValue] {
+        guard !overwriteExistingFields else { return values }
+        var result: [String: AutomationJSONValue] = [:]
+        for (key, value) in values {
+            guard value != .null else { continue }
+            let existingValueIsEmpty: Bool
+            switch key {
+            case "title": existingValueIsEmpty = currentTrack.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case "artist": existingValueIsEmpty = currentTrack.artist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case "album": existingValueIsEmpty = currentTrack.album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case "albumArtist": existingValueIsEmpty = currentTrack.albumArtist?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
+            case "description": existingValueIsEmpty = currentTrack.userDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case "genreTags": existingValueIsEmpty = currentTrack.genreTags.isEmpty
+            case "language": existingValueIsEmpty = currentTrack.language.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case "labelOrCompany": existingValueIsEmpty = currentTrack.labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            case "releaseDate": existingValueIsEmpty = currentTrack.releaseDate == nil
+            case "qqMusicSongMid": existingValueIsEmpty = currentTrack.qqMusicSongMid?.isEmpty ?? true
+            case "metadataSource": existingValueIsEmpty = currentTrack.metadataSource?.isEmpty ?? true
+            case "metadataFetchedAt": existingValueIsEmpty = currentTrack.metadataFetchedAt == nil
+            case "metadataConfidence": existingValueIsEmpty = currentTrack.metadataConfidence == nil
+            case "musicBrainzReleaseID": existingValueIsEmpty = currentTrack.musicBrainzReleaseID?.isEmpty ?? true
+            case "lyricsTimeOffsetMs": existingValueIsEmpty = currentTrack.lyricsTimeOffsetMs == 0
+            case "artistCredits": existingValueIsEmpty = currentTrack.artistCredits.isEmpty
+            default: existingValueIsEmpty = false
+            }
+            if existingValueIsEmpty { result[key] = value }
+        }
+        return result
     }
 
     private func makeMetadataPatch(
@@ -5700,20 +8845,130 @@ final class AutomationIPCServer {
     private func automationSettingsValues(
         _ settings: LibraryScopedSettings
     ) -> [String: AutomationJSONValue] {
-        [
+        let appSettings = AppSettings.shared
+        return [
             "referencedTrackDeletePolicy": .string(
                 settings.referencedTrackDeletePolicy.rawValue
-            )
+            ),
+            "deferImportEnrichment": .boolean(appSettings.deferImportEnrichment),
+            "globalArtworkTintEnabled": .boolean(appSettings.globalArtworkTintEnabled),
+            "audioVisualizationHDREnabled": .boolean(appSettings.audioVisualizationHDREnabled),
+            "dockProgressVisible": .boolean(appSettings.dockProgressVisible),
+            "appearanceMode": .string(appSettings.appearanceMode.rawValue)
         ]
+    }
+
+    private var defaultAutomationGlobalSettings: [String: AutomationJSONValue] {
+        [
+            "deferImportEnrichment": .boolean(true),
+            "globalArtworkTintEnabled": .boolean(true),
+            "audioVisualizationHDREnabled": .boolean(true),
+            "dockProgressVisible": .boolean(true),
+            "appearanceMode": .string("system")
+        ]
+    }
+
+    private func normalizeAutomationSettings(
+        _ requested: [String: AutomationJSONValue],
+        referencedLibrary: Bool
+    ) -> (values: [String: AutomationJSONValue], issues: [String]) {
+        let supported = Set([
+            "referencedTrackDeletePolicy",
+            "deferImportEnrichment",
+            "globalArtworkTintEnabled",
+            "audioVisualizationHDREnabled",
+            "dockProgressVisible",
+            "appearanceMode"
+        ])
+        var normalized: [String: AutomationJSONValue] = [:]
+        var issues: [String] = []
+        if requested.isEmpty {
+            issues.append("values must contain at least one supported setting.")
+        }
+        for (key, value) in requested {
+            guard supported.contains(key) else {
+                issues.append("Unsupported setting: \(key).")
+                continue
+            }
+            switch key {
+            case "referencedTrackDeletePolicy":
+                guard referencedLibrary else {
+                    issues.append("referencedTrackDeletePolicy applies only to a referenced library.")
+                    continue
+                }
+                if case .string(let rawValue) = value,
+                   let policy = ReferencedTrackDeletePolicy(rawValue: rawValue) {
+                    normalized[key] = .string(policy.rawValue)
+                } else {
+                    issues.append("referencedTrackDeletePolicy must be onlyLibrary or recycleSource.")
+                }
+            case "deferImportEnrichment", "globalArtworkTintEnabled",
+                 "audioVisualizationHDREnabled", "dockProgressVisible":
+                if case .boolean = value {
+                    normalized[key] = value
+                } else {
+                    issues.append("\(key) must be a boolean.")
+                }
+            case "appearanceMode":
+                if case .string(let rawValue) = value,
+                   AppSettings.AppearanceMode(rawValue: rawValue) != nil {
+                    normalized[key] = .string(rawValue)
+                } else {
+                    issues.append("appearanceMode must be system, light or dark.")
+                }
+            default:
+                break
+            }
+        }
+        return (normalized, issues)
+    }
+
+    private func applyGlobalAutomationSettings(_ values: [String: AutomationJSONValue]) {
+        let settings = AppSettings.shared
+        for (key, value) in values {
+            switch (key, value) {
+            case ("deferImportEnrichment", .boolean(let enabled)):
+                settings.deferImportEnrichment = enabled
+            case ("globalArtworkTintEnabled", .boolean(let enabled)):
+                settings.globalArtworkTintEnabled = enabled
+            case ("audioVisualizationHDREnabled", .boolean(let enabled)):
+                settings.audioVisualizationHDREnabled = enabled
+            case ("dockProgressVisible", .boolean(let enabled)):
+                settings.dockProgressVisible = enabled
+            case ("appearanceMode", .string(let rawValue)):
+                if let mode = AppSettings.AppearanceMode(rawValue: rawValue) {
+                    settings.appearanceMode = mode
+                }
+            default:
+                continue
+            }
+        }
     }
 
     private func automationSettingsRevision(
         _ values: [String: AutomationJSONValue]
     ) -> String {
-        guard case .string(let policy) = values["referencedTrackDeletePolicy"] else {
-            return "v1-unknown"
+        guard let data = try? AutomationWireCoding.encoder().encode(AutomationJSONValue.object(values)) else {
+            return "settings-v2-unavailable"
         }
-        return "v1-" + policy
+        let digest = SHA256.hash(data: data)
+            .prefix(8)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "settings-v2-\(digest)"
+    }
+
+    private func automationAudioRevision(
+        _ gaplessEnabled: Bool,
+        _ aacTrimEnabled: Bool,
+        _ outputDeviceID: String?
+    ) -> String {
+        let value = "\(gaplessEnabled ? 1 : 0)|\(aacTrimEnabled ? 1 : 0)|\(outputDeviceID ?? "default")"
+        let digest = SHA256.hash(data: Data(value.utf8))
+            .prefix(8)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "audio-v2-\(digest)"
     }
 
     private func settingsRevisionConflict(
@@ -6233,29 +9488,51 @@ final class AutomationIPCServer {
         switch method {
         case AutomationMethod.libraryCreate,
              AutomationMethod.libraryOpen,
+             AutomationMethod.libraryGet,
              AutomationMethod.librarySwitch,
              AutomationMethod.libraryRename,
              AutomationMethod.libraryRelocate,
-             AutomationMethod.libraryRemove: return "library"
-        case AutomationMethod.libraryTracks: return "selection"
+             AutomationMethod.libraryRemove,
+             AutomationMethod.libraryImport,
+             AutomationMethod.libraryBundleExport,
+             AutomationMethod.libraryReport: return "library"
+        case AutomationMethod.libraryTracks,
+             AutomationMethod.libraryStats,
+             AutomationMethod.librarySelectionList,
+             AutomationMethod.librarySelectionCreate,
+             AutomationMethod.librarySelectionGet,
+             AutomationMethod.librarySelectionDelete: return "selection"
         case AutomationMethod.playlistAddTracks,
+             AutomationMethod.playlistAddSelection,
              AutomationMethod.playlistRemoveTracks,
              AutomationMethod.playlistReplaceTracks,
-             AutomationMethod.playlistReorder: return "playlist"
-        case AutomationMethod.sourceRefresh,
+             AutomationMethod.playlistReorder,
+             AutomationMethod.playlistDiff,
+             AutomationMethod.playlistImport,
+             AutomationMethod.playlistExport: return "playlist"
+        case AutomationMethod.sourceGet,
+             AutomationMethod.sourceRename,
+             AutomationMethod.sourceRefresh,
              AutomationMethod.sourceBindPlaylist,
              AutomationMethod.sourceSetExcludedPath,
              AutomationMethod.sourceSetMonitorPolicy,
              AutomationMethod.sourceRemove: return "source"
         case AutomationMethod.filesInspect,
+             AutomationMethod.filesReveal,
+             AutomationMethod.filesExport,
              AutomationMethod.filesRename,
              AutomationMethod.filesMove,
              AutomationMethod.filesDelete: return "files"
         case AutomationMethod.metadataGet,
+             AutomationMethod.metadataEmbeddedGet,
+             AutomationMethod.metadataEmbeddedPatch,
+             AutomationMethod.metadataSearch,
+             AutomationMethod.metadataApplyCandidate,
              AutomationMethod.metadataPatch: return "metadata"
         case AutomationMethod.artworkSearch,
              AutomationMethod.artworkGet,
-             AutomationMethod.artworkApply: return "artwork"
+             AutomationMethod.artworkApply,
+             AutomationMethod.artworkApplyCandidate: return "artwork"
         case AutomationMethod.lyricsGet,
              AutomationMethod.lyricsSearch,
              AutomationMethod.lyricsCandidates,
@@ -6263,9 +9540,17 @@ final class AutomationIPCServer {
              AutomationMethod.lyricsApply,
              AutomationMethod.lyricsClean,
              AutomationMethod.lyricsRefresh,
+             AutomationMethod.playbackPlayPlaylist,
+             AutomationMethod.playbackToggle,
              AutomationMethod.queueReplace,
              AutomationMethod.queueEnqueue,
-             AutomationMethod.queueEnqueueNext: return "tracks"
+             AutomationMethod.queueEnqueueNext,
+             AutomationMethod.queueRemove,
+             AutomationMethod.queueReorder,
+             AutomationMethod.queueUpcoming: return "tracks"
+        case AutomationMethod.historyList,
+             AutomationMethod.historyStats,
+             AutomationMethod.historyClear: return "history"
         case AutomationMethod.storageInspect,
              AutomationMethod.storageValidate,
              AutomationMethod.storageOrphans,
@@ -6273,6 +9558,13 @@ final class AutomationIPCServer {
              AutomationMethod.storageDiff,
              AutomationMethod.storageReload,
              AutomationMethod.storageRepair: return "storage"
+        case AutomationMethod.settingsGet,
+             AutomationMethod.settingsSchema,
+             AutomationMethod.settingsPatch,
+             AutomationMethod.settingsValidate,
+             AutomationMethod.settingsReset: return "settings"
+        case AutomationMethod.audioGet,
+             AutomationMethod.audioPatch: return "audio"
         default: return "operation"
         }
     }
@@ -6288,6 +9580,8 @@ final class AutomationIPCServer {
             || values["playlistID"] != nil
             || values["sourceID"] != nil
             || values["libraryID"] != nil
+            || values["selectionID"] != nil
+            || values["candidateID"] != nil
             ? 1
             : nil
     }
@@ -6416,12 +9710,28 @@ final class AutomationIPCServer {
         )
     }
 
+    private func playbackHistoryRevision(_ items: [PlaybackHistoryItem]) -> String {
+        let orderedItems = items.sorted {
+            if $0.playedAt != $1.playedAt { return $0.playedAt > $1.playedAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+        guard let data = try? AutomationWireCoding.encoder().encode(orderedItems.map(makeHistoryItem)) else {
+            return "history-v1-unavailable"
+        }
+        let digest = SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "history-v1-" + digest
+    }
+
     private func makeJobSummary(
         _ descriptor: LibraryOperationTaskDescriptor
     ) -> AutomationJobSummary {
         let kind: String
         switch descriptor.kind {
         case .importFiles: kind = "importFiles"
+        case .libraryBundleExport: kind = "libraryBundleExport"
+        case .embeddedTagWrite: kind = "embeddedTagWrite"
         case .sourceScan: kind = "sourceScan"
         case .ncmConversion: kind = "ncmConversion"
         case .enrichment: kind = "enrichment"
@@ -6455,7 +9765,8 @@ final class AutomationIPCServer {
             retryable: descriptor.retrySpec != nil
                 && (descriptor.state == .failed
                     || descriptor.state == .partialFailure
-                    || descriptor.state == .cancelled)
+                    || descriptor.state == .cancelled),
+            result: descriptor.result
         )
     }
 
@@ -6485,11 +9796,94 @@ final class AutomationIPCServer {
         )
     }
 
+    private func cacheArtworkCandidate(
+        _ candidate: CoverCandidate,
+        target: ArtworkTarget,
+        revision: String,
+        session: LibrarySession,
+        queryTitle: String?,
+        queryArtist: String?,
+        queryAlbum: String?
+    ) -> AutomationArtworkCandidate {
+        pruneArtworkCandidateCache(now: Date())
+        let imageDigest = artworkDigest(candidate.imageData) ?? "unavailable"
+        let identity = [
+            session.context.id.uuidString,
+            target.stableIdentity,
+            artworkSourceName(candidate.source),
+            candidate.sourceItemId ?? "",
+            imageDigest
+        ].joined(separator: "\n")
+        let candidateDigest = SHA256.hash(data: Data(identity.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let candidateID = "art-v1-" + candidateDigest
+        let wireCandidate = makeArtworkCandidate(
+            candidate,
+            candidateID: candidateID,
+            queryTitle: queryTitle,
+            queryArtist: queryArtist,
+            queryAlbum: queryAlbum
+        )
+        let trackID: UUID?
+        let artistID: UUID?
+        let albumKey: String?
+        switch target {
+        case .track(let track):
+            trackID = track.id
+            artistID = nil
+            albumKey = nil
+        case .artist(let artist):
+            trackID = nil
+            artistID = artist.id
+            albumKey = nil
+        case .album(let album):
+            trackID = nil
+            artistID = nil
+            albumKey = album.canonicalKey
+        case .playlist:
+            return wireCandidate
+        }
+        artworkCandidateCache[candidateID] = CachedArtworkCandidate(
+            libraryID: session.context.id,
+            targetIdentity: target.stableIdentity,
+            trackID: trackID,
+            artistID: artistID,
+            albumKey: albumKey,
+            revision: revision,
+            candidate: wireCandidate,
+            expiresAt: Date().addingTimeInterval(15 * 60)
+        )
+        artworkCandidateOrder.removeAll { $0 == candidateID }
+        artworkCandidateOrder.append(candidateID)
+        while artworkCandidateOrder.count > artworkCandidateCacheLimit {
+            let expired = artworkCandidateOrder.removeFirst()
+            artworkCandidateCache.removeValue(forKey: expired)
+        }
+        return wireCandidate
+    }
+
+    private func pruneArtworkCandidateCache(now: Date) {
+        artworkCandidateOrder.removeAll { candidateID in
+            guard let candidate = artworkCandidateCache[candidateID],
+                  candidate.expiresAt > now else {
+                artworkCandidateCache.removeValue(forKey: candidateID)
+                return true
+            }
+            return false
+        }
+    }
+
     private func makeArtworkCandidate(
-        _ candidate: CoverCandidate
+        _ candidate: CoverCandidate,
+        candidateID: String? = nil,
+        queryTitle: String?,
+        queryArtist: String?,
+        queryAlbum: String?
     ) -> AutomationArtworkCandidate {
         let inlineData = inlineArtworkData(candidate.imageData)
         return AutomationArtworkCandidate(
+            candidateID: candidateID,
             source: artworkSourceName(candidate.source),
             sourceItemID: candidate.sourceItemId,
             imageBase64: inlineData.base64EncodedString(),
@@ -6500,6 +9894,16 @@ final class AutomationIPCServer {
             height: candidate.height,
             resolution: candidate.resolution,
             confidence: candidate.confidence,
+            matchQuality: AutomationArtworkQualityEvaluator.score(
+                queryTitle: queryTitle,
+                queryArtist: queryArtist,
+                queryAlbum: queryAlbum,
+                candidateTitle: candidate.matchedTitle,
+                candidateArtist: candidate.matchedArtist,
+                candidateAlbum: candidate.matchedAlbum,
+                width: candidate.width,
+                height: candidate.height
+            ),
             matchedTitle: candidate.matchedTitle,
             matchedArtist: candidate.matchedArtist,
             matchedAlbum: candidate.matchedAlbum,
@@ -6842,6 +10246,34 @@ final class AutomationIPCServer {
         return response == .OK ? panel.url : nil
     }
 
+    private func requestExportDirectory() async -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.title = "导出歌曲"
+        panel.prompt = "选择文件夹"
+        NSApp.activate(ignoringOtherApps: true)
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    private func uniqueExportURL(for fileName: String, in directory: URL) -> URL {
+        let sourceName = URL(fileURLWithPath: fileName)
+        let baseName = sourceName.deletingPathExtension().lastPathComponent
+        let fileExtension = sourceName.pathExtension
+        var candidate = directory.appendingPathComponent(fileName, isDirectory: false)
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            let uniqueName = fileExtension.isEmpty
+                ? "\(baseName) (\(suffix))"
+                : "\(baseName) (\(suffix)).\(fileExtension)"
+            candidate = directory.appendingPathComponent(uniqueName, isDirectory: false)
+            suffix += 1
+        }
+        return candidate
+    }
+
     /// Library lifecycle operations use the same App-owned picker boundary as
     /// Source creation. A requested path is only a navigation hint; the
     /// selected URL is still authorized by the App and retained until the
@@ -7160,10 +10592,146 @@ final class AutomationIPCServer {
         }
     }
 
+    private func resolveSelection(
+        _ snapshot: AutomationSelectionSnapshot,
+        viewModel: LibraryViewModel
+    ) throws -> (summary: AutomationSelectionSummary, trackIDs: [UUID]) {
+        guard let filter = snapshot.filter else {
+            return (snapshot.summary, snapshot.trackIDs)
+        }
+        try validateTrackFilter(filter)
+        let preferenceStatsByTrackID = AutomationTrackPreferenceQuery.requiresHistoryRead(in: filter)
+            ? viewModel.preferenceStats(for: viewModel.allTracks.map(\.id))
+            : [:]
+        let trackIDs = try viewModel.allTracks.compactMap { track in
+            try matchesTrackFilter(
+                track,
+                filter: filter,
+                playlists: viewModel.playlists,
+                preferenceStatsByTrackID: preferenceStatsByTrackID
+            ) ? track.id : nil
+        }
+        guard trackIDs.count <= 10_000 else {
+            throw AutomationParameterError.outOfRange("filter.resultCount")
+        }
+        let summary = AutomationSelectionSummary(
+            id: snapshot.summary.id,
+            name: snapshot.summary.name,
+            trackCount: trackIDs.count,
+            revision: selectionRevision(libraryID: snapshot.libraryID, trackIDs: trackIDs),
+            createdAt: snapshot.summary.createdAt,
+            expiresAt: snapshot.summary.expiresAt,
+            isDynamic: true
+        )
+        return (summary, trackIDs)
+    }
+
+    private func validateTrackFilter(_ filter: AutomationJSONValue) throws {
+        _ = try validateTrackFilter(filter, depth: 0, visited: 0)
+    }
+
+    @discardableResult
+    private func validateTrackFilter(
+        _ filter: AutomationJSONValue,
+        depth: Int,
+        visited: Int
+    ) throws -> Int {
+        guard depth <= 8, visited < 256 else {
+            throw AutomationParameterError.outOfRange("filter.complexity")
+        }
+        guard case .object(let values) = filter, values.count <= 64 else {
+            throw AutomationParameterError.invalidType("filter", expected: "bounded object")
+        }
+        var count = visited + 1
+        for (key, value) in values {
+            switch key {
+            case "all", "any":
+                guard case .array(let children) = value,
+                      children.count <= 100,
+                      key != "any" || !children.isEmpty else {
+                    throw AutomationParameterError.invalidType("filter.\(key)", expected: "bounded array of filters")
+                }
+                for child in children {
+                    count = try validateTrackFilter(child, depth: depth + 1, visited: count)
+                }
+            case "not":
+                count = try validateTrackFilter(value, depth: depth + 1, visited: count)
+            case "id", "sourceID", "playlistID":
+                guard case .string(let raw) = value, UUID(uuidString: raw) != nil else {
+                    throw AutomationParameterError.invalidValue("filter.\(key)")
+                }
+            case "ids":
+                guard case .array(let rawIDs) = value, rawIDs.count <= 10_000 else {
+                    throw AutomationParameterError.invalidType("filter.ids", expected: "bounded array of UUID strings")
+                }
+                for rawID in rawIDs {
+                    guard case .string(let raw) = rawID, UUID(uuidString: raw) != nil else {
+                        throw AutomationParameterError.invalidValue("filter.ids")
+                    }
+                }
+            case "text", "titleContains", "artistContains", "albumContains", "genreContains", "codec", "format":
+                guard case .string(let text) = value, text.count <= 1_000 else {
+                    throw AutomationParameterError.invalidType("filter.\(key)", expected: "string up to 1000 characters")
+                }
+            case "availability":
+                guard case .string(let raw) = value,
+                      TrackAvailability(rawValue: raw) != nil else {
+                    throw AutomationParameterError.invalidValue("filter.availability")
+                }
+            case "missing", "hasLyrics", "hasArtwork":
+                guard case .boolean = value else {
+                    throw AutomationParameterError.invalidType("filter.\(key)", expected: "boolean")
+                }
+            case "lyricsStatus":
+                guard case .string(let status) = value,
+                      ["none", "wordSynced", "lineSynced", "plain"].contains(status) else {
+                    throw AutomationParameterError.invalidValue("filter.lyricsStatus")
+                }
+            case "addedAfter", "addedBefore", "releaseAfter", "releaseBefore",
+                 "lastPlayedAfter", "lastPlayedBefore":
+                _ = try filterDate(value, key: key)
+            case "durationMin", "durationMax", "metadataConfidenceMin",
+                 "totalPlayedSecondsMin", "preferenceScoreMin":
+                guard case .number(let number) = value, number.isFinite else {
+                    throw AutomationParameterError.invalidType("filter.\(key)", expected: "finite number")
+                }
+                if key == "metadataConfidenceMin", !(0...1).contains(number) {
+                    throw AutomationParameterError.outOfRange("filter.\(key)")
+                }
+                if key == "totalPlayedSecondsMin", number < 0 {
+                    throw AutomationParameterError.outOfRange("filter.\(key)")
+                }
+            case "likeState":
+                guard case .string(let rawValue) = value,
+                      ManualLikeState(rawValue: rawValue) != nil else {
+                    throw AutomationParameterError.invalidValue("filter.likeState")
+                }
+            case "playCountMin", "playCountMax", "completePlayCountMin", "skipCountMin":
+                guard case .number(let number) = value,
+                      number.isFinite,
+                      number >= 0,
+                      number.rounded() == number else {
+                    throw AutomationParameterError.invalidValue("filter.\(key)")
+                }
+            case "sampleRateHz", "bitDepth":
+                guard case .number(let number) = value,
+                      number.isFinite,
+                      number.rounded() == number,
+                      number > 0 else {
+                    throw AutomationParameterError.invalidValue("filter.\(key)")
+                }
+            default:
+                throw AutomationParameterError.invalidValue("filter.\(key)")
+            }
+        }
+        return count
+    }
+
     private func matchesTrackFilter(
         _ track: Track,
         filter: AutomationJSONValue,
-        playlists: [Playlist]
+        playlists: [Playlist],
+        preferenceStatsByTrackID: [UUID: TrackPreferenceStats] = [:]
     ) throws -> Bool {
         guard case .object(let values) = filter else {
             throw AutomationParameterError.invalidType("filter", expected: "object")
@@ -7173,7 +10741,12 @@ final class AutomationIPCServer {
             guard case .array(let filters) = all else {
                 throw AutomationParameterError.invalidType("filter.all", expected: "array")
             }
-            for child in filters where try !matchesTrackFilter(track, filter: child, playlists: playlists) {
+            for child in filters where try !matchesTrackFilter(
+                track,
+                filter: child,
+                playlists: playlists,
+                preferenceStatsByTrackID: preferenceStatsByTrackID
+            ) {
                 return false
             }
         }
@@ -7182,14 +10755,24 @@ final class AutomationIPCServer {
                 throw AutomationParameterError.invalidType("filter.any", expected: "non-empty array")
             }
             var matched = false
-            for child in filters where try matchesTrackFilter(track, filter: child, playlists: playlists) {
+            for child in filters where try matchesTrackFilter(
+                track,
+                filter: child,
+                playlists: playlists,
+                preferenceStatsByTrackID: preferenceStatsByTrackID
+            ) {
                 matched = true
                 break
             }
             if !matched { return false }
         }
         if let not = values["not"] {
-            if try matchesTrackFilter(track, filter: not, playlists: playlists) { return false }
+            if try matchesTrackFilter(
+                track,
+                filter: not,
+                playlists: playlists,
+                preferenceStatsByTrackID: preferenceStatsByTrackID
+            ) { return false }
         }
 
         let memberships = track.mediaLocator.referencedFile?.allSourceMemberships ?? []
@@ -7202,6 +10785,7 @@ final class AutomationIPCServer {
             ?? track.audioProperties
         let lyricsStatus = trackLyricsStatus(track)
         let artworkAvailable = track.hasArtwork
+        let preferenceStats = preferenceStatsByTrackID[track.id] ?? TrackPreferenceStats()
 
         for (key, value) in values where key != "all" && key != "any" && key != "not" {
             switch key {
@@ -7320,6 +10904,16 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.invalidValue("filter.bitDepth")
                 }
                 if audio?.bitDepth != Int(expected) { return false }
+            case "likeState", "playCountMin", "playCountMax", "completePlayCountMin",
+                 "skipCountMin", "lastPlayedAfter", "lastPlayedBefore",
+                 "totalPlayedSecondsMin", "preferenceScoreMin":
+                if !AutomationTrackPreferenceQuery.matches(
+                    key,
+                    value: value,
+                    stats: preferenceStats
+                ) {
+                    return false
+                }
             default:
                 throw AutomationParameterError.invalidValue("filter.\(key)")
             }
@@ -7348,7 +10942,8 @@ final class AutomationIPCServer {
 
     private func sortTracks(
         _ tracks: [Track],
-        using values: [AutomationJSONValue]
+        using values: [AutomationJSONValue],
+        preferenceStatsByTrackID: [UUID: TrackPreferenceStats] = [:]
     ) throws -> [Track] {
         struct SortKey {
             let field: String
@@ -7369,7 +10964,12 @@ final class AutomationIPCServer {
             guard direction == "asc" || direction == "desc" else {
                 throw AutomationParameterError.invalidValue("sort[(index)].direction")
             }
-            guard ["title", "artist", "album", "duration", "addedAt", "releaseDate", "availability", "codec", "sampleRateHz", "filePath"].contains(field) else {
+            guard [
+                "title", "artist", "album", "duration", "addedAt", "releaseDate",
+                "availability", "codec", "sampleRateHz", "filePath",
+                "likeState", "playCount", "completePlayCount", "skipCount",
+                "lastPlayedAt", "totalPlayedSeconds", "preferenceScore"
+            ].contains(field) else {
                 throw AutomationParameterError.invalidValue("sort[(index)].field")
             }
             keys.append(SortKey(field: field, descending: direction == "desc"))
@@ -7379,7 +10979,12 @@ final class AutomationIPCServer {
             : keys
         return tracks.sorted { lhs, rhs in
             for key in effectiveKeys {
-                let comparison = compareTracks(lhs, rhs, field: key.field)
+                let comparison = compareTracks(
+                    lhs,
+                    rhs,
+                    field: key.field,
+                    preferenceStatsByTrackID: preferenceStatsByTrackID
+                )
                 if comparison == .orderedSame { continue }
                 return key.descending
                     ? comparison == .orderedDescending
@@ -7389,7 +10994,19 @@ final class AutomationIPCServer {
         }
     }
 
-    private func compareTracks(_ lhs: Track, _ rhs: Track, field: String) -> ComparisonResult {
+    private func compareTracks(
+        _ lhs: Track,
+        _ rhs: Track,
+        field: String,
+        preferenceStatsByTrackID: [UUID: TrackPreferenceStats]
+    ) -> ComparisonResult {
+        if let comparison = AutomationTrackPreferenceQuery.compare(
+            preferenceStatsByTrackID[lhs.id] ?? TrackPreferenceStats(),
+            preferenceStatsByTrackID[rhs.id] ?? TrackPreferenceStats(),
+            field: field
+        ) {
+            return comparison
+        }
         let lhsAudio = lhs.mediaLocator.referencedFile?.locations.first?.audioProperties ?? lhs.audioProperties
         let rhsAudio = rhs.mediaLocator.referencedFile?.locations.first?.audioProperties ?? rhs.audioProperties
         switch field {
@@ -7413,6 +11030,71 @@ final class AutomationIPCServer {
         }
     }
 
+    private func automationTrackFileURL(_ track: Track, in session: LibrarySession) -> URL? {
+        if let relativePath = track.mediaLocator.managedLibraryRelativePath,
+           TrackMediaLocator.isSafeRelativePath(relativePath) {
+            let root = session.context.rootURL.standardizedFileURL
+            let candidate = root.appendingPathComponent(relativePath).standardizedFileURL
+            guard candidate.path.hasPrefix(root.path + "/") else { return nil }
+            return candidate
+        }
+        let path = track.mediaLocator.referencedFile?.locations.first?.lastKnownPath ?? track.originalFilePath
+        guard path.hasPrefix("/") else { return nil }
+        return URL(fileURLWithPath: path).standardizedFileURL
+    }
+
+    private func embeddedAudioFileURL(for track: Track, session: LibrarySession) throws -> URL {
+        if case .referenced = track.mediaLocator {
+            return try currentAuthorizedFile(for: track, session: session).url
+        }
+        guard let url = automationTrackFileURL(track, in: session),
+              FileManager.default.fileExists(atPath: url.path) else {
+            throw AutomationParameterError.invalidValue("audio file unavailable")
+        }
+        return url
+    }
+
+    private func readEmbeddedTags(from url: URL) async -> (
+        values: [String: String], supportedForWrite: Bool, status: String, message: String?
+    ) {
+        if url.pathExtension.lowercased() == "mp3" {
+            do {
+                let values = embeddedTagValues(try MP3EmbeddedTagService.read(from: url))
+                return (
+                    values,
+                    true,
+                    values.isEmpty ? "empty" : "read",
+                    values.isEmpty ? "No supported ID3 values were found." : nil
+                )
+            } catch {
+                return ([:], false, "unsupported", MP3EmbeddedTagService.publicMessage(for: error))
+            }
+        }
+        let extracted = await ImportMetadataExtractor.extractMetadata(from: url)
+        var values: [String: String] = [:]
+        if let value = extracted.tagFields.title { values["title"] = value }
+        if let value = extracted.tagFields.artist { values["artist"] = value }
+        if let value = extracted.tagFields.album { values["album"] = value }
+        if let value = extracted.tagFields.albumArtist { values["albumArtist"] = value }
+        if let value = extracted.tagFields.releaseYear { values["year"] = String(value) }
+        return (
+            values,
+            false,
+            values.isEmpty ? "empty" : "read",
+            "Tags can be read through AVFoundation, but embedded-tag writes are currently supported only for MP3."
+        )
+    }
+
+    private func embeddedTagValues(_ tags: MP3EmbeddedTagService.TagValues) -> [String: String] {
+        var values: [String: String] = [:]
+        for field in MP3EmbeddedTagService.supportedFields.subtracting(["comment", "lyrics"]) {
+            if let value = tags[field] {
+                values[field] = String(value.prefix(16_384))
+            }
+        }
+        return values
+    }
+
     private func trackPath(_ track: Track) -> String {
         track.mediaLocator.referencedFile?.locations.first?.lastKnownPath
             ?? track.originalFilePath
@@ -7424,7 +11106,8 @@ final class AutomationIPCServer {
     /// for optimistic pagination without receiving any additional metadata.
     private func libraryTracksRevision(
         tracks: [Track],
-        playlists: [Playlist]
+        playlists: [Playlist],
+        preferenceStatsByTrackID: [UUID: TrackPreferenceStats]? = nil
     ) -> String {
         var playlistIDsByTrackID: [UUID: Set<UUID>] = [:]
         for playlist in playlists {
@@ -7439,7 +11122,9 @@ final class AutomationIPCServer {
                 includeFilePath: false,
                 playlistIDsOverride: Array(
                     playlistIDsByTrackID[track.id, default: []]
-                ).sorted { $0.uuidString < $1.uuidString }
+                ).sorted { $0.uuidString < $1.uuidString },
+                includePreferenceStats: preferenceStatsByTrackID != nil,
+                preferenceStats: preferenceStatsByTrackID?[track.id]
             )
         }
         guard let data = try? AutomationWireCoding.encoder().encode(summaries) else {
@@ -7449,6 +11134,28 @@ final class AutomationIPCServer {
             .map { String(format: "%02x", $0) }
             .joined()
         return "v1-" + digest
+    }
+
+    private func selectionRevision(libraryID: UUID, trackIDs: [UUID]) -> String {
+        let material = ([libraryID.uuidString] + trackIDs.map(\.uuidString)).joined(separator: "\n")
+        let digest = SHA256.hash(data: Data(material.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "selection-v1-" + digest
+    }
+
+    private func selectionStoreFailure(
+        for request: AutomationRequest,
+        error: Error
+    ) -> AutomationResponse {
+        .failure(
+            for: request,
+            error: AutomationError(
+                code: .internalError,
+                message: "The saved selection state could not be read or written.",
+                details: .object(["reason": .string(String(describing: error))])
+            )
+        )
     }
 
     private func libraryTracksRevisionConflict(
@@ -7484,11 +11191,56 @@ final class AutomationIPCServer {
         return "none"
     }
 
+    private func makeMetadataDocumentTrack(_ track: Track, revision: String) -> AutomationMetadataDocumentTrack {
+        func nullableString(_ value: String?) -> AutomationJSONValue {
+            value.map(AutomationJSONValue.string) ?? .null
+        }
+        func nullableDate(_ value: Date?) -> AutomationJSONValue {
+            value.map { .string(ISO8601DateFormatter().string(from: $0)) } ?? .null
+        }
+        let fields: [String: AutomationJSONValue] = [
+            "title": .string(track.title),
+            "artist": .string(track.artist),
+            "album": .string(track.album),
+            "albumArtist": nullableString(track.albumArtist),
+            "description": .string(track.userDescription),
+            "genreTags": .array(track.genreTags.map(AutomationJSONValue.string)),
+            "language": .string(track.language),
+            "labelOrCompany": .string(track.labelOrCompany),
+            "releaseDate": nullableDate(track.releaseDate),
+            "qqMusicSongMid": nullableString(track.qqMusicSongMid),
+            "metadataSource": nullableString(track.metadataSource),
+            "metadataFetchedAt": nullableDate(track.metadataFetchedAt),
+            "metadataConfidence": track.metadataConfidence.map(AutomationJSONValue.number) ?? .null,
+            "musicBrainzReleaseID": nullableString(track.musicBrainzReleaseID),
+            "lyricsTimeOffsetMs": .number(track.lyricsTimeOffsetMs),
+            "artistCredits": .array(track.artistCredits.map { credit in
+                .object([
+                    "id": .string(credit.id.uuidString),
+                    "displayName": .string(credit.displayName),
+                    "canonicalName": nullableString(credit.canonicalName),
+                    "role": .string(credit.role.rawValue)
+                ])
+            })
+        ]
+        return AutomationMetadataDocumentTrack(
+            id: track.id,
+            revision: revision,
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            duration: track.duration,
+            fields: fields
+        )
+    }
+
     private func makeTrackSummary(
         _ track: Track,
         playlists: [Playlist] = [],
         includeFilePath: Bool = true,
-        playlistIDsOverride: [UUID]? = nil
+        playlistIDsOverride: [UUID]? = nil,
+        includePreferenceStats: Bool = false,
+        preferenceStats: TrackPreferenceStats? = nil
     ) -> AutomationTrackSummary {
         let sourceMemberships = (track.mediaLocator.referencedFile?.allSourceMemberships ?? [])
             .map {
@@ -7523,6 +11275,19 @@ final class AutomationIPCServer {
             availability: track.availability.rawValue,
             addedAt: track.addedAt,
             importedAt: track.importedAt,
+            embeddedMetadataSnapshot: track.embeddedMetadataSnapshot.map { snapshot in
+                AutomationEmbeddedMetadataSnapshot(
+                    title: snapshot.title,
+                    artistDisplay: snapshot.artistDisplay,
+                    album: snapshot.album,
+                    albumArtist: snapshot.albumArtist,
+                    releaseYear: snapshot.releaseYear,
+                    compilation: snapshot.compilation,
+                    musicBrainzReleaseID: snapshot.musicBrainzReleaseID,
+                    durationSeconds: snapshot.durationSeconds,
+                    capturedAt: snapshot.capturedAt
+                )
+            },
             sourceMemberships: sourceMemberships,
             artistCredits: track.artistCredits.map {
                 AutomationTrackCredit(
@@ -7553,7 +11318,10 @@ final class AutomationIPCServer {
             bitDepth: audio?.bitDepth,
             channelCount: audio?.channelCount,
             filePath: includeFilePath ? trackPath(track) : nil,
-            playlistIDs: playlistIDs
+            playlistIDs: playlistIDs,
+            preferenceStats: includePreferenceStats
+                ? AutomationTrackPreferenceQuery.summary(preferenceStats ?? TrackPreferenceStats())
+                : nil
         )
     }
 
@@ -7611,6 +11379,34 @@ final class AutomationIPCServer {
             excludedRelativePaths: descriptor.excludedRelativePaths,
             monitorPolicy: descriptor.monitorPolicy.rawValue
         )
+    }
+
+    private func makeSourceConfiguration(
+        _ descriptor: ReferencedSourceDescriptor
+    ) -> AutomationSourceConfiguration {
+        AutomationSourceConfiguration(
+            sourceID: descriptor.id,
+            displayName: descriptor.displayName,
+            monitorPolicy: descriptor.monitorPolicy.rawValue,
+            excludedRelativePaths: descriptor.excludedRelativePaths
+        )
+    }
+
+    private func sourceConfigurationRevision(
+        libraryID: UUID,
+        configurations: [AutomationSourceConfiguration]
+    ) -> String {
+        let document = AutomationSourceConfigurationDocument(
+            originLibraryID: libraryID,
+            sources: configurations
+        )
+        guard let data = try? AutomationWireCoding.encoder().encode(document) else {
+            return "source-config-v1-unavailable"
+        }
+        let digest = SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "source-config-v1-" + digest
     }
 
     private struct AutomationFilePlan {
@@ -7891,6 +11687,22 @@ final class AutomationIPCServer {
         }
     }
 
+    private func metadataProviderUnavailable(
+        _ error: Error,
+        provider: String,
+        for request: AutomationRequest
+    ) -> AutomationResponse {
+        .failure(
+            for: request,
+            error: AutomationError(
+                code: .serverUnavailable,
+                message: "The \(provider) metadata provider could not complete the request.",
+                retryable: true,
+                details: .object(["reason": .string(error.localizedDescription)])
+            )
+        )
+    }
+
     private func invalidParameters(
         for request: AutomationRequest,
         error: Error? = nil
@@ -8006,7 +11818,8 @@ private struct AutomationParameters {
     func uuidArray(
         _ key: String,
         required: Bool = false,
-        allowEmpty: Bool = false
+        allowEmpty: Bool = false,
+        maximumCount: Int = 5_000
     ) throws -> [UUID] {
         guard let value = values[key] else {
             if required {
@@ -8017,7 +11830,7 @@ private struct AutomationParameters {
         guard case .array(let values) = value else {
             throw AutomationParameterError.invalidType(key, expected: "array of UUID strings")
         }
-        guard (allowEmpty || !values.isEmpty), values.count <= 5_000 else {
+        guard (allowEmpty || !values.isEmpty), values.count <= maximumCount else {
             throw AutomationParameterError.outOfRange(key)
         }
 

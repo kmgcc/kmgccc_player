@@ -23,6 +23,7 @@ nonisolated struct QQMusicArtworkCandidate: Codable, Equatable, Sendable {
 
 nonisolated enum MetadataDetailSource: String, Codable, Sendable {
     case qqmusic
+    case musicbrainz
 }
 
 nonisolated struct QQMusicMetadataDetail: Codable, Equatable, Sendable {
