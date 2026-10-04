@@ -1,12 +1,12 @@
 {
-  "latestVersion": "2.3.3",
-  "build_number": 14,
-  "releaseURL": "https://github.com/kmgcc/kmgccc_player/releases/tag/v2.3.3",
-  "notes": "## [v2.3.3] - 2026-10-01\n\n- 修正自动更新中更新日志的显示，避免将网页内容误作更新说明，并处理旧版保存的异常日志。",
-  "version": "2.3.3",
-  "build": "14",
+  "latestVersion": "2.3.4",
+  "build_number": 15,
+  "releaseURL": "https://github.com/kmgcc/kmgccc_player/releases/tag/v2.3.4",
+  "notes": "## [v2.3.4] - 2026-10-04\n\n- **边缘模糊修复**：修复皮肤边缘与封面边缘的模糊问题。\n- **自动化与 MCP 导入升级**：升级本机自动化与 MCP 的导入功能，扩展曲库导入、元数据与标签能力。",
+  "version": "2.3.4",
+  "build": "15",
   "channel": "production",
-  "release_notes_url": "https://kmgcc.github.io/kmgccc_player/release-notes/v2.3.3.md",
-  "dmg_url": "https://github.com/kmgcc/kmgccc_player/releases/download/v2.3.3/kmgccc_player_2.3.3_14.dmg",
-  "generated_at": "2026-09-30T00:00:00Z"
+  "release_notes_url": "https://kmgcc.github.io/kmgccc_player/release-notes/v2.3.4.md",
+  "dmg_url": "https://github.com/kmgcc/kmgccc_player/releases/download/v2.3.4/kmgccc_player_2.3.4_15.dmg",
+  "generated_at": "2026-10-04T00:00:00Z"
 }
