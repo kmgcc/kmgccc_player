@@ -14,19 +14,28 @@ import QuartzCore
 import SwiftUI
 
 struct KmgcccCassetteSkin: NowPlayingSkin {
-    let id: String = "kmgccc.cassette"
-    let name: String = NSLocalizedString("skin.kmgccc_cassette.name", comment: "")
-    let detail: String = NSLocalizedString("skin.kmgccc_cassette.detail", comment: "")
-    let systemImage: String = "music.note.list"
-    var isFullscreenCompatible: Bool { true }
-    var isNowPlayingCompatible: Bool { true }
+    let descriptor = SkinDescriptor(
+        id: "kmgccc.cassette",
+        name: NSLocalizedString("skin.kmgccc_cassette.name", comment: ""),
+        detail: NSLocalizedString("skin.kmgccc_cassette.detail", comment: ""),
+        systemImage: "music.note.list",
+        presentation: SkinPresentationPolicy(artBackgroundResourceProfile: .foreground),
+        audio: SkinAudioDefaults(window: .miniPlayerLED, fullscreen: .off, supportsEmbeddedVisualizer: false),
+        artwork: SkinArtworkDefaults(scale: 1.25),
+        fullscreenTypography: SkinDescriptor.coverTypography,
+        legacy: SkinLegacySettings(
+            visualizerNamespace: "skin.kmgcccCassette",
+            previousFullscreenVisualization: .miniPlayerLED,
+            defaultsMiniPlayerSpectrumOn: false
+        )
+    )
 
     func makeBackground(context: SkinContext) -> AnyView {
         AnyView(UnifiedNowPlayingBackground(context: context))
     }
 
     func makeArtwork(context: SkinContext) -> AnyView {
-        AnyView(CassetteArtwork(context: context).equatable())
+        AnyView(CassetteArtworkHost(context: context))
     }
 
     func makeOverlay(context: SkinContext) -> AnyView? {
@@ -43,6 +52,11 @@ struct KmgcccCassetteSkin: NowPlayingSkin {
 
     static func purgeCaches() {
         CassetteThemeAssetCache.shared.removeAll()
+    }
+
+    func releaseCachedResources() async {
+        await CassetteArtworkCache.shared.removeAll()
+        Self.purgeCaches()
     }
 }
 
@@ -369,6 +383,16 @@ private enum CassetteAssetToneMapper {
     }
 }
 
+private struct CassetteArtworkHost: View {
+    let context: SkinContext
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        CassetteArtwork(context: context, tint: themeStore.semanticPalette.cassetteTint)
+            .equatable()
+    }
+}
+
 private struct CassetteArtwork: View, Equatable {
     private struct ArtworkSourceIdentity: Equatable {
         let trackID: UUID?
@@ -384,6 +408,7 @@ private struct CassetteArtwork: View, Equatable {
     }
 
     let context: SkinContext
+    let tint: CassetteTintPalette
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
     @Environment(\.displayScale) private var displayScale
     @State private var adjustedArtworkImage: NSImage?
@@ -413,7 +438,7 @@ private struct CassetteArtwork: View, Equatable {
             && lhs.context.lyricsVisible == rhs.context.lyricsVisible
             && lhs.context.contentBounds.size == rhs.context.contentBounds.size
             && waveformPaletteSignature(for: lhs.context) == waveformPaletteSignature(for: rhs.context)
-            && cassetteTintSignature(for: lhs.context) == cassetteTintSignature(for: rhs.context)
+            && cassetteTintSignature(for: lhs.context, tint: lhs.tint) == cassetteTintSignature(for: rhs.context, tint: rhs.tint)
     }
 
     var body: some View {
@@ -470,7 +495,7 @@ private struct CassetteArtwork: View, Equatable {
                     .transition(.opacity.animation(kmgLookTransitionAnimation))
             }
         }
-        .overlay(HolesOverlay(context: context))
+        .overlay(HolesOverlay(context: context, tint: tint))
         .overlay(WaveformCapsulesLayer(context: context).zIndex(999))
         .frame(width: size.width, height: size.height)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -545,8 +570,8 @@ private struct CassetteArtwork: View, Equatable {
         return hasher.finalize()
     }
 
-    private static func cassetteTintSignature(for context: SkinContext) -> Int {
-        context.theme.colorScheme == .dark ? context.theme.cassetteTint.signature : 0
+    private static func cassetteTintSignature(for context: SkinContext, tint: CassetteTintPalette) -> Int {
+        context.theme.colorScheme == .dark ? tint.signature : 0
     }
 
     private static func append(color: NSColor?, to hasher: inout Hasher) {
@@ -759,7 +784,7 @@ private struct CassetteArtwork: View, Equatable {
     private func cassetteThemeImages(for size: CGSize) -> CassetteThemeImageSet? {
         CassetteThemeAssetCache.shared.imageSet(
             colorScheme: context.theme.colorScheme,
-            cassetteTint: context.theme.cassetteTint,
+            cassetteTint: tint,
             maxPixel: themeMaxPixel(for: size)
         )
     }
@@ -770,7 +795,7 @@ private struct CassetteArtwork: View, Equatable {
         }
         if let image = ArtAssetLoader.shared.xcAssetImage(named: name, maxPixel: 960) {
             let rendered = context.theme.colorScheme == .dark && name == "tapedark"
-                ? CassetteAssetToneMapper.colorized(image, tint: context.theme.cassetteTint) ?? image
+                ? CassetteAssetToneMapper.colorized(image, tint: tint) ?? image
                 : image
             return Image(nsImage: rendered)
         }
@@ -1342,12 +1367,13 @@ private enum WaveformCapsulesPalette {
 
 private struct HolesOverlay: View {
     let context: SkinContext
+    let tint: CassetteTintPalette
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         CassetteHoleRotationRepresentable(
             imageName: context.theme.colorScheme == .dark ? "darkhole" : "lighthole",
-            tint: context.theme.cassetteTint,
+            tint: tint,
             isPlaying: context.playback.isPlaying,
             displayScale: displayScale
         )

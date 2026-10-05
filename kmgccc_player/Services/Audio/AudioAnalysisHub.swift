@@ -13,6 +13,10 @@ import Foundation
 
 /// Raw FFT data provided to consumers.
 nonisolated public struct AudioAnalysisData: Sendable {
+    /// Latest unwindowed mono PCM analysis window, oldest sample first. This is
+    /// a visualisation feed, not a lossless recording stream.
+    public let pcmSamples: [Float]
+    public let hostTime: Double
     public let magnitudes: [Float]  // Frequency domain (0...Nyquist)
     public let sampleRate: Float
     public let fftSize: Int
@@ -613,6 +617,8 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         let currentSampleRate = sampleRate
         ringLock.unlock()  // Release lock ASAP
 
+        let pcmSamples = fftInput
+
         // 1b. Remove DC offset BEFORE metrics and windowing. Decoded music usually
         // has negligible DC, but any residual offset would concentrate in bin 0
         // and leak into the Sub band (20-60Hz), spuriously energizing the lowest
@@ -670,6 +676,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
         // 5. Notify Consumers
         let data = AudioAnalysisData(
+            pcmSamples: pcmSamples, hostTime: ProcessInfo.processInfo.systemUptime,
             magnitudes: fftMagnitudes,
             sampleRate: currentSampleRate,
             fftSize: fftSize,

@@ -314,6 +314,7 @@ nonisolated enum CacheManager {
         HomePlaylistCardCoverStore.shared.clearMemory()
         HomePlaylistPreviewArtworkStore.shared.clearMemory()
         FastArtworkMemoryCache.shared.removeAll()
+        await SkinRegistry.releaseCachedResources()
         BKThemeAssets.shared.purgeTransientCaches()
 
         await ArtworkAssetStore.shared.purgeHydratedImages()
@@ -325,9 +326,6 @@ nonisolated enum CacheManager {
         }
         await ArtworkLoader.clearMemoryCache()
         await PlaylistPageModelCacheService.shared.removeAll()
-        await CassetteArtworkCache.shared.removeAll()
-        await ClassicArtworkFrameExtendedArtworkCache.shared.removeAll()
-        ClassicArtworkFrameExtendedArtworkRenderer.clearCaches()
         ThemeStore.shared.clearArtworkColorCache()
         trimProcessMemory()
         Task { @MainActor in
@@ -357,9 +355,6 @@ nonisolated enum CacheManager {
         }
         BKThemeAssets.shared.purgeTransientCaches()
         ArtAssetLoader.shared.purgeCache()
-        await CoverGradientBlurMemory.clear()
-        await ClassicArtworkFrameExtendedArtworkCache.shared.removeAll()
-        ClassicArtworkFrameExtendedArtworkRenderer.clearCaches()
         await ArtworkAssetStore.shared.purgeHydratedImages()
         if let cacheServices {
             await cacheServices.trackArtworkCache.clearMemory()
@@ -368,9 +363,7 @@ nonisolated enum CacheManager {
         }
         await ArtworkLoader.clearMemoryCache()
         FastArtworkMemoryCache.shared.removeAll()
-        await CassetteArtworkCache.shared.removeAll()
-        KmgcccCassetteSkin.purgeCaches()
-        RotatingCoverSkin.purgeCaches()
+        await SkinRegistry.releaseCachedResources()
         ThemeStore.shared.clearArtworkColorCache()
         NativeLyricsSurfaceManager.shared.purgeInactiveRenderingResources()
         URLCache.shared.removeAllCachedResponses()

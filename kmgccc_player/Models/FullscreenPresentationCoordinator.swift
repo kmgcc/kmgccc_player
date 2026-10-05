@@ -31,7 +31,7 @@ public enum FullscreenVisualizerMode: String, CaseIterable, Identifiable, Codabl
     }
 }
 
-/// Fullscreen skin identifier
+/// Historic built-in identifiers retained for source compatibility. Routing uses SkinRegistry.
 public enum FullscreenSkinID: String, CaseIterable, Identifiable {
     case coverLed = "coverLed"
     case appleStyle = "appleStyle"
@@ -42,37 +42,19 @@ public enum FullscreenSkinID: String, CaseIterable, Identifiable {
     public var id: String { rawValue }
 
     public var supportsEmbeddedVisualizer: Bool {
-        switch self {
-        case .coverLed, .appleStyle, .rotatingCover: return true
-        case .kmgcccCassette: return false
-        case .coverGradientBlur: return false
-        }
+        SkinRegistry.registeredDescriptor(for: rawValue)?.audio.supportsEmbeddedVisualizer ?? false
     }
 
     public var supportsMiniPlayerVisualization: Bool {
-        switch self {
-        case .coverLed, .appleStyle, .rotatingCover, .coverGradientBlur, .kmgcccCassette: return true
-        }
+        SkinRegistry.registeredDescriptor(for: rawValue)?.audio.supportsMiniPlayerVisualization ?? false
     }
 
     public var defaultsMiniPlayerSpectrumOn: Bool {
-        switch self {
-        case .coverLed, .rotatingCover, .coverGradientBlur: return true
-        case .appleStyle, .kmgcccCassette: return false
-        }
+        SkinRegistry.registeredDescriptor(for: rawValue)?.legacy?.defaultsMiniPlayerSpectrumOn ?? false
     }
 
-    /// Whether this skin renders an audio LED meter as part of its decoration.
-    /// LED is a peer of spectrum: it should be driven by the skin identity,
-    /// not by the visualizerMode toggle.
     public var hasLedMeter: Bool {
-        switch self {
-        case .coverLed: return true
-        case .appleStyle: return true
-        case .kmgcccCassette: return true
-        case .rotatingCover: return true
-        case .coverGradientBlur: return false
-        }
+        SkinRegistry.registeredDescriptor(for: rawValue)?.audio.hasLedMeter ?? false
     }
 }
 
@@ -106,36 +88,12 @@ public struct FullscreenPresentationConfiguration: Equatable, Codable {
     }
 
     public init(skinID: String, visualizerMode: FullscreenVisualizerMode) {
-        let normalizedSkinID = FullscreenSkinID(rawValue: skinID)?.rawValue ?? "coverLed"
-
-        if let skin = FullscreenSkinID(rawValue: normalizedSkinID) {
-            switch visualizerMode {
-            case .miniPlayerSpectrum, .miniPlayerLED:
-                if !skin.supportsMiniPlayerVisualization {
-                    self.skinID = "coverLed"
-                    self.visualizerMode = visualizerMode
-                } else {
-                    self.skinID = normalizedSkinID
-                    self.visualizerMode = visualizerMode
-                }
-
-            case .skinVisualizer:
-                if !skin.supportsEmbeddedVisualizer {
-                    self.skinID = normalizedSkinID
-                    self.visualizerMode = .off
-                } else {
-                    self.skinID = normalizedSkinID
-                    self.visualizerMode = .skinVisualizer
-                }
-
-            case .off:
-                self.skinID = normalizedSkinID
-                self.visualizerMode = .off
-            }
-        } else {
-            self.skinID = "coverLed"
-            self.visualizerMode = .off
-        }
+        let descriptor = SkinRegistry.fullscreenSkin(for: skinID).descriptor
+        self.skinID = descriptor.id
+        let unsupported = ((visualizerMode == .miniPlayerSpectrum || visualizerMode == .miniPlayerLED)
+            && !descriptor.audio.supportsMiniPlayerVisualization)
+            || (visualizerMode == .skinVisualizer && !descriptor.audio.supportsEmbeddedVisualizer)
+        self.visualizerMode = unsupported ? .off : visualizerMode
     }
 
     public init(fromLegacy skinID: String, miniPlayerSpectrum: Bool, skinVisualizerEnabled: Bool) {
@@ -166,10 +124,6 @@ public final class FullscreenPresentationCoordinator {
         static let configuration = "fullscreenPresentationConfiguration_v2"
         static let skinID = "fullscreenSkin"
         static let miniPlayerSpectrumEnabled = "miniPlayerSpectrumEnabled"
-        static let classicLEDVisualizer = "skin.classicLED.fullscreen.visualizerMode"
-        static let appleStyleVisualizer = "skin.appleStyle.fullscreen.visualizerMode"
-        static let kmgcccCassetteVisualizer = "skin.kmgcccCassette.fullscreen.visualizerMode"
-        static let rotatingCoverVisualizer = "skin.rotatingCover.fullscreen.visualizerMode"
         static let userExplicitlyDisabledMiniPlayerSpectrum = "userExplicitlyDisabledMiniPlayerSpectrum_v1"
     }
 
@@ -263,8 +217,7 @@ public final class FullscreenPresentationCoordinator {
         let currentConfig = configuration
 
         if currentConfig.isMiniPlayerSpectrumEnabled {
-            if let skin = FullscreenSkinID(rawValue: currentConfig.skinID),
-               skin.supportsMiniPlayerVisualization {
+            if SkinRegistry.registeredDescriptor(for: currentConfig.skinID)?.audio.supportsMiniPlayerVisualization == true {
                 UserDefaults.standard.set(true, forKey: Keys.userExplicitlyDisabledMiniPlayerSpectrum)
             }
             updateConfiguration(FullscreenPresentationConfiguration(
@@ -375,49 +328,21 @@ public final class FullscreenPresentationCoordinator {
         config
     }
 
-    private func shouldDefaultMiniPlayerSpectrumOn(for skinID: String) -> Bool {
-        guard let skin = FullscreenSkinID(rawValue: skinID),
-              skin.supportsMiniPlayerVisualization,
-              skin.defaultsMiniPlayerSpectrumOn else {
-            return false
-        }
-        return !UserDefaults.standard.bool(forKey: Keys.userExplicitlyDisabledMiniPlayerSpectrum)
-    }
-
-    private func shouldUseLegacyMiniPlayerSpectrumValue(for skinID: String) -> Bool {
-        if shouldDefaultMiniPlayerSpectrumOn(for: skinID) {
-            return true
-        }
-        return UserDefaults.standard.bool(forKey: Keys.miniPlayerSpectrumEnabled)
-    }
-
     private func clearSkinVisualizer(for skinID: String) {
-        guard let skin = FullscreenSkinID(rawValue: skinID) else { return }
-        switch skin {
-        case .coverLed:
-            UserDefaults.standard.set("off", forKey: Keys.classicLEDVisualizer)
-        case .appleStyle:
-            UserDefaults.standard.set("off", forKey: Keys.appleStyleVisualizer)
-        case .rotatingCover:
-            UserDefaults.standard.set("off", forKey: Keys.rotatingCoverVisualizer)
-        case .kmgcccCassette:
-            UserDefaults.standard.set("off", forKey: Keys.kmgcccCassetteVisualizer)
-        case .coverGradientBlur:
-            break
-        }
+        guard let descriptor = SkinRegistry.registeredDescriptor(for: skinID),
+              descriptor.audio.hasLedMeter || descriptor.audio.supportsEmbeddedVisualizer else { return }
+        UserDefaults.standard.set("off", forKey: visualizerKey(for: descriptor))
     }
 
     private func legacySkinVisualizerKind(for skinID: String) -> AudioVisualizationKind {
-        guard let skin = FullscreenSkinID(rawValue: skinID) else { return .off }
-        let key: String
-        switch skin {
-        case .coverLed: key = Keys.classicLEDVisualizer
-        case .appleStyle: key = Keys.appleStyleVisualizer
-        case .rotatingCover: key = Keys.rotatingCoverVisualizer
-        case .kmgcccCassette: key = Keys.kmgcccCassetteVisualizer
-        case .coverGradientBlur: return .off
-        }
-        return AudioVisualizationKind(rawValue: UserDefaults.standard.string(forKey: key) ?? "off") ?? .off
+        guard let descriptor = SkinRegistry.registeredDescriptor(for: skinID),
+              descriptor.audio.hasLedMeter || descriptor.audio.supportsEmbeddedVisualizer else { return .off }
+        return AudioVisualizationKind(rawValue: UserDefaults.standard.string(forKey: visualizerKey(for: descriptor)) ?? "off") ?? .off
+    }
+
+    private func visualizerKey(for descriptor: SkinDescriptor) -> String {
+        descriptor.legacy?.visualizerKey(scope: .fullscreen)
+            ?? "skin.\(descriptor.id).fullscreen.visualizerMode"
     }
 
     private func saveConfiguration(_ config: FullscreenPresentationConfiguration) {
@@ -434,23 +359,12 @@ public final class FullscreenPresentationCoordinator {
             clearSkinVisualizer(for: config.skinID)
         }
 
-        if let skin = FullscreenSkinID(rawValue: config.skinID) {
-            switch skin {
-            case .rotatingCover:
-                // The "spectrum" sub-mode is only meaningful when the skin is
-                // currently active; keep this single legacy bridge so the
-                // existing skin-visualizer toggle still produces a value the
-                // skin can read. LED keys are NOT touched here — they belong
-                // to user settings + transition defaults.
-                if config.isSkinVisualizerEnabled {
-                    let existingMode = UserDefaults.standard.string(forKey: Keys.rotatingCoverVisualizer) ?? "off"
-                    if existingMode == "off" {
-                        UserDefaults.standard.set("spectrum", forKey: Keys.rotatingCoverVisualizer)
-                    }
-                }
-
-            case .coverLed, .appleStyle, .kmgcccCassette, .coverGradientBlur:
-                break
+        if config.isSkinVisualizerEnabled,
+           let descriptor = SkinRegistry.registeredDescriptor(for: config.skinID),
+           let activationKind = descriptor.legacy?.visualizerActivationKind {
+            let key = visualizerKey(for: descriptor)
+            if (UserDefaults.standard.string(forKey: key) ?? "off") == "off" {
+                UserDefaults.standard.set(activationKind.rawValue, forKey: key)
             }
         }
     }

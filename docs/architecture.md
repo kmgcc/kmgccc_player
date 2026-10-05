@@ -105,9 +105,17 @@ TTML 歌词文本
 
 ## 界面与皮肤
 
-`SkinRegistry` 列出可用的 Now Playing 皮肤及其兼容范围，`SkinManager` 把设置中的 ID 归一化为可用皮肤。普通窗口由 `NowPlayingHostView` 读取 presentation、原子封面快照、语义颜色和窗口尺寸，组装 `SkinContext` 后交给具体皮肤。实时频谱帧由皮肤内的 consumer 订阅，不塞进父级 context 反复重建视图。
+`SkinCatalog` 是唯一的皮肤登记集合；`SkinRegistry` 保留路由入口并委托给同一 catalog，`SkinManager` 在 App 组合入口接收它。每个 `NowPlayingSkin` 的 `SkinDescriptor` 声明支持的宿主、元数据、呈现策略、可视化能力和外观默认。当前默认值与历史兼容键分开保存，新增身份不需要扩充 `FullscreenSkinID` 或全局默认值名单。
+
+普通窗口由 `NowPlayingHostView` 读取稳定 presentation、原子封面快照、语义颜色和窗口尺寸，组装 `SkinContext` 后交给具体皮肤。公共上下文只保留当前消费者需要的数据，磁带色板等专用输入在皮肤内部适配。实时频谱帧由皮肤内的 consumer 订阅，播放时钟由原有实时叶节点消费。
 
 全屏设置由 `FullscreenPresentationCoordinator` 持有，包括皮肤、可视化模式和 MiniPlayer 频谱选择。`FullscreenWindowManager` 负责依赖注入、窗口建立和歌词 surface 切换；`FullscreenPlayerView` 同时支持系统 fullscreen space 与主窗口内嵌模式。两种宿主共享内容实现，但窗口生命周期和歌词 surface 要分别处理。
+
+每个宿主持有自己的 `SkinSession`，管理切换 identity 与局部异步任务；它不创建另一套播放、主题、歌词或分析服务。封面异步准备在提交前确认会话 generation，切换时重建皮肤子树，原生歌词保留 manager-owned 渲染器身份。皮肤通过 `releaseCachedResources()` 释放专属派生缓存，`CacheManager` 分发清理并继续管理共享缓存。
+
+有 `scene` 的皮肤由 `SkinSceneHost` 使用实际视口呈现，作者可以使用任意 SwiftUI 场景或 JSON 原生组合树。`SkinComponentCatalog` 登记可选封面、背景、文字、歌词、播放控制与共享可视化；新增组件不扩充宿主的皮肤 ID 分支。`SkinNativeLyricsMount` 以普通布局容器借用唯一歌词 view，激活和配置仍归原有 manager；作者覆盖叠在 App 配置之后，离开后恢复最新基础设置。
+
+五个内置模块与用户安装项共用 `PackagedSkin` 和同一 catalog。`registerBundled` 同时登记完整模块及封面、背景、装饰部件；原生布局工厂保留为既有外观的兼容适配。`SkinPackageStore` 在服务层管理普通 ZIP、安装资源、身份冲突与导出，设置面板呈现导入、导出、重载、删除和少量声明参数。同 ID 更新通过 catalog revision 使宿主会话失效；失败重载保留原登记。删除后相关选择恢复默认内置皮肤，播放继续。Web、开发目录监听与市场按[演进计划](skin-system-evolution-plan.md)继续推进；当前接入和实际验证边界见 [P3 实施记录](skin-system-p3.md)，作者入口见[原生皮肤开发](skin-authoring-native.md)。
 
 修改皮肤时先确认它支持普通 Now Playing、全屏或两者；修改全屏窗口行为时，不要把系统全屏、窗口模拟全屏和普通窗口三条路径合为一个布尔判断。
 

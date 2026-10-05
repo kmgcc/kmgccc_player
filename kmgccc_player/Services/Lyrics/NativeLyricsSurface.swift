@@ -253,10 +253,16 @@ final class NativeLyricsSurfaceManager {
 
     private var surfaces: [LyricsSurfaceRole: NativeLyricsSurface] = [:]
     private var configurations: [LyricsSurfaceRole: LyricsConfiguration] = [:]
+    private var baseConfigurations: [LyricsSurfaceRole: LyricsConfiguration] = [:]
+    private var sceneConfigurationOverrides: [LyricsSurfaceRole: String] = [:]
+    private var sceneConfigurationOwners: [LyricsSurfaceRole: UUID] = [:]
     private var seekHandlers: [LyricsSurfaceRole: (Double) -> Void] = [:]
     private var activeRoles: Set<LyricsSurfaceRole> = []
     private var renderingResourceReleaseTasks: [LyricsSurfaceRole: Task<Void, Never>] = [:]
     private var snapshot = PlaybackSnapshot()
+    let documentPublication = NativeLyricsDocumentPublication()
+    private var consumerDocumentTTML: String?
+    private var consumerDocument: LyricsDocument?
 
     private init() {}
 
@@ -286,6 +292,31 @@ final class NativeLyricsSurfaceManager {
     }
 
     var currentPlaybackTime: Double { snapshot.time }
+    var currentTTML: String { snapshot.ttml }
+
+    /// Custom renderers can read lyrics while all native surfaces are inactive.
+    /// Reuse an installed document where possible, otherwise decode once per input.
+    func documentForConsumers() -> LyricsDocument? {
+        if let surface = surfaces.values.first(where: {
+            $0.lastTTML == snapshot.ttml && $0.lastTrackID == snapshot.trackID && $0.lastError == nil
+        }), let document = surface.view.document { return document }
+        if consumerDocumentTTML != snapshot.ttml {
+            consumerDocumentTTML = snapshot.ttml
+            consumerDocument = snapshot.ttml.isEmpty ? nil : try? TTMLDecoder().decode(Data(snapshot.ttml.utf8))
+        }
+        return consumerDocument
+    }
+
+    func configurationForConsumers(role: LyricsSurfaceRole) -> LyricsConfiguration {
+        configurations[role] ?? NativeLyricsConfigurationMapper.base(role: role)
+    }
+
+    func timedGroupsForConsumers(role: LyricsSurfaceRole) -> [LyricGroup]? {
+        guard let surface = surfaces[role], surface.lastTTML == snapshot.ttml,
+              surface.lastTrackID == snapshot.trackID, surface.lastError == nil,
+              surface.view.configuration == configurationForConsumers(role: role) else { return nil }
+        return surface.view.diagnosticTimings
+    }
 
     func activate(role: LyricsSurfaceRole) {
         renderingResourceReleaseTasks.removeValue(forKey: role)?.cancel()
@@ -362,6 +393,7 @@ final class NativeLyricsSurfaceManager {
         isPlaying: Bool,
         forceLyricsReload: Bool = false
     ) {
+        let documentChanged = snapshot.trackID != trackID || snapshot.ttml != lyricsTTML
         snapshot = PlaybackSnapshot(
             trackID: trackID,
             ttml: lyricsTTML,
@@ -378,6 +410,7 @@ final class NativeLyricsSurfaceManager {
             )
         }
         snapshot.time = activePlaybackSurface?.currentTime ?? snapshot.time
+        if documentChanged { documentPublication.changed() }
     }
 
     func applyTrack(
@@ -387,6 +420,7 @@ final class NativeLyricsSurfaceManager {
         isPlaying: Bool,
         forceLyricsReload: Bool = false
     ) {
+        let documentChanged = snapshot.trackID != trackID || snapshot.ttml != (ttml ?? "")
         snapshot = PlaybackSnapshot(
             trackID: trackID,
             ttml: ttml ?? "",
@@ -403,6 +437,7 @@ final class NativeLyricsSurfaceManager {
             )
         }
         snapshot.time = activePlaybackSurface?.currentTime ?? snapshot.time
+        if documentChanged { documentPublication.changed() }
     }
 
     func updatePlaybackTime(
@@ -430,18 +465,23 @@ final class NativeLyricsSurfaceManager {
     }
 
     func applyConfiguration(_ configuration: LyricsConfiguration, for role: LyricsSurfaceRole) {
-        var resolved = configuration
+        baseConfigurations[role] = configuration
+        var resolved = sceneConfigurationOverrides[role].flatMap {
+            NativeLyricsConfigurationMapper.fromJSON($0, role: role, fallback: configuration)
+        } ?? configuration
         if resolved.cacheBudgetBytes > role.glyphCacheBudgetBytes {
             resolved.cacheBudgetBytes = role.glyphCacheBudgetBytes
         }
+        let configurationChanged = configurations[role] != resolved
         configurations[role] = resolved
         if activeRoles.contains(role) {
             surfaces[role]?.apply(configuration: resolved)
         }
+        if configurationChanged { documentPublication.changed() }
     }
 
     func applyConfigurationJSON(_ json: String, for role: LyricsSurfaceRole) {
-        let current = configurations[role]
+        let current = baseConfigurations[role]
         guard let configuration = NativeLyricsConfigurationMapper.fromJSON(
             json,
             role: role,
@@ -450,14 +490,29 @@ final class NativeLyricsSurfaceManager {
         applyConfiguration(configuration, for: role)
     }
 
+    /// Scene styling is applied after every App-owned configuration update.
+    /// Clearing it restores the latest App settings rather than the last skin's styling.
+    func setSceneConfigurationOverride(_ json: String?, for role: LyricsSurfaceRole, owner: UUID) {
+        sceneConfigurationOwners[role] = owner
+        sceneConfigurationOverrides[role] = json
+        applyConfiguration(baseConfigurations[role] ?? NativeLyricsConfigurationMapper.base(role: role), for: role)
+    }
+
+    func clearSceneConfigurationOverride(for role: LyricsSurfaceRole, owner: UUID) {
+        guard sceneConfigurationOwners[role] == owner else { return }
+        sceneConfigurationOwners[role] = nil
+        sceneConfigurationOverrides[role] = nil
+        applyConfiguration(baseConfigurations[role] ?? NativeLyricsConfigurationMapper.base(role: role), for: role)
+    }
+
     func applyPalette(_ palette: ThemePalette, for role: LyricsSurfaceRole) {
-        var configuration = configurations[role] ?? NativeLyricsConfigurationMapper.base(role: role)
+        var configuration = baseConfigurations[role] ?? NativeLyricsConfigurationMapper.base(role: role)
         configuration.palette = NativeLyricsConfigurationMapper.paletteForWindow(palette)
         applyConfiguration(configuration, for: role)
     }
 
     func setRenderScale(_ scale: Double, for role: LyricsSurfaceRole) {
-        var configuration = configurations[role] ?? NativeLyricsConfigurationMapper.base(role: role)
+        var configuration = baseConfigurations[role] ?? NativeLyricsConfigurationMapper.base(role: role)
         configuration.renderScale = max(0.35, min(1, scale))
         applyConfiguration(configuration, for: role)
     }
@@ -465,7 +520,7 @@ final class NativeLyricsSurfaceManager {
     func applyTheme(_ palette: ThemePalette) {
         let roles = Set(configurations.keys).union(surfaces.keys)
         for role in roles {
-            var configuration = configurations[role] ?? NativeLyricsConfigurationMapper.base(role: role)
+            var configuration = baseConfigurations[role] ?? NativeLyricsConfigurationMapper.base(role: role)
             configuration.palette = NativeLyricsConfigurationMapper.paletteForWindow(palette)
             applyConfiguration(configuration, for: role)
         }
@@ -490,6 +545,12 @@ final class NativeLyricsSurfaceManager {
         surfaces.values.forEach { $0.shutdown() }
         surfaces.removeAll()
         configurations.removeAll()
+        baseConfigurations.removeAll()
+        sceneConfigurationOverrides.removeAll()
+        sceneConfigurationOwners.removeAll()
+        consumerDocumentTTML = nil
+        consumerDocument = nil
+        documentPublication.changed()
         seekHandlers.removeAll()
         activeRoles.removeAll()
         snapshot = PlaybackSnapshot()

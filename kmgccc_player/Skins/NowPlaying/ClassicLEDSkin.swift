@@ -13,12 +13,16 @@ import SwiftUI
 struct ClassicLEDSkin: NowPlayingSkin {
     static let id: String = "coverLed"
 
-    let id: String = ClassicLEDSkin.id
-    let name: String = NSLocalizedString("skin.classic_led.name", comment: "")
-    let detail: String = NSLocalizedString("skin.classic_led.detail", comment: "")
-    let systemImage: String = "dot.radiowaves.left.and.right"
-    var isFullscreenCompatible: Bool { true }
-    var isNowPlayingCompatible: Bool { true }
+    let descriptor = SkinDescriptor(
+        id: ClassicLEDSkin.id,
+        name: NSLocalizedString("skin.classic_led.name", comment: ""),
+        detail: NSLocalizedString("skin.classic_led.detail", comment: ""),
+        systemImage: "dot.radiowaves.left.and.right",
+        audio: SkinAudioDefaults(window: .miniPlayerSpectrum, fullscreen: .miniPlayerLED),
+        artwork: SkinArtworkDefaults(scale: 1.1, maximumScale: 1.35),
+        fullscreenTypography: SkinDescriptor.coverTypography,
+        legacy: SkinLegacySettings(visualizerNamespace: "skin.classicLED")
+    )
 
     func makeBackground(context: SkinContext) -> AnyView {
         AnyView(UnifiedNowPlayingBackground(context: context))
@@ -34,6 +38,11 @@ struct ClassicLEDSkin: NowPlayingSkin {
 
     var fullscreenSettingsView: AnyView? {
         AnyView(ClassicLEDSkinFullscreenSettingsView())
+    }
+
+    func releaseCachedResources() async {
+        await ClassicArtworkFrameExtendedArtworkCache.shared.removeAll()
+        ClassicArtworkFrameExtendedArtworkRenderer.clearCaches()
     }
 }
 
@@ -157,7 +166,7 @@ struct ClassicCoverArtworkView: View {
     }
 }
 
-private struct ClassicArtworkCoverContainer: View {
+struct ClassicArtworkCoverContainer: View {
     let context: SkinContext
     let size: CGFloat
     let displayScale: CGFloat
@@ -167,7 +176,9 @@ private struct ClassicArtworkCoverContainer: View {
     @State private var maskRefreshToken = 0
     @State private var resolvedArtwork: ClassicArtworkFrameCoverAsset?
 
-    private let cornerRadius: CGFloat = 12
+    var frameMaskOverride: Bool? = nil
+    var cornerRadius: CGFloat = 12
+    private var usesFrameMask: Bool { frameMaskOverride ?? artworkFrameMaskEnabled }
 
     var body: some View {
         classicCoverContent
@@ -176,6 +187,7 @@ private struct ClassicArtworkCoverContainer: View {
             .onTapGesture {
                 advanceArtworkFrameMask()
             }
+            .skinControlRegion()
             .task(id: maskRequestKey) {
                 await loadArtworkFrameMask()
             }
@@ -186,7 +198,7 @@ private struct ClassicArtworkCoverContainer: View {
 
     @ViewBuilder
     private var classicCoverContent: some View {
-        if artworkFrameMaskEnabled, let artwork = resolvedArtwork {
+        if usesFrameMask, let artwork = resolvedArtwork {
             if let mask = artwork.mask {
                 ArtworkFrameMaskedImageView(
                     image: artwork.image,
@@ -201,7 +213,7 @@ private struct ClassicArtworkCoverContainer: View {
                 RoundedCoverArtworkImage(image: artwork.image, size: size, cornerRadius: cornerRadius)
             }
         } else if let image = context.track?.artworkImage {
-            if artworkFrameMaskEnabled, artworkFrameMaskRequest != nil {
+            if usesFrameMask, artworkFrameMaskRequest != nil {
                 Color.clear
             } else {
                 RoundedCoverArtworkImage(image: image, size: size, cornerRadius: cornerRadius)
@@ -215,7 +227,7 @@ private struct ClassicArtworkCoverContainer: View {
     }
 
     private var artworkFrameMaskRequest: ClassicArtworkFrameMaskRequest? {
-        guard artworkFrameMaskEnabled else {
+        guard usesFrameMask else {
             return nil
         }
 
@@ -283,7 +295,7 @@ private struct ClassicArtworkCoverContainer: View {
     }
 
     private func advanceArtworkFrameMask() {
-        guard artworkFrameMaskEnabled, context.track?.artworkImage != nil else {
+        guard usesFrameMask, context.track?.artworkImage != nil else {
             return
         }
 

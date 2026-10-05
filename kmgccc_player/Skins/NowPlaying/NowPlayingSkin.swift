@@ -8,12 +8,9 @@
 import SwiftUI
 
 protocol NowPlayingSkin {
-    var id: String { get }
-    var name: String { get }
-    var detail: String { get }
-    var systemImage: String { get }
-    var isFullscreenCompatible: Bool { get }
-    var isNowPlayingCompatible: Bool { get }
+    var descriptor: SkinDescriptor { get }
+    var scene: SkinScene? { get }
+    var parameterDefinitions: [SkinParameterDefinition] { get }
 
     func makeBackground(context: SkinContext) -> AnyView
     func makeArtwork(context: SkinContext) -> AnyView
@@ -23,9 +20,30 @@ protocol NowPlayingSkin {
     var settingsView: AnyView? { get }
     /// Settings view for fullscreen mode (independent from normal mode)
     var fullscreenSettingsView: AnyView? { get }
+
+    func releaseCachedResources() async
 }
 
 extension NowPlayingSkin {
+    var scene: SkinScene? { nil }
+    var parameterDefinitions: [SkinParameterDefinition] { [] }
+    var id: String { descriptor.id }
+    var name: String { descriptor.name }
+    var detail: String { descriptor.detail }
+    var systemImage: String { descriptor.systemImage }
+    var isFullscreenCompatible: Bool { descriptor.surfaces.contains(.fullscreen) }
+    var isNowPlayingCompatible: Bool { descriptor.surfaces.contains(.window) }
+
+    func releaseCachedResources() async {}
+
+    func makeBackground(context: SkinContext) -> AnyView {
+        AnyView(UnifiedNowPlayingBackground(context: context))
+    }
+
+    func makeArtwork(context: SkinContext) -> AnyView {
+        AnyView(SkinArtworkComponent(snapshot: .init(context: context)))
+    }
+
     func makeOverlay(context: SkinContext) -> AnyView? {
         nil
     }

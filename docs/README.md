@@ -8,6 +8,11 @@
 | --- | --- |
 | [实现约束与坑](PITFALLS.md) | 只收仍生效的实现约束与坑；**改对应功能代码前先读** |
 | [架构概览](architecture.md) | 应用组合根、资料库 session、本地与外部播放、统一展示模型、歌词、主题和频谱的主链路 |
+| [皮肤体系演进计划](skin-system-evolution-plan.md) | 皮肤解耦、组件与自由排版、ZIP 导入与重载、Web 效果、开发工具及 Folium 兼容阶段 |
+| [皮肤基础重构记录](skin-system-p0-p2.md) | P0–P2 的行为基线、登记契约、宿主拆分、生命周期及实际验证边界 |
+| [皮肤组件与自由场景实施记录](skin-system-p3.md) | P3 的组件边界、场景接入、产品决定与实际进度 |
+| [皮肤 P0–P4 审查](skin-system-review.md) | 计划覆盖、修正、组件扩展边界、维护债务与实际验证 |
+| [原生皮肤开发](skin-authoring-native.md) | JSON ZIP 示例、可选组件、自适应布局、少量参数与 Swift 原生扩展入口 |
 | [MotionKit 动画标准化与迁移计划](motion-kit-plan.md) | 原生弹簧 API、语义 motion token、动画分类、歌词边界与分阶段迁移门禁 |
 | [外部组件与构建依赖](dependencies.md) | AMLL、LDDC、QQ Music Helper、MediaRemoteAdapter、SACAD 与 Swift Package 依赖 |
 | [原生 Swift 歌词系统](native-lyrics.md) | 原生 Swift 渲染架构、Core Text 字体排版、Core Animation 动效与硬件时钟同步 |

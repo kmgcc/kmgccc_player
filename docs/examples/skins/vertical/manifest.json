@@ -1,0 +1,368 @@
+{
+  "formatVersion": 1,
+  "version": "1.0.0",
+  "descriptor": {
+    "id": "example.vertical",
+    "name": "Vertical Scene"
+  },
+  "scene": {
+    "root": {
+      "id": "scene",
+      "type": "overlay",
+      "children": [
+        {
+          "id": "background",
+          "type": "component",
+          "component": "native.background",
+          "layout": {
+            "fillsWidth": true,
+            "fillsHeight": true
+          }
+        },
+        {
+          "id": "responsive",
+          "type": "adaptive",
+          "minimumWidth": 720,
+          "wide": {
+            "id": "height-responsive",
+            "type": "adaptive",
+            "minimumWidth": 0,
+            "minimumHeight": 700,
+            "wide": {
+              "id": "tall",
+              "type": "column",
+              "children": [
+                {
+                  "id": "header",
+                  "type": "column",
+                  "children": [
+                    {
+                      "id": "cover",
+                      "type": "component",
+                      "component": "native.artwork",
+                      "values": {
+                        "cornerRadius": 16
+                      },
+                      "layout": {
+                        "width": 204,
+                        "height": 204
+                      }
+                    },
+                    {
+                      "id": "title",
+                      "type": "component",
+                      "component": "native.trackInfo",
+                      "values": {
+                        "fontSize": 20,
+                        "artistFontSize": 14,
+                        "alignment": "center"
+                      }
+                    }
+                  ],
+                  "spacing": 16
+                },
+                {
+                  "id": "lyrics",
+                  "type": "component",
+                  "component": "native.lyrics",
+                  "values": {
+                    "fontSize": 42,
+                    "translationFontSize": 18,
+                    "alignPosition": 0.38,
+                    "topEdgeOpacity": 0,
+                    "bottomEdgeOpacity": 0,
+                    "topFadeRange": 0.12,
+                    "bottomFadeRange": 0.16
+                  },
+                  "layout": {
+                    "maximumWidth": 680,
+                    "fillsWidth": true,
+                    "fillsHeight": true
+                  }
+                },
+                {
+                  "id": "fine-controls",
+                  "type": "column",
+                  "children": [
+                    {
+                      "id": "progress",
+                      "type": "component",
+                      "component": "native.progress",
+                      "layout": {
+                        "height": 20,
+                        "maximumWidth": 480,
+                        "fillsWidth": true
+                      }
+                    },
+                    {
+                      "id": "buttons",
+                      "type": "row",
+                      "children": [
+                        {
+                          "id": "order",
+                          "type": "component",
+                          "component": "native.playbackMode",
+                          "values": {
+                            "scale": 0.8
+                          }
+                        },
+                        {
+                          "id": "transport",
+                          "type": "component",
+                          "component": "native.transport"
+                        },
+                        {
+                          "id": "volume",
+                          "type": "component",
+                          "component": "native.volume",
+                          "layout": {
+                            "width": 76
+                          }
+                        }
+                      ],
+                      "spacing": 20,
+                      "layout": {
+                        "height": 40
+                      }
+                    }
+                  ],
+                  "spacing": 14,
+                  "layout": {
+                    "maximumWidth": 520,
+                    "fillsWidth": true
+                  }
+                }
+              ],
+              "spacing": 24,
+              "layout": {
+                "maximumWidth": 760,
+                "padding": 32,
+                "fillsWidth": true,
+                "fillsHeight": true
+              }
+            },
+            "compact": {
+              "id": "short",
+              "type": "column",
+              "children": [
+                {
+                  "id": "header",
+                  "type": "column",
+                  "children": [
+                    {
+                      "id": "cover",
+                      "type": "component",
+                      "component": "native.artwork",
+                      "values": {
+                        "cornerRadius": 16
+                      },
+                      "layout": {
+                        "width": 112,
+                        "height": 112
+                      }
+                    },
+                    {
+                      "id": "title",
+                      "type": "component",
+                      "component": "native.trackInfo",
+                      "values": {
+                        "fontSize": 20,
+                        "artistFontSize": 14,
+                        "alignment": "center"
+                      }
+                    }
+                  ],
+                  "spacing": 16
+                },
+                {
+                  "id": "lyrics",
+                  "type": "component",
+                  "component": "native.lyrics",
+                  "values": {
+                    "fontSize": 42,
+                    "translationFontSize": 18,
+                    "alignPosition": 0.38,
+                    "topEdgeOpacity": 0,
+                    "bottomEdgeOpacity": 0,
+                    "topFadeRange": 0.12,
+                    "bottomFadeRange": 0.16
+                  },
+                  "layout": {
+                    "maximumWidth": 680,
+                    "fillsWidth": true,
+                    "fillsHeight": true
+                  }
+                },
+                {
+                  "id": "fine-controls",
+                  "type": "column",
+                  "children": [
+                    {
+                      "id": "progress",
+                      "type": "component",
+                      "component": "native.progress",
+                      "layout": {
+                        "height": 20,
+                        "maximumWidth": 480,
+                        "fillsWidth": true
+                      }
+                    },
+                    {
+                      "id": "buttons",
+                      "type": "row",
+                      "children": [
+                        {
+                          "id": "order",
+                          "type": "component",
+                          "component": "native.playbackMode",
+                          "values": {
+                            "scale": 0.8
+                          }
+                        },
+                        {
+                          "id": "transport",
+                          "type": "component",
+                          "component": "native.transport"
+                        },
+                        {
+                          "id": "volume",
+                          "type": "component",
+                          "component": "native.volume",
+                          "layout": {
+                            "width": 76
+                          }
+                        }
+                      ],
+                      "spacing": 20,
+                      "layout": {
+                        "height": 40
+                      }
+                    }
+                  ],
+                  "spacing": 14,
+                  "layout": {
+                    "maximumWidth": 520,
+                    "fillsWidth": true
+                  }
+                }
+              ],
+              "spacing": 20,
+              "layout": {
+                "maximumWidth": 760,
+                "padding": 24,
+                "fillsWidth": true,
+                "fillsHeight": true
+              }
+            },
+            "layout": {
+              "fillsWidth": true,
+              "fillsHeight": true
+            }
+          },
+          "compact": {
+            "id": "compact",
+            "type": "column",
+            "children": [
+              {
+                "id": "title",
+                "type": "component",
+                "component": "native.trackInfo",
+                "values": {
+                  "fontSize": 20,
+                  "artistFontSize": 14,
+                  "alignment": "center"
+                }
+              },
+              {
+                "id": "lyrics",
+                "type": "component",
+                "component": "native.lyrics",
+                "values": {
+                  "fontSize": 42,
+                  "translationFontSize": 18,
+                  "alignPosition": 0.38,
+                  "topEdgeOpacity": 0,
+                  "bottomEdgeOpacity": 0,
+                  "topFadeRange": 0.12,
+                  "bottomFadeRange": 0.16
+                },
+                "layout": {
+                  "maximumWidth": 680,
+                  "fillsWidth": true,
+                  "fillsHeight": true
+                }
+              },
+              {
+                "id": "fine-controls",
+                "type": "column",
+                "children": [
+                  {
+                    "id": "progress",
+                    "type": "component",
+                    "component": "native.progress",
+                    "layout": {
+                      "height": 20,
+                      "maximumWidth": 480,
+                      "fillsWidth": true
+                    }
+                  },
+                  {
+                    "id": "buttons",
+                    "type": "row",
+                    "children": [
+                      {
+                        "id": "order",
+                        "type": "component",
+                        "component": "native.playbackMode",
+                        "values": {
+                          "scale": 0.8
+                        }
+                      },
+                      {
+                        "id": "transport",
+                        "type": "component",
+                        "component": "native.transport"
+                      },
+                      {
+                        "id": "volume",
+                        "type": "component",
+                        "component": "native.volume",
+                        "layout": {
+                          "width": 76
+                        }
+                      }
+                    ],
+                    "spacing": 20,
+                    "layout": {
+                      "height": 40
+                    }
+                  }
+                ],
+                "spacing": 14,
+                "layout": {
+                  "maximumWidth": 520,
+                  "fillsWidth": true
+                }
+              }
+            ],
+            "spacing": 20,
+            "layout": {
+              "maximumWidth": 760,
+              "padding": 24,
+              "fillsWidth": true,
+              "fillsHeight": true
+            }
+          },
+          "layout": {
+            "fillsWidth": true,
+            "fillsHeight": true
+          }
+        }
+      ],
+      "layout": {
+        "fillsWidth": true,
+        "fillsHeight": true
+      }
+    }
+  }
+}

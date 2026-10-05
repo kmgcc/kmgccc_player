@@ -42,6 +42,7 @@ struct FullscreenSkinTabView: View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
             SettingsSection("选择外观") {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
+                    SkinPackageSettingsActions(skin: SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID))
                     SkinSelectorRow(
                         skins: SkinRegistry.fullscreenOptions,
                         selectedSkinID: Binding(
@@ -60,28 +61,32 @@ struct FullscreenSkinTabView: View {
                 }
             }
 
-            if let selected = SkinRegistry.fullscreenOptions.first(where: { $0.id == settings.fullscreen.skinID }),
-               let optionsView = SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID).fullscreenSettingsView {
-                SettingsSection("\(selected.name) 选项") {
+            let selectedSkin = SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID)
+            if selectedSkin.fullscreenSettingsView != nil || selectedSkin.parameterDefinitions.contains(where: { $0.isUserVisible && $0.surfaces.contains(.fullscreen) }) {
+                SettingsSection("\(selectedSkin.name) 选项") {
                     VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                        optionsView
+                        if let optionsView = selectedSkin.fullscreenSettingsView { optionsView }
+                        SkinParameterSettingsView(skinID: selectedSkin.id, surface: .fullscreen,
+                                                  definitions: selectedSkin.parameterDefinitions, store: SkinRegistry.catalog.parameters)
                     }
                 }
             }
 
-            SettingsSection("Mini Player") {
-                VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                    AudioVisualizationSelectorRow(
-                        title: "音频可视化",
-                        selection: Binding(
-                            get: { settings.fullscreen.miniPlayerVisualization },
-                            set: { settings.fullscreen.setMiniPlayerVisualization($0) }
+            if selectedSkin.scene == nil {
+                SettingsSection("Mini Player") {
+                    VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
+                        AudioVisualizationSelectorRow(
+                            title: "音频可视化",
+                            selection: Binding(
+                                get: { settings.fullscreen.miniPlayerVisualization },
+                                set: { settings.fullscreen.setMiniPlayerVisualization($0) }
+                            )
                         )
-                    )
 
-                    miniPlayerAutoHidePicker
+                        miniPlayerAutoHidePicker
 
-                    miniPlayerMaterialPicker
+                        miniPlayerMaterialPicker
+                    }
                 }
             }
 
@@ -204,7 +209,8 @@ struct FullscreenSkinTabView: View {
     }
 
     private func supportsArtworkScaleControl(for skinID: String) -> Bool {
-        skinID != "fullscreen.coverGradientBlur"
+        SkinRegistry.fullscreenSkin(for: skinID).scene == nil
+            && SkinRegistry.fullscreenSkin(for: skinID).descriptor.presentation.artworkLayout == .foreground
     }
 
     private var currentArtworkScaleRange: ClosedRange<Double> {

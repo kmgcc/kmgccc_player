@@ -3,7 +3,7 @@
 //  myPlayer2
 //
 //  kmgccc_player - Now Playing Host View
-//  Hosts skins (background + artwork/overlay) while keeping lyrics outside skins.
+//  Hosts native author scenes and the existing preset compatibility layout.
 //
 
 import AppKit
@@ -23,9 +23,8 @@ struct NowPlayingHostView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var configuredMotionPolicy
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @EnvironmentObject private var themeStore: ThemeStore
-    @State private var skinRevision = 0
+    @State private var skinSession = SkinSession()
     /// Last fully decoded artwork committed to the skin layer.
     /// Track metadata may advance before artwork finishes decoding; keep this
     /// snapshot stable so skins never render placeholder/empty intermediate art.
@@ -44,54 +43,66 @@ struct NowPlayingHostView: View {
         let selectedSkin = skinManager.skin(for: selectedSkinID)
 
         GeometryReader { proxy in
-            let contentHeight = max(0, proxy.size.height - Constants.Layout.miniPlayerHeight - 12)
-            let contentBounds = CGRect(
-                origin: .zero, size: CGSize(width: mainContentWidth, height: contentHeight))
+            let hasScene = selectedSkin.scene != nil
+            let contentHeight = hasScene ? proxy.size.height : max(0, proxy.size.height - Constants.Layout.miniPlayerHeight - 12)
+            let contentBounds = CGRect(origin: .zero, size: CGSize(width: mainContentWidth, height: contentHeight))
             let context = makeContext(windowSize: proxy.size, contentBounds: contentBounds)
-
-            ZStack(alignment: .topLeading) {
-                if selectedSkinID == AppleStyleSkin.skinID
-                    || (settings.nowPlayingArtBackgroundEnabled && selectedSkinID != AppleStyleSkin.skinID) {
-                    Color.clear
-                } else {
-                    selectedSkin.makeBackground(context: context)
-                }
-
-                ZStack {
-                    selectedSkin.makeArtwork(context: context)
-                    if let overlay = selectedSkin.makeOverlay(context: context) {
-                        overlay
+            if let scene = selectedSkin.scene {
+                SkinSceneHost(
+                    skin: selectedSkin, scene: scene, context: context, session: skinSession,
+                    viewport: .init(size: proxy.size, surface: .window, fullscreenHost: .none),
+                    onRestore: { settings.selectedNowPlayingSkinID = SkinRegistry.defaultSkinID }
+                )
+                .id(skinSession.identity(for: selectedSkinID))
+            } else {
+                ZStack(alignment: .topLeading) {
+                    if selectedSkin.descriptor.presentation.windowBackgroundPlacement == .parent || settings.nowPlayingArtBackgroundEnabled {
+                        Color.clear
+                    } else {
+                        selectedSkin.makeBackground(context: context)
                     }
+                    ZStack {
+                        selectedSkin.makeArtwork(context: context)
+                        if let overlay = selectedSkin.makeOverlay(context: context) { overlay }
+                    }
+                    .frame(width: contentBounds.width, height: contentBounds.height, alignment: .center)
                 }
-                .frame(width: contentBounds.width, height: contentBounds.height, alignment: .center)
-
+                .id("nowPlayingSkin_\(skinSession.identity(for: selectedSkinID))")
+                .frame(width: mainContentWidth, height: proxy.size.height, alignment: .topLeading)
             }
-            .id("nowPlayingSkin_\(selectedSkinID)_\(skinRevision)")
-            .frame(width: mainContentWidth, height: proxy.size.height, alignment: .topLeading)
+        }
+        .onChange(of: skinManager.skin(for: selectedSkinID).scene != nil, initial: true) { _, hasScene in
+            AppKitMainSplitWindowController.setSkinSceneActive(hasScene)
         }
         .onChange(of: selectedSkinID) { oldValue, newValue in
             AudioVisualizationPreferences.shared.synchronizeLegacyState(for: newValue, scope: .window)
-            skinRevision &+= 1
+            skinSession.activate(newValue, revision: skinManager.catalog.revision(for: newValue))
             if !isLedEnabledForCurrentSkin() {
                 ledMeterProvider.releaseNowPlayingResources()
             }
-            Task { @MainActor in
+            skinSession.perform {
                 await CacheManager.purgePresentationMemoryCaches(
                     reason: "now-playing-skin-changed-\(oldValue)-to-\(newValue)",
                     cacheServices: cacheServices
                 )
             }
         }
+        .onChange(of: skinManager.catalog.revision(for: selectedSkinID)) { _, revision in
+            skinSession.activate(selectedSkinID, revision: revision)
+        }
         .onAppear {
+            skinSession.activate(selectedSkinID, revision: skinManager.catalog.revision(for: selectedSkinID))
             AudioVisualizationPreferences.shared.synchronizeLegacyState(for: selectedSkinID, scope: .window)
             TelemetryService.shared.setWindowNowPlayingVisible(true)
         }
         .onDisappear {
+            AppKitMainSplitWindowController.setSkinSceneActive(false)
+            skinSession.deactivate()
             TelemetryService.shared.setWindowNowPlayingVisible(false)
             ledMeterProvider.releaseNowPlayingResources()
             artworkSnapshot = nil
             if !FullscreenWindowManager.shared.isWindowedFullscreenActive {
-                Task { @MainActor in
+                skinSession.perform {
                     await CacheManager.purgePresentationMemoryCaches(
                         reason: "now-playing-disappear",
                         cacheServices: cacheServices
@@ -99,22 +110,22 @@ struct NowPlayingHostView: View {
                 }
             }
         }
-        .task(id: currentArtworkTaskKey) {
+        .task(id: "\(currentArtworkTaskKey)_\(skinSession.generation)") {
             await loadArtworkSnapshot()
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
             guard
                 let trackID = notification.userInfo?["trackID"] as? UUID,
-                trackID == playbackCoordinator.presentation.localTrack?.id
+                trackID == playbackCoordinator.stablePresentation.localTrack?.id
             else { return }
-            Task {
+            skinSession.perform {
                 await loadArtworkSnapshot()
             }
         }
     }
 
     private func makeContext(windowSize: CGSize, contentBounds: CGRect) -> SkinContext {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         let displayArtworkTrackID = presentation.artworkDisplayTrackID
             ?? presentation.displayTrackID
             ?? Self.externalArtworkTrackID
@@ -146,10 +157,7 @@ struct NowPlayingHostView: View {
             : nil
 
         let playback = SkinContext.PlaybackState(
-            isPlaying: presentation.isPlaying,
-            currentTime: presentation.currentTime,
-            duration: presentation.duration,
-            progress: presentation.progress
+            isPlaying: presentation.isPlaying
         )
 
         let analysis = themeStore.semanticPalette.analysis
@@ -171,41 +179,19 @@ struct NowPlayingHostView: View {
         let theme = SkinContext.ThemeTokens(
             accentColor: themeStore.accentColor,
             colorScheme: colorScheme,
-            reduceTransparency: reduceTransparency,
-            glassIntensity: AppSettings.shared.liquidGlassIntensity,
-            backgroundBlur: AppSettings.shared.nowPlayingBackgroundBlur,
-            backgroundBrightness: AppSettings.shared.nowPlayingBackgroundBrightness,
-            backgroundSaturation: AppSettings.shared.nowPlayingBackgroundSaturation,
-            meshAmplitude: AppSettings.shared.nowPlayingMeshAmplitude,
-            meshFlowSpeed: AppSettings.shared.nowPlayingMeshFlowSpeed,
-            meshSharpness: AppSettings.shared.nowPlayingMeshSharpness,
-            meshSoftness: AppSettings.shared.nowPlayingMeshSoftness,
-            meshColorBoost: AppSettings.shared.nowPlayingMeshColorBoost,
-            meshContrast: AppSettings.shared.nowPlayingMeshContrast,
-            meshBassImpact: AppSettings.shared.nowPlayingMeshBassImpact,
             artworkAccentColor: artworkSnapshot?.accentColor.map {
                 ColorRenderingAdapter.makeSwiftUIColor($0)
             },
             artworkPalette: artworkSnapshot?.palette ?? [],
-            artworkRichPalette: artworkSnapshot?.richPalette ?? [],
             artworkAverageColor: artworkSnapshot?.averageColor,
             artBackgroundIsUltraDark: artBackgroundIsUltraDark,
             spectrumArtworkColors: spectrumArtworkColors,
-            spectrumUsesDarkForeground: spectrumUsesDarkForeground,
-            cassetteTint: themeStore.semanticPalette.cassetteTint,
-            kickToBrightnessMix: AppSettings.shared.bgKickToBrightnessMix,
-            kickDisplaceAmount: AppSettings.shared.bgKickDisplaceAmount,
-            kickScaleAmount: AppSettings.shared.bgKickScaleAmount
+            spectrumUsesDarkForeground: spectrumUsesDarkForeground
         )
 
         return SkinContext(
             track: trackMeta,
             playback: playback,
-            // Live visualizer views subscribe to LED/audio frames directly. The
-            // parent skin context stays stable so routine audio frames do not
-            // rebuild the whole Now Playing skin hierarchy.
-            audio: .zero,
-            led: LEDMeterMetrics.zero(count: AppSettings.shared.ledCount),
             theme: theme,
             motionTokens: motionTokens,
             motionPolicy: motionPolicy,
@@ -219,7 +205,7 @@ struct NowPlayingHostView: View {
     }
     
     private var currentArtworkTaskKey: String {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         guard presentation.hasTrack else { return "none" }
         // The local-track artwork source shortcut is only valid for local
         // playback, where the track IS the source of truth. For external playback
@@ -251,7 +237,7 @@ struct NowPlayingHostView: View {
     }
 
     private var currentFallbackArtworkTrackID: UUID {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         return presentation.artworkDisplayTrackID
             ?? presentation.displayTrackID
             ?? presentation.localTrack?.id
@@ -259,7 +245,7 @@ struct NowPlayingHostView: View {
     }
 
     private var currentRenderingArtworkData: Data? {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         if let artworkData = presentation.artworkData, !artworkData.isEmpty {
             return artworkData
         }
@@ -271,8 +257,9 @@ struct NowPlayingHostView: View {
     }
     
     private func loadArtworkSnapshot() async {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         let expectedTaskKey = currentArtworkTaskKey
+        let expectedGeneration = skinSession.generation
         guard presentation.hasTrack else {
             return
         }
@@ -305,7 +292,7 @@ struct NowPlayingHostView: View {
         } else {
             return
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, skinSession.generation == expectedGeneration else { return }
         guard currentArtworkTaskKey == expectedTaskKey else { return }
         guard currentDisplayArtworkTrackID == expectedTrackID else { return }
         guard let snapshot, snapshot.trackID == expectedTrackID, Self.isValidDisplayArtworkSnapshot(snapshot) else {
@@ -322,7 +309,7 @@ struct NowPlayingHostView: View {
     }
 
     private var currentDisplayArtworkTrackID: UUID {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         return presentation.artworkDisplayTrackID
             ?? presentation.displayTrackID
             ?? presentation.localTrack?.id
@@ -339,18 +326,8 @@ struct NowPlayingHostView: View {
     }
 
     private func isLedEnabledForCurrentSkin() -> Bool {
-        let skinID = settings.selectedNowPlayingSkinID
-        switch skinID {
-        case "coverLed":
-            return UserDefaults.standard.string(forKey: "skin.classicLED.visualizerMode") == "led"
-        case AppleStyleSkin.skinID:
-            return UserDefaults.standard.string(forKey: "skin.appleStyle.visualizerMode") == "led"
-        case "rotatingCover":
-            return UserDefaults.standard.string(forKey: "skin.rotatingCover.visualizerMode") == "led"
-        case "kmgccc.cassette":
-            return UserDefaults.standard.string(forKey: "skin.kmgcccCassette.visualizerMode") == "led"
-        default:
-            return false
-        }
+        AudioVisualizationPreferences.shared.isSkinLEDEnabled(
+            for: settings.selectedNowPlayingSkinID, scope: .window
+        )
     }
 }

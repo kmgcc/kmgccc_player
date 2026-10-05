@@ -180,7 +180,7 @@ final class AppSessionHost: ObservableObject {
         self.placeholderHomeViewModel = HomeViewModel(paths: placeholderPaths)
         self.placeholderPlaybackHistoryStore = playbackHistoryStore ?? .inMemory()
         self.placeholderPlaybackHistoryViewModel = playbackHistoryViewModel
-        self.skinManager = SkinManager()
+        self.skinManager = SkinManager(catalog: SkinRegistry.catalog)
 
         sessionController.willReleaseActiveSession = { [weak self] in
             await self?.releaseActiveSessionBindings()

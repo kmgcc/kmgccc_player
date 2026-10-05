@@ -162,6 +162,15 @@ enum NativeLyricsConfigurationMapper {
             configuration.alignAnchor = value == "bottom" ? .bottom : value == "top" ? .top : .center
         }
         if let value = double(values["blendOpacity"]) { configuration.blendOpacity = value }
+        if let value = bool(values["showTranslation"]) { configuration.showTranslation = value }
+        if let value = bool(values["showRomanization"]) { configuration.showRomanization = value }
+        if let value = bool(values["showRuby"]) { configuration.showRuby = value }
+        if let value = bool(values["enableGlow"]) { configuration.glow = value }
+        if let value = bool(values["enableEmphasis"]) { configuration.emphasis = value }
+        if let value = bool(values["enableScale"]) { configuration.scale = value }
+        if let value = bool(values["hidePassedLines"]) { configuration.hidePassedLines = value }
+        if let value = bool(values["lineTimingOnly"]) { configuration.lineTimingOnly = value }
+        if let value = bool(values["preserveCompletedHighlight"]) { configuration.preserveCompletedHighlight = value }
         if let value = bool(values["enableBlur"]) { configuration.blur = value }
         if let value = bool(values["bakeSettledBlur"]) { configuration.bakeSettledBlur = value }
         if let value = bool(values["enableSpring"]) { configuration.spring = value }

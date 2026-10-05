@@ -125,6 +125,12 @@ final class UIStateViewModel {
         }
     }
 
+    /// Author scene visibility is transient; inspector preferences remain intact.
+    var skinSceneLyricsVisible = true
+    var usesSkinScene: Bool {
+        contentMode == .nowPlaying && SkinRegistry.skin(for: AppSettings.shared.selectedNowPlayingSkinID).scene != nil
+    }
+
     /// Current lyrics panel width (user-resizable).
     var lyricsWidth: CGFloat = Constants.Layout.lyricsPanelDefaultWidth {
         didSet {
@@ -377,7 +383,8 @@ final class UIStateViewModel {
 
     func toggleLyrics() {
         withAnimation(motionAnimation(for: .layout)) {
-            lyricsVisible.toggle()
+            if usesSkinScene { skinSceneLyricsVisible.toggle() }
+            else { lyricsVisible.toggle() }
         }
     }
 

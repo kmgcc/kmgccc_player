@@ -1,0 +1,84 @@
+{
+  "formatVersion": 1,
+  "version": "1.0.0",
+  "descriptor": {
+    "id": "example.artwork",
+    "name": "Artwork Scene"
+  },
+  "scene": {
+    "root": {
+      "id": "scene",
+      "type": "overlay",
+      "children": [
+        {
+          "id": "background",
+          "type": "component",
+          "component": "native.background",
+          "layout": {
+            "fillsWidth": true,
+            "fillsHeight": true
+          }
+        },
+        {
+          "id": "artwork",
+          "type": "column",
+          "children": [
+            {
+              "id": "cover",
+              "type": "component",
+              "component": "native.artwork",
+              "layout": {
+                "maximumWidth": 680,
+                "maximumHeight": 480,
+                "fillsWidth": true,
+                "fillsHeight": true
+              }
+            },
+            {
+              "id": "title",
+              "type": "component",
+              "component": "native.trackInfo"
+            },
+            {
+              "id": "lyrics",
+              "type": "component",
+              "component": "native.lyrics",
+              "layout": {
+                "fillsWidth": true,
+                "fillsHeight": true,
+                "maximumWidth": 760,
+                "maximumHeight": 230
+              },
+              "values": {
+                "topEdgeOpacity": 0,
+                "bottomEdgeOpacity": 0,
+                "topFadeRange": 0.12,
+                "bottomFadeRange": 0.12
+              }
+            },
+            {
+              "id": "mini",
+              "type": "component",
+              "component": "native.miniPlayer",
+              "layout": {
+                "height": 80,
+                "maximumWidth": 1280,
+                "fillsWidth": true
+              }
+            }
+          ],
+          "spacing": 20,
+          "layout": {
+            "padding": 24,
+            "fillsWidth": true,
+            "fillsHeight": true
+          }
+        }
+      ],
+      "layout": {
+        "fillsWidth": true,
+        "fillsHeight": true
+      }
+    }
+  }
+}

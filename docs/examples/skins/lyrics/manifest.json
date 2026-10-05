@@ -1,0 +1,99 @@
+{
+  "formatVersion": 1,
+  "version": "1.0.0",
+  "descriptor": {
+    "id": "example.lyrics",
+    "name": "Lyrics Scene"
+  },
+  "scene": {
+    "root": {
+      "id": "scene",
+      "type": "overlay",
+      "children": [
+        {
+          "id": "background",
+          "type": "component",
+          "component": "native.background",
+          "layout": {
+            "fillsWidth": true,
+            "fillsHeight": true
+          }
+        },
+        {
+          "id": "reading",
+          "type": "column",
+          "children": [
+            {
+              "id": "title",
+              "type": "component",
+              "component": "native.trackInfo"
+            },
+            {
+              "id": "lyrics",
+              "type": "component",
+              "component": "native.lyrics",
+              "layout": {
+                "fillsWidth": true,
+                "fillsHeight": true
+              },
+              "values": {
+                "topEdgeOpacity": 0,
+                "bottomEdgeOpacity": 0,
+                "topFadeRange": 0.12,
+                "bottomFadeRange": 0.12
+              }
+            },
+            {
+              "id": "controls",
+              "type": "row",
+              "children": [
+                {
+                  "id": "actions",
+                  "type": "component",
+                  "component": "native.actionsCapsule",
+                  "values": {
+                    "scale": 0.6
+                  }
+                },
+                {
+                  "id": "transport",
+                  "type": "component",
+                  "component": "native.transport"
+                },
+                {
+                  "id": "volume",
+                  "type": "component",
+                  "component": "native.volumeCapsule",
+                  "values": {
+                    "scale": 0.6
+                  }
+                }
+              ],
+              "spacing": 12
+            },
+            {
+              "id": "progress",
+              "type": "component",
+              "component": "native.progress",
+              "layout": {
+                "height": 20,
+                "maximumWidth": 760,
+                "fillsWidth": true
+              }
+            }
+          ],
+          "spacing": 16,
+          "layout": {
+            "padding": 24,
+            "fillsWidth": true,
+            "fillsHeight": true
+          }
+        }
+      ],
+      "layout": {
+        "fillsWidth": true,
+        "fillsHeight": true
+      }
+    }
+  }
+}

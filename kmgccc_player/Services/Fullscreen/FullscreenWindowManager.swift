@@ -265,7 +265,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
             contentView = AnyView(baseContentView)
         }
 
-        let hostingView = NSHostingView(rootView: contentView)
+        let hostingView = FullscreenPlayerHostingView(rootView: contentView)
         window.contentView = hostingView
 
         suspendMainLyricsIfNeeded()

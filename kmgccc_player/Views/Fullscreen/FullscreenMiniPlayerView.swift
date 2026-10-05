@@ -38,6 +38,11 @@ nonisolated struct FullscreenMiniPlayerLayoutMetrics: Equatable, Sendable {
         max(playbackModeExpandedWidth, externalPlaybackModeExpandedWidth)
     }
 
+    var minimumExpandedContainerWidth: CGFloat {
+        trackInfoWidth + controlsWidth + maximumPlaybackModeWidth + minimumProgressAreaWidth
+            + sectionSpacing * 3 + horizontalPadding * 2
+    }
+
     func availableProgressAreaWidth(
         containerWidth: CGFloat,
         playbackModeWidth: CGFloat
@@ -258,52 +263,28 @@ struct FullscreenMiniPlayerView: View {
 
     private var controlsView: some View {
         let presentation = playbackCoordinator.stablePresentation
-        let isEnabled = presentation.isControlEnabled
-        let isTrackControlEnabled = isEnabled && presentation.hasTrack
-        let metrics = AnimatedMediaControlMetrics.fullscreenMiniPlayer(scale: scale)
-        return HStack(spacing: controlsHSpacing) {
-            // Previous
-            AnimatedSkipButton(
-                direction: .previous,
-                enabled: isTrackControlEnabled,
-                metrics: metrics,
-                color: controlPrimaryColor,
-                disabledColor: controlDisabledColor,
-                blendMode: controlBlendMode,
-                action: {
-                    onInteraction()
-                    playbackCoordinator.previous()
-                }
-            )
-
-            // Play/Pause
-            AnimatedPlayPauseButton(
-                isPlaying: presentation.isPlaying,
-                enabled: isEnabled,
-                metrics: metrics,
-                color: controlPrimaryColor,
-                disabledColor: controlDisabledColor,
-                blendMode: controlBlendMode,
-                action: {
-                    onInteraction()
-                    playbackCoordinator.playPause()
-                }
-            )
-
-            // Next
-            AnimatedSkipButton(
-                direction: .next,
-                enabled: isTrackControlEnabled,
-                metrics: metrics,
-                color: controlPrimaryColor,
-                disabledColor: controlDisabledColor,
-                blendMode: controlBlendMode,
-                action: {
-                    onInteraction()
-                    playbackCoordinator.next()
-                }
-            )
-        }
+        return PlaybackTransportControls(
+            isPlaying: presentation.isPlaying,
+            isEnabled: presentation.isControlEnabled,
+            hasTrack: presentation.hasTrack,
+            metrics: .fullscreenMiniPlayer(scale: scale),
+            color: controlPrimaryColor,
+            disabledColor: controlDisabledColor,
+            blendMode: controlBlendMode,
+            spacing: controlsHSpacing,
+            previous: {
+                onInteraction()
+                playbackCoordinator.previous()
+            },
+            playPause: {
+                onInteraction()
+                playbackCoordinator.playPause()
+            },
+            next: {
+                onInteraction()
+                playbackCoordinator.next()
+            }
+        )
     }
 
     private var playbackModeView: some View {
@@ -384,7 +365,7 @@ struct FullscreenMiniPlayerView: View {
             enforceBrightForeground: resolvedForegroundProfile.enforceBrightProgressForeground,
             spectrumArtworkColors: spectrumArtworkColors,
             spectrumUsesDarkForeground: resolvedForegroundProfile.spectrumUsesDarkForeground,
-            ledToneVariant: settings.fullscreen.skinID == AppleStyleSkin.skinID
+            ledToneVariant: SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID).descriptor.presentation.controlForeground == .fixedLight
                 ? .appleStyleBright
                 : .miniPlayer,
             progress: progressDisplayTime(for: presentation),
@@ -590,7 +571,7 @@ struct FullscreenMiniPlayerView: View {
             palette: themeStore.semanticPalette,
             localArtworkPolarity: nil,
             hasArtworkThemeColor: themeStore.hasArtworkThemeColor,
-            skinID: settings.fullscreen.skinID,
+            controlForeground: SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID).descriptor.presentation.controlForeground,
             colorScheme: colorScheme,
             materialStyle: glassStyle.materialStyle,
             fullscreenArtBackgroundEnabled: settings.fullscreenArtBackgroundEnabled

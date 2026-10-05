@@ -36,7 +36,7 @@ final class EmbeddedFullscreenTransition {
     func mount(_ host: NSHostingView<AnyView>, in window: NSWindow) {
         guard let content = window.contentView else { return }
         contentHost = host
-        let surface = NSView()
+        let surface = FullscreenContentContainer()
         surface.wantsLayer = true
         surface.layer?.opacity = 0
         host.autoresizingMask = [.width, .height]
@@ -217,7 +217,7 @@ private struct NativeEmbeddedFullscreenSurface: NSViewRepresentable {
     final class Anchor: NSView {
         let host: NSHostingView<AnyView>
         init(content: AnyView) {
-            host = NSHostingView(rootView: content)
+            host = FullscreenPlayerHostingView(rootView: content)
             host.sizingOptions = []
             super.init(frame: .zero)
         }
@@ -233,4 +233,8 @@ private struct NativeEmbeddedFullscreenSurface: NSViewRepresentable {
             FullscreenWindowManager.shared.layoutEmbeddedFullscreenHost()
         }
     }
+}
+
+private final class FullscreenContentContainer: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
 }
