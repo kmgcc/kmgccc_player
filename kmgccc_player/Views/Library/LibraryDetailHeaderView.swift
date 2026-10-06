@@ -125,7 +125,7 @@ struct LibraryDetailHeaderView: View {
                     transaction.animation = nil
                 }
         }
-        .padding(.horizontal, 24)
+        .padding(.horizontal, Constants.Layout.listHorizontalPadding)
         .padding(.vertical, 20)
         .fileImporter(
             isPresented: $isImportingArtwork,

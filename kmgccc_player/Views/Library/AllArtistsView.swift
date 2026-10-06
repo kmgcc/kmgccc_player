@@ -182,7 +182,7 @@ struct AllArtistsView: View {
                     )
                 }
             )
-            .padding(.horizontal, 24)
+            .padding(.horizontal, Constants.Layout.listHorizontalPadding)
             .padding(.top, 16)
         }
     }
@@ -425,12 +425,18 @@ private struct ArtistListRow: View {
             Image(systemName: "ellipsis")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(subtitleColor)
-                .frame(width: 24, height: 24)
+                .frame(
+                    width: Constants.Layout.TrackRow.trailingMenuHitSize,
+                    height: Constants.Layout.TrackRow.trailingMenuHitSize
+                )
                 .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 24, height: 24)
+        .frame(
+            width: Constants.Layout.TrackRow.trailingMenuHitSize,
+            height: Constants.Layout.TrackRow.trailingMenuHitSize
+        )
         .opacity(isHovering ? 1 : 0.4)
         .disabled(!enableSecondaryInteractions)
         .allowsHitTesting(enableSecondaryInteractions)

@@ -277,7 +277,10 @@ struct TrackRowView<MenuContent: View>: View {
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .fixedSize()
+                .frame(
+                    width: Constants.Layout.TrackRow.trailingMenuHitSize,
+                    height: Constants.Layout.TrackRow.trailingMenuHitSize
+                )
             } else {
                 trailingMenuGlyph
                     .opacity(0.72)

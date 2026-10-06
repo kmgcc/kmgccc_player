@@ -1403,13 +1403,19 @@ private struct SidebarEnrichmentCompletionNotice: View {
             }
 
             if summary.failedCount > 0 {
-                Button("查看 \(summary.failedCount) 首失败") {
-                    onShowFailures()
+                HStack {
+                    Spacer(minLength: 0)
+
+                    Button("查看 \(summary.failedCount) 首失败") {
+                        onShowFailures()
+                    }
+                    .buttonStyle(
+                        SidebarNoticeCapsuleButtonStyle(
+                            accentColor: themeStore.accentColor,
+                            accentNSColor: themeStore.accentNSColor
+                        )
+                    )
                 }
-                .buttonStyle(.plain)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(themeStore.accentColor)
-                .padding(.leading, 22)
             }
         }
         .padding(.horizontal, 12)
@@ -1417,10 +1423,6 @@ private struct SidebarEnrichmentCompletionNotice: View {
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.green.opacity(0.08))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.green.opacity(0.25), lineWidth: 0.5)
         )
         .contentShape(Rectangle())
         .onTapGesture {
@@ -1566,23 +1568,34 @@ private struct SidebarNoticeView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: notice.style == .warning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(notice.style == .warning ? Color.orange : themeStore.accentColor)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: notice.style == .warning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(notice.style == .warning ? Color.orange : themeStore.accentColor)
 
-            Text(notice.message)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                .fixedSize(horizontal: false, vertical: true)
+                Text(notice.message)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            Spacer(minLength: 0)
+                Spacer(minLength: 0)
+            }
 
             if let actionTitle = notice.actionTitle {
-                Button(actionTitle, action: onAction)
-                    .buttonStyle(.plain)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(themeStore.accentColor)
+                HStack {
+                    Spacer(minLength: 0)
+
+                    Button(actionTitle, action: onAction)
+                        .buttonStyle(
+                            notice.style == .warning
+                                ? SidebarNoticeCapsuleButtonStyle(fillColor: Color.orange, labelColor: .white)
+                                : SidebarNoticeCapsuleButtonStyle(
+                                    accentColor: themeStore.accentColor,
+                                    accentNSColor: themeStore.accentNSColor
+                                )
+                        )
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -1590,10 +1603,6 @@ private struct SidebarNoticeView: View {
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(themeStore.appForegroundPalette.primaryColor.opacity(0.055))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(themeStore.appForegroundPalette.secondaryColor.opacity(0.12), lineWidth: 0.5)
         )
     }
 }
@@ -1634,25 +1643,24 @@ private struct SidebarUpdateCompletedView: View {
                 .font(.caption)
                 .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
 
-            Button("查看更新日志", action: onShowReleaseNotes)
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.plain)
-                .foregroundStyle(themeStore.accentColor)
-                .padding(.leading, 22)
-                .help("查看更新日志")
+            HStack {
+                Spacer(minLength: 0)
+
+                Button("查看更新日志", action: onShowReleaseNotes)
+                    .buttonStyle(
+                        SidebarNoticeCapsuleButtonStyle(
+                            accentColor: themeStore.accentColor,
+                            accentNSColor: themeStore.accentNSColor
+                        )
+                    )
+                    .help("查看更新日志")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color.green.opacity(0.08))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(
-                    Color.green.opacity(0.25),
-                    lineWidth: 0.5
-                )
         )
     }
 }
@@ -1711,16 +1719,6 @@ private struct SidebarUpdateReadyView: View {
 
     @EnvironmentObject private var themeStore: ThemeStore
 
-    private var updateButtonLabelColor: Color {
-        let rgb = themeStore.accentNSColor.usingColorSpace(.deviceRGB)
-            ?? themeStore.accentNSColor
-        let luminance =
-            0.2126 * rgb.redComponent
-            + 0.7152 * rgb.greenComponent
-            + 0.0722 * rgb.blueComponent
-        return luminance > 0.56 ? Color.black.opacity(0.82) : Color.white.opacity(0.95)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
@@ -1760,9 +1758,9 @@ private struct SidebarUpdateReadyView: View {
                 Button("立即重启更新", action: onInstall)
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(
-                        SidebarUpdateInstallButtonStyle(
-                            fillColor: themeStore.accentColor,
-                            labelColor: updateButtonLabelColor
+                        SidebarNoticeCapsuleButtonStyle(
+                            accentColor: themeStore.accentColor,
+                            accentNSColor: themeStore.accentNSColor
                         )
                     )
             }
@@ -1773,19 +1771,27 @@ private struct SidebarUpdateReadyView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(themeStore.appForegroundPalette.primaryColor.opacity(0.055))
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(
-                    themeStore.appForegroundPalette.secondaryColor.opacity(0.12),
-                    lineWidth: 0.5
-                )
-        )
     }
 }
 
-private struct SidebarUpdateInstallButtonStyle: ButtonStyle {
+private struct SidebarNoticeCapsuleButtonStyle: ButtonStyle {
     let fillColor: Color
     let labelColor: Color
+
+    init(fillColor: Color, labelColor: Color) {
+        self.fillColor = fillColor
+        self.labelColor = labelColor
+    }
+
+    init(accentColor: Color, accentNSColor: NSColor) {
+        self.fillColor = accentColor
+        let rgb = accentNSColor.usingColorSpace(.deviceRGB) ?? accentNSColor
+        let luminance =
+            0.2126 * rgb.redComponent
+            + 0.7152 * rgb.greenComponent
+            + 0.0722 * rgb.blueComponent
+        self.labelColor = luminance > 0.56 ? Color.black.opacity(0.82) : Color.white.opacity(0.95)
+    }
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -1801,6 +1807,8 @@ private struct SidebarUpdateInstallButtonStyle: ButtonStyle {
             .contentShape(Capsule(style: .continuous))
     }
 }
+
+private typealias SidebarUpdateInstallButtonStyle = SidebarNoticeCapsuleButtonStyle
 
 private struct SidebarTaskProgressView: View {
     let progress: SidebarTaskProgress
@@ -1880,11 +1888,18 @@ private struct SidebarTaskProgressView: View {
             }
 
             if let onShowReleaseNotes {
-                Button("查看更新日志", action: onShowReleaseNotes)
-                    .font(.caption.weight(.semibold))
-                    .buttonStyle(.plain)
-                    .foregroundStyle(themeStore.accentColor)
-                    .help("查看更新日志")
+                HStack {
+                    Spacer(minLength: 0)
+
+                    Button("查看更新日志", action: onShowReleaseNotes)
+                        .buttonStyle(
+                            SidebarNoticeCapsuleButtonStyle(
+                                accentColor: themeStore.accentColor,
+                                accentNSColor: themeStore.accentNSColor
+                            )
+                        )
+                        .help("查看更新日志")
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -1892,10 +1907,6 @@ private struct SidebarTaskProgressView: View {
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(themeStore.appForegroundPalette.primaryColor.opacity(0.055))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(themeStore.appForegroundPalette.secondaryColor.opacity(0.12), lineWidth: 0.5)
         )
     }
 

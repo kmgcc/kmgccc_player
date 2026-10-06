@@ -311,7 +311,7 @@ struct PlaylistDetailView: View {
                 trackRowsContent
                 .padding(.top, scrollContentTopPadding)
                 .padding(.bottom, listBottomPadding)
-                .padding(.horizontal)
+                .padding(.horizontal, Constants.Layout.listHorizontalPadding)
                 .transaction { tx in
                     if !pageController.isManualTrackReorderActive {
                         tx.animation = nil
@@ -361,7 +361,6 @@ struct PlaylistDetailView: View {
                 }
                 .padding(.top, scrollContentTopPadding)
                 .padding(.bottom, listBottomPadding)
-                .padding(.horizontal)
                 .transaction { tx in
                     if !pageController.isManualTrackReorderActive {
                         tx.animation = nil
@@ -483,9 +482,7 @@ struct PlaylistDetailView: View {
                 .frame(maxWidth: .infinity)
             } else {
                 trackRowsContent
-                    // The detail scroll already provides the leading gutter.
-                    // Preserve the extra trailing space for the scroll edge.
-                    .padding(.trailing, 16)
+                    .padding(.horizontal, Constants.Layout.listHorizontalPadding)
             }
         }
     }

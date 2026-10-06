@@ -45,11 +45,11 @@ struct PagePresentation<Content: View, Placeholder: View>: View {
                 usesSpatialMotion: !reduceMotion && policy == .full,
                 content: AnyView(content()
                     .environment(\.self, environment)
-                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .ignoresSafeArea(.container, edges: .all)),
                 placeholder: AnyView(placeholder()
                     .environment(\.self, environment)
-                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .ignoresSafeArea(.container, edges: .all))
             )
         }

@@ -156,7 +156,7 @@ struct PlaybackHistoryView: View {
                 // toolbar is AppKit-owned and overlays the center pane just as
                 // it does for All Songs, so rows must start below that inset.
                 .padding(.top, 16 + toolbarTopInset)
-                .padding(.horizontal)
+                .padding(.horizontal, Constants.Layout.listHorizontalPadding)
                 .padding(.bottom, 160)
             }
             .frame(width: proxy.size.width, height: proxy.size.height + toolbarTopInset)

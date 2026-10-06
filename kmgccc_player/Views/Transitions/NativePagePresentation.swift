@@ -277,6 +277,7 @@ struct NativePagePresentation: NSViewRepresentable {
                 placeholderClip.layer?.mask = nil
                 placeholderClip.layer?.opacity = 0
                 destinationClip.layer?.opacity = 1
+                destinationClip.layer?.masksToBounds = false
             }
             acceptsInteraction = true
         }
@@ -290,6 +291,7 @@ struct NativePagePresentation: NSViewRepresentable {
                 destinationClip.layer?.removeAllAnimations()
                 placeholderClip.layer?.removeAllAnimations()
                 destination.layer?.removeAllAnimations()
+                destinationClip.layer?.masksToBounds = false
             }
         }
 
