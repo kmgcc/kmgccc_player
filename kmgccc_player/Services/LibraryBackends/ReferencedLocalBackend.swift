@@ -511,17 +511,6 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         }
     }
 
-    /// Compatibility entry point for callers from the pre-transaction API.
-    /// New code must use commitManualPlaylistAddition so playlist and
-    /// membership sidecars share one compensation boundary.
-    @available(*, deprecated, message: "Use commitManualPlaylistAddition(playlistID:trackIDs:commitPlaylist:)")
-    func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async throws {
-        try await playlistMembershipStore.recordManualAddition(
-            playlistID: playlistID,
-            trackIDs: trackIDs
-        )
-    }
-
     func commitManualPlaylistRemoval(
         playlistID: UUID,
         trackIDs: [UUID],
@@ -549,19 +538,6 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
             }
             throw error
         }
-    }
-
-    /// Compatibility entry point for callers from the pre-transaction API.
-    @available(*, deprecated, message: "Use commitManualPlaylistRemoval(playlistID:trackIDs:commitPlaylist:)")
-    func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async throws {
-        let bindingIDs = try await sourceStore.allBindings()
-            .filter { $0.binding.playlistID == playlistID }
-            .map { $0.binding.id }
-        try await playlistMembershipStore.recordManualRemoval(
-            playlistID: playlistID,
-            trackIDs: trackIDs,
-            bindingIDs: bindingIDs
-        )
     }
 
     func commitPlaylistDeletion(

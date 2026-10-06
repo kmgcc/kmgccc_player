@@ -714,22 +714,6 @@ final class PlaybackCoordinator {
         externalProvider(for: activeSource)
     }
 
-    @available(*, deprecated, message: "Use smartRandomPick for single picks or playRandomTracks for ShuffleSession-backed playback.")
-    static func smartRandomQueue(
-        from tracks: [Track],
-        startingWith startTrack: Track? = nil,
-        preferenceStatsService: PreferenceStatsService
-    ) -> [Track] {
-        if let startTrack,
-           let matched = WeightedPlaybackSampler.playableUniqueTracks(from: tracks).first(where: { $0.id == startTrack.id }) {
-            return [matched]
-        }
-        return WeightedPlaybackSampler.pick(
-            from: tracks,
-            preferenceStatsService: preferenceStatsService
-        ).map { [$0] } ?? []
-    }
-
     static func smartRandomPick(
         from tracks: [Track],
         preferenceStatsService: PreferenceStatsService

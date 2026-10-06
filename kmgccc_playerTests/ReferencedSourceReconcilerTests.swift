@@ -124,11 +124,27 @@ private final class TestFileEventSource: LibraryFileEventSource, @unchecked Send
 private actor MonitorRecorder {
     var batches: [(Set<UUID>, Bool)] = []
     var suspended = false
+    private var resumeRecording: CheckedContinuation<Void, Never>?
+    private let onRecorded: @Sendable (Int) -> Void
+
+    init(onRecorded: @escaping @Sendable (Int) -> Void = { _ in }) {
+        self.onRecorded = onRecorded
+    }
+
     func record(_ ids: Set<UUID>, _ full: Bool) async {
         batches.append((ids, full))
-        while suspended && !Task.isCancelled { await Task.yield() }
+        onRecorded(batches.count)
+        if suspended {
+            await withCheckedContinuation { resumeRecording = $0 }
+        }
     }
-    func setSuspended(_ value: Bool) { suspended = value }
+    func setSuspended(_ value: Bool) {
+        suspended = value
+        if !value {
+            resumeRecording?.resume()
+            resumeRecording = nil
+        }
+    }
     func snapshot() -> [(Set<UUID>, Bool)] { batches }
 }
 
@@ -910,16 +926,26 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
     func testDebounceCoalescesAndStopAwaitsInFlightScanWithoutLateWrite() async throws {
         let eventSource = TestFileEventSource()
         let monitor = LibraryChangeMonitor(eventSource: eventSource, debounceNanoseconds: 20_000_000)
-        let recorder = MonitorRecorder()
+        let firstScan = expectation(description: "events coalesced")
+        let suspendedScan = expectation(description: "in-flight scan started")
+        let scanCancelled = expectation(description: "stop cancelled in-flight scan")
+        let recorder = MonitorRecorder { count in
+            if count == 1 { firstScan.fulfill() }
+            if count == 2 { suspendedScan.fulfill() }
+        }
         let first = UUID(), second = UUID()
         let firstURL = URL(fileURLWithPath: "/tmp/first", isDirectory: true)
         let secondURL = URL(fileURLWithPath: "/tmp/second", isDirectory: true)
-        try await monitor.start(sourceRoots: [first: firstURL, second: secondURL]) { ids, full in
-            await recorder.record(ids, full)
+        try await monitor.start(sourceRoots: [first: firstURL, second: secondURL], initiallyDirty: false) { ids, full in
+            await withTaskCancellationHandler {
+                await recorder.record(ids, full)
+            } onCancel: {
+                scanCancelled.fulfill()
+            }
         }
         eventSource.send([.init(path: firstURL.appendingPathComponent("a").path, requiresFullScan: false)])
         eventSource.send([.init(path: secondURL.appendingPathComponent("b").path, requiresFullScan: true)])
-        try await Task.sleep(nanoseconds: 80_000_000)
+        await fulfillment(of: [firstScan], timeout: 2)
         let initialBatches = await recorder.snapshot()
         XCTAssertEqual(initialBatches.count, 1)
         XCTAssertEqual(initialBatches[0].0, Set([first, second]))
@@ -927,15 +953,19 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
 
         await recorder.setSuspended(true)
         await monitor.markDirty(sourceIDs: [first])
-        try await Task.sleep(nanoseconds: 40_000_000)
+        await fulfillment(of: [suspendedScan], timeout: 2)
         let stop = Task { await monitor.stopAndWait() }
-        try await Task.sleep(nanoseconds: 20_000_000)
-        XCTAssertFalse(stop.isCancelled)
+        await fulfillment(of: [scanCancelled], timeout: 2)
+        // Session state remains installed until the suspended handler exits.
+        let statesWhileWaiting = await monitor.sourceStateSnapshot()
+        XCTAssertFalse(statesWhileWaiting.isEmpty)
         await recorder.setSuspended(false)
         await stop.value
+        let statesAfterStop = await monitor.sourceStateSnapshot()
+        XCTAssertTrue(statesAfterStop.isEmpty)
         let countAtClose = await recorder.snapshot().count
         eventSource.send([.init(path: firstURL.path, requiresFullScan: false)])
-        try await Task.sleep(nanoseconds: 40_000_000)
+        await monitor.markDirty(sourceIDs: [first])
         let batchesAfterClose = await recorder.snapshot()
         XCTAssertEqual(batchesAfterClose.count, countAtClose)
     }
@@ -946,11 +976,13 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         let sourceID = UUID()
         let sourceURL = URL(fileURLWithPath: "/tmp/library", isDirectory: true)
         let watchURL = sourceURL.appendingPathComponent("Tracks", isDirectory: true)
-        let recorder = MonitorRecorder()
+        let scanned = expectation(description: "watched path scanned")
+        let recorder = MonitorRecorder { _ in scanned.fulfill() }
 
         try await monitor.start(
             sourceRoots: [sourceID: sourceURL],
-            watchPathsBySource: [sourceID: [watchURL]]
+            watchPathsBySource: [sourceID: [watchURL]],
+            initiallyDirty: false
         ) { ids, full in
             await recorder.record(ids, full)
         }
@@ -962,9 +994,10 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
                 requiresFullScan: false
             )
         ])
-        try await Task.sleep(nanoseconds: 80_000_000)
+        await fulfillment(of: [scanned], timeout: 2)
         let batches = await recorder.snapshot()
         XCTAssertEqual(batches.first?.0, Set([sourceID]))
+        await monitor.stopAndWait()
     }
 
     func testPartialAuthorityFailureStaysPreparedAndRetriesOnlyFailedTrack() async throws {
