@@ -35,6 +35,7 @@ struct SkinActionButton: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .accessibilityLabel(label)
+        .skinControlRegion()
         .skinProvidesControls(reportsControls ? (SkinSceneControl(rawValue: kind.rawValue).map { [$0] } ?? []) : [])
     }
 
@@ -56,7 +57,7 @@ struct SkinActionButton: View {
         case .playPause: playback.stablePresentation.isPlaying ? "Pause" : "Play"
         case .previous: "Previous Track"
         case .next: "Next Track"
-        case .lyricsToggle: "Show Lyrics"
+        case .lyricsToggle: native?.presentation.isShowingLyrics == true ? "Hide Lyrics" : "Show Lyrics"
         case .fullscreen: surface == .fullscreen ? "fullscreen.exit" : "全屏播放"
         case .settings: "设置"
         case .quickPanel: "快速外观"

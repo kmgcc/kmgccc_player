@@ -87,7 +87,7 @@ JSON 是轻量组合树，复杂原生布局可直接用 SwiftUI `Layout`、`Vie
 | `native.artwork` | 原尺寸封面；`cornerRadius`、`artisticEdge`、`blur`、`fit`（fit/fill）、`opacity`；可放多个 |
 | `native.background` | `mode`：solid、gradient、artwork、preset；`blur`、`preset`、RGB；空白右键菜单 |
 | `native.trackInfo` | 标题与艺人；`fontSize`、`artistFontSize`、`alignment`（leading/center）、颜色 |
-| `native.text` | `text`、`fontSize`、颜色；缺少文字时使用歌名 |
+| `native.text` | `text`、`fontSize`、颜色；缺少文字时使用歌名，窄区域会自然换行 |
 | `native.image` | `path` 指向包内相对路径，如 `assets/decoration.png` |
 | `native.lyrics` | 唯一原生实例；字体、混合、特性、对齐、边缘淡出，见下方配置 |
 | `native.transport` | 上一首、播放/暂停、下一首；颜色、`spacing` |
@@ -224,7 +224,7 @@ Vertical Scene 展示宽度与高度分支的嵌套：宽度低于 720 点时收
 
 每个可用布局（包括所有宽高分支）应提供播放/暂停、上一首、下一首、进度、来源支持时的音量、歌词开关和全屏入口；全屏布局应提供退出和 Quick Panel。来源不支持的操作按现有可用状态禁用。作者可以自绘按钮、菜单或其他清楚可达的交互，调用 `skinSceneActions`，无需采用官方控件的形状、位置或排列。恢复外观保留在空白右键菜单，全局快捷键由 App 管理。
 
-完整 `native.miniPlayer` 始终包含左右胶囊；不提供中间胶囊的独立身份。独立调用 `native.actionsCapsule` / `native.volumeCapsule` 时，同一有效布局中应成对出现；它们可以分别定位。完全自绘播放控件不要求使用胶囊。必要操作和胶囊配对属于作者交付约束，导入服务不按一份固定组件名单封锁自绘实现。
+完整 `native.miniPlayer` 始终包含左右胶囊；不提供中间胶囊的独立身份。独立调用 `native.actionsCapsule` / `native.volumeCapsule` 时，同一有效布局中应成对出现；它们可以分别定位，也可以出现多对。包校验会分别检查 adaptive 的每个可见组合。完全自绘播放控件不要求使用胶囊；必要操作不会被限制为固定组件名单。
 
 官方按钮会声明已提供的操作。自绘入口可在场景内容上声明：
 
@@ -236,8 +236,26 @@ customControls
 
 `.fullscreen` 在普通场景表示进入全屏，在全屏场景表示退出。声明应与当前可见且可操作的控件一致；可把声明附在不同按钮上，宿主合并它们。全屏宿主只补充缺失的退出、歌词开关和 Quick Panel，不重复添加已有自绘入口。播放、进度与音量的完整性由作者按上述约束交付。
 
+JSON 场景中，设置为透明、禁止命中或零尺寸的节点不会声明自己提供的操作；adaptive 只按当前可见分支汇总。自绘 Swift 场景也应只声明可见、可操作的入口，避免宿主隐藏必要的备用入口。
+
 注册组件时用 `isInteractive: true` 声明整个组件区域属于控件；装饰、封面、背景和自绘可视化默认不声明整块点击区域，混合组件只在局部控件上使用 `.skinControlRegion()`。这决定原生歌词的遮挡命中和顶部窗口拖动，新增类型无需修改宿主白名单。
+
+官方独立动作按钮登记按钮本身的命中矩形。自绘布局也应把命中区域放在实际可操作的按钮或滑块上，避免扩大包围控件的纯排版区域。
 
 同 ID 替换和设置内重载会发布新的运行 revision，所有使用该皮肤的宿主取消旧会话工作并重建皮肤内容；隐藏的普通场景不抢占歌词视图。重载失败显示具体错误并保留已登记实例，完整新包准备成功前不删除旧安装。原生视图的暂态状态随重新挂载重置，播放服务和歌词时钟继续运行。P6 的开发目录监听与 P9 的在线更新复用此入口。
 
 自绘组件可从 `skinSceneSession` 登记 `registerCleanup { ... }`，只释放自己的任务、纹理或共享服务 lease；离开组件时用 `removeCleanup` 解除登记并完成局部释放。切换/重载/退出会话统一调用仍登记的释放动作。`SkinAudioReader` 已采用此方式，作者不需自行创建 audio tap。
+
+## P5 可复用契约边界
+
+后续渲染器可沿用这些已明确的语义，并为网络或进程边界另定可序列化格式：
+
+| 契约 | 当前原生接口 | 复用时保持的语义 |
+| --- | --- | --- |
+| 视口 | `SkinViewport` | 实际可用区域的逻辑点尺寸，以及 window/fullscreen 表面和宿主类型；Web 画布的原点、像素比例和裁剪规则由 P5 明定 |
+| 稳定展示 | `SkinSceneSnapshot` | 曲目文字、原图数据/文件/图像句柄与主题色；播放时钟和分析帧仍走实时读取器 |
+| 播放、歌词、音频读取 | `SkinPlaybackReader`、`SkinLyricsReader`、`SkinAudioReader` | 播放状态与时钟、带当前偏移语义的歌词文档/TTML/timed groups、共享 PCM/FFT 帧及外部来源不可用状态 |
+| 获准操作 | `SkinSceneActions` | 播放、切歌、seek、音量、播放顺序、喜欢、队列、歌词开关、全屏、设置和 Quick Panel 仍进入 App 现有领域服务 |
+| 包内资源 | `skinPackageResources` | 图片等资源从已安装包目录下的相对路径读取；外部格式需保留包内边界和资源身份 |
+
+当前 Swift 闭包、`NSImage`、`NowPlayingPresentation` 与歌词模型不是跨渲染器消息格式。P5 要为静态更新、播放时钟和批准操作定义版本化消息，再决定是否复用 JSON 场景节点词汇；原生 v1 Schema 仍描述本地注册组件。以上约定用于衔接工作，不代表已有 Web runtime 或脚本能力。

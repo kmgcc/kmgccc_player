@@ -11,6 +11,7 @@ enum NativeSkinComponents {
             Text(config.text("text", fallback: snapshot.track?.title ?? ""))
                 .font(.system(size: config.number("fontSize", fallback: 24)))
                 .foregroundStyle(config.color(fallback: snapshot.theme.accentColor))
+                .fixedSize(horizontal: false, vertical: true)
         }
         catalog.register("native.image") { _, config in SkinImageComponent(configuration: config) }
         catalog.register("native.lyrics") { _, config in SkinLyricsSlot(configuration: config) }
@@ -26,7 +27,7 @@ enum NativeSkinComponents {
         catalog.register("native.actionsCapsule", isInteractive: true) { _, config in SkinLeadingCapsule(configuration: config) }
         catalog.register("native.volumeCapsule", isInteractive: true) { _, config in SkinVolumeCapsule(configuration: config) }
         for control in SkinActionButton.Kind.allCases {
-            catalog.register("native." + control.rawValue, isInteractive: true) { _, config in SkinActionButton(kind: control, configuration: config) }
+            catalog.register("native." + control.rawValue) { _, config in SkinActionButton(kind: control, configuration: config) }
         }
         catalog.register("native.miniPlayer", isInteractive: true) { snapshot, config in
             SkinMiniPlayerComponent(snapshot: snapshot, configuration: config)

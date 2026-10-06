@@ -101,6 +101,9 @@
 		F01000000000000000000003 /* PlaybackCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000003 /* PlaybackCommands.swift */; };
 		F01000000000000000000006 /* kmgccc_playerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000006 /* kmgccc_playerApp.swift */; };
 		C28000000000000000000001 /* SkinSystemTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C28000000000000000000011 /* SkinSystemTests.swift */; };
+		C29000000000000000000001 /* SkinComponentCompletionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C29000000000000000000011 /* SkinComponentCompletionTests.swift */; };
+		C2A000000000000000000001 /* SkinPackageCompletionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2A000000000000000000011 /* SkinPackageCompletionTests.swift */; };
+		C2B000000000000000000001 /* SkinLifecycleCompletionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2B000000000000000000011 /* SkinLifecycleCompletionTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -205,6 +208,9 @@
 		E01000000000000000000003 /* PlaybackCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackCommands.swift; path = kmgccc_player/PlaybackCommands.swift; sourceTree = "<group>"; };
 		E01000000000000000000006 /* kmgccc_playerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = kmgccc_playerApp.swift; path = kmgccc_player/kmgccc_playerApp.swift; sourceTree = "<group>"; };
 		C28000000000000000000011 /* SkinSystemTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/SkinSystemTests.swift; sourceTree = "<group>"; };
+		C29000000000000000000011 /* SkinComponentCompletionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/SkinComponentCompletionTests.swift; sourceTree = "<group>"; };
+		C2A000000000000000000011 /* SkinPackageCompletionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/SkinPackageCompletionTests.swift; sourceTree = "<group>"; };
+		C2B000000000000000000011 /* SkinLifecycleCompletionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/SkinLifecycleCompletionTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -439,6 +445,9 @@
 				C26000000000000000000011 /* kmgccc_playerTests/MP3EmbeddedTagServiceTests.swift */,
 				C27000000000000000000011 /* kmgccc_playerTests/AutomationTrackPreferenceQueryTests.swift */,
 				C28000000000000000000011 /* SkinSystemTests.swift */,
+				C2B000000000000000000011 /* SkinLifecycleCompletionTests.swift */,
+				C2A000000000000000000011 /* SkinPackageCompletionTests.swift */,
+				C29000000000000000000011 /* SkinComponentCompletionTests.swift */,
 			);
 			name = Tests;
 			sourceTree = "<group>";
@@ -810,6 +819,9 @@
 				C26000000000000000000001 /* kmgccc_playerTests/MP3EmbeddedTagServiceTests.swift in Sources */,
 				C27000000000000000000001 /* kmgccc_playerTests/AutomationTrackPreferenceQueryTests.swift in Sources */,
 				C28000000000000000000001 /* SkinSystemTests.swift in Sources */,
+				C2B000000000000000000001 /* SkinLifecycleCompletionTests.swift in Sources */,
+				C2A000000000000000000001 /* SkinPackageCompletionTests.swift in Sources */,
+				C29000000000000000000001 /* SkinComponentCompletionTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

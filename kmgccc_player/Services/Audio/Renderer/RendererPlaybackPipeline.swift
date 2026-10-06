@@ -136,9 +136,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         // spatialization eligibility is declared after the renderer is attached
         // to its synchronizer, but before the first sample is enqueued.
         configureSpatialization(renderer)
-        if #available(macOS 11.3, *) {
-            synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
-        }
+        synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
         installRendererObservers(for: renderer)
         installProgressObserver()
         startAnalysisTimer()

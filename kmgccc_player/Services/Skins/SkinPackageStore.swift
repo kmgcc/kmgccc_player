@@ -39,8 +39,17 @@ final class SkinPackageStore {
         for directory in directories {
             do {
                 let manifest = try readManifest(in: directory)
-                if let existing = catalog.registeredSkin(for: manifest.descriptor.id) as? PackagedSkin,
-                   case .bundled = existing.origin { continue }
+                if let existing = catalog.registeredSkin(for: manifest.descriptor.id) {
+                    if let packaged = existing as? PackagedSkin {
+                        if case .bundled = packaged.origin { continue }
+                    } else {
+                        Log.warning(
+                            "Installed skin ID conflicts with a code-registered skin; keeping the registered skin: \(manifest.descriptor.id)",
+                            category: .ui
+                        )
+                        continue
+                    }
+                }
                 catalog.install(try skin(manifest, origin: .installed(directory)))
             } catch {
                 Log.warning("Skin package load failed: \(error.localizedDescription)", category: .ui)
@@ -60,11 +69,17 @@ final class SkinPackageStore {
         let directory = try await unpack(archive)
         defer { try? FileManager.default.removeItem(at: directory) }
         var manifest = try readManifest(in: directory)
-        let existing = catalog.registeredSkin(for: manifest.descriptor.id) as? PackagedSkin
-        let bundledCollision: Bool
-        if let existing, case .bundled = existing.origin { bundledCollision = true }
-        else { bundledCollision = false }
-        if existing != nil && (bundledCollision || disposition == .copy) {
+        let registeredSkin = catalog.registeredSkin(for: manifest.descriptor.id)
+        let existingPackage = registeredSkin as? PackagedSkin
+        let previousPackage: PackagedSkin? = {
+            guard disposition == .replace,
+                  let existingPackage,
+                  case .installed = existingPackage.origin else { return nil }
+            return existingPackage
+        }()
+        // Code-registered skins cannot be replaced by an imported archive. Treat
+        // those collisions like bundled skins and give the package a new identity.
+        if registeredSkin != nil && previousPackage == nil {
             let original = manifest.descriptor
             manifest.descriptor = original.withIdentity(
                 id: "user.\(UUID().uuidString.lowercased())",
@@ -79,7 +94,7 @@ final class SkinPackageStore {
         do {
             try FileManager.default.copyItem(at: directory, to: destination)
             try write(manifest, in: destination)
-            if let existing, case .installed(let previous) = existing.origin, disposition == .replace {
+            if let previousPackage, case .installed(let previous) = previousPackage.origin {
                 try FileManager.default.removeItem(at: previous)
             }
         } catch {

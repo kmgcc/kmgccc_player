@@ -15,6 +15,9 @@ extension SkinPackageManifest {
         }
         for parameter in parameters { try parameter.validateDefinition() }
         try scene?.root.validateNode()
+        guard scene?.hasPairedStandaloneCapsulesInEveryLayout != false else {
+            throw SkinPackageError.invalidManifest("每个自适应布局中的左右胶囊必须成对出现")
+        }
     }
 }
 

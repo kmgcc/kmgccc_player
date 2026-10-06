@@ -74,6 +74,14 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     // Consumers
     private nonisolated(unsafe) var consumers: [UUID: (AudioAnalysisData) -> Void] = [:]
     private let consumerLock = NSLock()
+#if DEBUG
+    /// Read-only runtime acceptance telemetry; includes all App consumers.
+    var skinDebugConsumerCount: Int {
+        consumerLock.lock()
+        defer { consumerLock.unlock() }
+        return consumers.count
+    }
+#endif
     private nonisolated(unsafe) var timer: DispatchSourceTimer?
     private nonisolated(unsafe) var activeClients: Int = 0
     private nonisolated(unsafe) var droppedTapBuffers: UInt64 = 0

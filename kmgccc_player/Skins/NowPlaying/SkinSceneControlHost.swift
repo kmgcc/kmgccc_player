@@ -80,7 +80,7 @@ struct SkinSceneControlHost<Content: View>: View {
                     .environment(\.skinNativeControls, native)
                     .environment(\.skinSceneSurface, surface)
                     .environment(\.skinSceneActions, actions)
-                    .skinControlRegion().padding(12)
+                    .padding(12)
                 }
             }
             .overlay {

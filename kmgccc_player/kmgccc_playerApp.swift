@@ -175,6 +175,11 @@ struct KmgcccPlayerApp: App {
                 await appSessionHost.setupIfNeeded()
                 Log.debug("[AppLaunch] mainWindowHandler.setupComplete", category: .ui)
                 _ = AppKitMainSplitWindowController.show(appSession: appSessionHost)
+#if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--skin-runtime-acceptance") {
+                    await SkinRuntimeAcceptance.run(appSession: appSessionHost)
+                }
+#endif
             }
         }
     }

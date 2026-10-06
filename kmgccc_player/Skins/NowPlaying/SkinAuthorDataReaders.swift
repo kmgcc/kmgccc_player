@@ -60,6 +60,7 @@ struct SkinAudioReader<Content: View>: View {
             }
             .onChange(of: isActive) { _, _ in synchronize() }
             .onChange(of: playback.stablePresentation.source) { _, _ in synchronize() }
+            .onChange(of: playback.stablePresentation.isPlaying) { _, _ in synchronize() }
             .onDisappear {
                 feed.stop()
                 if let cleanupID { session?.removeCleanup(cleanupID) }
@@ -67,6 +68,11 @@ struct SkinAudioReader<Content: View>: View {
             }
     }
     private func synchronize() {
-        feed.update(provider: provider, source: playback.stablePresentation.source, active: isActive)
+        feed.update(
+            provider: provider,
+            source: playback.stablePresentation.source,
+            active: isActive,
+            isPlaying: playback.stablePresentation.isPlaying
+        )
     }
 }

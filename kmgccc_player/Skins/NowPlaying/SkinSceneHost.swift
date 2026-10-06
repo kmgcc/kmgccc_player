@@ -45,7 +45,9 @@ struct SkinSceneHost: View {
     @State private var reloadError: String?
 
     private var role: LyricsSurfaceRole { viewport.surface == .window ? .main : .fullscreen }
-    private var isActive: Bool { viewport.surface == .fullscreen || fullscreen.presentationMode == .none }
+    private var isActive: Bool {
+        viewport.surface == .fullscreen || fullscreen.presentationMode == .none
+    }
     private var nativeLyricsVisible: Bool {
         lyricsConfiguration != nil && lyricsVisible && isActive && !uiState.isWindowPlaybackQueueVisible
             && (viewport.surface != .window || uiState.skinSceneLyricsVisible)
@@ -63,9 +65,14 @@ struct SkinSceneHost: View {
             onToggleLyrics: toggleLyrics
         ) {
           ZStack(alignment: .topLeading) {
-            scene.makeContent(snapshot: snapshot, viewport: viewport, components: components)
-                .frame(width: viewport.size.width, height: viewport.size.height)
-                .id(skin.id)
+            if isActive {
+                scene.makeContent(snapshot: snapshot, viewport: viewport, components: components)
+                    .frame(width: viewport.size.width, height: viewport.size.height)
+                    .id(skin.id)
+            } else {
+                Color.clear
+                    .frame(width: viewport.size.width, height: viewport.size.height)
+            }
 
             SkinSceneNativeLyricsLifecycle(
                 role: role, configuration: lyricsConfiguration,

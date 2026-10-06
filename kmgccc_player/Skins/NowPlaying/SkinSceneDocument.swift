@@ -12,6 +12,9 @@ struct SkinSceneDocument: Codable {
 
     var componentTypes: Set<String> { root.componentTypes }
     var simultaneousLyricsCount: Int { root.simultaneousLyricsCount }
+    var hasPairedStandaloneCapsulesInEveryLayout: Bool {
+        root.capsulePairBalanceVariants == [0]
+    }
 }
 
 struct SkinSceneNode: Codable, Identifiable {
@@ -50,6 +53,40 @@ struct SkinSceneNode: Codable, Identifiable {
         case .adaptive(_, _, let wide, let compact): return max(wide.simultaneousLyricsCount, compact.simultaneousLyricsCount)
         case .spacer: return 0
         }
+    }
+
+    var shouldAdvertiseControls: Bool {
+        layout.allowsHitTesting && isVisibleInLayout
+    }
+
+    /// Each realizable layout must contain matching counts of standalone side capsules.
+    /// Adaptive alternatives are checked independently; a mini player owns its own pair.
+    fileprivate var capsulePairBalanceVariants: Set<Int> {
+        guard isVisibleInLayout else { return [0] }
+        switch content {
+        case .component(let type, _):
+            if type == "native.actionsCapsule" { return [1] }
+            if type == "native.volumeCapsule" { return [-1] }
+            return [0]
+        case .row(let children, _), .column(let children, _), .overlay(let children):
+            return children.reduce(into: Set([0])) { balances, child in
+                let childBalances = child.capsulePairBalanceVariants
+                balances = Set(balances.flatMap { current in childBalances.map { current + $0 } })
+            }
+        case .adaptive(_, _, let wide, let compact):
+            return wide.capsulePairBalanceVariants.union(compact.capsulePairBalanceVariants)
+        case .spacer:
+            return [0]
+        }
+    }
+
+    private var isVisibleInLayout: Bool {
+        guard layout.opacity > 0 else { return false }
+        return [layout.width, layout.height, layout.maximumWidth, layout.maximumHeight]
+            .allSatisfy { dimension in
+                guard let dimension else { return true }
+                return dimension > 0
+            }
     }
 }
 
@@ -104,6 +141,9 @@ private struct SkinSceneNodeView: View {
             .rotationEffect(.degrees(node.layout.rotationDegrees))
             .opacity(node.layout.opacity)
             .allowsHitTesting(node.layout.allowsHitTesting)
+            .transformPreference(SkinSceneControlsKey.self) { controls in
+                if !node.shouldAdvertiseControls { controls.removeAll() }
+            }
     }
 
     @ViewBuilder
