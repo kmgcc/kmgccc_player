@@ -226,7 +226,6 @@ private struct HomeUnifiedGlassCardModifier: ViewModifier {
         case .frostedGlass:
             content
                 .background(.ultraThinMaterial, in: shape)
-                .homeGlassCardEdgeTreatment(shape: shape, colorScheme: colorScheme)
                 .modifier(HomeGlassCardShadowModifier(isEnabled: isFloating, colorScheme: colorScheme))
                 .contentShape(shape)
         case .solid:
@@ -236,7 +235,6 @@ private struct HomeUnifiedGlassCardModifier: ViewModifier {
                         .fill(solidTreatment)
                         .allowsHitTesting(false)
                 )
-                .homeGlassCardEdgeTreatment(shape: shape, colorScheme: colorScheme)
                 .modifier(HomeGlassCardShadowModifier(isEnabled: isFloating, colorScheme: colorScheme))
                 .contentShape(shape)
         }
