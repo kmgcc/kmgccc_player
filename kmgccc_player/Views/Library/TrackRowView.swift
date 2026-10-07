@@ -288,7 +288,15 @@ struct TrackRowView<MenuContent: View>: View {
             }
         }
         .padding(.vertical, Constants.Layout.TrackRow.verticalPadding)
-        .padding(.horizontal, Constants.Layout.TrackRow.horizontalPadding)
+        .padding(.leading, Constants.Layout.TrackRow.horizontalPadding)
+        .padding(
+            .trailing,
+            max(
+                0,
+                Constants.Layout.TrackRow.horizontalPadding
+                    - (Constants.Layout.TrackRow.trailingMenuHitSize - Constants.Layout.TrackRow.trailingMenuGlyphSize) / 2
+            )
+        )
         .frame(height: rowHeight)
         .background(rowBackground)
         .contentShape(Rectangle())

@@ -258,7 +258,11 @@ private struct PlaylistListRow: View {
             Spacer(minLength: 8)
             trailingActions
         }
-        .padding(.horizontal, 12)
+        .padding(.leading, 12)
+        .padding(
+            .trailing,
+            max(0, 12 - (Constants.Layout.TrackRow.trailingMenuHitSize - 13) / 2)
+        )
         .padding(.vertical, 8)
         .frame(minHeight: 76)
         .background(

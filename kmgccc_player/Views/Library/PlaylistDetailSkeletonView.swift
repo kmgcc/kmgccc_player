@@ -46,7 +46,7 @@ struct PlaylistDetailSkeletonView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     if showHeader {
                         headerSkeleton(contentWidth: contentWidth)
-                            .padding(.horizontal, Constants.Layout.listHorizontalPadding)
+                            .padding(.horizontal, Constants.Layout.listHorizontalPadding + Constants.Layout.TrackRow.horizontalPadding)
                     }
 
                     rowsSkeleton(contentWidth: contentWidth)
@@ -56,7 +56,7 @@ struct PlaylistDetailSkeletonView: View {
                 .padding(.top, 16)
                 .padding(.bottom, 64)
             }
-            .frame(width: geometry.size.width, height: geometry.size.height)
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
             .allowsHitTesting(false)
         }
     }
@@ -106,7 +106,6 @@ struct PlaylistDetailSkeletonView: View {
             .frame(maxWidth: .infinity, minHeight: LibraryDetailHeaderView.artworkSide, maxHeight: LibraryDetailHeaderView.artworkSide, alignment: .topLeading)
         }
         .frame(height: LibraryDetailHeaderView.artworkSide, alignment: .bottom)
-        .padding(.horizontal, 24)
         .padding(.vertical, 20)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -160,7 +159,15 @@ struct PlaylistDetailSkeletonView: View {
                         .frame(width: Layout.trailingMenuHitSize, height: Layout.trailingMenuHitSize)
                 }
                 .padding(.vertical, Constants.Layout.TrackRow.verticalPadding)
-                .padding(.horizontal, Constants.Layout.TrackRow.horizontalPadding)
+                .padding(.leading, Constants.Layout.TrackRow.horizontalPadding)
+                .padding(
+                    .trailing,
+                    max(
+                        0,
+                        Constants.Layout.TrackRow.horizontalPadding
+                            - (Constants.Layout.TrackRow.trailingMenuHitSize - Constants.Layout.TrackRow.trailingMenuGlyphSize) / 2
+                    )
+                )
                 .frame(height: Constants.Layout.TrackRow.height)
             }
         }

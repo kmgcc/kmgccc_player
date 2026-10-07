@@ -159,7 +159,7 @@ struct PlaybackHistoryView: View {
                 .padding(.horizontal, Constants.Layout.listHorizontalPadding)
                 .padding(.bottom, 160)
             }
-            .frame(width: proxy.size.width, height: proxy.size.height + toolbarTopInset)
+            .frame(width: proxy.size.width, height: proxy.size.height + toolbarTopInset, alignment: .topLeading)
             .offset(y: -toolbarTopInset)
             .scrollIndicators(.automatic)
         }

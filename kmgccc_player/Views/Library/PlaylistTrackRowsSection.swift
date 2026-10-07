@@ -386,6 +386,7 @@ private final class AppKitPlaylistRowsContainerView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
 
+        tableView.style = .plain
         column.resizingMask = .autoresizingMask
         tableView.addTableColumn(column)
         tableView.headerView = nil

@@ -318,7 +318,7 @@ struct PlaylistDetailView: View {
                     }
                 }
             }
-            .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset)
+            .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset, alignment: .topLeading)
             .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.trackList"))
             .modifier(
                 ScrollEdgeFadeTrackingMask(
@@ -367,7 +367,7 @@ struct PlaylistDetailView: View {
                     }
                 }
             }
-            .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset)
+            .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset, alignment: .topLeading)
             .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.detailScroll"))
             .modifier(
                 ScrollEdgeFadeTrackingMask(

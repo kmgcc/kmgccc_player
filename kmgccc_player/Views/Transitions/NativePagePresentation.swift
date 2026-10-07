@@ -55,7 +55,7 @@ struct NativePagePresentation: NSViewRepresentable {
             layer?.masksToBounds = false
             for (clip, host) in [(placeholderClip, loading), (destinationClip, destination)] {
                 clip.wantsLayer = true
-                clip.layer?.masksToBounds = true
+                clip.layer?.masksToBounds = false
                 host.sizingOptions = []
                 host.wantsLayer = true
                 clip.addSubview(host)
@@ -221,12 +221,18 @@ struct NativePagePresentation: NSViewRepresentable {
                 let feather = min(112, max(64, bounds.width * 0.12))
                 let travel = bounds.width + feather
                 let maskWidth = travel * 2
+                // Provide an edge safety margin beyond bounds.width so the opaque region
+                // fully clears the right edge of the viewport. This guarantees that at resting
+                // position (or during spring tail settling), the right boundary pixels never fall
+                // into the gradient fade or suffer subpixel rasterization clipping.
+                let edgeBuffer: CGFloat = 16
+                let splitPoint = Double(min((bounds.width + edgeBuffer) / maskWidth, 0.49))
                 for mask in [incomingMask, outgoingMask] {
                     mask.anchorPoint = .zero
                     mask.bounds = CGRect(x: 0, y: 0, width: maskWidth, height: destinationClip.bounds.height)
                     mask.startPoint = CGPoint(x: 0, y: 0.5)
                     mask.endPoint = CGPoint(x: 1, y: 0.5)
-                    mask.locations = [0, NSNumber(value: Double(bounds.width / maskWidth)), 0.5, 1]
+                    mask.locations = [0, NSNumber(value: splitPoint), 0.5, 1]
                 }
                 let opaque = NSColor.black.cgColor
                 let clear = NSColor.clear.cgColor
@@ -278,6 +284,8 @@ struct NativePagePresentation: NSViewRepresentable {
                 placeholderClip.layer?.opacity = 0
                 destinationClip.layer?.opacity = 1
                 destinationClip.layer?.masksToBounds = false
+                destination.layer?.removeAllAnimations()
+                destination.layer?.transform = CATransform3DIdentity
             }
             acceptsInteraction = true
         }
@@ -291,6 +299,7 @@ struct NativePagePresentation: NSViewRepresentable {
                 destinationClip.layer?.removeAllAnimations()
                 placeholderClip.layer?.removeAllAnimations()
                 destination.layer?.removeAllAnimations()
+                destination.layer?.transform = CATransform3DIdentity
                 destinationClip.layer?.masksToBounds = false
             }
         }
