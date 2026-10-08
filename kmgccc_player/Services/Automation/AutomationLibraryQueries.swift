@@ -48,7 +48,8 @@ struct AutomationLibraryQueries {
         _ = try validateTrackFilter(filter, depth: 0, visited: 0)
     }
 
-    func validateTrackFilter(
+    @discardableResult
+    private func validateTrackFilter(
         _ filter: AutomationJSONValue,
         depth: Int,
         visited: Int
@@ -683,5 +684,64 @@ struct AutomationLibraryQueries {
             return LyricsFormatSupport.looksLikeLRC(plain) ? 1 : 0
         }
         return 0
+    }
+
+    func makeTrackRevisions(
+        from values: [String: AutomationJSONValue]?
+    ) throws -> [UUID: String] {
+        guard let values else { return [:] }
+        var result: [UUID: String] = [:]
+        for (rawID, value) in values {
+            guard let id = UUID(uuidString: rawID),
+                  case .string(let revision) = value,
+                  !revision.isEmpty else {
+                throw AutomationParameterError.invalidValue("expectedRevisions")
+            }
+            result[id] = revision
+        }
+        return result
+    }
+
+    func makeMetadataDocumentTrack(_ track: Track, revision: String) -> AutomationMetadataDocumentTrack {
+        func nullableString(_ value: String?) -> AutomationJSONValue {
+            value.map(AutomationJSONValue.string) ?? .null
+        }
+        func nullableDate(_ value: Date?) -> AutomationJSONValue {
+            value.map { .string(ISO8601DateFormatter().string(from: $0)) } ?? .null
+        }
+        let fields: [String: AutomationJSONValue] = [
+            "title": .string(track.title),
+            "artist": .string(track.artist),
+            "album": .string(track.album),
+            "albumArtist": nullableString(track.albumArtist),
+            "description": .string(track.userDescription),
+            "genreTags": .array(track.genreTags.map(AutomationJSONValue.string)),
+            "language": .string(track.language),
+            "labelOrCompany": .string(track.labelOrCompany),
+            "releaseDate": nullableDate(track.releaseDate),
+            "qqMusicSongMid": nullableString(track.qqMusicSongMid),
+            "metadataSource": nullableString(track.metadataSource),
+            "metadataFetchedAt": nullableDate(track.metadataFetchedAt),
+            "metadataConfidence": track.metadataConfidence.map(AutomationJSONValue.number) ?? .null,
+            "musicBrainzReleaseID": nullableString(track.musicBrainzReleaseID),
+            "lyricsTimeOffsetMs": .number(track.lyricsTimeOffsetMs),
+            "artistCredits": .array(track.artistCredits.map { credit in
+                .object([
+                    "id": .string(credit.id.uuidString),
+                    "displayName": .string(credit.displayName),
+                    "canonicalName": nullableString(credit.canonicalName),
+                    "role": .string(credit.role.rawValue)
+                ])
+            })
+        ]
+        return AutomationMetadataDocumentTrack(
+            id: track.id,
+            revision: revision,
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            duration: track.duration,
+            fields: fields
+        )
     }
 }

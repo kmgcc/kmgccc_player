@@ -84,3 +84,7 @@ E：审查 diff、可见性、所有 method 路由、协议包零差异及真实
 - A：PlayerAutomation 40 项基线通过；App 定向基线 9 项通过（0 失败）。
 
 - B：共享参数、响应、交互、授权文件解析、查询/投影、Job 投影、Session access 和三类持久化已迁移；54 个 helper 与完整 execute body 的归一化比对保持原语句。Debug 编译与定向 XCTest 9 项通过；PlayerAutomation 40 项通过。作用域采用 internal 类型 + private 状态，不新增 public API。
+
+- C1：Playback/Queue、History、Settings/Audio、Jobs 已进入独立 Handler；Debug 编译与原有定向 XCTest 9 项通过。
+- C2：其余 8 个领域 Handler 已迁移。98 个原 switch case block 逐块归一化比对保持原语句，仅 helper 限定名与 Playlist 子请求闭包改变；所有原 helper 定义保留，没有基于静态搜索删除旧代码。候选 cache 的数据结构、容量与生命周期不变。跨领域 metadata document / expected revisions 解析归入查询/投影辅助，backup support 路径供 storage 与 audit 共用。
+- C 验收：新增真实 AF_UNIX fixture 覆盖 20 个领域读取入口、全局 schema/权限次序、dry-run scope 豁免、旧 Library ID、未知方法、幂等重放/冲突及 Selection→Playlist 子请求。Debug 构建与 11 项定向 XCTest 通过（0 失败）。PlayerAutomation 完整 40 项以 `swift test --no-parallel` 复跑通过；并行测试两次卡在既有子进程退出/EOF harness，未修改协议或测试 runner 来掩盖它。
