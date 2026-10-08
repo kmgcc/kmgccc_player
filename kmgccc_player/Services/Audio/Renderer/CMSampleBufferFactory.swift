@@ -55,19 +55,127 @@ nonisolated struct CanonicalPCM: Sendable {
 
 enum CMSampleBufferFactory {
 
-    /// Create a CMAudioFormatDescription for interleaved Float32 PCM.
-    ///
-    /// Deliberately uncached: format descriptions are created once per track
-    /// (or per format change), and Swift 6's isolation rules make a global
-    /// cached dictionary with Hashable keys awkward to keep nonisolated.
-    nonisolated static func formatDescription(channelCount: Int, sampleRate: Double) -> CMAudioFormatDescription? {
-        makeFormatDescription(channelCount: channelCount, sampleRate: sampleRate)
+    /// Copy the source format's real Core Audio layout into a small Sendable
+    /// value. A missing or unidentified layout remains explicitly unknown.
+    nonisolated static func dspAudioFormat(from format: AVAudioFormat) -> DSPAudioFormat {
+        let sampleRate = format.sampleRate
+        let channelCount = Int(format.channelCount)
+        guard sampleRate.isFinite, sampleRate > 0, channelCount > 0 else {
+            return DSPAudioFormat(
+                sampleRate: sampleRate,
+                channelCount: channelCount,
+                rawLayoutData: nil,
+                channelLabels: nil,
+                layoutIsKnown: false
+            )
+        }
+        guard let channelLayout = format.channelLayout else {
+            if channelCount == 1 || channelCount == 2 {
+                return conventionalMonoStereoFormat(
+                    sampleRate: sampleRate,
+                    channelCount: channelCount
+                )
+            }
+            return DSPAudioFormat(
+                sampleRate: sampleRate,
+                channelCount: channelCount,
+                rawLayoutData: nil,
+                channelLabels: nil,
+                layoutIsKnown: false
+            )
+        }
+
+        let nativeLayout = channelLayout.layout
+        let nativeValue = nativeLayout.pointee
+        let descriptionCount = Int(nativeValue.mNumberChannelDescriptions)
+        let descriptionOffset = MemoryLayout<AudioChannelLayout>.size
+            - MemoryLayout<AudioChannelDescription>.size
+        let layoutByteCount = descriptionOffset
+            + descriptionCount * MemoryLayout<AudioChannelDescription>.size
+        let rawLayout = Data(bytes: UnsafeRawPointer(nativeLayout), count: layoutByteCount)
+        let labels = channelLabels(
+            from: nativeLayout,
+            channelCount: channelCount
+        )
+        let unknownLabels: Set<UInt32> = [
+            UInt32(kAudioChannelLabel_Unknown),
+            UInt32(kAudioChannelLabel_Unused),
+            UInt32(kAudioChannelLabel_Discrete),
+        ]
+        let isKnown = labels?.count == channelCount
+            && labels?.allSatisfy { label in
+                !unknownLabels.contains(label)
+                    && !(label >= UInt32(kAudioChannelLabel_Discrete_0)
+                        && label <= UInt32(kAudioChannelLabel_Discrete_0) + 0xFFFF)
+            } == true
+
+        return DSPAudioFormat(
+            sampleRate: sampleRate,
+            channelCount: channelCount,
+            rawLayoutData: rawLayout,
+            channelLabels: labels,
+            layoutIsKnown: isKnown
+        )
     }
 
-    private nonisolated static func makeFormatDescription(
+    private nonisolated static func conventionalMonoStereoFormat(
+        sampleRate: Double,
+        channelCount: Int
+    ) -> DSPAudioFormat {
+        var layout = AudioChannelLayout()
+        layout.mChannelLayoutTag = channelCount == 1
+            ? kAudioChannelLayoutTag_Mono
+            : kAudioChannelLayoutTag_Stereo
+        layout.mChannelBitmap = AudioChannelBitmap(rawValue: 0)
+        layout.mNumberChannelDescriptions = 0
+        let headerByteCount = MemoryLayout<AudioChannelLayout>.size
+            - MemoryLayout<AudioChannelDescription>.size
+        let raw = withUnsafeBytes(of: &layout) { bytes in
+            Data(bytes.prefix(headerByteCount))
+        }
+        let labels: [UInt32] = channelCount == 1
+            ? [UInt32(kAudioChannelLabel_Mono)]
+            : [UInt32(kAudioChannelLabel_Left), UInt32(kAudioChannelLabel_Right)]
+        return DSPAudioFormat(
+            sampleRate: sampleRate,
+            channelCount: channelCount,
+            rawLayoutData: raw,
+            channelLabels: labels,
+            layoutIsKnown: true
+        )
+    }
+
+    /// Create a CMAudioFormatDescription for interleaved Float32 PCM while
+    /// preserving the source's actual channel layout. A nil/unknown layout is
+    /// represented without a guessed tag.
+    nonisolated static func formatDescription(
+        sourceFormat: DSPAudioFormat
+    ) -> CMAudioFormatDescription? {
+        makeFormatDescription(sourceFormat: sourceFormat)
+    }
+
+    /// Compatibility helper for callers that have only a count. Count alone
+    /// cannot establish speaker identities, so the resulting description has
+    /// no inferred multichannel layout.
+    nonisolated static func formatDescription(
         channelCount: Int,
         sampleRate: Double
     ) -> CMAudioFormatDescription? {
+        formatDescription(sourceFormat: DSPAudioFormat(
+            sampleRate: sampleRate,
+            channelCount: channelCount,
+            rawLayoutData: nil,
+            channelLabels: nil,
+            layoutIsKnown: false
+        ))
+    }
+
+    private nonisolated static func makeFormatDescription(
+        sourceFormat: DSPAudioFormat
+    ) -> CMAudioFormatDescription? {
+        let channelCount = sourceFormat.channelCount
+        let sampleRate = sourceFormat.sampleRate
+        guard channelCount > 0, sampleRate.isFinite, sampleRate > 0 else { return nil }
         var asbd = AudioStreamBasicDescription(
             mSampleRate: sampleRate,
             mFormatID: kAudioFormatLinearPCM,
@@ -80,31 +188,29 @@ enum CMSampleBufferFactory {
             mReserved: 0
         )
 
-        // Standard pre-defined channel layout tag (Stereo/Mono). Verified
-        // against the working reference implementation (mpv ao_avfoundation,
-        // which is what IINA uses and which enables system spatial audio on
-        // the same hardware where our layout-less description was rejected
-        // with "playback configuration is not [eligible]"): the format
-        // description must carry a STANDARD layout tag — a missing layout or
-        // a custom (UseChannelDescriptions) layout both land on the
-        // non-spatializable path (mpv PR #11955).
-        let layoutTag: AudioChannelLayoutTag? = switch channelCount {
-        case 1: nil // Preserve the verified demo's mono description.
-        case 2: kAudioChannelLayoutTag_Stereo
-        case 3: kAudioChannelLayoutTag_MPEG_3_0_A
-        case 4: kAudioChannelLayoutTag_Quadraphonic
-        case 5: kAudioChannelLayoutTag_MPEG_5_0_A
-        case 6: kAudioChannelLayoutTag_MPEG_5_1_A
-        case 8: kAudioChannelLayoutTag_MPEG_7_1_A
-        default: nil
-        }
-        var layout = AudioChannelLayout()
-        layout.mChannelLayoutTag = layoutTag ?? kAudioChannelLayoutTag_UseChannelDescriptions
-
         var formatDesc: CMAudioFormatDescription?
-        let status: OSStatus
-        if layoutTag == nil {
-            status = CMAudioFormatDescriptionCreate(
+        if let rawLayoutData = sourceFormat.rawLayoutData,
+           rawLayoutData.count >= MemoryLayout<AudioChannelLayout>.size
+                - MemoryLayout<AudioChannelDescription>.size {
+            let status = rawLayoutData.withUnsafeBytes { rawLayout in
+                guard let layout = rawLayout.baseAddress?.assumingMemoryBound(to: AudioChannelLayout.self) else {
+                    return kCMFormatDescriptionError_InvalidParameter
+                }
+                return CMAudioFormatDescriptionCreate(
+                    allocator: kCFAllocatorDefault,
+                    asbd: &asbd,
+                    layoutSize: rawLayoutData.count,
+                    layout: layout,
+                    magicCookieSize: 0,
+                    magicCookie: nil,
+                    extensions: nil,
+                    formatDescriptionOut: &formatDesc
+                )
+            }
+            return status == noErr ? formatDesc : nil
+        }
+
+        let status = CMAudioFormatDescriptionCreate(
                 allocator: kCFAllocatorDefault,
                 asbd: &asbd,
                 layoutSize: 0,
@@ -114,21 +220,91 @@ enum CMSampleBufferFactory {
                 extensions: nil,
                 formatDescriptionOut: &formatDesc
             )
-        } else {
-            status = withUnsafePointer(to: &layout) { layoutPtr in
-                CMAudioFormatDescriptionCreate(
-                    allocator: kCFAllocatorDefault,
-                    asbd: &asbd,
-                    layoutSize: MemoryLayout<AudioChannelLayout>.size,
-                    layout: layoutPtr,
-                    magicCookieSize: 0,
-                    magicCookie: nil,
-                    extensions: nil,
-                    formatDescriptionOut: &formatDesc
+        return status == noErr ? formatDesc : nil
+    }
+
+    private nonisolated static func channelLabels(
+        from layout: UnsafePointer<AudioChannelLayout>,
+        channelCount: Int
+    ) -> [UInt32]? {
+        let value = layout.pointee
+        if value.mNumberChannelDescriptions > 0 {
+            let descriptionOffset = MemoryLayout<AudioChannelLayout>.size
+                - MemoryLayout<AudioChannelDescription>.size
+            let descriptions = UnsafeRawPointer(layout)
+                .advanced(by: descriptionOffset)
+                .assumingMemoryBound(to: AudioChannelDescription.self)
+            let labels = (0..<Int(value.mNumberChannelDescriptions)).map {
+                descriptions[$0].mChannelLabel
+            }
+            return labels.count == channelCount ? labels : nil
+        }
+
+        switch value.mChannelLayoutTag {
+        case kAudioChannelLayoutTag_UseChannelBitmap:
+            var bitmap = value.mChannelBitmap
+            return withUnsafePointer(to: &bitmap) { pointer in
+                resolvedChannelLabels(
+                    property: kAudioFormatProperty_ChannelLayoutForBitmap,
+                    inputSize: UInt32(MemoryLayout<AudioChannelBitmap>.size),
+                    inputSpecifier: UnsafeRawPointer(pointer),
+                    channelCount: channelCount
+                )
+            }
+        case kAudioChannelLayoutTag_Unknown, kAudioChannelLayoutTag_UseChannelDescriptions:
+            return nil
+        default:
+            var tag = value.mChannelLayoutTag
+            return withUnsafePointer(to: &tag) { pointer in
+                resolvedChannelLabels(
+                    property: kAudioFormatProperty_ChannelLayoutForTag,
+                    inputSize: UInt32(MemoryLayout<AudioChannelLayoutTag>.size),
+                    inputSpecifier: UnsafeRawPointer(pointer),
+                    channelCount: channelCount
                 )
             }
         }
-        return status == noErr ? formatDesc : nil
+    }
+
+    private nonisolated static func resolvedChannelLabels(
+        property: AudioFormatPropertyID,
+        inputSize: UInt32,
+        inputSpecifier: UnsafeRawPointer,
+        channelCount: Int
+    ) -> [UInt32]? {
+        var outputSize: UInt32 = 0
+        guard AudioFormatGetPropertyInfo(
+            property,
+            inputSize,
+            inputSpecifier,
+            &outputSize
+        ) == noErr,
+        outputSize >= UInt32(MemoryLayout<AudioChannelLayout>.size) else { return nil }
+
+        var output = [UInt8](repeating: 0, count: Int(outputSize))
+        let status = output.withUnsafeMutableBytes { outputBytes in
+            AudioFormatGetProperty(
+                property,
+                inputSize,
+                inputSpecifier,
+                &outputSize,
+                outputBytes.baseAddress!
+            )
+        }
+        guard status == noErr else { return nil }
+        return output.withUnsafeBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return nil }
+            let layout = baseAddress.assumingMemoryBound(to: AudioChannelLayout.self)
+            guard layout.pointee.mNumberChannelDescriptions == UInt32(channelCount) else {
+                return nil
+            }
+            let descriptionOffset = MemoryLayout<AudioChannelLayout>.size
+                - MemoryLayout<AudioChannelDescription>.size
+            let descriptions = baseAddress
+                .advanced(by: descriptionOffset)
+                .assumingMemoryBound(to: AudioChannelDescription.self)
+            return (0..<channelCount).map { descriptions[$0].mChannelLabel }
+        }
     }
 
     // MARK: - Conversion

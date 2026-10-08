@@ -762,7 +762,24 @@ actor LRCConverterService {
                 }
                 segment.endTime = max(segment.time, clippedEnd)
             } else if i + 1 < count && !lyricsData[i + 1].segments.isEmpty {
-                segment.endTime = max(segment.time, lyricsData[i + 1].segments[0].time)
+                let nextLineStart = lyricsData[i + 1].segments[0].time
+                let rawDuration = nextLineStart - segment.time
+                let trimmed = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let textLen = max(1, trimmed.count)
+                let words = trimmed.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+                let syllableEstimate: Double
+                if words.count > 1 {
+                    syllableEstimate = Double(words.count) * 0.45
+                } else {
+                    syllableEstimate = Double(textLen) * 0.35
+                }
+                let estimatedSingingDuration = max(2.5, min(syllableEstimate + 1.2, 8.0))
+                let interludeThreshold: Double = 4.0
+                if rawDuration > estimatedSingingDuration + interludeThreshold {
+                    segment.endTime = segment.time + estimatedSingingDuration
+                } else {
+                    segment.endTime = max(segment.time, nextLineStart)
+                }
             } else {
                 let textLen = segment.text.count
                 let duration = max(2.0, Double(textLen) * 0.3)

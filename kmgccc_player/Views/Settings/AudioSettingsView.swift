@@ -25,6 +25,28 @@ struct AudioSettingsView: View {
                         .settingsDescriptionStyle()
                 }
             }
+
+            SettingsSection("音效处理") {
+                NavigationLink {
+                    AudioDSPSettingsView()
+                } label: {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("DSP 音效")
+                                .settingsRowLabelStyle()
+                            Text("九段均衡器、增益与预设")
+                                .settingsDescriptionStyle()
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Capsule())
+                }
+                .audioDSPCapsuleButtonStyle()
+            }
         }
         .onAppear {
             lookaheadEnabled = settings.audioLookaheadEnabled

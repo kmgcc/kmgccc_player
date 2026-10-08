@@ -68,6 +68,12 @@ final class LibrarySession: LibrarySessionLifecycle {
     let lyricsViewModel: LyricsViewModel
     let ledMeterProvider: LEDMeterServiceProvider
 
+    var audioDSPPresentationLeadSeconds: Double { playbackService.audioOutputDelay }
+
+    func bindAudioDSP(_ controller: AudioDSPController) {
+        playbackService.bindAudioDSP(controller)
+    }
+
     private let playbackService: AVAudioPlaybackService
     private let operationCoordinator: LibraryOperationCoordinator
     private let mutationCoordinator: LibraryMutationCoordinator

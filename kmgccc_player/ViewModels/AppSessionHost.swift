@@ -52,6 +52,7 @@ final class AppSessionHost: ObservableObject {
     private var whatsNewDismissalCancellable: AnyCancellable?
 
     let uiState: UIStateViewModel
+    let audioDSPController = AudioDSPController()
     let librarySetupFlow = LibrarySetupViewModel()
     let activeLibraryBinding: ActiveLibraryBinding
 
@@ -1414,6 +1415,8 @@ final class AppSessionHost: ObservableObject {
     private func publishActiveSession(_ session: LibrarySession) async {
         activeLibraryBinding.activeSession?.cacheServices.cancelArtworkColorPrefetch()
         uiState.clearLibraryImportFailureReports()
+        audioDSPController.setSourceIsLocal(!session.playbackCoordinator.activeSource.isExternal)
+        session.bindAudioDSP(audioDSPController)
         activeLibraryBinding.publish(session)
         CacheManager.scheduleBackgroundDiskMaintenance(storage: session.cacheServices.storageLocations)
         await bindReferencedScanStatePush(for: session)
@@ -1469,7 +1472,8 @@ final class AppSessionHost: ObservableObject {
         self.lyricsPlaybackPipeline = lyricsPlaybackPipeline
         lyricsPlaybackPipeline.start()
 
-        playbackCoordinator.onActiveSourceChanged = { [weak ledMeterProvider, weak lyricsVM] source in
+        playbackCoordinator.onActiveSourceChanged = { [weak ledMeterProvider, weak lyricsVM, weak audioDSPController] source in
+            audioDSPController?.setSourceIsLocal(!source.isExternal)
             ledMeterProvider?.playbackSource = source
             AudioVisualizationService.shared.setExternalMode(source.isExternal)
             lyricsVM?.refreshConfigFromSettings()
@@ -1553,6 +1557,7 @@ final class AppSessionHost: ObservableObject {
     }
 
     private func releaseActiveSessionBindings() async {
+        audioDSPController.detachPlayback()
         cacheServices?.cancelArtworkColorPrefetch()
         activeLibraryRescanTask?.cancel()
         activeLibraryRescanTask = nil

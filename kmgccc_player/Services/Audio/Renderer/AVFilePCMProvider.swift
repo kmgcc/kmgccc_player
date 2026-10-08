@@ -20,6 +20,7 @@ nonisolated final class AVFilePCMProvider: RendererPCMProvider, @unchecked Senda
 
     private let file: AVAudioFile
     private let processingFormat: AVAudioFormat
+    private let dspFormat: DSPAudioFormat
     private let rangeStart: AVAudioFramePosition
     private let rangeLength: AVAudioFramePosition
     private var currentPosition: AVAudioFramePosition = 0
@@ -32,6 +33,25 @@ nonisolated final class AVFilePCMProvider: RendererPCMProvider, @unchecked Senda
     ) {
         self.file = file
         self.processingFormat = file.processingFormat
+        let processingDSPFormat = CMSampleBufferFactory.dspAudioFormat(from: file.processingFormat)
+        let fileDSPFormat = CMSampleBufferFactory.dspAudioFormat(from: file.fileFormat)
+        if file.processingFormat.channelLayout == nil,
+           file.fileFormat.channelLayout != nil,
+           fileDSPFormat.channelCount == Int(file.processingFormat.channelCount),
+           let sourceLayout = fileDSPFormat.rawLayoutData {
+            // Keep the file's declared channel identity when AVAudioFile's
+            // processing format omitted it. The PCM is still decoded at the
+            // processing rate, but its channels retain the source ordering.
+            self.dspFormat = DSPAudioFormat(
+                sampleRate: file.processingFormat.sampleRate,
+                channelCount: Int(file.processingFormat.channelCount),
+                rawLayoutData: sourceLayout,
+                channelLabels: fileDSPFormat.channelLabels,
+                layoutIsKnown: fileDSPFormat.layoutIsKnown
+            )
+        } else {
+            self.dspFormat = processingDSPFormat
+        }
         let clampedStart = max(0, min(startingFrame, file.length))
         let available = max(0, file.length - clampedStart)
         let requested = frameCount.map(AVAudioFramePosition.init) ?? available
@@ -45,6 +65,10 @@ nonisolated final class AVFilePCMProvider: RendererPCMProvider, @unchecked Senda
 
     var sourceSampleRate: Double {
         processingFormat.sampleRate
+    }
+
+    var sourceDSPFormat: DSPAudioFormat {
+        dspFormat
     }
 
     var totalFrames: AVAudioFramePosition {

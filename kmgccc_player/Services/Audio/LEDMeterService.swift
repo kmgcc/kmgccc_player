@@ -6,6 +6,7 @@
 //  Computes low-frequency energy with FFT and publishes quantized LED levels.
 //
 
+import AVFoundation
 import Accelerate
 import Foundation
 import Observation

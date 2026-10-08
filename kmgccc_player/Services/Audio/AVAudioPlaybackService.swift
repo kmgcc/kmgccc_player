@@ -325,6 +325,17 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
     }
 
+    /// The App controller survives library sessions; only the active service
+    /// owns its renderer binding. Request IDs reject retired-session events.
+    func bindAudioDSP(_ controller: AudioDSPController) {
+        rendererPipeline.onDSPApplyEvent = { [weak controller] event in
+            Task { @MainActor [weak controller] in controller?.receive(event) }
+        }
+        controller.bindPlayback { [weak self] configuration, revision, requestID in
+            self?.rendererPipeline.applyDSP(configuration, revision: revision, requestID: requestID)
+        }
+    }
+
     /// Refresh the active Core Audio output route at the same cadence as the
     /// playback presentation timer. The renderer itself is bound to the
     /// reported device UID so its synchronizer follows the device clock. The

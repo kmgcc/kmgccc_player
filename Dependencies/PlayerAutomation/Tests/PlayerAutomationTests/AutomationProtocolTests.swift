@@ -1366,3 +1366,29 @@ func libraryTrackPreferenceQuerySchemaIsAdvertised() {
         params: .object(["includePreferenceStats": .boolean(true)])
     ).isEmpty)
 }
+
+@Test
+func dspCatalogUsesAudioScopesAndCompleteVersionedSchemas() throws {
+    let descriptors = AutomationDSPToolCatalog.descriptors
+    #expect(descriptors.count == 16)
+    #expect(Set(descriptors.map(\.name)).count == descriptors.count)
+    for descriptor in descriptors {
+        #expect(AutomationToolCatalog.descriptor(for: descriptor.name) != nil)
+        #expect(descriptor.scopes == [descriptor.readOnly ? .audioRead : .audioWrite])
+        #expect(!descriptor.requiresConfirmation)
+        #expect(!descriptor.supportsJobs)
+        #expect(!descriptor.supportsTasks)
+        #expect(AutomationToolCatalog.unknownParameterKeys(for: descriptor.name,
+            params: .object(["unsupported": .boolean(true)])) == ["unsupported"])
+    }
+    guard case .object(let presetFields) = AutomationDSPToolCatalog.presetSchema,
+          case .object(let properties) = presetFields["properties"] else {
+        Issue.record("Missing DSP preset properties")
+        return
+    }
+    #expect(properties["revisionString"] != nil)
+    #expect(properties["configuration"] == AutomationDSPToolCatalog.configurationSchema)
+    let encoded = try AutomationWireCoding.encoder().encode(descriptors)
+    let decoded = try AutomationWireCoding.decoder().decode([AutomationToolDescriptor].self, from: encoded)
+    #expect(decoded == descriptors)
+}

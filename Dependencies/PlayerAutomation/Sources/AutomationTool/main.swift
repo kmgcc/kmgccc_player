@@ -92,7 +92,7 @@ enum AutomationToolDefaults {
             ? maximumTimeout
             : configuredTimeout
 
-        if request.method == "jobs.wait", !timeoutWasSet {
+        if ["jobs.wait", AutomationMethod.dspWait].contains(request.method), !timeoutWasSet {
             let waitSeconds: TimeInterval
             if case .object(let parameters) = request.params,
                case .number(let timeoutMs) = parameters["timeoutMs"],
@@ -1229,6 +1229,43 @@ private struct AutomationCLI {
                 writeDiagnostic("usage error: unknown settings action \(action)")
                 return .usage
             }
+        case "dsp":
+            guard let action = args.first else {
+                writeDiagnostic("usage error: dsp requires schema, state, validate, patch, wait, presets or errors")
+                return .usage
+            }
+            args.removeFirst()
+            if action == "presets" || action == "errors" {
+                guard let operation = args.first else {
+                    writeDiagnostic("usage error: dsp \(action) requires an operation")
+                    return .usage
+                }
+                args.removeFirst()
+                method = "dsp.\(action).\(operation)"
+            } else {
+                method = "dsp.\(action)"
+            }
+            guard args.isEmpty, let descriptor = AutomationToolCatalog.descriptor(for: method) else {
+                writeDiagnostic("usage error: unknown DSP operation or unexpected positional arguments")
+                return .usage
+            }
+            var values: [String: AutomationJSONValue] = [:]
+            if let supplied = options.paramsJSON {
+                guard case .object(let object) = supplied else {
+                    writeDiagnostic("usage error: --params-json must contain a complete object")
+                    return .usage
+                }
+                values = object
+            }
+            if options.dryRun {
+                guard descriptor.supportsDryRun else {
+                    writeDiagnostic("usage error: this DSP operation does not support --dry-run")
+                    return .usage
+                }
+                values["dryRun"] = .boolean(true)
+            }
+            if let revision = options.expectedRevision { values["expectedRevision"] = .string(revision) }
+            params = values.isEmpty ? nil : .object(values)
         case "audio":
             guard let action = args.first else { writeDiagnostic("usage error: audio requires get or patch"); return .usage }
             args.removeFirst()
@@ -1914,6 +1951,7 @@ private struct AutomationCLI {
                                    Collect paginated health evidence or start a background Job
           settings schema|get|patch|validate|reset
                                    Inspect, validate, update or reset persistent settings
+          dsp schema|state|validate|patch|wait|presets|errors  Control DSP and complete presets.
           audio get|patch          Read audio state or update scheduling and App output routing
           storage inspect         Inspect Library storage layout and schema
           storage validate [--params-json <object>]
