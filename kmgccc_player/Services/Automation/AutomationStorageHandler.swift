@@ -1,10 +1,6 @@
-import AppKit
 import CryptoKit
 import Foundation
-import ImageIO
-import PlayerAutomationIPC
 import PlayerAutomationProtocol
-import UniformTypeIdentifiers
 
 private nonisolated struct AutomationStorageBackupManifest: Codable {
     let schemaVersion: Int

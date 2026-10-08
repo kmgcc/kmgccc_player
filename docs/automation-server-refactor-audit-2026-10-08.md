@@ -83,7 +83,7 @@ E：审查 diff、可见性、所有 method 路由、协议包零差异及真实
 
 - A：PlayerAutomation 40 项基线通过；App 定向基线 9 项通过（0 失败）。
 
-- B：共享参数、响应、交互、授权文件解析、查询/投影、Job 投影、Session access 和三类持久化已迁移；54 个 helper 与完整 execute body 的归一化比对保持原语句。Debug 编译与定向 XCTest 9 项通过；PlayerAutomation 40 项通过。作用域采用 internal 类型 + private 状态，不新增 public API。
+- B：共享参数、响应、交互、授权文件解析、查询/投影、Job 投影、Session access 和三类持久化已迁移；54 个 helper 与完整 execute body 的归一化比对保持原语句。Debug 编译与定向 XCTest 9 项通过；PlayerAutomation 40 项基线有效，B 的并行复跑停滞，C 阶段串行复跑通过。作用域采用 internal 类型 + private 状态，不新增 public API。
 
 - C1：Playback/Queue、History、Settings/Audio、Jobs 已进入独立 Handler；Debug 编译与原有定向 XCTest 9 项通过。
 - C2：其余 8 个领域 Handler 已迁移。98 个原 switch case block 逐块归一化比对保持原语句，仅 helper 限定名与 Playlist 子请求闭包改变；所有原 helper 定义保留，没有基于静态搜索删除旧代码。候选 cache 的数据结构、容量与生命周期不变。跨领域 metadata document / expected revisions 解析归入查询/投影辅助，backup support 路径供 storage 与 audit 共用。
@@ -92,3 +92,59 @@ E：审查 diff、可见性、所有 method 路由、协议包零差异及真实
 - D：files.export 的源存在性/唯一命名/复制，以及 rename/move 的建目录、移动与失败回滚进入 Server 持有的串行 AutomationFileWorker。worker 只接受 Sendable URL/UUID/Move 值，未新增 Task.detached、全局单例或数据库 owner。目的 scope 仍在请求内成对持有；export 加入已有 runLibraryOperation，并在 picker 返回后重验 Session identity。所有目标路径、Source membership 与安全相对路径校验继续由现有 MainActor 授权边界执行。
 - D 行为边界：复制结果、命名后缀、逐文件失败顺序、原文件保留和移动的逆序回滚保持。新增 operation 登记使 export 在 Job 观察面出现普通 `other` 描述符，响应仍是原 files.export 结果，不改成 Job handle。保持原文件操作对在途取消的完成行为；quiesce/取消等到实际 I/O 结束，不提前结束 continuation 或释放 security scope。
 - D 验收：Debug 构建与 14 项定向 XCTest 通过。新增测试用实际文件覆盖并发复制命名、缺失源错误、部分移动失败回滚；挂起 worker 队列验证 MainActor 仍可运行、Library quiesce 发出取消后等待 I/O 完成。真实 Finder 授权拒绝、外部卷与大文件场景仍待人工验收。IPC 全领域读取测试触发一条 main-thread runtime warning，相关领域 owner 尚未归因，不把上述测试视为全 App 性能验收。
+
+- E：execute 缩至 181 行；validateRequest 与 executePolicyRequest 分别承担全局校验和 policy 交互。184 个原 helper body 归一化比对保持原语句，114 个 method 路由与原 Server 完全一致；除有意改变的两个文件 I/O case 外，原分支语句保持。收紧持久化 payload、query 内部 helper 和 weak host 可见性；领域专有 lifecycle/provider 错误映射回到各自 Handler；去除多余 import，修正 Selection snapshot 注释。不删除 legacy MCP、scope schema 1 或任何未确认的兼容实现；没有确认需要删除的旧业务死代码。
+- E 自动验收：完整 App Debug XCTest 453 项通过，0 失败；完整 PlayerAutomation 40 项串行执行通过。git diff --check 通过，协议/CLI/MCP/IPC 包源码零差异。增量 XCTest 使用本地 MelismaKit 缓存，日志无新源码编译输入；最终采用独立 DerivedData 的 Debug 构建，实际 local MelismaKit compiler input 检查通过。
+- E 真实 App 验收：标准 build_and_run.sh --verify 构建/签名验证/启动通过，确认仅一个主进程、实际二进制路径及真实 Library 主界面。App bundle 内 adapter 完成现代 discovery/tools/resources/tools-call 与兼容 initialize/ping smoke；18 次只读 CLI 调用覆盖 Library/Playlist/Source/Playback/Queue/History/Jobs/Settings/Audio/Storage/Metadata/Artwork/Lyrics/Files 与非活动 Library 拒绝。未对用户资料库执行写入、导出、删除或切换验收。
+- 验证输出位于忽略的 build/automation-refactor-20261008/：baseline、各阶段、final-all-tests、package-serial、final-debug-build、final-run、live-mcp 日志及 live-cli-summary.json。并行 MCP harness 停滞的采样仅用于诊断；串行完整测试成功，不宣称该 harness 问题已修复。
+
+## 重构后的模块结构
+
+```mermaid
+flowchart TD
+    IPC[PlayerAutomationIPC listener] --> Server[AutomationIPCServer]
+    Server --> Validation[version / caller / schema / scopes]
+    Server --> Request[幂等 / 取消 / 审计 / background / batch]
+    Server --> Handlers[领域 Handlers]
+    Handlers --> Owners[AppSessionHost / LibrarySession / domain owners]
+    Handlers --> Shared[参数 / 响应 / 查询投影 / 交互 / 文件授权]
+    Owners --> Coordinator[LibraryOperationCoordinator]
+    Handlers --> FileHandler[AutomationFilesHandler]
+    FileHandler -->|runLibraryOperation| Coordinator
+    FileHandler -->|URL / UUID / Move| Files[AutomationFileWorker: Sendable 文件操作]
+```
+
+| 文件 | 最终职责与边界 |
+| --- | --- |
+| AutomationIPCServer.swift | 1,398 行；listener 生命周期、请求全局校验、显式分发、policy、幂等/审计、batch/background 请求编排；不再包含领域 switch body 或候选状态 |
+| AutomationLibraryHandler.swift | registry/lifecycle、import、bundle、Track query/report、Selection；事务/Job 仍由 Host/Session/ViewModel 拥有 |
+| AutomationPlaylistHandler.swift | Playlist 读取/交换/成员 mutation；Selection 子操作用 Server 提供的窄闭包回到全局校验 |
+| AutomationSourceHandler.swift | Source 配置交换、授权/管理、binding 与扫描入口；只调用现有 Host 服务 |
+| AutomationPlaybackHandler.swift | Playback 命令、Queue 状态与预览；不复制播放/队列 owner |
+| AutomationHistoryHandler.swift | History 查询/统计/revision、确认清空 |
+| AutomationMetadataHandler.swift | Track/entity Metadata、provider、文档、embedded tags 和领域错误；仍较大，保留内聚事务逻辑 |
+| AutomationArtworkHandler.swift | target/revision、图片输入、候选搜索/缓存和应用 |
+| AutomationLyricsHandler.swift | 候选搜索/缓存、质量、应用/清理/刷新；写入仍由 Session 执行 |
+| AutomationFilesHandler.swift | 文件授权/计划/用户交互、结果与 Source reconciliation；不执行同步 copy/move |
+| AutomationFileWorker.swift | 实例持有串行 queue，只处理 URL/UUID/Move 值的复制、唯一命名、移动/回滚；无 App/Session/model 状态 |
+| AutomationJobsHandler.swift | Job 观察、等待、取消/重试；不持有 Job registry 或新的 task owner |
+| AutomationSettingsHandler.swift | Settings/Audio schema、预览/revision、应用；复用现有 settings/audio owner |
+| AutomationStorageHandler.swift | inventory/backup/diff、validation/repair、诊断与 backup retention；既有后台执行保持 |
+| AutomationParameters.swift | typed 参数解析与稳定错误定义；没有新参数/schema |
+| AutomationResponseSupport.swift | 通用响应编码/分类/冲突 envelope，供 Server 和领域共用 |
+| AutomationSessionAccess.swift | 仅 weak host、active Library identity 和对应失败响应；无请求/领域状态 |
+| AutomationLibraryQueries.swift | 共享过滤/排序/Selection resolution、Track/Playlist 投影、revision 与歌词状态 |
+| AutomationFileAccess.swift | 原有 Source membership、bookmark root、相对路径/symlink 校验与授权媒体解析 |
+| AutomationInteraction.swift | 原有 App-owned picker 与前台确认；交互文案和取消语义保持 |
+| AutomationJobProjection.swift | 共享 Job wire projection |
+| AutomationPolicyPersistence.swift / AutomationSelectionStore.swift / AutomationSupportPaths.swift | 小型原有持久化/路径实现，格式与存储位置保持；文件内部 payload 继续 private |
+
+没有添加 Handler→Handler 依赖、领域单例、通用框架或第三方包。跨领域响应和辅助实现各保留一份；迁移后的 Server helper 副本已移除。uniqueExportURL 和移动回滚是迁移到 worker，不能把它们的原位置删除计作死代码清理。
+
+## 尚未解决的技术债务与人工路径
+
+- Metadata/Library Handler 内仍有较长但内聚的分支；后续需围绕文档 import/entity mutation 独立测试再拆，避免把复杂度转成转发链。
+- query/report 的大量遍历/序列化、Artwork 直读/转换、Selection/幂等/审计同步持久化、diagnostic sidecar/存在性查询仍可能占用 MainActor。已有线程 runtime warning 尚未归因；本轮没有全 App trace 或大文件吞吐基准。
+- 幂等 replay 的授权撤销顺序、Lyrics 候选跨 Library UUID/TTL、runModal 的在途取消，以及并行 MCP 测试退出/EOF harness 保持原有行为，需独立兼容性决策。
+- 自动 fixture 验证 dry-run、拒绝、冲突、取消/等待与 quiesce；真实 App 本轮只做读取 smoke。Finder 拒绝/取消、referenced Source scope、大文件/外部卷、GUI 切库、进程重启 Job 恢复、真实 provider/NCM 和 sandbox 分发仍需人工覆盖。worker unit/ownership tests 不等于这些系统边界已经验收。
+- 本轮没有 push、合并或发布。六个阶段提交可逆序回滚；性能提交可单独回滚。

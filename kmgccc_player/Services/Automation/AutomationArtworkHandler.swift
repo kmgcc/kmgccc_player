@@ -1,8 +1,6 @@
-import AppKit
 import CryptoKit
 import Foundation
 import ImageIO
-import PlayerAutomationIPC
 import PlayerAutomationProtocol
 import UniformTypeIdentifiers
 
@@ -500,12 +498,9 @@ final class AutomationArtworkHandler {
 
     private var artworkCandidateCache: [String: CachedArtworkCandidate] = [:]
 
-
     private var artworkCandidateOrder: [String] = []
 
-
     private let artworkCandidateCacheLimit = 64
-
 
     private func hasArtworkTargetParameters(
         _ parameters: AutomationParameters,

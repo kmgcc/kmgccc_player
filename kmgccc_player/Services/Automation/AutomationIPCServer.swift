@@ -1,11 +1,6 @@
-import AppKit
-import CryptoKit
-import Darwin
 import Foundation
-import ImageIO
 import PlayerAutomationIPC
 import PlayerAutomationProtocol
-import UniformTypeIdentifiers
 
 enum AutomationBatchExecutionContext {
     @TaskLocal static var aggregateConfirmationApproved = false
@@ -259,135 +254,7 @@ final class AutomationIPCServer {
         _ request: AutomationRequest,
         cancellation: AutomationIPCCancellationToken? = nil
     ) async -> AutomationResponse {
-        guard AutomationProtocol.supportedVersions.contains(request.protocolVersion) else {
-            return .failure(
-                for: request,
-                error: AutomationError(
-                    code: .unsupportedVersion,
-                    message: "Unsupported automation protocol version \(request.protocolVersion).",
-                    details: .object([
-                        "supportedVersions": .array(
-                            AutomationProtocol.supportedVersions.map { .number(Double($0)) }
-                        )
-                    ])
-                )
-            )
-        }
-
-        if let caller = request.context.caller?.lowercased() {
-            let enabled: Bool?
-            switch caller {
-            case "mcp": enabled = AppSettings.shared.automationMCPEnabled
-            case "cli": enabled = AppSettings.shared.automationCLIEnabled
-            default: enabled = nil
-            }
-            if enabled == false {
-                return .failure(
-                    for: request,
-                    error: AutomationError(
-                        code: .authorizationRequired,
-                        message: "The \(caller.uppercased()) control plane is disabled in App Settings.",
-                        details: .object([
-                            "controlPlane": .string(caller),
-                            "setting": .string(caller == "mcp" ? "automationMCPEnabled" : "automationCLIEnabled")
-                        ])
-                    )
-                )
-            }
-        }
-
-        let unknownParameterKeys = AutomationToolCatalog.unknownParameterKeys(
-            for: request.method,
-            params: request.params
-        )
-        if !unknownParameterKeys.isEmpty {
-            return AutomationResponseSupport.invalidParameters(
-                for: request,
-                error: AutomationParameterError.unknown(unknownParameterKeys)
-            )
-        }
-
-        if let descriptor = AutomationToolCatalog.descriptor(for: request.method) {
-            let granted = grantedScopes()
-            var required = Set(descriptor.scopes)
-            // A destructive preview is still read-only. Let an Agent inspect
-            // the impact with the normal library scope before requesting the
-            // separately protected delete scope for the real mutation.
-            if request.method == AutomationMethod.filesDelete,
-               case .object(let values) = request.params,
-               case .boolean(true) = values["dryRun"] {
-                required.remove(.filesDelete)
-            }
-            if request.method == AutomationMethod.libraryRemove,
-               case .object(let values) = request.params,
-               case .boolean(true) = values["dryRun"] {
-                required.remove(.libraryDelete)
-            }
-            if case .object(let values) = request.params,
-               case .boolean(true) = values["dryRun"],
-               let writeScope = Self.batchWriteScope(for: request.method) {
-                required.remove(writeScope)
-            }
-            if request.method == AutomationMethod.metadataEmbeddedPatch,
-               case .object(let values) = request.params,
-               case .boolean(true) = values["dryRun"] {
-                required.remove(.metadataWrite)
-                required.remove(.filesWrite)
-            }
-            if request.method == AutomationMethod.metadataImport,
-               case .object(let values) = request.params,
-               case .boolean(true) = values["dryRun"] {
-                required.remove(.metadataWrite)
-            }
-            if request.method == AutomationMethod.sourceConfigImport,
-               case .object(let values) = request.params,
-               case .boolean(true) = values["dryRun"] {
-                required.remove(.sourceWrite)
-            }
-            if request.method == AutomationMethod.libraryImport,
-               case .object(let values) = request.params {
-                if case .boolean(true) = values["dryRun"] {
-                    required.remove(.libraryWrite)
-                } else {
-                    if values["targetPlaylistID"] != nil { required.insert(.playlistWrite) }
-                    if appSession?.activeLibraryBinding.context?.mode == .referenced {
-                        required.insert(.sourceWrite)
-                    }
-                }
-            }
-            if request.method == AutomationMethod.jobsRetry,
-               case .object(let values) = request.params,
-               case .string(let rawJobID)? = values["jobID"],
-               let jobID = UUID(uuidString: rawJobID),
-               let retrySpec = appSession?.libraryJobDescriptors()
-                   .first(where: {
-                       $0.id == jobID && $0.libraryID == request.context.libraryID
-                   })?.retrySpec,
-               retrySpec.kind == .libraryImport {
-                required.insert(.libraryWrite)
-                if retrySpec.targetPlaylistID != nil { required.insert(.playlistWrite) }
-                if appSession?.activeLibraryBinding.context?.mode == .referenced {
-                    required.insert(.sourceWrite)
-                }
-            }
-            if requiresHistoryRead(for: request) {
-                required.insert(.historyRead)
-            }
-            if !granted.isSuperset(of: required) {
-                let denied = required.subtracting(granted)
-                return .failure(
-                    for: request,
-                    error: AutomationError(
-                        code: .authorizationRequired,
-                        message: "The App automation policy has not granted all scopes required by this capability.",
-                        details: .object([
-                            "requiredScopes": .array(required.map(\.rawValue).sorted().map { .string($0) }),
-                            "deniedScopes": .array(denied.map(\.rawValue).sorted().map { .string($0) })
-                        ])
-                    )
-                )
-            }
-        }
+        if let failure = validateRequest(request) { return failure }
 
         if isBackgroundJobRequest(request) {
             return await submitBackgroundJob(for: request)
@@ -554,6 +421,153 @@ final class AutomationIPCServer {
              AutomationMethod.audioPatch:
             return await AutomationSettingsHandler(appSession: appSession).handle(request)
 
+        case AutomationMethod.automationCapabilities,
+             AutomationMethod.automationScopes,
+             AutomationMethod.automationGrantScope,
+             AutomationMethod.automationRevokeScope:
+            return await executePolicyRequest(request)
+
+        default:
+            return AutomationResponseSupport.unsupportedMethod(for: request)
+        }
+    }
+
+    private func validateRequest(_ request: AutomationRequest) -> AutomationResponse? {
+        guard AutomationProtocol.supportedVersions.contains(request.protocolVersion) else {
+            return .failure(
+                for: request,
+                error: AutomationError(
+                    code: .unsupportedVersion,
+                    message: "Unsupported automation protocol version \(request.protocolVersion).",
+                    details: .object([
+                        "supportedVersions": .array(
+                            AutomationProtocol.supportedVersions.map { .number(Double($0)) }
+                        )
+                    ])
+                )
+            )
+        }
+
+        if let caller = request.context.caller?.lowercased() {
+            let enabled: Bool?
+            switch caller {
+            case "mcp": enabled = AppSettings.shared.automationMCPEnabled
+            case "cli": enabled = AppSettings.shared.automationCLIEnabled
+            default: enabled = nil
+            }
+            if enabled == false {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .authorizationRequired,
+                        message: "The \(caller.uppercased()) control plane is disabled in App Settings.",
+                        details: .object([
+                            "controlPlane": .string(caller),
+                            "setting": .string(caller == "mcp" ? "automationMCPEnabled" : "automationCLIEnabled")
+                        ])
+                    )
+                )
+            }
+        }
+
+        let unknownParameterKeys = AutomationToolCatalog.unknownParameterKeys(
+            for: request.method,
+            params: request.params
+        )
+        if !unknownParameterKeys.isEmpty {
+            return AutomationResponseSupport.invalidParameters(
+                for: request,
+                error: AutomationParameterError.unknown(unknownParameterKeys)
+            )
+        }
+
+        if let descriptor = AutomationToolCatalog.descriptor(for: request.method) {
+            let granted = grantedScopes()
+            var required = Set(descriptor.scopes)
+            // A destructive preview is still read-only. Let an Agent inspect
+            // the impact with the normal library scope before requesting the
+            // separately protected delete scope for the real mutation.
+            if request.method == AutomationMethod.filesDelete,
+               case .object(let values) = request.params,
+               case .boolean(true) = values["dryRun"] {
+                required.remove(.filesDelete)
+            }
+            if request.method == AutomationMethod.libraryRemove,
+               case .object(let values) = request.params,
+               case .boolean(true) = values["dryRun"] {
+                required.remove(.libraryDelete)
+            }
+            if case .object(let values) = request.params,
+               case .boolean(true) = values["dryRun"],
+               let writeScope = Self.batchWriteScope(for: request.method) {
+                required.remove(writeScope)
+            }
+            if request.method == AutomationMethod.metadataEmbeddedPatch,
+               case .object(let values) = request.params,
+               case .boolean(true) = values["dryRun"] {
+                required.remove(.metadataWrite)
+                required.remove(.filesWrite)
+            }
+            if request.method == AutomationMethod.metadataImport,
+               case .object(let values) = request.params,
+               case .boolean(true) = values["dryRun"] {
+                required.remove(.metadataWrite)
+            }
+            if request.method == AutomationMethod.sourceConfigImport,
+               case .object(let values) = request.params,
+               case .boolean(true) = values["dryRun"] {
+                required.remove(.sourceWrite)
+            }
+            if request.method == AutomationMethod.libraryImport,
+               case .object(let values) = request.params {
+                if case .boolean(true) = values["dryRun"] {
+                    required.remove(.libraryWrite)
+                } else {
+                    if values["targetPlaylistID"] != nil { required.insert(.playlistWrite) }
+                    if appSession?.activeLibraryBinding.context?.mode == .referenced {
+                        required.insert(.sourceWrite)
+                    }
+                }
+            }
+            if request.method == AutomationMethod.jobsRetry,
+               case .object(let values) = request.params,
+               case .string(let rawJobID)? = values["jobID"],
+               let jobID = UUID(uuidString: rawJobID),
+               let retrySpec = appSession?.libraryJobDescriptors()
+                   .first(where: {
+                       $0.id == jobID && $0.libraryID == request.context.libraryID
+                   })?.retrySpec,
+               retrySpec.kind == .libraryImport {
+                required.insert(.libraryWrite)
+                if retrySpec.targetPlaylistID != nil { required.insert(.playlistWrite) }
+                if appSession?.activeLibraryBinding.context?.mode == .referenced {
+                    required.insert(.sourceWrite)
+                }
+            }
+            if requiresHistoryRead(for: request) {
+                required.insert(.historyRead)
+            }
+            if !granted.isSuperset(of: required) {
+                let denied = required.subtracting(granted)
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .authorizationRequired,
+                        message: "The App automation policy has not granted all scopes required by this capability.",
+                        details: .object([
+                            "requiredScopes": .array(required.map(\.rawValue).sorted().map { .string($0) }),
+                            "deniedScopes": .array(denied.map(\.rawValue).sorted().map { .string($0) })
+                        ])
+                    )
+                )
+            }
+        }
+
+        return nil
+    }
+
+    private func executePolicyRequest(_ request: AutomationRequest) async -> AutomationResponse {
+        switch request.method {
         case AutomationMethod.automationCapabilities:
             guard request.params == nil || request.params == .null || AutomationResponseSupport.isObject(request.params) else {
                 return AutomationResponseSupport.invalidParameters(for: request)
@@ -655,13 +669,7 @@ final class AutomationIPCServer {
             }
 
         default:
-            return .failure(
-                for: request,
-                error: AutomationError(
-                    code: .methodNotFound,
-                    message: "Unsupported automation method: \(request.method)."
-                )
-            )
+            return AutomationResponseSupport.unsupportedMethod(for: request)
         }
     }
 
@@ -719,8 +727,6 @@ final class AutomationIPCServer {
             return false
         }
     }
-
-
 
     private func scopeStatusResult() -> AutomationCapabilityResult {
         let granted = grantedScopes()
