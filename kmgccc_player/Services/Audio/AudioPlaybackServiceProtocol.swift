@@ -3,7 +3,7 @@
 //  myPlayer2
 //
 //  kmgccc_player - Audio Playback Service Protocol
-//  Defines playback control interface for AVAudioEngine implementation.
+//  Defines the local playback control interface.
 //
 
 import Foundation
@@ -22,8 +22,8 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
     /// Current playback position in seconds.
     var currentTime: Double { get }
 
-    /// Realized audio output delay in seconds. This is non-zero only when the
-    /// playback graph delays audible output; internal analysis remains pre-delay.
+    /// App-owned renderer timeline lead used to align visualization. Physical
+    /// output-device latency is tracked separately by the renderer clock.
     var audioOutputDelay: Double { get }
 
     /// Total duration of current track in seconds.

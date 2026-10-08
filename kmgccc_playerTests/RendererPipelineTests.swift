@@ -81,6 +81,71 @@ final class RendererSampleBufferTests: XCTestCase {
 }
 
 final class RendererTimelineTests: XCTestCase {
+    func testLoadSeekFailureIsScopedAndDoesNotCommitOrEnqueue() {
+        let pipeline = RendererPlaybackPipeline()
+        let failureReported = expectation(description: "source seek failure is reported")
+        let timelineCommitted = expectation(description: "failed load does not commit")
+        timelineCommitted.isInverted = true
+        let pcmEnqueued = expectation(description: "failed load does not enqueue")
+        pcmEnqueued.isInverted = true
+        let stopCompleted = expectation(description: "stop completes after terminal cleanup")
+        let requestedSegmentID = UUID()
+
+        pipeline.onFailure = { segmentID, error in
+            XCTAssertEqual(segmentID, requestedSegmentID)
+            guard case .sourceError = error else {
+                XCTFail("expected a terminal source error")
+                return
+            }
+            failureReported.fulfill()
+        }
+        pipeline.onTimelineMutationCommitted = { _, _, _ in
+            timelineCommitted.fulfill()
+        }
+        pipeline.onEnqueue = { _, _ in
+            pcmEnqueued.fulfill()
+        }
+
+        pipeline.load(
+            source: ThrowingSeekRendererPCMProvider(),
+            segmentID: requestedSegmentID,
+            autoplay: true
+        )
+        wait(for: [failureReported], timeout: 2)
+        pipeline.stop {
+            stopCompleted.fulfill()
+        }
+        wait(for: [stopCompleted], timeout: 2)
+        wait(for: [timelineCommitted, pcmEnqueued], timeout: 0.1)
+    }
+
+    func testStopCompletionRunsAfterPipelineReleasesLoadedProvider() {
+        let pipeline = RendererPlaybackPipeline()
+        let timelineCommitted = expectation(description: "empty source load commits without renderer output")
+        let stopCompleted = expectation(description: "stop completion is a source-release barrier")
+        var provider: MemoryRendererPCMProvider? = MemoryRendererPCMProvider(
+            sampleRate: 48_000,
+            channels: 2,
+            frames: 0,
+            marker: 0
+        )
+        let weakProvider = WeakMemoryRendererProvider(provider!)
+
+        pipeline.onTimelineMutationCommitted = { _, _, _ in
+            timelineCommitted.fulfill()
+        }
+        pipeline.load(source: provider!, autoplay: false)
+        provider = nil
+
+        wait(for: [timelineCommitted], timeout: 2)
+        XCTAssertNotNil(weakProvider.value)
+        pipeline.stop {
+            XCTAssertNil(weakProvider.value)
+            stopCompleted.fulfill()
+        }
+        wait(for: [stopCompleted], timeout: 2)
+    }
+
     func testAppendCreatesContinuousTimelineAcrossSampleRatesWithOutputDelay() throws {
         let pipeline = RendererPlaybackPipeline()
         let first = MemoryRendererPCMProvider(
@@ -145,6 +210,86 @@ final class RendererTimelineTests: XCTestCase {
         XCTAssertEqual(RendererPlaybackPipeline.analysisChunkFrames, 1024)
         XCTAssertEqual(RendererPlaybackPipeline.chunkFrames, 8192)
     }
+
+    func testRendererRecoveryUsesLogicalSegmentBoundaryWithOutputLead() {
+        let outgoing = RendererSegmentDescriptor(
+            id: UUID(),
+            presentationStartSeconds: 0.18,
+            presentationEndSeconds: 10.18
+        )
+        let incoming = RendererSegmentDescriptor(
+            id: UUID(),
+            presentationStartSeconds: 10.18,
+            presentationEndSeconds: 20.18
+        )
+
+        XCTAssertEqual(
+            RendererRecoveryTimeline.segmentIndex(
+                in: [outgoing, incoming],
+                clockSeconds: 9.99,
+                leadSeconds: 0.18
+            ),
+            0
+        )
+        XCTAssertEqual(
+            RendererRecoveryTimeline.segmentIndex(
+                in: [outgoing, incoming],
+                clockSeconds: 10.10,
+                leadSeconds: 0.18
+            ),
+            1
+        )
+        XCTAssertEqual(
+            RendererRecoveryTimeline.sourceFrame(
+                clockSeconds: 10.10,
+                segmentStartSeconds: incoming.presentationStartSeconds,
+                leadSeconds: 0.18,
+                sampleRate: 48_000,
+                totalFrames: 480_000
+            ),
+            4_800
+        )
+        XCTAssertEqual(
+            RendererRecoveryTimeline.nextPresentationTime(
+                clockSeconds: 10.10,
+                segmentStartSeconds: incoming.presentationStartSeconds,
+                leadSeconds: 0.18
+            ),
+            10.28,
+            accuracy: 0.000_001
+        )
+    }
+
+    func testRendererFailureRecoveryBudgetResetsOnlyAfterRenderingClockAdvances() {
+        var budget = RendererFailureRecoveryBudget()
+
+        XCTAssertTrue(budget.beginRecoveryAttempt())
+        XCTAssertFalse(budget.beginRecoveryAttempt())
+        XCTAssertFalse(
+            budget.observeClock(previous: 1, current: 1.10, rendererIsRendering: false)
+        )
+        XCTAssertFalse(budget.beginRecoveryAttempt())
+        XCTAssertFalse(
+            budget.observeClock(previous: 1, current: 1.04, rendererIsRendering: true)
+        )
+        XCTAssertTrue(
+            budget.observeClock(previous: 1, current: 1.06, rendererIsRendering: true)
+        )
+        XCTAssertTrue(budget.beginRecoveryAttempt())
+    }
+
+    func testTimelineGenerationInvalidatesQueuedCallbacksAfterStopOrNewLoad() {
+        let gate = RendererTimelineGeneration()
+        let oldLoad = gate.current()
+
+        let stopped = gate.advance()
+        XCTAssertFalse(gate.isCurrent(oldLoad))
+        XCTAssertTrue(gate.isCurrent(stopped))
+
+        let nextLoad = gate.advance()
+        XCTAssertFalse(gate.isCurrent(stopped))
+        XCTAssertTrue(gate.isCurrent(nextLoad))
+    }
 }
 
 private final class EnqueueState: @unchecked Sendable {
@@ -161,6 +306,33 @@ private final class EnqueueState: @unchecked Sendable {
         lock.lock()
         points.append(value)
         lock.unlock()
+    }
+}
+
+private enum RendererProviderTestError: Error {
+    case seek
+}
+
+private nonisolated final class ThrowingSeekRendererPCMProvider: RendererPCMProvider, @unchecked Sendable {
+    let sourceSampleRate = 48_000.0
+    let sourceChannelCount = 2
+    let totalFrames: AVAudioFramePosition = 48_000
+
+    func nextChunk(maxFrames: AVAudioFrameCount) throws -> CanonicalPCM? {
+        XCTFail("a provider that fails positioning must not be decoded")
+        return nil
+    }
+
+    func seek(to position: AVAudioFramePosition) throws {
+        throw RendererProviderTestError.seek
+    }
+}
+
+private nonisolated final class WeakMemoryRendererProvider: @unchecked Sendable {
+    weak var value: MemoryRendererPCMProvider?
+
+    init(_ value: MemoryRendererPCMProvider) {
+        self.value = value
     }
 }
 

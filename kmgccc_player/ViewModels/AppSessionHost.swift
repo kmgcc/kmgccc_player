@@ -1817,8 +1817,8 @@ final class AppSessionHost: ObservableObject {
             // first responder these system services spin up and block the main
             // thread for hundreds of ms — which freezes the UI (scrubber, spectrum,
             // lyrics) when the song-Info editor is first opened during playback and
-            // is misperceived as an audio hitch. AVAudioEngine rendering is immune
-            // to main-thread stalls, so paying this cost off the interaction path at
+            // is misperceived as an audio hitch. Renderer playback uses its own
+            // queue, so paying this cost off the interaction path at
             // launch idle is safe and leaves the open-to-edit experience untouched.
             // Distinct from the SwiftUI-host prewarm tried earlier: that warmed the
             // view, not the system text services that actually cost the first frame.
@@ -1902,11 +1902,11 @@ final class AppSessionHost: ObservableObject {
     ///
     /// This rebuilds the queue, current track, position, and
     /// UI without auto-playing. The audio is prepared and scheduled at the saved
-    /// position but the player node is never started — the final state is paused,
+    /// position with the renderer clock paused — the final state is paused,
     /// and the user resumes from the restored position with one tap.
     ///
     /// The launch auto-play chain (`playTracks -> seek -> pause`) intentionally
-    /// stays disabled; this path never calls `playerNode.play()`. The saved
+    /// stays disabled; this path loads without autoplay. The saved
     /// memory is **not** cleared on restore so repeated relaunches keep working
     /// (the autosave timer keeps it current). It is only cleared when the saved
     /// track is genuinely no longer present in the library.

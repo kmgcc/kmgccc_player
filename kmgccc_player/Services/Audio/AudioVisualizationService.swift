@@ -85,10 +85,8 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     private var pendingPeak: Float = 0
     private var hasPendingFFT = false
 
-    /// Player volume (0...1), used to volume-compensate the time-domain RMS so
-    /// the spectrum's quiet/normal/loud classification tracks the source
-    /// loudness instead of the slider position. Updated from the playback
-    /// service; defaults to 1.0 (no compensation) until then.
+    /// Player volume (0...1) retained for diagnostics. Renderer PCM is supplied
+    /// before master gain, so source loudness needs no volume correction.
     private var playerVolume: Float = 1.0
 
     // Latest-frame mailbox: coalesce main-actor publishes so a stalled main
@@ -179,9 +177,8 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         }
     }
 
-    /// Update the player volume so the spectrum processor can volume-compensate
-    /// its time-domain loudness measurement. Safe to call from any thread; the
-    /// value is read on the processing queue. Defaults to 1.0 until first call.
+    /// Update the diagnostic player volume. Safe to call from any thread; the
+    /// value is read on the processing queue.
     func updateVolume(_ volume: Float) {
         let clamped = max(0, min(1, volume))
         processingQueue.async { [weak self] in
@@ -623,7 +620,6 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
             hubConsumerId = nil
         }
 
-        hub.reinstallTapIfActive()
         hubConsumerId = hub.addConsumer { [weak self] data in
             self?.enqueue(data)
         }
@@ -1122,7 +1118,7 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
             0.50,  // 8: Air    (was 0.50)
         ]
 
-        // --- Absolute loudness (time-domain RMS, volume-compensated) ---
+        // --- Absolute source loudness (pre-master time-domain RMS) ---
         // Asymmetric fast-attack / smooth-release tracking:
         // When volume jumps (bursts, drops, startup), reacts in ≈35ms (1-2 frames);
         // when volume drops, decays smoothly over ≈800ms to prevent pumping.
@@ -1323,7 +1319,7 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
     private var lastCommonMotionDb: Float = 0
     private var lastLowProminenceGate: Float = 0
     private var lastLoudnessState: String = "-"
-    // Volume-compensation diagnostics (raw vs compensated RMS).
+    // Source RMS diagnostics; the historical compensated field now equals source RMS.
     private var lastRawRms: Float = 0
     private var lastPlayerVolume: Float = 1
     private var lastCompensatedRms: Float = 0
@@ -1452,44 +1448,37 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         }
     }
 
-    // MARK: - Loudness (time-domain RMS, volume-compensated)
+    // MARK: - Loudness (pre-master time-domain RMS)
 
     private func updateLoudness(
         dt: Float, magnitudes: [Float], rms: Float, peak: Float, playerVolume: Float
     ) {
-        // Compensate for the player volume so the classification tracks the
-        // source loudness, not the slider position. The tap sits on
-        // playbackMixer (downstream of playerNode.volume); dividing by the
-        // known volume recovers the pre-volume level. Below 5% the tap signal is
-        // too close to the noise floor to divide safely, so hold the last
-        // classification (muted/very-quiet must not amplify noise into "loud").
-        // Compensated values are clamped to full-scale so a tiny divisor can't
-        // explode a noise floor into a high-level signal.
+        // Renderer analysis precedes renderer.volume. These samples already
+        // carry source loudness, including when the output is muted. Preserve
+        // the existing diagnostic fields while avoiding a second gain correction.
         lastRawRms = rms
         lastPlayerVolume = playerVolume
-        if playerVolume > 0.05 {
-            let compRms = min(rms / playerVolume, 1.0)
-            let compPeak = min(peak / playerVolume, 1.0)
-            lastCompensatedRms = compRms
-            let instantRmsDb = 20 * log10(compRms + Constants.epsilon)
-            let instantPeakDb = 20 * log10(compPeak + Constants.epsilon)
+        let sourceRms = min(rms, 1.0)
+        let sourcePeak = min(peak, 1.0)
+        lastCompensatedRms = sourceRms
+        let instantRmsDb = 20 * log10(sourceRms + Constants.epsilon)
+        let instantPeakDb = 20 * log10(sourcePeak + Constants.epsilon)
 
-            let rmsTau: Float = instantRmsDb > shortTermRmsDbFS
-                ? Constants.loudnessAttackTau
-                : Constants.loudnessReleaseTau
-            let alpha = 1 - exp(-dt / rmsTau)
-            shortTermRmsDbFS += alpha * (instantRmsDb - shortTermRmsDbFS)
+        let rmsTau: Float = instantRmsDb > shortTermRmsDbFS
+            ? Constants.loudnessAttackTau
+            : Constants.loudnessReleaseTau
+        let alpha = 1 - exp(-dt / rmsTau)
+        shortTermRmsDbFS += alpha * (instantRmsDb - shortTermRmsDbFS)
 
-            let peakTau: Float = instantPeakDb > shortTermPeakDbFS
-                ? Constants.loudnessAttackTau
-                : Constants.loudnessReleaseTau
-            let peakAlpha = 1 - exp(-dt / peakTau)
-            shortTermPeakDbFS += peakAlpha * (instantPeakDb - shortTermPeakDbFS)
+        let peakTau: Float = instantPeakDb > shortTermPeakDbFS
+            ? Constants.loudnessAttackTau
+            : Constants.loudnessReleaseTau
+        let peakAlpha = 1 - exp(-dt / peakTau)
+        shortTermPeakDbFS += peakAlpha * (instantPeakDb - shortTermPeakDbFS)
 
-            let instantCrest = instantPeakDb - instantRmsDb
-            let crestAlpha = 1 - exp(-dt / Constants.crestTau)
-            crestDb += crestAlpha * (instantCrest - crestDb)
-        }
+        let instantCrest = instantPeakDb - instantRmsDb
+        let crestAlpha = 1 - exp(-dt / Constants.crestTau)
+        crestDb += crestAlpha * (instantCrest - crestDb)
 
         // FFT mean power: volume-invariant reference for the base layer.
         // Uses asymmetric tracking so sudden chords lift the reference immediately
@@ -1519,9 +1508,8 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
 
         lastRawRms = rms
         lastPlayerVolume = playerVolume
-        let comp = playerVolume > 0.05 ? min(playerVolume, 1.0) : 1.0
-        let compRms = min(rms / comp, 1.0)
-        let compPeak = min(peak / comp, 1.0)
+        let compRms = min(rms, 1.0)
+        let compPeak = min(peak, 1.0)
         lastCompensatedRms = compRms
         shortTermRmsDbFS = 20 * log10(compRms + Constants.epsilon)
         shortTermPeakDbFS = 20 * log10(compPeak + Constants.epsilon)
@@ -1813,7 +1801,7 @@ nonisolated private struct SpectrumDiagnostics {
     var sumCommonMotion: Float = 0
     var sumLowProminence: Float = 0
 
-    // Volume-compensation diagnostics.
+    // Master-volume and source-RMS diagnostics.
     var sumRawRms: Float = 0
     var sumPlayerVolume: Float = 0
     var sumCompensatedRms: Float = 0

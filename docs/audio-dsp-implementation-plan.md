@@ -632,6 +632,8 @@ DSP 读取使用 `audio.read`，DSP/预设/代码/全局音频更新使用 `audi
 
 按统一计划删除 engine/旧 tap/旧回退，完成恢复、输出设备、180 ms lead、AAC/gapless、分析和开发录制验收。记录该版本作为 DSP A/B 基线。输出迁移未完成时不新增第二条 DSP 后端。
 
+2026-10-08 已完成 P0 源码迁移，详情见 [实施记录](audio-renderer-p0-implementation.md)。编译、测试执行与设备验收尚未完成，DSP A/B 基线版本仍待实测后确定。
+
 ### P1：EQ、基础节点契约和可观测状态
 
 新增最小配置 owner/processor、9 段 EQ、Double 状态、真实旁路、静态余量和 source format/layout 传递。复用既有 EQ 交互，在音频设置接入。同步新增 schema/state/validate/patch 及基础 MCP/CLI handler，UI/Agent 从首阶段共用 owner。
