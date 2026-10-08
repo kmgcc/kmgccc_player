@@ -933,35 +933,35 @@ public final class AppSettings {
 
     // MARK: - Playback Settings
 
-    /// When enabled, real audio output is delayed by the fixed 180ms playback
-    /// graph delay so the
+    /// When enabled, renderer sample timestamps retain a fixed 180ms lead so the
     /// inherent latency of the LED / spectrum / lyrics visual pipeline lines up
     /// with what the user hears. Default ON — improve visual sync out-of-the-box.
-    /// When OFF the output chain is physically delay-free.
+    /// When OFF the application adds no output lead.
     @ObservationIgnored
     @AppStorage("audioLookaheadEnabled") var audioLookaheadEnabled: Bool = true
 
-    /// Optional Core Audio output route for the App-owned spatial renderer.
+    /// Optional Core Audio output route for the App-owned renderer.
     /// Nil follows the user's system default output device.
     @ObservationIgnored
     @AppStorage("audioOutputDeviceUID") var audioOutputDeviceUID: String?
 
-    /// Legacy lookahead delay preference. The current playback graph uses a
+    /// Legacy lookahead delay preference. The renderer timeline uses a
     /// fixed 180ms target; this stored value is preserved for compatibility and
     /// future UI work.
     @ObservationIgnored
     @AppStorage("lookaheadMs") var lookaheadMs: Double = 180
 
-    /// Debug-only: when true, forces the no-delay direct output chain
+    /// Debug-only: when true, disables the application-owned renderer lead
     /// regardless of `audioLookaheadEnabled`. Not surfaced in any formal UI;
-    /// used to isolate whether the delay node contributes to a playback hitch.
+    /// used to isolate lookahead-related playback behavior. The persisted key
+    /// retains its old name for compatibility.
     /// Default false — normal behavior is unchanged.
     @ObservationIgnored
     @AppStorage("audioDebugBypassDelayNode") var audioDebugBypassDelayNode: Bool = false
 
-    /// Kill-switch for gapless scheduling (pre-scheduling the next track onto the
-    /// same player node for a 0-second join). Default ON. Turn OFF to revert to
-    /// the legacy "load the next track only after completion" path without a
+    /// Kill-switch for gapless scheduling (appending the next renderer segment
+    /// on the same continuous timeline). Default ON. Turn OFF to load the next
+    /// track only after completion without a
     /// rebuild — useful to isolate any gapless-related issue in the field.
     @ObservationIgnored
     @AppStorage("audioGaplessSchedulingEnabled") var audioGaplessSchedulingEnabled: Bool = true

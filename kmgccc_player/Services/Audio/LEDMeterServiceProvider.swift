@@ -6,7 +6,6 @@
 //  Wraps LEDMeterService to enable delayed creation while maintaining protocol compatibility.
 //
 
-import AVFoundation
 import Foundation
 import Observation
 
@@ -19,7 +18,6 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
 
     private var _service: LEDMeterService?
     private var config: LEDMeterConfig
-    private let mixerProvider: () -> AVAudioMixerNode
     private var externalPollTimer: Timer?
     private var externalPulse: UInt64 = 0
     private var externalIsPlaying: Bool = false
@@ -97,13 +95,9 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
         }
     }
 
-    /// Creates a provider that will lazily instantiate LEDMeterService when needed.
-    /// - Parameters:
-    ///   - config: Configuration for the LED meter
-    ///   - mixerProvider: Closure that provides the mixer node when service is created
-    init(config: LEDMeterConfig, mixerProvider: @escaping () -> AVAudioMixerNode) {
+    /// Creates a provider that lazily instantiates the LED meter on demand.
+    init(config: LEDMeterConfig) {
         self.config = config
-        self.mixerProvider = mixerProvider
     }
 
     /// Gets the existing service or creates it if needed.
@@ -116,7 +110,6 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
             return service
         }
         let service = LEDMeterService(config: config)
-        service.attachToMixer(mixerProvider())
         service.updatePlaybackState(isPlaying: lastObservedPlaying)
         _service = service
         if !frameConsumers.isEmpty {

@@ -1,5 +1,4 @@
 #if DEBUG
-import AVFoundation
 import XCTest
 @testable import kmgccc_player
 
@@ -107,12 +106,66 @@ final class SkinLifecycleCompletionTests: XCTestCase {
         XCTAssertEqual(cleanupCount, 2)
     }
 
+    func testRendererPCMFeedPublishesAnalysisFromItsOwnHub() {
+        let hub = AudioAnalysisHub()
+        hub.targetHz = 60
+        let receivedRendererPCM = expectation(description: "renderer PCM reaches analysis consumer")
+        let delivery = OneShotExpectation(receivedRendererPCM)
+        let consumerID = hub.addConsumer { data in
+            guard data.sampleRate == 48_000,
+                  data.pcmSamples.contains(where: { abs($0) > 0.1 }) else { return }
+            delivery.fulfillIfNeeded()
+        }
+        defer {
+            hub.setPlaying(false)
+            hub.disableRendererFeed()
+            hub.removeConsumer(consumerID)
+            hub.stop()
+        }
+
+        hub.start()
+        hub.enableRendererFeed()
+        let frameCount = 4_096
+        hub.enqueueRendererPCM(
+            CanonicalPCM(
+                frames: frameCount,
+                channelCount: 2,
+                sampleRate: 48_000,
+                data: [Float](repeating: 0.2, count: frameCount * 2)
+            )
+        )
+        hub.setPlaying(true)
+
+        wait(for: [receivedRendererPCM], timeout: 2)
+    }
+
+    func testRendererSourceSpectrumIsIndependentOfMasterVolume() {
+        func render(volume: Float) -> [[Float]] {
+            let processor = SpectrumProcessor()
+            return (0..<60).map { frame in
+                let rms: Float = frame < 30 ? 0.01 : 0.1
+                return processor.process(
+                    magnitudes: [Float](repeating: rms * rms, count: 512),
+                    fftSize: 1024,
+                    sampleRate: 48_000,
+                    rms: rms,
+                    peak: rms * 2,
+                    playerVolume: volume,
+                    scheduling: (produced: 0, displayed: 0, coalesced: 0, pending: 0, frameAgeMs: 0),
+                    dt: 1.0 / 30.0
+                )
+            }
+        }
+
+        let reference = render(volume: 1)
+        XCTAssertEqual(render(volume: 0.1), reference)
+        XCTAssertEqual(render(volume: 0), reference)
+    }
+
     @MainActor
     private func makeFeed() -> (SkinAudioFeed, LEDMeterServiceProvider) {
-        let engine = AVAudioEngine()
         let provider = LEDMeterServiceProvider(
-            config: LEDMeterConfig(),
-            mixerProvider: { engine.mainMixerNode }
+            config: LEDMeterConfig()
         )
         return (SkinAudioFeed(), provider)
     }
@@ -130,6 +183,26 @@ final class SkinLifecycleCompletionTests: XCTestCase {
             fastPeak: 0.25,
             fastWindow: 2
         )
+    }
+}
+
+nonisolated private final class OneShotExpectation: @unchecked Sendable {
+    private let lock = NSLock()
+    private let expectation: XCTestExpectation
+    private var isFulfilled = false
+
+    init(_ expectation: XCTestExpectation) {
+        self.expectation = expectation
+    }
+
+    func fulfillIfNeeded() {
+        lock.lock()
+        let shouldFulfill = !isFulfilled
+        isFulfilled = true
+        lock.unlock()
+        if shouldFulfill {
+            expectation.fulfill()
+        }
     }
 }
 #endif

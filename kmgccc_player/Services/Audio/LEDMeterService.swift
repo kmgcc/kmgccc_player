@@ -6,7 +6,6 @@
 //  Computes low-frequency energy with FFT and publishes quantized LED levels.
 //
 
-import AVFoundation
 import Accelerate
 import Foundation
 import Observation
@@ -51,7 +50,7 @@ final class LEDMeterService: AudioLevelMeterProtocol {
     private let processor: LEDMeterProcessor
     private var config: LEDMeterConfig
     private var consumerID: UUID?
-    private var isInstalled = false
+    private var isRunning = false
     private var runGeneration: UInt64 = 0
     private var frameConsumers: [UUID: FrameConsumer] = [:]
 
@@ -82,12 +81,8 @@ final class LEDMeterService: AudioLevelMeterProtocol {
         frameConsumers.removeValue(forKey: id)
     }
 
-    func attachToMixer(_ mixer: AVAudioMixerNode) {
-        hub.attachToMixer(mixer)
-    }
-
     func start() {
-        guard !isInstalled else { return }
+        guard !isRunning else { return }
         runGeneration &+= 1
         let generation = runGeneration
 
@@ -99,18 +94,18 @@ final class LEDMeterService: AudioLevelMeterProtocol {
             let result = processor.process(data: data)
             Task { @MainActor in
                 guard let self else { return }
-                guard self.isInstalled, self.runGeneration == generation else { return }
+                guard self.isRunning, self.runGeneration == generation else { return }
                 self.metrics = result.led
                 self.audioMetrics = result.audio
                 self.publishFrameToConsumers()
             }
         }
 
-        isInstalled = true
+        isRunning = true
     }
 
     func stop() {
-        guard isInstalled else { return }
+        guard isRunning else { return }
         runGeneration &+= 1
 
         if let id = consumerID {
@@ -119,7 +114,7 @@ final class LEDMeterService: AudioLevelMeterProtocol {
         }
         hub.stop()
 
-        isInstalled = false
+        isRunning = false
         processor.reset()
         metrics = LEDMeterMetrics.zero(count: config.ledCount)
         audioMetrics = AudioMetrics.zero
@@ -127,8 +122,8 @@ final class LEDMeterService: AudioLevelMeterProtocol {
     }
 
     func updatePlaybackState(isPlaying: Bool) {
-        // Idle-CPU: suspend the shared FFT while paused. The hub keeps its mixer
-        // tap installed, so the meter resumes instantly when playback continues.
+        // Idle-CPU: suspend the shared FFT after its pause linger. Renderer PCM
+        // resumes the existing feed as soon as playback continues.
         hub.setPlaying(isPlaying)
     }
 

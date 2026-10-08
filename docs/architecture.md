@@ -45,7 +45,9 @@ flowchart TD
 
 ### 本地播放
 
-本地播放的命令入口是 `PlaybackCoordinator`。界面调用它的 play、pause、seek、next、previous 等方法，当来源不是本地时，播放某个曲目会先切回 `.local`。协调器把具体操作交给 `PlayerViewModel`，后者持有当前曲目、队列、播放顺序、进度、音量和播放态，并调用 `AVAudioPlaybackService` 驱动 AVAudioEngine。managed locator 由 captured `LibraryPaths` 解析；referenced locator 通过 source/file bookmark 和成对的 scope lease 解析。
+本地播放的命令入口是 `PlaybackCoordinator`。界面调用它的 play、pause、seek、next、previous 等方法，当来源不是本地时，播放某个曲目会先切回 `.local`。协调器把具体操作交给 `PlayerViewModel`，后者持有当前曲目、队列、播放顺序、进度、音量和播放态，并调用 `AVAudioPlaybackService`。服务通过唯一的 `RendererPlaybackPipeline` 驱动 `AVSampleBufferAudioRenderer` 和 `AVSampleBufferRenderSynchronizer`；解码、segment、PTS、输出设备切换与恢复在管线串行队列执行。managed locator 由 captured `LibraryPaths` 解析；referenced locator 通过 source/file bookmark 和成对的 scope lease 解析。
+
+Renderer 保持源采样率与声道数，并向系统声明可用的空间化格式。输出设备 UID 绑定设备时钟；HAL 延迟只用于诊断。可视化延迟开关通过时间线保留零或固定 180 ms lead。无缝播放追加下一 segment，正常边界不重建输出对象。Renderer 连续故障只尝试一次重建；无法恢复或源读取失败时停止该请求，保留曲目与位置供用户重试。DSP 接入见 [实施计划](audio-dsp-implementation-plan.md)，当前输出统一阶段不包含效果处理。
 
 未来远程 catalog 不复用本地 bookmark/locator 伪装网络流。它应使用独立媒体表示、backend 与 playback adapter；当前 session/backend factory 和统一展示模型是预留边界，不包含未实现的远程 API 或行为承诺。
 
@@ -125,7 +127,7 @@ TTML 歌词文本
 
 `NowPlayingPresentation` 发布当前封面数据和 identity，`NowPlayingHostView` 等待完整图片解码后保持封面图片、checksum 和 track identity 原子切换。`ThemeStore` 是颜色状态 owner：按封面 identity/checksum 去重，复用 `ArtworkAssetStore` 或执行颜色分析，生成 `SemanticPalette`。普通皮肤、全屏、原生歌词和 AMLL 网格背景都消费这套语义颜色。新封面尚未完成分析时暂时保留上一张封面的主题，避免切歌时闪回默认色。
 
-本地音频分析从 `AVAudioPlaybackService.analysisMixerNode` 进入共享 `AudioAnalysisHub`。hub 持有唯一的 AVAudioEngine tap 和 FFT 结果，再由 `LEDMeterService` 与 `AudioVisualizationService` 消费；`LEDMeterServiceProvider` 根据播放态和消费者数量管理这些服务的启停与分发。外部播放没有 mixer，协调器切换到 `ExternalPlaybackSpectrumSimulator`，provider 只在播放且有消费者时轮询。频谱视图应订阅共享 provider，不要各自给 AVAudioEngine 安装 tap。
+本地音频分析使用 `RendererPlaybackPipeline` 解码得到的 canonical PCM，按 synchronizer 时间与应用的分析 lead 投递至共享 `AudioAnalysisHub`，不在提前解码时立即发布。hub 持有共享 FFT 结果，再由 `LEDMeterService` 与 `AudioVisualizationService` 消费；`LEDMeterServiceProvider` 根据播放态和消费者数量管理这些服务的启停与分发，创建消费者无需创建输出对象。外部播放由协调器切换到 `ExternalPlaybackSpectrumSimulator`，provider 只在播放且有消费者时轮询。频谱视图订阅共享 provider。开发用 `SpectrumRecorder` 同样使用 renderer 和定时 PCM 输入。
 
 ## 外部运行组件
 
@@ -149,7 +151,7 @@ App 依赖五个外部运行组件，都由 `bootstrap.sh` 构建，产物通过
 - **Fullscreen**：系统全屏、窗口模拟全屏和主窗口内嵌是三条独立路径，不要合并为一个布尔判断。
 - **外部 helper**：所有 helper 路径从 bundle 解析。QQ Music API 只能经 bundled helper 调用，不要在 Swift 中直接调用第三方 API。
 - **主题颜色**：`ThemeStore` 是唯一的状态 owner。界面消费 `SemanticPalette`，不要各自执行颜色分析。
-- **频谱**：所有可视化视图共享 `LEDMeterServiceProvider`，不要各自给 AVAudioEngine 安装 tap。
+- **频谱**：所有可视化视图共享 `LEDMeterServiceProvider` 和 `AudioAnalysisHub` 的 PCM 分析结果，不各自创建音频输出或分析管线。
 - **曲库持久化**：Track 和 Playlist 的持久化路径有多个方法（meta only、meta+lyrics、meta+artwork、全部），匹配方法到改动范围，不要为只改元数据而重写封面和歌词 sidecar。
 - **资料库 session**：磁盘服务只使用创建时捕获的 `LibraryContext`。新增长期任务时要在 quiesce/close 取消，并验证旧 generation 不会写入新库。
 - **原位来源**：scanner 只产生 diff；删除、ignore、NCM reservation 和 source removal 通过现有事务服务处理，不从视图或 FSEvents callback 直接改 Track。
