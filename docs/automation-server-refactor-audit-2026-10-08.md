@@ -61,7 +61,7 @@ B：原样迁移参数、响应、前台交互、持久化与共享查询/路径
 
 C：逐领域迁移原 switch 分支及其私有 helper/cache；Server 用显式 method 分组分发。后台/batch 保留请求层协调，Playlist 子请求使用窄 execute 闭包，避免 Handler 互相依赖。核对每个原 case 与迁移 body，运行协议/定向 App 测试并提交。
 
-D：单独修复文件复制/移动阻塞，以串行后台文件 worker 执行同步磁盘操作。请求/operation 等待实际 I/O 完成再释放 scope；取消为协作式、发生在文件边界，不承诺中断 copyItem。覆盖命名冲突、逐文件失败、取消、scope/operation 等待边界。
+D：单独修复文件复制/移动阻塞，以串行后台文件 worker 执行同步磁盘操作。请求/operation 等待实际 I/O 完成再释放 scope；保留既有文件操作取消行为，不强行中断 copyItem；取消后仍等待已提交 I/O 完成再释放授权。覆盖命名冲突、逐文件失败、取消、scope/operation 等待边界。
 
 E：审查 diff、可见性、所有 method 路由、协议包零差异及真实 App 只读 CLI/MCP smoke（条件允许）。只删除迁移后有确证的重复/无效代码；记录剩余运行验收边界。
 
@@ -88,3 +88,7 @@ E：审查 diff、可见性、所有 method 路由、协议包零差异及真实
 - C1：Playback/Queue、History、Settings/Audio、Jobs 已进入独立 Handler；Debug 编译与原有定向 XCTest 9 项通过。
 - C2：其余 8 个领域 Handler 已迁移。98 个原 switch case block 逐块归一化比对保持原语句，仅 helper 限定名与 Playlist 子请求闭包改变；所有原 helper 定义保留，没有基于静态搜索删除旧代码。候选 cache 的数据结构、容量与生命周期不变。跨领域 metadata document / expected revisions 解析归入查询/投影辅助，backup support 路径供 storage 与 audit 共用。
 - C 验收：新增真实 AF_UNIX fixture 覆盖 20 个领域读取入口、全局 schema/权限次序、dry-run scope 豁免、旧 Library ID、未知方法、幂等重放/冲突及 Selection→Playlist 子请求。Debug 构建与 11 项定向 XCTest 通过（0 失败）。PlayerAutomation 完整 40 项以 `swift test --no-parallel` 复跑通过；并行测试两次卡在既有子进程退出/EOF harness，未修改协议或测试 runner 来掩盖它。
+
+- D：files.export 的源存在性/唯一命名/复制，以及 rename/move 的建目录、移动与失败回滚进入 Server 持有的串行 AutomationFileWorker。worker 只接受 Sendable URL/UUID/Move 值，未新增 Task.detached、全局单例或数据库 owner。目的 scope 仍在请求内成对持有；export 加入已有 runLibraryOperation，并在 picker 返回后重验 Session identity。所有目标路径、Source membership 与安全相对路径校验继续由现有 MainActor 授权边界执行。
+- D 行为边界：复制结果、命名后缀、逐文件失败顺序、原文件保留和移动的逆序回滚保持。新增 operation 登记使 export 在 Job 观察面出现普通 `other` 描述符，响应仍是原 files.export 结果，不改成 Job handle。保持原文件操作对在途取消的完成行为；quiesce/取消等到实际 I/O 结束，不提前结束 continuation 或释放 security scope。
+- D 验收：Debug 构建与 14 项定向 XCTest 通过。新增测试用实际文件覆盖并发复制命名、缺失源错误、部分移动失败回滚；挂起 worker 队列验证 MainActor 仍可运行、Library quiesce 发出取消后等待 I/O 完成。真实 Finder 授权拒绝、外部卷与大文件场景仍待人工验收。IPC 全领域读取测试触发一条 main-thread runtime warning，相关领域 owner 尚未归因，不把上述测试视为全 App 性能验收。

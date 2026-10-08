@@ -334,6 +334,91 @@ final class AutomationJobIntegrationTests: XCTestCase {
         }
     }
 
+    func testFileWorkerCopyPreservesCollisionNamesAndMissingFileErrors() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("source/Audio.wav")
+        let destination = root.appendingPathComponent("export")
+        try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data([1, 2, 3, 4])
+        try bytes.write(to: source)
+        try bytes.write(to: destination.appendingPathComponent("Audio.wav"))
+        let worker = AutomationFileWorker()
+        let trackID = UUID()
+        async let first = worker.copy(source: source, trackID: trackID, to: destination)
+        async let second = worker.copy(source: source, trackID: trackID, to: destination)
+        let outputs = try await [first, second]
+        XCTAssertEqual(outputs.map(\.lastPathComponent).sorted(), ["Audio (2).wav", "Audio (3).wav"])
+        for output in outputs { XCTAssertEqual(try Data(contentsOf: output), bytes) }
+        XCTAssertEqual(try Data(contentsOf: source), bytes)
+        do {
+            _ = try await worker.copy(source: root.appendingPathComponent("missing.wav"), trackID: trackID, to: destination)
+            XCTFail("A missing source must fail.")
+        } catch AutomationFileOperationError.fileUnavailable(let failedID) {
+            XCTAssertEqual(failedID, trackID)
+        }
+    }
+
+    func testFileWorkerMoveRestoresEarlierFilesAfterPartialFailure() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("original.wav")
+        let destination = root.appendingPathComponent("moved/audio.wav")
+        let bytes = Data([4, 3, 2, 1])
+        try bytes.write(to: source)
+        do {
+            try await AutomationFileWorker().move([
+                .init(from: source, destination: destination),
+                .init(from: root.appendingPathComponent("missing.wav"), destination: root.appendingPathComponent("other.wav"))
+            ])
+            XCTFail("The second move must fail.")
+        } catch AutomationFileOperationError.operationFailed {
+            XCTAssertEqual(try Data(contentsOf: source), bytes)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        }
+    }
+
+    func testLibraryQuiesceWaitsForFileIOCompletionAfterCancellation() async throws {
+        try await withFixture { fixture in
+            let queue = DispatchQueue(label: "automation.file-test-gate")
+            queue.suspend()
+            var queueNeedsResume = true
+            defer { if queueNeedsResume { queue.resume() } }
+            let worker = AutomationFileWorker(queue: queue)
+            let destination = fixture.rootURL.appendingPathComponent("export")
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            let source = fixture.rootURL.appendingPathComponent("Audio/First.wav")
+            let task = Task { @MainActor in
+                try await fixture.session.runLibraryOperation(as: .other) {
+                    try await worker.copy(source: source, trackID: UUID(), to: destination)
+                }
+            }
+            var descriptor: LibraryOperationTaskDescriptor?
+            for _ in 0..<200 {
+                descriptor = fixture.session.libraryJobDescriptorsSnapshot().first { $0.kind == .other && $0.state == .running }
+                if descriptor != nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            _ = try XCTUnwrap(descriptor)
+            var didQuiesce = false
+            let quiesce = Task { @MainActor in
+                await fixture.session.quiesce()
+                didQuiesce = true
+            }
+            try await Task.sleep(for: .milliseconds(30))
+            XCTAssertFalse(didQuiesce, "Library access must remain alive while a queued copy owns it.")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent("First.wav").path))
+            queue.resume()
+            queueNeedsResume = false
+            let output = try await task.value
+            await quiesce.value
+            XCTAssertTrue(didQuiesce)
+            XCTAssertEqual(try Data(contentsOf: output), try Data(contentsOf: source))
+        }
+    }
+
     private func withFixture(
         _ work: @MainActor (AutomationJobIPCFixture) async throws -> Void
     ) async throws {

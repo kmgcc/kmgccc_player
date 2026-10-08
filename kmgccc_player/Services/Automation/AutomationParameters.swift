@@ -186,7 +186,7 @@ enum AutomationParameterError: Error, LocalizedError {
     }
 }
 
-enum AutomationFileOperationError: Error, LocalizedError {
+nonisolated enum AutomationFileOperationError: Error, LocalizedError {
     case referencedLibraryRequired
     case referencedFileRequired(UUID)
     case trackNotFound(UUID)

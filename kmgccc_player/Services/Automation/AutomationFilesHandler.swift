@@ -8,10 +8,12 @@ import UniformTypeIdentifiers
 
 @MainActor
 struct AutomationFilesHandler {
+    private let fileWorker: AutomationFileWorker
     private weak var appSession: AppSessionHost?
     private var sessionAccess: AutomationSessionAccess { AutomationSessionAccess(appSession: appSession) }
 
-    init(appSession: AppSessionHost?) {
+    init(appSession: AppSessionHost?, fileWorker: AutomationFileWorker = AutomationFileWorker()) {
+        self.fileWorker = fileWorker
         self.appSession = appSession
     }
 
@@ -110,6 +112,9 @@ struct AutomationFilesHandler {
                 guard let destinationURL = await AutomationInteraction.requestExportDirectory() else {
                     return AutomationResponseSupport.interactionCancelled(for: request)
                 }
+                guard sessionAccess.activeSession(for: request) === session else {
+                    return sessionAccess.noActiveLibraryResponse(for: request)
+                }
                 let hasScopedAccess = destinationURL.startAccessingSecurityScopedResource()
                 defer {
                     if hasScopedAccess { destinationURL.stopAccessingSecurityScopedResource() }
@@ -126,27 +131,26 @@ struct AutomationFilesHandler {
                     throw AutomationParameterError.invalidValue("destination folder inside active Library")
                 }
 
-                var files: [AutomationFileSummary] = []
-                var failures: [String] = []
-                for track in tracks {
-                    do {
-                        let source: URL
-                        if case .referenced = track.mediaLocator {
-                            source = try AutomationFileAccess.currentAuthorizedFile(for: track, session: session).url
-                        } else if let managed = AutomationFileAccess.automationTrackFileURL(track, in: session) {
-                            source = managed
-                        } else {
-                            throw AutomationFileOperationError.fileUnavailable(track.id)
+                let (files, failures) = try await session.runLibraryOperation(as: .other) {
+                    var files: [AutomationFileSummary] = []
+                    var failures: [String] = []
+                    for track in tracks {
+                        do {
+                            let source: URL
+                            if case .referenced = track.mediaLocator {
+                                source = try AutomationFileAccess.currentAuthorizedFile(for: track, session: session).url
+                            } else if let managed = AutomationFileAccess.automationTrackFileURL(track, in: session) {
+                                source = managed
+                            } else {
+                                throw AutomationFileOperationError.fileUnavailable(track.id)
+                            }
+                            let output = try await fileWorker.copy(source: source, trackID: track.id, to: destination)
+                            files.append(AutomationFileAccess.makeFileSummary(track, pathOverride: output.path, existsOverride: true))
+                        } catch {
+                            failures.append("\(track.id.uuidString): \(error.localizedDescription)")
                         }
-                        guard FileManager.default.fileExists(atPath: source.path) else {
-                            throw AutomationFileOperationError.fileUnavailable(track.id)
-                        }
-                        let output = uniqueExportURL(for: source.lastPathComponent, in: destination)
-                        try FileManager.default.copyItem(at: source, to: output)
-                        files.append(AutomationFileAccess.makeFileSummary(track, pathOverride: output.path, existsOverride: true))
-                    } catch {
-                        failures.append("\(track.id.uuidString): \(error.localizedDescription)")
                     }
+                    return (files, failures)
                 }
                 return AutomationResponseSupport.encodeResult(
                     AutomationFileOperationResult(
@@ -230,7 +234,9 @@ struct AutomationFilesHandler {
                 }
 
                 try await session.runLibraryOperation(as: .other) {
-                    try self.applyFilePlans(plans)
+                    try await fileWorker.move(plans.compactMap { plan in
+                        plan.destination.map { AutomationFileWorker.Move(from: plan.from, destination: $0) }
+                    })
                 }
                 let sourceIDs = Set(plans.flatMap(\.sourceIDs))
                 let jobs = sourceRefreshJobs(
@@ -392,22 +398,6 @@ struct AutomationFilesHandler {
         let sourceIDs: Set<UUID>
     }
 
-    private func uniqueExportURL(for fileName: String, in directory: URL) -> URL {
-        let sourceName = URL(fileURLWithPath: fileName)
-        let baseName = sourceName.deletingPathExtension().lastPathComponent
-        let fileExtension = sourceName.pathExtension
-        var candidate = directory.appendingPathComponent(fileName, isDirectory: false)
-        var suffix = 2
-        while FileManager.default.fileExists(atPath: candidate.path) {
-            let uniqueName = fileExtension.isEmpty
-                ? "\(baseName) (\(suffix))"
-                : "\(baseName) (\(suffix)).\(fileExtension)"
-            candidate = directory.appendingPathComponent(uniqueName, isDirectory: false)
-            suffix += 1
-        }
-        return candidate
-    }
-
     private func makeFilePlans(
         method: String,
         operations: [[String: AutomationJSONValue]],
@@ -532,28 +522,6 @@ struct AutomationFilesHandler {
             return name
         }
         return "\(name).\(source.pathExtension)"
-    }
-
-    private func applyFilePlans(_ plans: [AutomationFilePlan]) throws {
-        var applied: [AutomationFilePlan] = []
-        do {
-            for plan in plans {
-                guard let destination = plan.destination else { continue }
-                let parent = destination.deletingLastPathComponent()
-                try FileManager.default.createDirectory(
-                    at: parent,
-                    withIntermediateDirectories: true
-                )
-                try FileManager.default.moveItem(at: plan.from, to: destination)
-                applied.append(plan)
-            }
-        } catch {
-            for plan in applied.reversed() {
-                guard let destination = plan.destination else { continue }
-                try? FileManager.default.moveItem(at: destination, to: plan.from)
-            }
-            throw AutomationFileOperationError.operationFailed(error.localizedDescription)
-        }
     }
 
     private func sourceRefreshJobs(
