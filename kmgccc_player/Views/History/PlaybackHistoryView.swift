@@ -22,6 +22,7 @@ private struct PlaybackHistoryDeletionRequest: Identifiable {
 
 struct PlaybackHistoryView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(AppSettings.self) private var settings
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(PlaybackHistoryStore.self) private var historyStore
@@ -156,10 +157,10 @@ struct PlaybackHistoryView: View {
                 // toolbar is AppKit-owned and overlays the center pane just as
                 // it does for All Songs, so rows must start below that inset.
                 .padding(.top, 16 + toolbarTopInset)
-                .padding(.horizontal)
+                .padding(.horizontal, Constants.Layout.listHorizontalPadding)
                 .padding(.bottom, 160)
             }
-            .frame(width: proxy.size.width, height: proxy.size.height + toolbarTopInset)
+            .frame(width: proxy.size.width, height: proxy.size.height + toolbarTopInset, alignment: .topLeading)
             .offset(y: -toolbarTopInset)
             .scrollIndicators(.automatic)
         }
@@ -226,7 +227,8 @@ struct PlaybackHistoryView: View {
             onEditTrack: { trackToEdit = $0 },
             rowPrimaryColor: themeStore.appForegroundPalette.primaryColor,
             rowSecondaryColor: themeStore.appForegroundPalette.secondaryColor,
-            rowTertiaryColor: themeStore.appForegroundPalette.tertiaryColor
+            rowTertiaryColor: themeStore.appForegroundPalette.tertiaryColor,
+            artworkTintMode: settings.artworkTintMode
         )
     }
 
@@ -380,6 +382,7 @@ private struct PlaybackHistoryTrackRow: View {
     let rowPrimaryColor: Color
     let rowSecondaryColor: Color
     let rowTertiaryColor: Color
+    let artworkTintMode: AppSettings.ArtworkTintMode
 
     private var rowModel: TrackRowModel {
         let title = track?.title ?? item.title
@@ -417,7 +420,8 @@ private struct PlaybackHistoryTrackRow: View {
             onTap: { isShiftPressed in onTap(isShiftPressed) },
             rowPrimaryColor: rowPrimaryColor,
             rowSecondaryColor: rowSecondaryColor,
-            rowTertiaryColor: rowTertiaryColor
+            rowTertiaryColor: rowTertiaryColor,
+            artworkTintMode: artworkTintMode
         ) {
             if isMultiselectMode {
                 Button(role: .destructive, action: onDelete) {

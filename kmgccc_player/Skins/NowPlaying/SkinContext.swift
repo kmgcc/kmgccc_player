@@ -38,50 +38,24 @@ struct SkinContext {
 
     struct PlaybackState {
         let isPlaying: Bool
-        let currentTime: Double
-        let duration: Double
-        let progress: Double
     }
 
     struct ThemeTokens {
         let accentColor: Color
         let colorScheme: ColorScheme
-        let reduceTransparency: Bool
-        let glassIntensity: Double
-        /// Legacy background controls.
-        let backgroundBlur: Double
-        let backgroundBrightness: Double
-        let backgroundSaturation: Double
-        /// Mesh gradient controls.
-        let meshAmplitude: Double
-        let meshFlowSpeed: Double
-        let meshSharpness: Double
-        let meshSoftness: Double
-        let meshColorBoost: Double
-        let meshContrast: Double
-        let meshBassImpact: Double
         /// Accent derived from artwork for UI tint usage.
         let artworkAccentColor: Color?
         let artworkPalette: [NSColor]
-        let artworkRichPalette: [NSColor]
         let artworkAverageColor: NSColor?
         let artBackgroundIsUltraDark: Bool
         /// Spectrum-specific prepared palette and foreground mode.
         /// Reuses the exact same inputs as MiniPlayerSpectrumView.
         let spectrumArtworkColors: [NSColor]
         let spectrumUsesDarkForeground: Bool
-        /// Night-only luminance map for the cassette's dark shell and reels.
-        let cassetteTint: CassetteTintPalette
-        /// Background dynamics (transient overlays).
-        let kickToBrightnessMix: Double
-        let kickDisplaceAmount: Double
-        let kickScaleAmount: Double
     }
 
     let track: TrackMetadata?
     let playback: PlaybackState
-    let audio: AudioMetrics
-    let led: LEDMeterMetrics
     let theme: ThemeTokens
     let motionTokens: MotionTokens
     let motionPolicy: MotionPolicy
@@ -127,8 +101,6 @@ extension SkinContext {
         SkinContext(
             track: track,
             playback: playback,
-            audio: audio,
-            led: led,
             theme: theme,
             motionTokens: motionTokens,
             motionPolicy: motionPolicy,

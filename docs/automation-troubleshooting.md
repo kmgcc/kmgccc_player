@@ -9,6 +9,19 @@
 4. 需要现有实例时使用 `--no-launch`；否则让 CLI/MCP 启动同一个 App bundle。
 5. `libraryNotActive` 表示请求的 `--library` 不是当前 active session，接口不会偷偷切库。
 
+GUI App 退出或重启时，MCP stdio adapter 应继续运行。重开 App 后可在同一 MCP 会话中再次调用；
+不要用 `pkill -f kmgccc_player` 这类进程名匹配命令，它可能连 adapter 一起结束。默认连接等待为
+10 秒；超时后 `delivery: "notSent"` 表示请求未送达，可以在 App 恢复后重试。
+
+若错误为 `requestOutcomeUnknown`，说明请求 frame 已开始发送，App 可能已执行操作，但响应未返回。
+adapter 不会自动重放这类请求。先查 Job 或目标状态；确需重新发起 mutation 时，跨 adapter 会话
+使用相同的 `context.idempotencyKey`。不带显式 key 的默认幂等键只在当前 adapter 进程内稳定。
+
+歌词、封面、元数据 provider 搜索、`storage.validate`、`diagnostics.health`，以及可能等待前台授权或确认的
+资料库生命周期、授权、选图、Source 创建和批次确认调用使用较长的自动等待预算，最高 120 秒；可用
+`--timeout <seconds>` 显式覆盖。`jobs.wait` 默认 20 秒、最多 25 秒；携带的
+`context.deadline` 限制等待时间。等待超时与“操作未执行”含义不同，按错误中的 `delivery` 字段判断。
+
 设置窗口中的“自动化与智能”板块可以分别关闭本机 endpoint、MCP 入口或 CLI/脚本入口。
 如果 endpoint 关闭，先在该板块重新开启；如果只关闭了 MCP 或 CLI，对应 caller 会得到
 结构化 `authorizationRequired`，另一个控制面不受影响。
@@ -90,3 +103,7 @@ storage.validate -> 验证完整 invariant
 只保留最近一次 backup，后续 backup 会回收旧快照。不要修改
 secret、writer lock、pending transaction 或 migration journal 来绕过错误；不确定时报告
 evidence，而不是猜测。
+
+MCP troubleshooting 通常只需调用 tools、resources 和内置说明。不要假设用户电脑有本地源码。若现有
+能力无法解释异常或安全处理数据，再临时查阅 [官方开源仓库](https://github.com/kmgcc/kmgccc_player)，
+并在查阅后立即删除下载源码和临时工程文件。

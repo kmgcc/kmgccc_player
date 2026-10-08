@@ -160,7 +160,7 @@ struct AllPlaylistsView: View {
                     )
                 }
             )
-            .padding(.horizontal, 24)
+            .padding(.horizontal, Constants.Layout.listHorizontalPadding)
             .padding(.top, 16)
         }
     }
@@ -258,7 +258,11 @@ private struct PlaylistListRow: View {
             Spacer(minLength: 8)
             trailingActions
         }
-        .padding(.horizontal, 12)
+        .padding(.leading, 12)
+        .padding(
+            .trailing,
+            max(0, 12 - (Constants.Layout.TrackRow.trailingMenuHitSize - 13) / 2)
+        )
         .padding(.vertical, 8)
         .frame(minHeight: 76)
         .background(
@@ -359,12 +363,18 @@ private struct PlaylistListRow: View {
             Image(systemName: "ellipsis")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(subtitleColor)
-                .frame(width: 24, height: 24)
+                .frame(
+                    width: Constants.Layout.TrackRow.trailingMenuHitSize,
+                    height: Constants.Layout.TrackRow.trailingMenuHitSize
+                )
                 .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 24, height: 24)
+        .frame(
+            width: Constants.Layout.TrackRow.trailingMenuHitSize,
+            height: Constants.Layout.TrackRow.trailingMenuHitSize
+        )
         .opacity(isHovering ? 1 : 0.4)
         .disabled(!enableSecondaryInteractions)
         .allowsHitTesting(enableSecondaryInteractions)

@@ -79,30 +79,7 @@ struct FullscreenLyricsTypography: Codable, Equatable {
     /// Panorama follows the Apple-style font and size preset but uses an
     /// ultra-light weight.
     static func defaultValue(forFullscreenSkinID skinID: String) -> Self {
-        switch skinID {
-        case "coverLed", "rotatingCover", "kmgccc.cassette":
-            return Self(
-                mainFontNameZh: LyricsFontDefaults.skinChinese,
-                mainFontNameEn: LyricsFontDefaults.skinEnglish,
-                translationFontName: LyricsFontDefaults.skinTranslation,
-                mainFontWeight: 600,
-                translationFontWeight: 600,
-                mainFontSize: 64,
-                translationFontSize: 24
-            )
-        case "fullscreen.coverGradientBlur":
-            return Self(
-                mainFontNameZh: Self.defaultValue.mainFontNameZh,
-                mainFontNameEn: Self.defaultValue.mainFontNameEn,
-                translationFontName: Self.defaultValue.translationFontName,
-                mainFontWeight: 100,
-                translationFontWeight: 300,
-                mainFontSize: Self.defaultValue.mainFontSize,
-                translationFontSize: Self.defaultValue.translationFontSize
-            )
-        default:
-            return Self.defaultValue
-        }
+        SkinRegistry.registeredDescriptor(for: skinID)?.fullscreenTypography ?? Self.defaultValue
     }
 
     /// Defaults written by previous per-skin typography implementations.
@@ -318,6 +295,24 @@ public final class AppSettings {
         case dark
     }
 
+    enum ArtworkTintMode: String, CaseIterable, Identifiable, Hashable {
+        case simple
+        case dynamic
+        case rich
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .simple: return "简洁"
+            case .dynamic: return "动态"
+            case .rich: return "丰富"
+            }
+        }
+
+        var usesGlobalArtworkTint: Bool { self != .simple }
+    }
+
     enum LyricsBackgroundMode: String, CaseIterable, Identifiable {
         case clear
         case sidebar
@@ -349,6 +344,7 @@ public final class AppSettings {
     }
 
     private enum AppearanceKeys {
+        static let artworkTintMode = "artworkTintMode"
         static let globalArtworkTintEnabled = "globalArtworkTintEnabled"
         static let audioVisualizationHDREnabled = "audioVisualizationHDREnabled"
         static let dockProgressVisible = "dockProgressVisible"
@@ -428,24 +424,37 @@ public final class AppSettings {
         }
     }
 
-    /// Whether global accent/tint follows current artwork dominant color.
-    var globalArtworkTintEnabled: Bool {
+    /// How artwork colors affect global UI and song rows.
+    /// Existing installations retain their former on/off choice on first read.
+    var artworkTintMode: ArtworkTintMode {
         get {
-            access(keyPath: \.globalArtworkTintEnabled)
-            if UserDefaults.standard.object(forKey: AppearanceKeys.globalArtworkTintEnabled) == nil
-            {
-                return true
+            access(keyPath: \.artworkTintMode)
+            let defaults = UserDefaults.standard
+            if let storedValue = defaults.string(forKey: AppearanceKeys.artworkTintMode),
+               let mode = ArtworkTintMode(rawValue: storedValue) {
+                return mode
             }
-            return UserDefaults.standard.bool(forKey: AppearanceKeys.globalArtworkTintEnabled)
+
+            if let legacyValue = defaults.object(forKey: AppearanceKeys.globalArtworkTintEnabled) as? Bool {
+                return legacyValue ? .dynamic : .simple
+            }
+
+            return .dynamic
         }
         set {
-            withMutation(keyPath: \.globalArtworkTintEnabled) {
-                UserDefaults.standard.set(
-                    newValue,
-                    forKey: AppearanceKeys.globalArtworkTintEnabled
-                )
+            withMutation(keyPath: \.artworkTintMode) {
+                let defaults = UserDefaults.standard
+                defaults.set(newValue.rawValue, forKey: AppearanceKeys.artworkTintMode)
+                defaults.removeObject(forKey: AppearanceKeys.globalArtworkTintEnabled)
             }
         }
+    }
+
+    /// Compatibility view of the former switch. Rich mode keeps the global
+    /// artwork tint and adds per-song colors in lists.
+    var globalArtworkTintEnabled: Bool {
+        get { artworkTintMode.usesGlobalArtworkTint }
+        set { artworkTintMode = newValue ? .dynamic : .simple }
     }
 
     /// Whether audio visualization (spectrum / LED) renders in HDR high dynamic range.
@@ -910,8 +919,8 @@ public final class AppSettings {
     /// only the rotating-cover presentation mode still has an entry default.
     private func applySkinEntryDefaults(previous: String, new: String) {
         guard previous != new else { return }
-        if new == "rotatingCover" {
-            UserDefaults.standard.set(true, forKey: "skin.rotatingCover.cdMode")
+        if let key = SkinRegistry.registeredDescriptor(for: new)?.legacy?.entryBooleanKey {
+            UserDefaults.standard.set(true, forKey: key)
         }
     }
 
@@ -1274,9 +1283,8 @@ public final class AppSettings {
     /// preference remains shared for backward compatibility; this only changes
     /// the value used before the user has made an explicit choice.
     public static func defaultFullscreenDimmingIntensity(for skinID: String) -> Double {
-        skinID == "fullscreen.coverGradientBlur"
-            ? 0.0
-            : FullscreenDefaults.dimmingIntensity
+        SkinRegistry.registeredDescriptor(for: skinID)?.fullscreenDimming
+            ?? FullscreenDefaults.dimmingIntensity
     }
 
     /// Observation-only revision used by fullscreen surfaces to reapply AMLL
@@ -1332,35 +1340,11 @@ public final class AppSettings {
     }
 
     public static func defaultArtworkScale(for skinID: String) -> Double {
-        switch skinID {
-        case "kmgccc.cassette":
-            return 1.25
-        case "rotatingCover":
-            return 1.1
-        case AppleStyleSkin.skinID:
-            return 1.1
-        case "coverLed":
-            return 1.1
-        case "fullscreen.coverGradientBlur":
-            return 1.0
-        default:
-            return 1.1
-        }
+        SkinRegistry.registeredDescriptor(for: skinID)?.artwork.scale ?? 1.1
     }
 
     public static func maxArtworkScale(for skinID: String) -> Double {
-        switch skinID {
-        case "coverLed":
-            return 1.35
-        case AppleStyleSkin.skinID:
-            return 1.45
-        case "rotatingCover":
-            return 1.35
-        case "fullscreen.coverGradientBlur":
-            return 1.0
-        default:
-            return 1.6
-        }
+        SkinRegistry.registeredDescriptor(for: skinID)?.artwork.maximumScale ?? 1.6
     }
 
     public func artworkScale(for skinID: String) -> Double {
@@ -1550,13 +1534,7 @@ public final class AppSettings {
         let shouldUseSkinDefaults = globalTypography == FullscreenLyricsTypography.defaultValue
 
         var didChange = false
-        for skinID in [
-            "coverLed",
-            "appleStyle",
-            "rotatingCover",
-            "kmgccc.cassette",
-            "fullscreen.coverGradientBlur"
-        ] {
+        for skinID in SkinRegistry.fullscreenSkins.map(\.id) {
             let skinDefault = FullscreenLyricsTypography.defaultValue(
                 forFullscreenSkinID: skinID
             )
@@ -1594,7 +1572,7 @@ public final class AppSettings {
         let shouldUseSkinDefaults = globalTypography == FullscreenLyricsTypography.defaultValue
         var didChange = false
 
-        for skinID in FullscreenSkinID.allCases.map(\.rawValue) {
+        for skinID in SkinRegistry.fullscreenSkins.map(\.id) {
             guard profiles[skinID] == nil else { continue }
             profiles[skinID] = shouldUseSkinDefaults
                 ? FullscreenLyricsTypography.defaultValue(forFullscreenSkinID: skinID)

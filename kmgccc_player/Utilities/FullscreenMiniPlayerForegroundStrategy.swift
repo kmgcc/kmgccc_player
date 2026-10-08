@@ -58,19 +58,17 @@ nonisolated struct FullscreenOverlayForegroundProfile: Equatable {
 }
 
 nonisolated enum FullscreenMiniPlayerForegroundStrategy {
-    private static let appleStyleSkinID = "appleStyle"
-    private static let coverGradientBlurSkinID = "fullscreen.coverGradientBlur"
-
     static func resolve(
         palette: SemanticPalette,
         localArtworkPolarity: ArtworkForegroundPolarity?,
         hasArtworkThemeColor: Bool,
-        skinID: String,
+        controlForeground: SkinPresentationPolicy.ControlForeground,
         colorScheme: ColorScheme,
         materialStyle: LiquidGlassPillMaterialStyle,
         fullscreenArtBackgroundEnabled: Bool
     ) -> FullscreenMiniPlayerForegroundProfile {
-        if skinID == appleStyleSkinID {
+        let style = controlForeground
+        if style == .fixedLight {
             return lightProfile(
                 role: .appleFixedLight,
                 palette: palette,
@@ -78,7 +76,7 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
             )
         }
 
-        if skinID == coverGradientBlurSkinID,
+        if style == .artworkAdaptive,
            isClearOrNormalMaterial(materialStyle),
            hasArtworkThemeColor {
             // Local rendered-region polarity wins when the Cover Blur
@@ -106,7 +104,7 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
         }
 
         // B. Classic, Rotate Cover, KMGCCC Cassette skins
-        if skinID == "coverLed" || skinID == "rotatingCover" || skinID == "kmgccc.cassette" {
+        if style == .chrome {
             if colorScheme == .light {
                 return darkOnBrightChromeProfile(
                     role: .chromeDarkForeground,
@@ -169,17 +167,17 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
     static func resolveOverlaySurface(
         palette: SemanticPalette,
         localArtworkPolarity: ArtworkForegroundPolarity?,
-        skinID: String,
+        controlForeground: SkinPresentationPolicy.ControlForeground,
         colorScheme: ColorScheme
     ) -> FullscreenOverlayForegroundProfile {
-        if skinID == coverGradientBlurSkinID {
+        if controlForeground == .artworkAdaptive {
             let polarity = localArtworkPolarity
                 ?? (palette.analysis.usesDarkForeground
                     ? .darkOnLightBackground
                     : .lightOnDarkBackground)
             return overlaySurfaceProfile(palette: palette, polarity: polarity)
         }
-        if skinID == appleStyleSkinID {
+        if controlForeground == .fixedLight {
             return overlaySurfaceProfile(palette: palette, polarity: .lightOnDarkBackground)
         }
         return overlaySurfaceProfile(

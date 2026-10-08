@@ -199,39 +199,17 @@ struct MiniPlayerView: View {
     // MARK: - Subviews
 
     private func controlsView(presentation: NowPlayingPresentation) -> some View {
-        let isEnabled = presentation.isControlEnabled
-        let isTrackControlEnabled = isEnabled && presentation.hasTrack
-        return HStack(spacing: 14) {
-            // Previous
-            AnimatedSkipButton(
-                direction: .previous,
-                enabled: isTrackControlEnabled,
-                metrics: .windowMiniPlayer,
-                color: controlPrimaryColor,
-                disabledColor: controlDisabledColor,
-                action: { playbackCoordinator.previous() }
-            )
-
-            // Play/Pause
-            AnimatedPlayPauseButton(
-                isPlaying: presentation.isPlaying,
-                enabled: isEnabled,
-                metrics: .windowMiniPlayer,
-                color: controlPrimaryColor,
-                disabledColor: controlDisabledColor,
-                action: { playbackCoordinator.playPause() }
-            )
-
-            // Next
-            AnimatedSkipButton(
-                direction: .next,
-                enabled: isTrackControlEnabled,
-                metrics: .windowMiniPlayer,
-                color: controlPrimaryColor,
-                disabledColor: controlDisabledColor,
-                action: { playbackCoordinator.next() }
-            )
-        }
+        PlaybackTransportControls(
+            isPlaying: presentation.isPlaying,
+            isEnabled: presentation.isControlEnabled,
+            hasTrack: presentation.hasTrack,
+            metrics: .windowMiniPlayer,
+            color: controlPrimaryColor,
+            disabledColor: controlDisabledColor,
+            previous: { playbackCoordinator.previous() },
+            playPause: { playbackCoordinator.playPause() },
+            next: { playbackCoordinator.next() }
+        )
     }
 
     private func currentPlaybackMode(for presentation: NowPlayingPresentation) -> PlaybackOrderMode {
@@ -303,8 +281,10 @@ struct MiniPlayerView: View {
         if uiState.isWindowPlaybackQueueVisible {
             uiState.hideWindowPlaybackQueue()
         } else {
-            AppKitMainSplitWindowController.setLyricsVisible(true, animated: true)
-            uiState.lyricsVisible = true
+            if !uiState.usesSkinScene {
+                AppKitMainSplitWindowController.setLyricsVisible(true, animated: true)
+                uiState.lyricsVisible = true
+            }
             uiState.showWindowPlaybackQueue()
         }
     }
@@ -419,7 +399,7 @@ struct MiniPlayerView: View {
             foregroundColor: controlPrimaryColor,
             enforceBrightForeground: false,
             spectrumUsesDarkForeground: colorScheme == .light,
-            ledToneVariant: settings.selectedNowPlayingSkinID == AppleStyleSkin.skinID
+            ledToneVariant: SkinRegistry.descriptor(for: settings.selectedNowPlayingSkinID).presentation.controlForeground == .fixedLight
                 ? .appleStyleBright
                 : .miniPlayer,
             adaptsWideVisualizationSegments: true,

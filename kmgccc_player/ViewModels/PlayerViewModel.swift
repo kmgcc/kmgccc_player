@@ -301,17 +301,8 @@ final class PlayerViewModel {
     }
 
     private var isLedEnabledForCurrentSkin: Bool {
-        switch settings.selectedNowPlayingSkinID {
-        case ClassicLEDSkin.id:
-            return UserDefaults.standard.string(forKey: "skin.classicLED.visualizerMode") == "led"
-        case AppleStyleSkin.skinID:
-            return UserDefaults.standard.string(forKey: "skin.appleStyle.visualizerMode") == "led"
-        case "rotatingCover":
-            return UserDefaults.standard.string(forKey: "skin.rotatingCover.visualizerMode") == "led"
-        case "kmgccc.cassette":
-            return UserDefaults.standard.string(forKey: "skin.kmgcccCassette.visualizerMode") == "led"
-        default:
-            return false
-        }
+        AudioVisualizationPreferences.shared.isSkinLEDEnabled(
+            for: settings.selectedNowPlayingSkinID, scope: .window
+        )
     }
 }

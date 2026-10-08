@@ -20,6 +20,14 @@ nonisolated enum LibraryImportOrigin: String, Sendable, Equatable {
     case automation
 }
 
+/// Controls whether an automation import may make online enrichment requests.
+/// Migration imports keep embedded file data and leave restored metadata as the
+/// final write for each imported track.
+nonisolated enum LibraryImportEnrichmentPolicy: String, Sendable, Equatable {
+    case standard
+    case migration
+}
+
 /// Immutable context captured at the instant an import starts. The target is
 /// never recomputed after the picker returns, so navigating to another page or
 /// playlist cannot redirect a pending import.
@@ -29,20 +37,28 @@ nonisolated struct LibraryImportContext: Sendable, Equatable {
     let destination: LibraryImportDestination
     let metadataOverride: ImportMetadataOverride?
     let origin: LibraryImportOrigin
+    let enrichmentPolicy: LibraryImportEnrichmentPolicy
 
     init(
         libraryID: UUID,
         sessionGeneration: UInt64,
         destination: LibraryImportDestination,
         metadataOverride: ImportMetadataOverride? = nil,
-        origin: LibraryImportOrigin
+        origin: LibraryImportOrigin,
+        enrichmentPolicy: LibraryImportEnrichmentPolicy = .standard
     ) {
         self.libraryID = libraryID
         self.sessionGeneration = sessionGeneration
         self.destination = destination
         self.metadataOverride = metadataOverride
         self.origin = origin
+        self.enrichmentPolicy = enrichmentPolicy
     }
+}
+
+nonisolated struct LibraryImportFileTrackMapping: Sendable, Equatable {
+    let filePath: String
+    let trackID: UUID
 }
 
 nonisolated struct LibraryImportResult: Sendable, Equatable {
@@ -64,6 +80,7 @@ nonisolated struct LibraryImportResult: Sendable, Equatable {
     var alreadyInPlaylistCount: Int = 0
     var trackIDs: [UUID] = []
     var newTrackIDs: [UUID] = []
+    var fileTrackMappings: [LibraryImportFileTrackMapping] = []
 
     static let staleContext = LibraryImportResult(
         importedTrackCount: 0,

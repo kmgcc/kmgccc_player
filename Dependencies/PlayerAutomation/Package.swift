@@ -38,7 +38,7 @@ let package = Package(
         ),
         .testTarget(
             name: "PlayerAutomationTests",
-            dependencies: ["PlayerAutomationProtocol", "PlayerAutomationIPC"],
+            dependencies: ["PlayerAutomationProtocol", "PlayerAutomationIPC", "AutomationTool"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         )
     ]

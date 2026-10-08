@@ -332,7 +332,8 @@ struct AppKitMainContentPaneRoot: View {
                 }
             }
 
-            GeometryReader { proxy in
+            if !uiState.usesSkinScene {
+                GeometryReader { proxy in
                     MiniPlayerView()
                         .onGeometryChange(for: CGRect.self) { geometry in
                             geometry.frame(in: .global)
@@ -348,6 +349,7 @@ struct AppKitMainContentPaneRoot: View {
                 .opacity(fullscreenWindowManager.isWindowedFullscreenActive ? 0 : 1)
                 .allowsHitTesting(!fullscreenWindowManager.isWindowedFullscreenActive)
                 .accessibilityHidden(fullscreenWindowManager.isWindowedFullscreenActive)
+            }
 
             if fullscreenWindowManager.isEmbeddedFullscreenSurfaceMounted {
                 EmbeddedFullscreenSurface {
@@ -524,8 +526,9 @@ struct AppKitMainContentPaneRoot: View {
         uiState: UIStateViewModel
     ) -> Bool {
         uiState.contentMode == .nowPlaying
+            && !uiState.usesSkinScene
             && settings.nowPlayingArtBackgroundEnabled
-            && settings.selectedNowPlayingSkinID != AppleStyleSkin.skinID
+            && SkinRegistry.descriptor(for: settings.selectedNowPlayingSkinID).presentation.windowBackgroundPlacement != .parent
             && playbackCoordinator.stablePresentation.hasTrack
             && !fullscreenWindowManager.usesFullscreenPlayerUI
     }
@@ -707,9 +710,9 @@ struct AppKitMainWindowArtBackgroundLayer: View {
 
                 if let playbackCoordinator = appSession.playbackCoordinator,
                    isRenderableWindowBackgroundSize(proxy.size),
-                   shouldShowAppleStyleWindowBackground(playbackCoordinator: playbackCoordinator) {
-                    SkinRegistry.skin(for: AppleStyleSkin.skinID)
-                        .makeBackground(context: makeAppleStyleWindowContext(
+                   shouldShowSkinWindowBackground(playbackCoordinator: playbackCoordinator) {
+                    SkinRegistry.skin(for: settings.selectedNowPlayingSkinID)
+                        .makeBackground(context: makeWindowSkinContext(
                             windowSize: proxy.size,
                             playbackCoordinator: playbackCoordinator
                         ))
@@ -730,9 +733,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
                             : nil,
                         animationEnabled: appSession.uiState.contentMode == .nowPlaying
                             && !fullscreenWindowManager.usesFullscreenPlayerUI,
-                        resourceProfile: settings.selectedNowPlayingSkinID == "kmgccc.cassette"
-                            ? .cassetteForeground
-                            : .standard,
+                        resourceProfile: .init(skinProfile: SkinRegistry.descriptor(for: settings.selectedNowPlayingSkinID).presentation.artBackgroundResourceProfile),
                         initialPalette: [themeStore.accentNSColor],
                         isArtworkLoading: playbackCoordinator.stablePresentation.isArtworkLoading
                     )
@@ -773,15 +774,17 @@ struct AppKitMainWindowArtBackgroundLayer: View {
 
     private func shouldShowArtBackground(playbackCoordinator: PlaybackCoordinator) -> Bool {
         appSession.uiState.contentMode == .nowPlaying
+            && !appSession.uiState.usesSkinScene
             && settings.nowPlayingArtBackgroundEnabled
-            && settings.selectedNowPlayingSkinID != AppleStyleSkin.skinID
+            && SkinRegistry.descriptor(for: settings.selectedNowPlayingSkinID).presentation.windowBackgroundPlacement != .parent
             && playbackCoordinator.stablePresentation.hasTrack
             && !fullscreenWindowManager.usesFullscreenPlayerUI
     }
 
-    private func shouldShowAppleStyleWindowBackground(playbackCoordinator: PlaybackCoordinator) -> Bool {
+    private func shouldShowSkinWindowBackground(playbackCoordinator: PlaybackCoordinator) -> Bool {
         appSession.uiState.contentMode == .nowPlaying
-            && settings.selectedNowPlayingSkinID == AppleStyleSkin.skinID
+            && !appSession.uiState.usesSkinScene
+            && SkinRegistry.descriptor(for: settings.selectedNowPlayingSkinID).presentation.windowBackgroundPlacement == .parent
             && !fullscreenWindowManager.usesFullscreenPlayerUI
     }
 
@@ -824,11 +827,11 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         return ArtworkRenderingFallback.data(for: artworkBackgroundTrackID(playbackCoordinator: playbackCoordinator))
     }
 
-    private func makeAppleStyleWindowContext(
+    private func makeWindowSkinContext(
         windowSize: CGSize,
         playbackCoordinator: PlaybackCoordinator
     ) -> SkinContext {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         let effectiveArtworkData = renderingArtworkData(playbackCoordinator: playbackCoordinator)
         let artworkChecksum = ArtworkDataFingerprint.sampledHash(for: effectiveArtworkData)
 
@@ -854,10 +857,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
             : nil
 
         let playback = SkinContext.PlaybackState(
-            isPlaying: presentation.isPlaying,
-            currentTime: presentation.currentTime,
-            duration: presentation.duration,
-            progress: presentation.progress
+            isPlaying: presentation.isPlaying
         )
 
         let analysis = themeStore.semanticPalette.analysis
@@ -875,43 +875,20 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         let chosen = Array(primary.prefix(2))
         let spectrumArtworkColors = SpectrumColorResolver.prepareSpectrumColors(chosen, analysis: analysis)
 
-        let audioMetrics = appSession.ledMeterProvider?.audioMetrics ?? .zero
-        let ledMetrics = appSession.ledMeterProvider?.metrics
-            ?? LEDMeterMetrics.zero(count: LEDDefaults.ledCount)
-
         let theme = SkinContext.ThemeTokens(
             accentColor: themeStore.accentColor,
             colorScheme: themeStore.colorScheme,
-            reduceTransparency: NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
-            glassIntensity: settings.liquidGlassIntensity,
-            backgroundBlur: settings.nowPlayingBackgroundBlur,
-            backgroundBrightness: settings.nowPlayingBackgroundBrightness,
-            backgroundSaturation: settings.nowPlayingBackgroundSaturation,
-            meshAmplitude: settings.nowPlayingMeshAmplitude,
-            meshFlowSpeed: settings.nowPlayingMeshFlowSpeed,
-            meshSharpness: settings.nowPlayingMeshSharpness,
-            meshSoftness: settings.nowPlayingMeshSoftness,
-            meshColorBoost: settings.nowPlayingMeshColorBoost,
-            meshContrast: settings.nowPlayingMeshContrast,
-            meshBassImpact: settings.nowPlayingMeshBassImpact,
             artworkAccentColor: themeStore.hasArtworkThemeColor ? themeStore.accentColor : nil,
             artworkPalette: primary,
-            artworkRichPalette: analysis.displayPalette,
             artworkAverageColor: nil,
             artBackgroundIsUltraDark: false,
             spectrumArtworkColors: spectrumArtworkColors,
-            spectrumUsesDarkForeground: analysis.usesDarkForeground,
-            cassetteTint: themeStore.semanticPalette.cassetteTint,
-            kickToBrightnessMix: settings.bgKickToBrightnessMix,
-            kickDisplaceAmount: settings.bgKickDisplaceAmount,
-            kickScaleAmount: settings.bgKickScaleAmount
+            spectrumUsesDarkForeground: analysis.usesDarkForeground
         )
 
         return SkinContext(
             track: trackMeta,
             playback: playback,
-            audio: audioMetrics,
-            led: ledMetrics,
             theme: theme,
             motionTokens: motionTokens,
             motionPolicy: motionPolicy,
@@ -973,7 +950,7 @@ struct LyricsFlatDriverView: View {
                 )
             }
             .onDisappear {
-                LyricsSurfaceManager.shared.reportMainVisible(false)
+                if !uiState.usesSkinScene { LyricsSurfaceManager.shared.reportMainVisible(false) }
             }
             .onChange(of: uiState.lyricsVisible) { _, isVisible in
                 syncMainLyricsVisibility(
@@ -1014,7 +991,7 @@ struct LyricsFlatDriverView: View {
     private var isLyricsSurfaceActive: Bool {
         // uiState stays true across fullscreen only as a restoration marker.
         // Do not let the hidden flat-host driver keep syncing the window surface.
-        LyricsSurfaceManager.shared.targetMode == .main
+        !uiState.usesSkinScene && LyricsSurfaceManager.shared.targetMode == .main
             && uiState.lyricsVisible
             && !uiState.isWindowPlaybackQueueVisible
     }
@@ -1031,6 +1008,7 @@ struct LyricsFlatDriverView: View {
         reason: String,
         hasTrackOverride: Bool? = nil
     ) {
+        guard !uiState.usesSkinScene else { return }
         setupSeekCallback()
         guard LyricsSurfaceManager.shared.targetMode == .main else {
             LyricsSurfaceManager.shared.reportMainVisible(false)

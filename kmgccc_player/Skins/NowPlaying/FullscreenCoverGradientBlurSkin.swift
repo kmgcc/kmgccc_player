@@ -10,12 +10,33 @@ import MotionKit
 import SwiftUI
 
 struct FullscreenCoverGradientBlurSkin: NowPlayingSkin {
-    let id = "fullscreen.coverGradientBlur"
-    let name = NSLocalizedString("skin.cover_gradient_blur.name", comment: "")
-    let detail = NSLocalizedString("skin.cover_gradient_blur.detail", comment: "")
-    let systemImage = "photo.fill"
-    var isFullscreenCompatible: Bool { true }
-    var isNowPlayingCompatible: Bool { false }
+    let descriptor = SkinDescriptor(
+        id: "fullscreen.coverGradientBlur",
+        name: NSLocalizedString("skin.cover_gradient_blur.name", comment: ""),
+        detail: NSLocalizedString("skin.cover_gradient_blur.detail", comment: ""),
+        systemImage: "photo.fill",
+        surfaces: [.fullscreen],
+        presentation: SkinPresentationPolicy(
+            backgroundOwner: .skin,
+            artworkLayout: .backdrop,
+            lyricsBackdrop: .coverBlur,
+            controlForeground: .artworkAdaptive,
+            movesArtworkWithControls: false
+        ),
+        audio: SkinAudioDefaults(
+            fullscreen: .miniPlayerSpectrum,
+            supportsEmbeddedVisualizer: false,
+            hasLedMeter: false
+        ),
+        artwork: SkinArtworkDefaults(scale: 1.0, maximumScale: 1.0),
+        fullscreenTypography: SkinDescriptor.backdropTypography,
+        fullscreenDimming: 0,
+        fullscreenOrder: 0,
+        legacy: SkinLegacySettings(
+            visualizerNamespace: "skin.fullscreen.coverGradientBlur",
+            previousFullscreenVisualization: .miniPlayerSpectrum
+        )
+    )
 
     func makeBackground(context: SkinContext) -> AnyView {
         AnyView(
@@ -36,6 +57,10 @@ struct FullscreenCoverGradientBlurSkin: NowPlayingSkin {
 
     var fullscreenSettingsView: AnyView? {
         AnyView(CoverGradientBlurSettingsView())
+    }
+
+    func releaseCachedResources() async {
+        await CoverGradientBlurMemory.clear()
     }
 
     private func makeConfigFromSettings() -> CoverGradientBlurConfig {

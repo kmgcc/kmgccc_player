@@ -122,6 +122,11 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         controller.ensureToolbarController().toggleMultiselectFromCommand()
     }
 
+    static func setSkinSceneActive(_ active: Bool) {
+        sharedController?.splitViewController.setSkinSceneActive(active)
+        sharedController?.refreshPaneGlassBlendingModes()
+    }
+
     static func setLyricsVisible(
         _ visible: Bool,
         animated: Bool = true,

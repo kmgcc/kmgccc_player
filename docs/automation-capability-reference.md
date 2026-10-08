@@ -37,8 +37,9 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 | Metadata | `metadata.get/export/import/search/applyCandidate/patch`、`metadata.embedded.get/patch` | App metadata 与文件内标签分开读写；文件标签读取使用当前授权音频文件，MP3 写入支持 ID3v2.3/v2.4、逐首原子替换和 Job；其他格式可读的字段由 AVFoundation 提供但当前不可写；跨库 Track 文档分页、QQMusic + MusicBrainz 候选排序和 revision 冲突保护继续复用 App owner |
 | Artwork | `artwork.search/get/apply/applyCandidate` | Track、Artist、Album 可搜索候选并以绑定 Library/目标/revision 的候选 ID 直接预览或应用；候选提供跨 provider `matchQuality`、provider 原始 `confidence`、图片分辨率和匹配字段；Track、Artist、Album、Playlist 都可读写 App-owned artwork。支持 App 选图、路径提示、base64 或 `clear`；Track 批量 10 首及以上需 `confirm` 与 App 前台确认 |
 | Lyrics | `lyrics.get/search/candidates/compare/apply/refresh` | 候选可比较和明确应用；`lyrics.apply` 也可直接写入校验过的 `ttmlText`；refresh 返回 App-owned Job，逐字优先 |
-| Jobs | `jobs.list/get/cancel/retry`；MCP `tasks/get/update/cancel`；Resource `kmgccc://jobs` | 每个资料库保留有界历史；支持可重建的 Lyrics/Source Job 重试；现代 stdio MCP 可订阅 Jobs 资源变化，也可逐请求声明 Tasks 后接收 Task 状态通知、轮询与取消 |
-| Diagnostics | `diagnostics.health` | 返回机器可读的 Library/Source/missing/Job/storage/Playlist-reference 健康报告，并统计缺歌词、缺封面和关键 Metadata 字段覆盖率 |
+| Jobs | `jobs.list/get/wait/cancel/retry`；MCP `tasks/get/update/cancel`；Resource `kmgccc://jobs` | 每个资料库保留有界历史；支持可重建的 Lyrics/Source Job 重试；`jobs.wait` 单次最多等待 25 秒；现代 stdio MCP 可订阅 Jobs 资源变化，也可逐请求声明 Tasks 后接收 Task 状态通知、轮询与取消 |
+| Batch | `operations.batch` | 最多 100 项 Metadata/Artwork/Lyrics mutation 依序经现有 App owner 执行；逐项保存完整响应与冲突；dry-run、scope、revision、confirm 和 idempotency 沿用原 handler |
+| Diagnostics | `diagnostics.health` | 返回机器可读的 Library/Source/missing/Job/storage/Playlist-reference 健康报告，并统计缺歌词、缺封面和关键 Metadata 字段覆盖率；一致性 issues 与媒体路径 mediaIssues 分页分开 |
 | Settings / Audio | `settings.schema/get/patch/validate/reset`, `audio.get/patch` | Settings 覆盖导入补全时序、外观、封面着色、可视化 HDR、Dock 进度及 referenced 删除策略；支持 schema、无副作用校验、revision 和默认值 reset；Audio 读取 gapless scheduling/AAC trim、可用输出设备及系统／App 路由状态，并控制 gapless scheduling/AAC trim 和 App 输出设备选择 |
 | Storage | `storage.inspect/validate/orphans/backup/diff/reload/repair` | inspect/validate/orphans/diff 只读；backup 只复制 JSON/sidecar/enrichment 文件；reload 重新载入当前存储；repair 仅补齐 App-owned scaffolding，不改 domain data |
 | Files | `files.inspect/reveal/export/rename/move/delete` | reveal 使用已授权路径；export 经 App folder picker 把音频拷贝到用户选择的目录并保留原件；rename/move 遵守 Source 授权和路径 containment，批量需 preview/App confirmation；delete 默认 scope 拒绝且始终前台确认 |
@@ -194,12 +195,36 @@ Lyrics 候选查询和批量维护共用现有 provider/ranking owner。`lyrics.
 `lyrics.refresh` 用 Job 处理批量选择：先尝试逐字歌词，没有可用逐字结果再尝试逐行歌词，
 默认只应用更高质量结果；`--force` 只应在用户明确要求覆盖时使用。
 
+当每首歌曲需要不同的 Metadata、封面或歌词内容时，可将已有 `metadata.patch`、
+`metadata.applyCandidate`、`artwork.apply`、`artwork.applyCandidate`、`lyrics.apply` 或
+`lyrics.clean` 请求放入 `operations.batch`。每项使用原方法的 `params`，所以 `expectedRevision`、
+候选绑定、确认和参数校验继续由对应 handler 执行。批次返回 App-owned Job；`jobs.wait` 等待
+至多 25 秒并返回最新 Job 快照、`completed`、`timedOut`、`deadlineReached` 和 `waitedMs`，等待取消
+或超时不会取消 Job。查询 `jobs.get` 可读取持久化的逐项响应，具体结果在
+`job.result.items[i].response.result`；冲突和失败项不要整批重放。
+外层 `dryRun:true` 强制所有子项预览；10 项写入或 10 个不同写入目标以上需要一次前台确认。
+
+慢速 `metadata.search`、`artwork.search`、`lyrics.search`、`storage.validate` 和
+`diagnostics.health` 默认仍可同步调用；`background:true` 将它们提交为 Library-scoped Job。
+后台搜索的 `job.result` 是原 Automation response envelope，候选数组位于 `job.result.result`。
+
+`diagnostics.health` 与 `storage.validate` 的 `issues` 和 `mediaIssues` 分开分页，各自使用
+对应的 count/hasMore 字段。媒体项检查每个已知路径的存在性/可读性；任一已记录位置可读即算可用，
+失败说明当前路径可能离线或无权访问，并不证明永久删除。该检查不解码音频；媒体状态也不会并入
+sidecar、manifest、索引或 SQLite 一致性失败。
+
 ## Jobs
 
 长操作不应被当成无限等待的同步调用。`lyrics.refresh`、授权后的 `source.create` 和
-`source.refresh` 都明确返回 Job；`jobs.*` 观察 App-owned 的导入/Source/歌词任务。Job
-descriptor 包含 ID、kind、state、phase、completed/total、checkpoint、timestamps、failure
-entries、`failedItemIDs` 和 `retryable`。
+`source.refresh` 都明确返回 Job；`jobs.*` 观察 App-owned 的导入/Source/歌词任务。可选的
+`background:true` 也会把 provider search、`storage.validate` 或 `diagnostics.health` 提交为 Job，
+同步调用仍是默认行为。Job descriptor 包含 ID、kind、state、phase、completed/total、checkpoint、
+timestamps、failure entries、`failedItemIDs` 和 `retryable`。
+
+`jobs.wait(jobID, timeoutMs?)` 默认等待 20 秒，最多等待 25 秒，返回 `job` 最新快照、
+`completed`、`timedOut`、`deadlineReached` 与 `waitedMs`。`completed:true` 表示 Job 已进入终态，
+包括 `partialFailure`、`failed` 和 `cancelled`；是否成功以 `job.state` 为准。等待超时、被取消或资料库切换
+只结束等待，不会取消仍在运行的 Job。`jobs.get` 可继续读取终态及持久化结果。
 
 每个资料库的有界 Job 历史写在其 `Settings/automation-jobs.json`。App 重启时，未到达终态
 的旧 Job 会恢复为带 recovery failure 的 `failed` 记录；已经到达终态的记录可以继续由
@@ -217,7 +242,7 @@ MCP 2026-07-28 clients 可在每个 `tools/call` 的 `_meta.io.modelcontextproto
 `tasks/get` 读取的 Task；`tasks/update` 对当前没有 input request 的任务作空确认，
 `tasks/cancel` 映射到 App 的协作式 `jobs.cancel`。Task ID 绑定 Library ID 和 Job ID；原 Library
 未 active 时需先切回。未声明扩展的请求保留原 `CallToolResult`/Job 响应。CLI 一直通过
-`jobs.get/cancel/retry` 管理 Job。
+`jobs.get/wait/cancel/retry` 管理 Job。
 
 ## Remaining plan boundaries
 
@@ -227,8 +252,8 @@ Settings，以及远程 HTTP/XPC transport。远程 transport 按真实需求评
 联网 artwork search 暂无 provider。
 Storage backup 是 metadata-only：它不复制
 音频、缓存、索引或 live SQLite；`storage.diff` 只接受本 App 为当前资料库创建的 backup 路径。
-高级 Agent 可按 [Agent Behavior Guide](agent-behavior-guide.md) 使用诊断、backup/diff、源码审查
-和 validate/reload 进行受控 fallback。
+高级 Agent 可按 [Agent Behavior Guide](agent-behavior-guide.md) 使用诊断、backup/diff 和
+validate/reload 进行受控 fallback；普通操作不需要本地源码 checkout。
 
 ## Storage fallback surface
 
@@ -237,20 +262,26 @@ Storage backup 是 metadata-only：它不复制
 本机 App Support 的资料库专属备份目录，并返回绝对路径及 SHA-256 manifest；真实音频文件和
 运行时 SQLite 不在备份范围内。每个资料库只保留最近一次 backup；再次执行后，旧 backup
 目录会被回收，因此需要在同一次调用结果中保存新的 `backupPath`。`storage.diff` 比较当前可观测文件与该 manifest，`storage.reload`
-在受控底层修改后重新载入 App-owned Library。底层 JSON write 仍不是普通 Tool，必须由高级用户
-依据当前版本源码自行执行，并在修改前备份、修改后 validate/reload。
+在受控底层修改后重新载入 App-owned Library。底层 JSON write 仍不是普通 Tool；只有正式接口无法解决
+具体故障时才查阅官方源码中必要的当前版本细节，修改前备份，修改后 validate/reload，并立即清理临时 checkout。
 
 ## Audio import
 
 `library.import` 接受非空 `filePaths` 数组（绝对路径或 `~/` 路径；文件、文件夹可混合）、
-可选 `targetPlaylistID` 和 `dryRun`。托管与原位资料库共用手动导入的 FileImportService，
-包含 NCM 转换、重复识别、歌单归入、嵌入标签／封面／歌词读取，以及在线补全。
-补全遵循 App 当前设置及缺失字段策略，已有用户内容沿用 UI 的保护规则。
+可选 `targetPlaylistID`、`dryRun` 和 `enrichmentPolicy`。托管与原位资料库共用手动导入 owner，
+包含 NCM 转换、重复识别、歌单归入和嵌入标签／封面／歌词读取。`standard`（默认）还会按 App 当前设置
+在线补全；`migration` 只读取嵌入内容并跳过在线补全，适合跨资料库导入后再恢复已有 Metadata。
 
 返回 `libraryID`、`mode`、`filePaths` 和 `job`。调用 `jobs.get` 至终态后检查 `result`：
 `trackIDs`、`importedTrackCount`、`reusedTrackCount`、`playlistMembershipAdditions`、
 `alreadyInPlaylistCount`、`pendingNCMCount`（本批发现的 NCM 数）、逐文件 `failures`、
-`enrichmentCompleted` 和 `enrichmentWarnings`。导入结果可在补全进行中查询，终态 Job
+`enrichmentCompleted` 和 `enrichmentWarnings`。还会返回 `fileTrackMappings`，逐项给出实际输入音频
+绝对 `filePath` 与最终 `trackID`，包含重复复用、NCM 转换和目录展开。导出来源 Metadata 后，
+用 `metadata.export` 从来源资料库按每页最多 100 首导出版本化 Metadata，再把 bundle manifest
+`tracks[].audioPath`（相对路径需按 bundle 根目录解析）与映射 `filePath` 连接，
+再构造来源 Track ID 到目标 Track ID 的完整 `metadata.import(trackIDMap)`。逐页恢复 Metadata 后，
+用 `operations.batch` 应用逐首不同的歌词或封面。普通 `source.refresh` 只协调 Source 位置与可用状态，
+不会覆盖已保存 Metadata。导入结果可在补全进行中查询，终态 Job
 及结果保存在资料库内；provider 无匹配会留下补全提示，不撤销已经导入的音频。
 即时补全模式的匹配情况继续由曲目实际 metadata/artwork/lyrics 状态核验。
 

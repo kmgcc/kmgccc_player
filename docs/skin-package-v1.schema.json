@@ -1,0 +1,571 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "myPlayer2 native skin package v1",
+  "type": "object",
+  "properties": {
+    "formatVersion": {
+      "const": 1
+    },
+    "hostAPIVersion": {
+      "const": 1
+    },
+    "version": {
+      "type": "string"
+    },
+    "descriptor": {
+      "$ref": "#/$defs/descriptor"
+    },
+    "nativePreset": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "scene": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "$ref": "#/$defs/node"
+        }
+      },
+      "required": [
+        "root"
+      ]
+    },
+    "parameters": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/parameter"
+      }
+    }
+  },
+  "required": [
+    "descriptor"
+  ],
+  "anyOf": [
+    {
+      "required": [
+        "scene"
+      ]
+    },
+    {
+      "required": [
+        "nativePreset"
+      ],
+      "properties": {
+        "nativePreset": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "layout": {
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "number"
+        },
+        "height": {
+          "type": "number"
+        },
+        "minimumWidth": {
+          "type": "number"
+        },
+        "minimumHeight": {
+          "type": "number"
+        },
+        "maximumWidth": {
+          "type": "number"
+        },
+        "maximumHeight": {
+          "type": "number"
+        },
+        "aspectRatio": {
+          "type": "number"
+        },
+        "padding": {
+          "type": "number"
+        },
+        "zIndex": {
+          "type": "number"
+        },
+        "offsetX": {
+          "type": "number"
+        },
+        "offsetY": {
+          "type": "number"
+        },
+        "rotationDegrees": {
+          "type": "number"
+        },
+        "opacity": {
+          "type": "number"
+        },
+        "fillsWidth": {
+          "type": "boolean"
+        },
+        "fillsHeight": {
+          "type": "boolean"
+        },
+        "allowsHitTesting": {
+          "type": "boolean"
+        },
+        "alignment": {
+          "type": "string",
+          "enum": [
+            "topLeading",
+            "top",
+            "topTrailing",
+            "leading",
+            "center",
+            "trailing",
+            "bottomLeading",
+            "bottom",
+            "bottomTrailing"
+          ]
+        }
+      },
+      "required": []
+    },
+    "node": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "layout": {
+              "$ref": "#/$defs/layout"
+            },
+            "type": {
+              "const": "component"
+            },
+            "component": {
+              "type": "string",
+              "minLength": 1
+            },
+            "values": {
+              "type": "object"
+            },
+            "bindings": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "component"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "layout": {
+              "$ref": "#/$defs/layout"
+            },
+            "type": {
+              "const": "row"
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/node"
+              }
+            },
+            "spacing": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "children"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "layout": {
+              "$ref": "#/$defs/layout"
+            },
+            "type": {
+              "const": "column"
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/node"
+              }
+            },
+            "spacing": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "children"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "layout": {
+              "$ref": "#/$defs/layout"
+            },
+            "type": {
+              "const": "overlay"
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/node"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "children"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "layout": {
+              "$ref": "#/$defs/layout"
+            },
+            "type": {
+              "const": "adaptive"
+            },
+            "minimumWidth": {
+              "type": "number"
+            },
+            "minimumHeight": {
+              "type": "number"
+            },
+            "wide": {
+              "$ref": "#/$defs/node"
+            },
+            "compact": {
+              "$ref": "#/$defs/node"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "minimumWidth",
+            "wide",
+            "compact"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "layout": {
+              "$ref": "#/$defs/layout"
+            },
+            "type": {
+              "const": "spacer"
+            }
+          },
+          "required": [
+            "id",
+            "type"
+          ]
+        }
+      ]
+    },
+    "control": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "toggle"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "range"
+            },
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          },
+          "required": [
+            "type",
+            "min",
+            "max"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "choice"
+            },
+            "choices": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "title"
+                ]
+              }
+            }
+          },
+          "required": [
+            "type",
+            "choices"
+          ]
+        }
+      ]
+    },
+    "parameter": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string"
+        },
+        "defaultValue": {},
+        "control": {
+          "$ref": "#/$defs/control"
+        },
+        "surfaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "window",
+              "fullscreen"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "isUserVisible": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "defaultValue",
+        "control"
+      ]
+    },
+    "presentation": {
+      "type": "object",
+      "properties": {
+        "windowBackgroundPlacement": {
+          "type": "string",
+          "enum": [
+            "content",
+            "parent"
+          ]
+        },
+        "backgroundOwner": {
+          "type": "string",
+          "enum": [
+            "host",
+            "skin"
+          ]
+        },
+        "backgroundDimming": {
+          "type": "string",
+          "enum": [
+            "host",
+            "renderer"
+          ]
+        },
+        "artworkLayout": {
+          "type": "string",
+          "enum": [
+            "foreground",
+            "backdrop"
+          ]
+        },
+        "lyricsBackdrop": {
+          "type": "string",
+          "enum": [
+            "standard",
+            "coverBlur",
+            "mesh"
+          ]
+        },
+        "controlForeground": {
+          "type": "string",
+          "enum": [
+            "chrome",
+            "artworkAdaptive",
+            "fixedLight",
+            "artistic"
+          ]
+        },
+        "movesArtworkWithControls": {
+          "type": "boolean"
+        },
+        "artBackgroundResourceProfile": {
+          "type": "string",
+          "enum": [
+            "standard",
+            "foreground"
+          ]
+        }
+      },
+      "required": []
+    },
+    "audio": {
+      "type": "object",
+      "properties": {
+        "window": {
+          "type": "string",
+          "enum": [
+            "off",
+            "skinSpectrum",
+            "skinLED",
+            "miniPlayerSpectrum",
+            "miniPlayerLED"
+          ]
+        },
+        "fullscreen": {
+          "type": "string",
+          "enum": [
+            "off",
+            "skinSpectrum",
+            "skinLED",
+            "miniPlayerSpectrum",
+            "miniPlayerLED"
+          ]
+        },
+        "supportsEmbeddedVisualizer": {
+          "type": "boolean"
+        },
+        "supportsMiniPlayerVisualization": {
+          "type": "boolean"
+        },
+        "hasLedMeter": {
+          "type": "boolean"
+        }
+      },
+      "required": []
+    },
+    "descriptor": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "detail": {
+          "type": "string"
+        },
+        "systemImage": {
+          "type": "string"
+        },
+        "surfaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "window",
+              "fullscreen"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "presentation": {
+          "$ref": "#/$defs/presentation"
+        },
+        "audio": {
+          "$ref": "#/$defs/audio"
+        },
+        "artwork": {
+          "type": "object",
+          "properties": {
+            "scale": {
+              "type": "number"
+            },
+            "maximumScale": {
+              "type": "number"
+            }
+          },
+          "required": []
+        },
+        "fullscreenTypography": {
+          "type": "object"
+        },
+        "fullscreenDimming": {
+          "type": "number"
+        },
+        "fullscreenOrder": {
+          "type": "integer"
+        },
+        "legacy": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
+    }
+  }
+}

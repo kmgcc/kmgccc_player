@@ -30,6 +30,7 @@ nonisolated enum Constants {
 
         static let miniPlayerHeight: CGFloat = 50
         static let miniPlayerPadding: CGFloat = 16
+        static let listHorizontalPadding: CGFloat = 20
 
         enum TrackRow {
             static let height: CGFloat = 52

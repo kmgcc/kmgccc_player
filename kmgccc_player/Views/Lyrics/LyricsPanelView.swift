@@ -590,7 +590,9 @@ struct WindowPlaybackQueuePanelView: View {
 }
 
 private struct WindowPlaybackQueueRow: View {
+    @Environment(AppSettings.self) private var settings
     @Environment(LibraryCacheServices.self) private var cacheServices
+    @Environment(\.colorScheme) private var colorScheme
     let track: Track
     let isPlaying: Bool
     let primaryColor: Color
@@ -604,52 +606,61 @@ private struct WindowPlaybackQueueRow: View {
     private let artworkSize: CGFloat = 38
 
     var body: some View {
-        HStack(spacing: 10) {
-            artworkView
-                .frame(width: artworkSize, height: artworkSize)
+        TrackArtworkTintContent(
+            track: track,
+            tintMode: settings.artworkTintMode,
+            cacheServices: cacheServices,
+            colorScheme: colorScheme
+        ) { artworkTintColor in
+            HStack(spacing: 10) {
+                artworkView(tintColor: artworkTintColor)
+                    .frame(width: artworkSize, height: artworkSize)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(track.title)
-                    .font(.system(size: 13, weight: isPlaying ? .semibold : .medium))
-                    .foregroundStyle(isPlaying ? primaryColor : primaryColor.opacity(0.94))
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(track.title)
+                        .font(.system(size: 13, weight: isPlaying ? .semibold : .medium))
+                        .foregroundStyle(
+                            artworkTintColor ?? (isPlaying ? primaryColor : primaryColor.opacity(0.94))
+                        )
+                        .lineLimit(1)
 
-                Text(artistText)
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(secondaryColor)
-                    .lineLimit(1)
+                    Text(artistText)
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(artworkTintColor?.opacity(0.78) ?? secondaryColor)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if isPlaying {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(artworkTintColor ?? primaryColor)
+                        .frame(width: 24)
+                } else {
+                    Text(formatDuration(track.duration))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(artworkTintColor?.opacity(0.62) ?? tertiaryColor)
+                        .monospacedDigit()
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if isPlaying {
-                Image(systemName: "speaker.wave.2.fill")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(primaryColor)
-                    .frame(width: 24)
-            } else {
-                Text(formatDuration(track.duration))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(tertiaryColor)
-                    .monospacedDigit()
+            .padding(.horizontal, 9)
+            .frame(height: 52)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(rowFill)
+            )
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHovering = hovering
             }
-        }
-        .padding(.horizontal, 9)
-        .frame(height: 52)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(rowFill)
-        )
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            isHovering = hovering
-        }
-        .task(id: currentArtworkTaskKey) {
-            await loadArtwork()
+            .task(id: currentArtworkTaskKey) {
+                await loadArtwork()
+            }
         }
     }
 
     @ViewBuilder
-    private var artworkView: some View {
+    private func artworkView(tintColor: Color?) -> some View {
         if let artworkImage {
             Image(nsImage: artworkImage)
                 .resizable()
@@ -660,7 +671,7 @@ private struct WindowPlaybackQueueRow: View {
             ArtworkPlaceholderView.queueRow(
                 artworkSize: artworkSize,
                 scale: 1,
-                themeColor: isPlaying ? primaryColor : secondaryColor
+                themeColor: tintColor ?? (isPlaying ? primaryColor : secondaryColor)
             )
         }
     }

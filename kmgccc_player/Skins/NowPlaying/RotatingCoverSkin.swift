@@ -15,12 +15,20 @@ import SwiftUI
 struct RotatingCoverSkin: NowPlayingSkin {
     static let id: String = "rotatingCover"
 
-    let id: String = RotatingCoverSkin.id
-    let name: String = NSLocalizedString("skin.rotating_cover.name", comment: "")
-    let detail: String = NSLocalizedString("skin.rotating_cover.detail", comment: "")
-    let systemImage: String = "record.circle"
-    var isFullscreenCompatible: Bool { true }
-    var isNowPlayingCompatible: Bool { true }
+    let descriptor = SkinDescriptor(
+        id: RotatingCoverSkin.id,
+        name: NSLocalizedString("skin.rotating_cover.name", comment: ""),
+        detail: NSLocalizedString("skin.rotating_cover.detail", comment: ""),
+        systemImage: "record.circle",
+        audio: SkinAudioDefaults(window: .miniPlayerSpectrum, fullscreen: .miniPlayerSpectrum),
+        artwork: SkinArtworkDefaults(scale: 1.1, maximumScale: 1.35),
+        fullscreenTypography: SkinDescriptor.coverTypography,
+        legacy: SkinLegacySettings(
+            visualizerNamespace: "skin.rotatingCover",
+            visualizerActivationKind: .spectrum,
+            entryBooleanKey: "skin.rotatingCover.cdMode"
+        )
+    )
 
     func makeBackground(context: SkinContext) -> AnyView {
         AnyView(UnifiedNowPlayingBackground(context: context))
@@ -36,6 +44,10 @@ struct RotatingCoverSkin: NowPlayingSkin {
 
     var fullscreenSettingsView: AnyView? {
         AnyView(RotatingCoverSkinFullscreenSettingsView())
+    }
+
+    func releaseCachedResources() async {
+        Self.purgeCaches()
     }
 }
 

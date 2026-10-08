@@ -151,11 +151,32 @@ stdio 的 `notifications/cancelled` 会终止对应在途请求并关闭其 App 
 HTTP server。未来加入 HTTP 时必须明确 localhost binding、Origin/authentication、peer
 identity 和 secret rotation，不能把本地 shared secret 当作远程授权。
 
-## App unavailable
+## Connection, timeout, and retry behavior
+
+MCP stdio adapter 与 GUI App 是两个独立进程。默认连接启动等待为 10 秒；歌词、封面、元数据
+provider 搜索、`storage.validate`、`diagnostics.health`，以及可能等待前台授权或确认的
+资料库生命周期、授权、选图、Source 创建和批次确认调用会按操作提高等待预算，最高 120 秒。
+设置 `--timeout <seconds>` 后，该值覆盖自动预算。`jobs.wait` 默认等待 20 秒，单次最多 25 秒，
+adapter 会根据 `timeoutMs` 为它安排单次请求预算。请求携带 `context.deadline` 时，deadline 限制本次 IPC 等待。
+慢搜索、`storage.validate` 和 `diagnostics.health` 默认仍同步返回；传 `background:true` 后先返回 Job，
+可用 `jobs.wait` 有界等待，再用 `jobs.get` 取原响应 envelope（候选数据在 `job.result.result`）。
+`jobs.wait` 返回 `job`、`completed`、`timedOut`、`deadlineReached` 与 `waitedMs`；`completed:true` 表示任意
+终态，包括失败、部分失败或取消，需检查 `job.state`。超时、取消等待或切换 Library 不会取消 Job 本身。
 
 默认 adapter 会尝试启动 App，然后等待 socket/secret；`--no-launch` 用于测试和明确只连接
-现有实例的场景。App 未完成 Library setup、正在切库或 endpoint 不可用时，MCP tool result
-会保留结构化 `serverUnavailable`/`libraryNotActive` 错误，不应反复写入旧库。
+现有实例的场景。App 正常退出或重启时，adapter 继续运行；连接未建立前可安全重连，App 恢复后
+可继续调用。不要用 `pkill -f kmgccc_player` 一类宽泛的命令结束进程，这可能同时终止 MCP
+stdio adapter。应通过 App 的正常退出或精确确认后的 App 进程管理来重启 GUI。
+
+如果请求尚未送达，MCP 会返回带 `delivery: "notSent"` 和 `retryable: true` 的结构化错误，
+提示启动或重开 App。请求 frame 已开始发送后，adapter 不会自动重放；若没有收到响应，会返回
+`requestOutcomeUnknown`、`delivery: "unknown"` 和 `retryable: false`。先查 `jobs.get`、`jobs.wait`
+或相关对象状态，再决定是否重试。需要跨 adapter 重启安全重试同一 mutation 时，在 `tools/call.params.context`
+中提供固定 `idempotencyKey`；adapter 不会改写它。没有显式 key 时，默认 key 在单个 adapter
+进程内对同一 JSON-RPC ID 保持稳定，每个新 adapter 进程使用独立 key。
+
+App 未完成 Library setup、正在切库或 endpoint 不可用时，MCP tool result 会保留结构化
+`serverUnavailable`/`libraryNotActive` 错误，不应反复写入旧库。
 
 ## Import workflow
 
@@ -163,8 +184,32 @@ identity 和 secret rotation，不能把本地 shared secret 当作远程授权�
 以及自动歌词、封面和元数据补全。可访问文件直接执行，权限不足时由 App 请求选择。
 
 ```json
-{"name":"library.import","arguments":{"filePaths":["/path/to/song.ncm","/path/to/folder"],"targetPlaylistID":"<playlist-uuid>"}}
+{"name":"library.import","arguments":{"filePaths":["/path/to/song.ncm","/path/to/folder"],"targetPlaylistID":"<playlist-uuid>","enrichmentPolicy":"migration"}}
 ```
 
-将上述参数放进当前 host 的 `tools/call` 请求；收到 Job 后通过 `jobs.get` 查询终态及
-`result`。导入成功数量与补全缺失分别报告，不保证网络补全耗时。
+`enrichmentPolicy` 默认 `standard`；迁移用 `migration` 读取嵌入标签/歌词并跳过在线补全。
+将上述参数放进当前 host 的 `tools/call` 请求；收到 Job 后用 `jobs.wait` 有界等待，再以
+`jobs.get` 查询终态及 `result.fileTrackMappings`。映射逐项给出输入音频的绝对 `filePath` 与最终
+`trackID`，包括目录展开、复用与 NCM 转换。
+
+## Cross-Library metadata and asset migration
+
+从来源 Library 用 `metadata.export` 每页最多导出 100 首。把来源 Track ID 与实际音频路径关联，
+使用目标 Library `library.import(enrichmentPolicy:"migration")` 的 `fileTrackMappings` 将音频路径
+转换成目标 Track ID，再构造现有 `metadata.import` 所需的完整 `trackIDMap`。若音频路径来自 bundle
+manifest `tracks[].audioPath`，先相对 bundle 根目录解析；metadata 导入仍按原有分页与 revision 规则执行。
+最后用 `operations.batch` 分别应用逐首不同的歌词、封面或 Metadata。共享值继续用现有
+`metadata.patch(trackIDs, ...)`、`artwork.apply(trackIDs, ...)` 或 `lyrics.refresh(trackIDs)`。
+普通 `source.refresh` 只协调 Source 位置与可用状态，不会覆盖已保存 Metadata。
+
+`operations.batch` 一次最多 100 项，项目方法仅限现有 metadata/artwork/lyrics mutation，且每项沿用其
+原 handler 的参数、scope、revision 和校验。外层 `dryRun:true` 强制所有子项预览；10 项写入或 10 个不同
+写入目标以上需要 `confirm:true` 和一次 App 前台确认。Job 会逐项保存原始响应及冲突，只重提失败/冲突项。
+批次结果位于 `job.result.items[i].response.result`，每项同时保留完整 response envelope；后台搜索则将
+原 Automation response 存在 `job.result`，候选数据位于 `job.result.result`。
+
+## Source-independent use
+
+正常操作只依赖 MCP tools、resources 和内置说明，不假设用户电脑上存在项目源码。只有遇到机制不明、
+异常无法由现有工具诊断，或存在无法安全处理的数据风险时，才可临时查阅官方开源仓库：
+[kmgccc/kmgccc_player](https://github.com/kmgcc/kmgccc_player)。查阅后立即删除下载的源码和临时工程文件。

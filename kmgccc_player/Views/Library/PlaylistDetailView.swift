@@ -311,14 +311,14 @@ struct PlaylistDetailView: View {
                 trackRowsContent
                 .padding(.top, scrollContentTopPadding)
                 .padding(.bottom, listBottomPadding)
-                .padding(.horizontal)
+                .padding(.horizontal, Constants.Layout.listHorizontalPadding)
                 .transaction { tx in
                     if !pageController.isManualTrackReorderActive {
                         tx.animation = nil
                     }
                 }
             }
-            .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset)
+            .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset, alignment: .topLeading)
             .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.trackList"))
             .modifier(
                 ScrollEdgeFadeTrackingMask(
@@ -361,14 +361,13 @@ struct PlaylistDetailView: View {
                 }
                 .padding(.top, scrollContentTopPadding)
                 .padding(.bottom, listBottomPadding)
-                .padding(.horizontal)
                 .transaction { tx in
                     if !pageController.isManualTrackReorderActive {
                         tx.animation = nil
                     }
                 }
             }
-            .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset)
+            .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset, alignment: .topLeading)
             .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.detailScroll"))
             .modifier(
                 ScrollEdgeFadeTrackingMask(
@@ -483,9 +482,7 @@ struct PlaylistDetailView: View {
                 .frame(maxWidth: .infinity)
             } else {
                 trackRowsContent
-                    // The detail scroll already provides the leading gutter.
-                    // Preserve the extra trailing space for the scroll edge.
-                    .padding(.trailing, 16)
+                    .padding(.horizontal, Constants.Layout.listHorizontalPadding)
             }
         }
     }

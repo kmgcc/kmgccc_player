@@ -134,6 +134,7 @@ final class AppSessionHost: ObservableObject {
     private var playbackModeObserver: NSObjectProtocol?
     private var workspaceLibraryObservers: [NSObjectProtocol] = []
     private var appActiveLibraryObserver: NSObjectProtocol?
+    private var appResignActiveArtworkColorObserver: NSObjectProtocol?
     private var activeLibraryRescanTask: Task<Void, Never>?
     private var playbackMemoryTimer: Timer?
     private var memoryPressureSource: DispatchSourceMemoryPressure?
@@ -180,7 +181,7 @@ final class AppSessionHost: ObservableObject {
         self.placeholderHomeViewModel = HomeViewModel(paths: placeholderPaths)
         self.placeholderPlaybackHistoryStore = playbackHistoryStore ?? .inMemory()
         self.placeholderPlaybackHistoryViewModel = playbackHistoryViewModel
-        self.skinManager = SkinManager()
+        self.skinManager = SkinManager(catalog: SkinRegistry.catalog)
 
         sessionController.willReleaseActiveSession = { [weak self] in
             await self?.releaseActiveSessionBindings()
@@ -505,6 +506,17 @@ final class AppSessionHost: ObservableObject {
         guard let session = activeLibraryBinding.activeSession,
               libraryID == nil || session.context.id == libraryID else { return nil }
         return session.retryAutomationJob(id: id, importSelection: importSelection)
+    }
+
+    @discardableResult
+    func startAutomationJob(
+        totalCount: Int,
+        libraryID: UUID,
+        work: @escaping @MainActor (LibraryAutomationJobReporter) async -> Void
+    ) -> LibraryOperationTaskDescriptor? {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.id == libraryID else { return nil }
+        return session.startAutomationJob(totalCount: totalCount, work: work)
     }
 
     @discardableResult
@@ -1400,6 +1412,7 @@ final class AppSessionHost: ObservableObject {
     }
 
     private func publishActiveSession(_ session: LibrarySession) async {
+        activeLibraryBinding.activeSession?.cacheServices.cancelArtworkColorPrefetch()
         uiState.clearLibraryImportFailureReports()
         activeLibraryBinding.publish(session)
         CacheManager.scheduleBackgroundDiskMaintenance(storage: session.cacheServices.storageLocations)
@@ -1523,6 +1536,9 @@ final class AppSessionHost: ObservableObject {
             playerVM: playerVM,
             playbackCoordinator: playbackCoordinator
         )
+        if !NSApp.isActive {
+            scheduleIdleArtworkColorPrefetch()
+        }
 
         if let scenario = DebugLaunchScenario.current {
             Task { @MainActor in
@@ -1537,6 +1553,7 @@ final class AppSessionHost: ObservableObject {
     }
 
     private func releaseActiveSessionBindings() async {
+        cacheServices?.cancelArtworkColorPrefetch()
         activeLibraryRescanTask?.cancel()
         activeLibraryRescanTask = nil
         playbackMemoryTimer?.invalidate()
@@ -1594,7 +1611,20 @@ final class AppSessionHost: ObservableObject {
                 queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
+                    self?.cacheServices?.cancelArtworkColorPrefetch()
                     self?.scheduleActiveLibraryRescan()
+                }
+            }
+        }
+
+        if appResignActiveArtworkColorObserver == nil {
+            appResignActiveArtworkColorObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.scheduleIdleArtworkColorPrefetch()
                 }
             }
         }
@@ -1619,6 +1649,22 @@ final class AppSessionHost: ObservableObject {
                 }
                 await QQMusicHelperProcess.shared.terminate()
             }
+        }
+    }
+
+    private func scheduleIdleArtworkColorPrefetch() {
+        guard !NSApp.isActive,
+              AppSettings.shared.artworkTintMode == .rich,
+              let session = activeLibraryBinding.activeSession
+        else { return }
+
+        let libraryID = session.context.id
+        session.cacheServices.prefetchArtworkColorsWhenIdle(from: session.libraryViewModel.allTracks) {
+            [weak self] in
+            guard let self,
+                  self.activeLibraryBinding.activeSession?.context.id == libraryID
+            else { return false }
+            return !NSApp.isActive && AppSettings.shared.artworkTintMode == .rich
         }
     }
 
@@ -1650,6 +1696,9 @@ final class AppSessionHost: ObservableObject {
             }
             if let appActiveLibraryObserver {
                 NotificationCenter.default.removeObserver(appActiveLibraryObserver)
+            }
+            if let appResignActiveArtworkColorObserver {
+                NotificationCenter.default.removeObserver(appResignActiveArtworkColorObserver)
             }
             let workspaceCenter = NSWorkspace.shared.notificationCenter
             for observer in workspaceLibraryObservers {

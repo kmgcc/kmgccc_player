@@ -36,5 +36,5 @@
 
 ## 提交与验证
 
-- 常规改动 = 匹配的增量 Debug Build；`./scripts/verify.sh` 留给合并/PR/发布门禁；发布审计与私有资源验证**不进** verify.sh。
+- Agent 不自行编译或运行会触发编译的命令、脚本和测试；改动大小或重大重构都不构成例外。只有用户在当前任务明确要求时才可编译。需编译的测试由维护者运行；`./scripts/verify.sh` 也仅限用户明确要求。GitHub macOS CI 仅手动触发；发布审计与私有资源验证**不进** verify.sh。
 - 本仓库常有并行会话同时工作：动 git 分支、删产物、跑大规模清理前，先 `git status` + `git log` 确认没人在干活；squash 合并的分支不是 main 的祖先，删分支前先打 tag。

@@ -2,6 +2,8 @@
 
 以下命令均从仓库根目录运行。
 
+构建和测试入口由维护者显式调用。Agent 不自行编译或运行会触发编译的测试，改动大小或重大重构均不构成例外；只有用户在当前任务明确要求时才可执行。完整构建与测试门禁留给维护者运行。
+
 ## 常用入口
 
 ### `bootstrap.sh`
@@ -58,7 +60,7 @@ OUTPUT_DIR=/tmp/kmgccc-player-release \
 
 ### `verify.sh`
 
-PR 前统一门禁：bootstrap、ARM64 无签名 Debug 构建、LRC 回归、XCTest 和 App bundle 检查。构建与测试阶段显式禁用本机构建扩展。
+手动运行的完整门禁：bootstrap、ARM64 无签名 Debug 构建、LRC 回归、XCTest 和 App bundle 检查。构建与测试阶段显式禁用本机构建扩展。GitHub macOS CI 只接受手动触发，不会在 push 或 PR 时自动编译。
 它会检查每次 App/XCTest 构建的 MelismaKit 来源；远程依赖门禁需显式设置
 `MELISMAKIT_EXPECTED_SOURCE=remote`。
 
@@ -155,4 +157,4 @@ FROZEN_SHA="$(git rev-parse HEAD)"
 - 脚本从仓库根目录运行，并自行解析仓库路径。
 - 构建产物放入已忽略的本地目录或临时目录。
 - `Config/LocalOverrides.xcconfig` 是本机文件，不能提交。
-- `verify.sh` 是合并前门禁，发布审计保持独立。
+- `verify.sh` 是由维护者显式运行的合并前门禁；Agent 仅在用户于当前任务明确要求时运行。发布审计保持独立。

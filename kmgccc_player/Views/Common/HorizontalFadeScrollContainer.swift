@@ -2,14 +2,14 @@
 //  HorizontalFadeScrollContainer.swift
 //  myPlayer2
 //
-//  Lightweight horizontal ScrollView with edge fades that appear only when
-//  the content is wider than the viewport and the user has scrolled away
-//  from the corresponding edge. Fades never block hit-testing.
-//
-//  The container supports asymmetric leading/trailing scroll content padding
-//  so that callers (Albums / Artists rows) can place the first item at the
-//  Home content left edge while still extending the scrollable area visually
-//  beyond the normal Home content column.
+//  Universal horizontal scroll container for cards and carousels with:
+//  - Interactive pointer drag-to-scroll with physics momentum and MotionKit gesture settle
+//  - Directional gesture disambiguation to protect vertical page scrolling
+//  - Child tap gesture / button click arbitration (clicks preserved, cancelled on drag)
+//  - Edge fade masks that dynamically indicate scroll overflow
+//  - Optional edge hover scroll buttons
+//  - Hardware-accelerated 120fps display link clip view updates
+//  - Asymmetric leading/trailing scroll content padding
 //
 
 import AppKit
@@ -39,6 +39,8 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
     @State private var activeScrollEdge: HorizontalScrollEdge?
     @State private var nativeScrollView: NSScrollView?
     @State private var scrollAnimator = HorizontalScrollSpringAnimator()
+    @State private var dragDirection: HorizontalDragDirection = .undetermined
+    @State private var dragStartScrollX: CGFloat = 0
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
@@ -120,6 +122,8 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
             onScrollMetricsChange: onScrollMetricsChange,
             content: content
         )
+        .contentShape(Rectangle())
+        .highPriorityGesture(dragGesture)
         .modifier(ConditionalFadeMask(showsEdgeFade: showsEdgeFade, mask: scrollFadeMask))
         .overlay {
             if effectiveShowsScrollButtons {
@@ -302,6 +306,139 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
             scrollView.reflectScrolledClipView(clipView)
         }
     }
+
+    // MARK: - Drag to Scroll
+
+    private var dragGesture: some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                handleDragChanged(value)
+            }
+            .onEnded { value in
+                handleDragEnded(value)
+            }
+    }
+
+    private func handleDragChanged(_ value: DragGesture.Value) {
+        guard let scrollView = nativeScrollView,
+              let documentView = scrollView.documentView
+        else { return }
+
+        let clipView = scrollView.contentView
+        let maxNativeX = max(0, documentView.bounds.width - clipView.bounds.width)
+        guard maxNativeX > 0.5 else { return }
+
+        let dx = abs(value.translation.width)
+        let dy = abs(value.translation.height)
+
+        if dragDirection == .undetermined {
+            if dx >= 4 && dx >= dy {
+                dragDirection = .horizontal
+                dragStartScrollX = clipView.bounds.origin.x
+                scrollAnimator.invalidate()
+            } else if dy >= 4 && dy > dx {
+                dragDirection = .vertical
+                return
+            } else {
+                return
+            }
+        }
+
+        guard dragDirection == .horizontal else { return }
+
+        let rawTargetX = dragStartScrollX - value.translation.width
+        let currentX: CGFloat
+
+        if rawTargetX < 0 {
+            currentX = rawTargetX * 0.35
+        } else if rawTargetX > maxNativeX {
+            let excess = rawTargetX - maxNativeX
+            currentX = maxNativeX + excess * 0.35
+        } else {
+            currentX = rawTargetX
+        }
+
+        clipView.setBoundsOrigin(NSPoint(x: currentX, y: clipView.bounds.origin.y))
+        scrollView.reflectScrolledClipView(clipView)
+    }
+
+    private func handleDragEnded(_ value: DragGesture.Value) {
+        guard dragDirection == .horizontal else {
+            dragDirection = .undetermined
+            return
+        }
+        dragDirection = .undetermined
+
+        guard let scrollView = nativeScrollView,
+              let documentView = scrollView.documentView
+        else { return }
+
+        let clipView = scrollView.contentView
+        let maxNativeX = max(0, documentView.bounds.width - clipView.bounds.width)
+        guard maxNativeX > 0.5 else { return }
+
+        let currentX = clipView.bounds.origin.x
+
+        let dragVelocity = Double(value.velocity.width)
+        let scrollVelocity = -dragVelocity
+
+        let policy = configuredMotionPolicy.resolving(
+            accessibilityReduceMotion: accessibilityReduceMotion
+        )
+
+        // Overscrolled at edges — bounce back with gestureSettle
+        if currentX < 0 {
+            scrollAnimator.animate(
+                clipView: clipView,
+                targetX: 0,
+                spec: motionTokens[.gestureSettle],
+                policy: policy,
+                initialVelocity: scrollVelocity
+            ) {
+                scrollView.reflectScrolledClipView(clipView)
+            }
+            return
+        }
+
+        if currentX > maxNativeX {
+            scrollAnimator.animate(
+                clipView: clipView,
+                targetX: maxNativeX,
+                spec: motionTokens[.gestureSettle],
+                policy: policy,
+                initialVelocity: scrollVelocity
+            ) {
+                scrollView.reflectScrolledClipView(clipView)
+            }
+            return
+        }
+
+        // Within bounds: if release velocity is negligible, settle at current position
+        if abs(scrollVelocity) < 30 {
+            return
+        }
+
+        let predictedOffset = dragStartScrollX - value.predictedEndTranslation.width
+        let coastingOffset = currentX + scrollVelocity * 0.22
+        let projectedX: CGFloat
+        if scrollVelocity > 0 {
+            projectedX = max(predictedOffset, coastingOffset)
+        } else {
+            projectedX = min(predictedOffset, coastingOffset)
+        }
+
+        let targetX = min(max(projectedX, 0), maxNativeX)
+
+        scrollAnimator.animate(
+            clipView: clipView,
+            targetX: targetX,
+            spec: motionTokens[.gestureSettle],
+            policy: policy,
+            initialVelocity: scrollVelocity
+        ) {
+            scrollView.reflectScrolledClipView(clipView)
+        }
+    }
 }
 
 private final class HorizontalScrollSpringAnimator: NSObject {
@@ -317,6 +454,7 @@ private final class HorizontalScrollSpringAnimator: NSObject {
         targetX: CGFloat,
         spec: MotionSpec,
         policy: MotionPolicy,
+        initialVelocity: Double = 0,
         completion: @escaping () -> Void
     ) {
         let now = CACurrentMediaTime()
@@ -325,7 +463,7 @@ private final class HorizontalScrollSpringAnimator: NSObject {
             current = retargetState.advance(to: now)
             self.retargetState = retargetState
         } else {
-            current = (Double(clipView.bounds.origin.x), 0)
+            current = (Double(clipView.bounds.origin.x), initialVelocity)
         }
         stop()
 
@@ -338,14 +476,15 @@ private final class HorizontalScrollSpringAnimator: NSObject {
             return
         }
 
-        guard abs(self.targetX - current.value) > 0.5 else {
+        let startVelocity = abs(initialVelocity) > .leastNonzeroMagnitude ? initialVelocity : current.velocity
+        guard abs(self.targetX - current.value) > 0.5 || abs(startVelocity) > 5 else {
             finish()
             return
         }
 
         var retargetState = MotionRetargetState(
             value: current.value,
-            velocity: current.velocity,
+            velocity: startVelocity,
             spec: resolvedSpec
         )
         retargetState.retarget(to: self.targetX, at: now)
@@ -729,3 +868,10 @@ private struct ConditionalFadeMask<M: View>: ViewModifier {
         }
     }
 }
+
+private enum HorizontalDragDirection {
+    case undetermined
+    case horizontal
+    case vertical
+}
+

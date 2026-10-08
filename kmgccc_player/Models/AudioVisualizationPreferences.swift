@@ -96,6 +96,15 @@ final class AudioVisualizationPreferences {
         return selection
     }
 
+    /// Existing preset switches still write their historic @AppStorage key directly.
+    /// Keep that compatibility input authoritative until those switches migrate.
+    func isSkinLEDEnabled(for skinID: String, scope: AudioVisualizationScope) -> Bool {
+        if let legacy = SkinRegistry.registeredDescriptor(for: skinID)?.legacy {
+            return defaults.string(forKey: legacy.visualizerKey(scope: scope)) == "led"
+        }
+        return selection(for: skinID, scope: scope).skinKind == .led
+    }
+
     func setSkinKind(_ kind: AudioVisualizationKind, for skinID: String, scope: AudioVisualizationScope) {
         persist(.skin(kind), for: skinID, scope: scope, notify: true)
     }
@@ -138,66 +147,24 @@ final class AudioVisualizationPreferences {
         for skinID: String,
         scope: AudioVisualizationScope
     ) -> AudioVisualizationPlacement {
-        switch scope {
-        case .fullscreen:
-            switch skinID {
-            case FullscreenSkinID.coverLed.rawValue:
-                return .miniPlayerLED
-            case FullscreenSkinID.appleStyle.rawValue:
-                return .skinLED
-            case FullscreenSkinID.rotatingCover.rawValue,
-                 FullscreenSkinID.coverGradientBlur.rawValue:
-                return .miniPlayerSpectrum
-            case FullscreenSkinID.kmgcccCassette.rawValue:
-                return .off
-            default:
-                return .off
-            }
-
-        case .window:
-            switch skinID {
-            case FullscreenSkinID.appleStyle.rawValue,
-                 FullscreenSkinID.kmgcccCassette.rawValue:
-                return .miniPlayerLED
-            case FullscreenSkinID.coverLed.rawValue,
-                 FullscreenSkinID.rotatingCover.rawValue:
-                return .miniPlayerSpectrum
-            default:
-                return .miniPlayerSpectrum
-            }
+        guard let audio = SkinRegistry.registeredDescriptor(for: skinID)?.audio else {
+            return scope == .fullscreen ? .off : .miniPlayerSpectrum
         }
+        return scope == .fullscreen ? audio.fullscreen : audio.window
     }
 
     private func previousDefaultSelection(
         for skinID: String,
         scope: AudioVisualizationScope
     ) -> AudioVisualizationPlacement {
-        switch scope {
-        case .fullscreen:
-            switch skinID {
-            case FullscreenSkinID.coverGradientBlur.rawValue:
-                return .miniPlayerSpectrum
-            case FullscreenSkinID.kmgcccCassette.rawValue:
-                return .miniPlayerLED
-            default:
-                return .skinLED
-            }
-
-        case .window:
-            return .miniPlayerSpectrum
-        }
+        guard scope == .fullscreen else { return .miniPlayerSpectrum }
+        return SkinRegistry.registeredDescriptor(for: skinID)?.legacy?.previousFullscreenVisualization ?? .skinLED
     }
 
     private func migrateDefaultSelectionsIfNeeded() {
         guard !defaults.bool(forKey: Keys.defaultsMigration) else { return }
 
-        let skinIDs = [
-            FullscreenSkinID.coverLed.rawValue,
-            FullscreenSkinID.appleStyle.rawValue,
-            FullscreenSkinID.rotatingCover.rawValue,
-            FullscreenSkinID.kmgcccCassette.rawValue,
-            FullscreenSkinID.coverGradientBlur.rawValue,
-        ]
+        let skinIDs = SkinRegistry.skins.map(\.id)
 
         for scope in [AudioVisualizationScope.fullscreen, .window] {
             for skinID in skinIDs {
@@ -246,18 +213,10 @@ final class AudioVisualizationPreferences {
     }
 
     private func legacySkinKey(for skinID: String, scope: AudioVisualizationScope) -> String {
-        let suffix = scope == .fullscreen ? ".fullscreen.visualizerMode" : ".visualizerMode"
-        switch skinID {
-        case FullscreenSkinID.coverLed.rawValue:
-            return "skin.classicLED\(suffix)"
-        case FullscreenSkinID.appleStyle.rawValue:
-            return "skin.appleStyle\(suffix)"
-        case FullscreenSkinID.rotatingCover.rawValue:
-            return "skin.rotatingCover\(suffix)"
-        case FullscreenSkinID.kmgcccCassette.rawValue:
-            return "skin.kmgcccCassette\(suffix)"
-        default:
-            return "skin.\(skinID)\(suffix)"
+        if let legacy = SkinRegistry.registeredDescriptor(for: skinID)?.legacy {
+            return legacy.visualizerKey(scope: scope)
         }
+        let suffix = scope == .fullscreen ? ".fullscreen.visualizerMode" : ".visualizerMode"
+        return "skin.\(skinID)\(suffix)"
     }
 }

@@ -102,6 +102,10 @@ struct BKArtBackgroundView: View {
     enum ResourceProfile: Equatable, Sendable {
         case standard
         case cassetteForeground
+
+        init(skinProfile: SkinPresentationPolicy.ArtBackgroundResourceProfile) {
+            self = skinProfile == .foreground ? .cassetteForeground : .standard
+        }
     }
 
     enum DotRenderStyle: Equatable, Sendable {

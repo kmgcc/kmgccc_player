@@ -49,7 +49,7 @@ public enum AutomationIPCError: Error, Equatable, LocalizedError, Sendable {
         case .invalidSharedSecret:
             return "The automation shared secret is invalid."
         case .sharedSecretUnavailable:
-            return "The automation shared secret is unavailable."
+            return "The player App automation credential is unavailable. Open or relaunch kmgccc_player; with --no-launch, start the App manually before retrying."
         case .readFailed(let code):
             return "The automation socket read failed (errno \(code))."
         case .writeFailed(let code):
@@ -169,6 +169,13 @@ func setSocketTimeout(_ fd: Int32, seconds: TimeInterval) {
     }
 }
 
+private func refreshSocketTimeout(_ fd: Int32, deadline: Date?) throws {
+    guard let deadline else { return }
+    let remaining = deadline.timeIntervalSinceNow
+    guard remaining > 0 else { throw AutomationIPCError.timeout }
+    setSocketTimeout(fd, seconds: max(0.000_001, remaining))
+}
+
 func connectSocket(
     _ fd: Int32,
     path: String,
@@ -266,11 +273,12 @@ func secureDataEqual(_ lhs: Data, _ rhs: Data) -> Bool {
     return difference == 0
 }
 
-func writeAll(_ data: Data, to fd: Int32) throws {
+func writeAll(_ data: Data, to fd: Int32, deadline: Date? = nil) throws {
     try data.withUnsafeBytes { bytes in
         guard let baseAddress = bytes.baseAddress else { return }
         var offset = 0
         while offset < bytes.count {
+            try refreshSocketTimeout(fd, deadline: deadline)
             #if os(macOS)
             let written = Darwin.send(fd, baseAddress.advanced(by: offset), bytes.count - offset, MSG_NOSIGNAL)
             #else
@@ -289,13 +297,14 @@ func writeAll(_ data: Data, to fd: Int32) throws {
     }
 }
 
-func readExact(_ count: Int, from fd: Int32) throws -> Data {
+func readExact(_ count: Int, from fd: Int32, deadline: Date? = nil) throws -> Data {
     guard count >= 0 else { throw AutomationIPCError.peerClosed }
     var result = Data()
     result.reserveCapacity(count)
     var buffer = [UInt8](repeating: 0, count: min(max(count, 1), 64 * 1024))
     while result.count < count {
         let requested = min(buffer.count, count - result.count)
+        try refreshSocketTimeout(fd, deadline: deadline)
         let readCount = buffer.withUnsafeMutableBytes { bytes in
             Darwin.recv(fd, bytes.baseAddress, requested, 0)
         }
@@ -316,9 +325,10 @@ func readExact(_ count: Int, from fd: Int32) throws -> Data {
 
 func readFrame(
     from fd: Int32,
-    codec: AutomationIPCFrameCodec
+    codec: AutomationIPCFrameCodec,
+    deadline: Date? = nil
 ) throws -> Data {
-    let header = try readExact(MemoryLayout<UInt32>.size, from: fd)
+    let header = try readExact(MemoryLayout<UInt32>.size, from: fd, deadline: deadline)
     let encodedLength = header.reduce(UInt32(0)) { partial, byte in
         (partial << 8) | UInt32(byte)
     }
@@ -326,7 +336,7 @@ func readFrame(
     guard bodyLength <= codec.maximumFrameBytes else {
         throw AutomationIPCError.frameTooLarge(bodyLength)
     }
-    return try readExact(bodyLength, from: fd)
+    return try readExact(bodyLength, from: fd, deadline: deadline)
 }
 
 private enum AutomationIPCConnectionOutcome: Sendable {

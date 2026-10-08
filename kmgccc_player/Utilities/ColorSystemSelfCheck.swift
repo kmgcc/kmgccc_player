@@ -4030,7 +4030,7 @@ nonisolated enum ColorSystemSelfCheck {
             palette: brightPalette,
             localArtworkPolarity: nil,
             hasArtworkThemeColor: true,
-            skinID: "fullscreen.artisticBackground",
+            controlForeground: .artistic,
             colorScheme: .light,
             materialStyle: .regular,
             fullscreenArtBackgroundEnabled: true
@@ -4039,7 +4039,7 @@ nonisolated enum ColorSystemSelfCheck {
             palette: darkPalette,
             localArtworkPolarity: nil,
             hasArtworkThemeColor: true,
-            skinID: "fullscreen.artisticBackground",
+            controlForeground: .artistic,
             colorScheme: .dark,
             materialStyle: .regular,
             fullscreenArtBackgroundEnabled: true
@@ -4048,7 +4048,7 @@ nonisolated enum ColorSystemSelfCheck {
             palette: brightPalette,
             localArtworkPolarity: nil,
             hasArtworkThemeColor: true,
-            skinID: "appleStyle",
+            controlForeground: .fixedLight,
             colorScheme: .light,
             materialStyle: .normal,
             fullscreenArtBackgroundEnabled: true
@@ -4057,7 +4057,7 @@ nonisolated enum ColorSystemSelfCheck {
             palette: brightPalette,
             localArtworkPolarity: nil,
             hasArtworkThemeColor: true,
-            skinID: "fullscreen.coverGradientBlur",
+            controlForeground: .artworkAdaptive,
             colorScheme: .light,
             materialStyle: .clear,
             fullscreenArtBackgroundEnabled: false
@@ -4066,7 +4066,7 @@ nonisolated enum ColorSystemSelfCheck {
             palette: borderlineBrightPalette,
             localArtworkPolarity: nil,
             hasArtworkThemeColor: true,
-            skinID: "fullscreen.coverGradientBlur",
+            controlForeground: .artworkAdaptive,
             colorScheme: .light,
             materialStyle: .clear,
             fullscreenArtBackgroundEnabled: false
@@ -4075,7 +4075,7 @@ nonisolated enum ColorSystemSelfCheck {
             palette: darkPalette,
             localArtworkPolarity: nil,
             hasArtworkThemeColor: true,
-            skinID: "fullscreen.coverGradientBlur",
+            controlForeground: .artworkAdaptive,
             colorScheme: .dark,
             materialStyle: .clear,
             fullscreenArtBackgroundEnabled: false
@@ -4655,49 +4655,49 @@ nonisolated enum ColorSystemSelfCheck {
         // whose global gate is light.
         let coverBlurLocalDark = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: darkPalette, localArtworkPolarity: .darkOnLightBackground,
-            hasArtworkThemeColor: true, skinID: "fullscreen.coverGradientBlur",
+            hasArtworkThemeColor: true, controlForeground: .artworkAdaptive,
             colorScheme: .dark, materialStyle: .clear, fullscreenArtBackgroundEnabled: false
         )
         // Cover Blur clear + local light -> light role, even on a bright cover
         // whose global gate is dark.
         let coverBlurLocalLight = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: brightPalette, localArtworkPolarity: .lightOnDarkBackground,
-            hasArtworkThemeColor: true, skinID: "fullscreen.coverGradientBlur",
+            hasArtworkThemeColor: true, controlForeground: .artworkAdaptive,
             colorScheme: .light, materialStyle: .clear, fullscreenArtBackgroundEnabled: false
         )
         // Cover Blur normal + local -> reads local, glass scheme follows.
         let coverBlurNormalLocalDark = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: brightPalette, localArtworkPolarity: .darkOnLightBackground,
-            hasArtworkThemeColor: true, skinID: "fullscreen.coverGradientBlur",
+            hasArtworkThemeColor: true, controlForeground: .artworkAdaptive,
             colorScheme: .light, materialStyle: .normal, fullscreenArtBackgroundEnabled: false
         )
         let coverBlurNormalLocalLight = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: darkPalette, localArtworkPolarity: .lightOnDarkBackground,
-            hasArtworkThemeColor: true, skinID: "fullscreen.coverGradientBlur",
+            hasArtworkThemeColor: true, controlForeground: .artworkAdaptive,
             colorScheme: .dark, materialStyle: .normal, fullscreenArtBackgroundEnabled: false
         )
         // Cover Blur regular material -> ignores local (falls through).
         let coverBlurRegular = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: brightPalette, localArtworkPolarity: .darkOnLightBackground,
-            hasArtworkThemeColor: true, skinID: "fullscreen.coverGradientBlur",
+            hasArtworkThemeColor: true, controlForeground: .artworkAdaptive,
             colorScheme: .light, materialStyle: .regular, fullscreenArtBackgroundEnabled: false
         )
         // Apple Style -> ignores local, fixed light.
         let apple = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: brightPalette, localArtworkPolarity: .darkOnLightBackground,
-            hasArtworkThemeColor: true, skinID: "appleStyle",
+            hasArtworkThemeColor: true, controlForeground: .fixedLight,
             colorScheme: .light, materialStyle: .normal, fullscreenArtBackgroundEnabled: true
         )
         // coverLed light -> ignores local, chrome dark.
         let coverLedLight = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: brightPalette, localArtworkPolarity: .darkOnLightBackground,
-            hasArtworkThemeColor: true, skinID: "coverLed",
+            hasArtworkThemeColor: true, controlForeground: .chrome,
             colorScheme: .light, materialStyle: .normal, fullscreenArtBackgroundEnabled: false
         )
         // artistic dark -> ignores local, night light.
         let artisticDark = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: darkPalette, localArtworkPolarity: .darkOnLightBackground,
-            hasArtworkThemeColor: true, skinID: "fullscreen.artisticBackground",
+            hasArtworkThemeColor: true, controlForeground: .artistic,
             colorScheme: .dark, materialStyle: .regular, fullscreenArtBackgroundEnabled: true
         )
 
@@ -4764,23 +4764,23 @@ nonisolated enum ColorSystemSelfCheck {
         )
         let coverBlurLocalDark = FullscreenMiniPlayerForegroundStrategy.resolveOverlaySurface(
             palette: palette, localArtworkPolarity: .darkOnLightBackground,
-            skinID: "fullscreen.coverGradientBlur", colorScheme: .dark
+            controlForeground: .artworkAdaptive, colorScheme: .dark
         )
         let coverBlurLocalLight = FullscreenMiniPlayerForegroundStrategy.resolveOverlaySurface(
             palette: palette, localArtworkPolarity: .lightOnDarkBackground,
-            skinID: "fullscreen.coverGradientBlur", colorScheme: .light
+            controlForeground: .artworkAdaptive, colorScheme: .light
         )
         let appleQueue = FullscreenMiniPlayerForegroundStrategy.resolveOverlaySurface(
             palette: palette, localArtworkPolarity: .darkOnLightBackground,
-            skinID: "appleStyle", colorScheme: .light
+            controlForeground: .fixedLight, colorScheme: .light
         )
         let ledLightQueue = FullscreenMiniPlayerForegroundStrategy.resolveOverlaySurface(
             palette: palette, localArtworkPolarity: .lightOnDarkBackground,
-            skinID: "coverLed", colorScheme: .light
+            controlForeground: .chrome, colorScheme: .light
         )
         let ledDarkQueue = FullscreenMiniPlayerForegroundStrategy.resolveOverlaySurface(
             palette: palette, localArtworkPolarity: .darkOnLightBackground,
-            skinID: "coverLed", colorScheme: .dark
+            controlForeground: .chrome, colorScheme: .dark
         )
         let ok = coverBlurLocalDark.isDarkForeground
             && !coverBlurLocalLight.isDarkForeground

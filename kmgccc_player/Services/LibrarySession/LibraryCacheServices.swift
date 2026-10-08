@@ -27,6 +27,11 @@ final class LibraryCacheServices {
     let artworkDerivativeStore: ArtworkDerivativeCacheStore
     let playlistArtworkPipeline: PlaylistArtworkPipeline
 
+    @ObservationIgnored
+    private var artworkColorPrefetchTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var artworkColorPrefetchGeneration: UInt64 = 0
+
     init(paths: LibraryPaths) {
         let storage = StorageLocations.scoped(to: paths)
         self.storageLocations = storage
@@ -47,11 +52,67 @@ final class LibraryCacheServices {
     }
 
     func close() async {
+        cancelArtworkColorPrefetch()
         amllDBService.close()
         amllDBRawIndexCache.close()
         await trackArtworkCache.clearMemory()
         headerColorExtractor.clearMemory()
         await artworkDerivativeStore.clearMemory()
         await playlistArtworkPipeline.clearMemory()
+    }
+
+    func prefetchArtworkColorsWhenIdle(
+        from tracks: [Track],
+        shouldContinue: @escaping @MainActor () -> Bool
+    ) {
+        cancelArtworkColorPrefetch()
+        guard !tracks.isEmpty else { return }
+
+        artworkColorPrefetchGeneration &+= 1
+        let generation = artworkColorPrefetchGeneration
+        let artworkCache = trackArtworkCache
+        artworkColorPrefetchTask = Task(priority: .background) { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if self.artworkColorPrefetchGeneration == generation {
+                    self.artworkColorPrefetchTask = nil
+                }
+            }
+
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled,
+                  self.artworkColorPrefetchGeneration == generation,
+                  shouldContinue()
+            else { return }
+
+            for startIndex in stride(from: 0, to: tracks.count, by: 24) {
+                guard !Task.isCancelled,
+                      self.artworkColorPrefetchGeneration == generation,
+                      shouldContinue()
+                else { return }
+                let endIndex = min(startIndex + 24, tracks.count)
+
+                for track in tracks[startIndex..<endIndex] {
+                    guard !Task.isCancelled,
+                          self.artworkColorPrefetchGeneration == generation,
+                          shouldContinue()
+                    else { return }
+                    guard let source = track.trackArtworkSource() else { continue }
+                    _ = await artworkCache.artworkAccentColor(
+                        for: source,
+                        purpose: "idle-artwork-color",
+                        priority: .background
+                    )
+                    await Task.yield()
+                }
+
+                try? await Task.sleep(for: .milliseconds(125))
+            }
+        }
+    }
+
+    func cancelArtworkColorPrefetch() {
+        artworkColorPrefetchGeneration &+= 1
+        artworkColorPrefetchTask = nil
     }
 }

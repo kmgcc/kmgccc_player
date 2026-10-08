@@ -347,8 +347,10 @@ public enum AutomationMethod {
     public static let lyricsRefresh = "lyrics.refresh"
     public static let jobsList = "jobs.list"
     public static let jobsGet = "jobs.get"
+    public static let jobsWait = "jobs.wait"
     public static let jobsCancel = "jobs.cancel"
     public static let jobsRetry = "jobs.retry"
+    public static let operationsBatch = "operations.batch"
     public static let diagnosticsHealth = "diagnostics.health"
     public static let settingsGet = "settings.get"
     public static let settingsSchema = "settings.schema"
@@ -427,6 +429,16 @@ public struct AutomationLibrarySummary: Codable, Equatable, Sendable, Identifiab
     }
 }
 
+public struct AutomationLibraryImportFileTrackMapping: Codable, Equatable, Sendable {
+    public let filePath: String
+    public let trackID: UUID
+
+    public init(filePath: String, trackID: UUID) {
+        self.filePath = filePath
+        self.trackID = trackID
+    }
+}
+
 public struct AutomationLibraryImportResult: Codable, Equatable, Sendable {
     public let libraryID: UUID
     public let mode: String
@@ -434,18 +446,46 @@ public struct AutomationLibraryImportResult: Codable, Equatable, Sendable {
     public let targetPlaylistID: UUID?
     public let dryRun: Bool
     public let job: AutomationJobSummary?
+    public let enrichmentPolicy: String
+    public let fileTrackMappings: [AutomationLibraryImportFileTrackMapping]
     public let message: String
 
     public init(libraryID: UUID, mode: String, filePaths: [String],
                 targetPlaylistID: UUID? = nil, dryRun: Bool = false,
-                job: AutomationJobSummary? = nil, message: String) {
+                job: AutomationJobSummary? = nil,
+                enrichmentPolicy: String = "standard",
+                fileTrackMappings: [AutomationLibraryImportFileTrackMapping] = [],
+                message: String) {
         self.libraryID = libraryID
         self.mode = mode
         self.filePaths = filePaths
         self.targetPlaylistID = targetPlaylistID
         self.dryRun = dryRun
         self.job = job
+        self.enrichmentPolicy = enrichmentPolicy
+        self.fileTrackMappings = fileTrackMappings
         self.message = message
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case libraryID, mode, filePaths, targetPlaylistID, dryRun, job
+        case enrichmentPolicy, fileTrackMappings, message
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        libraryID = try container.decode(UUID.self, forKey: .libraryID)
+        mode = try container.decode(String.self, forKey: .mode)
+        filePaths = try container.decode([String].self, forKey: .filePaths)
+        targetPlaylistID = try container.decodeIfPresent(UUID.self, forKey: .targetPlaylistID)
+        dryRun = try container.decodeIfPresent(Bool.self, forKey: .dryRun) ?? false
+        job = try container.decodeIfPresent(AutomationJobSummary.self, forKey: .job)
+        enrichmentPolicy = try container.decodeIfPresent(String.self, forKey: .enrichmentPolicy) ?? "standard"
+        fileTrackMappings = try container.decodeIfPresent(
+            [AutomationLibraryImportFileTrackMapping].self,
+            forKey: .fileTrackMappings
+        ) ?? []
+        message = try container.decode(String.self, forKey: .message)
     }
 }
 
@@ -3029,6 +3069,50 @@ public struct AutomationJobSummary: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+public struct AutomationJobWaitResult: Codable, Equatable, Sendable {
+    public let job: AutomationJobSummary
+    public let completed: Bool
+    public let timedOut: Bool
+    public let deadlineReached: Bool
+    public let waitedMs: Int
+
+    public init(
+        job: AutomationJobSummary,
+        completed: Bool,
+        timedOut: Bool,
+        deadlineReached: Bool = false,
+        waitedMs: Int
+    ) {
+        self.job = job
+        self.completed = completed
+        self.timedOut = timedOut
+        self.deadlineReached = deadlineReached
+        self.waitedMs = max(0, waitedMs)
+    }
+}
+
+public struct AutomationJobSubmissionResult: Codable, Equatable, Sendable {
+    public let accepted: Bool
+    public let job: AutomationJobSummary
+    public let message: String
+
+    public init(accepted: Bool = true, job: AutomationJobSummary, message: String) {
+        self.accepted = accepted
+        self.job = job
+        self.message = message
+    }
+}
+
+public struct AutomationBatchOperation: Codable, Equatable, Sendable {
+    public let method: String
+    public let params: AutomationJSONValue?
+
+    public init(method: String, params: AutomationJSONValue? = nil) {
+        self.method = method
+        self.params = params
+    }
+}
+
 public struct AutomationJobRetryResult: Codable, Equatable, Sendable {
     public let originalJobID: UUID
     public let accepted: Bool
@@ -3081,6 +3165,14 @@ public struct AutomationDiagnosticsResult: Codable, Equatable, Sendable {
     public let playlistReferenceIssues: [AutomationPlaylistReferenceIssue]
     public let storageValidation: String
     public let storageValidationMessage: String?
+    public let issues: [AutomationDiagnosticIssue]
+    public let issueCount: Int
+    public let offset: Int
+    public let limit: Int
+    public let hasMore: Bool
+    public let mediaIssues: [AutomationDiagnosticIssue]
+    public let mediaIssueCount: Int
+    public let mediaHasMore: Bool
 
     public init(
         healthy: Bool,
@@ -3100,7 +3192,15 @@ public struct AutomationDiagnosticsResult: Codable, Equatable, Sendable {
         failedJobSummaries: [String] = [],
         playlistReferenceIssues: [AutomationPlaylistReferenceIssue] = [],
         storageValidation: String = "notRun",
-        storageValidationMessage: String? = nil
+        storageValidationMessage: String? = nil,
+        issues: [AutomationDiagnosticIssue] = [],
+        issueCount: Int? = nil,
+        offset: Int = 0,
+        limit: Int = 100,
+        hasMore: Bool = false,
+        mediaIssues: [AutomationDiagnosticIssue] = [],
+        mediaIssueCount: Int? = nil,
+        mediaHasMore: Bool = false
     ) {
         self.healthy = healthy
         self.libraryID = libraryID
@@ -3120,6 +3220,14 @@ public struct AutomationDiagnosticsResult: Codable, Equatable, Sendable {
         self.playlistReferenceIssues = playlistReferenceIssues
         self.storageValidation = storageValidation
         self.storageValidationMessage = storageValidationMessage
+        self.issues = issues
+        self.issueCount = issueCount ?? issues.count
+        self.offset = max(0, offset)
+        self.limit = max(1, limit)
+        self.hasMore = hasMore
+        self.mediaIssues = mediaIssues
+        self.mediaIssueCount = mediaIssueCount ?? mediaIssues.count
+        self.mediaHasMore = mediaHasMore
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -3128,6 +3236,7 @@ public struct AutomationDiagnosticsResult: Codable, Equatable, Sendable {
         case incompleteMetadataTrackCount, sourceCount, sourceIssues, runningJobCount, checks
         case failedJobCount, failedJobSummaries, playlistReferenceIssues
         case storageValidation, storageValidationMessage
+        case issues, issueCount, offset, limit, hasMore, mediaIssues, mediaIssueCount, mediaHasMore
     }
 
     public init(from decoder: Decoder) throws {
@@ -3153,6 +3262,42 @@ public struct AutomationDiagnosticsResult: Codable, Equatable, Sendable {
         ) ?? []
         storageValidation = try container.decodeIfPresent(String.self, forKey: .storageValidation) ?? "notRun"
         storageValidationMessage = try container.decodeIfPresent(String.self, forKey: .storageValidationMessage)
+        issues = try container.decodeIfPresent([AutomationDiagnosticIssue].self, forKey: .issues) ?? []
+        issueCount = try container.decodeIfPresent(Int.self, forKey: .issueCount) ?? issues.count
+        offset = try container.decodeIfPresent(Int.self, forKey: .offset) ?? 0
+        limit = try container.decodeIfPresent(Int.self, forKey: .limit) ?? max(1, issues.count)
+        hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore) ?? false
+        mediaIssues = try container.decodeIfPresent([AutomationDiagnosticIssue].self, forKey: .mediaIssues) ?? []
+        mediaIssueCount = try container.decodeIfPresent(Int.self, forKey: .mediaIssueCount) ?? mediaIssues.count
+        mediaHasMore = try container.decodeIfPresent(Bool.self, forKey: .mediaHasMore) ?? false
+    }
+}
+
+public struct AutomationDiagnosticIssue: Codable, Equatable, Sendable, Identifiable {
+    public let id: String
+    public let code: String
+    public let trackID: UUID?
+    public let playlistID: UUID?
+    public let sourceID: UUID?
+    public let path: String?
+    public let reason: String
+
+    public init(
+        id: String,
+        code: String,
+        trackID: UUID? = nil,
+        playlistID: UUID? = nil,
+        sourceID: UUID? = nil,
+        path: String? = nil,
+        reason: String
+    ) {
+        self.id = id
+        self.code = code
+        self.trackID = trackID
+        self.playlistID = playlistID
+        self.sourceID = sourceID
+        self.path = path
+        self.reason = reason
     }
 }
 
@@ -3204,6 +3349,14 @@ public struct AutomationStorageResult: Codable, Equatable, Sendable {
     public let missingRequiredDirectories: [String]
     public let validation: String
     public let validationMessage: String?
+    public let issues: [AutomationStorageIssue]
+    public let issueCount: Int
+    public let offset: Int
+    public let limit: Int
+    public let hasMore: Bool
+    public let mediaIssues: [AutomationStorageIssue]
+    public let mediaIssueCount: Int
+    public let mediaHasMore: Bool
     public let message: String
 
     public init(
@@ -3215,6 +3368,14 @@ public struct AutomationStorageResult: Codable, Equatable, Sendable {
         missingRequiredDirectories: [String] = [],
         validation: String,
         validationMessage: String? = nil,
+        issues: [AutomationStorageIssue] = [],
+        issueCount: Int? = nil,
+        offset: Int = 0,
+        limit: Int = 100,
+        hasMore: Bool = false,
+        mediaIssues: [AutomationStorageIssue] = [],
+        mediaIssueCount: Int? = nil,
+        mediaHasMore: Bool = false,
         message: String
     ) {
         self.libraryID = libraryID
@@ -3225,7 +3386,58 @@ public struct AutomationStorageResult: Codable, Equatable, Sendable {
         self.missingRequiredDirectories = missingRequiredDirectories.sorted()
         self.validation = validation
         self.validationMessage = validationMessage
+        self.issues = issues
+        self.issueCount = issueCount ?? issues.count
+        self.offset = max(0, offset)
+        self.limit = max(1, limit)
+        self.hasMore = hasMore
+        self.mediaIssues = mediaIssues
+        self.mediaIssueCount = mediaIssueCount ?? mediaIssues.count
+        self.mediaHasMore = mediaHasMore
         self.message = message
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case libraryID, mode, rootPath, schemaVersion, manifestPresent
+        case missingRequiredDirectories, validation, validationMessage, issues
+        case issueCount, offset, limit, hasMore, mediaIssues, mediaIssueCount, mediaHasMore, message
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        libraryID = try container.decodeIfPresent(UUID.self, forKey: .libraryID)
+        mode = try container.decodeIfPresent(String.self, forKey: .mode)
+        rootPath = try container.decodeIfPresent(String.self, forKey: .rootPath)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
+        manifestPresent = try container.decode(Bool.self, forKey: .manifestPresent)
+        missingRequiredDirectories = try container.decodeIfPresent([String].self, forKey: .missingRequiredDirectories) ?? []
+        validation = try container.decode(String.self, forKey: .validation)
+        validationMessage = try container.decodeIfPresent(String.self, forKey: .validationMessage)
+        issues = try container.decodeIfPresent([AutomationStorageIssue].self, forKey: .issues) ?? []
+        issueCount = try container.decodeIfPresent(Int.self, forKey: .issueCount) ?? issues.count
+        offset = try container.decodeIfPresent(Int.self, forKey: .offset) ?? 0
+        limit = try container.decodeIfPresent(Int.self, forKey: .limit) ?? max(1, issues.count)
+        hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore) ?? false
+        mediaIssues = try container.decodeIfPresent([AutomationStorageIssue].self, forKey: .mediaIssues) ?? []
+        mediaIssueCount = try container.decodeIfPresent(Int.self, forKey: .mediaIssueCount) ?? mediaIssues.count
+        mediaHasMore = try container.decodeIfPresent(Bool.self, forKey: .mediaHasMore) ?? false
+        message = try container.decode(String.self, forKey: .message)
+    }
+}
+
+public struct AutomationStorageIssue: Codable, Equatable, Sendable, Identifiable {
+    public let id: String
+    public let code: String
+    public let trackID: UUID?
+    public let path: String?
+    public let reason: String
+
+    public init(id: String, code: String, trackID: UUID? = nil, path: String? = nil, reason: String) {
+        self.id = id
+        self.code = code
+        self.trackID = trackID
+        self.path = path
+        self.reason = reason
     }
 }
 
@@ -3368,15 +3580,17 @@ public enum AutomationDocumentation {
     - Removing a Track from a Playlist does not remove it from the Library or delete its file. Deleting a Playlist also retains Tracks and files.
     - When a referenced Source file disappears, the default is to preserve the Track, metadata, history and Playlist membership while marking it missing/unavailable.
     - Low-risk mutations may execute directly after authorization. Use dryRun for impact inspection. High-risk file deletion, destructive mirroring, mass deletion, history clearing and direct storage writes require App-owned foreground confirmation.
-    - Import new audio files or folders with library.import(filePaths, targetPlaylistID?). It supports managed/referenced libraries and NCM through the manual import pipeline. Poll jobs.get until terminal and inspect result, failures and enrichmentWarnings; no provider match is not an import failure. playlist.addTracks only accepts existing Track IDs. Never handcraft sidecars or decrypt NCM externally for this workflow.
-    - Prefer the formal Automation API, then diagnostics/repair, then the current-version source and storage documentation. Back up before any controlled storage fallback and validate/reload afterward.
+    - Work from the installed App's formal tools and bundled guide; a source checkout is not expected. For a cross-Library move, export bounded metadata pages with metadata.export, import files with library.import(enrichmentPolicy:"migration"), use its fileTrackMappings with metadata.import(trackIDMap), then apply per-Track lyrics/artwork through operations.batch. Migration import reads embedded tags/lyrics and skips online enrichment; source.refresh reconciles existing Track identity and availability and does not replace saved metadata.
+    - Existing APIs already batch metadata.patch(trackIDs, shared patch), artwork.apply(trackIDs, shared image), lyrics.refresh(trackIDs), and metadata.export/import pages (up to 100 Tracks per page). Use operations.batch when each Track needs different metadata, artwork or lyrics. It returns an App Job; use jobs.wait(timeoutMs) for a bounded wait, then jobs.get for persisted items at job.result.items[i].response.result. A wait completed:true means any terminal state, so check job.state; re-submit only failed items with a new idempotency key.
+    - For slow provider searches, keep the default synchronous call for small work or pass background:true to receive an App Job; the original response envelope is in job.result and candidate data is nested at job.result.result. storage.validate and diagnostics.health return separately paginated consistency issues and mediaIssues with Track IDs, paths and reasons. Media checks only test recorded paths for existence/readability across known locations; they do not decode audio or repair files.
+    - Prefer the formal Automation API, then actionable diagnostics and App-owned repair. A source checkout is not needed for normal operations. If a concrete issue cannot be resolved through formal tools, inspect only the official source details needed to understand it, remove any temporary checkout immediately, and use a controlled fallback only after backup and a focused validation/reload plan.
     - Query first, preserve the returned revision, apply with expectedRevision when offered, and verify the result. Use idempotencyKey when retrying a mutation.
     - `metadata.get`/`metadata.patch` cover App-owned Track, Artist, Album and Playlist fields. Use `metadata.embedded.get` for live file tags; `metadata.embedded.patch` currently writes MP3 ID3v2.3/v2.4 only and always requires `dryRun`, `confirm` and App foreground confirmation.
     - Artwork is App-owned and sidecar-backed: `artwork.search/get/apply` use one target from Track, Artist, Album or Playlist where the operation supports it. `artwork.get` reports availability and a digest without returning image bytes; `artwork.apply` accepts an App picker, an image path hint, base64 image data, or an explicit clear. Batches of 10 or more require `confirm` plus foreground confirmation.
     """
 
     public static let capabilityOverview = """
-    The shared automation layer is App-owned. CLI and MCP are adapters over the same AF_UNIX IPC contract. `library.tracks` is the composable query entry point: combine text, IDs, Source/Playlist membership, availability, lyric/artwork/metadata state, technical audio fields, boolean all/any/not predicates, stable sort and offset pagination. Library Track identity is resolved before Playlist membership mutations, so an existing Track can be added to any Playlist without being imported again. Source exclusions, supported persistent settings, App-owned metadata/artwork, and App-owned storage inspect/validate/orphans/backup/diff/reload/repair are exposed as separate capabilities; arbitrary file or JSON writes are not ordinary tools.
+    The shared automation layer is App-owned. CLI and MCP are adapters over the same local IPC contract. `library.tracks` is the composable query entry point. Batch mutations and long operations remain owned by existing Library services and are observable through durable Jobs. Health and storage validation return bounded, paginated consistency evidence plus separate cheap media-path presence checks; they never decode audio or repair files implicitly.
     """
 }
 
@@ -3528,7 +3742,7 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.libraryImport,
             title: "Import Audio",
-            description: "Import local audio files or folders into the active managed or referenced library using the same pipeline as manual UI import, including NCM conversion, duplicate handling, metadata, artwork and lyrics enrichment. Optionally add imported and reused Tracks to targetPlaylistID. Returns an App-owned Job immediately; poll jobs.get for persisted Track IDs, counts, failures and enrichment completion. Requests App file authorization only when access is missing. Never write library sidecars yourself.",
+            description: "Import local audio files or folders through the same owner as manual UI import, including NCM conversion and duplicate handling. `enrichmentPolicy` defaults to `standard`; use `migration` to read embedded tags/lyrics and skip online enrichment. The App Job result includes a filePath-to-final-trackID mapping, including reused and converted files. Never write library sidecars yourself.",
             readOnly: false,
             scopes: [.libraryRead, .libraryWrite],
             risk: .low,
@@ -4184,10 +4398,12 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.metadataSearch,
             title: "Search Metadata Candidates",
-            description: "Search QQMusic and MusicBrainz for metadata candidates for one Track. Returns provider-neutral field match quality, provider warnings and the Track revision without changing the Library.",
+            description: "Search QQMusic and MusicBrainz for metadata candidates for one Track. Returns provider-neutral field match quality, provider warnings and the Track revision without changing the Library. Use background:true for slow searches; the App Job preserves the candidate result.",
             readOnly: true,
             scopes: [.metadataRead, .libraryRead],
             risk: .low,
+            supportsJobs: true,
+            supportsTasks: true,
             inputSchema: metadataSearchInputSchema
         ),
         AutomationToolDescriptor(
@@ -4214,10 +4430,12 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.artworkSearch,
             title: "Search Artwork",
-            description: "Search the App's configured artwork providers for one Track, Artist or Album and return ranked image candidates with inline image data for Agent review.",
+            description: "Search the App's configured artwork providers for one Track, Artist or Album and return ranked image candidates with inline image data for Agent review. Use background:true for slow searches; the App Job preserves the candidate result.",
             readOnly: true,
             scopes: [.artworkRead, .libraryRead],
             risk: .low,
+            supportsJobs: true,
+            supportsTasks: true,
             inputSchema: artworkSearchInputSchema
         ),
         AutomationToolDescriptor(
@@ -4262,10 +4480,12 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.lyricsSearch,
             title: "Search Lyrics",
-            description: "Search the existing AMLLDB and LDDC providers and return ranked, selectable lyrics candidates for one Track.",
+            description: "Search the existing AMLLDB and LDDC providers and return ranked, selectable lyrics candidates for one Track. Use background:true for slow searches; the App Job preserves the candidate result.",
             readOnly: true,
             scopes: [.lyricsRead, .libraryRead],
             risk: .low,
+            supportsJobs: true,
+            supportsTasks: true,
             inputSchema: lyricsSearchInputSchema
         ),
         AutomationToolDescriptor(
@@ -4330,11 +4550,32 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.jobsGet,
             title: "Get Job",
-            description: "Read one active library operation by ID.",
+            description: "Read one active or recent library Job by ID, including progress, item failures and persisted result.",
             readOnly: true,
             scopes: [.diagnosticsRead],
             risk: .low,
             inputSchema: jobIDInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.jobsWait,
+            title: "Wait for Job",
+            description: "Wait for one library Job to finish or for a bounded timeout. Maximum wait is 25 seconds; returns the latest snapshot on timeout. The wait can be cancelled without cancelling the Job.",
+            readOnly: true,
+            scopes: [.diagnosticsRead],
+            risk: .low,
+            inputSchema: jobWaitInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.operationsBatch,
+            title: "Batch Asset Operations",
+            description: "Run up to 100 metadata, artwork and lyrics mutations in order through their existing App owners. Each item has its own method and params, including expectedRevision. The App returns a durable Job with per-item results; use jobs.wait and jobs.get. Set dryRun:true to force a preview for every item. Ten or more write items or distinct write targets require confirm:true and one App foreground confirmation.",
+            readOnly: false,
+            scopes: [],
+            risk: .medium,
+            supportsDryRun: true,
+            supportsJobs: true,
+            supportsTasks: true,
+            inputSchema: operationsBatchInputSchema
         ),
         AutomationToolDescriptor(
             name: AutomationMethod.jobsCancel,
@@ -4357,11 +4598,13 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.diagnosticsHealth,
             title: "Library Health",
-            description: "Inspect Library, Source, missing Track and active Job health with actionable evidence.",
+            description: "Inspect Library, Source, missing/unavailable Track, Playlist reference, storage and Job health. Consistency issues and cheap media path presence issues are paginated separately and include IDs, paths and reasons where known; audio is not decoded and files are not repaired.",
             readOnly: true,
             scopes: [.diagnosticsRead, .libraryRead, .sourceRead],
             risk: .low,
-            inputSchema: emptyInputSchema
+            supportsJobs: true,
+            supportsTasks: true,
+            inputSchema: diagnosticsHealthInputSchema
         ),
         AutomationToolDescriptor(
             name: AutomationMethod.settingsGet,
@@ -4441,11 +4684,13 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.storageValidate,
             title: "Validate Library Storage",
-            description: "Run the App-owned storage, sidecar, index, manifest and playback-history integrity validator against the active Library.",
+            description: "Run the App-owned storage, sidecar, index, manifest and playback-history consistency validator against the active Library. Returns paginated consistency issues plus separate cheap existence/readability checks for recorded media paths; it does not decode or repair audio files. Use background:true when a large Library takes too long for a synchronous result.",
             readOnly: true,
             scopes: [.storageRead],
             risk: .low,
-            inputSchema: emptyInputSchema
+            supportsJobs: true,
+            supportsTasks: true,
+            inputSchema: storageValidationInputSchema
         ),
         AutomationToolDescriptor(
             name: AutomationMethod.storageRepair,
@@ -4636,6 +4881,10 @@ public enum AutomationToolCatalog {
                 "items": .object(["type": .string("string"), "minLength": .number(1)])
             ]),
             "targetPlaylistID": .object(["type": .string("string"), "format": .string("uuid")]),
+            "enrichmentPolicy": .object([
+                "type": .string("string"),
+                "enum": .array([.string("standard"), .string("migration")])
+            ]),
             "dryRun": .object(["type": .string("boolean")])
         ])
     ])
@@ -4997,7 +5246,8 @@ public enum AutomationToolCatalog {
         "additionalProperties": .boolean(false),
         "required": .array([.string("trackID")]),
         "properties": .object([
-            "trackID": .object(["type": .string("string")])
+            "trackID": .object(["type": .string("string")]),
+            "background": .object(["type": .string("boolean")])
         ])
     ])
 
@@ -5066,6 +5316,7 @@ public enum AutomationToolCatalog {
             "trackID": .object(["type": .string("string")]),
             "artistID": .object(["type": .string("string")]),
             "albumKey": .object(["type": .string("string")]),
+            "background": .object(["type": .string("boolean")]),
             "limit": .object([
                 "type": .string("integer"),
                 "minimum": .number(1),
@@ -5148,7 +5399,8 @@ public enum AutomationToolCatalog {
         "properties": .object([
             "trackID": .object(["type": .string("string")]),
             "mode": .object(["type": .string("string"), "enum": .array([.string("line"), .string("verbatim")])]),
-            "translation": .object(["type": .string("boolean")])
+            "translation": .object(["type": .string("boolean")]),
+            "background": .object(["type": .string("boolean")])
         ])
     ])
 
@@ -5545,6 +5797,26 @@ public enum AutomationToolCatalog {
         ])
     ])
 
+    private static let diagnosticsHealthInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "offset": .object(["type": .string("integer"), "minimum": .number(0)]),
+            "limit": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(100)]),
+            "background": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let storageValidationInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "offset": .object(["type": .string("integer"), "minimum": .number(0)]),
+            "limit": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(100)]),
+            "background": .object(["type": .string("boolean")])
+        ])
+    ])
+
     private static let storageDiffInputSchema: AutomationJSONValue = .object([
         "type": .string("object"),
         "additionalProperties": .boolean(false),
@@ -5643,6 +5915,54 @@ public enum AutomationToolCatalog {
         "required": .array([.string("jobID")]),
         "properties": .object([
             "jobID": .object(["type": .string("string")])
+        ])
+    ])
+
+    private static let jobWaitInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("jobID")]),
+        "properties": .object([
+            "jobID": .object(["type": .string("string"), "format": .string("uuid")]),
+            "timeoutMs": .object([
+                "type": .string("integer"),
+                "minimum": .number(0),
+                "maximum": .number(25_000)
+            ])
+        ])
+    ])
+
+    private static let operationsBatchInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("operations")]),
+        "properties": .object([
+            "operations": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "maxItems": .number(100),
+                "items": .object([
+                    "type": .string("object"),
+                    "additionalProperties": .boolean(false),
+                    "required": .array([.string("method")]),
+                    "properties": .object([
+                        "method": .object([
+                            "type": .string("string"),
+                            "enum": .array([
+                                .string(AutomationMethod.metadataPatch),
+                                .string(AutomationMethod.metadataApplyCandidate),
+                                .string(AutomationMethod.artworkApply),
+                                .string(AutomationMethod.artworkApplyCandidate),
+                                .string(AutomationMethod.lyricsApply),
+                                .string(AutomationMethod.lyricsClean)
+                            ])
+                        ]),
+                        "params": .object(["type": .string("object")])
+                    ])
+                ])
+            ]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
         ])
     ])
 

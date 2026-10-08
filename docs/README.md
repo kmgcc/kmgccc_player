@@ -8,6 +8,14 @@
 | --- | --- |
 | [实现约束与坑](PITFALLS.md) | 只收仍生效的实现约束与坑；**改对应功能代码前先读** |
 | [架构概览](architecture.md) | 应用组合根、资料库 session、本地与外部播放、统一展示模型、歌词、主题和频谱的主链路 |
+| [本地音频输出统一计划](audio-renderer-unification-plan.md) | 单一 sample-buffer renderer、旧 engine 移除、设备恢复、无缝播放与分析迁移 |
+| [Renderer 音频 DSP 实施计划](audio-dsp-implementation-plan.md) | 自定义效果链、等响补偿、完整预设实时切换、全局淡化/固定响度均衡、音质性能与 MCP/AI 控制 |
+| [App 维护备忘](app-maintenance-backlog.md) | App 本体的职责拆分、播放发布与开发工具整理，以及核心测试和实际 UI 验收范围 |
+| [皮肤体系演进计划](skin-system-evolution-plan.md) | 皮肤解耦、组件与自由排版、ZIP 导入与重载、Web 效果、开发工具及 Folium 兼容阶段 |
+| [皮肤基础重构记录](skin-system-p0-p2.md) | P0–P2 的行为基线、登记契约、宿主拆分、生命周期及实际验证边界 |
+| [皮肤组件与自由场景实施记录](skin-system-p3.md) | P3 的组件边界、场景接入、产品决定与实际进度 |
+| [皮肤 P0–P4 审查](skin-system-review.md) | 计划覆盖、修正、组件扩展边界、维护债务与实际验证 |
+| [原生皮肤开发](skin-authoring-native.md) | JSON ZIP 示例、可选组件、自适应布局、少量参数与 Swift 原生扩展入口 |
 | [MotionKit 动画标准化与迁移计划](motion-kit-plan.md) | 原生弹簧 API、语义 motion token、动画分类、歌词边界与分阶段迁移门禁 |
 | [外部组件与构建依赖](dependencies.md) | AMLL、LDDC、QQ Music Helper、MediaRemoteAdapter、SACAD 与 Swift Package 依赖 |
 | [原生 Swift 歌词系统](native-lyrics.md) | 原生 Swift 渲染架构、Core Text 字体排版、Core Animation 动效与硬件时钟同步 |
@@ -21,6 +29,7 @@
 | [Automation CLI / 本地 IPC / MCP](automation-cli-ipc.md) | 共享 Automation contract、CLI、AF_UNIX IPC、MCP stdio、文件管理和安全边界 |
 | [AI Agent Automation 实施计划](ai-agent-automation-plan.md) | 面向外部 Agent 的持续实施计划、阶段状态、Source/文件验收和安全边界 |
 | [Automation 计划实现审计（2026-10-03）](automation-plan-audit-2026-10-03.md) | 逐领域实现差距、导入闭环、Source 配置交换、Metadata 快照读取与实际验收边界 |
+| [MCP 实测优化验收（2026-10-07）](automation-improvement-audit-2026-10-07.md) | 报告核对、请求可靠性、批量操作、任务等待、诊断和迁移验收 |
 | [Automation Capability Reference](automation-capability-reference.md) | 当前可用的领域能力（含 Metadata/Artwork 控制）、组合查询、文件操作、风险、scope、revision 和 Jobs |
 | [Agent Behavior Guide](agent-behavior-guide.md) | Agent 的领域语义、安全规则、推荐 workflow 和 Storage fallback |
 | [Automation CLI Reference](automation-cli-reference.md) | 人、脚本和 Agent 可用的命令、JSON、exit code 和 batch 约定 |

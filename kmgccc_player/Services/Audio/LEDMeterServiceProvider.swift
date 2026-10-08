@@ -35,6 +35,10 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     /// kept around for fast re-acquire — Now Playing's hard release goes
     /// through `releaseNowPlayingResources()`.
     private var sessionCount: Int = 0
+#if DEBUG
+    /// Read-only runtime acceptance telemetry; includes all App leases.
+    var skinDebugSessionCount: Int { sessionCount }
+#endif
     /// Metrics from the real service or the external simulator.
     var metrics: LEDMeterMetrics {
         if playbackSource.isExternal {

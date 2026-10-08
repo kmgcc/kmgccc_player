@@ -17,7 +17,8 @@ private struct CLIOptions {
     var json = false
     var noLaunch = false
     var socketPath = AutomationToolDefaults.socketPath
-    var timeout: TimeInterval = 10
+    var timeout: TimeInterval = AutomationToolDefaults.defaultConnectionTimeout
+    var timeoutWasSet = false
     var libraryID: UUID?
     var query: String?
     var entityType: String?
@@ -49,6 +50,9 @@ private struct CLIOptions {
 }
 
 enum AutomationToolDefaults {
+    static let defaultConnectionTimeout: TimeInterval = 10
+    static let maximumTimeout: TimeInterval = 120
+
     static var socketPath: String {
         if let override = ProcessInfo.processInfo.environment["KMGCCC_AUTOMATION_SOCKET"],
            !override.isEmpty {
@@ -63,6 +67,61 @@ enum AutomationToolDefaults {
             .appendingPathComponent("Automation", isDirectory: true)
             .appendingPathComponent("automation.sock", isDirectory: false)
             .path
+    }
+
+    static func requestTimeout(
+        for request: AutomationRequest,
+        configuredTimeout: TimeInterval,
+        timeoutWasSet: Bool
+    ) -> TimeInterval {
+        let slowMethods: Set<String> = [
+            AutomationMethod.libraryCreate,
+            AutomationMethod.libraryOpen,
+            AutomationMethod.librarySwitch,
+            "lyrics.search",
+            "lyrics.candidates",
+            "artwork.search",
+            "metadata.search",
+            "storage.validate",
+            "diagnostics.health"
+        ]
+        let waitsForInteraction = AutomationToolCatalog.descriptor(for: request.method)?.requiresConfirmation == true
+            || request.method == AutomationMethod.sourceCreate
+            || request.method == AutomationMethod.operationsBatch
+        var budget = !timeoutWasSet && (slowMethods.contains(request.method) || waitsForInteraction)
+            ? maximumTimeout
+            : configuredTimeout
+
+        if request.method == "jobs.wait", !timeoutWasSet {
+            let waitSeconds: TimeInterval
+            if case .object(let parameters) = request.params,
+               case .number(let timeoutMs) = parameters["timeoutMs"],
+               timeoutMs.isFinite,
+               timeoutMs > 0 {
+                waitSeconds = timeoutMs / 1_000
+            } else {
+                waitSeconds = 20
+            }
+            budget = max(budget, waitSeconds + 5)
+        }
+
+        return min(max(budget, 0.000_001), maximumTimeout)
+    }
+
+    static func requestDeadline(
+        for request: AutomationRequest,
+        configuredTimeout: TimeInterval,
+        timeoutWasSet: Bool,
+        now: Date = Date()
+    ) -> Date {
+        let transportDeadline = now.addingTimeInterval(
+            requestTimeout(
+                for: request,
+                configuredTimeout: configuredTimeout,
+                timeoutWasSet: timeoutWasSet
+            )
+        )
+        return min(transportDeadline, request.context.deadline ?? transportDeadline)
     }
 }
 
@@ -109,7 +168,8 @@ private struct AutomationCLI {
                 options: AutomationMCPStdioOptions(
                     socketPath: options.socketPath,
                     noLaunch: options.noLaunch,
-                    timeout: options.timeout
+                    timeout: options.timeout,
+                    timeoutWasSet: options.timeoutWasSet
                 )
             ).run()
             return AutomationCLIExitCode(rawValue: mcpExitCode) ?? .internalError
@@ -290,6 +350,13 @@ private struct AutomationCLI {
                 ]
                 if let playlistID = options.targetPlaylistID ?? options.playlistID {
                     values["targetPlaylistID"] = .string(playlistID)
+                }
+                if let paramsJSON = options.paramsJSON {
+                    guard case .object(let extra) = paramsJSON else {
+                        writeDiagnostic("usage error: library import --params-json requires an object")
+                        return .usage
+                    }
+                    values.merge(extra) { existing, _ in existing }
                 }
                 method = AutomationMethod.libraryImport
                 params = .object(values)
@@ -1077,19 +1144,22 @@ private struct AutomationCLI {
             default: writeDiagnostic("usage error: unknown lyrics action \(action)"); return .usage
             }
         case "jobs":
-            guard let action = args.first else { writeDiagnostic("usage error: jobs requires list, get, cancel or retry"); return .usage }
+            guard let action = args.first else { writeDiagnostic("usage error: jobs requires list, get, wait, cancel or retry"); return .usage }
             args.removeFirst()
             switch action {
             case "list": method = AutomationMethod.jobsList; params = nil
-            case "get", "cancel", "retry":
+            case "get", "wait", "cancel", "retry":
                 guard args.count == 1 else { writeDiagnostic("usage error: jobs \(action) requires a job ID"); return .usage }
                 method = action == "get"
                     ? AutomationMethod.jobsGet
-                    : (action == "cancel" ? AutomationMethod.jobsCancel : AutomationMethod.jobsRetry)
+                    : (action == "wait"
+                        ? AutomationMethod.jobsWait
+                        : (action == "cancel" ? AutomationMethod.jobsCancel : AutomationMethod.jobsRetry))
                 var values: [String: AutomationJSONValue] = ["jobID": .string(args[0])]
                 if let paramsJSON = options.paramsJSON {
-                    guard action == "retry", case .object(let extra) = paramsJSON else {
-                        writeDiagnostic("usage error: --params-json is supported for jobs retry only and must be an object")
+                    guard action == "retry" || action == "wait",
+                          case .object(let extra) = paramsJSON else {
+                        writeDiagnostic("usage error: --params-json is supported for jobs wait or retry and must be an object")
                         return .usage
                     }
                     values.merge(extra) { existing, _ in existing }
@@ -1098,9 +1168,17 @@ private struct AutomationCLI {
             default: writeDiagnostic("usage error: unknown jobs action \(action)"); return .usage
             }
         case "diagnostics":
-            guard args.count == 1, args[0] == "health" else { writeDiagnostic("usage error: diagnostics health"); return .usage }
+            guard args.count == 1, args[0] == "health" else { writeDiagnostic("usage error: diagnostics health [--params-json <object>]"); return .usage }
             method = AutomationMethod.diagnosticsHealth
-            params = nil
+            if let paramsJSON = options.paramsJSON {
+                guard case .object = paramsJSON else {
+                    writeDiagnostic("usage error: diagnostics health --params-json requires an object")
+                    return .usage
+                }
+                params = paramsJSON
+            } else {
+                params = nil
+            }
         case "settings":
             guard let action = args.first else {
                 writeDiagnostic("usage error: settings requires schema, get, patch, validate or reset")
@@ -1189,7 +1267,15 @@ private struct AutomationCLI {
                     return .usage
                 }
                 method = AutomationMethod.storageValidate
-                params = nil
+                if let paramsJSON = options.paramsJSON {
+                    guard case .object = paramsJSON else {
+                        writeDiagnostic("usage error: storage validate --params-json requires an object")
+                        return .usage
+                    }
+                    params = paramsJSON
+                } else {
+                    params = nil
+                }
             case "orphans":
                 guard args.isEmpty else {
                     writeDiagnostic("usage error: storage orphans does not accept positional arguments")
@@ -1239,9 +1325,9 @@ private struct AutomationCLI {
         if let idempotencyKey = options.idempotencyKey {
             automaticIdempotencyKey = idempotencyKey
         } else if AutomationToolCatalog.descriptor(for: method)?.readOnly == false {
-            // A single CLI invocation may retry after a lost transport
-            // response. Give those retries one stable key without making two
-            // separate invocations accidentally share a mutation.
+            // Safe reconnect attempts can happen before request delivery.
+            // Scope this key to one invocation so separate CLI calls do not
+            // accidentally share a mutation result.
             automaticIdempotencyKey = "cli:\(requestID.uuidString)"
         } else {
             automaticIdempotencyKey = nil
@@ -1257,15 +1343,18 @@ private struct AutomationCLI {
             requestID: requestID
         )
         do {
+            let connectionDeadline = Date().addingTimeInterval(options.timeout)
             let socketExists = FileManager.default.fileExists(atPath: options.socketPath)
             let isCustomSocket = options.socketPath != AutomationToolDefaults.socketPath
-            if !options.noLaunch && !socketExists && !isCustomSocket {
+            let secretURL = try AutomationIPCSecretStore.url(forSocketPath: options.socketPath)
+            let secretExists = FileManager.default.fileExists(atPath: secretURL.path)
+            if !options.noLaunch && (!socketExists || !secretExists) && !isCustomSocket {
                 launchAppIfNeeded()
             }
             let sharedSecret = try loadSharedSecret(
                 forSocketPath: options.socketPath,
                 waitForCreation: !options.noLaunch,
-                timeout: options.timeout
+                timeout: max(0.000_001, connectionDeadline.timeIntervalSinceNow)
             )
             let configuration = try AutomationIPCConfiguration(
                 ioTimeout: options.timeout,
@@ -1275,11 +1364,18 @@ private struct AutomationCLI {
                 socketPath: options.socketPath,
                 configuration: configuration
             )
+            let requestDeadline = AutomationToolDefaults.requestDeadline(
+                for: request,
+                configuredTimeout: options.timeout,
+                timeoutWasSet: options.timeoutWasSet
+            )
             let response = try send(
                 request,
                 client: client,
-                noLaunch: true,
-                timeout: options.timeout
+                noLaunch: options.noLaunch,
+                deadline: requestDeadline,
+                connectionDeadline: min(connectionDeadline, requestDeadline),
+                canLaunch: !isCustomSocket
             )
             if options.json {
                 writeJSON(response)
@@ -1287,6 +1383,23 @@ private struct AutomationCLI {
                 renderHuman(response, method: method)
             }
             return exitCode(for: response)
+        } catch let error as AutomationIPCRequestError {
+            let retryable = error.isDefinitelyNotSent
+            let response = AutomationResponse(
+                requestID: request.requestID,
+                error: AutomationError(
+                    code: .serverUnavailable,
+                    message: error.localizedDescription,
+                    retryable: retryable,
+                    details: .object([
+                        "delivery": .string(retryable ? "notSent" : "unknown"),
+                        "retryable": .boolean(retryable)
+                    ])
+                )
+            )
+            if options.json { writeJSON(response) }
+            writeDiagnostic(error.localizedDescription)
+            return .unavailable
         } catch let error as AutomationIPCError {
             if options.json {
                 let response = AutomationResponse(
@@ -1294,7 +1407,8 @@ private struct AutomationCLI {
                     error: AutomationError(
                         code: .serverUnavailable,
                         message: error.localizedDescription,
-                        retryable: true
+                        retryable: true,
+                        details: .object(["delivery": .string("notSent")])
                     )
                 )
                 writeJSON(response)
@@ -1358,16 +1472,34 @@ private struct AutomationCLI {
         _ request: AutomationRequest,
         client: AutomationIPCClient,
         noLaunch: Bool,
-        timeout: TimeInterval
+        deadline: Date,
+        connectionDeadline: Date,
+        canLaunch: Bool
     ) throws -> AutomationResponse {
-        let deadline = Date().addingTimeInterval(timeout)
+        let connectionDeadline = min(connectionDeadline, deadline)
         var lastError: Error?
+        var didLaunchApp = false
         while Date() < deadline {
+            let remaining = deadline.timeIntervalSinceNow
+            let remainingConnection = connectionDeadline.timeIntervalSinceNow
+            guard remaining > 0, remainingConnection > 0 else {
+                throw lastError ?? AutomationIPCError.timeout
+            }
             do {
-                return try client.send(request)
-            } catch {
+                return try client.sendClassified(
+                    request,
+                    timeout: remaining,
+                    connectionTimeout: remainingConnection
+                )
+            } catch let error as AutomationIPCRequestError {
+                guard error.isDefinitelyNotSent else { throw error }
                 lastError = error
-                Thread.sleep(forTimeInterval: 0.1)
+                if canLaunch && !noLaunch && !didLaunchApp {
+                    launchAppIfNeeded()
+                    didLaunchApp = true
+                }
+                guard Date() < connectionDeadline else { throw error }
+                Thread.sleep(forTimeInterval: min(0.1, max(0, connectionDeadline.timeIntervalSinceNow)))
             }
         }
         throw lastError ?? AutomationIPCError.timeout
@@ -1470,10 +1602,11 @@ private struct AutomationCLI {
                       let timeout = TimeInterval(args[index + 1]),
                       timeout.isFinite,
                       timeout > 0,
-                      timeout <= 120 else {
+                      timeout <= AutomationToolDefaults.maximumTimeout else {
                     throw CLIError.invalidValue("--timeout")
                 }
                 options.timeout = timeout
+                options.timeoutWasSet = true
                 args.removeSubrange(index...(index + 1))
             case "--library":
                 guard index + 1 < args.count,
@@ -1702,7 +1835,7 @@ private struct AutomationCLI {
           library bundle-export   Export metadata, playlists and media; returns a Job
           library selection-list|selection-get|selection-create|selection-delete
                                   Save and reuse Track ID or filter selections
-          library import <path>... [--playlist-id <id>]
+          library import <path>... [--playlist-id <id>] [--params-json '{"enrichmentPolicy":"migration"}']
                                    Import audio/folders (including NCM); returns a Job
           library create <mode> <name> [parent]
                                    Create and activate a library
@@ -1771,16 +1904,20 @@ private struct AutomationCLI {
           lyrics compare|apply <track-id> --params-json '{...}'
           lyrics refresh <track-id>... [--force] (returns a Job)
           jobs list               Inspect recent library jobs
-          jobs get|cancel|retry <job-id>
-                                   Inspect, cancel or retry a library job
+          jobs get|wait|cancel|retry <job-id>
+                                   Inspect, wait for, cancel or retry a library job
+          jobs wait <job-id> [--params-json '{"timeoutMs":20000}']
+                                   Wait up to 20 seconds by default; use jobs get for a snapshot
           jobs retry <job-id> --params-json '{"filePaths":[...]}'
                                    Retry an import with newly authorized input files
-          diagnostics health      Collect actionable Library/Source health evidence
+          diagnostics health [--params-json <object>]
+                                   Collect paginated health evidence or start a background Job
           settings schema|get|patch|validate|reset
                                    Inspect, validate, update or reset persistent settings
           audio get|patch          Read audio state or update scheduling and App output routing
           storage inspect         Inspect Library storage layout and schema
-          storage validate        Run App-owned storage integrity validation
+          storage validate [--params-json <object>]
+                                   Validate storage invariants or start a background Job
           storage orphans         Report Playlist references to missing Tracks
           storage backup          Back up JSON/sidecar metadata without audio
           storage diff <path>     Compare current metadata with a backup
@@ -1791,7 +1928,7 @@ private struct AutomationCLI {
           --json                  Emit one versioned JSON response on stdout
           --no-launch             Do not ask LaunchServices to start the App
           --socket <path>         Override the per-user AF_UNIX socket path
-          --timeout <seconds>     Bound connection and launch wait (default 10)
+          --timeout <seconds>     IPC timeout override (0 < seconds <= 120; default 10)
           --library <id>          Require a specific active library UUID
           --query <text>          Filter tracks or metadata entities by text
           --entity-type <type>    List metadata entities: artist, album or playlist

@@ -331,7 +331,9 @@ private struct FullscreenQueueTextPalette {
 // MARK: - Queue Row
 
 private struct QueueRow: View {
+    @Environment(AppSettings.self) private var settings
     @Environment(LibraryCacheServices.self) private var cacheServices
+    @Environment(\.colorScheme) private var colorScheme
     let track: Track
     let isPlaying: Bool
     let textPalette: FullscreenQueueTextPalette
@@ -343,61 +345,68 @@ private struct QueueRow: View {
     @State private var artworkImage: NSImage?
 
     var body: some View {
-        HStack(spacing: 12 * scale) {
-            // Artwork
-            artworkView
-                .frame(width: artworkSize, height: artworkSize)
+        TrackArtworkTintContent(
+            track: track,
+            tintMode: settings.artworkTintMode,
+            cacheServices: cacheServices,
+            colorScheme: colorScheme
+        ) { artworkTintColor in
+            HStack(spacing: 12 * scale) {
+                // Artwork
+                artworkView(tintColor: artworkTintColor)
+                    .frame(width: artworkSize, height: artworkSize)
 
-            // Track info
-            VStack(alignment: .leading, spacing: 2 * scale) {
-                SeamlessMarqueeText(
-                    text: track.title,
-                    fontSize: 14 * scale,
-                    fontWeight: isPlaying ? .semibold : .medium,
-                    color: isPlaying ? currentRowForegroundColor : textPalette.primary,
-                    shouldAnimate: isPlaying
-                )
+                // Track info
+                VStack(alignment: .leading, spacing: 2 * scale) {
+                    SeamlessMarqueeText(
+                        text: track.title,
+                        fontSize: 14 * scale,
+                        fontWeight: isPlaying ? .semibold : .medium,
+                        color: artworkTintColor ?? (isPlaying ? currentRowForegroundColor : textPalette.primary),
+                        shouldAnimate: isPlaying
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Text(artistText)
+                        .font(.system(size: 12 * scale, weight: .regular))
+                        .foregroundStyle(artworkTintColor?.opacity(0.78) ?? textPalette.secondary)
+                        .lineLimit(1)
+                }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text(artistText)
-                    .font(.system(size: 12 * scale, weight: .regular))
-                    .foregroundStyle(textPalette.secondary)
-                    .lineLimit(1)
+                // Playing indicator or duration
+                if isPlaying {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 12 * scale, weight: .medium))
+                        .foregroundStyle(artworkTintColor ?? currentRowForegroundColor)
+                        .frame(width: 24 * scale)
+                } else {
+                    Text(formatDuration(track.duration))
+                        .font(.system(size: 12 * scale, weight: .medium))
+                        .foregroundStyle(artworkTintColor?.opacity(0.62) ?? textPalette.tertiary)
+                        .monospacedDigit()
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Playing indicator or duration
-            if isPlaying {
-                Image(systemName: "speaker.wave.2.fill")
-                    .font(.system(size: 12 * scale, weight: .medium))
-                    .foregroundStyle(currentRowForegroundColor)
-                    .frame(width: 24 * scale)
-            } else {
-                Text(formatDuration(track.duration))
-                    .font(.system(size: 12 * scale, weight: .medium))
-                    .foregroundStyle(textPalette.tertiary)
-                    .monospacedDigit()
+            .padding(.horizontal, 12 * scale)
+            .frame(height: rowHeight)
+            .background(
+                RoundedRectangle(cornerRadius: 8 * scale)
+                    .fill(backgroundFill)
+            )
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHovering = hovering
             }
-        }
-        .padding(.horizontal, 12 * scale)
-        .frame(height: rowHeight)
-        .background(
-            RoundedRectangle(cornerRadius: 8 * scale)
-                .fill(backgroundFill)
-        )
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            isHovering = hovering
-        }
-        .task(id: currentArtworkTaskKey) {
-            await loadArtwork()
+            .task(id: currentArtworkTaskKey) {
+                await loadArtwork()
+            }
         }
     }
 
     // MARK: - Artwork View
 
     @ViewBuilder
-    private var artworkView: some View {
+    private func artworkView(tintColor: Color?) -> some View {
         if let artworkImage {
             Image(nsImage: artworkImage)
                 .resizable()
@@ -408,7 +417,7 @@ private struct QueueRow: View {
             ArtworkPlaceholderView.queueRow(
                 artworkSize: 44,
                 scale: scale,
-                themeColor: isPlaying ? currentRowForegroundColor : textPalette.secondary
+                themeColor: tintColor ?? (isPlaying ? currentRowForegroundColor : textPalette.secondary)
             )
         }
     }

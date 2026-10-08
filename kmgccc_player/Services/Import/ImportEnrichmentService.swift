@@ -16,9 +16,14 @@ import UniformTypeIdentifiers
 nonisolated enum ImportEnrichmentMode: Sendable {
     case immediate
     case deferred
+    case skipped
 
     var defersEnrichment: Bool {
         self == .deferred
+    }
+
+    var skipsEnrichment: Bool {
+        self == .skipped
     }
 }
 

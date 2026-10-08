@@ -93,9 +93,7 @@ final class NowPlayingService {
         guard let player, let track = player.currentTrack else {
             cancelArtworkLoad()
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-            if #available(macOS 12.0, *) {
-                MPNowPlayingInfoCenter.default().playbackState = .stopped
-            }
+            MPNowPlayingInfoCenter.default().playbackState = .stopped
             manageProgressTimer(isPlaying: false)
             return
         }
@@ -124,9 +122,7 @@ final class NowPlayingService {
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         isNowPlayingClearedForSystemMode = false
-        if #available(macOS 12.0, *) {
-            MPNowPlayingInfoCenter.default().playbackState = player.isPlaying ? .playing : .paused
-        }
+        MPNowPlayingInfoCenter.default().playbackState = player.isPlaying ? .playing : .paused
         manageProgressTimer(isPlaying: player.isPlaying)
     }
 
@@ -139,9 +135,7 @@ final class NowPlayingService {
         guard presentation.hasTrack else {
             cancelArtworkLoad()
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-            if #available(macOS 12.0, *) {
-                MPNowPlayingInfoCenter.default().playbackState = .stopped
-            }
+            MPNowPlayingInfoCenter.default().playbackState = .stopped
             isNowPlayingClearedForSystemMode = false
             return
         }
@@ -179,10 +173,8 @@ final class NowPlayingService {
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         isNowPlayingClearedForSystemMode = false
-        if #available(macOS 12.0, *) {
-            MPNowPlayingInfoCenter.default().playbackState =
-                presentation.isPlaying ? .playing : .paused
-        }
+        MPNowPlayingInfoCenter.default().playbackState =
+            presentation.isPlaying ? .playing : .paused
     }
 
     private func applyAudioMetadata(
@@ -208,9 +200,7 @@ final class NowPlayingService {
 
     private func clearNowPlayingInfoForSystemMode() {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-        if #available(macOS 12.0, *) {
-            MPNowPlayingInfoCenter.default().playbackState = .stopped
-        }
+        MPNowPlayingInfoCenter.default().playbackState = .stopped
         guard !isNowPlayingClearedForSystemMode else { return }
         isNowPlayingClearedForSystemMode = true
         Log.info("[NowPlayingService] cleared app Now Playing info for systemNowPlaying mode", category: .playback)

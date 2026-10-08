@@ -113,11 +113,13 @@ struct TrackRowView<MenuContent: View>: View {
     var rowPrimaryColor: Color = ColorTokens.textPrimary
     var rowSecondaryColor: Color = ColorTokens.textSecondary
     var rowTertiaryColor: Color = ColorTokens.textTertiary
+    var artworkTintMode: AppSettings.ArtworkTintMode = .dynamic
     @ViewBuilder let menuContent: () -> MenuContent
 
     @State private var isHovering = false
     @State private var artworkImage: NSImage?
     @State private var isArtworkReady = false
+    @State private var rowArtworkAccentColor: NSColor?
     @State private var revealHighlightOpacity: Double = 0
     /// Animation to apply to the reveal-highlight overlay. The playlist scroll
     /// container strips animations via `.transaction { tx.animation = nil }`, so
@@ -159,6 +161,7 @@ struct TrackRowView<MenuContent: View>: View {
         rowPrimaryColor: Color = ColorTokens.textPrimary,
         rowSecondaryColor: Color = ColorTokens.textSecondary,
         rowTertiaryColor: Color = ColorTokens.textTertiary,
+        artworkTintMode: AppSettings.ArtworkTintMode = .dynamic,
         @ViewBuilder menuContent: @escaping () -> MenuContent
     ) {
         self.model = model
@@ -177,6 +180,7 @@ struct TrackRowView<MenuContent: View>: View {
         self.rowPrimaryColor = rowPrimaryColor
         self.rowSecondaryColor = rowSecondaryColor
         self.rowTertiaryColor = rowTertiaryColor
+        self.artworkTintMode = artworkTintMode
         self.menuContent = menuContent
 
         let fastCached = FastArtworkMemoryCache.shared.image(forKey: model.highArtworkCacheKey)
@@ -256,7 +260,7 @@ struct TrackRowView<MenuContent: View>: View {
             } else if isPlaying {
                 Image(systemName: "speaker.wave.2.fill")
                     .font(.system(size: Constants.Layout.TrackRow.playingIndicatorFontSize, weight: .medium))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(artworkTintColor ?? Color.accentColor)
                     .frame(width: playingIndicatorColumnWidth)
             } else {
                 Color.clear
@@ -265,7 +269,7 @@ struct TrackRowView<MenuContent: View>: View {
 
             Text(model.durationText)
                 .font(.system(size: Constants.Layout.TrackRow.durationFontSize, weight: .regular))
-                .foregroundStyle(rowTertiaryColor)
+                .foregroundStyle(effectiveRowTertiaryColor)
                 .monospacedDigit()
                 .frame(width: 42, alignment: .trailing)
 
@@ -277,7 +281,10 @@ struct TrackRowView<MenuContent: View>: View {
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .fixedSize()
+                .frame(
+                    width: Constants.Layout.TrackRow.trailingMenuHitSize,
+                    height: Constants.Layout.TrackRow.trailingMenuHitSize
+                )
             } else {
                 trailingMenuGlyph
                     .opacity(0.72)
@@ -285,7 +292,15 @@ struct TrackRowView<MenuContent: View>: View {
             }
         }
         .padding(.vertical, Constants.Layout.TrackRow.verticalPadding)
-        .padding(.horizontal, Constants.Layout.TrackRow.horizontalPadding)
+        .padding(.leading, Constants.Layout.TrackRow.horizontalPadding)
+        .padding(
+            .trailing,
+            max(
+                0,
+                Constants.Layout.TrackRow.horizontalPadding
+                    - (Constants.Layout.TrackRow.trailingMenuHitSize - Constants.Layout.TrackRow.trailingMenuGlyphSize) / 2
+            )
+        )
         .frame(height: rowHeight)
         .background(rowBackground)
         .contentShape(Rectangle())
@@ -321,6 +336,9 @@ struct TrackRowView<MenuContent: View>: View {
         .task(id: artworkTaskIdentity) {
             await loadArtwork()
         }
+        .task(id: artworkTintTaskIdentity) {
+            await loadArtworkTint()
+        }
         .onChange(of: enableSecondaryInteractions) { _, enabled in
             if !enabled {
                 isHovering = false
@@ -337,6 +355,12 @@ struct TrackRowView<MenuContent: View>: View {
         enableArtworkLoading ? model.artworkIdentity : "paused-\(model.id.uuidString)"
     }
 
+    private var artworkTintTaskIdentity: String {
+        let loadingState = enableArtworkLoading ? "loading" : "paused"
+        let artworkPath = model.artworkFileURL?.standardizedFileURL.path ?? "inline"
+        return "\(loadingState)|\(artworkTintMode.rawValue)|\(model.artworkIdentity)|\(artworkPath)"
+    }
+
     private var artistText: String {
         model.artist.isEmpty
             ? NSLocalizedString("library.unknown_artist", comment: "")
@@ -345,12 +369,53 @@ struct TrackRowView<MenuContent: View>: View {
 
     private var textPrimaryColor: Color {
         if model.isMissing { return .secondary }
+        if let artworkTintColor { return artworkTintColor }
         return isPlaying ? Color.accentColor : rowPrimaryColor
     }
 
     private var textSecondaryColor: Color {
         if model.isMissing { return Color.gray.opacity(0.6) }
-        return rowSecondaryColor
+        return effectiveRowSecondaryColor
+    }
+
+    private var artworkTintColor: Color? {
+        guard artworkTintMode == .rich, let rowArtworkAccentColor else { return nil }
+        let adjusted = ArtworkColorExtractor.adjustedAccent(
+            from: rowArtworkAccentColor,
+            isDarkMode: colorScheme == .dark
+        )
+        return ColorRenderingAdapter.makeSwiftUIColor(adjusted)
+    }
+
+    private var effectiveRowSecondaryColor: Color {
+        artworkTintColor?.opacity(0.78) ?? rowSecondaryColor
+    }
+
+    private var effectiveRowTertiaryColor: Color {
+        artworkTintColor?.opacity(0.62) ?? rowTertiaryColor
+    }
+
+    @MainActor
+    private func loadArtworkTint() async {
+        rowArtworkAccentColor = nil
+        guard enableArtworkLoading,
+              artworkTintMode == .rich,
+              !model.isMissing,
+              let source = TrackArtworkSource(
+                trackID: model.artworkTrackID,
+                artworkFileName: nil,
+                artworkFileURL: model.artworkFileURL,
+                inlineArtworkData: model.artworkData
+              )
+        else { return }
+
+        let accentColor = await cacheServices.trackArtworkCache.artworkAccentColor(
+            for: source,
+            purpose: "song-row-color",
+            priority: .userInitiated
+        )
+        guard !Task.isCancelled, artworkTintMode == .rich else { return }
+        rowArtworkAccentColor = accentColor
     }
 
     private var rowHeight: CGFloat {
@@ -401,7 +466,7 @@ struct TrackRowView<MenuContent: View>: View {
         guard !snippet.isEmpty else { return nil }
 
         var attributed = AttributedString(snippet)
-        attributed.foregroundColor = rowTertiaryColor
+        attributed.foregroundColor = effectiveRowTertiaryColor
         attributed.font = .system(size: Constants.Layout.TrackRow.lyricSnippetFontSize)
 
         for highlightRange in model.lyricHighlightRanges {
@@ -413,7 +478,7 @@ struct TrackRowView<MenuContent: View>: View {
             let attributedRange = Range(stringRange, in: attributed)
             else { continue }
 
-            attributed[attributedRange].foregroundColor = Color.accentColor
+            attributed[attributedRange].foregroundColor = artworkTintColor ?? Color.accentColor
             attributed[attributedRange].font = Font
                 .system(size: Constants.Layout.TrackRow.lyricSnippetFontSize)
                 .weight(.semibold)
@@ -541,7 +606,7 @@ struct TrackRowView<MenuContent: View>: View {
     private var trailingMenuGlyph: some View {
         Image(systemName: "ellipsis")
             .font(.system(size: Constants.Layout.TrackRow.trailingMenuGlyphSize, weight: .regular))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(effectiveRowSecondaryColor)
             .frame(
                 width: Constants.Layout.TrackRow.trailingMenuHitSize,
                 height: Constants.Layout.TrackRow.trailingMenuHitSize
@@ -707,6 +772,73 @@ extension TrackRowView: Equatable where MenuContent: View {
             && lhs.rowPrimaryColor == rhs.rowPrimaryColor
             && lhs.rowSecondaryColor == rhs.rowSecondaryColor
             && lhs.rowTertiaryColor == rhs.rowTertiaryColor
+            && lhs.artworkTintMode == rhs.artworkTintMode
+    }
+}
+
+/// Supplies a lazily resolved per-track tint to row views that do not use
+/// `TrackRowView` directly. The shared artwork store coalesces extraction and
+/// keeps the resolved color available to other list surfaces.
+struct TrackArtworkTintContent<Content: View>: View {
+    let track: Track
+    let tintMode: AppSettings.ArtworkTintMode
+    let cacheServices: LibraryCacheServices
+    let colorScheme: ColorScheme
+    private let content: (Color?) -> Content
+
+    @State private var extractedAccentColor: NSColor?
+
+    init(
+        track: Track,
+        tintMode: AppSettings.ArtworkTintMode,
+        cacheServices: LibraryCacheServices,
+        colorScheme: ColorScheme,
+        @ViewBuilder content: @escaping (Color?) -> Content
+    ) {
+        self.track = track
+        self.tintMode = tintMode
+        self.cacheServices = cacheServices
+        self.colorScheme = colorScheme
+        self.content = content
+    }
+
+    var body: some View {
+        content(artworkTintColor)
+            .task(id: taskIdentity) {
+                await loadArtworkTint()
+            }
+    }
+
+    private var artworkTintColor: Color? {
+        guard tintMode == .rich, let extractedAccentColor else { return nil }
+        let adjusted = ArtworkColorExtractor.adjustedAccent(
+            from: extractedAccentColor,
+            isDarkMode: colorScheme == .dark
+        )
+        return ColorRenderingAdapter.makeSwiftUIColor(adjusted)
+    }
+
+    private var taskIdentity: String {
+        guard tintMode == .rich,
+              let source = track.trackArtworkSource()
+        else { return "\(tintMode.rawValue)|none|\(track.id.uuidString)" }
+        return "\(tintMode.rawValue)|\(source.colorCacheIdentity)"
+    }
+
+    @MainActor
+    private func loadArtworkTint() async {
+        extractedAccentColor = nil
+        guard tintMode == .rich,
+              let source = track.trackArtworkSource()
+        else { return }
+
+        let accentColor = await cacheServices.trackArtworkCache.artworkAccentColor(
+            for: source,
+            purpose: "song-row-color",
+            priority: .userInitiated
+        )
+        guard !Task.isCancelled, tintMode == .rich else { return }
+        extractedAccentColor = accentColor
     }
 }
 

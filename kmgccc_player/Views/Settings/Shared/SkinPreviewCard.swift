@@ -20,6 +20,7 @@ struct SkinPreviewCard<Preview: View>: View {
     @ViewBuilder let preview: () -> Preview
     let action: () -> Void
 
+    @State private var isHovering = false
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
@@ -66,8 +67,7 @@ struct SkinPreviewCard<Preview: View>: View {
     }
 
     var body: some View {
-        Button(action: action) {
-            ZStack {
+        ZStack {
                 cardSurface
 
                 VStack(spacing: innerSpacing) {
@@ -97,8 +97,10 @@ struct SkinPreviewCard<Preview: View>: View {
                 }
             }
             .contentShape(outerShape)
-        }
-        .buttonStyle(SkinCardButtonStyle())
+            .opacity(isHovering ? 0.88 : 1.0)
+            .motionAnimation(.microInteraction, value: isHovering)
+            .onHover { isHovering = $0 }
+            .onTapGesture(perform: action)
     }
 
     // MARK: - Appearance
@@ -143,17 +145,5 @@ struct SkinPreviewCard<Preview: View>: View {
             return presentationStyle.primaryTextColor.opacity(0.85)
         }
         return selectionAccentColor.opacity(0.98)
-    }
-
-}
-
-// MARK: - Button Style
-
-/// Removes default button styling while preserving hover/pressed feedback via opacity.
-private struct SkinCardButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .opacity(configuration.isPressed ? 0.82 : 1.0)
-            .motionAnimation(.microInteraction, value: configuration.isPressed)
     }
 }

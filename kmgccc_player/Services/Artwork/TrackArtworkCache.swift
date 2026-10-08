@@ -17,6 +17,23 @@ struct TrackArtworkSource: Sendable, Equatable {
     let inlineArtworkData: Data?
     let sourceKey: String
 
+    nonisolated var colorCacheIdentity: String {
+        guard let artworkFileURL else { return sourceKey }
+        let values = try? artworkFileURL.resourceValues(
+            forKeys: [.fileSizeKey, .contentModificationDateKey]
+        )
+        let fileSize = values?.fileSize ?? 0
+        let modified = values?.contentModificationDate?.timeIntervalSince1970 ?? 0
+        let modifiedNanos = Int64((modified * 1_000_000_000).rounded())
+        return [
+            ArtworkColorExtractor.cacheVersion,
+            trackID.uuidString,
+            artworkFileURL.standardizedFileURL.path,
+            "\(fileSize)",
+            "\(modifiedNanos)",
+        ].joined(separator: "|")
+    }
+
     nonisolated init?(
         trackID: UUID,
         artworkFileName: String?,
@@ -245,7 +262,11 @@ actor TrackArtworkCache {
         return FileManager.default.fileExists(atPath: derivativeFileURL(for: imageKey).path)
     }
 
-    func sourceData(for source: TrackArtworkSource, purpose: String = "ui") async -> Data? {
+    func sourceData(
+        for source: TrackArtworkSource,
+        purpose: String = "ui",
+        priority: TaskPriority = .utility
+    ) async -> Data? {
         scheduleInitialDiskTrimIfNeeded()
         let requestGeneration = memoryGeneration
 
@@ -276,7 +297,7 @@ actor TrackArtworkCache {
 
         let cachedURL = originalFileURL(for: source)
         let taskID = UUID()
-        let task = Task.detached(priority: .utility) { [cachedURL] () -> Data? in
+        let task = Task.detached(priority: priority) { [cachedURL] () -> Data? in
             guard !Task.isCancelled else { return nil }
 
             // 1. Direct stream from source artwork file on disk (no duplicate copy to originalsRootURL)
@@ -350,6 +371,32 @@ actor TrackArtworkCache {
             recordDiskWriteAndTrimIfNeeded()
         }
         return data
+    }
+
+    func artworkAccentColor(
+        for source: TrackArtworkSource,
+        purpose: String = "ui",
+        priority: TaskPriority = .utility
+    ) async -> NSColor? {
+        let cacheLookup = await ArtworkAssetStore.shared.cachedAccentColor(for: source.colorCacheIdentity)
+        if cacheLookup.isCached {
+            return cacheLookup.accentColor
+        }
+
+        guard let data = await sourceData(
+            for: source,
+            purpose: purpose,
+            priority: priority
+        ) else {
+            return nil
+        }
+
+        return await ArtworkAssetStore.shared.resolveAccentColor(
+            trackID: source.trackID,
+            artworkData: data,
+            sourceIdentity: source.colorCacheIdentity,
+            priority: priority
+        )
     }
 
     private func image(
