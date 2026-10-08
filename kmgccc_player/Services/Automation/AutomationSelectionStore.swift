@@ -8,7 +8,7 @@ struct AutomationSelectionSnapshot: Codable, Equatable {
     let filter: AutomationJSONValue?
 }
 
-struct AutomationSelectionStoreFile: Codable {
+private struct AutomationSelectionStoreFile: Codable {
     let schemaVersion: Int
     let snapshots: [AutomationSelectionSnapshot]
 }

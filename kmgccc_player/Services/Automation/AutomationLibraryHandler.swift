@@ -1,10 +1,5 @@
-import AppKit
-import CryptoKit
 import Foundation
-import ImageIO
-import PlayerAutomationIPC
 import PlayerAutomationProtocol
-import UniformTypeIdentifiers
 
 @MainActor
 struct AutomationLibraryHandler {
@@ -139,7 +134,7 @@ struct AutomationLibraryHandler {
                 guard selection.hasUsableAccess else {
                     let path = selectedURL.path
                     selection.release()
-                    return AutomationResponseSupport.libraryPermissionDenied(for: request, path: path)
+                    return libraryPermissionDenied(for: request, path: path)
                 }
                 defer { selection.release() }
                 let result = try await appSession.createMusicLibrary(
@@ -204,7 +199,7 @@ struct AutomationLibraryHandler {
                     )
                 }
             } catch {
-                return AutomationResponseSupport.libraryLifecycleFailure(for: request, error: error)
+                return libraryLifecycleFailure(for: request, error: error)
             }
 
         case AutomationMethod.libraryOpen:
@@ -261,7 +256,7 @@ struct AutomationLibraryHandler {
                 guard selection.hasUsableAccess else {
                     let path = selectedURL.path
                     selection.release()
-                    return AutomationResponseSupport.libraryPermissionDenied(for: request, path: path)
+                    return libraryPermissionDenied(for: request, path: path)
                 }
                 defer { selection.release() }
                 let unavailableSourceIDs = try await appSession.openMusicLibrary(at: selectedURL)
@@ -284,7 +279,7 @@ struct AutomationLibraryHandler {
                     for: request
                 )
             } catch {
-                return AutomationResponseSupport.libraryLifecycleFailure(for: request, error: error)
+                return libraryLifecycleFailure(for: request, error: error)
             }
 
         case AutomationMethod.librarySwitch:
@@ -375,7 +370,7 @@ struct AutomationLibraryHandler {
                     for: request
                 )
             } catch {
-                return AutomationResponseSupport.libraryLifecycleFailure(for: request, error: error)
+                return libraryLifecycleFailure(for: request, error: error)
             }
 
         case AutomationMethod.libraryRename:
@@ -435,7 +430,7 @@ struct AutomationLibraryHandler {
                     for: request
                 )
             } catch {
-                return AutomationResponseSupport.libraryLifecycleFailure(for: request, error: error)
+                return libraryLifecycleFailure(for: request, error: error)
             }
 
         case AutomationMethod.libraryRelocate:
@@ -504,7 +499,7 @@ struct AutomationLibraryHandler {
                 guard selection.hasUsableAccess else {
                     let path = selectedURL.path
                     selection.release()
-                    return AutomationResponseSupport.libraryPermissionDenied(for: request, path: path)
+                    return libraryPermissionDenied(for: request, path: path)
                 }
                 defer { selection.release() }
                 let result = try await appSession.relocateMusicLibrary(id: libraryID, to: selectedURL)
@@ -537,7 +532,7 @@ struct AutomationLibraryHandler {
                     for: request
                 )
             } catch {
-                return AutomationResponseSupport.libraryLifecycleFailure(for: request, error: error)
+                return libraryLifecycleFailure(for: request, error: error)
             }
 
         case AutomationMethod.libraryRemove:
@@ -611,7 +606,7 @@ struct AutomationLibraryHandler {
                     for: request
                 )
             } catch {
-                return AutomationResponseSupport.libraryLifecycleFailure(for: request, error: error)
+                return libraryLifecycleFailure(for: request, error: error)
             }
 
         case AutomationMethod.libraryImport:
@@ -1339,5 +1334,142 @@ struct AutomationLibraryHandler {
         }
     }
 
+    private func libraryLifecycleFailure(
+        for request: AutomationRequest,
+        error: Error
+    ) -> AutomationResponse {
+        if error is AutomationParameterError || error is AutomationFileOperationError {
+            return AutomationResponseSupport.invalidParameters(for: request, error: error)
+        }
 
+        let reason = String(describing: error)
+        func failure(
+            _ code: AutomationErrorCode,
+            _ message: String,
+            retryable: Bool = false
+        ) -> AutomationResponse {
+            .failure(
+                for: request,
+                error: AutomationError(
+                    code: code,
+                    message: message,
+                    retryable: retryable,
+                    details: .object(["reason": .string(reason)])
+                )
+            )
+        }
+
+        switch error {
+        case let error as RegisteredLibraryActivationError:
+            switch error {
+            case .notRegistered:
+                return failure(.invalidRequest, "The requested library is not registered.")
+            case .reconnectRequired(let libraryID):
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .interactionRequired,
+                        message: "The registered library is unavailable at its last known path. Call library.open and select its current folder before switching again.",
+                        details: .object([
+                            "libraryID": .string(libraryID.uuidString),
+                            "nextAction": .string(AutomationMethod.libraryOpen),
+                            "reason": .string(reason)
+                        ])
+                    )
+                )
+            }
+
+        case let error as LibraryCreationError:
+            switch error {
+            case .invalidDisplayName:
+                return failure(.invalidRequest, "The library display name is invalid.")
+            case .destinationContainsUnknownItems, .invalidExistingLibrary:
+                return failure(.conflict, "The selected library location already queries.contains data that cannot be safely reused.")
+            case .stagingFailed, .validationFailed:
+                return failure(.internalError, "The new library could not be staged or validated.", retryable: true)
+            case .registryCommitFailed, .sessionActivationFailed, .recoveryFailed:
+                return failure(.internalError, "The new library could not be activated safely; the App preserved its recovery boundary.", retryable: true)
+            }
+
+        case let error as LibraryOpenError:
+            switch error {
+            case .libraryNotFound, .invalidManifest, .libraryNotRegistered,
+                 .reconnectIdentifierMismatch, .reconnectModeMismatch:
+                return failure(.invalidRequest, "The selected location is not a usable registered music library.")
+            case .pathConflict:
+                return failure(.conflict, "The selected library path is already registered to another library.")
+            case .bookmarkFailed, .securityScopeDenied:
+                return failure(.permissionDenied, "The App could not authorize the selected library location.")
+            case .transactionInProgress:
+                return failure(.conflict, "Another library lifecycle operation is in progress.", retryable: true)
+            case .activationFailed, .recoveryFailed:
+                return failure(.internalError, "The library could not be activated safely; the App preserved its recovery boundary.", retryable: true)
+            }
+
+        case let error as LibraryRelocationError:
+            switch error {
+            case .libraryNotRegistered:
+                return failure(.invalidRequest, "The requested library is not registered.")
+            case .destinationExists:
+                return failure(.conflict, "The destination already queries.contains a library or other data.")
+            case .validationFailed:
+                return failure(.invalidRequest, "The registered library failed validation and was not moved.")
+            case .securityScopeDenied:
+                return failure(.permissionDenied, "The App could not authorize the library or destination location.")
+            case .transactionInProgress, .pendingRepair, .recoveryConflict:
+                return failure(.conflict, "The library has an unfinished lifecycle transaction; repair or retry after the App reports it is ready.", retryable: true)
+            case .closeFailed, .copyFailed, .publicationFailed, .newSessionFailed,
+                 .registryCommitFailed, .recoveryFailed:
+                return failure(.internalError, "The library could not be relocated safely; the App preserved its recovery boundary.", retryable: true)
+            }
+
+        case let error as LibraryRemovalError:
+            switch error {
+            case .libraryNotRegistered, .manifestMismatch:
+                return failure(.invalidRequest, "The requested library is not a valid registered library.")
+            case .securityScopeDenied:
+                return failure(.permissionDenied, "The App could not authorize the library location.")
+            case .transactionInProgress, .pendingRepair:
+                return failure(.conflict, "The library has an unfinished removal transaction; repair or retry after the App reports it is ready.", retryable: true)
+            case .closeFailed, .recycleFailed, .intentWriteFailed, .recoveryFailed:
+                return failure(.internalError, "The library could not be moved to the macOS Trash safely; the App preserved its recovery boundary.", retryable: true)
+            }
+
+        case let error as LibraryDisplayNameUpdateError:
+            switch error {
+            case .invalidDisplayName:
+                return failure(.invalidRequest, "The library display name is invalid.")
+            case .libraryNotRegistered, .manifestMismatch:
+                return failure(.invalidRequest, "The requested library is not a valid registered library.")
+            case .securityScopeDenied:
+                return failure(.permissionDenied, "The App could not authorize the library location.")
+            case .transactionInProgress:
+                return failure(.conflict, "Another library lifecycle operation is in progress.", retryable: true)
+            case .manifestWriteFailed, .registryWriteFailedRolledBack,
+                 .registryWriteFailedRollbackFailed:
+                return failure(.internalError, "The library name could not be updated safely.", retryable: true)
+            }
+
+        default:
+            return failure(.internalError, "The library lifecycle operation failed.", retryable: true)
+        }
+    }
+
+    private func libraryPermissionDenied(
+        for request: AutomationRequest,
+        path: String
+    ) -> AutomationResponse {
+        .failure(
+            for: request,
+            error: AutomationError(
+                code: .permissionDenied,
+                message: "The selected library location could not be authorized; no library lifecycle mutation was applied.",
+                retryable: false,
+                details: .object([
+                    "path": .string(path),
+                    "reason": .string("securityScopedAccess")
+                ])
+            )
+        )
+    }
 }

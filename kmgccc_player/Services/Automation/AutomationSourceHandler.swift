@@ -1,10 +1,6 @@
-import AppKit
 import CryptoKit
 import Foundation
-import ImageIO
-import PlayerAutomationIPC
 import PlayerAutomationProtocol
-import UniformTypeIdentifiers
 
 @MainActor
 struct AutomationSourceHandler {

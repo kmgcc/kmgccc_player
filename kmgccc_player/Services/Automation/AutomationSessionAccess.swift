@@ -1,14 +1,13 @@
-import AppKit
-import CryptoKit
 import Foundation
-import ImageIO
-import PlayerAutomationIPC
 import PlayerAutomationProtocol
-import UniformTypeIdentifiers
 
 @MainActor
 struct AutomationSessionAccess {
-    weak var appSession: AppSessionHost?
+    private weak var appSession: AppSessionHost?
+
+    init(appSession: AppSessionHost?) {
+        self.appSession = appSession
+    }
 
     func activeSession(for request: AutomationRequest) -> LibrarySession? {
         guard let session = appSession?.activeLibraryBinding.activeSession else {

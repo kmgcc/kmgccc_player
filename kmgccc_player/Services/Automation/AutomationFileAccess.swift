@@ -1,10 +1,5 @@
-import AppKit
-import CryptoKit
 import Foundation
-import ImageIO
-import PlayerAutomationIPC
 import PlayerAutomationProtocol
-import UniformTypeIdentifiers
 
 @MainActor
 enum AutomationFileAccess {
@@ -118,7 +113,7 @@ enum AutomationFileAccess {
         return root.standardizedFileURL
     }
 
-    static func isDirectoryRoot(_ url: URL) -> Bool {
+    private static func isDirectoryRoot(_ url: URL) -> Bool {
         let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
         if let isDirectory = values?.isDirectory {
             return isDirectory

@@ -1,14 +1,14 @@
-import AppKit
 import CryptoKit
 import Foundation
-import ImageIO
-import PlayerAutomationIPC
 import PlayerAutomationProtocol
-import UniformTypeIdentifiers
 
 @MainActor
 struct AutomationLibraryQueries {
-    weak var appSession: AppSessionHost?
+    private weak var appSession: AppSessionHost?
+
+    init(appSession: AppSessionHost?) {
+        self.appSession = appSession
+    }
 
     func resolveSelection(
         _ snapshot: AutomationSelectionSnapshot,
@@ -339,7 +339,7 @@ struct AutomationLibraryQueries {
         return true
     }
 
-    func contains(
+    private func contains(
         _ value: AutomationJSONValue,
         key: String,
         in text: String
@@ -350,7 +350,7 @@ struct AutomationLibraryQueries {
         return text.localizedCaseInsensitiveContains(needle)
     }
 
-    func filterDate(_ value: AutomationJSONValue, key: String) throws -> Date? {
+    private func filterDate(_ value: AutomationJSONValue, key: String) throws -> Date? {
         guard case .string(let raw) = value,
               let date = ISO8601DateFormatter().date(from: raw) else {
             throw AutomationParameterError.invalidValue("filter.\(key)")
@@ -412,7 +412,7 @@ struct AutomationLibraryQueries {
         }
     }
 
-    func compareTracks(
+    private func compareTracks(
         _ lhs: Track,
         _ rhs: Track,
         field: String,

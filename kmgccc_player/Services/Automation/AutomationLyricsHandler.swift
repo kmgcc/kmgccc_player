@@ -1,10 +1,5 @@
-import AppKit
-import CryptoKit
 import Foundation
-import ImageIO
-import PlayerAutomationIPC
 import PlayerAutomationProtocol
-import UniformTypeIdentifiers
 
 @MainActor
 final class AutomationLyricsHandler {
@@ -443,9 +438,7 @@ final class AutomationLyricsHandler {
 
     private var lyricsCandidateCache: [UUID: CachedLyricsCandidates] = [:]
 
-
     private let lyricsCandidateCacheLimit = 256
-
 
     private func makeLyricsSearchResult(
         trackID: UUID,

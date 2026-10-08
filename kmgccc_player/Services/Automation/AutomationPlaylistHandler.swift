@@ -1,10 +1,5 @@
-import AppKit
-import CryptoKit
 import Foundation
-import ImageIO
-import PlayerAutomationIPC
 import PlayerAutomationProtocol
-import UniformTypeIdentifiers
 
 @MainActor
 struct AutomationPlaylistHandler {
@@ -782,6 +777,5 @@ struct AutomationPlaylistHandler {
             return AutomationResponseSupport.unsupportedMethod(for: request)
         }
     }
-
 
 }

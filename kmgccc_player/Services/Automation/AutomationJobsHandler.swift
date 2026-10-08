@@ -1,10 +1,6 @@
-import AppKit
-import CryptoKit
 import Foundation
-import ImageIO
 import PlayerAutomationIPC
 import PlayerAutomationProtocol
-import UniformTypeIdentifiers
 
 @MainActor
 struct AutomationJobsHandler {
@@ -317,6 +313,5 @@ struct AutomationJobsHandler {
             return AutomationResponseSupport.unsupportedMethod(for: request)
         }
     }
-
 
 }

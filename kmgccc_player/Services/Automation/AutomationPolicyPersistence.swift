@@ -49,12 +49,12 @@ nonisolated enum AutomationAppIdentity {
     }
 }
 
-struct AutomationScopePolicyFile: Codable {
+private struct AutomationScopePolicyFile: Codable {
     var schemaVersion = 2
     var grantedScopes: [String]
 }
 
-struct AutomationIdempotencyFile: Codable {
+private struct AutomationIdempotencyFile: Codable {
     var schemaVersion = 1
     var entries: [String: Entry]
 

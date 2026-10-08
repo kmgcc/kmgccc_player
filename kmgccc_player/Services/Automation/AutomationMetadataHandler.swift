@@ -1,10 +1,6 @@
-import AppKit
 import CryptoKit
 import Foundation
-import ImageIO
-import PlayerAutomationIPC
 import PlayerAutomationProtocol
-import UniformTypeIdentifiers
 
 @MainActor
 struct AutomationMetadataHandler {
@@ -826,7 +822,7 @@ struct AutomationMetadataHandler {
                             durationSeconds: initialTrack.duration
                         )
                     } catch {
-                        return AutomationResponseSupport.metadataProviderUnavailable(error, provider: "MusicBrainz", for: request)
+                        return metadataProviderUnavailable(error, provider: "MusicBrainz", for: request)
                     }
                     guard candidates.contains(where: { $0.recordingID == recordingID }) else {
                         throw AutomationParameterError.missingResource("candidateID")
@@ -835,7 +831,7 @@ struct AutomationMetadataHandler {
                     do {
                         detail = try await MusicBrainzAutomationProvider.shared.recording(id: recordingID)
                     } catch {
-                        return AutomationResponseSupport.metadataProviderUnavailable(error, provider: "MusicBrainz", for: request)
+                        return metadataProviderUnavailable(error, provider: "MusicBrainz", for: request)
                     }
                     guard let detail else {
                         throw AutomationParameterError.missingResource("metadata candidate detail")
@@ -857,7 +853,7 @@ struct AutomationMetadataHandler {
                             duration: initialTrack.duration
                         )
                     } catch {
-                        return AutomationResponseSupport.metadataProviderUnavailable(error, provider: "QQMusic", for: request)
+                        return metadataProviderUnavailable(error, provider: "QQMusic", for: request)
                     }
                     guard candidates.contains(where: { $0.songMid == candidateID }) else {
                         throw AutomationParameterError.missingResource("candidateID")
@@ -872,7 +868,7 @@ struct AutomationMetadataHandler {
                             duration: initialTrack.duration
                         )
                     } catch {
-                        return AutomationResponseSupport.metadataProviderUnavailable(error, provider: "QQMusic", for: request)
+                        return metadataProviderUnavailable(error, provider: "QQMusic", for: request)
                     }
                     titleValue = detail.title
                     artistValue = detail.artist
@@ -2083,5 +2079,21 @@ struct AutomationMetadataHandler {
             }
         }
         return values
+    }
+
+    private func metadataProviderUnavailable(
+        _ error: Error,
+        provider: String,
+        for request: AutomationRequest
+    ) -> AutomationResponse {
+        .failure(
+            for: request,
+            error: AutomationError(
+                code: .serverUnavailable,
+                message: "The \(provider) metadata provider could not complete the request.",
+                retryable: true,
+                details: .object(["reason": .string(error.localizedDescription)])
+            )
+        )
     }
 }
