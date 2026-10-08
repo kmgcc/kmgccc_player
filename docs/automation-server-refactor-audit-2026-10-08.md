@@ -2,7 +2,7 @@
 
 ## 范围与行为基线
 
-审计对象是 App 内 Automation 执行层；PlayerAutomationProtocol 的 catalog/schema、CLI、MCP 和 AF_UNIX transport 均保持原状。基线工作树干净。原文件 12,962 行，execute 从 687 至 7,618 行。行数仅用于定位，拆分依据为调用链和状态 owner。
+审计对象是 App 内 Automation 执行层；PlayerAutomationProtocol 的 catalog/schema、CLI、MCP 和 AF_UNIX transport 均保持原状。基线工作树干净。原文件 12,978 行，execute 从 687 至 7,618 行。行数仅用于定位，拆分依据为调用链和状态 owner。
 
 调用链：AppSessionHost 创建一个 AutomationIPCServer → listener 的 cancellableHandler → handle → execute → LibrarySession / AppSessionHost / LibraryViewModel / PlaybackCoordinator 等现有 owner。传输包验证 peer/secret、处理 framing/EOF；Server 不重建传输、认证、数据库或 Job 框架。
 
@@ -81,4 +81,6 @@ E：审查 diff、可见性、所有 method 路由、协议包零差异及真实
 
 ## 执行记录
 
-- A：PlayerAutomation 40 项基线通过；App 定向基线正在建立。
+- A：PlayerAutomation 40 项基线通过；App 定向基线 9 项通过（0 失败）。
+
+- B：共享参数、响应、交互、授权文件解析、查询/投影、Job 投影、Session access 和三类持久化已迁移；54 个 helper 与完整 execute body 的归一化比对保持原语句。Debug 编译与定向 XCTest 9 项通过；PlayerAutomation 40 项通过。作用域采用 internal 类型 + private 状态，不新增 public API。
