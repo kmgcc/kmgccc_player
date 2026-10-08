@@ -11,81 +11,6 @@ private enum AutomationBatchExecutionContext {
     @TaskLocal static var aggregateConfirmationApproved = false
 }
 
-private nonisolated enum AutomationAppIdentity {
-    static var bundleIdentifier: String {
-        for executablePath in executablePaths {
-            if let bundleIdentifier = bundleIdentifier(atExecutablePath: executablePath) {
-                return bundleIdentifier
-            }
-        }
-        return Bundle.main.bundleIdentifier ?? "kmgccc.player"
-    }
-
-    private static var executablePaths: [String] {
-        var paths: [String] = []
-        var buffer = [CChar](repeating: 0, count: 4096)
-        let length = buffer.withUnsafeMutableBufferPointer { buffer in
-            proc_pidpath(getpid(), buffer.baseAddress, UInt32(buffer.count))
-        }
-        if length > 0 {
-            let bytes = buffer.prefix(Int(length)).map { UInt8(bitPattern: $0) }
-            paths.append(String(decoding: bytes, as: UTF8.self))
-        }
-        if let argument = ProcessInfo.processInfo.arguments.first,
-           !argument.isEmpty {
-            paths.append(argument)
-        }
-        return paths
-    }
-
-    private static func bundleIdentifier(atExecutablePath executablePath: String) -> String? {
-        let infoURL = URL(fileURLWithPath: executablePath, isDirectory: false)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Info.plist", isDirectory: false)
-        guard let data = try? Data(contentsOf: infoURL),
-              let propertyList = try? PropertyListSerialization.propertyList(
-                  from: data,
-                  options: [],
-                  format: nil
-              ) as? [String: Any],
-              let bundleIdentifier = propertyList["CFBundleIdentifier"] as? String,
-              !bundleIdentifier.isEmpty
-        else {
-            return nil
-        }
-        return bundleIdentifier
-    }
-}
-
-private struct AutomationScopePolicyFile: Codable {
-    var schemaVersion = 2
-    var grantedScopes: [String]
-}
-
-private struct AutomationIdempotencyFile: Codable {
-    var schemaVersion = 1
-    var entries: [String: Entry]
-
-    struct Entry: Codable {
-        let fingerprint: String
-        let response: AutomationResponse
-        let storedAt: Date
-    }
-}
-
-private struct AutomationSelectionSnapshot: Codable, Equatable {
-    let libraryID: UUID
-    let summary: AutomationSelectionSummary
-    let trackIDs: [UUID]
-    let filter: AutomationJSONValue?
-}
-
-private struct AutomationSelectionStoreFile: Codable {
-    let schemaVersion: Int
-    let snapshots: [AutomationSelectionSnapshot]
-}
-
 private nonisolated struct AutomationStorageBackupManifest: Codable {
     let schemaVersion: Int
     let libraryID: UUID
@@ -176,215 +101,6 @@ private nonisolated struct AutomationStorageInventory {
     let failures: [String]
 }
 
-/// The scope file is deliberately small and App-owned. It is not a second
-/// authentication mechanism: the AF_UNIX peer/secret check still gates the
-/// process, while this store decides which catalog capabilities the caller may
-/// invoke. Dangerous scopes are denied by default until a foreground App
-/// confirmation grants them.
-private final class AutomationScopePolicyStore {
-    private let fileURL: URL
-    private let fileManager: FileManager
-
-    init(
-        fileManager: FileManager = .default,
-        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier,
-        appSupportDirectoryURL: URL? = nil
-    ) {
-        self.fileManager = fileManager
-        let appSupport = appSupportDirectoryURL ?? fileManager.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-        fileURL = appSupport
-            .appendingPathComponent(bundleIdentifier, isDirectory: true)
-            .appendingPathComponent("Automation", isDirectory: true)
-            .appendingPathComponent("scopes.json", isDirectory: false)
-    }
-
-    var defaultGrantedScopes: Set<AutomationScope> {
-        Set(AutomationScope.allCases).subtracting([.filesDelete, .storageWrite, .libraryDelete])
-    }
-
-    /// A missing policy is the first-run high-autonomy default. A present but
-    /// unreadable policy is different: fail closed to read-only capabilities
-    /// rather than silently restoring write access after corruption.
-    var readOnlyGrantedScopes: Set<AutomationScope> {
-        Set(AutomationScope.allCases.filter { scope in
-            scope.rawValue.hasSuffix(".read")
-        })
-    }
-
-    func load() -> Set<AutomationScope> {
-        guard fileManager.fileExists(atPath: fileURL.path) else {
-            return defaultGrantedScopes
-        }
-        guard let data = try? Data(contentsOf: fileURL),
-              let payload = try? JSONDecoder().decode(AutomationScopePolicyFile.self, from: data),
-              payload.schemaVersion == 1 || payload.schemaVersion == 2 else {
-            return readOnlyGrantedScopes
-        }
-        var scopes = Set(payload.grantedScopes.compactMap(AutomationScope.init(rawValue:)))
-        // Schema 1 predates the explicit lifecycle scope. It was not possible
-        // to deny library lifecycle separately in that schema, so migrate the
-        // new non-destructive management scope while keeping the new delete
-        // scope denied by default.
-        if payload.schemaVersion == 1 {
-            scopes.insert(.libraryManage)
-        }
-        return scopes
-    }
-
-    func save(_ scopes: Set<AutomationScope>) throws {
-        try fileManager.createDirectory(
-            at: fileURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        let payload = AutomationScopePolicyFile(
-            grantedScopes: scopes.map(\.rawValue).sorted()
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(payload).write(to: fileURL, options: .atomic)
-    }
-}
-
-/// Successful mutation responses are small enough to make idempotency useful
-/// across an App restart. The response is stored in App-owned private support
-/// storage, never in the public audit log, and is evicted with the same bound
-/// as the in-memory cache.
-private final class AutomationIdempotencyStore {
-    private let fileURL: URL
-    private let fileManager: FileManager
-
-    init(
-        fileManager: FileManager = .default,
-        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier,
-        appSupportDirectoryURL: URL? = nil
-    ) {
-        self.fileManager = fileManager
-        let appSupport = appSupportDirectoryURL ?? fileManager.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-        fileURL = appSupport
-            .appendingPathComponent(bundleIdentifier, isDirectory: true)
-            .appendingPathComponent("Automation", isDirectory: true)
-            .appendingPathComponent("idempotency.json", isDirectory: false)
-    }
-
-    func load() -> [(key: String, fingerprint: String, response: AutomationResponse)] {
-        guard let data = try? Data(contentsOf: fileURL),
-              let payload = try? JSONDecoder().decode(AutomationIdempotencyFile.self, from: data),
-              payload.schemaVersion == 1 else {
-            return []
-        }
-        return payload.entries.map { key, entry in
-            (key: key, fingerprint: entry.fingerprint, response: entry.response)
-        }
-    }
-
-    func save(
-        _ entries: [String: (fingerprint: String, response: AutomationResponse)],
-        order: [String]
-    ) throws {
-        try fileManager.createDirectory(
-            at: fileURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        let orderedKeys = order.reversed().filter { entries[$0] != nil }
-        var stored: [String: AutomationIdempotencyFile.Entry] = [:]
-        for key in orderedKeys {
-            guard let entry = entries[key] else { continue }
-            stored[key] = AutomationIdempotencyFile.Entry(
-                fingerprint: entry.fingerprint,
-                response: entry.response,
-                storedAt: entry.response.serverTime
-            )
-        }
-        let payload = AutomationIdempotencyFile(entries: stored)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        try encoder.encode(payload).write(to: fileURL, options: .atomic)
-    }
-}
-
-/// Selection snapshots retain only ordered Track IDs and a content revision.
-/// They are bounded per Library and contain no names, paths, or media data.
-private final class AutomationSelectionStore {
-    private let appSupportURL: URL
-    private let bundleIdentifier: String
-    private let fileManager: FileManager
-    private let maximumSnapshotCount = 100
-
-    init(
-        fileManager: FileManager = .default,
-        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier,
-        appSupportDirectoryURL: URL? = nil
-    ) {
-        self.fileManager = fileManager
-        self.bundleIdentifier = bundleIdentifier
-        appSupportURL = appSupportDirectoryURL ?? fileManager.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-    }
-
-    func load(libraryID: UUID, now: Date = Date()) throws -> [AutomationSelectionSnapshot] {
-        let url = fileURL(for: libraryID)
-        guard fileManager.fileExists(atPath: url.path) else { return [] }
-        let data = try Data(contentsOf: url)
-        let payload = try AutomationWireCoding.decoder().decode(
-            AutomationSelectionStoreFile.self,
-            from: data
-        )
-        guard payload.schemaVersion == 1,
-              payload.snapshots.allSatisfy({ $0.libraryID == libraryID }) else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
-        return payload.snapshots.filter { $0.summary.expiresAt > now }
-    }
-
-    func save(
-        _ snapshots: [AutomationSelectionSnapshot],
-        libraryID: UUID,
-        now: Date = Date()
-    ) throws {
-        let normalized = snapshots
-            .filter { $0.libraryID == libraryID && $0.summary.expiresAt > now }
-            .sorted { $0.summary.createdAt > $1.summary.createdAt }
-            .prefix(maximumSnapshotCount)
-        let payload = AutomationSelectionStoreFile(
-            schemaVersion: 1,
-            snapshots: Array(normalized)
-        )
-        let directoryURL = fileURL(for: libraryID).deletingLastPathComponent()
-        try fileManager.createDirectory(
-            at: directoryURL,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        try fileManager.setAttributes(
-            [.posixPermissions: 0o700],
-            ofItemAtPath: directoryURL.path
-        )
-        let data = try AutomationWireCoding.encoder().encode(payload)
-        let url = fileURL(for: libraryID)
-        try data.write(to: url, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-    }
-
-    private func fileURL(for libraryID: UUID) -> URL {
-        appSupportURL
-            .appendingPathComponent(bundleIdentifier, isDirectory: true)
-            .appendingPathComponent("Automation", isDirectory: true)
-            .appendingPathComponent("Selections", isDirectory: true)
-            .appendingPathComponent("\(libraryID.uuidString).json", isDirectory: false)
-    }
-}
-
-/// The App-owned automation endpoint. It exposes DTOs only; no repository or
-/// sidecar parser crosses the process boundary. CLI, MCP and future in-process
-/// AI callers all reach the same App-owned capability handler.
 @MainActor
 final class AutomationIPCServer {
     private enum ArtworkTarget {
@@ -426,6 +142,9 @@ final class AutomationIPCServer {
 
     private static let socketDirectoryName = "Automation"
     private static let socketFileName = "automation.sock"
+
+    private var sessionAccess: AutomationSessionAccess { AutomationSessionAccess(appSession: appSession) }
+    private var queries: AutomationLibraryQueries { AutomationLibraryQueries(appSession: appSession) }
 
     private let listener: AutomationIPCListener
     private weak var appSession: AppSessionHost?
@@ -580,7 +299,7 @@ final class AutomationIPCServer {
                     recordAudit(for: request, response: response)
                     return response
                 }
-                let response = responseForRequest(cached.response, requestID: request.requestID)
+                let response = AutomationResponseSupport.responseForRequest(cached.response, requestID: request.requestID)
                 recordAudit(for: request, response: response)
                 return response
             }
@@ -632,7 +351,7 @@ final class AutomationIPCServer {
             let completedWaiters = pendingIdempotency.removeValue(forKey: cacheKey)?.waiters ?? []
             for waiter in completedWaiters {
                 waiter.continuation.resume(
-                    returning: responseForRequest(response, requestID: waiter.requestID)
+                    returning: AutomationResponseSupport.responseForRequest(response, requestID: waiter.requestID)
                 )
             }
             recordAudit(for: request, response: response)
@@ -730,7 +449,7 @@ final class AutomationIPCServer {
             params: request.params
         )
         if !unknownParameterKeys.isEmpty {
-            return invalidParameters(
+            return AutomationResponseSupport.invalidParameters(
                 for: request,
                 error: AutomationParameterError.unknown(unknownParameterKeys)
             )
@@ -827,17 +546,17 @@ final class AutomationIPCServer {
             return await submitOperationsBatch(for: request)
 
         case AutomationMethod.systemPing:
-            guard isEmptyParameters(request.params) else {
-                return invalidParameters(for: request)
+            guard AutomationResponseSupport.isEmptyParameters(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
-            return encodeResult(
+            return AutomationResponseSupport.encodeResult(
                 AutomationPingResult(),
                 for: request
             )
 
         case AutomationMethod.systemInfo:
-            guard isEmptyParameters(request.params) else {
-                return invalidParameters(for: request)
+            guard AutomationResponseSupport.isEmptyParameters(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
             let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
                 ?? (Bundle.main.infoDictionary?["CFBundleVersion"] as? String)
@@ -850,11 +569,11 @@ final class AutomationIPCServer {
                 isReady: appSession?.hasCompletedInitialSetup == true,
                 activeLibraryID: appSession?.activeLibraryBinding.context?.id
             )
-            return encodeResult(info, for: request)
+            return AutomationResponseSupport.encodeResult(info, for: request)
 
         case AutomationMethod.libraryList:
-            guard isEmptyParameters(request.params) else {
-                return invalidParameters(for: request)
+            guard AutomationResponseSupport.isEmptyParameters(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -868,9 +587,9 @@ final class AutomationIPCServer {
             }
             let registry = await appSession.musicLibraryRegistrySnapshot()
             let summaries = registry.libraries.map {
-                makeLibrarySummary($0, activeLibraryID: registry.activeLibraryID)
+                queries.makeLibrarySummary($0, activeLibraryID: registry.activeLibraryID)
             }
-            return encodeResult(
+            return AutomationResponseSupport.encodeResult(
                 AutomationLibraryListResult(
                     libraries: summaries,
                     activeLibraryID: registry.activeLibraryID
@@ -889,12 +608,12 @@ final class AutomationIPCServer {
                 guard let bookmark = registry.libraries.first(where: { $0.id == libraryID }) else {
                     return .failure(for: request, error: AutomationError(code: .invalidRequest, message: "The requested Library is not registered.", details: .object(["libraryID": .string(libraryID.uuidString)])))
                 }
-                return encodeResult(AutomationLibraryGetResult(
-                    library: makeLibrarySummary(bookmark, activeLibraryID: registry.activeLibraryID),
+                return AutomationResponseSupport.encodeResult(AutomationLibraryGetResult(
+                    library: queries.makeLibrarySummary(bookmark, activeLibraryID: registry.activeLibraryID),
                     activeLibraryID: registry.activeLibraryID
                 ), for: request)
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.libraryCreate:
@@ -928,19 +647,19 @@ final class AutomationIPCServer {
                     default: false
                 )
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLibraryLifecycleResult(
                             operation: AutomationMethod.libraryCreate,
                             applied: false,
                             dryRun: true,
-                            path: requestedParentPath.map(expandPath(_:)),
+                            path: requestedParentPath.map(AutomationInteraction.expandPath(_:)),
                             message: "Preview only. The App will ask for a parent folder, create the library root without overwriting unknown files, and activate the new library after confirm=true."
                         ),
                         for: request
                     )
                 }
                 guard confirm else {
-                    return confirmationRequired(
+                    return AutomationResponseSupport.confirmationRequired(
                         for: request,
                         message: "创建资料库会切换当前资料库，需要 confirm=true，并由播放器在前台确认。",
                         details: .object([
@@ -950,25 +669,25 @@ final class AutomationIPCServer {
                         ])
                     )
                 }
-                guard await confirmDestructiveOperation(
+                guard await AutomationInteraction.confirmDestructiveOperation(
                     title: "创建并切换资料库？",
                     message: "要创建“\(displayName)”资料库并切换到它吗？当前播放会话将随之切换。"
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
-                guard let selectedURL = await requestLibraryDirectory(
-                    requestedPath: requestedParentPath.map(expandPath(_:)),
+                guard let selectedURL = await AutomationInteraction.requestLibraryDirectory(
+                    requestedPath: requestedParentPath.map(AutomationInteraction.expandPath(_:)),
                     title: "选择资料库位置",
                     prompt: "选择",
                     allowsCreatingDirectories: true
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
                 let selection = LibraryInitialImportSelection(urls: [selectedURL])
                 guard selection.hasUsableAccess else {
                     let path = selectedURL.path
                     selection.release()
-                    return libraryPermissionDenied(for: request, path: path)
+                    return AutomationResponseSupport.libraryPermissionDenied(for: request, path: path)
                 }
                 defer { selection.release() }
                 let result = try await appSession.createMusicLibrary(
@@ -983,9 +702,9 @@ final class AutomationIPCServer {
                 switch result {
                 case .created(let context, _):
                     let summary = registry.library(id: context.id).map {
-                        makeLibrarySummary($0, activeLibraryID: registry.activeLibraryID)
+                        queries.makeLibrarySummary($0, activeLibraryID: registry.activeLibraryID)
                     }
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLibraryLifecycleResult(
                             operation: AutomationMethod.libraryCreate,
                             applied: true,
@@ -1001,9 +720,9 @@ final class AutomationIPCServer {
                     )
                 case .existingLibrary(let context):
                     let summary = registry.library(id: context.id).map {
-                        makeLibrarySummary($0, activeLibraryID: registry.activeLibraryID)
+                        queries.makeLibrarySummary($0, activeLibraryID: registry.activeLibraryID)
                     }
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLibraryLifecycleResult(
                             operation: AutomationMethod.libraryCreate,
                             applied: false,
@@ -1033,7 +752,7 @@ final class AutomationIPCServer {
                     )
                 }
             } catch {
-                return libraryLifecycleFailure(for: request, error: error)
+                return AutomationResponseSupport.libraryLifecycleFailure(for: request, error: error)
             }
 
         case AutomationMethod.libraryOpen:
@@ -1054,57 +773,57 @@ final class AutomationIPCServer {
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 let confirm = try parameters.boolean("confirm", default: false)
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLibraryLifecycleResult(
                             operation: AutomationMethod.libraryOpen,
                             applied: false,
                             dryRun: true,
-                            path: requestedPath.map(expandPath(_:)),
+                            path: requestedPath.map(AutomationInteraction.expandPath(_:)),
                             message: "Preview only. The App will ask for the existing library folder, register it if needed, and activate it after confirm=true."
                         ),
                         for: request
                     )
                 }
                 guard confirm else {
-                    return confirmationRequired(
+                    return AutomationResponseSupport.confirmationRequired(
                         for: request,
                         message: "打开资料库会切换当前资料库，需要 confirm=true，并由播放器在前台确认。",
                         details: .object(["operation": .string(AutomationMethod.libraryOpen)])
                     )
                 }
-                guard await confirmDestructiveOperation(
+                guard await AutomationInteraction.confirmDestructiveOperation(
                     title: "打开并切换资料库？",
                     message: "要打开所选资料库并切换到它吗？当前播放会话将随之切换。"
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
-                guard let selectedURL = await requestLibraryDirectory(
-                    requestedPath: requestedPath.map(expandPath(_:)),
+                guard let selectedURL = await AutomationInteraction.requestLibraryDirectory(
+                    requestedPath: requestedPath.map(AutomationInteraction.expandPath(_:)),
                     title: "选择现有资料库",
                     prompt: "打开",
                     allowsCreatingDirectories: false
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
                 let selection = LibraryInitialImportSelection(urls: [selectedURL])
                 guard selection.hasUsableAccess else {
                     let path = selectedURL.path
                     selection.release()
-                    return libraryPermissionDenied(for: request, path: path)
+                    return AutomationResponseSupport.libraryPermissionDenied(for: request, path: path)
                 }
                 defer { selection.release() }
                 let unavailableSourceIDs = try await appSession.openMusicLibrary(at: selectedURL)
                 let registry = await appSession.musicLibraryRegistrySnapshot()
                 let activeID = registry.activeLibraryID
                 let active = activeID.flatMap(registry.library(id:))
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationLibraryLifecycleResult(
                         operation: AutomationMethod.libraryOpen,
                         applied: true,
                         dryRun: false,
                         confirmed: true,
                         libraryID: activeID,
-                        library: active.map { makeLibrarySummary($0, activeLibraryID: activeID) },
+                        library: active.map { queries.makeLibrarySummary($0, activeLibraryID: activeID) },
                         activeLibraryID: activeID,
                         path: active?.lastKnownPath,
                         unavailableSourceIDs: unavailableSourceIDs,
@@ -1113,7 +832,7 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return libraryLifecycleFailure(for: request, error: error)
+                return AutomationResponseSupport.libraryLifecycleFailure(for: request, error: error)
             }
 
         case AutomationMethod.librarySwitch:
@@ -1136,9 +855,9 @@ final class AutomationIPCServer {
                 guard let target = registry.library(id: libraryID) else {
                     throw AutomationParameterError.missingResource("libraryID")
                 }
-                let targetSummary = makeLibrarySummary(target, activeLibraryID: registry.activeLibraryID)
+                let targetSummary = queries.makeLibrarySummary(target, activeLibraryID: registry.activeLibraryID)
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLibraryLifecycleResult(
                             operation: AutomationMethod.librarySwitch,
                             applied: false,
@@ -1153,7 +872,7 @@ final class AutomationIPCServer {
                     )
                 }
                 guard confirm else {
-                    return confirmationRequired(
+                    return AutomationResponseSupport.confirmationRequired(
                         for: request,
                         message: "切换当前资料库需要 confirm=true，并由播放器在前台确认。",
                         details: .object([
@@ -1163,7 +882,7 @@ final class AutomationIPCServer {
                     )
                 }
                 guard libraryID != registry.activeLibraryID else {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLibraryLifecycleResult(
                             operation: AutomationMethod.librarySwitch,
                             applied: false,
@@ -1178,24 +897,24 @@ final class AutomationIPCServer {
                         for: request
                     )
                 }
-                guard await confirmDestructiveOperation(
+                guard await AutomationInteraction.confirmDestructiveOperation(
                     title: "切换当前资料库？",
                     message: "要切换到“\(target.displayName)”吗？当前播放会话将关闭并重新打开所选资料库。"
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
                 let unavailableSourceIDs = try await appSession.activateRegisteredLibrary(id: libraryID)
                 let updatedRegistry = await appSession.musicLibraryRegistrySnapshot()
                 let updatedActiveID = updatedRegistry.activeLibraryID
                 let active = updatedActiveID.flatMap(updatedRegistry.library(id:))
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationLibraryLifecycleResult(
                         operation: AutomationMethod.librarySwitch,
                         applied: true,
                         dryRun: false,
                         confirmed: true,
                         libraryID: libraryID,
-                        library: active.map { makeLibrarySummary($0, activeLibraryID: updatedActiveID) },
+                        library: active.map { queries.makeLibrarySummary($0, activeLibraryID: updatedActiveID) },
                         activeLibraryID: updatedActiveID,
                         path: active?.lastKnownPath,
                         unavailableSourceIDs: unavailableSourceIDs,
@@ -1204,7 +923,7 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return libraryLifecycleFailure(for: request, error: error)
+                return AutomationResponseSupport.libraryLifecycleFailure(for: request, error: error)
             }
 
         case AutomationMethod.libraryRename:
@@ -1231,9 +950,9 @@ final class AutomationIPCServer {
                 guard let target = registry.library(id: libraryID) else {
                     throw AutomationParameterError.missingResource("libraryID")
                 }
-                let targetSummary = makeLibrarySummary(target, activeLibraryID: registry.activeLibraryID)
+                let targetSummary = queries.makeLibrarySummary(target, activeLibraryID: registry.activeLibraryID)
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLibraryLifecycleResult(
                             operation: AutomationMethod.libraryRename,
                             applied: false,
@@ -1250,13 +969,13 @@ final class AutomationIPCServer {
                 try await appSession.renameMusicLibrary(id: libraryID, displayName: displayName)
                 let updatedRegistry = await appSession.musicLibraryRegistrySnapshot()
                 let updated = updatedRegistry.library(id: libraryID)
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationLibraryLifecycleResult(
                         operation: AutomationMethod.libraryRename,
                         applied: true,
                         dryRun: false,
                         libraryID: libraryID,
-                        library: updated.map { makeLibrarySummary($0, activeLibraryID: updatedRegistry.activeLibraryID) },
+                        library: updated.map { queries.makeLibrarySummary($0, activeLibraryID: updatedRegistry.activeLibraryID) },
                         activeLibraryID: updatedRegistry.activeLibraryID,
                         path: updated?.lastKnownPath ?? target.lastKnownPath,
                         message: "Library renamed."
@@ -1264,7 +983,7 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return libraryLifecycleFailure(for: request, error: error)
+                return AutomationResponseSupport.libraryLifecycleFailure(for: request, error: error)
             }
 
         case AutomationMethod.libraryRelocate:
@@ -1289,9 +1008,9 @@ final class AutomationIPCServer {
                 guard let target = registry.library(id: libraryID) else {
                     throw AutomationParameterError.missingResource("libraryID")
                 }
-                let targetSummary = makeLibrarySummary(target, activeLibraryID: registry.activeLibraryID)
+                let targetSummary = queries.makeLibrarySummary(target, activeLibraryID: registry.activeLibraryID)
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLibraryLifecycleResult(
                             operation: AutomationMethod.libraryRelocate,
                             applied: false,
@@ -1299,14 +1018,14 @@ final class AutomationIPCServer {
                             libraryID: libraryID,
                             library: targetSummary,
                             activeLibraryID: registry.activeLibraryID,
-                            path: requestedParentPath.map(expandPath(_:)),
+                            path: requestedParentPath.map(AutomationInteraction.expandPath(_:)),
                             message: "Preview only. The App will ask for a destination parent folder and move the complete library through its recovery transaction after confirm=true."
                         ),
                         for: request
                     )
                 }
                 guard confirm else {
-                    return confirmationRequired(
+                    return AutomationResponseSupport.confirmationRequired(
                         for: request,
                         message: "迁移资料库会改变磁盘上的文件位置，需要 confirm=true，并由播放器在前台确认。",
                         details: .object([
@@ -1315,25 +1034,25 @@ final class AutomationIPCServer {
                         ])
                     )
                 }
-                guard await confirmDestructiveOperation(
+                guard await AutomationInteraction.confirmDestructiveOperation(
                     title: "迁移资料库？",
                     message: "要将“\(target.displayName)”移动到新位置吗？移动后当前播放会话将重新打开。"
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
-                guard let selectedURL = await requestLibraryDirectory(
-                    requestedPath: requestedParentPath.map(expandPath(_:)),
+                guard let selectedURL = await AutomationInteraction.requestLibraryDirectory(
+                    requestedPath: requestedParentPath.map(AutomationInteraction.expandPath(_:)),
                     title: "选择新的资料库位置",
                     prompt: "移到这里",
                     allowsCreatingDirectories: true
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
                 let selection = LibraryInitialImportSelection(urls: [selectedURL])
                 guard selection.hasUsableAccess else {
                     let path = selectedURL.path
                     selection.release()
-                    return libraryPermissionDenied(for: request, path: path)
+                    return AutomationResponseSupport.libraryPermissionDenied(for: request, path: path)
                 }
                 defer { selection.release() }
                 let result = try await appSession.relocateMusicLibrary(id: libraryID, to: selectedURL)
@@ -1351,14 +1070,14 @@ final class AutomationIPCServer {
                 }
                 let updatedRegistry = await appSession.musicLibraryRegistrySnapshot()
                 let updated = updatedRegistry.library(id: libraryID)
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationLibraryLifecycleResult(
                         operation: AutomationMethod.libraryRelocate,
                         applied: true,
                         dryRun: false,
                         confirmed: true,
                         libraryID: libraryID,
-                        library: updated.map { makeLibrarySummary($0, activeLibraryID: updatedRegistry.activeLibraryID) },
+                        library: updated.map { queries.makeLibrarySummary($0, activeLibraryID: updatedRegistry.activeLibraryID) },
                         activeLibraryID: updatedRegistry.activeLibraryID,
                         path: newContext.rootURL.path,
                         message: message
@@ -1366,7 +1085,7 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return libraryLifecycleFailure(for: request, error: error)
+                return AutomationResponseSupport.libraryLifecycleFailure(for: request, error: error)
             }
 
         case AutomationMethod.libraryRemove:
@@ -1389,9 +1108,9 @@ final class AutomationIPCServer {
                 guard let target = registry.library(id: libraryID) else {
                     throw AutomationParameterError.missingResource("libraryID")
                 }
-                let targetSummary = makeLibrarySummary(target, activeLibraryID: registry.activeLibraryID)
+                let targetSummary = queries.makeLibrarySummary(target, activeLibraryID: registry.activeLibraryID)
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLibraryLifecycleResult(
                             operation: AutomationMethod.libraryRemove,
                             applied: false,
@@ -1406,7 +1125,7 @@ final class AutomationIPCServer {
                     )
                 }
                 guard confirm else {
-                    return confirmationRequired(
+                    return AutomationResponseSupport.confirmationRequired(
                         for: request,
                         message: "将资料库移到 macOS 废纸篓需要 confirm=true，并由播放器在前台确认。",
                         details: .object([
@@ -1415,24 +1134,24 @@ final class AutomationIPCServer {
                         ])
                     )
                 }
-                guard await confirmDestructiveOperation(
+                guard await AutomationInteraction.confirmDestructiveOperation(
                     title: "将资料库移到废纸篓？",
                     message: "要将“\(target.displayName)”及其资料库数据移到 macOS 废纸篓吗？其他资料库会保留，并继续使用可用的资料库。"
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
                 _ = try await appSession.removeMusicLibrary(id: libraryID)
                 let updatedRegistry = await appSession.musicLibraryRegistrySnapshot()
                 let activeID = updatedRegistry.activeLibraryID
                 let active = activeID.flatMap(updatedRegistry.library(id:))
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationLibraryLifecycleResult(
                         operation: AutomationMethod.libraryRemove,
                         applied: true,
                         dryRun: false,
                         confirmed: true,
                         libraryID: libraryID,
-                        library: active.map { makeLibrarySummary($0, activeLibraryID: activeID) },
+                        library: active.map { queries.makeLibrarySummary($0, activeLibraryID: activeID) },
                         activeLibraryID: activeID,
                         path: target.lastKnownPath,
                         message: "Library moved to the macOS Trash; the App selected the next active library."
@@ -1440,12 +1159,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return libraryLifecycleFailure(for: request, error: error)
+                return AutomationResponseSupport.libraryLifecycleFailure(for: request, error: error)
             }
 
         case AutomationMethod.libraryImport:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -1461,7 +1180,7 @@ final class AutomationIPCServer {
                           (rawPath as NSString).expandingTildeInPath.hasPrefix("/") else {
                         throw AutomationParameterError.invalidValue("filePaths")
                     }
-                    let url = URL(fileURLWithPath: expandPath(rawPath))
+                    let url = URL(fileURLWithPath: AutomationInteraction.expandPath(rawPath))
                     if seen.insert(url.resolvingSymlinksInPath().path).inserted { urls.append(url) }
                 }
                 let playlistID = try parameters.uuid("targetPlaylistID")
@@ -1476,7 +1195,7 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.invalidValue("enrichmentPolicy")
                 }
                 if dryRun {
-                    return encodeResult(AutomationLibraryImportResult(
+                    return AutomationResponseSupport.encodeResult(AutomationLibraryImportResult(
                         libraryID: session.context.id, mode: session.context.mode.rawValue,
                         filePaths: urls.map(\.path), targetPlaylistID: playlistID,
                         dryRun: true,
@@ -1494,11 +1213,11 @@ final class AutomationIPCServer {
                 var selectedURLs = urls
                 if !inaccessible.isEmpty {
                     guard let picked = await session.fileImportService.pickImportURLs(triggeredAt: Date()) else {
-                        return interactionCancelled(for: request)
+                        return AutomationResponseSupport.interactionCancelled(for: request)
                     }
                     let pickedPaths = Set(picked.map { $0.resolvingSymlinksInPath().standardizedFileURL.path })
                     guard inaccessible.allSatisfy({ pickedPaths.contains($0.resolvingSymlinksInPath().path) }) else {
-                        return permissionDenied(for: request, path: inaccessible[0].path)
+                        return AutomationResponseSupport.permissionDenied(for: request, path: inaccessible[0].path)
                     }
                     selectedURLs = urls.map { url in
                         picked.first { $0.resolvingSymlinksInPath().path == url.resolvingSymlinksInPath().path } ?? url
@@ -1510,30 +1229,30 @@ final class AutomationIPCServer {
                     FileManager.default.fileExists(atPath: $0.path)
                         && !FileManager.default.isReadableFile(atPath: $0.path)
                 }) {
-                    return permissionDenied(for: request, path: denied.path)
+                    return AutomationResponseSupport.permissionDenied(for: request, path: denied.path)
                 }
-                guard activeSession(for: request) === session,
+                guard sessionAccess.activeSession(for: request) === session,
                       let job = session.startAutomationImport(
                         selection: selection,
                         playlistID: playlistID,
                         enrichmentPolicy: enrichmentPolicy
                       ) else {
-                    return noActiveLibraryResponse(for: request)
+                    return sessionAccess.noActiveLibraryResponse(for: request)
                 }
-                return encodeResult(AutomationLibraryImportResult(
+                return AutomationResponseSupport.encodeResult(AutomationLibraryImportResult(
                     libraryID: session.context.id, mode: session.context.mode.rawValue,
                     filePaths: selectedURLs.map(\.path), targetPlaylistID: playlistID,
-                    job: makeJobSummary(job),
+                    job: AutomationJobProjection.makeJobSummary(job),
                     enrichmentPolicy: enrichmentPolicy.rawValue,
                     message: "Import started. Use jobs.wait or jobs.get for Track IDs, per-file mappings, failures and enrichment status."
                 ), for: request)
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.libraryTracks:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -1546,7 +1265,7 @@ final class AutomationIPCServer {
                 let requestedIDs = try parameters.uuidArray("ids")
                 let filter = try parameters.object("filter")
                 if let filter {
-                    try validateTrackFilter(.object(filter))
+                    try queries.validateTrackFilter(.object(filter))
                 }
                 let sort = try parameters.array("sort")
                 let includePreferenceStats = try parameters.boolean(
@@ -1584,13 +1303,13 @@ final class AutomationIPCServer {
                     playlistTrackIDs = nil
                 }
 
-                let revision = libraryTracksRevision(
+                let revision = queries.libraryTracksRevision(
                     tracks: allTracks,
                     playlists: viewModel.playlists,
                     preferenceStatsByTrackID: usesPreferenceData ? preferenceStatsByTrackID : nil
                 )
                 if let expectedRevision, expectedRevision != revision {
-                    return libraryTracksRevisionConflict(
+                    return AutomationResponseSupport.libraryTracksRevisionConflict(
                         for: request,
                         expected: expectedRevision,
                         actual: revision
@@ -1620,7 +1339,7 @@ final class AutomationIPCServer {
                         continue
                     }
                     if let filter,
-                       try !matchesTrackFilter(
+                       try !queries.matchesTrackFilter(
                            track,
                            filter: .object(filter),
                            playlists: viewModel.playlists,
@@ -1630,7 +1349,7 @@ final class AutomationIPCServer {
                     }
                     filteredTracks.append(track)
                 }
-                let orderedTracks = try sortTracks(
+                let orderedTracks = try queries.sortTracks(
                     filteredTracks,
                     using: sort,
                     preferenceStatsByTrackID: preferenceStatsByTrackID
@@ -1638,7 +1357,7 @@ final class AutomationIPCServer {
                 let pageStart = min(offset, orderedTracks.count)
                 let pageEnd = min(pageStart + limit, orderedTracks.count)
                 let page = Array(orderedTracks[pageStart..<pageEnd]).map {
-                    makeTrackSummary(
+                    queries.makeTrackSummary(
                         $0,
                         playlists: viewModel.playlists,
                         includeFilePath: grantedScopes().contains(.filesRead),
@@ -1646,7 +1365,7 @@ final class AutomationIPCServer {
                         preferenceStats: preferenceStatsByTrackID[$0.id]
                     )
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationLibraryTracksResult(
                         tracks: page,
                         total: orderedTracks.count,
@@ -1658,23 +1377,23 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.libraryStats:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
-            guard isEmptyParameters(request.params) else {
-                return invalidParameters(for: request)
+            guard AutomationResponseSupport.isEmptyParameters(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
             let viewModel = session.libraryViewModel
             let tracks = viewModel.allTracks
-            let revision = libraryTracksRevision(tracks: tracks, playlists: viewModel.playlists)
+            let revision = queries.libraryTracksRevision(tracks: tracks, playlists: viewModel.playlists)
             let linkedSourceIDs = Set(tracks.flatMap { track in
                 track.mediaLocator.referencedFile?.allSourceMemberships.map(\.sourceID) ?? []
             })
-            return encodeResult(AutomationLibraryStatsResult(
+            return AutomationResponseSupport.encodeResult(AutomationLibraryStatsResult(
                 libraryID: session.context.id,
                 mode: session.context.mode.rawValue,
                 trackCount: tracks.count,
@@ -1692,8 +1411,8 @@ final class AutomationIPCServer {
             ), for: request)
 
         case AutomationMethod.libraryReport:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -1726,7 +1445,7 @@ final class AutomationIPCServer {
                 let preferenceStatsByTrackID = includePreferenceStats
                     ? viewModel.preferenceStats(for: allTracks.map(\.id))
                     : [:]
-                let revision = libraryTracksRevision(
+                let revision = queries.libraryTracksRevision(
                     tracks: allTracks,
                     playlists: playlists,
                     preferenceStatsByTrackID: includePreferenceStats
@@ -1734,7 +1453,7 @@ final class AutomationIPCServer {
                         : nil
                 )
                 if let expectedRevision, expectedRevision != revision {
-                    return libraryTracksRevisionConflict(
+                    return AutomationResponseSupport.libraryTracksRevisionConflict(
                         for: request,
                         expected: expectedRevision,
                         actual: revision
@@ -1743,7 +1462,7 @@ final class AutomationIPCServer {
                 let start = min(offset, allTracks.count)
                 let end = min(start + limit, allTracks.count)
                 let trackPage = Array(allTracks[start..<end]).map {
-                    makeTrackSummary(
+                    queries.makeTrackSummary(
                         $0,
                         playlists: playlists,
                         includeFilePath: includeFilePaths,
@@ -1773,11 +1492,11 @@ final class AutomationIPCServer {
                     totalDurationSeconds: allTracks.reduce(0) { $0 + max(0, $1.duration) },
                     revision: revision
                 )
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationLibraryReportResult(
                         stats: stats,
                         tracks: trackPage,
-                        playlists: playlistPage.map(makePlaylistSummary),
+                        playlists: playlistPage.map(queries.makePlaylistSummary),
                         offset: offset,
                         limit: limit,
                         nextOffset: end < allTracks.count ? end : nil,
@@ -1789,12 +1508,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.libraryBundleExport:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -1803,15 +1522,15 @@ final class AutomationIPCServer {
                 let viewModel = session.libraryViewModel
                 let libraryTracks = viewModel.allTracks
                 let libraryPlaylists = viewModel.playlists
-                let revision = libraryTracksRevision(tracks: libraryTracks, playlists: libraryPlaylists)
+                let revision = queries.libraryTracksRevision(tracks: libraryTracks, playlists: libraryPlaylists)
                 var failures: [String] = []
                 let tracks: [LibraryBundleExportTrackInput] = libraryTracks.map { track in
                     let audioURL: URL?
                     do {
                         if case .referenced = track.mediaLocator {
-                            audioURL = try currentAuthorizedFile(for: track, session: session).url
+                            audioURL = try AutomationFileAccess.currentAuthorizedFile(for: track, session: session).url
                         } else {
-                            audioURL = automationTrackFileURL(track, in: session)
+                            audioURL = AutomationFileAccess.automationTrackFileURL(track, in: session)
                         }
                     } catch {
                         audioURL = nil
@@ -1853,7 +1572,7 @@ final class AutomationIPCServer {
                 }
                 let estimatedBytes = LibraryBundleExportService.estimatedBytes(for: tracks)
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLibraryBundleExportResult(
                             libraryID: session.context.id,
                             dryRun: true,
@@ -1866,7 +1585,7 @@ final class AutomationIPCServer {
                     )
                 }
                 guard confirm else {
-                    return confirmationRequired(
+                    return AutomationResponseSupport.confirmationRequired(
                         for: request,
                         message: "Export a complete Library bundle?",
                         details: .object([
@@ -1876,14 +1595,14 @@ final class AutomationIPCServer {
                         ])
                     )
                 }
-                guard await confirmDestructiveOperation(
+                guard await AutomationInteraction.confirmDestructiveOperation(
                     title: "导出完整资料库？",
                     message: "将把 \(tracks.count) 首歌曲及可用封面、歌词复制到新资料库包，估算 \(ByteCountFormatter.string(fromByteCount: estimatedBytes, countStyle: .file))。"
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
-                guard let destinationURL = await requestExportDirectory() else {
-                    return interactionCancelled(for: request)
+                guard let destinationURL = await AutomationInteraction.requestExportDirectory() else {
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
                 let destination = destinationURL.standardizedFileURL
                 let libraryRoot = session.context.rootURL.standardizedFileURL
@@ -1892,9 +1611,9 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.invalidValue("destination folder inside active Library")
                 }
                 let hasScopedAccess = destinationURL.startAccessingSecurityScopedResource()
-                guard activeSession(for: request) === session else {
+                guard sessionAccess.activeSession(for: request) === session else {
                     if hasScopedAccess { destinationURL.stopAccessingSecurityScopedResource() }
-                    return noActiveLibraryResponse(for: request)
+                    return sessionAccess.noActiveLibraryResponse(for: request)
                 }
                 guard let job = session.startAutomationLibraryBundleExport(
                         destinationDirectory: destinationURL,
@@ -1903,9 +1622,9 @@ final class AutomationIPCServer {
                         tracks: tracks,
                         playlists: playlists
                       ) else {
-                    return noActiveLibraryResponse(for: request)
+                    return sessionAccess.noActiveLibraryResponse(for: request)
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationLibraryBundleExportResult(
                         libraryID: session.context.id,
                         dryRun: false,
@@ -1914,22 +1633,22 @@ final class AutomationIPCServer {
                         trackCount: tracks.count,
                         estimatedBytes: estimatedBytes,
                         outputDirectory: destination.path,
-                        job: makeJobSummary(job),
+                        job: AutomationJobProjection.makeJobSummary(job),
                         failures: failures,
                         message: "Library bundle export started. Poll the returned Job for progress and the completed package location."
                     ),
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.librarySelectionList:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
-            guard isEmptyParameters(request.params) else {
-                return invalidParameters(for: request)
+            guard AutomationResponseSupport.isEmptyParameters(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
             do {
                 let snapshots = try selectionStore.load(libraryID: session.context.id)
@@ -1940,15 +1659,15 @@ final class AutomationIPCServer {
                 let preferenceStatsByTrackID = usesPreferenceData
                     ? viewModel.preferenceStats(for: viewModel.allTracks.map(\.id))
                     : [:]
-                let currentRevision = libraryTracksRevision(
+                let currentRevision = queries.libraryTracksRevision(
                     tracks: viewModel.allTracks,
                     playlists: viewModel.playlists,
                     preferenceStatsByTrackID: usesPreferenceData ? preferenceStatsByTrackID : nil
                 )
                 let selections = try snapshots.map {
-                    try resolveSelection($0, viewModel: viewModel).summary
+                    try queries.resolveSelection($0, viewModel: viewModel).summary
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationSelectionListResult(
                         libraryID: session.context.id,
                         currentRevision: currentRevision,
@@ -1957,12 +1676,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return selectionStoreFailure(for: request, error: error)
+                return AutomationResponseSupport.selectionStoreFailure(for: request, error: error)
             }
 
         case AutomationMethod.librarySelectionCreate:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -1994,25 +1713,25 @@ final class AutomationIPCServer {
                 let preferenceStatsByTrackID = usesPreferenceData
                     ? viewModel.preferenceStats(for: viewModel.allTracks.map(\.id))
                     : [:]
-                let currentRevision = libraryTracksRevision(
+                let currentRevision = queries.libraryTracksRevision(
                     tracks: viewModel.allTracks,
                     playlists: viewModel.playlists,
                     preferenceStatsByTrackID: usesPreferenceData ? preferenceStatsByTrackID : nil
                 )
                 if let expectedRevision, expectedRevision != currentRevision {
-                    return libraryTracksRevisionConflict(
+                    return AutomationResponseSupport.libraryTracksRevisionConflict(
                         for: request,
                         expected: expectedRevision,
                         actual: currentRevision
                     )
                 }
                 if let filter {
-                    try validateTrackFilter(filter)
+                    try queries.validateTrackFilter(filter)
                 }
                 let selectedTrackIDs: [UUID]
                 if let filter {
                     selectedTrackIDs = try viewModel.allTracks.compactMap { track in
-                        try matchesTrackFilter(
+                        try queries.matchesTrackFilter(
                             track,
                             filter: filter,
                             playlists: viewModel.playlists,
@@ -2045,7 +1764,7 @@ final class AutomationIPCServer {
                     id: selectionID,
                     name: name?.isEmpty == true ? nil : name,
                     trackCount: selectedTrackIDs.count,
-                    revision: selectionRevision(
+                    revision: queries.selectionRevision(
                         libraryID: session.context.id,
                         trackIDs: selectedTrackIDs
                     ),
@@ -2054,7 +1773,7 @@ final class AutomationIPCServer {
                     isDynamic: filter != nil
                 )
                 guard !dryRun else {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationSelectionCreateResult(
                             libraryID: session.context.id,
                             selection: summary,
@@ -2075,7 +1794,7 @@ final class AutomationIPCServer {
                     )
                 )
                 try selectionStore.save(snapshots, libraryID: session.context.id, now: now)
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationSelectionCreateResult(
                         libraryID: session.context.id,
                         selection: summary,
@@ -2086,14 +1805,14 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch let error as AutomationParameterError {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             } catch {
-                return selectionStoreFailure(for: request, error: error)
+                return AutomationResponseSupport.selectionStoreFailure(for: request, error: error)
             }
 
         case AutomationMethod.librarySelectionGet:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -2109,8 +1828,8 @@ final class AutomationIPCServer {
                         )
                     )
                 }
-                let resolved = try resolveSelection(snapshot, viewModel: session.libraryViewModel)
-                return encodeResult(
+                let resolved = try queries.resolveSelection(snapshot, viewModel: session.libraryViewModel)
+                return AutomationResponseSupport.encodeResult(
                     AutomationSelectionDetailResult(
                         libraryID: session.context.id,
                         selection: resolved.summary,
@@ -2120,14 +1839,14 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch let error as AutomationParameterError {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             } catch {
-                return selectionStoreFailure(for: request, error: error)
+                return AutomationResponseSupport.selectionStoreFailure(for: request, error: error)
             }
 
         case AutomationMethod.librarySelectionDelete:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -2148,7 +1867,7 @@ final class AutomationIPCServer {
                     snapshots.removeAll { $0.summary.id == selectionID }
                     try selectionStore.save(snapshots, libraryID: session.context.id)
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationSelectionDeleteResult(
                         libraryID: session.context.id,
                         selectionID: selectionID,
@@ -2158,31 +1877,31 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch let error as AutomationParameterError {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             } catch {
-                return selectionStoreFailure(for: request, error: error)
+                return AutomationResponseSupport.selectionStoreFailure(for: request, error: error)
             }
 
         case AutomationMethod.playlistList:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
-            guard isEmptyParameters(request.params) else {
-                return invalidParameters(for: request)
+            guard AutomationResponseSupport.isEmptyParameters(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
-            return encodeResult(
+            return AutomationResponseSupport.encodeResult(
                 AutomationPlaylistListResult(
-                    playlists: session.libraryViewModel.playlists.map(makePlaylistSummary)
+                    playlists: session.libraryViewModel.playlists.map(queries.makePlaylistSummary)
                 ),
                 for: request
             )
 
         case AutomationMethod.sourceList:
-            guard activeSession(for: request) != nil else {
-                return noActiveLibraryResponse(for: request)
+            guard sessionAccess.activeSession(for: request) != nil else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
-            guard isEmptyParameters(request.params) else {
-                return invalidParameters(for: request)
+            guard AutomationResponseSupport.isEmptyParameters(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -2199,7 +1918,7 @@ final class AutomationIPCServer {
                 let sources = descriptors.map { descriptor in
                     makeSourceSummary(descriptor)
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationSourceListResult(sources: sources),
                     for: request
                 )
@@ -2215,8 +1934,8 @@ final class AutomationIPCServer {
             }
 
         case AutomationMethod.sourceGet:
-            guard activeSession(for: request)?.context.mode == .referenced else {
-                return noActiveLibraryResponse(for: request)
+            guard sessionAccess.activeSession(for: request)?.context.mode == .referenced else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -2230,17 +1949,17 @@ final class AutomationIPCServer {
                 guard let descriptor = try await appSession.referencedSources().first(where: { $0.id == sourceID }) else {
                     return .failure(for: request, error: AutomationError(code: .invalidRequest, message: "The requested Source does not exist.", details: .object(["sourceID": .string(sourceID.uuidString)])))
                 }
-                return encodeResult(AutomationSourceGetResult(source: makeSourceSummary(descriptor)), for: request)
+                return AutomationResponseSupport.encodeResult(AutomationSourceGetResult(source: makeSourceSummary(descriptor)), for: request)
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.sourceConfigExport:
-            guard let session = activeSession(for: request), session.context.mode == .referenced else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request), session.context.mode == .referenced else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
-            guard isEmptyParameters(request.params) else {
-                return invalidParameters(for: request)
+            guard AutomationResponseSupport.isEmptyParameters(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -2255,7 +1974,7 @@ final class AutomationIPCServer {
                     originLibraryID: session.context.id,
                     sources: configurations
                 )
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationSourceConfigurationExportResult(
                         libraryID: session.context.id,
                         revision: sourceConfigurationRevision(
@@ -2278,8 +1997,8 @@ final class AutomationIPCServer {
             }
 
         case AutomationMethod.sourceConfigImport:
-            guard let session = activeSession(for: request), session.context.mode == .referenced else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request), session.context.mode == .referenced else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -2334,7 +2053,7 @@ final class AutomationIPCServer {
                 )
                 if let expectedRevision = try parameters.string("expectedRevision"),
                    expectedRevision != currentRevision {
-                    return revisionConflict(for: request, expected: expectedRevision, actual: currentRevision)
+                    return AutomationResponseSupport.revisionConflict(for: request, expected: expectedRevision, actual: currentRevision)
                 }
 
                 var targetConfigurations: [AutomationSourceConfiguration] = []
@@ -2384,7 +2103,7 @@ final class AutomationIPCServer {
                 let previewConfigurations = Array(previewByID.values)
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 guard !dryRun else {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationSourceConfigurationImportResult(
                             libraryID: session.context.id,
                             applied: false,
@@ -2397,7 +2116,7 @@ final class AutomationIPCServer {
                     )
                 }
                 guard !changed.isEmpty else {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationSourceConfigurationImportResult(
                             libraryID: session.context.id,
                             applied: false,
@@ -2410,7 +2129,7 @@ final class AutomationIPCServer {
                     )
                 }
                 guard try parameters.boolean("confirm", default: false) else {
-                    return confirmationRequired(
+                    return AutomationResponseSupport.confirmationRequired(
                         for: request,
                         message: "Apply the Source policy changes from this configuration?",
                         details: .object([
@@ -2420,11 +2139,11 @@ final class AutomationIPCServer {
                         ])
                     )
                 }
-                guard await confirmDestructiveOperation(
+                guard await AutomationInteraction.confirmDestructiveOperation(
                     title: "导入来源配置？",
                     message: "这会更新来源显示名、自动监听策略和排除路径；未授权路径与书签会留在本机。"
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
 
                 var failures: [AutomationSourceConfigurationFailure] = []
@@ -2486,7 +2205,7 @@ final class AutomationIPCServer {
                     libraryID: session.context.id,
                     configurations: finalConfigurations
                 )
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationSourceConfigurationImportResult(
                         libraryID: session.context.id,
                         applied: !updatedIDs.isEmpty,
@@ -2500,12 +2219,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.sourceRename:
-            guard let session = activeSession(for: request), session.context.mode == .referenced else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request), session.context.mode == .referenced else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -2528,21 +2247,21 @@ final class AutomationIPCServer {
                 if dryRun {
                     var preview = current
                     preview.displayName = displayName
-                    return encodeResult(AutomationSourceRenameResult(source: makeSourceSummary(preview), applied: false, dryRun: true), for: request)
+                    return AutomationResponseSupport.encodeResult(AutomationSourceRenameResult(source: makeSourceSummary(preview), applied: false, dryRun: true), for: request)
                 }
                 let renamed = try await appSession.renameReferencedSource(
                     id: sourceID,
                     displayName: displayName,
                     libraryID: session.context.id
                 )
-                return encodeResult(AutomationSourceRenameResult(source: makeSourceSummary(renamed), applied: true, dryRun: false), for: request)
+                return AutomationResponseSupport.encodeResult(AutomationSourceRenameResult(source: makeSourceSummary(renamed), applied: true, dryRun: false), for: request)
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.sourceRefresh:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -2566,7 +2285,7 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.missingResource("sourceID")
                 }
                 guard !dryRun else {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationSourceRefreshResult(
                             sourceID: sourceID,
                             applied: false,
@@ -2584,7 +2303,7 @@ final class AutomationIPCServer {
                 ) else {
                     throw AutomationParameterError.invalidValue("sourceID")
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationSourceRefreshResult(
                         sourceID: sourceID,
                         applied: false,
@@ -2593,18 +2312,18 @@ final class AutomationIPCServer {
                         libraryTrackCount: session.libraryViewModel.allTracks.count,
                         issues: [],
                         completed: false,
-                        job: makeJobSummary(job),
+                        job: AutomationJobProjection.makeJobSummary(job),
                         message: "Source refresh started as a Job; existing Tracks will be reused."
                     ),
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.playlistCreate:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -2615,7 +2334,7 @@ final class AutomationIPCServer {
                 }
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 guard !dryRun else {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationPlaylistMutationResult(
                             operation: AutomationMethod.playlistCreate,
                             applied: false,
@@ -2628,26 +2347,26 @@ final class AutomationIPCServer {
                 }
                 do {
                     let playlist = try await session.libraryViewModel.createPlaylistForAutomation(name: name)
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationPlaylistMutationResult(
                             operation: AutomationMethod.playlistCreate,
                             applied: true,
                             dryRun: false,
-                            playlist: makePlaylistSummary(playlist),
+                            playlist: queries.makePlaylistSummary(playlist),
                             message: "Playlist created."
                         ),
                         for: request
                     )
                 } catch {
-                    return mutationFailure(for: request, error: error)
+                    return AutomationResponseSupport.mutationFailure(for: request, error: error)
                 }
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.playlistAddTracks:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -2681,16 +2400,16 @@ final class AutomationIPCServer {
                 let existingIDs = Set(playlist.tracks.map(\.id))
                 let changedTrackIDs = requestedTrackIDs.filter { !existingIDs.contains($0) }
                 let skippedTrackIDs = requestedTrackIDs.filter { existingIDs.contains($0) }
-                let summary = makePlaylistSummary(playlist)
+                let summary = queries.makePlaylistSummary(playlist)
                 if let expectedRevision, expectedRevision != summary.revision {
-                    return revisionConflict(
+                    return AutomationResponseSupport.revisionConflict(
                         for: request,
                         expected: expectedRevision,
                         actual: summary.revision
                     )
                 }
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationPlaylistMutationResult(
                             operation: AutomationMethod.playlistAddTracks,
                             applied: false,
@@ -2705,7 +2424,7 @@ final class AutomationIPCServer {
                     )
                 }
                 guard !changedTrackIDs.isEmpty else {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationPlaylistMutationResult(
                             operation: AutomationMethod.playlistAddTracks,
                             applied: false,
@@ -2728,12 +2447,12 @@ final class AutomationIPCServer {
                     let updatedPlaylist = session.libraryViewModel.playlists.first {
                         $0.id == playlistID
                     }
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationPlaylistMutationResult(
                             operation: AutomationMethod.playlistAddTracks,
                             applied: true,
                             dryRun: false,
-                            playlist: updatedPlaylist.map(makePlaylistSummary),
+                            playlist: updatedPlaylist.map(queries.makePlaylistSummary),
                             requestedTrackIDs: requestedTrackIDs,
                             changedTrackIDs: changedTrackIDs,
                             skippedTrackIDs: skippedTrackIDs,
@@ -2742,15 +2461,15 @@ final class AutomationIPCServer {
                         for: request
                     )
                 } catch {
-                    return mutationFailure(for: request, error: error)
+                    return AutomationResponseSupport.mutationFailure(for: request, error: error)
                 }
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.playlistAddSelection:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -2770,7 +2489,7 @@ final class AutomationIPCServer {
                         )
                     )
                 }
-                let resolved = try resolveSelection(snapshot, viewModel: session.libraryViewModel)
+                let resolved = try queries.resolveSelection(snapshot, viewModel: session.libraryViewModel)
                 if let expectedSelectionRevision,
                    expectedSelectionRevision != resolved.summary.revision {
                     return .failure(
@@ -2827,7 +2546,7 @@ final class AutomationIPCServer {
                     AutomationPlaylistMutationResult.self,
                     from: resultData
                 )
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationPlaylistSelectionMutationResult(
                         selectionID: selectionID,
                         selectionRevision: resolved.summary.revision,
@@ -2836,14 +2555,14 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch let error as AutomationParameterError {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             } catch {
-                return selectionStoreFailure(for: request, error: error)
+                return AutomationResponseSupport.selectionStoreFailure(for: request, error: error)
             }
 
         case AutomationMethod.playlistRemoveTracks:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -2877,16 +2596,16 @@ final class AutomationIPCServer {
                 let existingIDs = Set(playlist.tracks.map(\.id))
                 let changedTrackIDs = requestedTrackIDs.filter { existingIDs.contains($0) }
                 let skippedTrackIDs = requestedTrackIDs.filter { !existingIDs.contains($0) }
-                let summary = makePlaylistSummary(playlist)
+                let summary = queries.makePlaylistSummary(playlist)
                 if let expectedRevision, expectedRevision != summary.revision {
-                    return revisionConflict(
+                    return AutomationResponseSupport.revisionConflict(
                         for: request,
                         expected: expectedRevision,
                         actual: summary.revision
                     )
                 }
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationPlaylistMutationResult(
                             operation: AutomationMethod.playlistRemoveTracks,
                             applied: false,
@@ -2901,7 +2620,7 @@ final class AutomationIPCServer {
                     )
                 }
                 guard !changedTrackIDs.isEmpty else {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationPlaylistMutationResult(
                             operation: AutomationMethod.playlistRemoveTracks,
                             applied: false,
@@ -2924,12 +2643,12 @@ final class AutomationIPCServer {
                     let updatedPlaylist = session.libraryViewModel.playlists.first {
                         $0.id == playlistID
                     }
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationPlaylistMutationResult(
                             operation: AutomationMethod.playlistRemoveTracks,
                             applied: true,
                             dryRun: false,
-                            playlist: updatedPlaylist.map(makePlaylistSummary),
+                            playlist: updatedPlaylist.map(queries.makePlaylistSummary),
                             requestedTrackIDs: requestedTrackIDs,
                             changedTrackIDs: changedTrackIDs,
                             skippedTrackIDs: skippedTrackIDs,
@@ -2938,15 +2657,15 @@ final class AutomationIPCServer {
                         for: request
                     )
                 } catch {
-                    return mutationFailure(for: request, error: error)
+                    return AutomationResponseSupport.mutationFailure(for: request, error: error)
                 }
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.playlistGet:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -2954,20 +2673,20 @@ final class AutomationIPCServer {
                 guard let playlist = session.libraryViewModel.playlists.first(where: { $0.id == playlistID }) else {
                     throw AutomationParameterError.missingResource("playlistID")
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationPlaylistDetailResult(
-                        playlist: makePlaylistSummary(playlist),
+                        playlist: queries.makePlaylistSummary(playlist),
                         trackIDs: playlist.tracks.map(\.id)
                     ),
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.playlistDiff:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -3001,20 +2720,20 @@ final class AutomationIPCServer {
                     let excluded = membershipSets.dropFirst().reduce(into: Set<UUID>()) { $0.formUnion($1) }
                     resultIDs = orderedMemberships[0].filter { !excluded.contains($0) }
                 }
-                let summaries = playlistIDs.compactMap { id in playlistsByID[id].map(makePlaylistSummary) }
+                let summaries = playlistIDs.compactMap { id in playlistsByID[id].map(queries.makePlaylistSummary) }
                 let revision = "v1-" + summaries.map(\.revision).joined(separator: ":")
                 let start = min(offset, resultIDs.count)
                 let page = Array(resultIDs[start..<min(start + limit, resultIDs.count)])
-                return encodeResult(AutomationPlaylistDiffResult(
+                return AutomationResponseSupport.encodeResult(AutomationPlaylistDiffResult(
                     operation: operation, inputPlaylistIDs: playlistIDs,
                     trackIDs: page, total: resultIDs.count, revision: revision
                 ), for: request)
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.playlistExport:
-            guard let session = activeSession(for: request) else { return noActiveLibraryResponse(for: request) }
+            guard let session = sessionAccess.activeSession(for: request) else { return sessionAccess.noActiveLibraryResponse(for: request) }
             do {
                 let parameters = try AutomationParameters(request)
                 let playlistID = try parameters.uuid("playlistID", required: true)!
@@ -3031,25 +2750,25 @@ final class AutomationIPCServer {
                     let duration = track.duration.isFinite ? max(0, Int(track.duration)) : 0
                     let label = [track.artist, track.title].filter { !$0.isEmpty }.joined(separator: " - ")
                     rows.append("#EXTINF:\(duration),\(label)")
-                    if includePaths, let fileURL = automationTrackFileURL(track, in: session) {
+                    if includePaths, let fileURL = AutomationFileAccess.automationTrackFileURL(track, in: session) {
                         rows.append(fileURL.absoluteString)
                         pathCount += 1
                     } else {
                         rows.append("player-track://\(track.id.uuidString)")
                     }
                 }
-                return encodeResult(AutomationPlaylistExportResult(
-                    playlist: makePlaylistSummary(playlist),
+                return AutomationResponseSupport.encodeResult(AutomationPlaylistExportResult(
+                    playlist: queries.makePlaylistSummary(playlist),
                     m3uText: rows.joined(separator: "\n") + "\n",
                     exportedTrackCount: playlist.tracks.count,
                     filePathEntryCount: pathCount
                 ), for: request)
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.playlistImport:
-            guard let session = activeSession(for: request) else { return noActiveLibraryResponse(for: request) }
+            guard let session = sessionAccess.activeSession(for: request) else { return sessionAccess.noActiveLibraryResponse(for: request) }
             do {
                 let parameters = try AutomationParameters(request)
                 let playlistID = try parameters.uuid("playlistID", required: true)!
@@ -3062,16 +2781,16 @@ final class AutomationIPCServer {
                 guard let playlist = session.libraryViewModel.playlists.first(where: { $0.id == playlistID }) else {
                     throw AutomationParameterError.missingResource("playlistID")
                 }
-                let summary = makePlaylistSummary(playlist)
+                let summary = queries.makePlaylistSummary(playlist)
                 if let expectedRevision, expectedRevision != summary.revision {
-                    return revisionConflict(for: request, expected: expectedRevision, actual: summary.revision)
+                    return AutomationResponseSupport.revisionConflict(for: request, expected: expectedRevision, actual: summary.revision)
                 }
                 let tracks = session.libraryViewModel.allTracks
                 let tracksByID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
                 var trackIDByPath: [String: UUID] = [:]
                 var managedIDByRelativePath: [String: UUID] = [:]
                 for track in tracks {
-                    if let fileURL = automationTrackFileURL(track, in: session) {
+                    if let fileURL = AutomationFileAccess.automationTrackFileURL(track, in: session) {
                         let path = fileURL.standardizedFileURL.path
                         if trackIDByPath[path] == nil { trackIDByPath[path] = track.id }
                     }
@@ -3110,7 +2829,7 @@ final class AutomationIPCServer {
                     targetIDs = uniqueMatched
                 }
                 guard dryRun || targetIDs != playlist.tracks.map(\.id) else {
-                    return encodeResult(AutomationPlaylistImportResult(
+                    return AutomationResponseSupport.encodeResult(AutomationPlaylistImportResult(
                         playlist: summary, operation: operation, applied: false, dryRun: false,
                         matchedTrackIDs: matchedTrackIDs, unmatchedEntries: unmatchedEntries
                     ), for: request)
@@ -3122,8 +2841,8 @@ final class AutomationIPCServer {
                     )
                 }
                 let updatedPlaylist = session.libraryViewModel.playlists.first { $0.id == playlistID } ?? playlist
-                return encodeResult(AutomationPlaylistImportResult(
-                    playlist: makePlaylistSummary(dryRun ? playlist : updatedPlaylist),
+                return AutomationResponseSupport.encodeResult(AutomationPlaylistImportResult(
+                    playlist: queries.makePlaylistSummary(dryRun ? playlist : updatedPlaylist),
                     operation: operation,
                     applied: !dryRun,
                     dryRun: dryRun,
@@ -3131,12 +2850,12 @@ final class AutomationIPCServer {
                     unmatchedEntries: unmatchedEntries
                 ), for: request)
             } catch {
-                return mutationFailure(for: request, error: error)
+                return AutomationResponseSupport.mutationFailure(for: request, error: error)
             }
 
         case AutomationMethod.playlistRename:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -3152,16 +2871,16 @@ final class AutomationIPCServer {
                 guard let playlist = session.libraryViewModel.playlists.first(where: { $0.id == playlistID }) else {
                     throw AutomationParameterError.missingResource("playlistID")
                 }
-                let summary = makePlaylistSummary(playlist)
+                let summary = queries.makePlaylistSummary(playlist)
                 if let expectedRevision, expectedRevision != summary.revision {
-                    return revisionConflict(
+                    return AutomationResponseSupport.revisionConflict(
                         for: request,
                         expected: expectedRevision,
                         actual: summary.revision
                     )
                 }
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationPlaylistMutationResult(
                             operation: AutomationMethod.playlistRename,
                             applied: false,
@@ -3178,23 +2897,23 @@ final class AutomationIPCServer {
                     description: description,
                     expectedRevision: expectedRevision
                 )
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationPlaylistMutationResult(
                         operation: AutomationMethod.playlistRename,
                         applied: true,
                         dryRun: false,
-                        playlist: makePlaylistSummary(updated),
+                        playlist: queries.makePlaylistSummary(updated),
                         message: "Playlist renamed."
                     ),
                     for: request
                 )
             } catch {
-                return mutationFailure(for: request, error: error)
+                return AutomationResponseSupport.mutationFailure(for: request, error: error)
             }
 
         case AutomationMethod.playlistDelete:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -3205,16 +2924,16 @@ final class AutomationIPCServer {
                 guard let playlist = session.libraryViewModel.playlists.first(where: { $0.id == playlistID }) else {
                     throw AutomationParameterError.missingResource("id")
                 }
-                let summary = makePlaylistSummary(playlist)
+                let summary = queries.makePlaylistSummary(playlist)
                 if let expectedRevision, expectedRevision != summary.revision {
-                    return revisionConflict(
+                    return AutomationResponseSupport.revisionConflict(
                         for: request,
                         expected: expectedRevision,
                         actual: summary.revision
                     )
                 }
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationPlaylistMutationResult(
                             operation: AutomationMethod.playlistDelete,
                             applied: false,
@@ -3226,7 +2945,7 @@ final class AutomationIPCServer {
                     )
                 }
                 guard confirm else {
-                    return confirmationRequired(
+                    return AutomationResponseSupport.confirmationRequired(
                         for: request,
                         message: "删除播放列表需要 confirm=true，并由播放器在前台确认。",
                         details: .object([
@@ -3235,17 +2954,17 @@ final class AutomationIPCServer {
                         ])
                     )
                 }
-                guard await confirmDestructiveOperation(
+                guard await AutomationInteraction.confirmDestructiveOperation(
                     title: "删除播放列表？",
                     message: "要删除“\(summary.name)”及其 \(summary.trackCount) 条歌曲关系吗？歌曲和音频文件会保留。"
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
                 try await session.libraryViewModel.deletePlaylistForAutomation(
                     playlist,
                     expectedRevision: expectedRevision
                 )
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationPlaylistMutationResult(
                         operation: AutomationMethod.playlistDelete,
                         applied: true,
@@ -3256,12 +2975,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return mutationFailure(for: request, error: error)
+                return AutomationResponseSupport.mutationFailure(for: request, error: error)
             }
 
         case AutomationMethod.playlistReplaceTracks, AutomationMethod.playlistReorder:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -3297,9 +3016,9 @@ final class AutomationIPCServer {
                         )
                     )
                 }
-                let summary = makePlaylistSummary(playlist)
+                let summary = queries.makePlaylistSummary(playlist)
                 if let expectedRevision, expectedRevision != summary.revision {
-                    return revisionConflict(
+                    return AutomationResponseSupport.revisionConflict(
                         for: request,
                         expected: expectedRevision,
                         actual: summary.revision
@@ -3307,7 +3026,7 @@ final class AutomationIPCServer {
                 }
                 let operation = request.method
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationPlaylistMutationResult(
                             operation: operation,
                             applied: false,
@@ -3326,12 +3045,12 @@ final class AutomationIPCServer {
                     expectedRevision: expectedRevision
                 )
                 let updated = session.libraryViewModel.playlists.first { $0.id == playlistID }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationPlaylistMutationResult(
                         operation: operation,
                         applied: true,
                         dryRun: false,
-                        playlist: updated.map(makePlaylistSummary),
+                        playlist: updated.map(queries.makePlaylistSummary),
                         requestedTrackIDs: requestedTrackIDs,
                         changedTrackIDs: requestedTrackIDs,
                         message: "Playlist membership order updated; no files were imported or deleted."
@@ -3339,12 +3058,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return mutationFailure(for: request, error: error)
+                return AutomationResponseSupport.mutationFailure(for: request, error: error)
             }
 
         case AutomationMethod.sourceCreate:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -3374,7 +3093,7 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.missingResource("playlistID")
                 }
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationSourceCreateResult(
                             applied: false,
                             selectedPath: requestedPath,
@@ -3385,7 +3104,7 @@ final class AutomationIPCServer {
                 }
 
                 let descriptors = try await appSession.referencedSources()
-                let normalizedRequestedPath = requestedPath.map(expandPath(_:))
+                let normalizedRequestedPath = requestedPath.map(AutomationInteraction.expandPath(_:))
                 if let requestedPath = normalizedRequestedPath,
                    let existing = descriptors.first(where: { descriptor in
                        descriptor.mode == mode
@@ -3401,7 +3120,7 @@ final class AutomationIPCServer {
                     }
                     let refreshed = try await appSession.referencedSources()
                         .first(where: { $0.id == existing.id }) ?? existing
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationSourceCreateResult(
                             applied: false,
                             playlistBindingApplied: playlistID != nil,
@@ -3434,19 +3153,19 @@ final class AutomationIPCServer {
                         isDirectory: mode == .directory
                     )
                 } else {
-                    selectedURL = try await requestSourceURL(
+                    selectedURL = try await AutomationInteraction.requestSourceURL(
                         mode: mode,
                         requestedPath: normalizedRequestedPath
                     )
                 }
                 guard let selectedURL else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
                 let selection = LibraryInitialImportSelection(urls: [selectedURL])
                 guard selection.hasUsableAccess || inheritedAuthorization else {
                     let path = selectedURL.path
                     selection.release()
-                    return permissionDenied(
+                    return AutomationResponseSupport.permissionDenied(
                         for: request,
                         path: path
                     )
@@ -3460,12 +3179,12 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.invalidValue("path")
                 }
                 selection.release()
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationSourceCreateResult(
                         applied: false,
                         completed: false,
                         selectedPath: selectedURL.path,
-                        job: makeJobSummary(job),
+                        job: AutomationJobProjection.makeJobSummary(job),
                         message: playlistID == nil
                             ? "Source authorization accepted; import/reconcile started as a Job."
                             : "Source authorization accepted; import/reconcile and Playlist binding started as a Job."
@@ -3473,12 +3192,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.sourceBindPlaylist:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -3510,7 +3229,7 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.invalidValue("relativePath")
                 }
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationSourceCreateResult(
                             applied: false,
                             source: makeSourceSummary(descriptor),
@@ -3527,7 +3246,7 @@ final class AutomationIPCServer {
                 )
                 let updated = try await appSession.referencedSources()
                     .first(where: { $0.id == sourceID })
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationSourceCreateResult(
                         applied: true,
                         source: updated.map(makeSourceSummary),
@@ -3536,12 +3255,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.sourceSetExcludedPath:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -3573,7 +3292,7 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.invalidValue("sourceID")
                 }
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationSourceCreateResult(
                             applied: false,
                             source: makeSourceSummary(descriptor),
@@ -3592,7 +3311,7 @@ final class AutomationIPCServer {
                 )
                 let updated = try await appSession.referencedSources()
                     .first(where: { $0.id == sourceID })
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationSourceCreateResult(
                         applied: true,
                         source: updated.map(makeSourceSummary),
@@ -3603,12 +3322,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.sourceSetMonitorPolicy:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -3635,7 +3354,7 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.missingResource("sourceID")
                 }
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationSourceCreateResult(
                             applied: false,
                             source: makeSourceSummary(descriptor),
@@ -3651,7 +3370,7 @@ final class AutomationIPCServer {
                 )
                 let updated = try await appSession.referencedSources()
                     .first(where: { $0.id == sourceID })
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationSourceCreateResult(
                         applied: true,
                         source: updated.map(makeSourceSummary),
@@ -3662,12 +3381,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.sourceRemove:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -3690,7 +3409,7 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.missingResource("id")
                 }
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationSourceCreateResult(
                             applied: false,
                             source: makeSourceSummary(descriptor),
@@ -3704,24 +3423,24 @@ final class AutomationIPCServer {
                 ) == true
                 if !isTrusted {
                     guard confirm else {
-                        return confirmationRequired(
+                        return AutomationResponseSupport.confirmationRequired(
                             for: request,
                             message: "移除来源需要 confirm=true，并由播放器在前台确认。",
                             details: .object(["sourceID": .string(sourceID.uuidString)])
                         )
                     }
-                    guard await confirmDestructiveOperation(
+                    guard await AutomationInteraction.confirmDestructiveOperation(
                         title: "移除来源？",
                         message: "要从当前资料库移除“\(descriptor.displayName)”吗？原文件不会删除，相关歌曲可能暂时不可用。"
                     ) else {
-                        return interactionCancelled(for: request)
+                        return AutomationResponseSupport.interactionCancelled(for: request)
                     }
                 }
                 try await appSession.removeReferencedSource(
                     id: sourceID,
                     libraryID: session.context.id
                 )
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationSourceCreateResult(
                         applied: true,
                         selectedPath: descriptor.lastKnownPath,
@@ -3730,34 +3449,34 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.filesInspect:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
                 let trackIDs = try parameters.uuidArray("trackIDs", required: true)
-                let tracks = try automationTracks(ids: trackIDs, in: session.libraryViewModel.allTracks)
-                return encodeResult(
+                let tracks = try AutomationFileAccess.automationTracks(ids: trackIDs, in: session.libraryViewModel.allTracks)
+                return AutomationResponseSupport.encodeResult(
                     AutomationFileOperationResult(
                         operation: AutomationMethod.filesInspect,
                         applied: false,
                         dryRun: true,
-                        files: tracks.map { makeFileSummary($0) },
+                        files: tracks.map { AutomationFileAccess.makeFileSummary($0) },
                         message: "Physical file state inspected; no file system mutation was applied."
                     ),
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.filesReveal:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -3765,7 +3484,7 @@ final class AutomationIPCServer {
                 guard trackIDs.count <= 50 else {
                     throw AutomationParameterError.outOfRange("trackIDs")
                 }
-                let tracks = try automationTracks(ids: trackIDs, in: session.libraryViewModel.allTracks)
+                let tracks = try AutomationFileAccess.automationTracks(ids: trackIDs, in: session.libraryViewModel.allTracks)
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 var files: [AutomationFileSummary] = []
                 var urls: [URL] = []
@@ -3774,8 +3493,8 @@ final class AutomationIPCServer {
                     do {
                         let url: URL
                         if case .referenced = track.mediaLocator {
-                            url = try currentAuthorizedFile(for: track, session: session).url
-                        } else if let managedURL = automationTrackFileURL(track, in: session) {
+                            url = try AutomationFileAccess.currentAuthorizedFile(for: track, session: session).url
+                        } else if let managedURL = AutomationFileAccess.automationTrackFileURL(track, in: session) {
                             url = managedURL
                         } else {
                             throw AutomationFileOperationError.fileUnavailable(track.id)
@@ -3784,7 +3503,7 @@ final class AutomationIPCServer {
                             throw AutomationFileOperationError.fileUnavailable(track.id)
                         }
                         urls.append(url)
-                        files.append(makeFileSummary(track, pathOverride: url.path, existsOverride: true))
+                        files.append(AutomationFileAccess.makeFileSummary(track, pathOverride: url.path, existsOverride: true))
                     } catch {
                         failures.append("\(track.id.uuidString): \(error.localizedDescription)")
                     }
@@ -3792,7 +3511,7 @@ final class AutomationIPCServer {
                 if !dryRun, !urls.isEmpty {
                     NSWorkspace.shared.activateFileViewerSelecting(urls)
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationFileOperationResult(
                         operation: AutomationMethod.filesReveal,
                         applied: !dryRun && !urls.isEmpty,
@@ -3807,12 +3526,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.filesExport:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -3820,9 +3539,9 @@ final class AutomationIPCServer {
                 guard trackIDs.count <= 500 else {
                     throw AutomationParameterError.outOfRange("trackIDs")
                 }
-                let tracks = try automationTracks(ids: trackIDs, in: session.libraryViewModel.allTracks)
-                guard let destinationURL = await requestExportDirectory() else {
-                    return interactionCancelled(for: request)
+                let tracks = try AutomationFileAccess.automationTracks(ids: trackIDs, in: session.libraryViewModel.allTracks)
+                guard let destinationURL = await AutomationInteraction.requestExportDirectory() else {
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
                 let hasScopedAccess = destinationURL.startAccessingSecurityScopedResource()
                 defer {
@@ -3846,8 +3565,8 @@ final class AutomationIPCServer {
                     do {
                         let source: URL
                         if case .referenced = track.mediaLocator {
-                            source = try currentAuthorizedFile(for: track, session: session).url
-                        } else if let managed = automationTrackFileURL(track, in: session) {
+                            source = try AutomationFileAccess.currentAuthorizedFile(for: track, session: session).url
+                        } else if let managed = AutomationFileAccess.automationTrackFileURL(track, in: session) {
                             source = managed
                         } else {
                             throw AutomationFileOperationError.fileUnavailable(track.id)
@@ -3857,12 +3576,12 @@ final class AutomationIPCServer {
                         }
                         let output = uniqueExportURL(for: source.lastPathComponent, in: destination)
                         try FileManager.default.copyItem(at: source, to: output)
-                        files.append(makeFileSummary(track, pathOverride: output.path, existsOverride: true))
+                        files.append(AutomationFileAccess.makeFileSummary(track, pathOverride: output.path, existsOverride: true))
                     } catch {
                         failures.append("\(track.id.uuidString): \(error.localizedDescription)")
                     }
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationFileOperationResult(
                         operation: AutomationMethod.filesExport,
                         applied: !files.isEmpty,
@@ -3875,12 +3594,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.filesRename, AutomationMethod.filesMove:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -3902,9 +3621,9 @@ final class AutomationIPCServer {
                     operations: operations,
                     session: session
                 )
-                let files = plans.map { makeFileSummary($0.track) }
+                let files = plans.map { AutomationFileAccess.makeFileSummary($0.track) }
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationFileOperationResult(
                             operation: request.method,
                             applied: false,
@@ -3924,7 +3643,7 @@ final class AutomationIPCServer {
                 }
                 if plans.count > 1 && !isTrusted {
                     guard confirm else {
-                        return confirmationRequired(
+                        return AutomationResponseSupport.confirmationRequired(
                             for: request,
                             message: "批量重命名或移动文件需要 confirm=true，并由播放器在前台确认。",
                             details: .object([
@@ -3933,13 +3652,13 @@ final class AutomationIPCServer {
                             ])
                         )
                     }
-                    guard await confirmDestructiveOperation(
+                    guard await AutomationInteraction.confirmDestructiveOperation(
                         title: request.method == AutomationMethod.filesRename
                             ? "重命名多个音乐文件？"
                             : "移动多个音乐文件？",
                         message: "这会改变 \(plans.count) 个音乐文件在磁盘上的位置，播放器随后会重新扫描相关来源。"
                     ) else {
-                        return interactionCancelled(for: request)
+                        return AutomationResponseSupport.interactionCancelled(for: request)
                     }
                 }
 
@@ -3953,13 +3672,13 @@ final class AutomationIPCServer {
                     libraryID: session.context.id
                 )
                 let appliedFiles = plans.map { plan in
-                    makeFileSummary(
+                    AutomationFileAccess.makeFileSummary(
                         plan.track,
                         pathOverride: plan.destination?.path,
                         existsOverride: plan.destination.map { FileManager.default.fileExists(atPath: $0.path) }
                     )
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationFileOperationResult(
                         operation: request.method,
                         applied: true,
@@ -3973,7 +3692,7 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch let error as AutomationFileOperationError {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             } catch {
                 return .failure(
                     for: request,
@@ -3986,8 +3705,8 @@ final class AutomationIPCServer {
             }
 
         case AutomationMethod.filesDelete:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -4005,9 +3724,9 @@ final class AutomationIPCServer {
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 let confirm = try parameters.boolean("confirm", default: false)
                 let plans = try makeFileDeletePlans(trackIDs: trackIDs, session: session)
-                let files = plans.map { makeFileSummary($0.track) }
+                let files = plans.map { AutomationFileAccess.makeFileSummary($0.track) }
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationFileOperationResult(
                             operation: AutomationMethod.filesDelete,
                             applied: false,
@@ -4024,7 +3743,7 @@ final class AutomationIPCServer {
                 }
                 if !isTrusted {
                     guard confirm else {
-                        return confirmationRequired(
+                        return AutomationResponseSupport.confirmationRequired(
                             for: request,
                             message: "将音乐文件移到废纸篓需要 confirm=true，并由播放器在前台确认。",
                             details: .object([
@@ -4033,11 +3752,11 @@ final class AutomationIPCServer {
                             ])
                         )
                     }
-                    guard await confirmDestructiveOperation(
+                    guard await AutomationInteraction.confirmDestructiveOperation(
                         title: "将音乐文件移到废纸篓？",
                         message: "要将 \(plans.count) 个音乐文件移到 macOS 废纸篓吗？歌曲、元数据、播放记录和播放列表关系会保留。"
                     ) else {
-                        return interactionCancelled(for: request)
+                        return AutomationResponseSupport.interactionCancelled(for: request)
                     }
                 }
 
@@ -4061,12 +3780,12 @@ final class AutomationIPCServer {
                     libraryID: session.context.id
                 )
                 let appliedFiles = plans.map { plan in
-                    makeFileSummary(
+                    AutomationFileAccess.makeFileSummary(
                         plan.track,
                         existsOverride: outcome.0.contains(plan.trackID) ? false : nil
                     )
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationFileOperationResult(
                         operation: AutomationMethod.filesDelete,
                         applied: !outcome.0.isEmpty,
@@ -4081,7 +3800,7 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch let error as AutomationFileOperationError {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             } catch {
                 return .failure(
                     for: request,
@@ -4094,13 +3813,13 @@ final class AutomationIPCServer {
             }
 
         case AutomationMethod.playbackState:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
-            guard request.params == nil || request.params == .null || isObject(request.params) else {
-                return invalidParameters(for: request)
+            guard request.params == nil || request.params == .null || AutomationResponseSupport.isObject(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
-            return encodeResult(
+            return AutomationResponseSupport.encodeResult(
                 makePlaybackState(session.playbackCoordinator),
                 for: request
             )
@@ -4114,8 +3833,8 @@ final class AutomationIPCServer {
              AutomationMethod.playbackSeek,
              AutomationMethod.playbackSetVolume,
              AutomationMethod.playbackSetMode:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -4130,7 +3849,7 @@ final class AutomationIPCServer {
                         }
                         session.playbackCoordinator.play(track: track)
                     } else if !trackIDs.isEmpty {
-                        let tracks = try automationTracks(
+                        let tracks = try AutomationFileAccess.automationTracks(
                             ids: trackIDs,
                             in: session.libraryViewModel.allTracks
                         )
@@ -4158,7 +3877,7 @@ final class AutomationIPCServer {
                 case AutomationMethod.playbackToggle:
                     session.playbackCoordinator.playPause()
                 case AutomationMethod.playbackPause:
-                    guard request.params == nil || request.params == .null || isObject(request.params) else {
+                    guard request.params == nil || request.params == .null || AutomationResponseSupport.isObject(request.params) else {
                         throw AutomationParameterError.invalidShape
                     }
                     session.playbackCoordinator.pause()
@@ -4189,26 +3908,26 @@ final class AutomationIPCServer {
                 default:
                     break
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     makePlaybackState(session.playbackCoordinator),
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.queueGet:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
-            guard request.params == nil || request.params == .null || isObject(request.params) else {
-                return invalidParameters(for: request)
+            guard request.params == nil || request.params == .null || AutomationResponseSupport.isObject(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
-            return encodeResult(makeQueueResult(session), for: request)
+            return AutomationResponseSupport.encodeResult(makeQueueResult(session), for: request)
 
         case AutomationMethod.queueUpcoming:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -4229,12 +3948,12 @@ final class AutomationIPCServer {
                 let ids = session.playerViewModel.currentQueueTracks.map(\.id)
                 let start = min(offset, ids.count)
                 let page = Array(ids[start..<min(start + limit, ids.count)])
-                return encodeResult(AutomationQueueUpcomingResult(
+                return AutomationResponseSupport.encodeResult(AutomationQueueUpcomingResult(
                     currentTrackID: session.playbackCoordinator.presentation.localTrack?.id,
                     trackIDs: page, offset: offset, total: ids.count, revision: revision
                 ), for: request)
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.queueReplace,
@@ -4243,8 +3962,8 @@ final class AutomationIPCServer {
              AutomationMethod.queueRemove,
              AutomationMethod.queueReorder,
              AutomationMethod.queueClear:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -4275,14 +3994,14 @@ final class AutomationIPCServer {
                     mutationTracks = []
                 case AutomationMethod.queueReplace:
                     nextIDs = try parameters.uuidArray("trackIDs", required: true, allowEmpty: true)
-                    mutationTracks = try automationTracks(ids: nextIDs, in: session.libraryViewModel.allTracks)
+                    mutationTracks = try AutomationFileAccess.automationTracks(ids: nextIDs, in: session.libraryViewModel.allTracks)
                 case AutomationMethod.queueEnqueue:
                     let appended = try parameters.uuidArray("trackIDs", required: true)
                     nextIDs = current.map(\.id) + appended
-                    mutationTracks = try automationTracks(ids: appended, in: session.libraryViewModel.allTracks)
+                    mutationTracks = try AutomationFileAccess.automationTracks(ids: appended, in: session.libraryViewModel.allTracks)
                 case AutomationMethod.queueEnqueueNext:
                     let appended = try parameters.uuidArray("trackIDs", required: true)
-                    mutationTracks = try automationTracks(ids: appended, in: session.libraryViewModel.allTracks)
+                    mutationTracks = try AutomationFileAccess.automationTracks(ids: appended, in: session.libraryViewModel.allTracks)
                     let currentTrackID = session.playbackCoordinator.presentation.localTrack?.id
                     nextIDs = predictedQueueAfterEnqueueNext(
                         currentIDs: current.map(\.id),
@@ -4317,7 +4036,7 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.invalidValue("method")
                 }
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         makeQueueResult(
                             session,
                             trackIDs: nextIDs,
@@ -4339,14 +4058,14 @@ final class AutomationIPCServer {
                 default:
                     player.updateQueueTracks(mutationTracks)
                 }
-                return encodeResult(makeQueueResult(session), for: request)
+                return AutomationResponseSupport.encodeResult(makeQueueResult(session), for: request)
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.historyList:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -4414,7 +4133,7 @@ final class AutomationIPCServer {
                 let pageStart = min(offset, filteredItems.count)
                 let pageEnd = min(pageStart + limit, filteredItems.count)
                 let page = Array(filteredItems[pageStart..<pageEnd])
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationHistoryListResult(
                         items: page.map(makeHistoryItem),
                         revision: revision,
@@ -4426,12 +4145,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.historyStats:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -4480,7 +4199,7 @@ final class AutomationIPCServer {
                     ? aggregates(\.artist, unknown: "Unknown Artist") : []
                 let albumStats = dimension == "all" || dimension == "album"
                     ? aggregates(\.album, unknown: "Unknown Album") : []
-                return encodeResult(AutomationHistoryStatsResult(
+                return AutomationResponseSupport.encodeResult(AutomationHistoryStatsResult(
                     from: from, to: to, playCount: items.count,
                     distinctTrackCount: Set(items.map(\.trackID)).count,
                     distinctArtistCount: Set(items.map { $0.artist.lowercased() }).count,
@@ -4490,12 +4209,12 @@ final class AutomationIPCServer {
                     revision: playbackHistoryRevision(items)
                 ), for: request)
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.historyClear:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -4503,7 +4222,7 @@ final class AutomationIPCServer {
                 let confirm = try parameters.boolean("confirm", default: false)
                 let count = session.playbackHistoryStore.fetchItems().count
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationHistoryListResult(
                             items: [],
                             revision: "v1-\(session.playbackHistoryStore.revision)"
@@ -4512,22 +4231,22 @@ final class AutomationIPCServer {
                     )
                 }
                 guard confirm else {
-                    return confirmationRequired(
+                    return AutomationResponseSupport.confirmationRequired(
                         for: request,
                         message: "清除播放记录需要 confirm=true，并由播放器在前台确认。",
                         details: .object(["recordCount": .number(Double(count))])
                     )
                 }
-                guard await confirmDestructiveOperation(
+                guard await AutomationInteraction.confirmDestructiveOperation(
                     title: "清除播放记录？",
                     message: "要删除 \(count) 条播放记录吗？此操作无法在播放器中撤销。"
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
                 guard session.playbackHistoryStore.clearAll() else {
                     throw AutomationParameterError.invalidValue("history")
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationHistoryListResult(
                         items: [],
                         revision: "v1-\(session.playbackHistoryStore.revision)"
@@ -4535,12 +4254,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.artworkSearch:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -4617,7 +4336,7 @@ final class AutomationIPCServer {
                     if lhs.resolution != rhs.resolution { return lhs.resolution > rhs.resolution }
                     return lhs.id < rhs.id
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationArtworkSearchResult(
                         targetType: target.type,
                         trackID: trackID,
@@ -4634,12 +4353,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.artworkApplyCandidate:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -4729,12 +4448,12 @@ final class AutomationIPCServer {
                     session: session
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.artworkGet:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -4756,7 +4475,7 @@ final class AutomationIPCServer {
                             makeArtworkInfo(.track($0), session: session)
                         }
                     }
-                    revision = libraryTracksRevision(
+                    revision = queries.libraryTracksRevision(
                         tracks: session.libraryViewModel.allTracks,
                         playlists: session.libraryViewModel.playlists
                     )
@@ -4769,7 +4488,7 @@ final class AutomationIPCServer {
                     artworks = [makeArtworkInfo(target, session: session)]
                     revision = artworkRevision(for: target, session: session)
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationArtworkGetResult(
                         artworks: artworks,
                         revision: revision
@@ -4777,12 +4496,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.artworkApply:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -4857,7 +4576,7 @@ final class AutomationIPCServer {
 
                 if !dryRun, trackIDs.count >= 10 {
                     guard confirm else {
-                        return confirmationRequired(
+                        return AutomationResponseSupport.confirmationRequired(
                             for: request,
                             message: "批量应用封面需要 confirm=true，并由播放器在前台确认。",
                             details: .object([
@@ -4881,7 +4600,7 @@ final class AutomationIPCServer {
                             throw AutomationParameterError.invalidValue("imageBase64")
                         }
                     }
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationArtworkMutationResult(
                             applied: false,
                             dryRun: true,
@@ -4897,13 +4616,13 @@ final class AutomationIPCServer {
 
                 if trackIDs.count >= 10,
                    !AutomationBatchExecutionContext.aggregateConfirmationApproved {
-                    guard await confirmDestructiveOperation(
+                    guard await AutomationInteraction.confirmDestructiveOperation(
                         title: "应用到 \(trackIDs.count) 首歌曲？",
                         message: clear
                             ? "要清除这 \(trackIDs.count) 首歌曲的封面吗？原音频文件不会修改。"
                             : "要将所选封面应用到这 \(trackIDs.count) 首歌曲吗？原音频文件不会修改。"
                     ) else {
-                        return interactionCancelled(for: request)
+                        return AutomationResponseSupport.interactionCancelled(for: request)
                     }
                 }
 
@@ -4921,15 +4640,15 @@ final class AutomationIPCServer {
                     }
                     resolvedInput = ("imageBase64", data)
                 } else if let imagePath,
-                           let data = try? Data(contentsOf: URL(fileURLWithPath: expandPath(imagePath))),
+                           let data = try? Data(contentsOf: URL(fileURLWithPath: AutomationInteraction.expandPath(imagePath))),
                            data.count <= 16 * 1024 * 1024,
                            ArtworkDataNormalizer.isDecodableImage(data) {
                     resolvedInput = ("imagePath", ArtworkDataNormalizer.normalizedJPEGData(from: data) ?? data)
                 } else {
-                    guard let selectedURL = try await requestArtworkURL(
-                        requestedPath: imagePath.map(expandPath(_:))
+                    guard let selectedURL = try await AutomationInteraction.requestArtworkURL(
+                        requestedPath: imagePath.map(AutomationInteraction.expandPath(_:))
                     ) else {
-                        return interactionCancelled(for: request)
+                        return AutomationResponseSupport.interactionCancelled(for: request)
                     }
                     let data = await Task.detached(priority: .userInitiated) { () -> Data? in
                         let accessed = selectedURL.startAccessingSecurityScopedResource()
@@ -4951,7 +4670,7 @@ final class AutomationIPCServer {
                     artworkData: resolvedInput.data,
                     expectedRevisions: expectedRevisions
                 )
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationArtworkMutationResult(
                         applied: !outcome.updatedTrackIDs.isEmpty,
                         dryRun: false,
@@ -4967,12 +4686,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return mutationFailure(for: request, error: error)
+                return AutomationResponseSupport.mutationFailure(for: request, error: error)
             }
 
         case AutomationMethod.metadataGet:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -5003,7 +4722,7 @@ final class AutomationIPCServer {
                           requestedEntityCount == 0 else {
                         throw AutomationParameterError.invalidValue("entityType")
                     }
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         makeMetadataCollectionResult(
                             entityType: entityType,
                             query: query,
@@ -5027,7 +4746,7 @@ final class AutomationIPCServer {
                         playlistID: playlistID,
                         session: session
                     )
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         makeMetadataGetResult(for: target, session: session),
                         for: request
                     )
@@ -5044,10 +4763,10 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.invalidValue("trackIDs")
                 }
                 let tracks = trackIDs.compactMap { tracksByID[$0] }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationLibraryTracksResult(
                         tracks: tracks.map {
-                            makeTrackSummary(
+                            queries.makeTrackSummary(
                                 $0,
                                 playlists: session.libraryViewModel.playlists,
                                 includeFilePath: grantedScopes().contains(.filesRead)
@@ -5056,7 +4775,7 @@ final class AutomationIPCServer {
                         total: tracks.count,
                         offset: 0,
                         limit: tracks.count,
-                        revision: libraryTracksRevision(
+                        revision: queries.libraryTracksRevision(
                             tracks: session.libraryViewModel.allTracks,
                             playlists: session.libraryViewModel.playlists
                         )
@@ -5064,12 +4783,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.metadataEmbeddedGet:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -5093,7 +4812,7 @@ final class AutomationIPCServer {
                 for trackID in trackIDs {
                     guard let track = tracksByID[trackID] else { continue }
                     do {
-                        let fileURL = try embeddedAudioFileURL(for: track, session: session)
+                        let fileURL = try AutomationFileAccess.embeddedAudioFileURL(for: track, session: session)
                         let snapshot = await readEmbeddedTags(from: fileURL)
                         results.append(AutomationEmbeddedTagTrack(
                             id: track.id,
@@ -5117,11 +4836,11 @@ final class AutomationIPCServer {
                         ))
                     }
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationEmbeddedTagsResult(
                         dryRun: false,
                         applied: false,
-                        libraryRevision: libraryTracksRevision(
+                        libraryRevision: queries.libraryTracksRevision(
                             tracks: session.libraryViewModel.allTracks,
                             playlists: session.libraryViewModel.playlists
                         ),
@@ -5131,12 +4850,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.metadataEmbeddedPatch:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -5200,7 +4919,7 @@ final class AutomationIPCServer {
                         continue
                     }
                     do {
-                        let fileURL = try embeddedAudioFileURL(for: track, session: session)
+                        let fileURL = try AutomationFileAccess.embeddedAudioFileURL(for: track, session: session)
                         guard fileURL.pathExtension.lowercased() == "mp3" else {
                             previews.append(AutomationEmbeddedTagTrack(
                                 id: trackID,
@@ -5243,12 +4962,12 @@ final class AutomationIPCServer {
                         ))
                     }
                 }
-                let libraryRevision = libraryTracksRevision(
+                let libraryRevision = queries.libraryTracksRevision(
                     tracks: session.libraryViewModel.allTracks,
                     playlists: session.libraryViewModel.playlists
                 )
                 guard !writeRequests.isEmpty else {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationEmbeddedTagsResult(
                             dryRun: dryRun,
                             applied: false,
@@ -5260,7 +4979,7 @@ final class AutomationIPCServer {
                     )
                 }
                 guard !dryRun else {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationEmbeddedTagsResult(
                             dryRun: true,
                             applied: false,
@@ -5272,7 +4991,7 @@ final class AutomationIPCServer {
                     )
                 }
                 guard confirm else {
-                    return confirmationRequired(
+                    return AutomationResponseSupport.confirmationRequired(
                         for: request,
                         message: "写入原音频标签需要 confirm=true，并由播放器在前台确认。",
                         details: .object([
@@ -5282,33 +5001,33 @@ final class AutomationIPCServer {
                         ])
                     )
                 }
-                guard await confirmDestructiveOperation(
+                guard await AutomationInteraction.confirmDestructiveOperation(
                     title: "写入 \(writeRequests.count) 个 MP3 文件标签？",
                     message: "将按预览写入 ID3 标签并替换原音频文件；每首歌曲分别校验，失败的文件保持原样。"
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
                 guard let descriptor = session.startAutomationEmbeddedTagWrite(requests: writeRequests) else {
                     throw AutomationParameterError.invalidValue("library session is closing")
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationEmbeddedTagsResult(
                         dryRun: false,
                         applied: false,
                         libraryRevision: libraryRevision,
                         tracks: previews,
-                        job: makeJobSummary(descriptor),
+                        job: AutomationJobProjection.makeJobSummary(descriptor),
                         message: "The embedded-tag Job was started. Query jobs.get for per-file completion and failures."
                     ),
                     for: request
                 )
             } catch {
-                return mutationFailure(for: request, error: error)
+                return AutomationResponseSupport.mutationFailure(for: request, error: error)
             }
 
         case AutomationMethod.metadataExport:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -5317,7 +5036,7 @@ final class AutomationIPCServer {
                     maximumCount: 100
                 )
                 let allTracks = session.libraryViewModel.allTracks
-                let revision = libraryTracksRevision(
+                let revision = queries.libraryTracksRevision(
                     tracks: allTracks,
                     playlists: session.libraryViewModel.playlists
                 )
@@ -5355,7 +5074,7 @@ final class AutomationIPCServer {
                 let nextOffset = offset + pageTracks.count < total
                     ? offset + pageTracks.count
                     : nil
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationMetadataDocument(
                         sourceLibraryID: session.context.id,
                         revision: revision,
@@ -5373,12 +5092,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.metadataImport:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -5399,12 +5118,12 @@ final class AutomationIPCServer {
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 let overwriteExistingFields = try parameters.boolean("overwriteExistingFields", default: false)
                 let currentTracks = session.libraryViewModel.allTracks
-                let currentRevision = libraryTracksRevision(
+                let currentRevision = queries.libraryTracksRevision(
                     tracks: currentTracks,
                     playlists: session.libraryViewModel.playlists
                 )
                 if let expectedRevision, expectedRevision != currentRevision {
-                    return revisionConflict(for: request, expected: expectedRevision, actual: currentRevision)
+                    return AutomationResponseSupport.revisionConflict(for: request, expected: expectedRevision, actual: currentRevision)
                 }
 
                 let sourceIDs = Set(document.tracks.map(\.id))
@@ -5491,7 +5210,7 @@ final class AutomationIPCServer {
                     )
                 }
                 if dryRun || planned.contains(where: { $0.status == "missing" }) {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationMetadataImportResult(
                             libraryID: session.context.id,
                             sourceLibraryID: document.sourceLibraryID,
@@ -5508,7 +5227,7 @@ final class AutomationIPCServer {
                 }
                 let readyCount = planned.filter { $0.status == "ready" }.count
                 guard readyCount > 0 else {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationMetadataImportResult(
                             libraryID: session.context.id,
                             sourceLibraryID: document.sourceLibraryID,
@@ -5522,7 +5241,7 @@ final class AutomationIPCServer {
                     )
                 }
                 guard try parameters.boolean("confirm", default: false) else {
-                    return confirmationRequired(
+                    return AutomationResponseSupport.confirmationRequired(
                         for: request,
                         message: "Import this Track metadata document?",
                         details: .object([
@@ -5533,11 +5252,11 @@ final class AutomationIPCServer {
                         ])
                     )
                 }
-                guard await confirmDestructiveOperation(
+                guard await AutomationInteraction.confirmDestructiveOperation(
                     title: "导入曲目元数据？",
                     message: "要为 \(readyCount) 首歌曲写入元数据吗？默认只补充空字段。"
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
 
                 var itemBySourceID = Dictionary(uniqueKeysWithValues: items.map { ($0.sourceTrackID, $0) })
@@ -5585,14 +5304,14 @@ final class AutomationIPCServer {
                 items = planned.compactMap { itemBySourceID[$0.record.id] }
                 let applied = items.contains { $0.status == "updated" }
                 let hasFailure = items.contains { ["failed", "conflict", "missing"].contains($0.status) }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationMetadataImportResult(
                         libraryID: session.context.id,
                         sourceLibraryID: document.sourceLibraryID,
                         dryRun: false,
                         applied: applied,
                         items: items,
-                        revision: libraryTracksRevision(
+                        revision: queries.libraryTracksRevision(
                             tracks: session.libraryViewModel.allTracks,
                             playlists: session.libraryViewModel.playlists
                         ),
@@ -5603,12 +5322,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.metadataSearch:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -5690,7 +5409,7 @@ final class AutomationIPCServer {
                     if $0.provider != $1.provider { return $0.provider < $1.provider }
                     return ($0.candidateID ?? "") < ($1.candidateID ?? "")
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationMetadataSearchResult(
                         trackID: track.id,
                         queryTitle: track.title,
@@ -5710,12 +5429,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.metadataApplyCandidate:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -5737,7 +5456,7 @@ final class AutomationIPCServer {
                         conflictedTrackIDs: [trackID],
                         message: "The Track changed after the candidate was selected. Search again before applying."
                     )
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationMetadataCandidateApplyResult(
                             trackID: trackID,
                             candidateID: candidateID,
@@ -5775,7 +5494,7 @@ final class AutomationIPCServer {
                             durationSeconds: initialTrack.duration
                         )
                     } catch {
-                        return metadataProviderUnavailable(error, provider: "MusicBrainz", for: request)
+                        return AutomationResponseSupport.metadataProviderUnavailable(error, provider: "MusicBrainz", for: request)
                     }
                     guard candidates.contains(where: { $0.recordingID == recordingID }) else {
                         throw AutomationParameterError.missingResource("candidateID")
@@ -5784,7 +5503,7 @@ final class AutomationIPCServer {
                     do {
                         detail = try await MusicBrainzAutomationProvider.shared.recording(id: recordingID)
                     } catch {
-                        return metadataProviderUnavailable(error, provider: "MusicBrainz", for: request)
+                        return AutomationResponseSupport.metadataProviderUnavailable(error, provider: "MusicBrainz", for: request)
                     }
                     guard let detail else {
                         throw AutomationParameterError.missingResource("metadata candidate detail")
@@ -5806,7 +5525,7 @@ final class AutomationIPCServer {
                             duration: initialTrack.duration
                         )
                     } catch {
-                        return metadataProviderUnavailable(error, provider: "QQMusic", for: request)
+                        return AutomationResponseSupport.metadataProviderUnavailable(error, provider: "QQMusic", for: request)
                     }
                     guard candidates.contains(where: { $0.songMid == candidateID }) else {
                         throw AutomationParameterError.missingResource("candidateID")
@@ -5821,7 +5540,7 @@ final class AutomationIPCServer {
                             duration: initialTrack.duration
                         )
                     } catch {
-                        return metadataProviderUnavailable(error, provider: "QQMusic", for: request)
+                        return AutomationResponseSupport.metadataProviderUnavailable(error, provider: "QQMusic", for: request)
                     }
                     titleValue = detail.title
                     artistValue = detail.artist
@@ -5902,7 +5621,7 @@ final class AutomationIPCServer {
                         ? "Preview only. Existing values are preserved unless overwriteExistingFields is true."
                         : "The selected metadata candidate was applied through the App-owned metadata persistence path."
                 )
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationMetadataCandidateApplyResult(
                         trackID: trackID,
                         candidateID: candidateID,
@@ -5914,12 +5633,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.metadataPatch:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -5970,7 +5689,7 @@ final class AutomationIPCServer {
                     return track.id
                 }
                 guard !dryRun else {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationMetadataMutationResult(
                             applied: false,
                             dryRun: true,
@@ -5984,7 +5703,7 @@ final class AutomationIPCServer {
                 }
                 if trackIDs.count >= 10 {
                     guard confirm else {
-                        return confirmationRequired(
+                        return AutomationResponseSupport.confirmationRequired(
                             for: request,
                             message: "批量修改歌曲信息需要 confirm=true，并由播放器在前台确认。",
                             details: .object([
@@ -5996,11 +5715,11 @@ final class AutomationIPCServer {
                         )
                     }
                     if !AutomationBatchExecutionContext.aggregateConfirmationApproved {
-                        guard await confirmDestructiveOperation(
+                        guard await AutomationInteraction.confirmDestructiveOperation(
                             title: "修改 \(trackIDs.count) 首歌曲的信息？",
                             message: "要将这些歌曲的信息更新到播放器资料库吗？原音频文件和内嵌标签不会修改。"
                         ) else {
-                            return interactionCancelled(for: request)
+                            return AutomationResponseSupport.interactionCancelled(for: request)
                         }
                     }
                 }
@@ -6009,7 +5728,7 @@ final class AutomationIPCServer {
                     patch: patch,
                     expectedRevisions: expectedRevisions
                 )
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationMetadataMutationResult(
                         applied: !outcome.updatedTrackIDs.isEmpty,
                         dryRun: false,
@@ -6023,12 +5742,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return mutationFailure(for: request, error: error)
+                return AutomationResponseSupport.mutationFailure(for: request, error: error)
             }
 
         case AutomationMethod.lyricsGet:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -6036,22 +5755,22 @@ final class AutomationIPCServer {
                 guard let track = session.libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
                     throw AutomationParameterError.missingResource("trackID")
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationLyricsDetail(
                         trackID: trackID,
-                        status: trackLyricsStatus(track),
+                        status: queries.trackLyricsStatus(track),
                         ttml: track.ttmlLyricText,
                         plainText: track.lyricsText
                     ),
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.lyricsSearch, AutomationMethod.lyricsCandidates:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -6091,7 +5810,7 @@ final class AutomationIPCServer {
                     )
                     trimLyricsCandidateCacheIfNeeded()
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     makeLyricsSearchResult(
                         trackID: trackID,
                         track: track,
@@ -6102,12 +5821,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.lyricsCompare:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -6119,12 +5838,12 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.missing("candidate")
                 }
                 let candidate = try makeAutomationLyricsCandidate(from: candidateValues)
-                let currentQuality = currentLyricsQuality(track)
+                let currentQuality = queries.currentLyricsQuality(track)
                 let candidateQuality = lyricsQuality(for: candidate)
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationLyricsComparisonResult(
                         trackID: trackID,
-                        currentStatus: trackLyricsStatus(track),
+                        currentStatus: queries.trackLyricsStatus(track),
                         currentQuality: currentQuality,
                         candidate: candidate,
                         candidateQuality: candidateQuality,
@@ -6136,12 +5855,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.lyricsApply:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -6162,7 +5881,7 @@ final class AutomationIPCServer {
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 let cleanMetadata = try parameters.boolean("cleanMetadata", default: true)
                 let expectedRevision = try parameters.string("expectedRevision")
-                let currentQuality = currentLyricsQuality(track)
+                let currentQuality = queries.currentLyricsQuality(track)
                 let candidate: AutomationLyricsCandidate?
                 let estimatedQuality: Int
                 let effectiveCustomTTML: String?
@@ -6185,14 +5904,14 @@ final class AutomationIPCServer {
                 }
                 if let expectedRevision,
                    expectedRevision != session.libraryViewModel.automationTrackRevision(for: track) {
-                    return trackRevisionConflict(
+                    return AutomationResponseSupport.trackRevisionConflict(
                         for: request,
                         expected: expectedRevision,
                         actual: session.libraryViewModel.automationTrackRevision(for: track)
                     )
                 }
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLyricsApplyResult(
                             trackID: trackID,
                             applied: false,
@@ -6219,7 +5938,7 @@ final class AutomationIPCServer {
                         expectedRevision: expectedRevision
                     )
                     if outcome.conflicted {
-                        return trackRevisionConflict(
+                        return AutomationResponseSupport.trackRevisionConflict(
                             for: request,
                             expected: expectedRevision ?? "unknown",
                             actual: session.libraryViewModel.allTracks
@@ -6228,7 +5947,7 @@ final class AutomationIPCServer {
                                 ?? "unknown"
                         )
                     }
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLyricsApplyResult(
                             trackID: trackID,
                             applied: outcome.applied,
@@ -6279,7 +5998,7 @@ final class AutomationIPCServer {
                     expectedRevision: expectedRevision
                 )
                 if outcome.conflicted {
-                    return trackRevisionConflict(
+                    return AutomationResponseSupport.trackRevisionConflict(
                         for: request,
                         expected: expectedRevision ?? "unknown",
                         actual: session.libraryViewModel.allTracks
@@ -6288,7 +6007,7 @@ final class AutomationIPCServer {
                             ?? "unknown"
                     )
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationLyricsApplyResult(
                         trackID: trackID,
                         applied: outcome.applied,
@@ -6303,12 +6022,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.lyricsClean:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -6317,7 +6036,7 @@ final class AutomationIPCServer {
                 guard let track = session.libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
                     throw AutomationParameterError.missingResource("trackID")
                 }
-                guard let ttml = resolveTTMLText(for: track),
+                guard let ttml = queries.resolveTTMLText(for: track),
                       !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return .failure(
                         for: request,
@@ -6334,7 +6053,7 @@ final class AutomationIPCServer {
                     artist: track.artist
                 )
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLyricsCleanResult(
                             trackID: trackID,
                             cleaned: removedCount > 0,
@@ -6354,7 +6073,7 @@ final class AutomationIPCServer {
                         ttml: sanitized,
                         expectedRevision: nil
                     )
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLyricsCleanResult(
                             trackID: trackID,
                             cleaned: outcome.applied,
@@ -6368,7 +6087,7 @@ final class AutomationIPCServer {
                         for: request
                     )
                 } else {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLyricsCleanResult(
                             trackID: trackID,
                             cleaned: false,
@@ -6381,12 +6100,12 @@ final class AutomationIPCServer {
                     )
                 }
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.lyricsRefresh:
-            guard let session = activeSession(for: request), let appSession else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request), let appSession else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -6398,7 +6117,7 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.invalidValue("trackIDs")
                 }
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationLyricsRefreshResult(
                             applied: false,
                             dryRun: true,
@@ -6422,18 +6141,18 @@ final class AutomationIPCServer {
                         )
                     )
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationLyricsRefreshResult(
                         applied: true,
                         dryRun: false,
                         selectedTrackIDs: trackIDs,
-                        job: makeJobSummary(descriptor),
+                        job: AutomationJobProjection.makeJobSummary(descriptor),
                         message: "Lyrics refresh Job accepted; query jobs.get for progress and failures."
                     ),
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.jobsList:
@@ -6447,15 +6166,15 @@ final class AutomationIPCServer {
                     )
                 )
             }
-            guard activeSession(for: request) != nil else {
-                return noActiveLibraryResponse(for: request)
+            guard sessionAccess.activeSession(for: request) != nil else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
-            guard request.params == nil || request.params == .null || isObject(request.params) else {
-                return invalidParameters(for: request)
+            guard request.params == nil || request.params == .null || AutomationResponseSupport.isObject(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
-            return encodeResult(
+            return AutomationResponseSupport.encodeResult(
                 AutomationJobListResult(
-                    jobs: appSession.libraryJobDescriptors().map(makeJobSummary)
+                    jobs: appSession.libraryJobDescriptors().map(AutomationJobProjection.makeJobSummary)
                 ),
                 for: request
             )
@@ -6471,8 +6190,8 @@ final class AutomationIPCServer {
                     )
                 )
             }
-            guard activeSession(for: request) != nil else {
-                return noActiveLibraryResponse(for: request)
+            guard sessionAccess.activeSession(for: request) != nil else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -6480,14 +6199,14 @@ final class AutomationIPCServer {
                 guard let job = appSession.libraryJobDescriptors().first(where: { $0.id == jobID }) else {
                     throw AutomationParameterError.missingResource("jobID")
                 }
-                return encodeResult(makeJobSummary(job), for: request)
+                return AutomationResponseSupport.encodeResult(AutomationJobProjection.makeJobSummary(job), for: request)
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.jobsWait:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -6525,14 +6244,14 @@ final class AutomationIPCServer {
                         )
                     }
                     guard appSession.activeLibraryBinding.activeSession === session else {
-                        return noActiveLibraryResponse(for: request)
+                        return sessionAccess.noActiveLibraryResponse(for: request)
                     }
                     guard let descriptor = session.libraryJobDescriptorsSnapshot().first(where: {
                         $0.id == jobID
                     }) else {
                         throw AutomationParameterError.missingResource("jobID")
                     }
-                    let job = makeJobSummary(descriptor)
+                    let job = AutomationJobProjection.makeJobSummary(descriptor)
                     let completed: Bool
                     switch job.state {
                     case .completed, .partialFailure, .failed, .cancelled:
@@ -6541,7 +6260,7 @@ final class AutomationIPCServer {
                         completed = false
                     }
                     if completed {
-                        return encodeResult(
+                        return AutomationResponseSupport.encodeResult(
                             AutomationJobWaitResult(
                                 job: job,
                                 completed: true,
@@ -6554,7 +6273,7 @@ final class AutomationIPCServer {
 
                     let remaining = deadline.timeIntervalSinceNow
                     if remaining <= 0 {
-                        return encodeResult(
+                        return AutomationResponseSupport.encodeResult(
                             AutomationJobWaitResult(
                                 job: job,
                                 completed: false,
@@ -6578,7 +6297,7 @@ final class AutomationIPCServer {
                     )
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.jobsCancel:
@@ -6592,8 +6311,8 @@ final class AutomationIPCServer {
                     )
                 )
             }
-            guard activeSession(for: request) != nil else {
-                return noActiveLibraryResponse(for: request)
+            guard sessionAccess.activeSession(for: request) != nil else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -6604,7 +6323,7 @@ final class AutomationIPCServer {
                 ) else {
                     throw AutomationParameterError.missingResource("jobID")
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationJSONValue.object([
                         "jobID": .string(jobID.uuidString),
                         "cancelRequested": .boolean(true)
@@ -6612,7 +6331,7 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.jobsRetry:
@@ -6626,8 +6345,8 @@ final class AutomationIPCServer {
                     )
                 )
             }
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -6662,7 +6381,7 @@ final class AutomationIPCServer {
                               (rawPath as NSString).expandingTildeInPath.hasPrefix("/") else {
                             throw AutomationParameterError.invalidValue("filePaths")
                         }
-                        let url = URL(fileURLWithPath: expandPath(rawPath))
+                        let url = URL(fileURLWithPath: AutomationInteraction.expandPath(rawPath))
                         if seen.insert(url.resolvingSymlinksInPath().path).inserted {
                             urls.append(url)
                         }
@@ -6676,7 +6395,7 @@ final class AutomationIPCServer {
                         guard let picked = await session.fileImportService.pickImportURLs(
                             triggeredAt: Date()
                         ) else {
-                            return interactionCancelled(for: request)
+                            return AutomationResponseSupport.interactionCancelled(for: request)
                         }
                         let pickedPaths = Set(picked.map {
                             $0.resolvingSymlinksInPath().standardizedFileURL.path
@@ -6684,7 +6403,7 @@ final class AutomationIPCServer {
                         guard inaccessible.allSatisfy({
                             pickedPaths.contains($0.resolvingSymlinksInPath().path)
                         }) else {
-                            return permissionDenied(for: request, path: inaccessible[0].path)
+                            return AutomationResponseSupport.permissionDenied(for: request, path: inaccessible[0].path)
                         }
                         selectedURLs = urls.map { url in
                             picked.first {
@@ -6697,7 +6416,7 @@ final class AutomationIPCServer {
                         FileManager.default.fileExists(atPath: $0.path)
                             && !FileManager.default.isReadableFile(atPath: $0.path)
                     }) {
-                        return permissionDenied(for: request, path: denied.path)
+                        return AutomationResponseSupport.permissionDenied(for: request, path: denied.path)
                     }
                     importSelection = LibraryInitialImportSelection(urls: selectedURLs)
                 } else {
@@ -6714,11 +6433,11 @@ final class AutomationIPCServer {
                 ) else {
                     throw AutomationParameterError.invalidValue("jobID")
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationJobRetryResult(
                         originalJobID: jobID,
                         accepted: true,
-                        job: makeJobSummary(retryJob),
+                        job: AutomationJobProjection.makeJobSummary(retryJob),
                         message: descriptor.retrySpec?.kind == .libraryImport
                             ? "Import retry accepted with the caller-supplied file paths; query jobs.get for the new Job's progress."
                             : "Job retry accepted; query jobs.get for the new Job's progress."
@@ -6726,12 +6445,12 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.diagnosticsHealth:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -6753,7 +6472,7 @@ final class AutomationIPCServer {
                 let tracks = session.libraryViewModel.allTracks
                 let missing = tracks.filter { $0.availability == .missing }.count
                 let unavailable = tracks.filter { $0.availability != .available }.count
-                let missingLyrics = tracks.filter { trackLyricsStatus($0) == "none" }.count
+                let missingLyrics = tracks.filter { queries.trackLyricsStatus($0) == "none" }.count
                 let missingArtwork = tracks.filter { !$0.hasArtwork }.count
                 let incompleteMetadata = tracks.filter { track in
                     [track.title, track.artist, track.album].contains {
@@ -6836,7 +6555,7 @@ final class AutomationIPCServer {
                     "mediaPresence": mediaIssues.isEmpty ? "ok" : "attention",
                     "storage": storageValidation == "passed" ? "ok" : "attention"
                 ]
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationDiagnosticsResult(
                         healthy: sourceIssues.isEmpty
                             && unavailable == 0
@@ -6873,7 +6592,7 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch let error as AutomationParameterError {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             } catch {
                 return .failure(
                     for: request,
@@ -6886,8 +6605,8 @@ final class AutomationIPCServer {
             }
 
         case AutomationMethod.settingsGet:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -6902,7 +6621,7 @@ final class AutomationIPCServer {
             do {
                 let settings = try await appSession.libraryScopedSettings()
                 let values = automationSettingsValues(settings)
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationSettingsResult(
                         libraryID: session.context.id,
                         values: values,
@@ -6923,8 +6642,8 @@ final class AutomationIPCServer {
             }
 
         case AutomationMethod.settingsPatch:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(
@@ -6969,7 +6688,7 @@ final class AutomationIPCServer {
                 for (key, value) in normalized.values { nextValues[key] = value }
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationSettingsResult(
                             libraryID: session.context.id,
                             values: nextValues,
@@ -6985,7 +6704,7 @@ final class AutomationIPCServer {
                    requestedPolicy != current.referencedTrackDeletePolicy {
                     let confirm = try parameters.boolean("confirm", default: false)
                     guard confirm else {
-                        return confirmationRequired(
+                        return AutomationResponseSupport.confirmationRequired(
                             for: request,
                             message: "启用“同时处理原文件”会改变以后删除引用歌曲的方式，需要播放器确认。",
                             details: .object([
@@ -6994,11 +6713,11 @@ final class AutomationIPCServer {
                             ])
                         )
                     }
-                    guard await confirmDestructiveOperation(
+                    guard await AutomationInteraction.confirmDestructiveOperation(
                         title: "更改引用歌曲的删除方式？",
                         message: "以后删除引用歌曲时，来源文件可能会移到废纸篓。"
                     ) else {
-                        return interactionCancelled(for: request)
+                        return AutomationResponseSupport.interactionCancelled(for: request)
                     }
                 }
                 if let requestedPolicy {
@@ -7008,7 +6727,7 @@ final class AutomationIPCServer {
                     )
                 }
                 applyGlobalAutomationSettings(normalized.values)
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationSettingsResult(
                         libraryID: session.context.id,
                         values: nextValues,
@@ -7019,15 +6738,15 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.settingsSchema:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
-            guard isEmptyParameters(request.params) else { return invalidParameters(for: request) }
-            return encodeResult(AutomationJSONValue.object([
+            guard AutomationResponseSupport.isEmptyParameters(request.params) else { return AutomationResponseSupport.invalidParameters(for: request) }
+            return AutomationResponseSupport.encodeResult(AutomationJSONValue.object([
                 "libraryID": .string(session.context.id.uuidString),
                 "settings": .object([
                     "referencedTrackDeletePolicy": .object([
@@ -7071,8 +6790,8 @@ final class AutomationIPCServer {
             ]), for: request)
 
         case AutomationMethod.settingsValidate:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(for: request, error: AutomationError(code: .serverUnavailable, message: "The player App is no longer available.", retryable: true))
@@ -7086,7 +6805,7 @@ final class AutomationIPCServer {
                 )
                 let current = try await appSession.libraryScopedSettings()
                 let currentValues = automationSettingsValues(current)
-                return encodeResult(AutomationJSONValue.object([
+                return AutomationResponseSupport.encodeResult(AutomationJSONValue.object([
                     "valid": .boolean(validation.issues.isEmpty),
                     "libraryID": .string(session.context.id.uuidString),
                     "currentRevision": .string(automationSettingsRevision(currentValues)),
@@ -7094,12 +6813,12 @@ final class AutomationIPCServer {
                     "issues": .array(validation.issues.map(AutomationJSONValue.string))
                 ]), for: request)
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.settingsReset:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             guard let appSession else {
                 return .failure(for: request, error: AutomationError(code: .serverUnavailable, message: "The player App is no longer available.", retryable: true))
@@ -7125,7 +6844,7 @@ final class AutomationIPCServer {
                     }
                     applyGlobalAutomationSettings(defaultAutomationGlobalSettings)
                 }
-                return encodeResult(AutomationSettingsResult(
+                return AutomationResponseSupport.encodeResult(AutomationSettingsResult(
                     libraryID: session.context.id,
                     values: nextValues,
                     revision: automationSettingsRevision(nextValues),
@@ -7134,11 +6853,11 @@ final class AutomationIPCServer {
                     message: dryRun ? "Preview only. No persistent setting was changed." : "Supported settings were reset to their documented defaults."
                 ), for: request)
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.audioGet:
-            guard isEmptyParameters(request.params) else { return invalidParameters(for: request) }
+            guard AutomationResponseSupport.isEmptyParameters(request.params) else { return AutomationResponseSupport.invalidParameters(for: request) }
             guard let appSession else {
                 return .failure(for: request, error: AutomationError(code: .serverUnavailable, message: "The player App is no longer available.", retryable: true))
             }
@@ -7181,8 +6900,8 @@ final class AutomationIPCServer {
                     "isBluetooth": .boolean(activeOutput.isBluetooth)
                 ])
             ]
-            return encodeResult(AutomationSettingsResult(
-                libraryID: activeSession(for: request)?.context.id,
+            return AutomationResponseSupport.encodeResult(AutomationSettingsResult(
+                libraryID: sessionAccess.activeSession(for: request)?.context.id,
                 values: values,
                 revision: automationAudioRevision(
                     audio.gaplessSchedulingEnabled,
@@ -7260,8 +6979,8 @@ final class AutomationIPCServer {
                         AutomationJSONValue.string(AudioOutputLatencyMonitor.stableDeviceID(for: $0))
                     } ?? .null
                 ]
-                return encodeResult(AutomationSettingsResult(
-                    libraryID: activeSession(for: request)?.context.id,
+                return AutomationResponseSupport.encodeResult(AutomationSettingsResult(
+                    libraryID: sessionAccess.activeSession(for: request)?.context.id,
                     values: values,
                     revision: automationAudioRevision(
                         next.gaplessSchedulingEnabled,
@@ -7273,24 +6992,24 @@ final class AutomationIPCServer {
                     message: dryRun ? "Preview only. No audio setting was changed." : "Audio settings updated."
                 ), for: request)
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.storageInspect:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
-            guard request.params == nil || request.params == .null || isObject(request.params) else {
-                return invalidParameters(for: request)
+            guard request.params == nil || request.params == .null || AutomationResponseSupport.isObject(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
-            return encodeResult(
+            return AutomationResponseSupport.encodeResult(
                 storageResult(for: session, validation: "notRun"),
                 for: request
             )
 
         case AutomationMethod.storageValidate:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -7308,7 +7027,7 @@ final class AutomationIPCServer {
                         searchIndex: session.searchIndex,
                         playbackHistoryStore: session.playbackHistoryStore
                     )
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         storageResult(
                             for: session,
                             validation: "passed",
@@ -7321,7 +7040,7 @@ final class AutomationIPCServer {
                         for: request
                     )
                 } catch {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         storageResult(
                             for: session,
                             validation: "failed",
@@ -7337,20 +7056,20 @@ final class AutomationIPCServer {
                     )
                 }
             } catch let error as AutomationParameterError {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             } catch {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.storageRepair:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 if dryRun {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         storageResult(
                             for: session,
                             validation: "notRun",
@@ -7361,7 +7080,7 @@ final class AutomationIPCServer {
                 }
                 try LibraryScaffoldingRepair.repairIfNeeded(at: session.context.rootURL)
                 await session.libraryViewModel.reloadLibrary()
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     storageResult(
                         for: session,
                         validation: "notRun",
@@ -7370,7 +7089,7 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch let error as AutomationParameterError {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             } catch {
                 return .failure(
                     for: request,
@@ -7383,15 +7102,15 @@ final class AutomationIPCServer {
             }
 
         case AutomationMethod.storageOrphans:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
-            guard request.params == nil || request.params == .null || isObject(request.params) else {
-                return invalidParameters(for: request)
+            guard request.params == nil || request.params == .null || AutomationResponseSupport.isObject(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
             do {
                 let snapshot = try await storageDiskSnapshot(for: session)
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationStorageOrphansResult(
                         libraryID: session.context.id,
                         playlistReferenceIssues: makePlaylistReferenceIssues(
@@ -7415,11 +7134,11 @@ final class AutomationIPCServer {
             }
 
         case AutomationMethod.storageBackup:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
-            guard request.params == nil || request.params == .null || isObject(request.params) else {
-                return invalidParameters(for: request)
+            guard request.params == nil || request.params == .null || AutomationResponseSupport.isObject(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
             do {
                 let context = session.context
@@ -7432,7 +7151,7 @@ final class AutomationIPCServer {
                         )
                     }.value
                 }
-                return encodeResult(result, for: request)
+                return AutomationResponseSupport.encodeResult(result, for: request)
             } catch {
                 return .failure(
                     for: request,
@@ -7446,8 +7165,8 @@ final class AutomationIPCServer {
             }
 
         case AutomationMethod.storageDiff:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -7461,9 +7180,9 @@ final class AutomationIPCServer {
                         appSupportDirectoryURL: self.appSupportDirectoryURL
                     )
                 }.value
-                return encodeResult(result, for: request)
+                return AutomationResponseSupport.encodeResult(result, for: request)
             } catch let error as AutomationParameterError {
-                return invalidParameters(for: request, error: error)
+                return AutomationResponseSupport.invalidParameters(for: request, error: error)
             } catch {
                 return .failure(
                     for: request,
@@ -7476,17 +7195,17 @@ final class AutomationIPCServer {
             }
 
         case AutomationMethod.storageReload:
-            guard let session = activeSession(for: request) else {
-                return noActiveLibraryResponse(for: request)
+            guard let session = sessionAccess.activeSession(for: request) else {
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
-            guard request.params == nil || request.params == .null || isObject(request.params) else {
-                return invalidParameters(for: request)
+            guard request.params == nil || request.params == .null || AutomationResponseSupport.isObject(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
             do {
                 let _: Void = try await session.runLibraryOperation(as: .other) {
                     await session.libraryViewModel.reloadLibrary()
                 }
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     storageResult(
                         for: session,
                         validation: "notRun",
@@ -7507,10 +7226,10 @@ final class AutomationIPCServer {
             }
 
         case AutomationMethod.automationCapabilities:
-            guard request.params == nil || request.params == .null || isObject(request.params) else {
-                return invalidParameters(for: request)
+            guard request.params == nil || request.params == .null || AutomationResponseSupport.isObject(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
-            return encodeResult(
+            return AutomationResponseSupport.encodeResult(
                 AutomationCapabilityResult(
                     grantedScopes: Array(grantedScopes()),
                     deniedScopes: AutomationScope.allCases.filter {
@@ -7527,10 +7246,10 @@ final class AutomationIPCServer {
             )
 
         case AutomationMethod.automationScopes:
-            guard request.params == nil || request.params == .null || isObject(request.params) else {
-                return invalidParameters(for: request)
+            guard request.params == nil || request.params == .null || AutomationResponseSupport.isObject(request.params) else {
+                return AutomationResponseSupport.invalidParameters(for: request)
             }
-            return encodeResult(
+            return AutomationResponseSupport.encodeResult(
                 scopeStatusResult(),
                 for: request
             )
@@ -7545,7 +7264,7 @@ final class AutomationIPCServer {
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 let confirm = try parameters.boolean("confirm", default: false)
                 guard !dryRun else {
-                    return encodeResult(
+                    return AutomationResponseSupport.encodeResult(
                         AutomationScopeMutationResult(
                             scope: scope,
                             granted: grantedScopes().contains(scope),
@@ -7555,23 +7274,23 @@ final class AutomationIPCServer {
                     )
                 }
                 guard confirm else {
-                    return confirmationRequired(
+                    return AutomationResponseSupport.confirmationRequired(
                         for: request,
                         message: "授予自动化权限需要 confirm=true，并由播放器在前台确认。",
                         details: .object(["scope": .string(scope.rawValue)])
                     )
                 }
-                guard await confirmDestructiveOperation(
+                guard await AutomationInteraction.confirmDestructiveOperation(
                     title: "授予自动化权限？",
                     message: "要允许外部自动化使用“\(scope.rawValue)”能力吗？"
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
                 var scopes = grantedScopes()
                 scopes.insert(scope)
                 try scopePolicyStore.save(scopes)
                 cachedGrantedScopes = scopes
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationScopeMutationResult(
                         scope: scope,
                         granted: true,
@@ -7580,7 +7299,7 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return mutationFailure(for: request, error: error)
+                return AutomationResponseSupport.mutationFailure(for: request, error: error)
             }
 
         case AutomationMethod.automationRevokeScope:
@@ -7594,7 +7313,7 @@ final class AutomationIPCServer {
                 scopes.remove(scope)
                 try scopePolicyStore.save(scopes)
                 cachedGrantedScopes = scopes
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationScopeMutationResult(
                         scope: scope,
                         granted: false,
@@ -7603,7 +7322,7 @@ final class AutomationIPCServer {
                     for: request
                 )
             } catch {
-                return mutationFailure(for: request, error: error)
+                return AutomationResponseSupport.mutationFailure(for: request, error: error)
             }
 
         default:
@@ -7617,18 +7336,7 @@ final class AutomationIPCServer {
         }
     }
 
-    private func responseForRequest(
-        _ response: AutomationResponse,
-        requestID: UUID
-    ) -> AutomationResponse {
-        AutomationResponse(
-            requestID: requestID,
-            result: response.result,
-            error: response.error,
-            serverTime: response.serverTime,
-            protocolVersion: response.protocolVersion
-        )
-    }
+
 
     private func grantedScopes() -> Set<AutomationScope> {
         if let cachedGrantedScopes {
@@ -7664,7 +7372,7 @@ final class AutomationIPCServer {
         case AutomationMethod.librarySelectionList,
              AutomationMethod.librarySelectionGet,
              AutomationMethod.playlistAddSelection:
-            guard let session = activeSession(for: request),
+            guard let session = sessionAccess.activeSession(for: request),
                   let snapshots = try? selectionStore.load(libraryID: session.context.id) else {
                 return false
             }
@@ -8310,7 +8018,7 @@ final class AutomationIPCServer {
         }
 
         if let imagePath {
-            let expanded = expandPath(imagePath)
+            let expanded = AutomationInteraction.expandPath(imagePath)
             let directURL = URL(fileURLWithPath: expanded)
             if let data = try? Data(contentsOf: directURL),
                data.count <= 16 * 1024 * 1024,
@@ -8322,8 +8030,8 @@ final class AutomationIPCServer {
             }
         }
 
-        guard let selectedURL = try await requestArtworkURL(
-            requestedPath: imagePath.map(expandPath(_:))
+        guard let selectedURL = try await AutomationInteraction.requestArtworkURL(
+            requestedPath: imagePath.map(AutomationInteraction.expandPath(_:))
         ) else {
             return nil
         }
@@ -8453,7 +8161,7 @@ final class AutomationIPCServer {
             let previewSkippedAlbumIDs = previewChanged == false ? targetAlbumIDs : []
             let previewUpdatedPlaylistIDs = previewChanged == true ? targetPlaylistIDs : []
             let previewSkippedPlaylistIDs = previewChanged == false ? targetPlaylistIDs : []
-            return encodeResult(
+            return AutomationResponseSupport.encodeResult(
                 AutomationArtworkMutationResult(
                     targetType: target.type,
                     trackID: targetID.flatMap { targetArtistID == nil ? $0 : nil },
@@ -8515,7 +8223,7 @@ final class AutomationIPCServer {
             imageBase64: imageBase64
         )
         guard let resolvedInput else {
-            return interactionCancelled(for: request)
+            return AutomationResponseSupport.interactionCancelled(for: request)
         }
 
         switch target {
@@ -8615,7 +8323,7 @@ final class AutomationIPCServer {
             let conflict = expectedRevision != nil && expectedRevision != session.libraryViewModel.automationTrackRevision(for: track)
             let changed = !conflict && metadataPatchChanges(track, patch: patch)
             if dryRun {
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationMetadataMutationResult(
                         applied: false,
                         dryRun: true,
@@ -8632,7 +8340,7 @@ final class AutomationIPCServer {
                 patch: patch,
                 expectedRevisions: expectedRevision.map { [track.id: $0] } ?? [:]
             )
-            return encodeResult(
+            return AutomationResponseSupport.encodeResult(
                 AutomationMetadataMutationResult(
                     applied: !outcome.updatedTrackIDs.isEmpty,
                     dryRun: false,
@@ -8648,7 +8356,7 @@ final class AutomationIPCServer {
             let conflict = expectedRevision != nil && expectedRevision != session.libraryViewModel.automationArtistRevision(for: entry)
             let changed = !conflict && artistMetadataPatchChanges(entry, patch: patch)
             if dryRun {
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationMetadataMutationResult(
                         applied: false,
                         dryRun: true,
@@ -8665,7 +8373,7 @@ final class AutomationIPCServer {
                 patch: patch,
                 expectedRevision: expectedRevision
             )
-            return encodeResult(
+            return AutomationResponseSupport.encodeResult(
                 AutomationMetadataMutationResult(
                     applied: !outcome.updatedArtistIDs.isEmpty,
                     dryRun: false,
@@ -8681,7 +8389,7 @@ final class AutomationIPCServer {
             let conflict = expectedRevision != nil && expectedRevision != session.libraryViewModel.automationAlbumRevision(for: entry)
             let changed = !conflict && albumMetadataPatchChanges(entry, patch: patch)
             if dryRun {
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationMetadataMutationResult(
                         applied: false,
                         dryRun: true,
@@ -8698,7 +8406,7 @@ final class AutomationIPCServer {
                 patch: patch,
                 expectedRevision: expectedRevision
             )
-            return encodeResult(
+            return AutomationResponseSupport.encodeResult(
                 AutomationMetadataMutationResult(
                     applied: !outcome.updatedAlbumIDs.isEmpty,
                     dryRun: false,
@@ -8716,7 +8424,7 @@ final class AutomationIPCServer {
             let conflict = expectedRevision != nil && expectedRevision != session.libraryViewModel.automationPlaylistRevision(for: playlist)
             let changed = !conflict && (desiredName != playlist.name || desiredDescription != playlist.userDescription)
             if dryRun {
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationMetadataMutationResult(
                         applied: false,
                         dryRun: true,
@@ -8729,7 +8437,7 @@ final class AutomationIPCServer {
                 )
             }
             guard !conflict else {
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationMetadataMutationResult(
                         applied: false,
                         dryRun: false,
@@ -8740,7 +8448,7 @@ final class AutomationIPCServer {
                 )
             }
             guard changed else {
-                return encodeResult(
+                return AutomationResponseSupport.encodeResult(
                     AutomationMetadataMutationResult(
                         applied: false,
                         dryRun: false,
@@ -8756,7 +8464,7 @@ final class AutomationIPCServer {
                 description: desiredDescription,
                 expectedRevision: expectedRevision
             )
-            return encodeResult(
+            return AutomationResponseSupport.encodeResult(
                 AutomationMetadataMutationResult(
                     applied: true,
                     dryRun: false,
@@ -8834,7 +8542,7 @@ final class AutomationIPCServer {
         switch target {
         case .track(let track):
             return AutomationMetadataGetResult(
-                tracks: [makeTrackSummary(track, playlists: session.libraryViewModel.playlists)],
+                tracks: [queries.makeTrackSummary(track, playlists: session.libraryViewModel.playlists)],
                 total: 1,
                 revision: session.libraryViewModel.automationTrackRevision(for: track)
             )
@@ -8852,9 +8560,9 @@ final class AutomationIPCServer {
             )
         case .playlist(let playlist):
             return AutomationMetadataGetResult(
-                playlists: [makePlaylistSummary(playlist)],
+                playlists: [queries.makePlaylistSummary(playlist)],
                 total: 1,
-                revision: makePlaylistSummary(playlist).revision
+                revision: queries.makePlaylistSummary(playlist).revision
             )
         }
     }
@@ -8955,7 +8663,7 @@ final class AutomationIPCServer {
                 : allEntries
             let pageStart = min(offset, filtered.count)
             let pageEnd = min(pageStart + limit, filtered.count)
-            let page = Array(filtered[pageStart..<pageEnd]).map(makePlaylistSummary)
+            let page = Array(filtered[pageStart..<pageEnd]).map(queries.makePlaylistSummary)
             return AutomationMetadataGetResult(
                 playlists: page,
                 total: filtered.count,
@@ -9600,7 +9308,7 @@ final class AutomationIPCServer {
     ) -> [AutomationStorageIssue] {
         let fileManager = FileManager.default
         return tracks.compactMap { track in
-            let candidates = automationTrackFileURLs(track, in: session)
+            let candidates = AutomationFileAccess.automationTrackFileURLs(track, in: session)
                 .map { $0.standardizedFileURL }
             if candidates.contains(where: { fileManager.fileExists(atPath: $0.path) && fileManager.isReadableFile(atPath: $0.path) }) {
                 return nil
@@ -9762,7 +9470,7 @@ final class AutomationIPCServer {
             ))
         }
         for track in tracks {
-            let path = automationTrackFileURL(track, in: session)?.path
+            let path = AutomationFileAccess.automationTrackFileURL(track, in: session)?.path
             if track.availability != .available {
                 issues.append(AutomationDiagnosticIssue(
                     id: "track-availability:\(track.id.uuidString)",
@@ -9772,7 +9480,7 @@ final class AutomationIPCServer {
                     reason: "Cached Track availability is \(track.availability.rawValue)."
                 ))
             }
-            if trackLyricsStatus(track) == "none" {
+            if queries.trackLyricsStatus(track) == "none" {
                 issues.append(AutomationDiagnosticIssue(
                     id: "track-lyrics:\(track.id.uuidString)",
                     code: "track.lyrics.missing",
@@ -10146,35 +9854,11 @@ final class AutomationIPCServer {
         return nil
     }
 
-    private func isObject(_ value: AutomationJSONValue?) -> Bool {
-        guard let value else { return false }
-        if case .object = value { return true }
-        return false
-    }
 
-    /// CLI requests commonly omit params while MCP tools/call conventionally
-    /// supplies an empty arguments object. Both represent a no-argument call.
-    private func isEmptyParameters(_ value: AutomationJSONValue?) -> Bool {
-        guard let value else { return true }
-        switch value {
-        case .null:
-            return true
-        case .object(let values):
-            return values.isEmpty
-        default:
-            return false
-        }
-    }
 
-    private func automationTracks(ids: [UUID], in allTracks: [Track]) throws -> [Track] {
-        guard !ids.isEmpty else { return [] }
-        let byID = Dictionary(uniqueKeysWithValues: allTracks.map { ($0.id, $0) })
-        let missing = ids.filter { byID[$0] == nil }
-        guard missing.isEmpty else {
-            throw AutomationParameterError.invalidValue("trackIDs")
-        }
-        return ids.compactMap { byID[$0] }
-    }
+
+
+
 
     private func makePlaybackState(
         _ coordinator: PlaybackCoordinator
@@ -10254,13 +9938,13 @@ final class AutomationIPCServer {
 
     private func submitBackgroundJob(for request: AutomationRequest) async -> AutomationResponse {
         if let deadline = request.context.deadline, deadline <= Date() {
-            return requestDeadlineExpired(for: request)
+            return AutomationResponseSupport.requestDeadlineExpired(for: request)
         }
-        guard let session = activeSession(for: request), let appSession else {
-            return noActiveLibraryResponse(for: request)
+        guard let session = sessionAccess.activeSession(for: request), let appSession else {
+            return sessionAccess.noActiveLibraryResponse(for: request)
         }
         guard case .object(var params) = request.params else {
-            return invalidParameters(for: request)
+            return AutomationResponseSupport.invalidParameters(for: request)
         }
         params["background"] = .boolean(false)
         let backgroundRequest = AutomationRequest(
@@ -10279,7 +9963,7 @@ final class AutomationIPCServer {
             libraryID: session.context.id,
             work: { [weak self] reporter in
                 guard let self,
-                      self.activeSession(for: backgroundRequest) === session else {
+                      self.sessionAccess.activeSession(for: backgroundRequest) === session else {
                     reporter.recordFailure("The submitted Library is no longer active.")
                     return
                 }
@@ -10306,11 +9990,11 @@ final class AutomationIPCServer {
                 reporter.recordProgress(completedCount: 1, totalCount: 1, phase: phase)
             }
         ) else {
-            return noActiveLibraryResponse(for: request)
+            return sessionAccess.noActiveLibraryResponse(for: request)
         }
-        return encodeResult(
+        return AutomationResponseSupport.encodeResult(
             AutomationJobSubmissionResult(
-                job: makeJobSummary(job),
+                job: AutomationJobProjection.makeJobSummary(job),
                 message: "The request was accepted as a library-scoped Job. Use jobs.wait or jobs.get for its original result."
             ),
             for: request
@@ -10319,10 +10003,10 @@ final class AutomationIPCServer {
 
     private func submitOperationsBatch(for request: AutomationRequest) async -> AutomationResponse {
         if let deadline = request.context.deadline, deadline <= Date() {
-            return requestDeadlineExpired(for: request)
+            return AutomationResponseSupport.requestDeadlineExpired(for: request)
         }
-        guard let session = activeSession(for: request), let appSession else {
-            return noActiveLibraryResponse(for: request)
+        guard let session = sessionAccess.activeSession(for: request), let appSession else {
+            return sessionAccess.noActiveLibraryResponse(for: request)
         }
         do {
             let parameters = try AutomationParameters(request)
@@ -10345,7 +10029,7 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.invalidValue("operations[\(index)].method")
                 }
                 let childParams = fields["params"]
-                guard childParams == nil || childParams == .null || isObject(childParams) else {
+                guard childParams == nil || childParams == .null || AutomationResponseSupport.isObject(childParams) else {
                     // Keep malformed per-item parameters in the Job so the
                     // caller receives the same indexed error envelope as any
                     // other handler-level parameter failure.
@@ -10396,7 +10080,7 @@ final class AutomationIPCServer {
                 && (writeOperationCount >= 10 || distinctTargets.count >= 10)
             if requiresConfirmation {
                 guard confirm else {
-                    return confirmationRequired(
+                    return AutomationResponseSupport.confirmationRequired(
                         for: request,
                         message: "批量资产修改需要 confirm=true，并由播放器在前台一次性确认。",
                         details: .object([
@@ -10408,16 +10092,16 @@ final class AutomationIPCServer {
                         ])
                     )
                 }
-                guard await confirmDestructiveOperation(
+                guard await AutomationInteraction.confirmDestructiveOperation(
                     title: "执行 \(writeOperationCount) 项资料库修改？",
                     message: "这些操作将按顺序应用到 \(distinctTargets.count) 个目标，并逐项保留执行结果。"
                 ) else {
-                    return interactionCancelled(for: request)
+                    return AutomationResponseSupport.interactionCancelled(for: request)
                 }
             }
 
             if let deadline = request.context.deadline, deadline <= Date() {
-                return requestDeadlineExpired(for: request)
+                return AutomationResponseSupport.requestDeadlineExpired(for: request)
             }
             let boundLibraryID = session.context.id
             let snapshotOperations = operations
@@ -10457,7 +10141,7 @@ final class AutomationIPCServer {
                             forceDryRun: forceDryRun,
                             aggregateConfirmationApproved: requiresConfirmation
                         )
-                        guard self.activeSession(for: childRequest) === session else {
+                        guard self.sessionAccess.activeSession(for: childRequest) === session else {
                             failedIndices.append(index)
                             reporter.recordFailure(
                                 "The Library changed before batch item \(index) could run.",
@@ -10469,7 +10153,7 @@ final class AutomationIPCServer {
                             .withValue(requiresConfirmation) {
                                 await self.execute(childRequest)
                             }
-                        let responseValue = self.jsonValue(for: response)
+                        let responseValue = AutomationResponseSupport.jsonValue(for: response)
                             ?? .object(["error": .string("Unable to encode item response.")])
                         itemResults.append(.object([
                             "index": .number(Double(index)),
@@ -10507,17 +10191,17 @@ final class AutomationIPCServer {
                     reporter.recordResult(resultSnapshot())
                 }
             ) else {
-                return noActiveLibraryResponse(for: request)
+                return sessionAccess.noActiveLibraryResponse(for: request)
             }
-            return encodeResult(
+            return AutomationResponseSupport.encodeResult(
                 AutomationJobSubmissionResult(
-                    job: makeJobSummary(job),
+                    job: AutomationJobProjection.makeJobSummary(job),
                     message: "Batch accepted. Each item result and any revision conflicts are persisted in the Job; use jobs.wait or jobs.get."
                 ),
                 for: request
             )
         } catch {
-            return invalidParameters(for: request, error: error)
+            return AutomationResponseSupport.invalidParameters(for: request, error: error)
         }
     }
 
@@ -10605,10 +10289,7 @@ final class AutomationIPCServer {
         return nil
     }
 
-    private func jsonValue<Value: Encodable>(for value: Value) -> AutomationJSONValue? {
-        guard let data = try? AutomationWireCoding.encoder().encode(value) else { return nil }
-        return try? AutomationWireCoding.decoder().decode(AutomationJSONValue.self, from: data)
-    }
+
 
     private func conflictedTargets(in value: AutomationJSONValue?) -> [String] {
         guard let value else { return [] }
@@ -10668,52 +10349,7 @@ final class AutomationIPCServer {
         return "history-v1-" + digest
     }
 
-    private func makeJobSummary(
-        _ descriptor: LibraryOperationTaskDescriptor
-    ) -> AutomationJobSummary {
-        let kind: String
-        switch descriptor.kind {
-        case .importFiles: kind = "importFiles"
-        case .libraryBundleExport: kind = "libraryBundleExport"
-        case .embeddedTagWrite: kind = "embeddedTagWrite"
-        case .sourceScan: kind = "sourceScan"
-        case .ncmConversion: kind = "ncmConversion"
-        case .enrichment: kind = "enrichment"
-        case .automation: kind = "automation"
-        case .indexUpdate: kind = "indexUpdate"
-        case .other: kind = "other"
-        }
-        let state: AutomationJobState
-        switch descriptor.state {
-        case .queued: state = .queued
-        case .running: state = .running
-        case .checkpointed: state = .checkpointed
-        case .completed: state = .completed
-        case .partialFailure: state = .partialFailure
-        case .failed: state = .failed
-        case .cancelled: state = .cancelled
-        }
-        return AutomationJobSummary(
-            id: descriptor.id,
-            kind: kind,
-            libraryID: descriptor.libraryID,
-            state: state,
-            createdAt: descriptor.createdAt,
-            startedAt: descriptor.startedAt,
-            finishedAt: descriptor.finishedAt,
-            checkpoint: descriptor.lastCheckpointLabel,
-            completedCount: descriptor.completedCount ?? 0,
-            totalCount: descriptor.totalCount,
-            currentPhase: descriptor.currentPhase,
-            failures: descriptor.partialFailureSummaries,
-            failedItemIDs: descriptor.failedItemIDs,
-            retryable: descriptor.retrySpec != nil
-                && (descriptor.state == .failed
-                    || descriptor.state == .partialFailure
-                    || descriptor.state == .cancelled),
-            result: descriptor.result
-        )
-    }
+
 
     private func makeLyricsSearchResult(
         trackID: UUID,
@@ -11026,54 +10662,11 @@ final class AutomationIPCServer {
         candidate.mode == LDDCMode.verbatim.rawValue ? 2 : 1
     }
 
-    private func resolveTTMLText(for track: Track) -> String? {
-        if let text = track.ttmlLyricText, !text.isEmpty {
-            return text
-        }
-        if let text = track.loadTTMLLyricsIfNeeded(), !text.isEmpty {
-            return text
-        }
-        if let fileName = track.ttmlLyricsFileName,
-           let paths = appSession?.activeLibraryBinding.activeSession?.context.paths,
-           let url = paths.trackAssetURL(for: track.id, fileName: fileName),
-           let text = try? String(contentsOf: url, encoding: .utf8),
-           !text.isEmpty {
-            track.ttmlLyricText = text
-            return text
-        }
-        return nil
-    }
 
-    private func resolvePlainLyricsText(for track: Track) -> String? {
-        if let text = track.lyricsText, !text.isEmpty {
-            return text
-        }
-        if let text = track.loadLyricsIfNeeded(), !text.isEmpty {
-            return text
-        }
-        if let fileName = track.lyricsFileName,
-           let paths = appSession?.activeLibraryBinding.activeSession?.context.paths,
-           let url = paths.trackAssetURL(for: track.id, fileName: fileName),
-           let text = try? String(contentsOf: url, encoding: .utf8),
-           !text.isEmpty {
-            track.lyricsText = text
-            return text
-        }
-        return nil
-    }
 
-    private func currentLyricsQuality(_ track: Track) -> Int {
-        if let ttml = resolveTTMLText(for: track),
-           !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return LyricsFormatSupport.isWordSyncedTTML(ttml) ? 2 : 1
-        }
-        if track.ttmlLyricsFileName != nil { return 1 }
-        if let plain = resolvePlainLyricsText(for: track),
-           !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return LyricsFormatSupport.looksLikeLRC(plain) ? 1 : 0
-        }
-        return 0
-    }
+
+
+
 
     private func trimLyricsCandidateCacheIfNeeded() {
         guard lyricsCandidateCache.count > lyricsCandidateCacheLimit else { return }
@@ -11115,93 +10708,15 @@ final class AutomationIPCServer {
         return Int(number)
     }
 
-    private func trackRevisionConflict(
-        for request: AutomationRequest,
-        expected: String,
-        actual: String
-    ) -> AutomationResponse {
-        .failure(
-            for: request,
-            error: AutomationError(
-                code: .conflict,
-                message: "The Track changed while the lyrics candidate was being prepared.",
-                retryable: true,
-                details: .object([
-                    "expectedRevision": .string(expected),
-                    "actualRevision": .string(actual)
-                ])
-            )
-        )
-    }
 
-    private func expandPath(_ raw: String) -> String {
-        URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
-            .standardizedFileURL
-            .path
-    }
 
-    /// The picker is owned by the App. A raw path is accepted without another
-    /// panel only when an existing Source root or the user-selected trusted
-    /// audio root already covers it.
-    private func requestSourceURL(
-        mode: ReferencedSourceMode,
-        requestedPath: String?
-    ) async throws -> URL? {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = mode == .directory
-        panel.canChooseFiles = mode == .file
-        panel.allowsMultipleSelection = false
-        panel.title = mode == .directory ? "选择音乐文件夹" : "选择音乐文件"
-        panel.prompt = "添加来源"
-        if let requestedPath {
-            let requestedURL = URL(fileURLWithPath: requestedPath)
-            panel.directoryURL = FileManager.default.fileExists(atPath: requestedURL.path)
-                && requestedURL.hasDirectoryPath
-                ? requestedURL
-                : requestedURL.deletingLastPathComponent()
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        let response = panel.runModal()
-        return response == .OK ? panel.url : nil
-    }
 
-    /// Artwork input is always authorized by an App-owned open panel. A
-    /// caller-provided path is only used to choose the panel's initial folder;
-    /// it is never treated as sandbox authorization by itself.
-    private func requestArtworkURL(requestedPath: String?) async throws -> URL? {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.image]
-        panel.title = "选择封面"
-        panel.prompt = "使用封面"
-        if let requestedPath {
-            let requestedURL = URL(fileURLWithPath: requestedPath)
-            let requestedIsDirectory = (try? requestedURL.resourceValues(
-                forKeys: [.isDirectoryKey]
-            ).isDirectory) == true
-            panel.directoryURL = FileManager.default.fileExists(atPath: requestedURL.path)
-                && requestedIsDirectory
-                ? requestedURL
-                : requestedURL.deletingLastPathComponent()
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        let response = panel.runModal()
-        return response == .OK ? panel.url : nil
-    }
 
-    private func requestExportDirectory() async -> URL? {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = true
-        panel.title = "导出歌曲"
-        panel.prompt = "选择文件夹"
-        NSApp.activate(ignoringOtherApps: true)
-        return panel.runModal() == .OK ? panel.url : nil
-    }
+
+
+
+
+
 
     private func uniqueExportURL(for fileName: String, in directory: URL) -> URL {
         let sourceName = URL(fileURLWithPath: fileName)
@@ -11219,799 +10734,50 @@ final class AutomationIPCServer {
         return candidate
     }
 
-    /// Library lifecycle operations use the same App-owned picker boundary as
-    /// Source creation. A requested path is only a navigation hint; the
-    /// selected URL is still authorized by the App and retained until the
-    /// lifecycle transaction has captured its own bookmark.
-    private func requestLibraryDirectory(
-        requestedPath: String?,
-        title: String,
-        prompt: String,
-        allowsCreatingDirectories: Bool
-    ) async -> URL? {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = allowsCreatingDirectories
-        panel.title = title
-        panel.prompt = prompt
-        if let requestedPath {
-            let requestedURL = URL(fileURLWithPath: requestedPath)
-            let requestedIsDirectory = (try? requestedURL.resourceValues(
-                forKeys: [.isDirectoryKey]
-            ).isDirectory) == true
-            panel.directoryURL = FileManager.default.fileExists(atPath: requestedURL.path)
-                && requestedIsDirectory
-                ? requestedURL
-                : requestedURL.deletingLastPathComponent()
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        let response = panel.runModal()
-        return response == .OK ? panel.url : nil
-    }
 
-    private func confirmDestructiveOperation(title: String, message: String) async -> Bool {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: "确认")
-        alert.addButton(withTitle: "取消")
-        NSApp.activate(ignoringOtherApps: true)
-        return alert.runModal() == .alertFirstButtonReturn
-    }
 
-    private func interactionCancelled(for request: AutomationRequest) -> AutomationResponse {
-        .failure(
-            for: request,
-            error: AutomationError(
-                code: .interactionRequired,
-                message: "The App interaction was cancelled or is not available; no mutation was applied.",
-                retryable: false
-            )
-        )
-    }
 
-    private func permissionDenied(
-        for request: AutomationRequest,
-        path: String
-    ) -> AutomationResponse {
-        .failure(
-            for: request,
-            error: AutomationError(
-                code: .permissionDenied,
-                message: "The selected Source could not be authorized; no import Job was started.",
-                retryable: false,
-                details: .object([
-                    "path": .string(path),
-                    "reason": .string("securityScopedAccess")
-                ])
-            )
-        )
-    }
 
-    private func libraryPermissionDenied(
-        for request: AutomationRequest,
-        path: String
-    ) -> AutomationResponse {
-        .failure(
-            for: request,
-            error: AutomationError(
-                code: .permissionDenied,
-                message: "The selected library location could not be authorized; no library lifecycle mutation was applied.",
-                retryable: false,
-                details: .object([
-                    "path": .string(path),
-                    "reason": .string("securityScopedAccess")
-                ])
-            )
-        )
-    }
 
-    private func activeSession(for request: AutomationRequest) -> LibrarySession? {
-        guard let session = appSession?.activeLibraryBinding.activeSession else {
-            return nil
-        }
-        guard request.context.libraryID == nil
-            || request.context.libraryID == session.context.id else {
-            return nil
-        }
-        return session
-    }
 
-    private func noActiveLibraryResponse(for request: AutomationRequest) -> AutomationResponse {
-        .failure(
-            for: request,
-            error: AutomationError(
-                code: appSession == nil ? .serverUnavailable : .libraryNotActive,
-                message: appSession == nil
-                    ? "The player App is no longer available."
-                    : "The requested library is not active.",
-                retryable: true
-            )
-        )
-    }
 
-    private func confirmationRequired(
-        for request: AutomationRequest,
-        message: String = "此操作需要 dryRun=false，并提供 confirm=true。",
-        details: AutomationJSONValue? = nil
-    ) -> AutomationResponse {
-        .failure(
-            for: request,
-            error: AutomationError(
-                code: .authorizationRequired,
-                message: message,
-                details: details ?? .object([
-                    "required": .array([.string("dryRun=false"), .string("confirm=true")])
-                ])
-            )
-        )
-    }
 
-    private func revisionConflict(
-        for request: AutomationRequest,
-        expected: String,
-        actual: String
-    ) -> AutomationResponse {
-        .failure(
-            for: request,
-            error: AutomationError(
-                code: .conflict,
-                message: "The playlist changed since it was queried.",
-                retryable: true,
-                details: .object([
-                    "expectedRevision": .string(expected),
-                    "actualRevision": .string(actual)
-                ])
-            )
-        )
-    }
 
-    private func mutationFailure(
-        for request: AutomationRequest,
-        error: Error
-    ) -> AutomationResponse {
-        if error is AutomationParameterError || error is AutomationFileOperationError {
-            return invalidParameters(for: request, error: error)
-        }
-        if let error = error as? LibraryAutomationMutationError {
-            switch error {
-            case .sessionQuiescing:
-                return .failure(
-                    for: request,
-                    error: AutomationError(
-                        code: .conflict,
-                        message: error.localizedDescription,
-                        retryable: true
-                    )
-                )
-            case .revisionConflict(let expected, let actual):
-                return revisionConflict(
-                    for: request,
-                    expected: expected,
-                    actual: actual
-                )
-            case .playlistNotFound(let playlistID):
-                return .failure(
-                    for: request,
-                    error: AutomationError(
-                        code: .invalidRequest,
-                        message: error.localizedDescription,
-                        details: .object(["playlistID": .string(playlistID.uuidString)])
-                    )
-                )
-            case .resultUnavailable:
-                break
-            }
-        }
-        return .failure(
-            for: request,
-            error: AutomationError(
-                code: .internalError,
-                message: "The playlist mutation failed.",
-                details: .object(["reason": .string(String(describing: error))])
-            )
-        )
-    }
 
-    private func libraryLifecycleFailure(
-        for request: AutomationRequest,
-        error: Error
-    ) -> AutomationResponse {
-        if error is AutomationParameterError || error is AutomationFileOperationError {
-            return invalidParameters(for: request, error: error)
-        }
 
-        let reason = String(describing: error)
-        func failure(
-            _ code: AutomationErrorCode,
-            _ message: String,
-            retryable: Bool = false
-        ) -> AutomationResponse {
-            .failure(
-                for: request,
-                error: AutomationError(
-                    code: code,
-                    message: message,
-                    retryable: retryable,
-                    details: .object(["reason": .string(reason)])
-                )
-            )
-        }
 
-        switch error {
-        case let error as RegisteredLibraryActivationError:
-            switch error {
-            case .notRegistered:
-                return failure(.invalidRequest, "The requested library is not registered.")
-            case .reconnectRequired(let libraryID):
-                return .failure(
-                    for: request,
-                    error: AutomationError(
-                        code: .interactionRequired,
-                        message: "The registered library is unavailable at its last known path. Call library.open and select its current folder before switching again.",
-                        details: .object([
-                            "libraryID": .string(libraryID.uuidString),
-                            "nextAction": .string(AutomationMethod.libraryOpen),
-                            "reason": .string(reason)
-                        ])
-                    )
-                )
-            }
 
-        case let error as LibraryCreationError:
-            switch error {
-            case .invalidDisplayName:
-                return failure(.invalidRequest, "The library display name is invalid.")
-            case .destinationContainsUnknownItems, .invalidExistingLibrary:
-                return failure(.conflict, "The selected library location already contains data that cannot be safely reused.")
-            case .stagingFailed, .validationFailed:
-                return failure(.internalError, "The new library could not be staged or validated.", retryable: true)
-            case .registryCommitFailed, .sessionActivationFailed, .recoveryFailed:
-                return failure(.internalError, "The new library could not be activated safely; the App preserved its recovery boundary.", retryable: true)
-            }
 
-        case let error as LibraryOpenError:
-            switch error {
-            case .libraryNotFound, .invalidManifest, .libraryNotRegistered,
-                 .reconnectIdentifierMismatch, .reconnectModeMismatch:
-                return failure(.invalidRequest, "The selected location is not a usable registered music library.")
-            case .pathConflict:
-                return failure(.conflict, "The selected library path is already registered to another library.")
-            case .bookmarkFailed, .securityScopeDenied:
-                return failure(.permissionDenied, "The App could not authorize the selected library location.")
-            case .transactionInProgress:
-                return failure(.conflict, "Another library lifecycle operation is in progress.", retryable: true)
-            case .activationFailed, .recoveryFailed:
-                return failure(.internalError, "The library could not be activated safely; the App preserved its recovery boundary.", retryable: true)
-            }
 
-        case let error as LibraryRelocationError:
-            switch error {
-            case .libraryNotRegistered:
-                return failure(.invalidRequest, "The requested library is not registered.")
-            case .destinationExists:
-                return failure(.conflict, "The destination already contains a library or other data.")
-            case .validationFailed:
-                return failure(.invalidRequest, "The registered library failed validation and was not moved.")
-            case .securityScopeDenied:
-                return failure(.permissionDenied, "The App could not authorize the library or destination location.")
-            case .transactionInProgress, .pendingRepair, .recoveryConflict:
-                return failure(.conflict, "The library has an unfinished lifecycle transaction; repair or retry after the App reports it is ready.", retryable: true)
-            case .closeFailed, .copyFailed, .publicationFailed, .newSessionFailed,
-                 .registryCommitFailed, .recoveryFailed:
-                return failure(.internalError, "The library could not be relocated safely; the App preserved its recovery boundary.", retryable: true)
-            }
 
-        case let error as LibraryRemovalError:
-            switch error {
-            case .libraryNotRegistered, .manifestMismatch:
-                return failure(.invalidRequest, "The requested library is not a valid registered library.")
-            case .securityScopeDenied:
-                return failure(.permissionDenied, "The App could not authorize the library location.")
-            case .transactionInProgress, .pendingRepair:
-                return failure(.conflict, "The library has an unfinished removal transaction; repair or retry after the App reports it is ready.", retryable: true)
-            case .closeFailed, .recycleFailed, .intentWriteFailed, .recoveryFailed:
-                return failure(.internalError, "The library could not be moved to the macOS Trash safely; the App preserved its recovery boundary.", retryable: true)
-            }
 
-        case let error as LibraryDisplayNameUpdateError:
-            switch error {
-            case .invalidDisplayName:
-                return failure(.invalidRequest, "The library display name is invalid.")
-            case .libraryNotRegistered, .manifestMismatch:
-                return failure(.invalidRequest, "The requested library is not a valid registered library.")
-            case .securityScopeDenied:
-                return failure(.permissionDenied, "The App could not authorize the library location.")
-            case .transactionInProgress:
-                return failure(.conflict, "Another library lifecycle operation is in progress.", retryable: true)
-            case .manifestWriteFailed, .registryWriteFailedRolledBack,
-                 .registryWriteFailedRollbackFailed:
-                return failure(.internalError, "The library name could not be updated safely.", retryable: true)
-            }
 
-        default:
-            return failure(.internalError, "The library lifecycle operation failed.", retryable: true)
-        }
-    }
 
-    private func resolveSelection(
-        _ snapshot: AutomationSelectionSnapshot,
-        viewModel: LibraryViewModel
-    ) throws -> (summary: AutomationSelectionSummary, trackIDs: [UUID]) {
-        guard let filter = snapshot.filter else {
-            return (snapshot.summary, snapshot.trackIDs)
-        }
-        try validateTrackFilter(filter)
-        let preferenceStatsByTrackID = AutomationTrackPreferenceQuery.requiresHistoryRead(in: filter)
-            ? viewModel.preferenceStats(for: viewModel.allTracks.map(\.id))
-            : [:]
-        let trackIDs = try viewModel.allTracks.compactMap { track in
-            try matchesTrackFilter(
-                track,
-                filter: filter,
-                playlists: viewModel.playlists,
-                preferenceStatsByTrackID: preferenceStatsByTrackID
-            ) ? track.id : nil
-        }
-        guard trackIDs.count <= 10_000 else {
-            throw AutomationParameterError.outOfRange("filter.resultCount")
-        }
-        let summary = AutomationSelectionSummary(
-            id: snapshot.summary.id,
-            name: snapshot.summary.name,
-            trackCount: trackIDs.count,
-            revision: selectionRevision(libraryID: snapshot.libraryID, trackIDs: trackIDs),
-            createdAt: snapshot.summary.createdAt,
-            expiresAt: snapshot.summary.expiresAt,
-            isDynamic: true
-        )
-        return (summary, trackIDs)
-    }
 
-    private func validateTrackFilter(_ filter: AutomationJSONValue) throws {
-        _ = try validateTrackFilter(filter, depth: 0, visited: 0)
-    }
+
+
+
+
+
 
     @discardableResult
-    private func validateTrackFilter(
-        _ filter: AutomationJSONValue,
-        depth: Int,
-        visited: Int
-    ) throws -> Int {
-        guard depth <= 8, visited < 256 else {
-            throw AutomationParameterError.outOfRange("filter.complexity")
-        }
-        guard case .object(let values) = filter, values.count <= 64 else {
-            throw AutomationParameterError.invalidType("filter", expected: "bounded object")
-        }
-        var count = visited + 1
-        for (key, value) in values {
-            switch key {
-            case "all", "any":
-                guard case .array(let children) = value,
-                      children.count <= 100,
-                      key != "any" || !children.isEmpty else {
-                    throw AutomationParameterError.invalidType("filter.\(key)", expected: "bounded array of filters")
-                }
-                for child in children {
-                    count = try validateTrackFilter(child, depth: depth + 1, visited: count)
-                }
-            case "not":
-                count = try validateTrackFilter(value, depth: depth + 1, visited: count)
-            case "id", "sourceID", "playlistID":
-                guard case .string(let raw) = value, UUID(uuidString: raw) != nil else {
-                    throw AutomationParameterError.invalidValue("filter.\(key)")
-                }
-            case "ids":
-                guard case .array(let rawIDs) = value, rawIDs.count <= 10_000 else {
-                    throw AutomationParameterError.invalidType("filter.ids", expected: "bounded array of UUID strings")
-                }
-                for rawID in rawIDs {
-                    guard case .string(let raw) = rawID, UUID(uuidString: raw) != nil else {
-                        throw AutomationParameterError.invalidValue("filter.ids")
-                    }
-                }
-            case "text", "titleContains", "artistContains", "albumContains", "genreContains", "codec", "format":
-                guard case .string(let text) = value, text.count <= 1_000 else {
-                    throw AutomationParameterError.invalidType("filter.\(key)", expected: "string up to 1000 characters")
-                }
-            case "availability":
-                guard case .string(let raw) = value,
-                      TrackAvailability(rawValue: raw) != nil else {
-                    throw AutomationParameterError.invalidValue("filter.availability")
-                }
-            case "missing", "hasLyrics", "hasArtwork":
-                guard case .boolean = value else {
-                    throw AutomationParameterError.invalidType("filter.\(key)", expected: "boolean")
-                }
-            case "lyricsStatus":
-                guard case .string(let status) = value,
-                      ["none", "wordSynced", "lineSynced", "plain"].contains(status) else {
-                    throw AutomationParameterError.invalidValue("filter.lyricsStatus")
-                }
-            case "addedAfter", "addedBefore", "releaseAfter", "releaseBefore",
-                 "lastPlayedAfter", "lastPlayedBefore":
-                _ = try filterDate(value, key: key)
-            case "durationMin", "durationMax", "metadataConfidenceMin",
-                 "totalPlayedSecondsMin", "preferenceScoreMin":
-                guard case .number(let number) = value, number.isFinite else {
-                    throw AutomationParameterError.invalidType("filter.\(key)", expected: "finite number")
-                }
-                if key == "metadataConfidenceMin", !(0...1).contains(number) {
-                    throw AutomationParameterError.outOfRange("filter.\(key)")
-                }
-                if key == "totalPlayedSecondsMin", number < 0 {
-                    throw AutomationParameterError.outOfRange("filter.\(key)")
-                }
-            case "likeState":
-                guard case .string(let rawValue) = value,
-                      ManualLikeState(rawValue: rawValue) != nil else {
-                    throw AutomationParameterError.invalidValue("filter.likeState")
-                }
-            case "playCountMin", "playCountMax", "completePlayCountMin", "skipCountMin":
-                guard case .number(let number) = value,
-                      number.isFinite,
-                      number >= 0,
-                      number.rounded() == number else {
-                    throw AutomationParameterError.invalidValue("filter.\(key)")
-                }
-            case "sampleRateHz", "bitDepth":
-                guard case .number(let number) = value,
-                      number.isFinite,
-                      number.rounded() == number,
-                      number > 0 else {
-                    throw AutomationParameterError.invalidValue("filter.\(key)")
-                }
-            default:
-                throw AutomationParameterError.invalidValue("filter.\(key)")
-            }
-        }
-        return count
-    }
 
-    private func matchesTrackFilter(
-        _ track: Track,
-        filter: AutomationJSONValue,
-        playlists: [Playlist],
-        preferenceStatsByTrackID: [UUID: TrackPreferenceStats] = [:]
-    ) throws -> Bool {
-        guard case .object(let values) = filter else {
-            throw AutomationParameterError.invalidType("filter", expected: "object")
-        }
 
-        if let all = values["all"] {
-            guard case .array(let filters) = all else {
-                throw AutomationParameterError.invalidType("filter.all", expected: "array")
-            }
-            for child in filters where try !matchesTrackFilter(
-                track,
-                filter: child,
-                playlists: playlists,
-                preferenceStatsByTrackID: preferenceStatsByTrackID
-            ) {
-                return false
-            }
-        }
-        if let any = values["any"] {
-            guard case .array(let filters) = any, !filters.isEmpty else {
-                throw AutomationParameterError.invalidType("filter.any", expected: "non-empty array")
-            }
-            var matched = false
-            for child in filters where try matchesTrackFilter(
-                track,
-                filter: child,
-                playlists: playlists,
-                preferenceStatsByTrackID: preferenceStatsByTrackID
-            ) {
-                matched = true
-                break
-            }
-            if !matched { return false }
-        }
-        if let not = values["not"] {
-            if try matchesTrackFilter(
-                track,
-                filter: not,
-                playlists: playlists,
-                preferenceStatsByTrackID: preferenceStatsByTrackID
-            ) { return false }
-        }
 
-        let memberships = track.mediaLocator.referencedFile?.allSourceMemberships ?? []
-        let playlistIDs = Set(
-            playlists.lazy.filter { playlist in
-                playlist.tracks.contains { $0.id == track.id }
-            }.map(\.id)
-        )
-        let audio = track.mediaLocator.referencedFile?.locations.first?.audioProperties
-            ?? track.audioProperties
-        let lyricsStatus = trackLyricsStatus(track)
-        let artworkAvailable = track.hasArtwork
-        let preferenceStats = preferenceStatsByTrackID[track.id] ?? TrackPreferenceStats()
 
-        for (key, value) in values where key != "all" && key != "any" && key != "not" {
-            switch key {
-            case "id":
-                guard case .string(let raw) = value, UUID(uuidString: raw) == track.id else { return false }
-            case "ids":
-                guard case .array(let rawIDs) = value else {
-                    throw AutomationParameterError.invalidType("filter.ids", expected: "array")
-                }
-                let ids = try rawIDs.map { value -> UUID in
-                    guard case .string(let raw) = value, let id = UUID(uuidString: raw) else {
-                        throw AutomationParameterError.invalidValue("filter.ids")
-                    }
-                    return id
-                }
-                if !ids.contains(track.id) { return false }
-            case "text":
-                guard case .string(let text) = value else {
-                    throw AutomationParameterError.invalidType("filter.text", expected: "string")
-                }
-                if !track.title.localizedCaseInsensitiveContains(text)
-                    && !track.artist.localizedCaseInsensitiveContains(text)
-                    && !track.album.localizedCaseInsensitiveContains(text) {
-                    return false
-                }
-            case "titleContains":
-                if try contains(value, key: key, in: track.title) == false { return false }
-            case "artistContains":
-                if try contains(value, key: key, in: track.artist) == false { return false }
-            case "albumContains":
-                if try contains(value, key: key, in: track.album) == false { return false }
-            case "genreContains":
-                let genres = track.genreTags.joined(separator: " ")
-                if try contains(value, key: key, in: genres) == false { return false }
-            case "sourceID":
-                guard case .string(let raw) = value, let sourceID = UUID(uuidString: raw) else {
-                    throw AutomationParameterError.invalidValue("filter.sourceID")
-                }
-                if !memberships.contains(where: { $0.sourceID == sourceID }) { return false }
-            case "playlistID":
-                guard case .string(let raw) = value, let playlistID = UUID(uuidString: raw) else {
-                    throw AutomationParameterError.invalidValue("filter.playlistID")
-                }
-                if !playlistIDs.contains(playlistID) { return false }
-            case "availability":
-                guard case .string(let availability) = value else {
-                    throw AutomationParameterError.invalidType("filter.availability", expected: "string")
-                }
-                if track.availability.rawValue != availability { return false }
-            case "missing":
-                guard case .boolean(let missing) = value else {
-                    throw AutomationParameterError.invalidType("filter.missing", expected: "boolean")
-                }
-                if (track.availability == .missing) != missing { return false }
-            case "hasLyrics":
-                guard case .boolean(let expected) = value else {
-                    throw AutomationParameterError.invalidType("filter.hasLyrics", expected: "boolean")
-                }
-                if (lyricsStatus != "none") != expected { return false }
-            case "lyricsStatus":
-                guard case .string(let expected) = value else {
-                    throw AutomationParameterError.invalidType("filter.lyricsStatus", expected: "string")
-                }
-                if lyricsStatus != expected { return false }
-            case "hasArtwork":
-                guard case .boolean(let expected) = value else {
-                    throw AutomationParameterError.invalidType("filter.hasArtwork", expected: "boolean")
-                }
-                if artworkAvailable != expected { return false }
-            case "addedAfter":
-                if let date = try filterDate(value, key: key), track.addedAt <= date { return false }
-            case "addedBefore":
-                if let date = try filterDate(value, key: key), track.addedAt >= date { return false }
-            case "releaseAfter":
-                guard let releaseDate = track.releaseDate,
-                      let date = try filterDate(value, key: key), releaseDate > date else { return false }
-            case "releaseBefore":
-                guard let releaseDate = track.releaseDate,
-                      let date = try filterDate(value, key: key), releaseDate < date else { return false }
-            case "durationMin":
-                guard case .number(let minimum) = value else {
-                    throw AutomationParameterError.invalidType("filter.durationMin", expected: "number")
-                }
-                if track.duration < minimum { return false }
-            case "durationMax":
-                guard case .number(let maximum) = value else {
-                    throw AutomationParameterError.invalidType("filter.durationMax", expected: "number")
-                }
-                if track.duration > maximum { return false }
-            case "metadataConfidenceMin":
-                guard case .number(let minimum) = value else {
-                    throw AutomationParameterError.invalidType("filter.metadataConfidenceMin", expected: "number")
-                }
-                if (track.metadataConfidence ?? 0) < minimum { return false }
-            case "codec":
-                guard case .string(let expected) = value else {
-                    throw AutomationParameterError.invalidType("filter.codec", expected: "string")
-                }
-                if audio?.codec?.localizedCaseInsensitiveCompare(expected) != .orderedSame { return false }
-            case "format":
-                guard case .string(let expected) = value else {
-                    throw AutomationParameterError.invalidType("filter.format", expected: "string")
-                }
-                if audio?.format?.localizedCaseInsensitiveCompare(expected) != .orderedSame { return false }
-            case "sampleRateHz":
-                guard case .number(let expected) = value,
-                      expected.isFinite,
-                      expected.rounded() == expected else {
-                    throw AutomationParameterError.invalidValue("filter.sampleRateHz")
-                }
-                if audio?.sampleRateHz != Int(expected) { return false }
-            case "bitDepth":
-                guard case .number(let expected) = value,
-                      expected.isFinite,
-                      expected.rounded() == expected else {
-                    throw AutomationParameterError.invalidValue("filter.bitDepth")
-                }
-                if audio?.bitDepth != Int(expected) { return false }
-            case "likeState", "playCountMin", "playCountMax", "completePlayCountMin",
-                 "skipCountMin", "lastPlayedAfter", "lastPlayedBefore",
-                 "totalPlayedSecondsMin", "preferenceScoreMin":
-                if !AutomationTrackPreferenceQuery.matches(
-                    key,
-                    value: value,
-                    stats: preferenceStats
-                ) {
-                    return false
-                }
-            default:
-                throw AutomationParameterError.invalidValue("filter.\(key)")
-            }
-        }
-        return true
-    }
 
-    private func contains(
-        _ value: AutomationJSONValue,
-        key: String,
-        in text: String
-    ) throws -> Bool {
-        guard case .string(let needle) = value else {
-            throw AutomationParameterError.invalidType("filter.\(key)", expected: "string")
-        }
-        return text.localizedCaseInsensitiveContains(needle)
-    }
 
-    private func filterDate(_ value: AutomationJSONValue, key: String) throws -> Date? {
-        guard case .string(let raw) = value,
-              let date = ISO8601DateFormatter().date(from: raw) else {
-            throw AutomationParameterError.invalidValue("filter.\(key)")
-        }
-        return date
-    }
 
-    private func sortTracks(
-        _ tracks: [Track],
-        using values: [AutomationJSONValue],
-        preferenceStatsByTrackID: [UUID: TrackPreferenceStats] = [:]
-    ) throws -> [Track] {
-        struct SortKey {
-            let field: String
-            let descending: Bool
-        }
-        var keys: [SortKey] = []
-        for value in values {
-            guard case .object(let object) = value,
-                  case .string(let field) = object["field"] else {
-                throw AutomationParameterError.invalidValue("sort[(index)]")
-            }
-            let direction: String
-            if case .string(let rawDirection) = object["direction"] {
-                direction = rawDirection
-            } else {
-                direction = "asc"
-            }
-            guard direction == "asc" || direction == "desc" else {
-                throw AutomationParameterError.invalidValue("sort[(index)].direction")
-            }
-            guard [
-                "title", "artist", "album", "duration", "addedAt", "releaseDate",
-                "availability", "codec", "sampleRateHz", "filePath",
-                "likeState", "playCount", "completePlayCount", "skipCount",
-                "lastPlayedAt", "totalPlayedSeconds", "preferenceScore"
-            ].contains(field) else {
-                throw AutomationParameterError.invalidValue("sort[(index)].field")
-            }
-            keys.append(SortKey(field: field, descending: direction == "desc"))
-        }
-        let effectiveKeys = keys.isEmpty
-            ? [SortKey(field: "title", descending: false), SortKey(field: "artist", descending: false), SortKey(field: "album", descending: false)]
-            : keys
-        return tracks.sorted { lhs, rhs in
-            for key in effectiveKeys {
-                let comparison = compareTracks(
-                    lhs,
-                    rhs,
-                    field: key.field,
-                    preferenceStatsByTrackID: preferenceStatsByTrackID
-                )
-                if comparison == .orderedSame { continue }
-                return key.descending
-                    ? comparison == .orderedDescending
-                    : comparison == .orderedAscending
-            }
-            return lhs.id.uuidString < rhs.id.uuidString
-        }
-    }
 
-    private func compareTracks(
-        _ lhs: Track,
-        _ rhs: Track,
-        field: String,
-        preferenceStatsByTrackID: [UUID: TrackPreferenceStats]
-    ) -> ComparisonResult {
-        if let comparison = AutomationTrackPreferenceQuery.compare(
-            preferenceStatsByTrackID[lhs.id] ?? TrackPreferenceStats(),
-            preferenceStatsByTrackID[rhs.id] ?? TrackPreferenceStats(),
-            field: field
-        ) {
-            return comparison
-        }
-        let lhsAudio = lhs.mediaLocator.referencedFile?.locations.first?.audioProperties ?? lhs.audioProperties
-        let rhsAudio = rhs.mediaLocator.referencedFile?.locations.first?.audioProperties ?? rhs.audioProperties
-        switch field {
-        case "title": return lhs.title.localizedStandardCompare(rhs.title)
-        case "artist": return lhs.artist.localizedStandardCompare(rhs.artist)
-        case "album": return lhs.album.localizedStandardCompare(rhs.album)
-        case "availability": return lhs.availability.rawValue.localizedStandardCompare(rhs.availability.rawValue)
-        case "codec": return (lhsAudio?.codec ?? "").localizedStandardCompare(rhsAudio?.codec ?? "")
-        case "filePath": return trackPath(lhs).localizedStandardCompare(trackPath(rhs))
-        case "duration": return lhs.duration == rhs.duration ? .orderedSame : (lhs.duration < rhs.duration ? .orderedAscending : .orderedDescending)
-        case "sampleRateHz":
-            let left = lhsAudio?.sampleRateHz ?? 0
-            let right = rhsAudio?.sampleRateHz ?? 0
-            return left == right ? .orderedSame : (left < right ? .orderedAscending : .orderedDescending)
-        case "addedAt": return lhs.addedAt == rhs.addedAt ? .orderedSame : (lhs.addedAt < rhs.addedAt ? .orderedAscending : .orderedDescending)
-        case "releaseDate":
-            let left = lhs.releaseDate ?? .distantPast
-            let right = rhs.releaseDate ?? .distantPast
-            return left == right ? .orderedSame : (left < right ? .orderedAscending : .orderedDescending)
-        default: return .orderedSame
-        }
-    }
 
-    private func automationTrackFileURLs(_ track: Track, in session: LibrarySession) -> [URL] {
-        if track.mediaLocator.managedLibraryRelativePath != nil {
-            return automationTrackFileURL(track, in: session).map { [$0] } ?? []
-        }
-        let recordedPaths = (track.mediaLocator.referencedFile?.locations.map(\.lastKnownPath) ?? [])
-            + [track.originalFilePath]
-        var seen = Set<String>()
-        return recordedPaths.compactMap { path in
-            guard path.hasPrefix("/") else { return nil }
-            let url = URL(fileURLWithPath: path).standardizedFileURL
-            return seen.insert(url.path).inserted ? url : nil
-        }
-    }
 
-    private func automationTrackFileURL(_ track: Track, in session: LibrarySession) -> URL? {
-        if let relativePath = track.mediaLocator.managedLibraryRelativePath,
-           TrackMediaLocator.isSafeRelativePath(relativePath) {
-            let root = session.context.rootURL.standardizedFileURL
-            let candidate = root.appendingPathComponent(relativePath).standardizedFileURL
-            guard candidate.path.hasPrefix(root.path + "/") else { return nil }
-            return candidate
-        }
-        let path = track.mediaLocator.referencedFile?.locations.first?.lastKnownPath ?? track.originalFilePath
-        guard path.hasPrefix("/") else { return nil }
-        return URL(fileURLWithPath: path).standardizedFileURL
-    }
 
-    private func embeddedAudioFileURL(for track: Track, session: LibrarySession) throws -> URL {
-        if case .referenced = track.mediaLocator {
-            return try currentAuthorizedFile(for: track, session: session).url
-        }
-        guard let url = automationTrackFileURL(track, in: session),
-              FileManager.default.fileExists(atPath: url.path) else {
-            throw AutomationParameterError.invalidValue("audio file unavailable")
-        }
-        return url
-    }
+
+
+
+
+
+
 
     private func readEmbeddedTags(from url: URL) async -> (
         values: [String: String], supportedForWrite: Bool, status: String, message: String?
@@ -12054,101 +10820,17 @@ final class AutomationIPCServer {
         return values
     }
 
-    private func trackPath(_ track: Track) -> String {
-        track.mediaLocator.referencedFile?.locations.first?.lastKnownPath
-            ?? track.originalFilePath
-    }
 
-    /// Build a deterministic snapshot token from the fields exposed by
-    /// `library.tracks`, including the order of the library and Playlist
-    /// membership. The token is intentionally opaque so callers can use it
-    /// for optimistic pagination without receiving any additional metadata.
-    private func libraryTracksRevision(
-        tracks: [Track],
-        playlists: [Playlist],
-        preferenceStatsByTrackID: [UUID: TrackPreferenceStats]? = nil
-    ) -> String {
-        var playlistIDsByTrackID: [UUID: Set<UUID>] = [:]
-        for playlist in playlists {
-            for track in playlist.tracks {
-                playlistIDsByTrackID[track.id, default: []].insert(playlist.id)
-            }
-        }
-        let summaries = tracks.map { track in
-            makeTrackSummary(
-                track,
-                playlists: [],
-                includeFilePath: false,
-                playlistIDsOverride: Array(
-                    playlistIDsByTrackID[track.id, default: []]
-                ).sorted { $0.uuidString < $1.uuidString },
-                includePreferenceStats: preferenceStatsByTrackID != nil,
-                preferenceStats: preferenceStatsByTrackID?[track.id]
-            )
-        }
-        guard let data = try? AutomationWireCoding.encoder().encode(summaries) else {
-            return "v1-unavailable"
-        }
-        let digest = SHA256.hash(data: data)
-            .map { String(format: "%02x", $0) }
-            .joined()
-        return "v1-" + digest
-    }
 
-    private func selectionRevision(libraryID: UUID, trackIDs: [UUID]) -> String {
-        let material = ([libraryID.uuidString] + trackIDs.map(\.uuidString)).joined(separator: "\n")
-        let digest = SHA256.hash(data: Data(material.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
-        return "selection-v1-" + digest
-    }
 
-    private func selectionStoreFailure(
-        for request: AutomationRequest,
-        error: Error
-    ) -> AutomationResponse {
-        .failure(
-            for: request,
-            error: AutomationError(
-                code: .internalError,
-                message: "The saved selection state could not be read or written.",
-                details: .object(["reason": .string(String(describing: error))])
-            )
-        )
-    }
 
-    private func libraryTracksRevisionConflict(
-        for request: AutomationRequest,
-        expected: String,
-        actual: String
-    ) -> AutomationResponse {
-        .failure(
-            for: request,
-            error: AutomationError(
-                code: .conflict,
-                message: "The Library changed while the Track results were being paginated.",
-                retryable: true,
-                details: .object([
-                    "expectedRevision": .string(expected),
-                    "actualRevision": .string(actual)
-                ])
-            )
-        )
-    }
 
-    private func trackLyricsStatus(_ track: Track) -> String {
-        if let ttml = resolveTTMLText(for: track), !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return LyricsFormatSupport.isWordSyncedTTML(ttml) ? "wordSynced" : "lineSynced"
-        }
-        if track.ttmlLyricsFileName != nil { return "lineSynced" }
-        if let plain = resolvePlainLyricsText(for: track), !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return LyricsFormatSupport.looksLikeLRC(plain) ? "lineSynced" : "plain"
-        }
-        if let lyricsFileName = track.lyricsFileName {
-            return lyricsFileName.lowercased().hasSuffix(".lrc") ? "lineSynced" : "plain"
-        }
-        return "none"
-    }
+
+
+
+
+
+
 
     private func makeMetadataDocumentTrack(_ track: Track, revision: String) -> AutomationMetadataDocumentTrack {
         func nullableString(_ value: String?) -> AutomationJSONValue {
@@ -12193,136 +10875,11 @@ final class AutomationIPCServer {
         )
     }
 
-    private func makeTrackSummary(
-        _ track: Track,
-        playlists: [Playlist] = [],
-        includeFilePath: Bool = true,
-        playlistIDsOverride: [UUID]? = nil,
-        includePreferenceStats: Bool = false,
-        preferenceStats: TrackPreferenceStats? = nil
-    ) -> AutomationTrackSummary {
-        let sourceMemberships = (track.mediaLocator.referencedFile?.allSourceMemberships ?? [])
-            .map {
-                AutomationTrackSourceMembership(
-                    sourceID: $0.sourceID,
-                    relativePath: $0.relativePath
-                )
-            }
-            .sorted {
-                if $0.sourceID != $1.sourceID {
-                    return $0.sourceID.uuidString < $1.sourceID.uuidString
-                }
-                return $0.relativePath < $1.relativePath
-            }
-        let audio = track.mediaLocator.referencedFile?.locations.first?.audioProperties
-            ?? track.audioProperties
-        let playlistIDs: [UUID]
-        if let playlistIDsOverride {
-            playlistIDs = playlistIDsOverride.sorted { $0.uuidString < $1.uuidString }
-        } else {
-            playlistIDs = playlists
-                .filter { playlist in playlist.tracks.contains { $0.id == track.id } }
-                .map(\.id)
-                .sorted { $0.uuidString < $1.uuidString }
-        }
-        return AutomationTrackSummary(
-            id: track.id,
-            title: track.title,
-            artist: track.artist,
-            album: track.album,
-            duration: track.duration,
-            availability: track.availability.rawValue,
-            addedAt: track.addedAt,
-            importedAt: track.importedAt,
-            embeddedMetadataSnapshot: track.embeddedMetadataSnapshot.map { snapshot in
-                AutomationEmbeddedMetadataSnapshot(
-                    title: snapshot.title,
-                    artistDisplay: snapshot.artistDisplay,
-                    album: snapshot.album,
-                    albumArtist: snapshot.albumArtist,
-                    releaseYear: snapshot.releaseYear,
-                    compilation: snapshot.compilation,
-                    musicBrainzReleaseID: snapshot.musicBrainzReleaseID,
-                    durationSeconds: snapshot.durationSeconds,
-                    capturedAt: snapshot.capturedAt
-                )
-            },
-            sourceMemberships: sourceMemberships,
-            artistCredits: track.artistCredits.map {
-                AutomationTrackCredit(
-                    id: $0.id,
-                    displayName: $0.displayName,
-                    canonicalName: $0.canonicalName,
-                    role: $0.role.rawValue
-                )
-            },
-            albumArtist: track.albumArtist,
-            userDescription: track.userDescription,
-            genreTags: track.genreTags,
-            language: track.language,
-            labelOrCompany: track.labelOrCompany,
-            releaseDate: track.releaseDate,
-            qqMusicSongMid: track.qqMusicSongMid,
-            metadataSource: track.metadataSource,
-            metadataFetchedAt: track.metadataFetchedAt,
-            metadataConfidence: track.metadataConfidence,
-            musicBrainzReleaseID: track.musicBrainzReleaseID,
-            lyricsTimeOffsetMs: track.lyricsTimeOffsetMs,
-            lyricsStatus: trackLyricsStatus(track),
-            artworkAvailable: track.hasArtwork,
-            artworkFileName: track.artworkFileName,
-            format: audio?.format,
-            codec: audio?.codec,
-            sampleRateHz: audio?.sampleRateHz,
-            bitDepth: audio?.bitDepth,
-            channelCount: audio?.channelCount,
-            filePath: includeFilePath ? trackPath(track) : nil,
-            playlistIDs: playlistIDs,
-            preferenceStats: includePreferenceStats
-                ? AutomationTrackPreferenceQuery.summary(preferenceStats ?? TrackPreferenceStats())
-                : nil
-        )
-    }
 
-    private func makePlaylistSummary(_ playlist: Playlist) -> AutomationPlaylistSummary {
-        let service = appSession?.activeLibraryBinding.activeSession?.libraryService
-        let sidecar = service?.loadPlaylistSidecar(playlistID: playlist.id)
-        let artworkSource = sidecar?.headerArtworkSource ?? .none
-        let artworkFileName: String?
-        switch artworkSource {
-        case .custom:
-            artworkFileName = sidecar?.customHeaderArtworkFileName
-        case .generated:
-            artworkFileName = sidecar?.generatedHeaderArtworkFileName
-        case .none:
-            artworkFileName = nil
-        }
-        return AutomationPlaylistSummary(
-            id: playlist.id,
-            name: playlist.name,
-            description: playlist.userDescription,
-            createdAt: playlist.createdAt,
-            trackCount: playlist.trackCount,
-            totalDuration: playlist.totalDuration,
-            revision: appSession?.libraryVM?.automationPlaylistRevision(for: playlist) ?? "v1-0",
-            artworkAvailable: artworkFileName != nil,
-            artworkSource: artworkSource.rawValue,
-            artworkFileName: artworkFileName,
-            artworkRevision: sidecar?.artworkRevision
-        )
-    }
 
-    private func makeLibrarySummary(
-        _ bookmark: MusicLibraryBookmark,
-        activeLibraryID: UUID?
-    ) -> AutomationLibrarySummary {
-        AutomationLibrarySummary(
-            id: bookmark.id,
-            displayName: bookmark.displayName,
-            mode: bookmark.modeProjection == .managed ? .managed : .referenced,
-            isActive: bookmark.id == activeLibraryID
-        )
-    }
+
+
+
 
     private func makeSourceSummary(
         _ descriptor: ReferencedSourceDescriptor
@@ -12376,23 +10933,7 @@ final class AutomationIPCServer {
         let sourceIDs: Set<UUID>
     }
 
-    private func makeFileSummary(
-        _ track: Track,
-        pathOverride: String? = nil,
-        existsOverride: Bool? = nil
-    ) -> AutomationFileSummary {
-        let locator = track.mediaLocator.referencedFile
-        let memberships = locator?.allSourceMemberships ?? []
-        let path = pathOverride ?? trackPath(track)
-        return AutomationFileSummary(
-            trackID: track.id,
-            path: path,
-            exists: existsOverride ?? FileManager.default.fileExists(atPath: path),
-            availability: track.availability.rawValue,
-            sourceIDs: memberships.map(\.sourceID),
-            relativePaths: memberships.map(\.relativePath)
-        )
-    }
+
 
     private func makeFilePlans(
         method: String,
@@ -12418,7 +10959,7 @@ final class AutomationIPCServer {
             guard let track = tracksByID[trackID] else {
                 throw AutomationFileOperationError.trackNotFound(trackID)
             }
-            let current = try currentAuthorizedFile(for: track, session: session)
+            let current = try AutomationFileAccess.currentAuthorizedFile(for: track, session: session)
             let destination: URL
 
             if method == AutomationMethod.filesRename {
@@ -12438,12 +10979,12 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.missing("operations.relativePath")
                 }
                 let relativePath = rawRelativePath.trimmingCharacters(in: .whitespacesAndNewlines)
-                let root = try authorizedDirectoryRoot(sourceID: sourceID, sourceScope: sourceScope)
+                let root = try AutomationFileAccess.authorizedDirectoryRoot(sourceID: sourceID, sourceScope: sourceScope)
                 guard TrackMediaLocator.isSafeRelativePath(relativePath) else {
                     throw AutomationFileOperationError.unsafeRelativePath(relativePath)
                 }
                 destination = root.appendingPathComponent(relativePath).standardizedFileURL
-                guard isAuthorizedPath(destination, inside: root) else {
+                guard AutomationFileAccess.isAuthorizedPath(destination, inside: root) else {
                     throw AutomationFileOperationError.unsafeRelativePath(relativePath)
                 }
             }
@@ -12489,9 +11030,9 @@ final class AutomationIPCServer {
         guard session.context.mode == .referenced else {
             throw AutomationFileOperationError.referencedLibraryRequired
         }
-        let tracks = try automationTracks(ids: trackIDs, in: session.libraryViewModel.allTracks)
+        let tracks = try AutomationFileAccess.automationTracks(ids: trackIDs, in: session.libraryViewModel.allTracks)
         return try tracks.map { track in
-            let current = try currentAuthorizedFile(for: track, session: session)
+            let current = try AutomationFileAccess.currentAuthorizedFile(for: track, session: session)
             return AutomationFilePlan(
                 track: track,
                 trackID: track.id,
@@ -12502,53 +11043,9 @@ final class AutomationIPCServer {
         }
     }
 
-    private func currentAuthorizedFile(
-        for track: Track,
-        session: LibrarySession
-    ) throws -> (url: URL, sourceIDs: Set<UUID>) {
-        guard case let .referenced(locator) = track.mediaLocator else {
-            throw AutomationFileOperationError.referencedFileRequired(track.id)
-        }
-        guard let sourceScope = session.referencedSourceScope else {
-            throw AutomationFileOperationError.referencedLibraryRequired
-        }
-        let sourceIDs = Set(locator.allSourceMemberships.map(\.sourceID))
-        for location in locator.locations {
-            for membership in location.sourceMemberships {
-                guard let authorizedRoot = sourceScope.authorizedRoots[membership.sourceID],
-                      isDirectoryRoot(authorizedRoot.url),
-                      TrackMediaLocator.isSafeRelativePath(membership.relativePath) else {
-                    continue
-                }
-                let candidate = authorizedRoot.url
-                    .appendingPathComponent(membership.relativePath)
-                    .standardizedFileURL
-                guard isAuthorizedPath(candidate, inside: authorizedRoot.url),
-                      FileManager.default.fileExists(atPath: candidate.path),
-                      !isDirectoryRoot(candidate) else {
-                    continue
-                }
-                return (candidate, sourceIDs)
-            }
-        }
-        if sourceIDs.isEmpty {
-            throw AutomationFileOperationError.noSourceMembership(track.id)
-        }
-        throw AutomationFileOperationError.fileUnavailable(track.id)
-    }
 
-    private func authorizedDirectoryRoot(
-        sourceID: UUID,
-        sourceScope: ReferencedSourceScope
-    ) throws -> URL {
-        guard let root = sourceScope.authorizedRoots[sourceID]?.url else {
-            throw AutomationFileOperationError.sourceNotAuthorized(sourceID)
-        }
-        guard isDirectoryRoot(root) else {
-            throw AutomationFileOperationError.sourceMustBeDirectory(sourceID)
-        }
-        return root.standardizedFileURL
-    }
+
+
 
     private func normalizedFileName(
         _ rawName: String,
@@ -12568,35 +11065,9 @@ final class AutomationIPCServer {
         return "\(name).\(source.pathExtension)"
     }
 
-    private func isDirectoryRoot(_ url: URL) -> Bool {
-        let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
-        if let isDirectory = values?.isDirectory {
-            return isDirectory
-        }
-        return url.hasDirectoryPath
-    }
 
-    private func isAuthorizedPath(_ candidate: URL, inside root: URL) -> Bool {
-        let standardizedCandidate = candidate.standardizedFileURL
-        let standardizedRoot = root.standardizedFileURL
-        guard standardizedCandidate.path == standardizedRoot.path
-            || standardizedCandidate.path.hasPrefix(standardizedRoot.path + "/") else {
-            return false
-        }
 
-        // The lexical check above blocks traversal. Resolve the nearest
-        // existing ancestor as well so a symlinked directory cannot redirect
-        // a newly-created destination outside the authorized Source.
-        var existingAncestor = standardizedCandidate
-        while !FileManager.default.fileExists(atPath: existingAncestor.path),
-              existingAncestor.path != existingAncestor.deletingLastPathComponent().path {
-            existingAncestor.deleteLastPathComponent()
-        }
-        let canonicalRoot = standardizedRoot.resolvingSymlinksInPath().standardizedFileURL.path
-        let canonicalAncestor = existingAncestor.resolvingSymlinksInPath().standardizedFileURL.path
-        return canonicalAncestor == canonicalRoot
-            || canonicalAncestor.hasPrefix(canonicalRoot + "/")
-    }
+
 
     private func applyFilePlans(_ plans: [AutomationFilePlan]) throws {
         var applied: [AutomationFilePlan] = []
@@ -12630,7 +11101,7 @@ final class AutomationIPCServer {
             .compactMap { sourceID in
                 appSession.startSourceRefreshJob(sourceID: sourceID, libraryID: libraryID)
             }
-            .map(makeJobSummary)
+            .map(AutomationJobProjection.makeJobSummary)
     }
 
     private func sourceIssueMessage(_ issue: ReferencedSourceScopeIssue) -> String {
@@ -12646,333 +11117,11 @@ final class AutomationIPCServer {
         }
     }
 
-    private func metadataProviderUnavailable(
-        _ error: Error,
-        provider: String,
-        for request: AutomationRequest
-    ) -> AutomationResponse {
-        .failure(
-            for: request,
-            error: AutomationError(
-                code: .serverUnavailable,
-                message: "The \(provider) metadata provider could not complete the request.",
-                retryable: true,
-                details: .object(["reason": .string(error.localizedDescription)])
-            )
-        )
-    }
 
-    private func requestDeadlineExpired(for request: AutomationRequest) -> AutomationResponse {
-        .failure(
-            for: request,
-            error: AutomationError(
-                code: .serverUnavailable,
-                message: "The request deadline expired before the Job was accepted.",
-                retryable: true,
-                details: .object(["deadlineReached": .boolean(true)])
-            )
-        )
-    }
 
-    private func invalidParameters(
-        for request: AutomationRequest,
-        error: Error? = nil
-    ) -> AutomationResponse {
-        if let error = error as? LibraryOperationError,
-           error == .sessionQuiescing {
-            return .failure(
-                for: request,
-                error: AutomationError(
-                    code: .conflict,
-                    message: "The active library is changing; retry after the operation completes.",
-                    retryable: true
-                )
-            )
-        }
-        guard error == nil
-            || error is AutomationParameterError
-            || error is AutomationFileOperationError else {
-            return .failure(
-                for: request,
-                error: AutomationError(
-                    code: .internalError,
-                    message: "The automation operation failed.",
-                    details: .object(["reason": .string(String(describing: error!))])
-                )
-            )
-        }
-        return .failure(
-            for: request,
-            error: AutomationError(
-                code: .invalidRequest,
-                message: error?.localizedDescription ?? "The request parameters are invalid.",
-                details: error.flatMap { error in
-                    guard case let AutomationParameterError.unknown(keys) = error else {
-                        return nil
-                    }
-                    return .object([
-                        "unknownParameters": .array(keys.map { .string($0) })
-                    ])
-                }
-            )
-        )
-    }
 
-    private func encodeResult<Value: Encodable>(
-        _ value: Value,
-        for request: AutomationRequest
-    ) -> AutomationResponse {
-        do {
-            let data = try AutomationWireCoding.encoder().encode(value)
-            let json = try AutomationWireCoding.decoder().decode(
-                AutomationJSONValue.self,
-                from: data
-            )
-            return .success(for: request, result: json)
-        } catch {
-            return .failure(
-                for: request,
-                error: AutomationError(
-                    code: .internalError,
-                    message: "Failed to encode automation response.",
-                    details: .object(["reason": .string(String(describing: error))])
-                )
-            )
-        }
-    }
-}
 
-private struct AutomationParameters {
-    let values: [String: AutomationJSONValue]
 
-    init(_ request: AutomationRequest) throws {
-        switch request.params {
-        case nil, .some(.null):
-            values = [:]
-        case .some(.object(let values)):
-            let unknown = AutomationToolCatalog.unknownParameterKeys(
-                for: request.method,
-                params: .object(values)
-            )
-            guard unknown.isEmpty else {
-                throw AutomationParameterError.unknown(unknown)
-            }
-            self.values = values
-        default:
-            throw AutomationParameterError.invalidShape
-        }
-    }
 
-    func string(_ key: String, required: Bool = false) throws -> String? {
-        guard let value = values[key] else {
-            if required {
-                throw AutomationParameterError.missing(key)
-            }
-            return nil
-        }
-        guard case .string(let string) = value else {
-            throw AutomationParameterError.invalidType(key, expected: "string")
-        }
-        return string
-    }
 
-    func uuid(_ key: String, required: Bool = false) throws -> UUID? {
-        guard let string = try string(key, required: required) else {
-            return nil
-        }
-        guard let uuid = UUID(uuidString: string) else {
-            throw AutomationParameterError.invalidValue(key)
-        }
-        return uuid
-    }
-
-    func uuidArray(
-        _ key: String,
-        required: Bool = false,
-        allowEmpty: Bool = false,
-        maximumCount: Int = 5_000
-    ) throws -> [UUID] {
-        guard let value = values[key] else {
-            if required {
-                throw AutomationParameterError.missing(key)
-            }
-            return []
-        }
-        guard case .array(let values) = value else {
-            throw AutomationParameterError.invalidType(key, expected: "array of UUID strings")
-        }
-        guard (allowEmpty || !values.isEmpty), values.count <= maximumCount else {
-            throw AutomationParameterError.outOfRange(key)
-        }
-
-        var result: [UUID] = []
-        var seen = Set<UUID>()
-        for value in values {
-            guard case .string(let string) = value,
-                  let uuid = UUID(uuidString: string) else {
-                throw AutomationParameterError.invalidValue(key)
-            }
-            if seen.insert(uuid).inserted {
-                result.append(uuid)
-            }
-        }
-        return result
-    }
-
-    func integer(_ key: String, default defaultValue: Int) throws -> Int {
-        guard let value = values[key] else {
-            return defaultValue
-        }
-        guard case .number(let number) = value,
-              number.isFinite,
-              number.rounded() == number,
-              number >= Double(Int.min),
-              number <= Double(Int.max) else {
-            throw AutomationParameterError.invalidType(key, expected: "integer")
-        }
-        return Int(number)
-    }
-
-    func boolean(_ key: String, default defaultValue: Bool) throws -> Bool {
-        guard let value = values[key] else {
-            return defaultValue
-        }
-        guard case .boolean(let boolean) = value else {
-            throw AutomationParameterError.invalidType(key, expected: "boolean")
-        }
-        return boolean
-    }
-
-    func double(_ key: String, default defaultValue: Double? = nil) throws -> Double? {
-        guard let value = values[key] else { return defaultValue }
-        guard case .number(let number) = value, number.isFinite else {
-            throw AutomationParameterError.invalidType(key, expected: "number")
-        }
-        return number
-    }
-
-    func object(_ key: String) throws -> [String: AutomationJSONValue]? {
-        guard let value = values[key] else { return nil }
-        guard case .object(let object) = value else {
-            throw AutomationParameterError.invalidType(key, expected: "object")
-        }
-        return object
-    }
-
-    func objectArray(
-        _ key: String,
-        required: Bool = false
-    ) throws -> [[String: AutomationJSONValue]] {
-        guard let value = values[key] else {
-            if required { throw AutomationParameterError.missing(key) }
-            return []
-        }
-        guard case .array(let array) = value else {
-            throw AutomationParameterError.invalidType(key, expected: "array of objects")
-        }
-        guard !array.isEmpty, array.count <= 5_000 else {
-            throw AutomationParameterError.outOfRange(key)
-        }
-        return try array.map { value in
-            guard case .object(let object) = value else {
-                throw AutomationParameterError.invalidType(key, expected: "array of objects")
-            }
-            return object
-        }
-    }
-
-    func array(_ key: String) throws -> [AutomationJSONValue] {
-        guard let value = values[key] else { return [] }
-        guard case .array(let array) = value else {
-            throw AutomationParameterError.invalidType(key, expected: "array")
-        }
-        return array
-    }
-
-    func date(_ key: String) throws -> Date? {
-        guard let string = try string(key) else { return nil }
-        guard let date = ISO8601DateFormatter().date(from: string) else {
-            throw AutomationParameterError.invalidValue(key)
-        }
-        return date
-    }
-}
-
-private enum AutomationParameterError: Error, LocalizedError {
-    case invalidShape
-    case unknown([String])
-    case missing(String)
-    case missingResource(String)
-    case invalidType(String, expected: String)
-    case invalidValue(String)
-    case outOfRange(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidShape:
-            return "Request parameters must be a JSON object."
-        case .unknown(let keys):
-            return "Unknown parameter(s): " + keys.joined(separator: ", ") + "."
-        case .missing(let key):
-            return "Missing required parameter '\(key)'."
-        case .missingResource(let key):
-            return "The requested \(key) does not exist."
-        case .invalidType(let key, let expected):
-            return "Parameter '\(key)' must be \(expected)."
-        case .invalidValue(let key):
-            return "Parameter '\(key)' has an invalid value."
-        case .outOfRange(let key):
-            return "Parameter '\(key)' is outside the supported range."
-        }
-    }
-}
-
-private enum AutomationFileOperationError: Error, LocalizedError {
-    case referencedLibraryRequired
-    case referencedFileRequired(UUID)
-    case trackNotFound(UUID)
-    case noSourceMembership(UUID)
-    case fileUnavailable(UUID)
-    case sourceNotAuthorized(UUID)
-    case sourceMustBeDirectory(UUID)
-    case unsafeRelativePath(String)
-    case invalidFileName
-    case destinationIsCurrentFile(String)
-    case destinationExists(String)
-    case duplicateDestination
-    case destinationOverlapsSelection
-    case operationFailed(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .referencedLibraryRequired:
-            return "Physical file automation currently requires a referenced music library."
-        case .referencedFileRequired(let trackID):
-            return "Track \(trackID.uuidString) does not point to a referenced external file."
-        case .trackNotFound(let trackID):
-            return "Track \(trackID.uuidString) was not found in the active Library."
-        case .noSourceMembership(let trackID):
-            return "Track \(trackID.uuidString) has no authorized Source membership."
-        case .fileUnavailable(let trackID):
-            return "The current physical file for Track \(trackID.uuidString) is missing or unavailable."
-        case .sourceNotAuthorized(let sourceID):
-            return "Source \(sourceID.uuidString) is not currently authorized by the App."
-        case .sourceMustBeDirectory(let sourceID):
-            return "Source \(sourceID.uuidString) is a single-file Source; choose an authorized directory Source for this operation."
-        case .unsafeRelativePath(let path):
-            return "The destination path is not a safe Source-relative path: \(path)"
-        case .invalidFileName:
-            return "The new file name must be a single non-empty path component."
-        case .destinationIsCurrentFile(let path):
-            return "The destination is already the current file: \(path)"
-        case .destinationExists(let path):
-            return "The destination file already exists: \(path)"
-        case .duplicateDestination:
-            return "Multiple file operations resolve to the same destination."
-        case .destinationOverlapsSelection:
-            return "A file operation would overwrite another selected file; no mutation was applied."
-        case .operationFailed(let reason):
-            return "The physical file operation failed: \(reason)"
-        }
-    }
 }
