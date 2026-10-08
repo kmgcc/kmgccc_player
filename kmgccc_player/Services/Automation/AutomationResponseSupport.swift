@@ -444,4 +444,14 @@ enum AutomationResponseSupport {
             return false
         }
     }
+
+    static func unsupportedMethod(for request: AutomationRequest) -> AutomationResponse {
+        .failure(
+            for: request,
+            error: AutomationError(
+                code: .methodNotFound,
+                message: "Unsupported automation method: \(request.method)."
+            )
+        )
+    }
 }
