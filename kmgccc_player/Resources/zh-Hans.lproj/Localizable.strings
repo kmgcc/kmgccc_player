@@ -297,3 +297,4 @@
 "skin.cover_gradient_blur.edge_fill_pixel" = "拉伸";
 "skin.cover_gradient_blur.edge_fill_mirror" = "镜像";
 "skin.cover_gradient_blur.edge_fill_mode" = "右侧填充";
+"dsp.preset.flat" = "平直";

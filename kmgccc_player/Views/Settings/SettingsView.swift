@@ -35,9 +35,12 @@ struct SettingsView: View {
                     max: 300
                 )
         } detail: {
-            detailView
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .navigationTitle(selection.title)
+            NavigationStack {
+                detailView
+            }
+            .id(selection)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .navigationTitle(selection.title)
         }
         .navigationSplitViewStyle(.prominentDetail)
         .tint(themeStore.accentColor)

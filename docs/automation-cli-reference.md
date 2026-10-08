@@ -350,3 +350,22 @@ MCP 同名工具为 `library.import`，参数是 `filePaths`、可选 `targetPla
 若 modern MCP 客户端逐请求声明 Tasks 扩展，长 Job Tools 会返回 Task；轮询使用
 `tasks/get`/`tasks/cancel`。否则工具返回原 App Job，使用 `jobs.get`。CLI 始终使用 Jobs API。
 结果和权限语义见 [Audio import](automation-capability-reference.md#audio-import)。
+
+## DSP
+
+```sh
+player-automation dsp schema
+player-automation dsp state
+player-automation dsp patch --params-json '{"operations":[{"op":"setMaster","value":true}]}'
+player-automation dsp presets list
+player-automation dsp presets save --params-json '{"name":"我的均衡器"}'
+player-automation dsp presets select --params-json '{"presetID":"<UUID>"}'
+player-automation dsp wait --params-json '{"requestID":"<UUID>","timeoutMs":5000}'
+player-automation dsp errors get
+```
+
+`dsp validate` 和 `dsp patch --dry-run` 可预览完整配置或有序编辑。
+`--expected-revision` 使用 `dsp state` 的 `desiredRevision`，预设修改的
+`expectedPresetRevision` 放入 `--params-json`。所有子命令也可用
+`call dsp.<method> --params-json ...`。完整参数、预设 JSON 与可听状态说明见
+[DSP 与完整预设](automation-mcp.md#dsp-与完整预设)。

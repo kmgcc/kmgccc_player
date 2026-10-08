@@ -40,6 +40,7 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 | Jobs | `jobs.list/get/wait/cancel/retry`；MCP `tasks/get/update/cancel`；Resource `kmgccc://jobs` | 每个资料库保留有界历史；支持可重建的 Lyrics/Source Job 重试；`jobs.wait` 单次最多等待 25 秒；现代 stdio MCP 可订阅 Jobs 资源变化，也可逐请求声明 Tasks 后接收 Task 状态通知、轮询与取消 |
 | Batch | `operations.batch` | 最多 100 项 Metadata/Artwork/Lyrics mutation 依序经现有 App owner 执行；逐项保存完整响应与冲突；dry-run、scope、revision、confirm 和 idempotency 沿用原 handler |
 | Diagnostics | `diagnostics.health` | 返回机器可读的 Library/Source/missing/Job/storage/Playlist-reference 健康报告，并统计缺歌词、缺封面和关键 Metadata 字段覆盖率；一致性 issues 与媒体路径 mediaIssues 分页分开 |
+| DSP | `dsp.schema/state/validate/patch/wait`, `dsp.presets.*`, `dsp.errors.*` | App-wide 九段 EQ、增益余量、完整有序预设与实时切换；audio.read/write；状态资源支持变化订阅 |
 | Settings / Audio | `settings.schema/get/patch/validate/reset`, `audio.get/patch` | Settings 覆盖导入补全时序、外观、封面着色、可视化 HDR、Dock 进度及 referenced 删除策略；支持 schema、无副作用校验、revision 和默认值 reset；Audio 读取 gapless scheduling/AAC trim、可用输出设备及系统／App 路由状态，并控制 gapless scheduling/AAC trim 和 App 输出设备选择 |
 | Storage | `storage.inspect/validate/orphans/backup/diff/reload/repair` | inspect/validate/orphans/diff 只读；backup 只复制 JSON/sidecar/enrichment 文件；reload 重新载入当前存储；repair 仅补齐 App-owned scaffolding，不改 domain data |
 | Files | `files.inspect/reveal/export/rename/move/delete` | reveal 使用已授权路径；export 经 App folder picker 把音频拷贝到用户选择的目录并保留原件；rename/move 遵守 Source 授权和路径 containment，批量需 preview/App confirmation；delete 默认 scope 拒绝且始终前台确认 |

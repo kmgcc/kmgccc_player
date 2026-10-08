@@ -17,6 +17,7 @@ struct LRCConverterServiceRegressionTests {
         try await testEarlyTranslationOffsetFallback()
         try await testIntroCreditsAreStripped()
         try await testHyphenatedIntroAdlibsDoNotShiftTranslations()
+        try await testInterludeGapIsNotStretchedInLineTimedLRC()
         print("LRCConverterServiceRegressionTests passed")
     }
 
@@ -146,6 +147,37 @@ struct LRCConverterServiceRegressionTests {
                "Expected My mama line to keep its own translation")
         expect(paragraph(containing: "Said", in: ttml)?.contains("她说在电视上看见你们觉得你们变了许多") == true,
                "Expected Said line to keep its own translation")
+    }
+
+    private static func testInterludeGapIsNotStretchedInLineTimedLRC() async throws {
+        // Line 12 of 自由灵魂 stripped: starts at 01:19.44, next line starts at 01:40.85 (21.41s later)
+        let lrc = """
+        [00:35.08]没想过 这么累人
+        [00:38.62]想的不一样就被定罪了
+        [01:19.44]阖上眼我就是 自由灵魂
+        [01:40.85]没想过 这么累人
+        """
+
+        let ttml = try await LRCConverterService.shared.convertToTTML(
+            lrcContent: lrc,
+            stripMetadata: true
+        )
+
+        // For normal consecutive lines, line 1 should still bridge cleanly to line 2
+        let p1 = paragraph(containing: "想的不一样", in: ttml)
+        expect(p1 != nil, "Expected second line to exist")
+
+        // For line 3 before the 21s interlude, the end time must NOT stretch to 01:40.850
+        guard let p3 = paragraph(containing: "自由灵魂", in: ttml) else {
+            expect(false, "Expected line before interlude to exist in TTML")
+            return
+        }
+
+        expect(!p3.contains("end=\"01:40.850\""),
+               "Expected line before interlude to not stretch to the next line's start (01:40.850)")
+        // Instead, it should finish within ~8 seconds (leaving a >= 4.0s interlude gap)
+        // e.g. 01:19.440 + ~4.5s = ~01:23.940
+        expect(p3.contains("begin=\"01:19.440\""), "Expected line to start at 01:19.440")
     }
 
     private static func expect(_ condition: Bool, _ message: String) {

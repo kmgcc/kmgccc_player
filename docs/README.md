@@ -10,6 +10,7 @@
 | [架构概览](architecture.md) | 应用组合根、资料库 session、本地与外部播放、统一展示模型、歌词、主题和频谱的主链路 |
 | [本地音频输出统一计划](audio-renderer-unification-plan.md) | 单一 sample-buffer renderer、旧 engine 移除、设备恢复、无缝播放与分析迁移 |
 | [Renderer P0 实施记录](audio-renderer-p0-implementation.md) | 单一输出源码迁移、恢复与资源屏障、分析/录制接入，以及待执行的构建和设备验收 |
+| [DSP P1–P2 实施记录](audio-dsp-p1-p2-implementation.md) | 九段 EQ、完整预设、未来队列替换、统一设置和 AI 控制，以及待设备验收项目 |
 | [Renderer 音频 DSP 实施计划](audio-dsp-implementation-plan.md) | 自定义效果链、等响补偿、完整预设实时切换、全局淡化/固定响度均衡、音质性能与 MCP/AI 控制 |
 | [App 维护备忘](app-maintenance-backlog.md) | App 本体的职责拆分、播放发布与开发工具整理，以及核心测试和实际 UI 验收范围 |
 | [皮肤体系演进计划](skin-system-evolution-plan.md) | 皮肤解耦、组件与自由排版、ZIP 导入与重载、Web 效果、开发工具及 Folium 兼容阶段 |

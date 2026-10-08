@@ -1,14 +1,27 @@
 import AVFoundation
 import CoreMedia
 import XCTest
+@testable import kmgccc_player
 
 final class RendererSampleBufferTests: XCTestCase {
-    func testStereoFormatCarriesVerifiedStandardLayoutTag() throws {
+    func testStereoFormatCarriesExplicitSourceLayoutTag() throws {
+        let sourceLayout = try XCTUnwrap(
+            AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_Stereo)
+        )
+        let source = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            interleaved: true,
+            channelLayout: sourceLayout
+        )
+        let dspFormat = CMSampleBufferFactory.dspAudioFormat(from: source)
+        XCTAssertTrue(dspFormat.layoutIsKnown)
+        XCTAssertEqual(dspFormat.channelLabels, [
+            UInt32(kAudioChannelLabel_Left),
+            UInt32(kAudioChannelLabel_Right),
+        ])
         let description = try XCTUnwrap(
-            CMSampleBufferFactory.formatDescription(
-                channelCount: 2,
-                sampleRate: 48_000
-            )
+            CMSampleBufferFactory.formatDescription(sourceFormat: dspFormat)
         )
         var layoutSize = 0
         let layout = try XCTUnwrap(
@@ -17,8 +30,20 @@ final class RendererSampleBufferTests: XCTestCase {
                 sizeOut: &layoutSize
             )
         )
-        XCTAssertGreaterThanOrEqual(layoutSize, MemoryLayout<AudioChannelLayout>.size)
+        let layoutHeaderSize = MemoryLayout<AudioChannelLayout>.size
+            - MemoryLayout<AudioChannelDescription>.size
+        XCTAssertGreaterThanOrEqual(layoutSize, layoutHeaderSize)
         XCTAssertEqual(layout.pointee.mChannelLayoutTag, kAudioChannelLayoutTag_Stereo)
+        XCTAssertEqual(layout.pointee.mNumberChannelDescriptions, 0)
+    }
+
+    func testChannelCountAloneDoesNotInferMultichannelLayout() throws {
+        let description = try XCTUnwrap(
+            CMSampleBufferFactory.formatDescription(channelCount: 6, sampleRate: 48_000)
+        )
+        var layoutSize = 0
+        XCTAssertNil(CMAudioFormatDescriptionGetChannelLayout(description, sizeOut: &layoutSize))
+        XCTAssertEqual(layoutSize, 0)
     }
 
     func testSampleBufferUsesSamplePrecisePTSAndPerFrameSize() throws {
@@ -83,6 +108,7 @@ final class RendererSampleBufferTests: XCTestCase {
 final class RendererTimelineTests: XCTestCase {
     func testLoadSeekFailureIsScopedAndDoesNotCommitOrEnqueue() {
         let pipeline = RendererPlaybackPipeline()
+        pipeline.setVolume(0)
         let failureReported = expectation(description: "source seek failure is reported")
         let timelineCommitted = expectation(description: "failed load does not commit")
         timelineCommitted.isInverted = true
@@ -121,6 +147,7 @@ final class RendererTimelineTests: XCTestCase {
 
     func testStopCompletionRunsAfterPipelineReleasesLoadedProvider() {
         let pipeline = RendererPlaybackPipeline()
+        pipeline.setVolume(0)
         let timelineCommitted = expectation(description: "empty source load commits without renderer output")
         let stopCompleted = expectation(description: "stop completion is a source-release barrier")
         var provider: MemoryRendererPCMProvider? = MemoryRendererPCMProvider(
@@ -148,6 +175,7 @@ final class RendererTimelineTests: XCTestCase {
 
     func testAppendCreatesContinuousTimelineAcrossSampleRatesWithOutputDelay() throws {
         let pipeline = RendererPlaybackPipeline()
+        pipeline.setVolume(0)
         let first = MemoryRendererPCMProvider(
             sampleRate: 44_100,
             channels: 2,
@@ -174,6 +202,7 @@ final class RendererTimelineTests: XCTestCase {
 
     func testNonZeroClockLoadAnchorsPTSAfterOutputDelay() throws {
         let pipeline = RendererPlaybackPipeline()
+        pipeline.setVolume(0)
         let first = MemoryRendererPCMProvider(
             sampleRate: 48_000,
             channels: 2,
@@ -209,6 +238,104 @@ final class RendererTimelineTests: XCTestCase {
     func testAnalysisChunkGranularity() throws {
         XCTAssertEqual(RendererPlaybackPipeline.analysisChunkFrames, 1024)
         XCTAssertEqual(RendererPlaybackPipeline.chunkFrames, 8192)
+        XCTAssertEqual(RendererPlaybackPipeline.enqueueBlockFrames, 2048)
+    }
+
+    func testDecodedChunkIsSplitAndShortTailIsEnqueued() {
+        let pipeline = RendererPlaybackPipeline()
+        pipeline.setVolume(0)
+        let provider = MemoryRendererPCMProvider(
+            sampleRate: 48_000,
+            channels: 2,
+            frames: 2 * AVAudioFramePosition(RendererPlaybackPipeline.enqueueBlockFrames) + 17,
+            marker: 0.25
+        )
+        let state = EnqueuedFrameState()
+        let allFramesEnqueued = expectation(description: "both full blocks and the short tail are queued")
+        allFramesEnqueued.expectedFulfillmentCount = 3
+        pipeline.onEnqueue = { pcm, _ in
+            state.append(pcm.frames)
+            allFramesEnqueued.fulfill()
+        }
+        pipeline.load(source: provider, autoplay: false)
+
+        wait(for: [allFramesEnqueued], timeout: 2)
+        XCTAssertEqual(state.values, [2048, 2048, 17])
+        pipeline.stop()
+    }
+
+    func testDisabledDSPHistoryStaysBoundedDuringLongPlayback() {
+        let pipeline = RendererPlaybackPipeline()
+        pipeline.setVolume(0)
+        let provider = MemoryRendererPCMProvider(
+            sampleRate: 48_000,
+            channels: 2,
+            frames: 15 * 48_000,
+            marker: 0.125
+        )
+        let passedEightSeconds = expectation(description: "renderer has continued feeding past eight seconds")
+        let gate = OneShotGate()
+        pipeline.onEnqueue = { _, pts in
+            if pts >= 8, gate.claim() { passedEightSeconds.fulfill() }
+        }
+        pipeline.load(source: provider, autoplay: true)
+
+        wait(for: [passedEightSeconds], timeout: 12)
+        XCTAssertLessThan(pipeline.dspOutputBoundaryCountForTesting, 160)
+        pipeline.stop()
+    }
+
+    func testDSPApplyReplaysQueuedBlocksAcrossGaplessSegmentBoundary() throws {
+        let pipeline = RendererPlaybackPipeline()
+        pipeline.setVolume(0)
+        let first = MemoryRendererPCMProvider(
+            sampleRate: 48_000,
+            channels: 2,
+            frames: 33_600,
+            marker: 0.1
+        )
+        let second = MemoryRendererPCMProvider(
+            sampleRate: 48_000,
+            channels: 2,
+            frames: 96_000,
+            marker: 0.2
+        )
+        let hasQueuedPastBoundary = expectation(description: "output is queued from the second segment")
+        let didScheduleDSP = expectation(description: "cross-segment DSP replacement is scheduled")
+        let requestID = UUID()
+        let queueExpectationGate = OneShotGate()
+        pipeline.onEnqueue = { _, pts in
+            if pts >= 0.8, queueExpectationGate.claim() { hasQueuedPastBoundary.fulfill() }
+        }
+        pipeline.onDSPApplyEvent = { event in
+            if event.requestID == requestID, event.state == .scheduled {
+                didScheduleDSP.fulfill()
+            }
+        }
+        pipeline.load(source: first, autoplay: false)
+        _ = try XCTUnwrap(pipeline.append(source: second))
+        wait(for: [hasQueuedPastBoundary], timeout: 2)
+
+        var bands = DSPParametricEQBand.defaultBands
+        bands[4] = DSPParametricEQBand(
+            enabled: true,
+            type: .bell,
+            frequencyHz: 1_000,
+            gainDB: 3
+        )
+        var node = DSPNodeConfiguration.parametricEQ(bands: bands)
+        node.channelPolicy = "allChannels"
+        pipeline.applyDSP(
+            AudioDSPConfiguration(
+                enabled: true,
+                headroom: DSPHeadroomConfiguration(mode: .off),
+                nodes: [node]
+            ),
+            revision: "gapless-replay-test",
+            requestID: requestID
+        )
+        wait(for: [didScheduleDSP], timeout: 3)
+        pipeline.stop()
     }
 
     func testRendererRecoveryUsesLogicalSegmentBoundaryWithOutputLead() {
@@ -306,6 +433,36 @@ private final class EnqueueState: @unchecked Sendable {
         lock.lock()
         points.append(value)
         lock.unlock()
+    }
+}
+
+private final class EnqueuedFrameState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frameCounts: [Int] = []
+
+    var values: [Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        return frameCounts
+    }
+
+    func append(_ count: Int) {
+        lock.lock()
+        frameCounts.append(count)
+        lock.unlock()
+    }
+}
+
+private final class OneShotGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var wasClaimed = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !wasClaimed else { return false }
+        wasClaimed = true
+        return true
     }
 }
 

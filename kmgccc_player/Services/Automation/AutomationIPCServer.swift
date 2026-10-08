@@ -412,6 +412,15 @@ final class AutomationIPCServer {
              AutomationMethod.storageReload:
             return await AutomationStorageHandler(appSession: appSession, automationBundleIdentifier: automationBundleIdentifier, appSupportDirectoryURL: appSupportDirectoryURL).handle(request)
 
+        case AutomationMethod.dspSchema, AutomationMethod.dspState,
+             AutomationMethod.dspValidate, AutomationMethod.dspPatch, AutomationMethod.dspWait,
+             AutomationMethod.dspPresetsList, AutomationMethod.dspPresetsGet,
+             AutomationMethod.dspPresetsSave, AutomationMethod.dspPresetsSelect,
+             AutomationMethod.dspPresetsRename, AutomationMethod.dspPresetsDelete,
+             AutomationMethod.dspPresetsDuplicate, AutomationMethod.dspPresetsImport,
+             AutomationMethod.dspPresetsExport, AutomationMethod.dspErrorsGet, AutomationMethod.dspErrorsClear:
+            return await AutomationDSPHandler(appSession: appSession).handle(request)
+
         case AutomationMethod.settingsGet,
              AutomationMethod.settingsPatch,
              AutomationMethod.settingsSchema,
@@ -949,7 +958,7 @@ final class AutomationIPCServer {
              AutomationMethod.settingsReset: return "settings"
         case AutomationMethod.audioGet,
              AutomationMethod.audioPatch: return "audio"
-        default: return "operation"
+        default: return method.hasPrefix("dsp.") ? "audio" : "operation"
         }
     }
 

@@ -213,3 +213,30 @@ manifest `tracks[].audioPath`，先相对 bundle 根目录解析；metadata 导�
 正常操作只依赖 MCP tools、resources 和内置说明，不假设用户电脑上存在项目源码。只有遇到机制不明、
 异常无法由现有工具诊断，或存在无法安全处理的数据风险时，才可临时查阅官方开源仓库：
 [kmgccc/kmgccc_player](https://github.com/kmgcc/kmgccc_player)。查阅后立即删除下载的源码和临时工程文件。
+
+## DSP 与完整预设
+
+P1–P2 的 `dsp.*` 工具通过 App 唯一 `AudioDSPController` 操作 renderer 前的音效。
+`dsp.schema` 返回当前支持的九段 EQ 参数合同，`dsp.state` 返回完整配置、当前格式、
+`desiredRevision`／`preparedRevision`／`effectiveRevision`／`audibleRevision` 和诊断。
+`dsp.validate` 无副作用；`dsp.patch` 接受完整 `configuration` 或有序 `operations`，
+在全部参数通过后原子提交。`expectedRevision` 使用 `dsp.state.desiredRevision`。
+操作类型是 `setMaster`、`setTrim`、`setHeadroom`、`setParameter`、`setEnabled`、
+`addNode`、`removeNode`、`setOrder`；`setParameter.path` 相对节点参数，例如 `bands.0.gainDB`。
+
+`dsp.patch`／预设选择返回 `status.requestID`。`dsp.wait` 最多等待 30 秒；
+`scheduled` 表示已排入队列，`audible` 才表示输出时钟已到达切换点，`timedOut` 独立返回。App 只保留最近 64 个请求的状态；未知或已淘汰的 ID 返回参数错误，不会伪装为 superseded。`applicationPresentationLeadSeconds` 单独报告 App 的可视化 lead。
+外部播放来源返回 `inactiveExternalSource`。重试 mutation 使用既有 `context.idempotencyKey`，
+CLI 使用 `--idempotency-key`；每次调参沿用 audio 授权，不弹额外确认。
+
+`dsp.presets.list/get/save/select/rename/delete/duplicate/import/export` 保存完整有序配置，
+包含 disabled 节点及参数、质量、声道策略、增益和余量。UUID 是身份，名字允许重复，
+`expectedPresetRevision` 对照文档的 `revisionString`。内置平直预设不可覆盖或删除；
+删除当前预设保留当前声音为草稿。导入／导出使用 JSON payload，导入先用 `dryRun` 查看兼容性。
+未知节点和参数完整保留。预览分别返回 `canImport` 和 `isCompatible`：当前 schema 的未支持算法可以保留为未兼容预设，导入返回 `applied:false`；选择时校验失败，保留原声音。损坏或不受支持的文档 schema 不写入。全局播放淡化和整曲固定响度均衡不进入预设。
+
+资源 `kmgccc://audio/dsp/state` 与 `kmgccc://audio/dsp/presets` 支持读取和现代
+`subscriptions/listen`。沿用现有约 2 秒快照订阅循环，仅变化时发送
+`notifications/resources/updated`；订阅不会自动启动 App。读工具使用 `audio.read`，
+写工具使用 `audio.write`；`dsp.errors.get/clear` 公开报错与清除操作。
+当前运行节点仅 `peq9`；等响补偿、其他创意效果与脚本执行在后续阶段接入。

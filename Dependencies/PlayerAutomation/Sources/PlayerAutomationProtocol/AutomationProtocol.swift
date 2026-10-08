@@ -3586,6 +3586,7 @@ public enum AutomationDocumentation {
     - Prefer the formal Automation API, then actionable diagnostics and App-owned repair. A source checkout is not needed for normal operations. If a concrete issue cannot be resolved through formal tools, inspect only the official source details needed to understand it, remove any temporary checkout immediately, and use a controlled fallback only after backup and a focused validation/reload plan.
     - Query first, preserve the returned revision, apply with expectedRevision when offered, and verify the result. Use idempotencyKey when retrying a mutation.
     - `metadata.get`/`metadata.patch` cover App-owned Track, Artist, Album and Playlist fields. Use `metadata.embedded.get` for live file tags; `metadata.embedded.patch` currently writes MP3 ID3v2.3/v2.4 only and always requires `dryRun`, `confirm` and App foreground confirmation.
+    - DSP uses App-wide dsp.schema/state/validate/patch/wait and dsp.presets tools. Fetch stable node IDs and desiredRevision first, patch atomically with expectedRevision, then wait on status.requestID; scheduled is queued audio, audible follows the output clock. Presets retain complete ordered configurations and disabled parameters. Use context.idempotencyKey for retries. Global fades and track loudness normalization are outside DSP presets.
     - Artwork is App-owned and sidecar-backed: `artwork.search/get/apply` use one target from Track, Artist, Album or Playlist where the operation supports it. `artwork.get` reports availability and a digest without returning image bytes; `artwork.apply` accepts an App picker, an image path hint, base64 image data, or an explicit clear. Batches of 10 or more require `confirm` plus foreground confirmation.
     """
 
@@ -3638,7 +3639,7 @@ public struct AutomationToolDescriptor: Codable, Equatable, Sendable {
 }
 
 public enum AutomationToolCatalog {
-    public static let all: [AutomationToolDescriptor] = [
+    public static let all: [AutomationToolDescriptor] = ([
         AutomationToolDescriptor(
             name: AutomationMethod.systemPing,
             title: "Ping Player",
@@ -4764,7 +4765,7 @@ public enum AutomationToolCatalog {
             risk: .low,
             inputSchema: scopeInputSchema
         )
-    ].sorted { $0.name < $1.name }
+    ] + AutomationDSPToolCatalog.descriptors).sorted { $0.name < $1.name }
 
     public static func descriptor(for name: String) -> AutomationToolDescriptor? {
         all.first { $0.name == name }
