@@ -125,6 +125,9 @@ final class ThemeStore: ObservableObject {
     func clearArtworkColorCache() {
         dominantColorCache.removeAllObjects()
         averageColorCache = nil
+        Task {
+            await ArtworkAssetStore.shared.clearAccentColorCache()
+        }
     }
 
     /// Legacy entrypoint kept for compatibility with old call sites.

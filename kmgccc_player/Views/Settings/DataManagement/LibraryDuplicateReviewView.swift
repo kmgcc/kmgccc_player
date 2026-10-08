@@ -8,7 +8,10 @@ struct LibraryDuplicateReviewView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
+    @Environment(AppSettings.self) private var appSettings
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
 
     let snapshot: LibraryDiagnosticsSnapshot
 
@@ -73,64 +76,72 @@ struct LibraryDuplicateReviewView: View {
     }
 
     private func duplicateTrackRow(_ track: Track, canDelete: Bool) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: track.availability.isPlayable ? "music.note" : "exclamationmark.triangle")
-                .foregroundStyle(
-                    track.availability.isPlayable
-                        ? themeStore.accentColor
-                        : Color.orange
-                )
-                .frame(width: 22)
+        TrackArtworkTintContent(
+            track: track,
+            tintMode: appSettings.artworkTintMode,
+            cacheServices: cacheServices,
+            colorScheme: colorScheme
+        ) { artworkTintColor in
+            HStack(spacing: 10) {
+                Image(systemName: track.availability.isPlayable ? "music.note" : "exclamationmark.triangle")
+                    .foregroundStyle(
+                        track.availability.isPlayable
+                            ? (artworkTintColor ?? themeStore.accentColor)
+                            : Color.orange
+                    )
+                    .frame(width: 22)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(track.title.isEmpty ? "未命名歌曲" : track.title)
-                    .font(.body.weight(.medium))
-                    .lineLimit(1)
-                Text(displayPath(for: track))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(track.title.isEmpty ? "未命名歌曲" : track.title)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(artworkTintColor ?? .primary)
+                        .lineLimit(1)
+                    Text(displayPath(for: track))
+                        .font(.caption)
+                        .foregroundStyle(artworkTintColor?.opacity(0.78) ?? .secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            Button {
-                playbackCoordinator.playTrack(track, inQueueFrom: [track])
-            } label: {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 34, height: 34)
-                    .foregroundStyle(themeStore.accentColor)
-                    .background(themeStore.accentColor.opacity(0.12), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .help("播放")
-            .accessibilityLabel("播放")
-            .disabled(!track.availability.isPlayable)
-
-            if canDelete {
                 Button {
-                    trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
+                    playbackCoordinator.playTrack(track, inQueueFrom: [track])
                 } label: {
-                    Image(systemName: "trash.fill")
+                    Image(systemName: "play.fill")
                         .font(.system(size: 11, weight: .semibold))
                         .frame(width: 34, height: 34)
-                        .foregroundStyle(.red)
-                        .background(Color.red.opacity(0.11), in: Circle())
+                        .foregroundStyle(artworkTintColor ?? themeStore.accentColor)
+                        .background((artworkTintColor ?? themeStore.accentColor).opacity(0.12), in: Circle())
                 }
                 .buttonStyle(.plain)
-                .help("从资料库删除")
-                .accessibilityLabel("从资料库删除")
-                .disabled(deletingTrackIDs.contains(track.id))
+                .help("播放")
+                .accessibilityLabel("播放")
+                .disabled(!track.availability.isPlayable)
+
+                if canDelete {
+                    Button {
+                        trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
+                    } label: {
+                        Image(systemName: "trash.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(width: 34, height: 34)
+                            .foregroundStyle(.red)
+                            .background(Color.red.opacity(0.11), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("从资料库删除")
+                    .accessibilityLabel("从资料库删除")
+                    .disabled(deletingTrackIDs.contains(track.id))
+                }
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(minHeight: 68)
+            .background(
+                Color.primary.opacity(0.035),
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .frame(minHeight: 68)
-        .background(
-            Color.primary.opacity(0.035),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-        )
     }
 
     private func deleteTracks(_ tracks: [Track]) {

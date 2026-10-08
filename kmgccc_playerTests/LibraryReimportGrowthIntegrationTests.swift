@@ -9,6 +9,63 @@ import XCTest
 /// produce duplicate Track records or duplicate managed copies.
 @MainActor
 final class LibraryReimportGrowthIntegrationTests: XCTestCase {
+    func testMigrationImportMapsExpandedAndReusedInputsWithoutOnlineEnrichment() async throws {
+        let fixture = try makeFixture(initialFileCount: 2)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let host = try makeHost(registryURL: fixture.registryURL)
+        _ = try await host.createMusicLibrary(
+            mode: .managed,
+            parentURL: fixture.libraryParent,
+            displayName: "Migration Import",
+            initialImportSelection: nil
+        )
+        let session = try XCTUnwrap(host.activeLibraryBinding.activeSession)
+        let previousDeferred = AppSettings.shared.deferImportEnrichment
+        AppSettings.shared.deferImportEnrichment = false
+        defer { AppSettings.shared.deferImportEnrichment = previousDeferred }
+
+        let context = LibraryImportContext(
+            libraryID: session.context.id,
+            sessionGeneration: session.context.generation,
+            destination: .libraryOnly,
+            origin: .automation,
+            enrichmentPolicy: .migration
+        )
+        let inputPaths = (1...2).map {
+            fixture.sourceRoot.appendingPathComponent("\($0).wav").standardizedFileURL.path
+        }.sorted()
+        let firstResult = await session.fileImportService.importSelectedURLs(
+            [fixture.sourceRoot],
+            context: context
+        )
+
+        XCTAssertEqual(firstResult.importedTrackCount, 2)
+        XCTAssertEqual(firstResult.fileTrackMappings.map(\.filePath), inputPaths)
+        let persistedTrackIDs = Set((await session.repository.fetchTracks(in: nil)).map(\.id))
+        for mapping in firstResult.fileTrackMappings {
+            XCTAssertTrue(persistedTrackIDs.contains(mapping.trackID))
+        }
+        let firstTrackIDByInputPath = Dictionary(uniqueKeysWithValues:
+            firstResult.fileTrackMappings.map { ($0.filePath, $0.trackID) }
+        )
+        XCTAssertTrue(session.importEnrichmentService.enrichmentRows.isEmpty)
+
+        let reusedResult = await session.fileImportService.importSelectedURLs(
+            [URL(fileURLWithPath: inputPaths[0])],
+            context: context
+        )
+        XCTAssertEqual(reusedResult.importedTrackCount, 0)
+        XCTAssertEqual(reusedResult.reusedTrackCount, 1)
+        let reusedTrackID = try XCTUnwrap(firstTrackIDByInputPath[inputPaths[0]])
+        XCTAssertEqual(reusedResult.fileTrackMappings, [
+            LibraryImportFileTrackMapping(filePath: inputPaths[0], trackID: reusedTrackID)
+        ])
+        XCTAssertTrue(session.importEnrichmentService.enrichmentRows.isEmpty)
+
+        await session.quiesce()
+        await session.close()
+    }
+
     func testReferencedDirectoryGrowthReimportAddsFiveAndReusesTen() async throws {
         let fixture = try makeFixture(initialFileCount: 10)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -177,6 +234,12 @@ final class LibraryReimportGrowthIntegrationTests: XCTestCase {
         XCTAssertEqual(result.alreadyInPlaylistCount, 0)
         XCTAssertEqual(result.possibleDuplicatesCount, 1)
         XCTAssertTrue(result.failures.isEmpty)
+        XCTAssertEqual(result.fileTrackMappings, [
+            LibraryImportFileTrackMapping(
+                filePath: duplicateURL.standardizedFileURL.path,
+                trackID: existing.id
+            )
+        ])
 
         let allTracks = await session.repository.fetchTracks(in: nil)
         XCTAssertEqual(allTracks.map(\.id), [existing.id], "referenced duplicate must not create a Track")

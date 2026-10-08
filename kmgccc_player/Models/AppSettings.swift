@@ -295,6 +295,24 @@ public final class AppSettings {
         case dark
     }
 
+    enum ArtworkTintMode: String, CaseIterable, Identifiable, Hashable {
+        case simple
+        case dynamic
+        case rich
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .simple: return "简洁"
+            case .dynamic: return "动态"
+            case .rich: return "丰富"
+            }
+        }
+
+        var usesGlobalArtworkTint: Bool { self != .simple }
+    }
+
     enum LyricsBackgroundMode: String, CaseIterable, Identifiable {
         case clear
         case sidebar
@@ -326,6 +344,7 @@ public final class AppSettings {
     }
 
     private enum AppearanceKeys {
+        static let artworkTintMode = "artworkTintMode"
         static let globalArtworkTintEnabled = "globalArtworkTintEnabled"
         static let audioVisualizationHDREnabled = "audioVisualizationHDREnabled"
         static let dockProgressVisible = "dockProgressVisible"
@@ -405,24 +424,37 @@ public final class AppSettings {
         }
     }
 
-    /// Whether global accent/tint follows current artwork dominant color.
-    var globalArtworkTintEnabled: Bool {
+    /// How artwork colors affect global UI and song rows.
+    /// Existing installations retain their former on/off choice on first read.
+    var artworkTintMode: ArtworkTintMode {
         get {
-            access(keyPath: \.globalArtworkTintEnabled)
-            if UserDefaults.standard.object(forKey: AppearanceKeys.globalArtworkTintEnabled) == nil
-            {
-                return true
+            access(keyPath: \.artworkTintMode)
+            let defaults = UserDefaults.standard
+            if let storedValue = defaults.string(forKey: AppearanceKeys.artworkTintMode),
+               let mode = ArtworkTintMode(rawValue: storedValue) {
+                return mode
             }
-            return UserDefaults.standard.bool(forKey: AppearanceKeys.globalArtworkTintEnabled)
+
+            if let legacyValue = defaults.object(forKey: AppearanceKeys.globalArtworkTintEnabled) as? Bool {
+                return legacyValue ? .dynamic : .simple
+            }
+
+            return .dynamic
         }
         set {
-            withMutation(keyPath: \.globalArtworkTintEnabled) {
-                UserDefaults.standard.set(
-                    newValue,
-                    forKey: AppearanceKeys.globalArtworkTintEnabled
-                )
+            withMutation(keyPath: \.artworkTintMode) {
+                let defaults = UserDefaults.standard
+                defaults.set(newValue.rawValue, forKey: AppearanceKeys.artworkTintMode)
+                defaults.removeObject(forKey: AppearanceKeys.globalArtworkTintEnabled)
             }
         }
+    }
+
+    /// Compatibility view of the former switch. Rich mode keeps the global
+    /// artwork tint and adds per-song colors in lists.
+    var globalArtworkTintEnabled: Bool {
+        get { artworkTintMode.usesGlobalArtworkTint }
+        set { artworkTintMode = newValue ? .dynamic : .simple }
     }
 
     /// Whether audio visualization (spectrum / LED) renders in HDR high dynamic range.

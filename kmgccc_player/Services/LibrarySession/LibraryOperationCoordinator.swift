@@ -35,6 +35,7 @@ nonisolated enum LibraryTaskKind: String, Codable, Equatable, Sendable {
     case sourceScan
     case ncmConversion
     case enrichment
+    case automation
     case indexUpdate
     case libraryBundleExport
     case embeddedTagWrite
@@ -56,6 +57,23 @@ nonisolated struct LibraryOperationRetrySpec: Codable, Equatable, Sendable {
     let sourceID: UUID?
     let force: Bool
     let targetPlaylistID: UUID?
+    let enrichmentPolicy: String
+
+    init(
+        kind: Kind,
+        trackIDs: [UUID] = [],
+        sourceID: UUID? = nil,
+        force: Bool = false,
+        targetPlaylistID: UUID? = nil,
+        enrichmentPolicy: String = "standard"
+    ) {
+        self.kind = kind
+        self.trackIDs = trackIDs
+        self.sourceID = sourceID
+        self.force = force
+        self.targetPlaylistID = targetPlaylistID
+        self.enrichmentPolicy = enrichmentPolicy
+    }
 
     static func lyricsRefresh(trackIDs: [UUID], force: Bool) -> Self {
         Self(
@@ -77,14 +95,32 @@ nonisolated struct LibraryOperationRetrySpec: Codable, Equatable, Sendable {
         )
     }
 
-    static func libraryImport(targetPlaylistID: UUID?) -> Self {
+    static func libraryImport(
+        targetPlaylistID: UUID?,
+        enrichmentPolicy: String = "standard"
+    ) -> Self {
         Self(
             kind: .libraryImport,
             trackIDs: [],
             sourceID: nil,
             force: false,
-            targetPlaylistID: targetPlaylistID
+            targetPlaylistID: targetPlaylistID,
+            enrichmentPolicy: enrichmentPolicy
         )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, trackIDs, sourceID, force, targetPlaylistID, enrichmentPolicy
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decode(Kind.self, forKey: .kind)
+        trackIDs = try container.decodeIfPresent([UUID].self, forKey: .trackIDs) ?? []
+        sourceID = try container.decodeIfPresent(UUID.self, forKey: .sourceID)
+        force = try container.decodeIfPresent(Bool.self, forKey: .force) ?? false
+        targetPlaylistID = try container.decodeIfPresent(UUID.self, forKey: .targetPlaylistID)
+        enrichmentPolicy = try container.decodeIfPresent(String.self, forKey: .enrichmentPolicy) ?? "standard"
     }
 }
 
@@ -452,7 +488,11 @@ final class LibraryOperationCoordinator {
                 }
                 self?.markRunning(operationID: operationID)
                 await work()
-                self?.finishNormally(operationID: operationID)
+                if Task.isCancelled {
+                    self?.finish(operationID: operationID, state: .cancelled)
+                } else {
+                    self?.finishNormally(operationID: operationID)
+                }
             }
         }
         let completion = Task { @MainActor in

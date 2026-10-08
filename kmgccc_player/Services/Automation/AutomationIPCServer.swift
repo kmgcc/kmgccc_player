@@ -7,6 +7,10 @@ import PlayerAutomationIPC
 import PlayerAutomationProtocol
 import UniformTypeIdentifiers
 
+private enum AutomationBatchExecutionContext {
+    @TaskLocal static var aggregateConfirmationApproved = false
+}
+
 private nonisolated enum AutomationAppIdentity {
     static var bundleIdentifier: String {
         for executablePath in executablePaths {
@@ -183,10 +187,11 @@ private final class AutomationScopePolicyStore {
 
     init(
         fileManager: FileManager = .default,
-        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier
+        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier,
+        appSupportDirectoryURL: URL? = nil
     ) {
         self.fileManager = fileManager
-        let appSupport = fileManager.urls(
+        let appSupport = appSupportDirectoryURL ?? fileManager.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
@@ -253,10 +258,11 @@ private final class AutomationIdempotencyStore {
 
     init(
         fileManager: FileManager = .default,
-        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier
+        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier,
+        appSupportDirectoryURL: URL? = nil
     ) {
         self.fileManager = fileManager
-        let appSupport = fileManager.urls(
+        let appSupport = appSupportDirectoryURL ?? fileManager.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
@@ -312,11 +318,12 @@ private final class AutomationSelectionStore {
 
     init(
         fileManager: FileManager = .default,
-        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier
+        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier,
+        appSupportDirectoryURL: URL? = nil
     ) {
         self.fileManager = fileManager
         self.bundleIdentifier = bundleIdentifier
-        appSupportURL = fileManager.urls(
+        appSupportURL = appSupportDirectoryURL ?? fileManager.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
@@ -425,6 +432,8 @@ final class AutomationIPCServer {
     private let scopePolicyStore: AutomationScopePolicyStore
     private let idempotencyStore: AutomationIdempotencyStore
     private let selectionStore: AutomationSelectionStore
+    private let automationBundleIdentifier: String
+    private let appSupportDirectoryURL: URL?
     private var cachedGrantedScopes: Set<AutomationScope>?
     private var idempotencyCache: [String: (fingerprint: String, response: AutomationResponse)] = [:]
     private var idempotencyOrder: [String] = []
@@ -464,20 +473,37 @@ final class AutomationIPCServer {
         var message: String
     }
 
-    init(appSession: AppSessionHost) throws {
+    init(
+        appSession: AppSessionHost,
+        bundleIdentifier: String? = nil,
+        socketURL: URL? = nil,
+        appSupportDirectoryURL: URL? = nil,
+        ioTimeout: TimeInterval = 120
+    ) throws {
         self.appSession = appSession
-        let bundleIdentifier = AutomationAppIdentity.bundleIdentifier
-        scopePolicyStore = AutomationScopePolicyStore(bundleIdentifier: bundleIdentifier)
-        idempotencyStore = AutomationIdempotencyStore(bundleIdentifier: bundleIdentifier)
-        selectionStore = AutomationSelectionStore(bundleIdentifier: bundleIdentifier)
-        let socketPath = Self.defaultSocketURL.path
+        let resolvedBundleIdentifier = bundleIdentifier ?? AutomationAppIdentity.bundleIdentifier
+        self.automationBundleIdentifier = resolvedBundleIdentifier
+        self.appSupportDirectoryURL = appSupportDirectoryURL
+        scopePolicyStore = AutomationScopePolicyStore(
+            bundleIdentifier: resolvedBundleIdentifier,
+            appSupportDirectoryURL: appSupportDirectoryURL
+        )
+        idempotencyStore = AutomationIdempotencyStore(
+            bundleIdentifier: resolvedBundleIdentifier,
+            appSupportDirectoryURL: appSupportDirectoryURL
+        )
+        selectionStore = AutomationSelectionStore(
+            bundleIdentifier: resolvedBundleIdentifier,
+            appSupportDirectoryURL: appSupportDirectoryURL
+        )
+        let socketPath = (socketURL ?? Self.socketURL(bundleIdentifier: resolvedBundleIdentifier)).path
         let sharedSecret = try AutomationIPCSecretStore.loadOrCreate(
             forSocketPath: socketPath
         )
         let configuration = try AutomationIPCConfiguration(
             maximumFrameBytes: 1_048_576,
             maximumConcurrentConnections: 8,
-            ioTimeout: 10,
+            ioTimeout: ioTimeout,
             sharedSecret: sharedSecret
         )
         listener = try AutomationIPCListener(
@@ -491,13 +517,17 @@ final class AutomationIPCServer {
     }
 
     static var defaultSocketURL: URL {
+        socketURL(bundleIdentifier: AutomationAppIdentity.bundleIdentifier)
+    }
+
+    private static func socketURL(bundleIdentifier: String) -> URL {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         return appSupport
             .appendingPathComponent(
-                AutomationAppIdentity.bundleIdentifier,
+                bundleIdentifier,
                 isDirectory: true
             )
             .appendingPathComponent(socketDirectoryName, isDirectory: true)
@@ -581,7 +611,7 @@ final class AutomationIPCServer {
                 fingerprint: fingerprint,
                 waiters: []
             )
-            let response = await execute(request)
+            let response = await execute(request, cancellation: cancellation)
             let waiters = pendingIdempotency[cacheKey]?.waiters ?? []
             if waiters.isEmpty {
                 cancelJobReturnedByCancelledRequest(
@@ -590,8 +620,7 @@ final class AutomationIPCServer {
                     cancellation: cancellation
                 )
             }
-            if response.error == nil,
-               AutomationToolCatalog.descriptor(for: request.method)?.readOnly == false {
+            if response.error == nil, usesIdempotencyCache(for: request) {
                 idempotencyCache[cacheKey] = (fingerprint, response)
                 idempotencyOrder.append(cacheKey)
                 while idempotencyOrder.count > idempotencyCacheLimit {
@@ -610,7 +639,7 @@ final class AutomationIPCServer {
             return response
         }
 
-        let response = await execute(request)
+        let response = await execute(request, cancellation: cancellation)
         cancelJobReturnedByCancelledRequest(
             response,
             request: request,
@@ -655,7 +684,10 @@ final class AutomationIPCServer {
         return try? AutomationWireCoding.decoder().decode(AutomationJobSummary.self, from: data)
     }
 
-    private func execute(_ request: AutomationRequest) async -> AutomationResponse {
+    private func execute(
+        _ request: AutomationRequest,
+        cancellation: AutomationIPCCancellationToken? = nil
+    ) async -> AutomationResponse {
         guard AutomationProtocol.supportedVersions.contains(request.protocolVersion) else {
             return .failure(
                 for: request,
@@ -720,10 +752,10 @@ final class AutomationIPCServer {
                case .boolean(true) = values["dryRun"] {
                 required.remove(.libraryDelete)
             }
-            if request.method == AutomationMethod.metadataPatch,
-               case .object(let values) = request.params,
-               case .boolean(true) = values["dryRun"] {
-                required.remove(.metadataWrite)
+            if case .object(let values) = request.params,
+               case .boolean(true) = values["dryRun"],
+               let writeScope = Self.batchWriteScope(for: request.method) {
+                required.remove(writeScope)
             }
             if request.method == AutomationMethod.metadataEmbeddedPatch,
                case .object(let values) = request.params,
@@ -735,11 +767,6 @@ final class AutomationIPCServer {
                case .object(let values) = request.params,
                case .boolean(true) = values["dryRun"] {
                 required.remove(.metadataWrite)
-            }
-            if request.method == AutomationMethod.artworkApply,
-               case .object(let values) = request.params,
-               case .boolean(true) = values["dryRun"] {
-                required.remove(.artworkWrite)
             }
             if request.method == AutomationMethod.sourceConfigImport,
                case .object(let values) = request.params,
@@ -791,7 +818,14 @@ final class AutomationIPCServer {
             }
         }
 
+        if isBackgroundJobRequest(request) {
+            return await submitBackgroundJob(for: request)
+        }
+
         switch request.method {
+        case AutomationMethod.operationsBatch:
+            return await submitOperationsBatch(for: request)
+
         case AutomationMethod.systemPing:
             guard isEmptyParameters(request.params) else {
                 return invalidParameters(for: request)
@@ -1436,11 +1470,17 @@ final class AutomationIPCServer {
                     throw AutomationParameterError.missingResource("targetPlaylistID")
                 }
                 let dryRun = try parameters.boolean("dryRun", default: false)
+                let enrichmentPolicyRaw = try parameters.string("enrichmentPolicy")
+                    ?? LibraryImportEnrichmentPolicy.standard.rawValue
+                guard let enrichmentPolicy = LibraryImportEnrichmentPolicy(rawValue: enrichmentPolicyRaw) else {
+                    throw AutomationParameterError.invalidValue("enrichmentPolicy")
+                }
                 if dryRun {
                     return encodeResult(AutomationLibraryImportResult(
                         libraryID: session.context.id, mode: session.context.mode.rawValue,
                         filePaths: urls.map(\.path), targetPlaylistID: playlistID,
                         dryRun: true,
+                        enrichmentPolicy: enrichmentPolicy.rawValue,
                         message: "Preview only; no scan, conversion, authorization, import or enrichment has started."
                     ), for: request)
                 }
@@ -1473,14 +1513,19 @@ final class AutomationIPCServer {
                     return permissionDenied(for: request, path: denied.path)
                 }
                 guard activeSession(for: request) === session,
-                      let job = session.startAutomationImport(selection: selection, playlistID: playlistID) else {
+                      let job = session.startAutomationImport(
+                        selection: selection,
+                        playlistID: playlistID,
+                        enrichmentPolicy: enrichmentPolicy
+                      ) else {
                     return noActiveLibraryResponse(for: request)
                 }
                 return encodeResult(AutomationLibraryImportResult(
                     libraryID: session.context.id, mode: session.context.mode.rawValue,
                     filePaths: selectedURLs.map(\.path), targetPlaylistID: playlistID,
                     job: makeJobSummary(job),
-                    message: "Import started. Poll jobs.get for Track IDs, Playlist additions, failures and enrichment completion."
+                    enrichmentPolicy: enrichmentPolicy.rawValue,
+                    message: "Import started. Use jobs.wait or jobs.get for Track IDs, per-file mappings, failures and enrichment status."
                 ), for: request)
             } catch {
                 return invalidParameters(for: request, error: error)
@@ -4850,7 +4895,8 @@ final class AutomationIPCServer {
                     )
                 }
 
-                if trackIDs.count >= 10 {
+                if trackIDs.count >= 10,
+                   !AutomationBatchExecutionContext.aggregateConfirmationApproved {
                     guard await confirmDestructiveOperation(
                         title: "应用到 \(trackIDs.count) 首歌曲？",
                         message: clear
@@ -5949,11 +5995,13 @@ final class AutomationIPCServer {
                             ])
                         )
                     }
-                    guard await confirmDestructiveOperation(
-                        title: "修改 \(trackIDs.count) 首歌曲的信息？",
-                        message: "要将这些歌曲的信息更新到播放器资料库吗？原音频文件和内嵌标签不会修改。"
-                    ) else {
-                        return interactionCancelled(for: request)
+                    if !AutomationBatchExecutionContext.aggregateConfirmationApproved {
+                        guard await confirmDestructiveOperation(
+                            title: "修改 \(trackIDs.count) 首歌曲的信息？",
+                            message: "要将这些歌曲的信息更新到播放器资料库吗？原音频文件和内嵌标签不会修改。"
+                        ) else {
+                            return interactionCancelled(for: request)
+                        }
                     }
                 }
                 let outcome = try await session.libraryViewModel.applyMetadataPatchForAutomation(
@@ -6437,6 +6485,102 @@ final class AutomationIPCServer {
                 return invalidParameters(for: request, error: error)
             }
 
+        case AutomationMethod.jobsWait:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard let appSession else {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .serverUnavailable,
+                        message: "The player App is no longer available.",
+                        retryable: true
+                    )
+                )
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let jobID = try parameters.uuid("jobID", required: true)!
+                let timeoutMs = try parameters.integer("timeoutMs", default: 20_000)
+                guard (0...25_000).contains(timeoutMs) else {
+                    throw AutomationParameterError.outOfRange("timeoutMs")
+                }
+                let startedAt = Date()
+                let requestedDeadline = startedAt.addingTimeInterval(Double(timeoutMs) / 1_000)
+                let requestDeadline = request.context.deadline
+                let deadline = min(requestedDeadline, requestDeadline ?? requestedDeadline)
+                let contextDeadlineIsEarlier = requestDeadline.map { $0 < requestedDeadline } ?? false
+
+                while true {
+                    if cancellation?.isCancelled == true {
+                        return .failure(
+                            for: request,
+                            error: AutomationError(
+                                code: .serverUnavailable,
+                                message: "The Job wait was cancelled. The Job continues running.",
+                                retryable: true,
+                                details: .object(["jobID": .string(jobID.uuidString)])
+                            )
+                        )
+                    }
+                    guard appSession.activeLibraryBinding.activeSession === session else {
+                        return noActiveLibraryResponse(for: request)
+                    }
+                    guard let descriptor = session.libraryJobDescriptorsSnapshot().first(where: {
+                        $0.id == jobID
+                    }) else {
+                        throw AutomationParameterError.missingResource("jobID")
+                    }
+                    let job = makeJobSummary(descriptor)
+                    let completed: Bool
+                    switch job.state {
+                    case .completed, .partialFailure, .failed, .cancelled:
+                        completed = true
+                    case .queued, .running, .checkpointed:
+                        completed = false
+                    }
+                    if completed {
+                        return encodeResult(
+                            AutomationJobWaitResult(
+                                job: job,
+                                completed: true,
+                                timedOut: false,
+                                waitedMs: Int(Date().timeIntervalSince(startedAt) * 1_000)
+                            ),
+                            for: request
+                        )
+                    }
+
+                    let remaining = deadline.timeIntervalSinceNow
+                    if remaining <= 0 {
+                        return encodeResult(
+                            AutomationJobWaitResult(
+                                job: job,
+                                completed: false,
+                                timedOut: true,
+                                deadlineReached: contextDeadlineIsEarlier,
+                                waitedMs: Int(Date().timeIntervalSince(startedAt) * 1_000)
+                            ),
+                            for: request
+                        )
+                    }
+                    let sleepMs = min(200, max(1, Int(remaining * 1_000)))
+                    try await Task.sleep(for: .milliseconds(sleepMs))
+                }
+            } catch is CancellationError {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .serverUnavailable,
+                        message: "The Job wait was cancelled. The Job continues running.",
+                        retryable: true
+                    )
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
         case AutomationMethod.jobsCancel:
             guard let appSession else {
                 return .failure(
@@ -6600,6 +6744,12 @@ final class AutomationIPCServer {
                 )
             }
             do {
+                let parameters = try AutomationParameters(request)
+                let offset = try parameters.integer("offset", default: 0)
+                let limit = try parameters.integer("limit", default: 100)
+                guard offset >= 0, (1...100).contains(limit) else {
+                    throw AutomationParameterError.outOfRange("offset/limit")
+                }
                 let tracks = session.libraryViewModel.allTracks
                 let missing = tracks.filter { $0.availability == .missing }.count
                 let unavailable = tracks.filter { $0.availability != .available }.count
@@ -6614,7 +6764,7 @@ final class AutomationIPCServer {
                 let sourceIssues = sources
                     .filter { $0.status != .available }
                     .map { "\($0.displayName): \($0.status.rawValue) (\($0.lastKnownPath))" }
-                let jobs = appSession.libraryJobDescriptors()
+                let jobs = session.libraryJobDescriptorsSnapshot()
                 let runningJobs = jobs.filter {
                     switch $0.state {
                     case .queued, .running, .checkpointed: return true
@@ -6640,6 +6790,7 @@ final class AutomationIPCServer {
                 } ?? []
                 var storageValidation = "notRun"
                 var storageValidationMessage: String?
+                var storageValidationError: Error?
                 do {
                     try await LibraryUpgradeSessionValidator.validate(
                         context: session.context,
@@ -6652,7 +6803,26 @@ final class AutomationIPCServer {
                 } catch {
                     storageValidation = "failed"
                     storageValidationMessage = String(describing: error)
+                    storageValidationError = error
                 }
+                let issues = diagnosticsIssues(
+                    tracks: tracks,
+                    sources: sources,
+                    jobs: jobs,
+                    playlistReferences: playlistReferenceIssues,
+                    storageError: storageValidationError,
+                    diskSnapshot: diskSnapshot,
+                    in: session
+                )
+                let mediaIssues = mediaPresenceIssues(for: tracks, in: session).map {
+                    AutomationDiagnosticIssue(
+                        id: $0.id,
+                        code: $0.code,
+                        trackID: $0.trackID,
+                        path: $0.path,
+                        reason: $0.reason
+                    )
+                }.sorted { $0.id < $1.id }
                 let checks = [
                     "library": "ok",
                     "sources": sourceIssues.isEmpty ? "ok" : "attention",
@@ -6663,6 +6833,7 @@ final class AutomationIPCServer {
                     "metadataCoverage": incompleteMetadata == 0 ? "complete" : "partial",
                     "jobs": runningJobs == 0 ? (failedJobs.isEmpty ? "idle" : "attention") : "running",
                     "playlistReferences": playlistReferenceIssues.isEmpty ? "ok" : "attention",
+                    "mediaPresence": mediaIssues.isEmpty ? "ok" : "attention",
                     "storage": storageValidation == "passed" ? "ok" : "attention"
                 ]
                 return encodeResult(
@@ -6671,6 +6842,7 @@ final class AutomationIPCServer {
                             && unavailable == 0
                             && failedJobs.isEmpty
                             && playlistReferenceIssues.isEmpty
+                            && mediaIssues.isEmpty
                             && storageValidation == "passed",
                         libraryID: session.context.id,
                         trackCount: tracks.count,
@@ -6686,12 +6858,22 @@ final class AutomationIPCServer {
                         checks: checks,
                         failedJobCount: failedJobs.count,
                         failedJobSummaries: Array(failedJobSummaries),
-                        playlistReferenceIssues: playlistReferenceIssues,
+                        playlistReferenceIssues: Array(playlistReferenceIssues.prefix(100)),
                         storageValidation: storageValidation,
-                        storageValidationMessage: storageValidationMessage
+                        storageValidationMessage: storageValidationMessage,
+                        issues: Array(issues.dropFirst(offset).prefix(limit)),
+                        issueCount: issues.count,
+                        offset: offset,
+                        limit: limit,
+                        hasMore: offset + limit < issues.count,
+                        mediaIssues: Array(mediaIssues.dropFirst(offset).prefix(limit)),
+                        mediaIssueCount: mediaIssues.count,
+                        mediaHasMore: offset + limit < mediaIssues.count
                     ),
                     for: request
                 )
+            } catch let error as AutomationParameterError {
+                return invalidParameters(for: request, error: error)
             } catch {
                 return .failure(
                     for: request,
@@ -7110,35 +7292,54 @@ final class AutomationIPCServer {
             guard let session = activeSession(for: request) else {
                 return noActiveLibraryResponse(for: request)
             }
-            guard request.params == nil || request.params == .null || isObject(request.params) else {
-                return invalidParameters(for: request)
-            }
             do {
-                try await LibraryUpgradeSessionValidator.validate(
-                    context: session.context,
-                    libraryViewModel: session.libraryViewModel,
-                    repository: session.repository,
-                    searchIndex: session.searchIndex,
-                    playbackHistoryStore: session.playbackHistoryStore
-                )
-                return encodeResult(
-                    storageResult(
-                        for: session,
-                        validation: "passed",
-                        validationMessage: "The App-owned storage validator passed."
-                    ),
-                    for: request
-                )
+                let parameters = try AutomationParameters(request)
+                let offset = try parameters.integer("offset", default: 0)
+                let limit = try parameters.integer("limit", default: 100)
+                guard offset >= 0, (1...100).contains(limit) else {
+                    throw AutomationParameterError.outOfRange("offset/limit")
+                }
+                let diskSnapshot = try? await storageDiskSnapshot(for: session)
+                do {
+                    try await LibraryUpgradeSessionValidator.validate(
+                        context: session.context,
+                        libraryViewModel: session.libraryViewModel,
+                        repository: session.repository,
+                        searchIndex: session.searchIndex,
+                        playbackHistoryStore: session.playbackHistoryStore
+                    )
+                    return encodeResult(
+                        storageResult(
+                            for: session,
+                            validation: "passed",
+                            validationMessage: "The App-owned storage validator passed.",
+                            diskSnapshot: diskSnapshot,
+                            includeMediaPresenceIssues: true,
+                            offset: offset,
+                            limit: limit
+                        ),
+                        for: request
+                    )
+                } catch {
+                    return encodeResult(
+                        storageResult(
+                            for: session,
+                            validation: "failed",
+                            validationMessage: String(describing: error),
+                            message: "Storage validation found an issue; no repair was attempted.",
+                            validationError: error,
+                            diskSnapshot: diskSnapshot,
+                            includeMediaPresenceIssues: true,
+                            offset: offset,
+                            limit: limit
+                        ),
+                        for: request
+                    )
+                }
+            } catch let error as AutomationParameterError {
+                return invalidParameters(for: request, error: error)
             } catch {
-                return encodeResult(
-                    storageResult(
-                        for: session,
-                        validation: "failed",
-                        validationMessage: String(describing: error),
-                        message: "Storage validation found an issue; no repair was attempted."
-                    ),
-                    for: request
-                )
+                return invalidParameters(for: request, error: error)
             }
 
         case AutomationMethod.storageRepair:
@@ -7168,6 +7369,8 @@ final class AutomationIPCServer {
                     ),
                     for: request
                 )
+            } catch let error as AutomationParameterError {
+                return invalidParameters(for: request, error: error)
             } catch {
                 return .failure(
                     for: request,
@@ -7222,7 +7425,11 @@ final class AutomationIPCServer {
                 let context = session.context
                 let result = try await session.runLibraryOperation(as: .other) {
                     try await Task.detached(priority: .utility) {
-                        try Self.createStorageBackup(context: context)
+                        try Self.createStorageBackup(
+                            context: context,
+                            bundleIdentifier: self.automationBundleIdentifier,
+                            appSupportDirectoryURL: self.appSupportDirectoryURL
+                        )
                     }.value
                 }
                 return encodeResult(result, for: request)
@@ -7247,7 +7454,12 @@ final class AutomationIPCServer {
                 let backupPath = try parameters.string("backupPath", required: true)!
                 let context = session.context
                 let result = try await Task.detached(priority: .utility) {
-                    try Self.storageDiff(context: context, backupPath: backupPath)
+                    try Self.storageDiff(
+                        context: context,
+                        backupPath: backupPath,
+                        bundleIdentifier: self.automationBundleIdentifier,
+                        appSupportDirectoryURL: self.appSupportDirectoryURL
+                    )
                 }.value
                 return encodeResult(result, for: request)
             } catch let error as AutomationParameterError {
@@ -9012,17 +9224,23 @@ final class AutomationIPCServer {
     }
 
     private nonisolated static func automationStorageBackupRoot(
-        libraryID: UUID
+        libraryID: UUID,
+        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier,
+        appSupportDirectoryURL: URL? = nil
     ) -> URL {
-        return automationSupportDirectory()
+        return automationSupportDirectory(
+            bundleIdentifier: bundleIdentifier,
+            appSupportDirectoryURL: appSupportDirectoryURL
+        )
             .appendingPathComponent("Backups", isDirectory: true)
             .appendingPathComponent(libraryID.uuidString, isDirectory: true)
     }
 
     private nonisolated static func automationSupportDirectory(
-        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier
+        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier,
+        appSupportDirectoryURL: URL? = nil
     ) -> URL {
-        let appSupport = FileManager.default.urls(
+        let appSupport = appSupportDirectoryURL ?? FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
@@ -9126,12 +9344,18 @@ final class AutomationIPCServer {
     }
 
     private nonisolated static func createStorageBackup(
-        context: LibraryContext
+        context: LibraryContext,
+        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier,
+        appSupportDirectoryURL: URL? = nil
     ) throws -> AutomationStorageBackupResult {
         let createdAt = Date()
         let inventory = try storageInventory(at: context.rootURL)
         let fileManager = FileManager.default
-        let root = automationStorageBackupRoot(libraryID: context.id)
+        let root = automationStorageBackupRoot(
+            libraryID: context.id,
+            bundleIdentifier: bundleIdentifier,
+            appSupportDirectoryURL: appSupportDirectoryURL
+        )
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         let stamp = ISO8601DateFormatter().string(from: createdAt)
             .replacingOccurrences(of: ":", with: "-")
@@ -9200,12 +9424,18 @@ final class AutomationIPCServer {
 
     private nonisolated static func storageBackupManifest(
         context: LibraryContext,
-        backupPath: String
+        backupPath: String,
+        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier,
+        appSupportDirectoryURL: URL? = nil
     ) throws -> (URL, AutomationStorageBackupManifest) {
         let candidate = URL(fileURLWithPath: backupPath)
             .resolvingSymlinksInPath()
             .standardizedFileURL
-        let root = automationStorageBackupRoot(libraryID: context.id)
+        let root = automationStorageBackupRoot(
+            libraryID: context.id,
+            bundleIdentifier: bundleIdentifier,
+            appSupportDirectoryURL: appSupportDirectoryURL
+        )
             .resolvingSymlinksInPath()
             .standardizedFileURL
         let candidateValues = try? candidate.resourceValues(forKeys: [.isDirectoryKey])
@@ -9234,11 +9464,15 @@ final class AutomationIPCServer {
 
     private nonisolated static func storageDiff(
         context: LibraryContext,
-        backupPath: String
+        backupPath: String,
+        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier,
+        appSupportDirectoryURL: URL? = nil
     ) throws -> AutomationStorageDiffResult {
         let (backupURL, manifest) = try storageBackupManifest(
             context: context,
-            backupPath: backupPath
+            backupPath: backupPath,
+            bundleIdentifier: bundleIdentifier,
+            appSupportDirectoryURL: appSupportDirectoryURL
         )
         let current = try storageInventory(at: context.rootURL)
         let currentByPath = Dictionary(uniqueKeysWithValues: current.items.map {
@@ -9277,7 +9511,12 @@ final class AutomationIPCServer {
         for session: LibrarySession,
         validation: String,
         validationMessage: String? = nil,
-        message: String = "The App-owned Library storage layout was inspected."
+        message: String = "The App-owned Library storage layout was inspected.",
+        validationError: Error? = nil,
+        diskSnapshot: LibraryUpgradeSessionValidator.DiskSnapshot? = nil,
+        includeMediaPresenceIssues: Bool = false,
+        offset: Int = 0,
+        limit: Int = 100
     ) -> AutomationStorageResult {
         let fileManager = FileManager.default
         let paths = session.context.paths
@@ -9289,6 +9528,51 @@ final class AutomationIPCServer {
             let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
             return path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : url.lastPathComponent
         }
+        let pageOffset = max(0, offset)
+        let pageLimit = max(1, min(100, limit))
+        var issues = missingDirectories.map { relativePath in
+            AutomationStorageIssue(
+                id: "missing-directory:\(relativePath)",
+                code: "storage.required-directory.missing",
+                path: session.context.rootURL.appendingPathComponent(relativePath).path,
+                reason: "The App-owned Library directory is missing."
+            )
+        }
+        if !fileManager.fileExists(atPath: paths.manifestURL.path) {
+            issues.append(AutomationStorageIssue(
+                id: "manifest-missing",
+                code: "storage.manifest.missing",
+                path: paths.manifestURL.path,
+                reason: "The Library manifest file is missing."
+            ))
+        } else if manifest == nil {
+            issues.append(AutomationStorageIssue(
+                id: "manifest-invalid",
+                code: "storage.manifest.invalid",
+                path: paths.manifestURL.path,
+                reason: "The Library manifest could not be decoded."
+            ))
+        }
+        for reference in diskSnapshot?.playlistReferenceIssues ?? [] {
+            for trackID in reference.missingTrackIDs {
+                issues.append(AutomationStorageIssue(
+                    id: "playlist-reference:\(reference.playlistID.uuidString):\(trackID.uuidString)",
+                    code: "storage.playlist.reference-missing",
+                    trackID: trackID,
+                    path: paths.playlistURL(for: reference.playlistID).path,
+                    reason: "Playlist \(reference.playlistName) references Track \(trackID.uuidString), which is absent from the Track index."
+                ))
+            }
+        }
+        if let validationError,
+           let issue = storageValidationIssue(validationError, session: session, diskSnapshot: diskSnapshot) {
+            if !issues.contains(where: { $0.id == issue.id }) { issues.append(issue) }
+        }
+        let media = includeMediaPresenceIssues
+            ? mediaPresenceIssues(for: session.libraryViewModel.allTracks, in: session)
+            : []
+        let sortedIssues = issues.sorted { $0.id < $1.id }
+        let sortedMedia = media.sorted { $0.id < $1.id }
         return AutomationStorageResult(
             libraryID: session.context.id,
             mode: session.context.mode.rawValue,
@@ -9298,8 +9582,258 @@ final class AutomationIPCServer {
             missingRequiredDirectories: missingDirectories,
             validation: validation,
             validationMessage: validationMessage,
+            issues: Array(sortedIssues.dropFirst(pageOffset).prefix(pageLimit)),
+            issueCount: sortedIssues.count,
+            offset: pageOffset,
+            limit: pageLimit,
+            hasMore: pageOffset + pageLimit < sortedIssues.count,
+            mediaIssues: Array(sortedMedia.dropFirst(pageOffset).prefix(pageLimit)),
+            mediaIssueCount: sortedMedia.count,
+            mediaHasMore: pageOffset + pageLimit < sortedMedia.count,
             message: message
         )
+    }
+
+    private func mediaPresenceIssues(
+        for tracks: [Track],
+        in session: LibrarySession
+    ) -> [AutomationStorageIssue] {
+        let fileManager = FileManager.default
+        return tracks.compactMap { track in
+            let candidates = automationTrackFileURLs(track, in: session)
+                .map { $0.standardizedFileURL }
+            if candidates.contains(where: { fileManager.fileExists(atPath: $0.path) && fileManager.isReadableFile(atPath: $0.path) }) {
+                return nil
+            }
+            let paths = candidates.map(\.path)
+            let expectedPath = paths.first ?? (track.originalFilePath.isEmpty ? nil : track.originalFilePath)
+            let pathSummary = paths.isEmpty ? "No absolute media path is recorded." : "Recorded candidate paths: \(paths.joined(separator: ", "))."
+            return AutomationStorageIssue(
+                id: "media-path:\(track.id.uuidString)",
+                code: "media.path.missing-or-inaccessible",
+                trackID: track.id,
+                path: expectedPath,
+                reason: "None of the recorded paths currently exists and is readable by the App. This check does not decode the audio file, and it does not prove permanent deletion or distinguish an offline source from denied access. Cached availability is \(track.availability.rawValue). \(pathSummary)"
+            )
+        }
+    }
+
+    private func storageValidationIssue(
+        _ error: Error,
+        session: LibrarySession,
+        diskSnapshot: LibraryUpgradeSessionValidator.DiskSnapshot?
+    ) -> AutomationStorageIssue? {
+        let paths = session.context.paths
+        let reason = String(describing: error)
+        let code: String
+        let path: String
+        switch error as? LibraryUpgradeValidationError {
+        case .manifestMismatch:
+            code = "storage.manifest.identity-mismatch"
+            path = paths.manifestURL.path
+        case .damagedTrackSidecar:
+            code = "storage.track-sidecar.invalid"
+            path = firstInvalidTrackSidecar(in: session) ?? paths.tracksRootURL.path
+        case .damagedPlaylistSidecar:
+            code = "storage.playlist-sidecar.invalid"
+            path = firstInvalidPlaylistSidecar(in: session) ?? paths.playlistsRootURL.path
+        case .duplicateTrackID:
+            code = "storage.track-id.duplicate"
+            path = paths.tracksRootURL.path
+        case .trackCountMismatch:
+            code = "storage.track-count.mismatch"
+            path = session.context.rootURL.path
+        case .playlistReferenceMissing:
+            if let issue = diskSnapshot?.playlistReferenceIssues.first {
+                code = "storage.playlist.reference-missing"
+                path = paths.playlistURL(for: issue.playlistID).path
+            } else {
+                code = "storage.playlist.reference-missing"
+                path = paths.playlistsRootURL.path
+            }
+        case .storageModeMismatch:
+            code = "storage.mode.mismatch"
+            path = paths.manifestURL.path
+        case .trackIndexUnavailable, .trackIndexMismatch:
+            code = "storage.track-index.invalid"
+            path = paths.trackIndexStoreURL.path
+        case .searchIndexMismatch:
+            code = "storage.search-index.invalid"
+            path = paths.searchIndexStoreURL.path
+        case .historyStoreMismatch:
+            code = "storage.playback-history.invalid"
+            path = paths.playbackHistoryStoreURL.path
+        case .sqliteIntegrityFailed(let fileName):
+            code = "storage.sqlite.integrity-failed"
+            path = [paths.trackIndexStoreURL, paths.searchIndexStoreURL, paths.playbackHistoryStoreURL]
+                .first(where: { $0.lastPathComponent == fileName })?.path
+                ?? session.context.rootURL.appendingPathComponent(fileName).path
+        case .legacyIndexCleanupFailed:
+            code = "storage.legacy-index.cleanup-failed"
+            path = session.context.rootURL.path
+        case .journalIdentityMismatch, .journalNotRegistered:
+            code = "storage.journal.invalid"
+            path = session.context.rootURL.path
+        case nil:
+            code = "storage.validation.failed"
+            path = session.context.rootURL.path
+        }
+        let nextStep: String
+        switch error as? LibraryUpgradeValidationError {
+        case .manifestMismatch, .storageModeMismatch:
+            nextStep = "Check the Library manifest against the active Library binding before taking further action."
+        case .damagedTrackSidecar, .duplicateTrackID, .trackCountMismatch:
+            nextStep = "Inspect the reported Tracks path and compare the sidecar entries with the App-owned Track index."
+        case .damagedPlaylistSidecar, .playlistReferenceMissing:
+            nextStep = "Inspect the reported Playlist sidecar and compare its Track IDs with the App-owned Track index."
+        case .trackIndexUnavailable, .trackIndexMismatch:
+            nextStep = "Preserve a backup before using an App-owned recovery flow if the mismatch remains."
+        case .searchIndexMismatch:
+            nextStep = "Allow the App-owned search index to finish rebuilding, then run storage.validate again."
+        case .historyStoreMismatch, .sqliteIntegrityFailed:
+            nextStep = "Preserve a backup before using an App-owned recovery or restore flow."
+        case .legacyIndexCleanupFailed, .journalIdentityMismatch, .journalNotRegistered:
+            nextStep = "Keep the Library unchanged and inspect the App-owned migration or recovery state."
+        case nil:
+            nextStep = "Inspect this App-owned Library location and rerun storage.validate for a focused result."
+        }
+        return AutomationStorageIssue(
+            id: "\(code):\(path)",
+            code: code,
+            path: path,
+            reason: "\(reason) \(nextStep)"
+        )
+    }
+
+    private func firstInvalidTrackSidecar(in session: LibrarySession) -> String? {
+        let root = session.context.paths.tracksRootURL
+        let directories = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        let decoder = AutomationWireCoding.decoder()
+        for directory in directories ?? [] {
+            guard (try? directory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
+            let metaURL = directory.appendingPathComponent("meta.json")
+            guard let data = try? Data(contentsOf: metaURL),
+                  let sidecar = try? decoder.decode(TrackSidecar.self, from: data),
+                  UUID(uuidString: directory.lastPathComponent) == sidecar.id else {
+                return metaURL.path
+            }
+        }
+        return nil
+    }
+
+    private func firstInvalidPlaylistSidecar(in session: LibrarySession) -> String? {
+        let root = session.context.paths.playlistsRootURL
+        let files = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+        let decoder = AutomationWireCoding.decoder()
+        for url in files ?? [] where url.pathExtension.lowercased() == "json" {
+            guard let data = try? Data(contentsOf: url),
+                  (try? decoder.decode(PlaylistSidecar.self, from: data)) != nil else {
+                return url.path
+            }
+        }
+        return nil
+    }
+
+    private func diagnosticsIssues(
+        tracks: [Track],
+        sources: [ReferencedSourceDescriptor],
+        jobs: [LibraryOperationTaskDescriptor],
+        playlistReferences: [AutomationPlaylistReferenceIssue],
+        storageError: Error?,
+        diskSnapshot: LibraryUpgradeSessionValidator.DiskSnapshot?,
+        in session: LibrarySession
+    ) -> [AutomationDiagnosticIssue] {
+        var issues: [AutomationDiagnosticIssue] = []
+        for source in sources where source.status != .available {
+            issues.append(AutomationDiagnosticIssue(
+                id: "source:\(source.id.uuidString)",
+                code: "source.\(source.status.rawValue)",
+                sourceID: source.id,
+                path: source.lastKnownPath,
+                reason: "Source status is \(source.status.rawValue)."
+            ))
+        }
+        for track in tracks {
+            let path = automationTrackFileURL(track, in: session)?.path
+            if track.availability != .available {
+                issues.append(AutomationDiagnosticIssue(
+                    id: "track-availability:\(track.id.uuidString)",
+                    code: "track.availability.\(track.availability.rawValue)",
+                    trackID: track.id,
+                    path: path,
+                    reason: "Cached Track availability is \(track.availability.rawValue)."
+                ))
+            }
+            if trackLyricsStatus(track) == "none" {
+                issues.append(AutomationDiagnosticIssue(
+                    id: "track-lyrics:\(track.id.uuidString)",
+                    code: "track.lyrics.missing",
+                    trackID: track.id,
+                    path: path,
+                    reason: "The Track has no persisted lyrics."
+                ))
+            }
+            if !track.hasArtwork {
+                issues.append(AutomationDiagnosticIssue(
+                    id: "track-artwork:\(track.id.uuidString)",
+                    code: "track.artwork.missing",
+                    trackID: track.id,
+                    path: path,
+                    reason: "The Track has no App-owned artwork."
+                ))
+            }
+            let incompleteFields = ["title": track.title, "artist": track.artist, "album": track.album]
+                .filter { $0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .map(\.key)
+                .sorted()
+            if !incompleteFields.isEmpty {
+                issues.append(AutomationDiagnosticIssue(
+                    id: "track-metadata:\(track.id.uuidString)",
+                    code: "track.metadata.incomplete",
+                    trackID: track.id,
+                    path: path,
+                    reason: "Missing metadata fields: \(incompleteFields.joined(separator: ", "))."
+                ))
+            }
+        }
+        for issue in playlistReferences {
+            for trackID in issue.missingTrackIDs {
+                issues.append(AutomationDiagnosticIssue(
+                    id: "playlist-reference:\(issue.playlistID.uuidString):\(trackID.uuidString)",
+                    code: "playlist.reference.missing-track",
+                    trackID: trackID,
+                    playlistID: issue.playlistID,
+                    reason: "Playlist \(issue.playlistName) references a missing Track."
+                ))
+            }
+        }
+        for job in jobs where job.state == .failed || job.state == .partialFailure {
+            issues.append(AutomationDiagnosticIssue(
+                id: "job:\(job.id.uuidString)",
+                code: "job.\(job.state.rawValue)",
+                reason: job.partialFailureSummaries.prefix(3).joined(separator: "; ").isEmpty
+                    ? "Job ended in state \(job.state.rawValue)."
+                    : job.partialFailureSummaries.prefix(3).joined(separator: "; ")
+            ))
+        }
+        if let storageError,
+           let issue = storageValidationIssue(storageError, session: session, diskSnapshot: diskSnapshot) {
+            issues.append(AutomationDiagnosticIssue(
+                id: issue.id,
+                code: issue.code,
+                path: issue.path,
+                reason: issue.reason
+            ))
+        }
+        return issues.sorted { $0.id < $1.id }
     }
 
     private func makeTrackRevisions(
@@ -9393,7 +9927,10 @@ final class AutomationIPCServer {
     /// previous segment is retained when the active JSONL file reaches the
     /// bound, so a noisy or stuck caller cannot grow App Support forever.
     private func recordAudit(for request: AutomationRequest, response: AutomationResponse) {
-        let directory = Self.automationSupportDirectory()
+        let directory = Self.automationSupportDirectory(
+            bundleIdentifier: automationBundleIdentifier,
+            appSupportDirectoryURL: appSupportDirectoryURL
+        )
         let url = directory.appendingPathComponent("audit.jsonl", isDirectory: false)
         var values: [String: AutomationJSONValue] = [
             "timestamp": .string(ISO8601DateFormatter().string(from: response.serverTime)),
@@ -9697,6 +10234,413 @@ final class AutomationIPCServer {
         return queue
     }
 
+    private func isBackgroundJobRequest(_ request: AutomationRequest) -> Bool {
+        guard request.method == AutomationMethod.metadataSearch
+                || request.method == AutomationMethod.artworkSearch
+                || request.method == AutomationMethod.lyricsSearch
+                || request.method == AutomationMethod.storageValidate
+                || request.method == AutomationMethod.diagnosticsHealth,
+              case .object(let values) = request.params,
+              case .boolean(true)? = values["background"] else {
+            return false
+        }
+        return true
+    }
+
+    private func usesIdempotencyCache(for request: AutomationRequest) -> Bool {
+        AutomationToolCatalog.descriptor(for: request.method)?.readOnly == false
+            || isBackgroundJobRequest(request)
+    }
+
+    private func submitBackgroundJob(for request: AutomationRequest) async -> AutomationResponse {
+        if let deadline = request.context.deadline, deadline <= Date() {
+            return requestDeadlineExpired(for: request)
+        }
+        guard let session = activeSession(for: request), let appSession else {
+            return noActiveLibraryResponse(for: request)
+        }
+        guard case .object(var params) = request.params else {
+            return invalidParameters(for: request)
+        }
+        params["background"] = .boolean(false)
+        let backgroundRequest = AutomationRequest(
+            method: request.method,
+            params: .object(params),
+            context: AutomationRequestContext(
+                principalSessionID: request.context.principalSessionID,
+                libraryID: session.context.id,
+                caller: request.context.caller
+            ),
+            requestID: request.requestID,
+            protocolVersion: request.protocolVersion
+        )
+        guard let job = appSession.startAutomationJob(
+            totalCount: 1,
+            libraryID: session.context.id,
+            work: { [weak self] reporter in
+                guard let self,
+                      self.activeSession(for: backgroundRequest) === session else {
+                    reporter.recordFailure("The submitted Library is no longer active.")
+                    return
+                }
+                let response = await self.execute(backgroundRequest)
+                if let encoded = try? AutomationWireCoding.encoder().encode(response),
+                   let value = try? AutomationWireCoding.decoder().decode(
+                       AutomationJSONValue.self,
+                       from: encoded
+                   ) {
+                    reporter.recordResult(value)
+                }
+                if let error = response.error {
+                    reporter.recordFailure(error.message)
+                }
+                let phase: String
+                switch backgroundRequest.method {
+                case AutomationMethod.metadataSearch: phase = "Metadata search complete"
+                case AutomationMethod.artworkSearch: phase = "Artwork search complete"
+                case AutomationMethod.lyricsSearch: phase = "Lyrics search complete"
+                case AutomationMethod.storageValidate: phase = "Storage validation complete"
+                case AutomationMethod.diagnosticsHealth: phase = "Diagnostics complete"
+                default: phase = "Operation complete"
+                }
+                reporter.recordProgress(completedCount: 1, totalCount: 1, phase: phase)
+            }
+        ) else {
+            return noActiveLibraryResponse(for: request)
+        }
+        return encodeResult(
+            AutomationJobSubmissionResult(
+                job: makeJobSummary(job),
+                message: "The request was accepted as a library-scoped Job. Use jobs.wait or jobs.get for its original result."
+            ),
+            for: request
+        )
+    }
+
+    private func submitOperationsBatch(for request: AutomationRequest) async -> AutomationResponse {
+        if let deadline = request.context.deadline, deadline <= Date() {
+            return requestDeadlineExpired(for: request)
+        }
+        guard let session = activeSession(for: request), let appSession else {
+            return noActiveLibraryResponse(for: request)
+        }
+        do {
+            let parameters = try AutomationParameters(request)
+            guard case .object(let batchParams) = request.params,
+                  case .array(let values)? = batchParams["operations"],
+                  !values.isEmpty, values.count <= 100 else {
+                throw AutomationParameterError.outOfRange("operations")
+            }
+            let forceDryRun = try parameters.boolean("dryRun", default: false)
+            let confirm = try parameters.boolean("confirm", default: false)
+            var operations: [AutomationBatchOperation] = []
+            operations.reserveCapacity(values.count)
+            for (index, value) in values.enumerated() {
+                guard case .object(let fields) = value,
+                      case .string(let method)? = fields["method"] else {
+                    throw AutomationParameterError.invalidValue("operations[\(index)]")
+                }
+                guard method != AutomationMethod.operationsBatch,
+                      Self.batchAllowedMethods.contains(method) else {
+                    throw AutomationParameterError.invalidValue("operations[\(index)].method")
+                }
+                let childParams = fields["params"]
+                guard childParams == nil || childParams == .null || isObject(childParams) else {
+                    // Keep malformed per-item parameters in the Job so the
+                    // caller receives the same indexed error envelope as any
+                    // other handler-level parameter failure.
+                    operations.append(AutomationBatchOperation(method: method, params: childParams))
+                    continue
+                }
+                operations.append(AutomationBatchOperation(method: method, params: childParams))
+            }
+
+            var requiredScopes = Set<AutomationScope>()
+            var distinctTargets = Set<String>()
+            var writeOperationCount = 0
+            for operation in operations {
+                guard let descriptor = AutomationToolCatalog.descriptor(for: operation.method) else {
+                    throw AutomationParameterError.invalidValue("operations.method")
+                }
+                var scopes = Set(descriptor.scopes)
+                var itemDryRun = forceDryRun
+                if case .object(let itemParams) = operation.params,
+                   case .boolean(true)? = itemParams["dryRun"] {
+                    itemDryRun = true
+                }
+                if itemDryRun, let writeScope = Self.batchWriteScope(for: operation.method) {
+                    scopes.remove(writeScope)
+                } else if !itemDryRun {
+                    writeOperationCount += 1
+                    distinctTargets.formUnion(batchTargetKeys(for: operation))
+                }
+                requiredScopes.formUnion(scopes)
+            }
+            let granted = grantedScopes()
+            guard granted.isSuperset(of: requiredScopes) else {
+                let denied = requiredScopes.subtracting(granted)
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .authorizationRequired,
+                        message: "The App automation policy has not granted all scopes required by this batch.",
+                        details: .object([
+                            "requiredScopes": .array(requiredScopes.map(\.rawValue).sorted().map(AutomationJSONValue.string)),
+                            "deniedScopes": .array(denied.map(\.rawValue).sorted().map(AutomationJSONValue.string))
+                        ])
+                    )
+                )
+            }
+
+            let requiresConfirmation = !forceDryRun
+                && (writeOperationCount >= 10 || distinctTargets.count >= 10)
+            if requiresConfirmation {
+                guard confirm else {
+                    return confirmationRequired(
+                        for: request,
+                        message: "批量资产修改需要 confirm=true，并由播放器在前台一次性确认。",
+                        details: .object([
+                            "operation": .string(AutomationMethod.operationsBatch),
+                            "operationCount": .number(Double(writeOperationCount)),
+                            "distinctTargetCount": .number(Double(distinctTargets.count)),
+                            "threshold": .number(10),
+                            "requiresForegroundConfirmation": .boolean(true)
+                        ])
+                    )
+                }
+                guard await confirmDestructiveOperation(
+                    title: "执行 \(writeOperationCount) 项资料库修改？",
+                    message: "这些操作将按顺序应用到 \(distinctTargets.count) 个目标，并逐项保留执行结果。"
+                ) else {
+                    return interactionCancelled(for: request)
+                }
+            }
+
+            if let deadline = request.context.deadline, deadline <= Date() {
+                return requestDeadlineExpired(for: request)
+            }
+            let boundLibraryID = session.context.id
+            let snapshotOperations = operations
+            let plannedWriteCount = writeOperationCount
+            guard let job = appSession.startAutomationJob(
+                totalCount: snapshotOperations.count,
+                libraryID: boundLibraryID,
+                work: { [weak self, snapshotOperations, plannedWriteCount] reporter in
+                    guard let self else { return }
+                    var itemResults: [AutomationJSONValue] = []
+                    var failedIndices: [Int] = []
+                    var conflictedTrackIDs = Set<UUID>()
+                    var conflictedTargets = Set<String>()
+                    itemResults.reserveCapacity(snapshotOperations.count)
+
+                    func resultSnapshot() -> AutomationJSONValue {
+                        .object([
+                            "libraryID": .string(boundLibraryID.uuidString),
+                            "dryRun": .boolean(forceDryRun || plannedWriteCount == 0),
+                            "requestedCount": .number(Double(snapshotOperations.count)),
+                            "completedCount": .number(Double(itemResults.count)),
+                            "failedCount": .number(Double(failedIndices.count)),
+                            "failedItemIndices": .array(failedIndices.map { .number(Double($0)) }),
+                            "conflictCount": .number(Double(conflictedTargets.count)),
+                            "conflictedTrackIDs": .array(conflictedTrackIDs.sorted { $0.uuidString < $1.uuidString }.map { .string($0.uuidString) }),
+                            "conflictedTargets": .array(conflictedTargets.sorted().map(AutomationJSONValue.string)),
+                            "items": .array(itemResults)
+                        ])
+                    }
+
+                    for (index, operation) in snapshotOperations.enumerated() {
+                        guard !Task.isCancelled else { break }
+                        let childRequest = self.makeBatchChildRequest(
+                            operation,
+                            parent: request,
+                            libraryID: boundLibraryID,
+                            forceDryRun: forceDryRun,
+                            aggregateConfirmationApproved: requiresConfirmation
+                        )
+                        guard self.activeSession(for: childRequest) === session else {
+                            failedIndices.append(index)
+                            reporter.recordFailure(
+                                "The Library changed before batch item \(index) could run.",
+                                itemID: self.batchPrimaryTargetID(for: operation)
+                            )
+                            break
+                        }
+                        let response = await AutomationBatchExecutionContext.$aggregateConfirmationApproved
+                            .withValue(requiresConfirmation) {
+                                await self.execute(childRequest)
+                            }
+                        let responseValue = self.jsonValue(for: response)
+                            ?? .object(["error": .string("Unable to encode item response.")])
+                        itemResults.append(.object([
+                            "index": .number(Double(index)),
+                            "method": .string(operation.method),
+                            "response": responseValue
+                        ]))
+                        if let error = response.error {
+                            failedIndices.append(index)
+                            reporter.recordFailure(
+                                "Item \(index) (\(operation.method)): \(error.message)",
+                                itemID: self.batchPrimaryTargetID(for: operation)
+                            )
+                        }
+                        let itemConflicts = self.conflictedTargets(in: response.result)
+                        if !itemConflicts.isEmpty {
+                            for target in itemConflicts where conflictedTargets.insert(target).inserted {
+                                let rawTargetID = String(target.split(separator: ":").last ?? "")
+                                let targetID = UUID(uuidString: rawTargetID)
+                                if target.hasPrefix("track:"), let targetID {
+                                    conflictedTrackIDs.insert(targetID)
+                                }
+                                reporter.recordFailure(
+                                    "Item \(index) (\(operation.method)) conflicted on \(target); refresh that target before retrying.",
+                                    itemID: target.hasPrefix("album:") ? nil : targetID
+                                )
+                            }
+                        }
+                        reporter.recordProgress(
+                            completedCount: index + 1,
+                            totalCount: snapshotOperations.count,
+                            phase: "Item \(index + 1) of \(snapshotOperations.count)"
+                        )
+                        reporter.recordResult(resultSnapshot())
+                    }
+                    reporter.recordResult(resultSnapshot())
+                }
+            ) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            return encodeResult(
+                AutomationJobSubmissionResult(
+                    job: makeJobSummary(job),
+                    message: "Batch accepted. Each item result and any revision conflicts are persisted in the Job; use jobs.wait or jobs.get."
+                ),
+                for: request
+            )
+        } catch {
+            return invalidParameters(for: request, error: error)
+        }
+    }
+
+    private static let batchAllowedMethods: Set<String> = [
+        AutomationMethod.metadataPatch,
+        AutomationMethod.metadataApplyCandidate,
+        AutomationMethod.artworkApply,
+        AutomationMethod.artworkApplyCandidate,
+        AutomationMethod.lyricsApply,
+        AutomationMethod.lyricsClean
+    ]
+
+    private static func batchWriteScope(for method: String) -> AutomationScope? {
+        switch method {
+        case AutomationMethod.metadataPatch, AutomationMethod.metadataApplyCandidate:
+            return .metadataWrite
+        case AutomationMethod.artworkApply, AutomationMethod.artworkApplyCandidate:
+            return .artworkWrite
+        case AutomationMethod.lyricsApply, AutomationMethod.lyricsClean:
+            return .lyricsWrite
+        default:
+            return nil
+        }
+    }
+
+    private func makeBatchChildRequest(
+        _ operation: AutomationBatchOperation,
+        parent: AutomationRequest,
+        libraryID: UUID,
+        forceDryRun: Bool,
+        aggregateConfirmationApproved: Bool
+    ) -> AutomationRequest {
+        var params: [String: AutomationJSONValue]
+        if case .object(let values) = operation.params {
+            params = values
+        } else {
+            params = [:]
+        }
+        if forceDryRun {
+            params["dryRun"] = .boolean(true)
+        }
+        if aggregateConfirmationApproved,
+           operation.method == AutomationMethod.metadataPatch
+                || operation.method == AutomationMethod.artworkApply {
+            params["confirm"] = .boolean(true)
+        }
+        return AutomationRequest(
+            method: operation.method,
+            params: .object(params),
+            context: AutomationRequestContext(
+                principalSessionID: parent.context.principalSessionID,
+                libraryID: libraryID,
+                caller: parent.context.caller
+            ),
+            protocolVersion: parent.protocolVersion
+        )
+    }
+
+    private func batchTargetKeys(for operation: AutomationBatchOperation) -> Set<String> {
+        guard case .object(let params) = operation.params else { return [] }
+        var targets = Set<String>()
+        if case .string(let raw)? = params["trackID"] { targets.insert("track:\(raw)") }
+        if case .array(let values)? = params["trackIDs"] {
+            for value in values {
+                if case .string(let raw) = value { targets.insert("track:\(raw)") }
+            }
+        }
+        for key in ["artistID", "albumKey", "playlistID"] {
+            if case .string(let raw)? = params[key], !raw.isEmpty {
+                let prefix = key == "artistID" ? "artist" : key == "albumKey" ? "album" : "playlist"
+                targets.insert("\(prefix):\(raw)")
+            }
+        }
+        return targets
+    }
+
+    private func batchPrimaryTargetID(for operation: AutomationBatchOperation) -> UUID? {
+        guard case .object(let params) = operation.params else { return nil }
+        if case .string(let raw)? = params["trackID"] { return UUID(uuidString: raw) }
+        if case .array(let values)? = params["trackIDs"] {
+            for value in values {
+                if case .string(let raw) = value, let id = UUID(uuidString: raw) { return id }
+            }
+        }
+        return nil
+    }
+
+    private func jsonValue<Value: Encodable>(for value: Value) -> AutomationJSONValue? {
+        guard let data = try? AutomationWireCoding.encoder().encode(value) else { return nil }
+        return try? AutomationWireCoding.decoder().decode(AutomationJSONValue.self, from: data)
+    }
+
+    private func conflictedTargets(in value: AutomationJSONValue?) -> [String] {
+        guard let value else { return [] }
+        var result = Set<String>()
+        func visit(_ value: AutomationJSONValue) {
+            guard case .object(let fields) = value else {
+                if case .array(let values) = value { values.forEach(visit) }
+                return
+            }
+            for (key, nested) in fields {
+                if key.hasPrefix("conflicted"),
+                   case .array(let targets) = nested,
+                   key.hasSuffix("IDs") || key.hasSuffix("Keys") {
+                    let prefix: String
+                    if key.contains("Artist") { prefix = "artist" }
+                    else if key.contains("Album") { prefix = "album" }
+                    else if key.contains("Playlist") { prefix = "playlist" }
+                    else { prefix = "track" }
+                    for target in targets {
+                        if case .string(let raw) = target {
+                            result.insert("\(prefix):\(raw)")
+                        }
+                    }
+                } else {
+                    visit(nested)
+                }
+            }
+        }
+        visit(value)
+        return result.sorted()
+    }
+
     private func makeHistoryItem(_ item: PlaybackHistoryItem) -> AutomationHistoryItem {
         AutomationHistoryItem(
             id: item.id,
@@ -9735,6 +10679,7 @@ final class AutomationIPCServer {
         case .sourceScan: kind = "sourceScan"
         case .ncmConversion: kind = "ncmConversion"
         case .enrichment: kind = "enrichment"
+        case .automation: kind = "automation"
         case .indexUpdate: kind = "indexUpdate"
         case .other: kind = "other"
         }
@@ -11030,6 +11975,20 @@ final class AutomationIPCServer {
         }
     }
 
+    private func automationTrackFileURLs(_ track: Track, in session: LibrarySession) -> [URL] {
+        if track.mediaLocator.managedLibraryRelativePath != nil {
+            return automationTrackFileURL(track, in: session).map { [$0] } ?? []
+        }
+        let recordedPaths = (track.mediaLocator.referencedFile?.locations.map(\.lastKnownPath) ?? [])
+            + [track.originalFilePath]
+        var seen = Set<String>()
+        return recordedPaths.compactMap { path in
+            guard path.hasPrefix("/") else { return nil }
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            return seen.insert(url.path).inserted ? url : nil
+        }
+    }
+
     private func automationTrackFileURL(_ track: Track, in session: LibrarySession) -> URL? {
         if let relativePath = track.mediaLocator.managedLibraryRelativePath,
            TrackMediaLocator.isSafeRelativePath(relativePath) {
@@ -11699,6 +12658,18 @@ final class AutomationIPCServer {
                 message: "The \(provider) metadata provider could not complete the request.",
                 retryable: true,
                 details: .object(["reason": .string(error.localizedDescription)])
+            )
+        )
+    }
+
+    private func requestDeadlineExpired(for request: AutomationRequest) -> AutomationResponse {
+        .failure(
+            for: request,
+            error: AutomationError(
+                code: .serverUnavailable,
+                message: "The request deadline expired before the Job was accepted.",
+                retryable: true,
+                details: .object(["deadlineReached": .boolean(true)])
             )
         )
     }

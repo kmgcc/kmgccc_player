@@ -44,7 +44,7 @@ lyrics get|search|candidates|compare|apply|refresh
 playback state|play|play-playlist|toggle|pause|next|previous|seek|volume|mode
 queue get|upcoming|replace|enqueue|enqueue-next|remove|reorder|clear
 history list|stats|clear
-jobs list|get|cancel|retry
+jobs list|get|wait|cancel|retry
 diagnostics health
 settings schema|get|patch|validate|reset
 audio get|patch
@@ -108,6 +108,12 @@ player-automation automation call library.tracks \
   --params-json '{"filter":{"not":{"playlistID":"P"}},"limit":50}' --json
 player-automation automation call metadata.patch \
   --params-json '{"trackIDs":["T"],"patch":{"genreTags":["jazz"]}}' --json
+player-automation automation call operations.batch \
+  --params-json '{"operations":[{"method":"lyrics.apply","params":{"trackID":"T","ttmlText":"<tt>…</tt>"}}]}' --json
+player-automation jobs wait JOB-ID --params-json '{"timeoutMs":20000}' --json
+player-automation automation call lyrics.search \
+  --params-json '{"trackID":"T","background":true}' --json
+player-automation jobs get JOB-ID --json
 player-automation artwork get TRACK-ID --json
 player-automation artwork search TRACK-ID --params-json '{"limit":5}' --json
 player-automation artwork apply-candidate art-v1-CANDIDATE-DIGEST --dry-run --json
@@ -117,6 +123,11 @@ player-automation artwork apply TRACK-ID \
 player-automation artwork apply TRACK-ID \
   --params-json '{"clear":true}' --json
 ```
+
+`jobs.wait` 最多等待 25 秒；返回的 `completed:true` 表示 Job 已进入任意终态，包含
+`partialFailure`、`failed` 和 `cancelled`，要看 `job.state` 判断成功。Batch 的逐项结果路径是
+`job.result.items[i].response.result`；`background:true` 搜索的原 Automation response 保存在
+`job.result`，候选数据位于 `job.result.result`。等待超时不会取消 Job。
 
 Metadata 和 Artwork 也可以直接以 Artist、Album 或 Playlist 为目标，不需要把它们伪装成
 Track。四种目标选择器一次只能使用一个：
@@ -319,11 +330,21 @@ lyrics refresh -> jobs.get(Job ID) -> jobs.retry/jobs.cancel（必要时） -> �
 player-automation library import /path/to/song.mp3 /path/to/song.ncm /path/to/folder \
   --playlist-id <playlist-id> --dry-run --json
 player-automation library import /path/to/folder --playlist-id <playlist-id> --json
+player-automation library import /path/to/folder \
+  --params-json '{"enrichmentPolicy":"migration"}' --json
 player-automation jobs get <job-id> --json
 player-automation jobs retry <job-id> --params-json '{"filePaths":["/path/to/song.mp3"]}' --json
 ```
 
-MCP 同名工具为 `library.import`，参数是 `filePaths`、可选 `targetPlaylistID` 和 `dryRun`。
+`enrichmentPolicy` 默认 `standard`；迁移时设为 `migration`，导入会读取嵌入标签与歌词并跳过在线补全。
+用 `jobs.wait` 有界等待，随后从 `jobs.get` 读取 `result.fileTrackMappings`。跨库迁移先用来源资料库的
+`metadata.export` 逐页导出（每页最多 100 首），将 bundle manifest 的 `tracks[].audioPath` 按 bundle 根目录
+解析后与 `fileTrackMappings.filePath` 匹配，构造来源 Track ID → 目标 Track ID 的完整映射；再将每页
+Metadata 传给现有 `metadata.import` 的 `trackIDMap`。逐首不同的歌词、封面或 Metadata 用
+`operations.batch`；共享值仍用现有 `metadata.patch(trackIDs, ...)`、`artwork.apply(trackIDs, ...)` 和
+`lyrics.refresh(trackIDs)`。普通 `source.refresh` 只协调 Source 位置与可用状态，不覆盖已保存 Metadata。
+MCP 同名工具为 `library.import`，参数是 `filePaths`、可选 `targetPlaylistID`、`dryRun` 和
+`enrichmentPolicy`。
 若导入 Job 在 App 重启后中断，`jobs.retry` 保留原目标 Playlist，但要求重新传入 `filePaths`，
 让 App 重新取得文件访问授权；retry spec 不保存路径或书签，逐文件失败结果可能包含诊断路径。
 若 modern MCP 客户端逐请求声明 Tasks 扩展，长 Job Tools 会返回 Task；轮询使用

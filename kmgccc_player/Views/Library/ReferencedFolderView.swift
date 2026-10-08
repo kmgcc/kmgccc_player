@@ -8,8 +8,11 @@ import SwiftUI
 struct ReferencedFolderView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
+    @Environment(AppSettings.self) private var appSettings
     @ObservedObject var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var configuredMotionPolicy
@@ -570,39 +573,51 @@ struct ReferencedFolderView: View {
             } else {
                 LazyVStack(spacing: 5) {
                     ForEach(tracks) { track in
-                        HStack(spacing: 10) {
-                            Image(systemName: track.availability.isPlayable ? "music.note" : "exclamationmark.triangle")
-                                .foregroundStyle(track.availability.isPlayable ? themeStore.accentColor : .orange)
-                                .frame(width: 20)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(track.title.isEmpty ? "未命名歌曲" : track.title)
-                                    .lineLimit(1)
-                                Text(track.artist.isEmpty ? "未知艺人" : track.artist)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
+                        TrackArtworkTintContent(
+                            track: track,
+                            tintMode: appSettings.artworkTintMode,
+                            cacheServices: cacheServices,
+                            colorScheme: colorScheme
+                        ) { artworkTintColor in
+                            HStack(spacing: 10) {
+                                Image(systemName: track.availability.isPlayable ? "music.note" : "exclamationmark.triangle")
+                                    .foregroundStyle(
+                                        track.availability.isPlayable
+                                            ? (artworkTintColor ?? themeStore.accentColor)
+                                            : .orange
+                                    )
+                                    .frame(width: 20)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(track.title.isEmpty ? "未命名歌曲" : track.title)
+                                        .foregroundStyle(artworkTintColor ?? .primary)
+                                        .lineLimit(1)
+                                    Text(track.artist.isEmpty ? "未知艺人" : track.artist)
+                                        .font(.caption)
+                                        .foregroundStyle(artworkTintColor?.opacity(0.78) ?? .secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 8)
+                                if let path = source
+                                    .flatMap({ membershipPath(track, sourceID: $0.id) })
+                                    ?? standalonePath(track) {
+                                    Text(path)
+                                        .font(.caption2)
+                                        .foregroundStyle(artworkTintColor?.opacity(0.62) ?? .secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .frame(maxWidth: 220, alignment: .trailing)
+                                }
                             }
-                            Spacer(minLength: 8)
-                            if let path = source
-                                .flatMap({ membershipPath(track, sourceID: $0.id) })
-                                ?? standalonePath(track) {
-                                Text(path)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                    .frame(maxWidth: 220, alignment: .trailing)
-                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 2)
+                            .frame(minHeight: 44)
+                            .background(
+                                Color.primary.opacity(0.035),
+                                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            )
+                            .contentShape(Rectangle())
+                            .contextMenu { trackRowMenu(track, source: source) }
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 2)
-                        .frame(minHeight: 44)
-                        .background(
-                            Color.primary.opacity(0.035),
-                            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        )
-                        .contentShape(Rectangle())
-                        .contextMenu { trackRowMenu(track, source: source) }
                     }
                 }
             }

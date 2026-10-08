@@ -66,6 +66,7 @@
 		C09000000000000000000001 /* kmgccc_playerTests/MusicSettingsStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C09000000000000000000011 /* kmgccc_playerTests/MusicSettingsStateTests.swift */; };
 		C0A000000000000000000001 /* kmgccc_playerTests/LibraryInitialImportIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000011 /* kmgccc_playerTests/LibraryInitialImportIntegrationTests.swift */; };
 		C0A10000000000000000000001 /* kmgccc_playerTests/LibraryReimportGrowthIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A10000000000000000000011 /* kmgccc_playerTests/LibraryReimportGrowthIntegrationTests.swift */; };
+		C1D000000000000000000001 /* kmgccc_playerTests/AutomationJobIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1D000000000000000000011 /* kmgccc_playerTests/AutomationJobIntegrationTests.swift */; };
 		C0B000000000000000000001 /* kmgccc_playerTests/MusicSettingsRenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0B000000000000000000011 /* kmgccc_playerTests/MusicSettingsRenderTests.swift */; };
 		C0C000000000000000000001 /* kmgccc_playerTests/SourceReconnectMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0C000000000000000000011 /* kmgccc_playerTests/SourceReconnectMatcherTests.swift */; };
 		C0D000000000000000000001 /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D000000000000000000011 /* Log.swift */; };
@@ -175,6 +176,7 @@
 		C09000000000000000000011 /* kmgccc_playerTests/MusicSettingsStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/MusicSettingsStateTests.swift; sourceTree = "<group>"; };
 		C0A000000000000000000011 /* kmgccc_playerTests/LibraryInitialImportIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/LibraryInitialImportIntegrationTests.swift; sourceTree = "<group>"; };
 		C0A10000000000000000000011 /* kmgccc_playerTests/LibraryReimportGrowthIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/LibraryReimportGrowthIntegrationTests.swift; sourceTree = "<group>"; };
+		C1D000000000000000000011 /* kmgccc_playerTests/AutomationJobIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/AutomationJobIntegrationTests.swift; sourceTree = "<group>"; };
 		C0B000000000000000000011 /* kmgccc_playerTests/MusicSettingsRenderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/MusicSettingsRenderTests.swift; sourceTree = "<group>"; };
 		C0C000000000000000000011 /* kmgccc_playerTests/SourceReconnectMatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/SourceReconnectMatcherTests.swift; sourceTree = "<group>"; };
 		C0D000000000000000000011 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Log.swift; path = kmgccc_player/Utilities/Log.swift; sourceTree = "<group>"; };
@@ -419,6 +421,7 @@
 				C09000000000000000000011 /* kmgccc_playerTests/MusicSettingsStateTests.swift */,
 				C0A000000000000000000011 /* kmgccc_playerTests/LibraryInitialImportIntegrationTests.swift */,
 				C0A10000000000000000000011 /* kmgccc_playerTests/LibraryReimportGrowthIntegrationTests.swift */,
+				C1D000000000000000000011 /* kmgccc_playerTests/AutomationJobIntegrationTests.swift */,
 				C0B000000000000000000011 /* kmgccc_playerTests/MusicSettingsRenderTests.swift */,
 				C0C000000000000000000011 /* kmgccc_playerTests/SourceReconnectMatcherTests.swift */,
 				C11000000000000000000011 /* kmgccc_playerTests/CrossSourceMoveIntegrationTests.swift */,
@@ -790,6 +793,7 @@
 				C09000000000000000000001 /* kmgccc_playerTests/MusicSettingsStateTests.swift in Sources */,
 				C0A000000000000000000001 /* kmgccc_playerTests/LibraryInitialImportIntegrationTests.swift in Sources */,
 				C0A10000000000000000000001 /* kmgccc_playerTests/LibraryReimportGrowthIntegrationTests.swift in Sources */,
+				C1D000000000000000000001 /* kmgccc_playerTests/AutomationJobIntegrationTests.swift in Sources */,
 				C0B000000000000000000001 /* kmgccc_playerTests/MusicSettingsRenderTests.swift in Sources */,
 				C0C000000000000000000001 /* kmgccc_playerTests/SourceReconnectMatcherTests.swift in Sources */,
 				C11000000000000000000001 /* kmgccc_playerTests/CrossSourceMoveIntegrationTests.swift in Sources */,

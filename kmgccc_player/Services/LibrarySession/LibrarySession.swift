@@ -11,6 +11,35 @@ struct LibraryAutomationLyricsApplyOutcome: Sendable {
 }
 
 @MainActor
+struct LibraryAutomationJobReporter {
+    private let operationCoordinator: LibraryOperationCoordinator
+
+    init(operationCoordinator: LibraryOperationCoordinator) {
+        self.operationCoordinator = operationCoordinator
+    }
+
+    func recordProgress(completedCount: Int, totalCount: Int, phase: String) {
+        operationCoordinator.recordProgress(
+            completedCount: completedCount,
+            totalCount: totalCount,
+            phase: phase
+        )
+    }
+
+    func recordCheckpoint(_ label: String) {
+        operationCoordinator.recordCheckpoint(label)
+    }
+
+    func recordFailure(_ summary: String, itemID: UUID? = nil) {
+        operationCoordinator.recordPartialFailure(summary, itemID: itemID)
+    }
+
+    func recordResult(_ result: AutomationJSONValue) {
+        operationCoordinator.recordResult(result)
+    }
+}
+
+@MainActor
 final class LibrarySession: LibrarySessionLifecycle {
     let context: LibraryContext
     private let rootAccessLease: LibraryRootAccessLease
@@ -327,6 +356,24 @@ final class LibrarySession: LibrarySessionLifecycle {
         }
     }
 
+    /// Starts generic App automation work as a library-scoped, cancellable
+    /// Job. The caller reports item results through the same durable owner.
+    @discardableResult
+    func startAutomationJob(
+        totalCount: Int,
+        work: @escaping @MainActor (LibraryAutomationJobReporter) async -> Void
+    ) -> LibraryOperationTaskDescriptor? {
+        guard !isClosed, totalCount > 0 else { return nil }
+        let started = operationCoordinator.start({ [weak self] in
+            guard let self else { return }
+            let reporter = LibraryAutomationJobReporter(operationCoordinator: self.operationCoordinator)
+            reporter.recordProgress(completedCount: 0, totalCount: totalCount, phase: "Starting")
+            await work(reporter)
+        }, kind: .automation)
+        guard started else { return nil }
+        return operationCoordinator.taskDescriptors.last
+    }
+
     @discardableResult
     func cancelLibraryJob(id: UUID) -> Bool {
         operationCoordinator.cancel(operationID: id)
@@ -360,6 +407,9 @@ final class LibrarySession: LibrarySessionLifecycle {
             return startAutomationSourceRefresh(sourceID: sourceID)
         case .libraryImport:
             guard let importSelection,
+                  let enrichmentPolicy = LibraryImportEnrichmentPolicy(
+                    rawValue: retrySpec.enrichmentPolicy
+                  ),
                   retrySpec.targetPlaylistID.map({ playlistID in
                       libraryViewModel.playlists.contains { $0.id == playlistID }
                   }) ?? true else {
@@ -368,7 +418,8 @@ final class LibrarySession: LibrarySessionLifecycle {
             return startAutomationImport(
                 selection: importSelection,
                 playlistID: retrySpec.targetPlaylistID,
-                retryEnrichment: true
+                retryEnrichment: enrichmentPolicy == .standard,
+                enrichmentPolicy: enrichmentPolicy
             )
         }
     }
@@ -747,7 +798,8 @@ final class LibrarySession: LibrarySessionLifecycle {
     func startAutomationImport(
         selection: LibraryInitialImportSelection,
         playlistID: UUID? = nil,
-        retryEnrichment: Bool = false
+        retryEnrichment: Bool = false,
+        enrichmentPolicy: LibraryImportEnrichmentPolicy = .standard
     ) -> LibraryOperationTaskDescriptor? {
         guard !isClosed else { return nil }
         let ownedSelection = selection.retainedCopy()
@@ -755,7 +807,8 @@ final class LibrarySession: LibrarySessionLifecycle {
             libraryID: context.id,
             sessionGeneration: context.generation,
             destination: playlistID.map { .playlist($0) } ?? .libraryOnly,
-            origin: .automation
+            origin: .automation,
+            enrichmentPolicy: enrichmentPolicy
         )
         let started = operationCoordinator.start({ [weak self] in
             defer { ownedSelection.release() }
@@ -778,23 +831,37 @@ final class LibrarySession: LibrarySessionLifecycle {
                 "playlistMembershipAdditions": .number(Double(outcome.playlistMembershipAdditions)),
                 "alreadyInPlaylistCount": .number(Double(outcome.alreadyInPlaylistCount)),
                 "pendingNCMCount": .number(Double(outcome.pendingNCMCount)),
+                "fileTrackMappings": .array(outcome.fileTrackMappings.map { mapping in
+                    .object([
+                        "filePath": .string(mapping.filePath),
+                        "trackID": .string(mapping.trackID.uuidString)
+                    ])
+                }),
                 "failures": .array(outcome.failures.map { .object([
                     "path": .string($0.url.path), "message": .string($0.message)
                 ]) }),
-                "enrichmentCompleted": .boolean(false)
+                "enrichmentPolicy": .string(enrichmentPolicy.rawValue),
+                "enrichmentCompleted": .boolean(enrichmentPolicy == .migration)
             ]
             if let playlistID { values["targetPlaylistID"] = .string(playlistID.uuidString) }
             self.operationCoordinator.recordResult(.object(values))
             self.operationCoordinator.recordProgress(
                 completedCount: outcome.affectedTrackCount,
                 totalCount: outcome.affectedTrackCount + outcome.failures.count,
-                phase: "import enrichment"
+                phase: enrichmentPolicy == .migration ? "import complete" : "import enrichment"
             )
             for failure in outcome.failures.prefix(50) {
                 self.operationCoordinator.recordPartialFailure("\(failure.url.path): \(failure.message)")
             }
             if outcome.wasRejectedAsStale {
                 self.operationCoordinator.recordPartialFailure("Import rejected: library session changed")
+            }
+            guard enrichmentPolicy == .standard else {
+                values["enrichmentWarnings"] = .array([])
+                await self.libraryViewModel.syncVisibleStateFromRepositoryAfterImport()
+                self.operationCoordinator.recordResult(.object(values))
+                self.operationCoordinator.recordCheckpoint("Import complete without online enrichment")
+                return
             }
             let newTrackIDs = Set(outcome.newTrackIDs)
             let affectedTrackIDs = Set(outcome.trackIDs)
@@ -826,7 +893,10 @@ final class LibrarySession: LibrarySessionLifecycle {
             } catch {
                 self.operationCoordinator.recordPartialFailure("Enrichment failed: \(error)")
             }
-        }, kind: .importFiles, retrySpec: .libraryImport(targetPlaylistID: playlistID))
+        }, kind: .importFiles, retrySpec: .libraryImport(
+            targetPlaylistID: playlistID,
+            enrichmentPolicy: enrichmentPolicy.rawValue
+        ))
         guard started else {
             ownedSelection.release()
             return nil

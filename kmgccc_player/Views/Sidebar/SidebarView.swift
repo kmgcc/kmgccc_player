@@ -825,6 +825,7 @@ struct SidebarView: View {
                     .sourceScan,
                     .ncmConversion,
                     .enrichment,
+                    .automation,
                     .libraryBundleExport,
                     .embeddedTagWrite
                 ].contains(task.kind)
@@ -840,6 +841,7 @@ struct SidebarView: View {
             case .sourceScan: title = "正在扫描来源"
             case .ncmConversion: title = "正在转换歌曲"
             case .enrichment: title = "正在补全信息"
+            case .automation: title = "正在处理自动化任务"
             default: title = "正在导入歌曲"
             }
             return SidebarTaskProgress(

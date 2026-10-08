@@ -19,7 +19,7 @@ struct AppearanceSettingsView: View {
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var configuredMotionPolicy
 
-    @State private var globalArtworkTintEnabled: Bool = AppSettings.shared.globalArtworkTintEnabled
+    @State private var artworkTintMode: AppSettings.ArtworkTintMode = AppSettings.shared.artworkTintMode
     @State private var audioVisualizationHDREnabled: Bool = AppSettings.shared.audioVisualizationHDREnabled
     @State private var dockProgressVisible: Bool = AppSettings.shared.dockProgressVisible
     @State private var followSystemAppearance: Bool = AppSettings.shared.followSystemAppearance
@@ -79,12 +79,8 @@ struct AppearanceSettingsView: View {
             SettingsSection("常规") {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack(alignment: .top, spacing: 14) {
-                        SettingsSwitchRow(
-                            title: "全局取色",
-                            isOn: $globalArtworkTintEnabled,
-                            detail: "开启后界面配色将跟随当前播放封面的主色调动态变化"
-                        )
-                        .frame(maxWidth: .infinity)
+                        artworkTintModePicker
+                            .frame(maxWidth: .infinity)
 
                         Divider()
                             .frame(height: 18)
@@ -121,7 +117,7 @@ struct AppearanceSettingsView: View {
             }
         }
         .onAppear {
-            globalArtworkTintEnabled = settings.globalArtworkTintEnabled
+            artworkTintMode = settings.artworkTintMode
             audioVisualizationHDREnabled = settings.audioVisualizationHDREnabled
             dockProgressVisible = settings.dockProgressVisible
             followSystemAppearance = settings.followSystemAppearance
@@ -129,10 +125,10 @@ struct AppearanceSettingsView: View {
             homeCardMaterialMode = settings.homeCardMaterialMode
             homeSectionOrder = settings.homeSectionOrder
         }
-        .onChange(of: globalArtworkTintEnabled) { _, newValue in
-            settings.globalArtworkTintEnabled = newValue
+        .onChange(of: artworkTintMode) { _, newValue in
+            settings.artworkTintMode = newValue
             Task { @MainActor in
-                await themeStore.refreshPalette(reason: "settings_global_tint_change")
+                await themeStore.refreshPalette(reason: "settings_artwork_tint_mode_change")
             }
         }
         .onChange(of: audioVisualizationHDREnabled) { _, newValue in
@@ -153,6 +149,50 @@ struct AppearanceSettingsView: View {
         .onChange(of: settings.homeSectionOrder) { _, newValue in
             guard newValue != homeSectionOrder else { return }
             homeSectionOrder = newValue
+        }
+    }
+
+    private var artworkTintModePicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("动态取色")
+                    .settingsRowLabelStyle()
+
+                Spacer(minLength: 6)
+
+                SlidingSelector(
+                    segments: AppSettings.ArtworkTintMode.allCases,
+                    selection: $artworkTintMode,
+                    hSpacing: 0,
+                    background: {
+                        Color.clear
+                    },
+                    knob: {
+                        Capsule()
+                            .fill(themeStore.accentColor.opacity(0.18))
+                    },
+                    content: { mode, isSelected in
+                        Text(mode.title)
+                            .font(.system(size: 11, weight: isSelected ? .medium : .regular))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .foregroundStyle(
+                                isSelected ? themeStore.accentColor : (appColors?.secondary ?? .secondary)
+                            )
+                            .frame(minWidth: 34)
+                    }
+                )
+                .padding(3)
+                .background(
+                    Capsule()
+                        .fill((appColors?.secondary ?? .secondary).opacity(0.08))
+                )
+                .fixedSize(horizontal: true, vertical: false)
+            }
+
+            Text("简洁使用默认色，动态跟随播放封面，丰富为列表歌曲分别取色")
+                .font(.system(size: 11))
+                .foregroundStyle(appColors?.secondary ?? .secondary)
         }
     }
 

@@ -37,6 +37,9 @@ struct ImportCandidate: Sendable {
     /// Advisory compilation suggestions inferred from the directory batch
     /// (§10.4). Suggestion-only: never written back to files.
     let enrichmentSuggestions: [EnrichmentSuggestion]?
+    /// Original paths represented by this candidate, including converted NCM
+    /// inputs and files coalesced onto one physical referenced Track.
+    let originalInputFilePaths: [String]
 
     nonisolated init(
         progressID: String,
@@ -53,7 +56,8 @@ struct ImportCandidate: Sendable {
         recoveryTrackID: UUID?,
         embeddedSnapshot: EmbeddedMetadataSnapshot? = nil,
         audioPropertiesOverride: TrackAudioProperties? = nil,
-        enrichmentSuggestions: [EnrichmentSuggestion]? = nil
+        enrichmentSuggestions: [EnrichmentSuggestion]? = nil,
+        originalInputFilePaths: [String] = []
     ) {
         self.progressID = progressID
         self.displayName = displayName
@@ -70,6 +74,7 @@ struct ImportCandidate: Sendable {
         self.embeddedSnapshot = embeddedSnapshot
         self.audioPropertiesOverride = audioPropertiesOverride
         self.enrichmentSuggestions = enrichmentSuggestions
+        self.originalInputFilePaths = originalInputFilePaths
     }
 
     func prepared(trackID: UUID, placement: ImportPlacement) -> ImportCandidate {
@@ -88,7 +93,8 @@ struct ImportCandidate: Sendable {
             recoveryTrackID: recoveryTrackID,
             embeddedSnapshot: embeddedSnapshot,
             audioPropertiesOverride: audioPropertiesOverride,
-            enrichmentSuggestions: enrichmentSuggestions
+            enrichmentSuggestions: enrichmentSuggestions,
+            originalInputFilePaths: originalInputFilePaths
         )
     }
 }
@@ -101,6 +107,7 @@ struct ResolvedImportFile: Sendable {
     let ncmResult: NCMConversionResult?
     let discoveredFile: ImportDiscoveredFile
     let referencedNCMOutput: ReferencedNCMConversionOutput?
+    var originalInputFilePaths: [String] = []
 }
 
 struct ExistingTrackMatch: Sendable {
@@ -185,6 +192,7 @@ final class ImportPlanner {
         let referencedReuseLocators: [UUID: ReferencedFileLocator]
         let filesToImport: [ImportDiscoveredFile]
         let eligibleNCMFiles: [ImportDiscoveredFile]
+        let fileTrackMappings: [LibraryImportFileTrackMapping]
     }
 
     func interpretInputs(
@@ -201,6 +209,7 @@ final class ImportPlanner {
         var reusedTracks: [Track] = []
         var reusedTrackIDs = Set<UUID>()
         var referencedReuseLocators: [UUID: ReferencedFileLocator] = [:]
+        var fileTrackMappings: [LibraryImportFileTrackMapping] = []
         let identityResolver = TrackIdentityResolver()
         // Managed-mode identity reuse matches by canonical source path. Index
         // the library once per import instead of scanning every track per file.
@@ -266,6 +275,10 @@ final class ImportPlanner {
                         _ = locator.setContentDigest(digest, atLocationID: locationID)
                     }
                     referencedReuseLocators[reuseTarget.id] = locator
+                    fileTrackMappings.append(.init(
+                        filePath: file.url.standardizedFileURL.path,
+                        trackID: reuseTarget.id
+                    ))
                     if reusedTrackIDs.insert(reuseTarget.id).inserted {
                         reusedTracks.append(reuseTarget)
                     }
@@ -287,6 +300,10 @@ final class ImportPlanner {
                     newFiles.append(file)
                     continue
                 }
+                fileTrackMappings.append(.init(
+                    filePath: file.url.standardizedFileURL.path,
+                    trackID: existingTrack.id
+                ))
                 if reusedTrackIDs.insert(existingTrack.id).inserted {
                     reusedTracks.append(existingTrack)
                 }
@@ -310,7 +327,8 @@ final class ImportPlanner {
             reusedTrackIDs: reusedTrackIDs,
             referencedReuseLocators: referencedReuseLocators,
             filesToImport: filesToImport,
-            eligibleNCMFiles: eligibleNCMFiles
+            eligibleNCMFiles: eligibleNCMFiles,
+            fileTrackMappings: fileTrackMappings
         )
     }
 
@@ -321,6 +339,7 @@ final class ImportPlanner {
         let reusedTracks: [Track]
         let reusedTrackIDs: Set<UUID>
         let failures: [ImportInputFailure]
+        var fileTrackMappings: [LibraryImportFileTrackMapping] = []
         /// Managed pipeline finished but cancellation was requested right
         /// after; the caller owns rollback.
         let cancelledAfterManagedConversion: Bool
@@ -338,6 +357,7 @@ final class ImportPlanner {
         var reusedTracks = reusedTracks
         var reusedTrackIDs = reusedTrackIDs
         var failures: [ImportInputFailure] = []
+        var fileTrackMappings: [LibraryImportFileTrackMapping] = []
 
         var resolvedFiles: [ResolvedImportFile] = filesToImport.map {
             ResolvedImportFile(
@@ -346,7 +366,8 @@ final class ImportPlanner {
                 fileURL: $0.url,
                 ncmResult: nil,
                 discoveredFile: $0,
-                referencedNCMOutput: nil
+                referencedNCMOutput: nil,
+                originalInputFilePaths: [$0.url.standardizedFileURL.path]
             )
         }
 
@@ -387,7 +408,8 @@ final class ImportPlanner {
                             primarySourceID: nil,
                             fingerprint: try? ReferencedFileIdentityProvider().fingerprint(for: result.audioFileURL)
                         ),
-                        referencedNCMOutput: nil
+                        referencedNCMOutput: nil,
+                        originalInputFilePaths: [output.sourceURL.standardizedFileURL.path]
                     )
                 )
             }
@@ -408,7 +430,8 @@ final class ImportPlanner {
                             primarySourceID: output.locator.primarySourceID,
                             fingerprint: output.locator.fingerprint
                         ),
-                        referencedNCMOutput: output
+                        referencedNCMOutput: output,
+                        originalInputFilePaths: [file.url.standardizedFileURL.path]
                     ))
                     progressController.updateItem(
                         id: file.url.path,
@@ -433,6 +456,10 @@ final class ImportPlanner {
                         if reusedTrackIDs.insert(existing.id).inserted {
                             reusedTracks.append(existing)
                         }
+                        fileTrackMappings.append(.init(
+                            filePath: file.url.standardizedFileURL.path,
+                            trackID: existing.id
+                        ))
                         progressController.updateItem(
                             id: file.url.path,
                             title: existing.title,
@@ -477,6 +504,7 @@ final class ImportPlanner {
             reusedTracks: reusedTracks,
             reusedTrackIDs: reusedTrackIDs,
             failures: failures,
+            fileTrackMappings: fileTrackMappings,
             cancelledAfterManagedConversion: false
         )
     }
@@ -727,13 +755,18 @@ final class ImportPlanner {
                     ?? file.discoveredFile.primarySourceID,
                 fingerprint: preferred.discoveredFile.fingerprint ?? fingerprint
             )
+            var mergedInputFilePaths = existing.originalInputFilePaths
+            for path in file.originalInputFilePaths where !mergedInputFilePaths.contains(path) {
+                mergedInputFilePaths.append(path)
+            }
             result[existingIndex] = ResolvedImportFile(
                 progressID: preferred.progressID,
                 displayName: preferred.displayName,
                 fileURL: preferred.fileURL,
                 ncmResult: preferred.ncmResult,
                 discoveredFile: mergedDiscoveredFile,
-                referencedNCMOutput: preferred.referencedNCMOutput
+                referencedNCMOutput: preferred.referencedNCMOutput,
+                originalInputFilePaths: mergedInputFilePaths
             )
         }
         return result
@@ -1001,7 +1034,8 @@ final class ImportPlanner {
                 recoveryTrackID: candidate.recoveryTrackID,
                 embeddedSnapshot: candidate.embeddedSnapshot,
                 audioPropertiesOverride: candidate.audioPropertiesOverride,
-                enrichmentSuggestions: suggestions
+                enrichmentSuggestions: suggestions,
+                originalInputFilePaths: candidate.originalInputFilePaths
             )
         }
     }
@@ -1048,7 +1082,8 @@ final class ImportPlanner {
                     ncmOperationID: file.referencedNCMOutput?.operationID,
                     ncmAssociation: file.referencedNCMOutput?.association,
                     ncmLocator: file.referencedNCMOutput?.locator,
-                    recoveryTrackID: file.referencedNCMOutput?.trackID
+                    recoveryTrackID: file.referencedNCMOutput?.trackID,
+                    originalInputFilePaths: file.originalInputFilePaths
                 ),
                 duplicateRow: nil
             )
@@ -1107,7 +1142,8 @@ final class ImportPlanner {
                         ncmOperationID: file.referencedNCMOutput?.operationID,
                         ncmAssociation: file.referencedNCMOutput?.association,
                         ncmLocator: file.referencedNCMOutput?.locator,
-                        recoveryTrackID: file.referencedNCMOutput?.trackID
+                        recoveryTrackID: file.referencedNCMOutput?.trackID,
+                        originalInputFilePaths: file.originalInputFilePaths
                     ),
                     duplicateRow: nil
                 )
@@ -1149,7 +1185,8 @@ final class ImportPlanner {
             ncmLocator: file.referencedNCMOutput?.locator,
             recoveryTrackID: file.referencedNCMOutput?.trackID,
             embeddedSnapshot: embeddedSnapshot,
-            audioPropertiesOverride: audioPropertiesOverride
+            audioPropertiesOverride: audioPropertiesOverride,
+            originalInputFilePaths: file.originalInputFilePaths
         )
         let dedupKey = LibraryNormalization.normalizedDedupKey(
             title: effectivePreview.title,
@@ -1183,7 +1220,8 @@ final class ImportPlanner {
             recoveryTrackID: candidate.recoveryTrackID,
             embeddedSnapshot: candidate.embeddedSnapshot,
             audioPropertiesOverride: candidate.audioPropertiesOverride,
-            enrichmentSuggestions: candidate.enrichmentSuggestions
+            enrichmentSuggestions: candidate.enrichmentSuggestions,
+            originalInputFilePaths: candidate.originalInputFilePaths
         )
 
         let duplicateRow = DuplicatePairRow(

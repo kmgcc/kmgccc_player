@@ -1,5 +1,6 @@
 import Foundation
 import Dispatch
+import Darwin
 import PlayerAutomationIPC
 import PlayerAutomationProtocol
 
@@ -117,51 +118,121 @@ private struct MCPServerNotification: Encodable, Sendable {
 
 private final class MCPStdioOutput: @unchecked Sendable {
     private let lock = NSLock()
+    private let onWriteFailure: @Sendable () -> Void
+    private var writable = true
+
+    init(onWriteFailure: @escaping @Sendable () -> Void) {
+        self.onWriteFailure = onWriteFailure
+    }
+
+    var isWritable: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return writable
+    }
 
     func write<Value: Encodable>(_ value: Value) {
+        let data: Data
         do {
-            let data = try AutomationWireCoding.encoder().encode(value)
-            lock.lock()
-            defer { lock.unlock() }
-            FileHandle.standardOutput.write(data)
-            FileHandle.standardOutput.write(Data([0x0A]))
+            data = try AutomationWireCoding.encoder().encode(value) + Data([0x0A])
         } catch {
             let diagnostic = "MCP response encoding failed: \(error.localizedDescription)\n"
             FileHandle.standardError.write(Data(diagnostic.utf8))
+            return
+        }
+
+        lock.lock()
+        guard writable else {
+            lock.unlock()
+            return
+        }
+        do {
+            try FileHandle.standardOutput.write(contentsOf: data)
+            lock.unlock()
+        } catch {
+            writable = false
+            lock.unlock()
+            let diagnostic = "MCP stdout closed: \(error.localizedDescription)\n"
+            FileHandle.standardError.write(Data(diagnostic.utf8))
+            onWriteFailure()
         }
     }
 }
 
 private final class MCPInFlightRequests: @unchecked Sendable {
-    private let lock = NSLock()
-    private var requests: [MCPJSONRPCID: AutomationIPCCancellationToken] = [:]
+    private struct Entry {
+        let requestID: MCPJSONRPCID
+        let token: AutomationIPCCancellationToken
+        let deadline: Date
+    }
 
-    func insert(_ token: AutomationIPCCancellationToken, for requestID: MCPJSONRPCID) {
-        lock.lock()
-        requests[requestID] = token
-        lock.unlock()
+    private let condition = NSCondition()
+    private var requests: [ObjectIdentifier: Entry] = [:]
+    private var requestTokens: [MCPJSONRPCID: Set<ObjectIdentifier>] = [:]
+
+    func insert(
+        _ token: AutomationIPCCancellationToken,
+        for requestID: MCPJSONRPCID,
+        deadline: Date
+    ) {
+        let tokenID = ObjectIdentifier(token)
+        condition.lock()
+        requests[tokenID] = Entry(requestID: requestID, token: token, deadline: deadline)
+        requestTokens[requestID, default: []].insert(tokenID)
+        condition.unlock()
     }
 
     func cancel(_ requestID: MCPJSONRPCID) {
-        lock.lock()
-        let token = requests[requestID]
-        lock.unlock()
-        token?.cancel()
+        condition.lock()
+        let tokens = requestTokens[requestID, default: []].compactMap { requests[$0]?.token }
+        condition.unlock()
+        tokens.forEach { $0.cancel() }
     }
 
     func remove(_ requestID: MCPJSONRPCID, token: AutomationIPCCancellationToken) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard requests[requestID] === token else { return }
-        requests.removeValue(forKey: requestID)
+        let tokenID = ObjectIdentifier(token)
+        condition.lock()
+        defer { condition.unlock() }
+        guard let entry = requests[tokenID], entry.requestID == requestID else { return }
+        requests.removeValue(forKey: tokenID)
+        requestTokens[requestID]?.remove(tokenID)
+        if requestTokens[requestID]?.isEmpty == true {
+            requestTokens.removeValue(forKey: requestID)
+        }
+        if requests.isEmpty {
+            condition.broadcast()
+        }
     }
 
     func cancelAll() {
-        lock.lock()
-        let active = Array(requests.values)
-        requests.removeAll()
-        lock.unlock()
+        condition.lock()
+        let active = requests.values.map(\.token)
+        condition.unlock()
         active.forEach { $0.cancel() }
+    }
+
+    func drainDeadline(grace: TimeInterval, maximumWait: TimeInterval) -> Date {
+        condition.lock()
+        let latestRequestDeadline = requests.values.map(\.deadline).max()
+        condition.unlock()
+
+        let now = Date()
+        let requestDeadline = latestRequestDeadline ?? now
+        return min(
+            max(now, requestDeadline).addingTimeInterval(max(0, grace)),
+            now.addingTimeInterval(max(0, maximumWait))
+        )
+    }
+
+    @discardableResult
+    func waitUntilDrained(until deadline: Date) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        while !requests.isEmpty {
+            guard deadline.timeIntervalSinceNow > 0 else { return false }
+            guard condition.wait(until: deadline) else { return requests.isEmpty }
+        }
+        return true
     }
 }
 
@@ -426,22 +497,27 @@ struct AutomationMCPStdioOptions: Sendable {
     let socketPath: String
     let noLaunch: Bool
     let timeout: TimeInterval
+    let timeoutWasSet: Bool
 }
 
 struct AutomationMCPStdioServer: Sendable {
     let options: AutomationMCPStdioOptions
+    private let idempotencySessionID = UUID()
 
     func run() -> Int32 {
+        // A disconnected MCP client must be reported as a write failure so
+        // pending IPC work can be cancelled instead of terminating by SIGPIPE.
+        _ = signal(SIGPIPE, SIG_IGN)
         var client: AutomationIPCClient?
         var state = MCPConnectionState()
-        let output = MCPStdioOutput()
         let inFlight = MCPInFlightRequests()
+        let output = MCPStdioOutput { inFlight.cancelAll() }
         let subscriptions = MCPJobResourceSubscriptions(
             output: output,
             readJobs: { [self] in readJobsForSubscription() },
             taskNotificationValue: { [self] job in taskNotificationValue(for: job) }
         )
-        while let line = readLine(strippingNewline: true) {
+        while output.isWritable, let line = readLine(strippingNewline: true) {
             guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 continue
             }
@@ -482,7 +558,11 @@ struct AutomationMCPStdioServer: Sendable {
                         try negotiateRequest(request, state: &state)
                     }
                     let cancellation = AutomationIPCCancellationToken()
-                    inFlight.insert(cancellation, for: requestID)
+                    inFlight.insert(
+                        cancellation,
+                        for: requestID,
+                        deadline: inFlightDeadline(for: request)
+                    )
                     let stateSnapshot = state
                     DispatchQueue.global(qos: .userInitiated).async { [self] in
                         defer { inFlight.remove(requestID, token: cancellation) }
@@ -556,9 +636,47 @@ struct AutomationMCPStdioServer: Sendable {
                 )
             }
         }
-        inFlight.cancelAll()
         subscriptions.stop()
+
+        if output.isWritable {
+            let drainDeadline = inFlight.drainDeadline(
+                grace: 0.5,
+                maximumWait: AutomationToolDefaults.maximumTimeout + 0.5
+            )
+            if !inFlight.waitUntilDrained(until: drainDeadline) {
+                inFlight.cancelAll()
+                _ = inFlight.waitUntilDrained(until: Date().addingTimeInterval(1))
+            }
+        } else {
+            inFlight.cancelAll()
+            _ = inFlight.waitUntilDrained(until: Date().addingTimeInterval(1))
+        }
         return 0
+    }
+
+    private func inFlightDeadline(for request: MCPRequest) -> Date {
+        let now = Date()
+        guard request.method == "tools/call",
+              case .object(let values) = request.params,
+              case .string(let toolName) = values["name"] else {
+            return now.addingTimeInterval(
+                min(max(options.timeout, 0.000_001), AutomationToolDefaults.maximumTimeout)
+            )
+        }
+
+        let context = (try? automationContext(from: values["context"]))
+            ?? AutomationRequestContext(caller: "mcp")
+        let automationRequest = AutomationRequest(
+            method: toolName,
+            params: values["arguments"],
+            context: context
+        )
+        return AutomationToolDefaults.requestDeadline(
+            for: automationRequest,
+            configuredTimeout: options.timeout,
+            timeoutWasSet: options.timeoutWasSet,
+            now: now
+        )
     }
 
     private func openSubscription(
@@ -766,11 +884,15 @@ struct AutomationMCPStdioServer: Sendable {
             )
             let response: AutomationResponse
             do {
-                if client == nil { client = try makeClient() }
+                let deadline = Date().addingTimeInterval(options.timeout)
+                if client == nil {
+                    client = try makeClient(timeout: options.timeout, cancellation: cancellation)
+                }
                 response = try send(
                     cancelRequest,
                     client: client!,
-                    timeout: options.timeout,
+                    deadline: deadline,
+                    connectionDeadline: deadline,
                     cancellation: cancellation
                 )
             } catch {
@@ -833,9 +955,18 @@ struct AutomationMCPStdioServer: Sendable {
             }
             let requestID = UUID()
             let suppliedContext = try automationContext(from: values["context"])
+            let descriptor = AutomationToolCatalog.descriptor(for: toolName)
+            let requestsBackgroundJob: Bool
+            if case .object(let toolArguments)? = arguments,
+               case .boolean(true)? = toolArguments["background"] {
+                requestsBackgroundJob = true
+            } else {
+                requestsBackgroundJob = false
+            }
+            let submitsBackgroundJob = descriptor?.supportsJobs == true && requestsBackgroundJob
             let idempotencyKey = suppliedContext.idempotencyKey
-                ?? (AutomationToolCatalog.descriptor(for: toolName)?.readOnly == false
-                    ? "mcp:\(id.idempotencyComponent)"
+                ?? (descriptor?.readOnly == false || submitsBackgroundJob
+                    ? "mcp:\(idempotencySessionID.uuidString):\(id.idempotencyComponent)"
                     : nil)
             let automationRequest = AutomationRequest(
                 method: toolName,
@@ -851,13 +982,24 @@ struct AutomationMCPStdioServer: Sendable {
             )
             let toolResult: AutomationJSONValue
             do {
+                let requestDeadline = AutomationToolDefaults.requestDeadline(
+                    for: automationRequest,
+                    configuredTimeout: options.timeout,
+                    timeoutWasSet: options.timeoutWasSet
+                )
+                let connectionDeadline = min(
+                    Date().addingTimeInterval(options.timeout),
+                    requestDeadline
+                )
                 if client == nil {
-                    client = try makeClient()
+                    let connectTimeout = max(0.000_001, connectionDeadline.timeIntervalSinceNow)
+                    client = try makeClient(timeout: connectTimeout, cancellation: cancellation)
                 }
                 let response = try send(
                     automationRequest,
                     client: client!,
-                    timeout: options.timeout,
+                    deadline: requestDeadline,
+                    connectionDeadline: connectionDeadline,
                     cancellation: cancellation
                 )
                 if let descriptor = AutomationToolCatalog.descriptor(for: toolName),
@@ -889,10 +1031,7 @@ struct AutomationMCPStdioServer: Sendable {
                     toolResult = makeToolResult(response)
                 }
             } catch {
-                toolResult = makeToolExecutionError(
-                    code: "serverUnavailable",
-                    message: error.localizedDescription
-                )
+                toolResult = makeTransportToolError(error)
             }
             return success(id: id, result: toolResult, modern: isModernRequest(request))
 
@@ -1349,7 +1488,10 @@ Follow this structured workflow to ensure lyrics quality:
     ) throws -> AutomationJobSummary {
         let response: AutomationResponse
         do {
-            if client == nil { client = try makeClient() }
+            let deadline = Date().addingTimeInterval(options.timeout)
+            if client == nil {
+                client = try makeClient(timeout: options.timeout, cancellation: cancellation)
+            }
             let request = AutomationRequest(
                 method: AutomationMethod.jobsGet,
                 params: .object(["jobID": .string(identity.jobID.uuidString)]),
@@ -1358,7 +1500,8 @@ Follow this structured workflow to ensure lyrics quality:
             response = try send(
                 request,
                 client: client!,
-                timeout: options.timeout,
+                deadline: deadline,
+                connectionDeadline: deadline,
                 cancellation: cancellation
             )
         } catch {
@@ -1545,17 +1688,20 @@ Follow this structured workflow to ensure lyrics quality:
 
     private func makeClient(
         allowLaunch: Bool = true,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        cancellation: AutomationIPCCancellationToken? = nil
     ) throws -> AutomationIPCClient {
-        let clientTimeout = timeout ?? options.timeout
+        let clientTimeout = max(0.000_001, timeout ?? options.timeout)
         let socketExists = FileManager.default.fileExists(atPath: options.socketPath)
         let isCustomSocket = options.socketPath != AutomationToolDefaults.socketPath
-        if allowLaunch && !options.noLaunch && !socketExists && !isCustomSocket {
+        let secretURL = try AutomationIPCSecretStore.url(forSocketPath: options.socketPath)
+        let secretExists = FileManager.default.fileExists(atPath: secretURL.path)
+        if allowLaunch && !options.noLaunch && (!socketExists || !secretExists) && !isCustomSocket {
             launchAppIfNeeded()
         }
-        let secretURL = try AutomationIPCSecretStore.url(forSocketPath: options.socketPath)
         let deadline = Date().addingTimeInterval(clientTimeout)
         while Date() < deadline {
+            if cancellation?.isCancelled == true { throw CancellationError() }
             if FileManager.default.fileExists(atPath: secretURL.path) {
                 let secret = try AutomationIPCSecretStore.load(
                     forSocketPath: options.socketPath
@@ -1571,7 +1717,7 @@ Follow this structured workflow to ensure lyrics quality:
                     displayName: "kmgccc_player MCP stdio"
                 )
             }
-            Thread.sleep(forTimeInterval: 0.1)
+            Thread.sleep(forTimeInterval: min(0.1, max(0, deadline.timeIntervalSinceNow)))
         }
         throw AutomationIPCError.sharedSecretUnavailable
     }
@@ -1580,7 +1726,10 @@ Follow this structured workflow to ensure lyrics quality:
         client: inout AutomationIPCClient?,
         cancellation: AutomationIPCCancellationToken? = nil
     ) throws -> AutomationJSONValue {
-        if client == nil { client = try makeClient() }
+        let deadline = Date().addingTimeInterval(options.timeout)
+        if client == nil {
+            client = try makeClient(timeout: options.timeout, cancellation: cancellation)
+        }
         let request = AutomationRequest(
             method: AutomationMethod.jobsList,
             params: nil,
@@ -1589,7 +1738,8 @@ Follow this structured workflow to ensure lyrics quality:
         let response = try send(
             request,
             client: client!,
-            timeout: options.timeout,
+            deadline: deadline,
+            connectionDeadline: deadline,
             cancellation: cancellation
         )
         guard response.error == nil else {
@@ -1620,21 +1770,43 @@ Follow this structured workflow to ensure lyrics quality:
     private func send(
         _ request: AutomationRequest,
         client: AutomationIPCClient,
-        timeout: TimeInterval,
+        deadline: Date,
+        connectionDeadline: Date,
         cancellation: AutomationIPCCancellationToken? = nil
     ) throws -> AutomationResponse {
-        let deadline = Date().addingTimeInterval(timeout)
+        let connectionDeadline = min(connectionDeadline, deadline)
         var lastError: Error?
+        var didAttemptLaunch = false
         while Date() < deadline {
             if cancellation?.isCancelled == true { throw CancellationError() }
+            let remaining = deadline.timeIntervalSinceNow
+            let remainingConnection = connectionDeadline.timeIntervalSinceNow
+            guard remaining > 0, remainingConnection > 0 else {
+                throw lastError ?? AutomationIPCRequestError.notSent(.timeout)
+            }
             do {
-                return try client.send(request, cancellation: cancellation)
+                return try client.sendClassified(
+                    request,
+                    timeout: remaining,
+                    connectionTimeout: remainingConnection,
+                    cancellation: cancellation
+                )
+            } catch let error as AutomationIPCRequestError {
+                guard error.isDefinitelyNotSent else { throw error }
+                lastError = error
+                if !didAttemptLaunch,
+                   !options.noLaunch,
+                   options.socketPath == AutomationToolDefaults.socketPath {
+                    launchAppIfNeeded()
+                    didAttemptLaunch = true
+                }
+                guard Date() < connectionDeadline else { throw error }
+                Thread.sleep(forTimeInterval: min(0.1, max(0, connectionDeadline.timeIntervalSinceNow)))
             } catch {
                 if cancellation?.isCancelled == true || error is CancellationError {
                     throw CancellationError()
                 }
-                lastError = error
-                Thread.sleep(forTimeInterval: 0.1)
+                throw error
             }
         }
         throw lastError ?? AutomationIPCError.timeout
@@ -1722,6 +1894,42 @@ Follow this structured workflow to ensure lyrics quality:
             "isError": .boolean(true),
             "structuredContent": .object(["error": .object(errorValue)])
         ])
+    }
+
+    private func makeTransportToolError(_ error: Error) -> AutomationJSONValue {
+        if let requestError = error as? AutomationIPCRequestError {
+            let notSent = requestError.isDefinitelyNotSent
+            return makeToolExecutionError(
+                code: notSent ? "serverUnavailable" : "requestOutcomeUnknown",
+                message: requestError.localizedDescription,
+                details: .object([
+                    "delivery": .string(notSent ? "notSent" : "unknown"),
+                    "retryable": .boolean(notSent),
+                    "action": .string(
+                        notSent
+                            ? "Start or reopen kmgccc_player, then retry."
+                            : "Check the relevant job or state before retrying; do not repeat a mutation until its outcome is known."
+                    )
+                ])
+            )
+        }
+
+        if let ipcError = error as? AutomationIPCError {
+            return makeToolExecutionError(
+                code: "serverUnavailable",
+                message: ipcError.localizedDescription,
+                details: .object([
+                    "delivery": .string("notSent"),
+                    "retryable": .boolean(true),
+                    "action": .string("Start or reopen kmgccc_player, then retry.")
+                ])
+            )
+        }
+
+        return makeToolExecutionError(
+            code: "serverUnavailable",
+            message: error.localizedDescription
+        )
     }
 
     private func success(

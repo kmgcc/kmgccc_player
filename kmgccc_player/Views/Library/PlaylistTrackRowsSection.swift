@@ -12,6 +12,7 @@ import MotionKit
 struct PlaylistTrackRowsSection: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryCacheServices.self) private var cacheServices
+    @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.motionTokens) private var motionTokens
@@ -108,7 +109,8 @@ struct PlaylistTrackRowsSection: View {
             colorScheme: colorScheme,
             primaryColor: rowPrimaryColor,
             secondaryColor: rowSecondaryColor,
-            tertiaryColor: rowTertiaryColor
+            tertiaryColor: rowTertiaryColor,
+            artworkTintMode: settings.artworkTintMode
         )
 
         return ZStack(alignment: .topLeading) {
@@ -216,7 +218,8 @@ struct PlaylistTrackRowsSection: View {
             },
             rowPrimaryColor: rowPrimaryColor,
             rowSecondaryColor: rowSecondaryColor,
-            rowTertiaryColor: rowTertiaryColor
+            rowTertiaryColor: rowTertiaryColor,
+            artworkTintMode: settings.artworkTintMode
         ) {
             menuBuilder(row.id)
         }
@@ -242,7 +245,8 @@ struct PlaylistTrackRowsSection: View {
             onTap: { _ in },
             rowPrimaryColor: rowPrimaryColor,
             rowSecondaryColor: rowSecondaryColor,
-            rowTertiaryColor: rowTertiaryColor
+            rowTertiaryColor: rowTertiaryColor,
+            artworkTintMode: settings.artworkTintMode
         ) {
             EmptyView()
         }
@@ -273,6 +277,7 @@ private struct AppKitPlaylistRowsPresentation: Equatable {
     let primaryColor: Color
     let secondaryColor: Color
     let tertiaryColor: Color
+    let artworkTintMode: AppSettings.ArtworkTintMode
 }
 
 private struct AppKitPlaylistTrackRowsTable: NSViewRepresentable {

@@ -9,6 +9,11 @@ import AppKit
 import Foundation
 import ImageIO
 
+struct ArtworkColorCacheLookup: Sendable {
+    let isCached: Bool
+    let accentColor: NSColor?
+}
+
 nonisolated private final class ArtworkOperationState<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var isFinished = false
@@ -47,6 +52,14 @@ nonisolated private final class ArtworkOperationState<Value: Sendable>: @uncheck
 actor ArtworkAssetStore {
     static let shared = ArtworkAssetStore()
 
+    private final class CachedArtworkAccent: NSObject {
+        let color: NSColor?
+
+        init(color: NSColor?) {
+            self.color = color
+        }
+    }
+
     private let cache: NSCache<NSString, ArtworkAssetSnapshot> = {
         let cache = NSCache<NSString, ArtworkAssetSnapshot>()
         cache.countLimit = 32
@@ -61,6 +74,12 @@ actor ArtworkAssetStore {
         cache.totalCostLimit = 8 * 1024 * 1024
         return cache
     }()
+    private let accentColorCache: NSCache<NSString, CachedArtworkAccent> = {
+        let cache = NSCache<NSString, CachedArtworkAccent>()
+        cache.countLimit = 100_000
+        cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
     private var inProgressTokens: [String: UUID] = [:]
     private var waitingContinuations: [String: [UUID: CheckedContinuation<ArtworkAssetSnapshot?, Never>]] = [:]
     private var metadataGeneration: UInt64 = 0
@@ -71,12 +90,17 @@ actor ArtworkAssetStore {
     func clearCache() {
         cache.removeAllObjects()
         fullImageCache.removeAllObjects()
+        clearAccentColorCache()
         metadataGeneration &+= 1
         inProgressTokens.removeAll()
         resumeAllMetadataWaiters(returning: nil)
         fullImageGeneration &+= 1
         fullImageInProgressTokens.removeAll()
         resumeAllFullImageWaiters(returning: nil)
+    }
+
+    func clearAccentColorCache() {
+        accentColorCache.removeAllObjects()
     }
 
     func purgeHydratedImages() {
@@ -98,6 +122,43 @@ actor ArtworkAssetStore {
     func get(trackID: UUID, artworkChecksum: UInt64) -> ArtworkAssetSnapshot? {
         let key = ArtworkAssetSnapshot.cacheKey(trackID: trackID, artworkChecksum: artworkChecksum)
         return cache.object(forKey: key as NSString)
+    }
+
+    func cachedAccentColor(for sourceIdentity: String) -> ArtworkColorCacheLookup {
+        let key = Self.accentColorCacheKey(for: sourceIdentity) as NSString
+        guard let cached = accentColorCache.object(forKey: key) else {
+            return ArtworkColorCacheLookup(isCached: false, accentColor: nil)
+        }
+        return ArtworkColorCacheLookup(isCached: true, accentColor: cached.color)
+    }
+
+    func resolveAccentColor(
+        trackID: UUID,
+        artworkData: Data,
+        sourceIdentity: String,
+        priority: TaskPriority = .utility
+    ) async -> NSColor? {
+        guard !artworkData.isEmpty else { return nil }
+
+        let sourceKey = Self.accentColorCacheKey(for: sourceIdentity) as NSString
+        if let cached = accentColorCache.object(forKey: sourceKey) {
+            return cached.color
+        }
+
+        let snapshot = await snapshotMetadata(
+            trackID: trackID,
+            artworkData: artworkData,
+            artworkChecksum: Self.computeChecksum(artworkData),
+            priority: priority
+        )
+        guard let snapshot else { return nil }
+        let color = snapshot.accentColor ?? snapshot.dominantColor ?? snapshot.averageColor
+        accentColorCache.setObject(
+            CachedArtworkAccent(color: color),
+            forKey: sourceKey,
+            cost: 64
+        )
+        return color
     }
     
     func snapshot(
@@ -162,6 +223,7 @@ actor ArtworkAssetStore {
         trackID: UUID,
         artworkData: Data,
         artworkChecksum: UInt64,
+        priority: TaskPriority = .utility,
         extract: @Sendable @escaping (Data, UInt64) async -> ArtworkAssetSnapshot?
     ) async -> ArtworkAssetSnapshot? {
         let key = ArtworkAssetSnapshot.cacheKey(trackID: trackID, artworkChecksum: artworkChecksum)
@@ -188,7 +250,8 @@ actor ArtworkAssetStore {
         }
 
         result = await Self.runBounded(
-            timeoutNanoseconds: 15_000_000_000
+            timeoutNanoseconds: 15_000_000_000,
+            priority: priority
         ) {
             await extract(artworkData, artworkChecksum)
         }
@@ -370,12 +433,14 @@ actor ArtworkAssetStore {
     private func snapshotMetadata(
         trackID: UUID,
         artworkData: Data,
-        artworkChecksum: UInt64
+        artworkChecksum: UInt64,
+        priority: TaskPriority = .utility
     ) async -> ArtworkAssetSnapshot? {
         await getOrCreate(
             trackID: trackID,
             artworkData: artworkData,
-            artworkChecksum: artworkChecksum
+            artworkChecksum: artworkChecksum,
+            priority: priority
         ) { data, checksum in
             Self.makeSnapshot(trackID: trackID, artworkData: data, checksum: checksum)
         }
@@ -383,13 +448,14 @@ actor ArtworkAssetStore {
 
     private nonisolated static func runBounded<Value: Sendable>(
         timeoutNanoseconds: UInt64,
+        priority: TaskPriority = .utility,
         operation: @escaping @Sendable () async -> Value?
     ) async -> Value? {
         let state = ArtworkOperationState<Value>()
-        let operationTask = Task.detached(priority: .utility) {
+        let operationTask = Task.detached(priority: priority) {
             state.finish(await operation())
         }
-        let timeoutTask = Task.detached(priority: .utility) {
+        let timeoutTask = Task.detached(priority: priority) {
             do {
                 try await Task.sleep(nanoseconds: timeoutNanoseconds)
             } catch {
@@ -462,6 +528,10 @@ actor ArtworkAssetStore {
             averageColor: averageColor,
             analysis: analysis
         )
+    }
+
+    private nonisolated static func accentColorCacheKey(for sourceIdentity: String) -> String {
+        "\(ArtworkColorExtractor.cacheVersion)|\(sourceIdentity)"
     }
     
     private nonisolated static func downsampledImage(data: Data, maxPixelSize: Int) -> NSImage? {

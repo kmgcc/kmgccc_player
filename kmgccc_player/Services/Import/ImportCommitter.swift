@@ -15,6 +15,7 @@ struct ImportedTrackRecord {
     let progressID: String
     let displayName: String
     let track: Track
+    var originalInputFilePaths: [String] = []
     let needsLyricsEnrichment: Bool
     let needsCoverEnrichment: Bool
     let needsTrackMetadataEnrichment: Bool
@@ -146,6 +147,7 @@ final class ImportCommitter {
                         progressID: output.progressID,
                         displayName: output.displayName,
                         track: track,
+                        originalInputFilePaths: candidates[output.index].originalInputFilePaths,
                         needsLyricsEnrichment: output.needsLyricsEnrichment,
                         needsCoverEnrichment: output.needsCoverEnrichment,
                         needsTrackMetadataEnrichment: output.needsTrackMetadataEnrichment,
@@ -162,8 +164,14 @@ final class ImportCommitter {
                         || output.needsAlbumMetadataEnrichment
                         || output.needsArtistArtworkEnrichment
                         || output.needsAlbumArtworkEnrichment
-                    let detail = needsEnrichment
-                        ? ImportImmediateEnrichmentEngine.pendingEnrichmentDetail(
+                    let enrichmentIsPending = needsEnrichment && !enrichmentMode.skipsEnrichment
+                    let detail: String
+                    if !needsEnrichment {
+                        detail = "歌曲文件已就绪，已有歌词与封面"
+                    } else if enrichmentMode.skipsEnrichment {
+                        detail = "保留文件内信息，跳过在线补全"
+                    } else {
+                        detail = ImportImmediateEnrichmentEngine.pendingEnrichmentDetail(
                             needsLyrics: output.needsLyricsEnrichment,
                             needsCover: output.needsCoverEnrichment,
                             needsTrackMetadata: output.needsTrackMetadataEnrichment,
@@ -173,13 +181,13 @@ final class ImportCommitter {
                             needsAlbumArtwork: output.needsAlbumArtworkEnrichment,
                             deferred: enrichmentMode.defersEnrichment
                         )
-                        : "歌曲文件已就绪，已有歌词与封面"
+                    }
                     progressController.updateItem(
                         id: output.progressID,
                         title: output.metadata.title,
                         artist: output.metadata.artist,
-                        stage: needsEnrichment ? .enrichingMetadata : .importing,
-                        status: needsEnrichment ? .waiting : .success,
+                        stage: enrichmentIsPending ? .enrichingMetadata : .importing,
+                        status: enrichmentIsPending ? .waiting : .success,
                         detail: detail
                     )
                 } else {

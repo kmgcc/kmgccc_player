@@ -20,7 +20,7 @@ referenced 均支持，NCM 由 App 转换。`playlist.addTracks` 仅用于已有
 ```text
 library.import(filePaths, targetPlaylistID?)
     -> MCP Task tasks.get，或 jobs.get 至终态
-    -> result / failures / enrichmentWarnings
+    -> result / fileTrackMappings / failures / enrichmentWarnings
     -> library.stats / library.tracks / playlist.get / artwork.get / lyrics.get 核验
 ```
 
@@ -30,6 +30,14 @@ library.import(filePaths, targetPlaylistID?)
 `library.import`，使用新 idempotency key，并核验已有 Track 与歌单关系。
 MCP modern 请求如声明 Tasks 扩展，会获得绑定 Library 与 Job 的 Task ID；切换资料库后查询前
 先切回创建任务的资料库。CLI 与未声明 Tasks 的 MCP 客户端继续使用 `jobs.get`。
+
+跨资料库迁移时，先从来源资料库用 `metadata.export` 导出每页不超过 100 首的版本化文档，
+并保留来源 Track ID。导入目标资料库时传 `enrichmentPolicy:"migration"`，让 App 读取嵌入标签与歌词、
+跳过联网补全；完成后用 Job 的 `result.fileTrackMappings` 将输入音频绝对路径映射到最终 Track ID。
+若输入路径来自 bundle manifest 的 `tracks[].audioPath`，先相对 bundle 根目录解析路径，再按路径连接映射；
+据此构造来源 Track ID 到目标 Track ID 的完整 `trackIDMap`，逐页调用已有 `metadata.import`。
+最后用 `operations.batch` 按目标 Track 分别应用歌词或封面。不要把源 Track ID 当成目标 ID，
+也不要为迁移另写 sidecar。普通 `source.refresh` 只协调来源位置与可用状态，不会覆盖已保存的 Metadata。
 
 ## 主 App 启动与实测前置
 
@@ -53,6 +61,14 @@ scripts/build_and_run.sh 使用运行锁，把这项检查放在构建前和启�
 4. 只有明确进行远程依赖构建时才使用 `--require-remote`：组件发布新版本 tag 后，App 必须重新解析依赖并核对 `Package.resolved` 的新 revision。
 
 `build_and_run.sh`、`build_app.sh` 和 `verify.sh` 默认执行本地依赖检查；远程构建必须显式设置 `MELISMAKIT_EXPECTED_SOURCE=remote`，不能用手动 `open` 或其他构建入口绕过依赖和进程检查。
+
+## 构建与测试节奏
+
+Agent 不自行编译，也不运行会触发编译的命令或脚本；改动大小、重大重构、迁移、组件接入和测试需求都不构成例外。只有用户在当前任务中明确要求时，Agent 才可编译或运行编译型测试。`xcodebuild`、`swift build/test`、`swiftc` 及任何间接调用它们的脚本都算编译；无法确认是否触发编译时，不运行。静态检查可按改动运行。
+
+测试仍应随行为改动补充或更新，但需要编译的测试由维护者手动运行。交付时列出未运行项、建议命令和未验证边界。编译型验证与 `verify.sh` 只有在用户于当前任务明确要求时才运行；准备合并、PR 或发布本身不构成授权。
+
+`verify.sh` 是完整编译门禁，仅在用户于当前任务明确要求时运行；准备合并、PR 或发布本身不构成授权。GitHub macOS CI 仅保留手动触发，代码推送和 PR 不会自动编译。
 
 ## Library lifecycle workflow
 
@@ -199,12 +215,26 @@ Metadata、History 和 Playlist membership 不会被静默删除。
 - `lyrics.apply` 的 `candidate` 和 `ttmlText` 必须二选一。候选遵循质量门槛；`ttmlText`
   适合 Agent 在中间台完成翻译/时间轴微调后直接写回，App 会先验证 TTML 再经现有歌词
   persistence owner 持久化。
+- 多首歌曲需要不同 Metadata、封面或歌词内容时，使用 `operations.batch`，每项沿用原工具的
+  参数、scope、revision 与结果 envelope；最多 100 项，Job 会逐项保存结果。外层 `dryRun:true`
+  会强制所有子项预览；10 项写入或 10 个不同写入目标以上需要 `confirm:true` 和一次前台确认。
+  有冲突或失败时只重提对应项，并使用新的 idempotency key。共享 patch/image 或联网歌词刷新继续使用
+  现有批量工具 `metadata.patch`、`artwork.apply`、`lyrics.refresh`。
 - 不要无条件覆盖已有较高置信度或用户手工数据。Metadata/Artwork 的 10 首及以上批量应先
   `dryRun`；真实调用必须带 `confirm=true`，并等待 App 前台弹窗，调用方的 `--yes` 不能
   绕过弹窗。完成后重新调用对应目标的 `metadata.get`/`artwork.get` 或 `library.tracks`
   验证 applied/skipped/conflicted；不要把 Track revision 复用于 Artist、Album 或 Playlist。
 - `diagnostics.health` 同时报告 Library/Source/Job/storage 完整性与缺歌词、缺封面、关键 Metadata
-  字段覆盖数；后面三项是内容完整度提示，不等同于存储损坏。
+  字段覆盖数；主 `issues` 与 `mediaIssues` 分页独立。媒体检查只对已知路径做存在性/可读性检查，
+  能使用任一已记录位置即视为可用，不解码音频；路径缺失提示也不证明文件已永久删除。
+  缺歌词、缺封面和关键 Metadata 字段只是内容完整度提示，不等同于存储损坏。
+
+`jobs.wait` 可用 `timeoutMs` 等待 Job 进入终态，默认 20 秒、最多 25 秒；结果包含最新 Job 快照、
+`completed`、`timedOut`、`deadlineReached` 与 `waitedMs`。`completed:true` 表示已到终态，终态也包括
+`partialFailure`、`failed` 和 `cancelled`；要判断是否成功，检查 `job.state`。等待超时或被取消不会取消 Job；
+切换资料库会结束当前等待。批次结果在 `job.result.items[i].response.result`，每项另有完整 `response`；
+`background:true` 搜索的原始 Automation response 在 `job.result`，候选数据位于 `job.result.result`。
+可先 `jobs.wait`，再用 `jobs.get` 读取完整持久结果。
 
 ## Playback and queue
 
@@ -230,7 +260,7 @@ Metadata、History 和 Playlist membership 不会被静默删除。
 ```text
 Automation API
   -> diagnostics / repair
-  -> 当前版本 docs 和 GitHub 源码
+  -> 当前版本 docs；只有机制不明时才查看必要的官方源码
   -> backup
   -> 最小 controlled JSON/filesystem change
   -> schema/invariant validate
@@ -238,13 +268,15 @@ Automation API
   -> query 验证并报告
 ```
 
-当前公开源码仓库是 <https://github.com/kmgcc/kmgccc_player>，但 Agent 必须以当前 checkout
-的 `git remote -v` 和对应 commit 为准，不应假设旧版本 schema。Direct storage write 不是
-普通 Tool，也不应修改 secret、锁文件、迁移 journal 或缓存来“修复”表面症状。
+普通自动化不要求本机有源码，也不应为了常规迁移下载源码。确需理解正式工具无法解释的具体故障时，
+只查阅官方仓库中与该故障相关的当前版本代码，核对来源和版本后立即删除临时 checkout；不要通读或
+保留整份源码。Direct storage write 不是普通 Tool，也不应修改 secret、锁文件、迁移 journal 或缓存
+来“修复”表面症状。
 
 当前正式 Storage 能力是 `storage.inspect`、`storage.validate` 和受限的
 `storage.repair`。后者只补齐 App-owned scaffolding；若仍需底层修改，先备份并按上面的
-顺序核对 owner、schema、锁和缓存。
+顺序核对 owner、schema、锁和缓存。`storage.validate` 的一致性结果与 `mediaIssues` 分开分页；后者只检查
+已知媒体路径是否存在且可读，不解码文件，也不把音频状态作为 sidecar/index 一致性失败。
 
 ## Recommended report
 
