@@ -24,6 +24,7 @@ final class AutomationIPCServer {
 
     private var sessionAccess: AutomationSessionAccess { AutomationSessionAccess(appSession: appSession) }
 
+    private let filesHandler: AutomationFilesHandler
     private let artworkHandler: AutomationArtworkHandler
     private let lyricsHandler: AutomationLyricsHandler
     private let listener: AutomationIPCListener
@@ -48,6 +49,7 @@ final class AutomationIPCServer {
         ioTimeout: TimeInterval = 120
     ) throws {
         self.appSession = appSession
+        filesHandler = AutomationFilesHandler(appSession: appSession)
         lyricsHandler = AutomationLyricsHandler(appSession: appSession)
         artworkHandler = AutomationArtworkHandler(appSession: appSession)
         let resolvedBundleIdentifier = bundleIdentifier ?? AutomationAppIdentity.bundleIdentifier
@@ -474,7 +476,7 @@ final class AutomationIPCServer {
              AutomationMethod.filesRename,
              AutomationMethod.filesMove,
              AutomationMethod.filesDelete:
-            return await AutomationFilesHandler(appSession: appSession).handle(request)
+            return await filesHandler.handle(request)
 
         case AutomationMethod.playbackState,
              AutomationMethod.playbackPlay,
