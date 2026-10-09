@@ -173,7 +173,7 @@ artifact_risk() {
       printf '%s\n' 'metal-source-in-app-bundle'
       return
       ;;
-    *.swift|*.air|*.png|*.jpg|*.jpeg|*.heic|*.webp|*.sh)
+    *.swift|*.swift.*|*.air|*.png|*.jpg|*.jpeg|*.heic|*.webp|*.sh)
       printf '%s\n' 'source-or-plaintext-runtime-artifact'
       return
       ;;

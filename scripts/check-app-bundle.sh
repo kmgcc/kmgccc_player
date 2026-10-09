@@ -72,7 +72,8 @@ require_file \
   "$RESOURCES/Licenses/MediaRemoteAdapter-BSD-3-Clause.txt" \
   "MediaRemoteAdapter license"
 
-for forbidden_name in .DS_Store .git DerivedData __pycache__ .pytest_cache; do
+for forbidden_name in .DS_Store .git DerivedData __pycache__ .pytest_cache \
+  '*.bak' '*.orig' '*.rej' '*.swp' '*.swo' '*~'; do
   if /usr/bin/find "$CONTENTS" -name "$forbidden_name" -print -quit | /usr/bin/grep -q .; then
     fail "Forbidden bundle entry found: $forbidden_name"
   fi
