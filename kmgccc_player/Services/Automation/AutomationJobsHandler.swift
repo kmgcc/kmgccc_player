@@ -224,6 +224,16 @@ struct AutomationJobsHandler {
                     || descriptor.state == .cancelled else {
                     throw AutomationParameterError.invalidValue("jobID")
                 }
+                if descriptor.retrySpec?.kind == .dspScriptTest {
+                    guard parameters.values["filePaths"] == nil,
+                          let job = try await AutomationDSPScriptsHandler(appSession: appSession)
+                            .retryTestJob(descriptor, session: session) else {
+                        throw AutomationParameterError.invalidValue("jobID")
+                    }
+                    return AutomationResponseSupport.encodeResult(AutomationJobRetryResult(
+                        originalJobID: jobID, accepted: true, job: AutomationJobProjection.makeJobSummary(job),
+                        message: "Script fixture retry accepted for the unchanged source revision."), for: request)
+                }
                 let importSelection: LibraryInitialImportSelection?
                 if descriptor.retrySpec?.kind == .libraryImport {
                     if let playlistID = descriptor.retrySpec?.targetPlaylistID,

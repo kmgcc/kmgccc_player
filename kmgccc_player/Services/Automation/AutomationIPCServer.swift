@@ -412,6 +412,14 @@ final class AutomationIPCServer {
              AutomationMethod.storageReload:
             return await AutomationStorageHandler(appSession: appSession, automationBundleIdentifier: automationBundleIdentifier, appSupportDirectoryURL: appSupportDirectoryURL).handle(request)
 
+        case AutomationMethod.audioLoudnessGet, AutomationMethod.audioLoudnessAnalyze:
+            return await AutomationLoudnessHandler(appSession: appSession).handle(request)
+
+        case AutomationMethod.dspScriptsGet, AutomationMethod.dspScriptsUpdate,
+             AutomationMethod.dspScriptsCompile, AutomationMethod.dspScriptsTest,
+             AutomationMethod.dspNodesRetry:
+            return await AutomationDSPScriptsHandler(appSession: appSession).handle(request)
+
         case AutomationMethod.dspSchema, AutomationMethod.dspState,
              AutomationMethod.dspValidate, AutomationMethod.dspPatch, AutomationMethod.dspWait,
              AutomationMethod.dspPresetsList, AutomationMethod.dspPresetsGet,
@@ -459,20 +467,27 @@ final class AutomationIPCServer {
 
         if let caller = request.context.caller?.lowercased() {
             let enabled: Bool?
+            let controlPlane: String
             switch caller {
-            case "mcp": enabled = AppSettings.shared.automationMCPEnabled
-            case "cli": enabled = AppSettings.shared.automationCLIEnabled
-            default: enabled = nil
+            case "mcp", "mcp-resource", "mcp-subscription", "mcp-tasks":
+                controlPlane = "mcp"
+                enabled = AppSettings.shared.automationMCPEnabled
+            case "cli":
+                controlPlane = "cli"
+                enabled = AppSettings.shared.automationCLIEnabled
+            default:
+                controlPlane = caller
+                enabled = nil
             }
             if enabled == false {
                 return .failure(
                     for: request,
                     error: AutomationError(
                         code: .authorizationRequired,
-                        message: "The \(caller.uppercased()) control plane is disabled in App Settings.",
+                        message: "The \(controlPlane.uppercased()) control plane is disabled in App Settings.",
                         details: .object([
-                            "controlPlane": .string(caller),
-                            "setting": .string(caller == "mcp" ? "automationMCPEnabled" : "automationCLIEnabled")
+                            "controlPlane": .string(controlPlane),
+                            "setting": .string(controlPlane == "mcp" ? "automationMCPEnabled" : "automationCLIEnabled")
                         ])
                     )
                 )
@@ -544,13 +559,16 @@ final class AutomationIPCServer {
                let jobID = UUID(uuidString: rawJobID),
                let retrySpec = appSession?.libraryJobDescriptors()
                    .first(where: {
-                       $0.id == jobID && $0.libraryID == request.context.libraryID
-                   })?.retrySpec,
-               retrySpec.kind == .libraryImport {
-                required.insert(.libraryWrite)
-                if retrySpec.targetPlaylistID != nil { required.insert(.playlistWrite) }
-                if appSession?.activeLibraryBinding.context?.mode == .referenced {
-                    required.insert(.sourceWrite)
+                       $0.id == jobID && $0.libraryID == (request.context.libraryID ?? appSession?.activeLibraryBinding.context?.id)
+                   })?.retrySpec {
+                if retrySpec.kind == .libraryImport {
+                    required.insert(.libraryWrite)
+                    if retrySpec.targetPlaylistID != nil { required.insert(.playlistWrite) }
+                    if appSession?.activeLibraryBinding.context?.mode == .referenced {
+                        required.insert(.sourceWrite)
+                    }
+                } else if retrySpec.kind == .dspScriptTest {
+                    required.formUnion([.audioWrite, .libraryRead])
                 }
             }
             if requiresHistoryRead(for: request) {
@@ -957,7 +975,7 @@ final class AutomationIPCServer {
              AutomationMethod.settingsValidate,
              AutomationMethod.settingsReset: return "settings"
         case AutomationMethod.audioGet,
-             AutomationMethod.audioPatch: return "audio"
+             AutomationMethod.audioPatch, AutomationMethod.audioLoudnessGet, AutomationMethod.audioLoudnessAnalyze: return "audio"
         default: return method.hasPrefix("dsp.") ? "audio" : "operation"
         }
     }

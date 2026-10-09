@@ -8,6 +8,25 @@ import PlayerAutomationProtocol
 
 @MainActor
 final class AutomationJobIntegrationTests: XCTestCase {
+    func testMCPResourceSubscriptionAndTaskRequestsRespectTheMCPControlPlaneSwitch() async throws {
+        try await withFixture { fixture in
+            let previous = AppSettings.shared.automationMCPEnabled
+            defer { AppSettings.shared.automationMCPEnabled = previous }
+            AppSettings.shared.automationMCPEnabled = false
+            for caller in ["mcp", "mcp-resource", "mcp-subscription", "mcp-tasks"] {
+                let response = try await fixture.send(AutomationRequest(method: AutomationMethod.dspSchema,
+                    context: AutomationRequestContext(libraryID: fixture.session.context.id, caller: caller)))
+                XCTAssertEqual(response.error?.code, .authorizationRequired)
+                guard case .object(let details)? = response.error?.details else {
+                    XCTFail("Expected control-plane error details.")
+                    continue
+                }
+                XCTAssertEqual(details["controlPlane"], .string("mcp"))
+                XCTAssertEqual(details["setting"], .string("automationMCPEnabled"))
+            }
+        }
+    }
+
     func testJobsWaitReportsTimeoutAndTerminalStateAndWaitCancellationLeavesJobRunning() async throws {
         try await withFixture { fixture in
             let gate = AutomationJobIntegrationGate()

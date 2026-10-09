@@ -1231,11 +1231,11 @@ private struct AutomationCLI {
             }
         case "dsp":
             guard let action = args.first else {
-                writeDiagnostic("usage error: dsp requires schema, state, validate, patch, wait, presets or errors")
+                writeDiagnostic("usage error: dsp requires schema, state, validate, patch, wait, presets, scripts, nodes or errors")
                 return .usage
             }
             args.removeFirst()
-            if action == "presets" || action == "errors" {
+            if ["presets", "errors", "scripts", "nodes"].contains(action) {
                 guard let operation = args.first else {
                     writeDiagnostic("usage error: dsp \(action) requires an operation")
                     return .usage
@@ -1274,6 +1274,18 @@ private struct AutomationCLI {
                 guard args.isEmpty else { writeDiagnostic("usage error: audio get takes no arguments"); return .usage }
                 method = AutomationMethod.audioGet
                 params = nil
+            case "loudness":
+                guard let operation = args.first, args.count == 1, ["get", "analyze"].contains(operation) else {
+                    writeDiagnostic("usage error: audio loudness requires get or analyze"); return .usage
+                }
+                method = operation == "get" ? AutomationMethod.audioLoudnessGet : AutomationMethod.audioLoudnessAnalyze
+                var parameters: [String: AutomationJSONValue] = [:]
+                if let raw = options.paramsJSON {
+                    guard case .object(let values) = raw else { writeDiagnostic("usage error: --params-json requires an object"); return .usage }
+                    parameters = values
+                }
+                if options.dryRun { parameters["dryRun"] = .boolean(true) }
+                params = parameters.isEmpty ? nil : .object(parameters)
             case "patch":
                 guard args.isEmpty, let values = options.paramsJSON else { writeDiagnostic("usage error: audio patch requires --params-json values object"); return .usage }
                 method = AutomationMethod.audioPatch

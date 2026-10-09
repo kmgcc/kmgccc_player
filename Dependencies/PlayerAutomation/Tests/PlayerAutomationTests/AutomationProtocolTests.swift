@@ -1369,7 +1369,7 @@ func libraryTrackPreferenceQuerySchemaIsAdvertised() {
 
 @Test
 func dspCatalogUsesAudioScopesAndCompleteVersionedSchemas() throws {
-    let descriptors = AutomationDSPToolCatalog.descriptors
+    let descriptors = AutomationDSPToolCatalog.descriptors.filter { $0.name.hasPrefix("dsp.") }
     #expect(descriptors.count == 16)
     #expect(Set(descriptors.map(\.name)).count == descriptors.count)
     for descriptor in descriptors {
@@ -1391,4 +1391,100 @@ func dspCatalogUsesAudioScopesAndCompleteVersionedSchemas() throws {
     let encoded = try AutomationWireCoding.encoder().encode(descriptors)
     let decoded = try AutomationWireCoding.decoder().decode([AutomationToolDescriptor].self, from: encoded)
     #expect(decoded == descriptors)
+}
+
+@Test
+func globalLoudnessUsesExistingJobsAndAudioScopes() throws {
+    let read = try #require(AutomationToolCatalog.descriptor(for: AutomationMethod.audioLoudnessGet))
+    #expect(read.scopes == [.audioRead, .libraryRead])
+    #expect(read.readOnly)
+    let analyze = try #require(AutomationToolCatalog.descriptor(for: AutomationMethod.audioLoudnessAnalyze))
+    #expect(analyze.scopes == [.audioWrite, .libraryRead])
+    #expect(analyze.supportsDryRun && analyze.supportsJobs && analyze.supportsTasks)
+    #expect(!analyze.requiresConfirmation)
+    let audio = try #require(AutomationToolCatalog.descriptor(for: AutomationMethod.audioPatch))
+    guard case .object(let schema) = audio.inputSchema,
+          case .object(let fields) = schema["properties"],
+          case .object(let values) = fields["values"],
+          case .object(let parameters) = values["properties"] else {
+        Issue.record("Missing audio globals schema")
+        return
+    }
+    #expect(parameters["fade"] == AutomationDSPToolCatalog.fadeSchema)
+    #expect(parameters["loudness"] == AutomationDSPToolCatalog.loudnessSchema)
+    #expect(parameters["deviceReferences"] == AutomationDSPToolCatalog.deviceReferencesSchema)
+}
+
+@Test
+func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
+    #expect(AutomationDSPToolCatalog.builtInNodeSchemas.count == 6)
+    for typeID in ["stereoWidth", "virtualBass", "tube"] {
+        let raw = try #require(AutomationDSPToolCatalog.builtInNodeSchemas.first { node in
+            guard case .object(let fields) = node else { return false }
+            return fields["typeID"] == .string(typeID)
+        })
+        guard case .object(let node) = raw,
+              case .object(let parameters) = node["parameters"],
+              case .object(let properties) = parameters["properties"],
+              case .array(let required) = parameters["required"],
+              case .object(let defaults) = node["parameterDefaults"],
+              case .array(let qualities) = node["quality"] else {
+            Issue.record("Incomplete native DSP node schema")
+            continue
+        }
+        #expect(Set(defaults.keys) == Set(properties.keys))
+        #expect(required.count == properties.count)
+        let requiredKeys = required.compactMap { value -> String? in
+            guard case .string(let key) = value else { return nil }
+            return key
+        }
+        #expect(requiredKeys.count == required.count)
+        #expect(Set(requiredKeys) == Set(properties.keys))
+        if typeID == "stereoWidth" {
+            #expect(qualities == [.string("standard")])
+            #expect(node["declaredLatencyFramesWhenActive"] == .number(0))
+        } else {
+            #expect(qualities == [.string("oversampling2x"), .string("oversampling4x")])
+            #expect(node["declaredLatencyFramesWhenActive"] == .number(64))
+            #expect(defaults["mix"] == .number(0))
+            #expect(node["peakGuarantee"] == .string("unavailable"))
+        }
+    }
+}
+
+
+@Test
+func programmableDSPToolsExposeDraftCASAndExistingJobs() throws {
+    let methods = [AutomationMethod.dspScriptsGet, AutomationMethod.dspScriptsUpdate,
+                   AutomationMethod.dspScriptsCompile, AutomationMethod.dspScriptsTest,
+                   AutomationMethod.dspNodesRetry]
+    for method in methods {
+        _ = try #require(AutomationToolCatalog.descriptor(for: method))
+    }
+    let compile = try #require(AutomationToolCatalog.descriptor(for: AutomationMethod.dspScriptsCompile))
+    #expect(compile.readOnly)
+    let update = try #require(AutomationToolCatalog.descriptor(for: AutomationMethod.dspScriptsUpdate))
+    #expect(update.supportsDryRun)
+    #expect(update.scopes.contains(.audioWrite))
+    let test = try #require(AutomationToolCatalog.descriptor(for: AutomationMethod.dspScriptsTest))
+    #expect(test.supportsJobs)
+    #expect(test.supportsTasks)
+    #expect(test.supportsDryRun)
+    #expect(test.scopes.contains(.audioWrite))
+    #expect(test.scopes.contains(.libraryRead))
+    #expect(AutomationToolCatalog.unknownParameterKeys(for: AutomationMethod.dspScriptsUpdate,
+        params: .object(["nodeID": .string("id"), "source": .string("process { output = input; }"),
+                         "expectedDraftRevision": .string("draft-1"), "apply": .boolean(true),
+                         "expectedRevision": .string("config-1")])).isEmpty)
+    #expect(AutomationToolCatalog.unknownParameterKeys(for: AutomationMethod.dspScriptsCompile,
+        params: .object(["shell": .string("never")])) == ["shell"])
+    let script = try #require(AutomationDSPToolCatalog.builtInNodeSchemas.first { node in
+        guard case .object(let fields) = node else { return false }
+        return fields["typeID"] == .string("script")
+    })
+    guard case .object(let fields) = script else { return }
+    #expect(fields["parameters"] == AutomationDSPToolCatalog.scriptParametersSchema)
+    #expect(fields["language"] == AutomationDSPToolCatalog.scriptLanguageCapabilities)
+    #expect(AutomationDSPScriptDocumentation.languageGuide.contains("expectedDraftRevision"))
+    #expect(AutomationDSPScriptDocumentation.languageGuide.contains("user data"))
 }

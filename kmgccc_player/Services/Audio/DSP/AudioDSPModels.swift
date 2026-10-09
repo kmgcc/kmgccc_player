@@ -205,8 +205,15 @@ nonisolated struct DSPHeadroomConfiguration: Codable, Equatable, Sendable {
 
 nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
     nonisolated static let parametricEQTypeID = "peq9"
+    nonisolated static let equalLoudnessTypeID = "equalLoudness"
+    nonisolated static let stereoWidthTypeID = "stereoWidth"
+    nonisolated static let virtualBassTypeID = "virtualBass"
+    nonisolated static let tubeTypeID = "tube"
     nonisolated static let defaultChannelPolicy = "fullRange"
-    nonisolated static let supportedChannelPolicies: Set<String> = ["allChannels", "fullRange"]
+    nonisolated static let supportedChannelPolicies: Set<String> = ["allChannels", "frontPair", "fullRange"]
+    nonisolated static let standardQuality = "standard"
+    nonisolated static let oversampling2xQuality = "oversampling2x"
+    nonisolated static let oversampling4xQuality = "oversampling4x"
 
     var nodeID: UUID
     var typeID: String
@@ -271,6 +278,163 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
         }
     }
 
+    nonisolated var equalLoudnessParameters: DSPEqualLoudnessParameters? {
+        get {
+            guard typeID == Self.equalLoudnessTypeID,
+                  let strength = parameters["strength"]?.numberValue,
+                  let maxBassGainDB = parameters["maxBassGainDB"]?.numberValue,
+                  let maxTrebleGainDB = parameters["maxTrebleGainDB"]?.numberValue,
+                  let bassFrequencyHz = parameters["bassFrequencyHz"]?.numberValue,
+                  let bassQ = parameters["bassQ"]?.numberValue,
+                  let trebleFrequencyHz = parameters["trebleFrequencyHz"]?.numberValue,
+                  let trebleQ = parameters["trebleQ"]?.numberValue,
+                  let compensationWindowDB = parameters["compensationWindowDB"]?.numberValue,
+                  case .string(let rawHeadroomMode)? = parameters["headroomMode"],
+                  let headroomMode = DSPHeadroomMode(rawValue: rawHeadroomMode)
+            else { return nil }
+            return DSPEqualLoudnessParameters(
+                strength: strength,
+                maxBassGainDB: maxBassGainDB,
+                maxTrebleGainDB: maxTrebleGainDB,
+                bassFrequencyHz: bassFrequencyHz,
+                bassQ: bassQ,
+                trebleFrequencyHz: trebleFrequencyHz,
+                trebleQ: trebleQ,
+                compensationWindowDB: compensationWindowDB,
+                headroomMode: headroomMode
+            )
+        }
+        set {
+            guard typeID == Self.equalLoudnessTypeID, let newValue else { return }
+            parameters["strength"] = .number(newValue.strength)
+            parameters["maxBassGainDB"] = .number(newValue.maxBassGainDB)
+            parameters["maxTrebleGainDB"] = .number(newValue.maxTrebleGainDB)
+            parameters["bassFrequencyHz"] = .number(newValue.bassFrequencyHz)
+            parameters["bassQ"] = .number(newValue.bassQ)
+            parameters["trebleFrequencyHz"] = .number(newValue.trebleFrequencyHz)
+            parameters["trebleQ"] = .number(newValue.trebleQ)
+            parameters["compensationWindowDB"] = .number(newValue.compensationWindowDB)
+            parameters["headroomMode"] = .string(newValue.headroomMode.rawValue)
+        }
+    }
+
+    nonisolated var stereoWidthParameters: DSPStereoWidthParameters? {
+        get {
+            guard typeID == Self.stereoWidthTypeID,
+                  let width = parameters["width"]?.numberValue,
+                  let outputTrimDB = parameters["outputTrimDB"]?.numberValue else { return nil }
+            return DSPStereoWidthParameters(width: width, outputTrimDB: outputTrimDB)
+        }
+        set {
+            guard typeID == Self.stereoWidthTypeID, let newValue else { return }
+            parameters["width"] = .number(newValue.width)
+            parameters["outputTrimDB"] = .number(newValue.outputTrimDB)
+        }
+    }
+
+    nonisolated var virtualBassParameters: DSPVirtualBassParameters? {
+        get {
+            guard typeID == Self.virtualBassTypeID,
+                  let lowFrequencyHz = parameters["lowFrequencyHz"]?.numberValue,
+                  let highFrequencyHz = parameters["highFrequencyHz"]?.numberValue,
+                  let amount = parameters["amount"]?.numberValue,
+                  let driveDB = parameters["driveDB"]?.numberValue,
+                  let harmonics = parameters["harmonics"]?.numberValue,
+                  let mix = parameters["mix"]?.numberValue,
+                  let outputTrimDB = parameters["outputTrimDB"]?.numberValue else { return nil }
+            return DSPVirtualBassParameters(
+                lowFrequencyHz: lowFrequencyHz,
+                highFrequencyHz: highFrequencyHz,
+                amount: amount,
+                driveDB: driveDB,
+                harmonics: harmonics,
+                mix: mix,
+                outputTrimDB: outputTrimDB
+            )
+        }
+        set {
+            guard typeID == Self.virtualBassTypeID, let newValue else { return }
+            parameters["lowFrequencyHz"] = .number(newValue.lowFrequencyHz)
+            parameters["highFrequencyHz"] = .number(newValue.highFrequencyHz)
+            parameters["amount"] = .number(newValue.amount)
+            parameters["driveDB"] = .number(newValue.driveDB)
+            parameters["harmonics"] = .number(newValue.harmonics)
+            parameters["mix"] = .number(newValue.mix)
+            parameters["outputTrimDB"] = .number(newValue.outputTrimDB)
+        }
+    }
+
+    nonisolated var tubeParameters: DSPTubeParameters? {
+        get {
+            guard typeID == Self.tubeTypeID,
+                  let driveDB = parameters["driveDB"]?.numberValue,
+                  let bias = parameters["bias"]?.numberValue,
+                  let mix = parameters["mix"]?.numberValue,
+                  let inputTrimDB = parameters["inputTrimDB"]?.numberValue,
+                  let outputTrimDB = parameters["outputTrimDB"]?.numberValue,
+                  case .bool(let dcRemovalEnabled)? = parameters["dcRemovalEnabled"],
+                  let dcBlockHz = parameters["dcBlockHz"]?.numberValue else { return nil }
+            return DSPTubeParameters(
+                driveDB: driveDB,
+                bias: bias,
+                mix: mix,
+                inputTrimDB: inputTrimDB,
+                outputTrimDB: outputTrimDB,
+                dcRemovalEnabled: dcRemovalEnabled,
+                dcBlockHz: dcBlockHz
+            )
+        }
+        set {
+            guard typeID == Self.tubeTypeID, let newValue else { return }
+            parameters["driveDB"] = .number(newValue.driveDB)
+            parameters["bias"] = .number(newValue.bias)
+            parameters["mix"] = .number(newValue.mix)
+            parameters["inputTrimDB"] = .number(newValue.inputTrimDB)
+            parameters["outputTrimDB"] = .number(newValue.outputTrimDB)
+            parameters["dcRemovalEnabled"] = .bool(newValue.dcRemovalEnabled)
+            parameters["dcBlockHz"] = .number(newValue.dcBlockHz)
+        }
+    }
+
+    nonisolated static func supportedChannelPolicies(forTypeID typeID: String) -> Set<String> {
+        switch typeID {
+        case parametricEQTypeID, equalLoudnessTypeID, scriptTypeID:
+            ["allChannels", "fullRange"]
+        case stereoWidthTypeID:
+            ["frontPair"]
+        case virtualBassTypeID:
+            ["frontPair", "fullRange"]
+        case tubeTypeID:
+            ["allChannels", "fullRange"]
+        default:
+            []
+        }
+    }
+
+    nonisolated static func defaultChannelPolicy(forTypeID typeID: String) -> String {
+        typeID == stereoWidthTypeID ? "frontPair" : defaultChannelPolicy
+    }
+
+    nonisolated static func supportedQualities(forTypeID typeID: String) -> Set<String> {
+        switch typeID {
+        case parametricEQTypeID, equalLoudnessTypeID, stereoWidthTypeID, scriptTypeID:
+            [standardQuality]
+        case virtualBassTypeID, tubeTypeID:
+            [oversampling2xQuality, oversampling4xQuality]
+        default:
+            []
+        }
+    }
+
+    nonisolated static func defaultQuality(forTypeID typeID: String) -> String {
+        switch typeID {
+        case virtualBassTypeID, tubeTypeID:
+            oversampling2xQuality
+        default:
+            standardQuality
+        }
+    }
+
     nonisolated static func parametricEQ(
         nodeID: UUID = UUID(),
         enabled: Bool = true,
@@ -282,6 +446,73 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
             enabled: enabled
         )
         node.parametricEQBands = bands
+        return node
+    }
+
+    nonisolated static func equalLoudness(
+        nodeID: UUID = UUID(),
+        enabled: Bool = true,
+        parameters: DSPEqualLoudnessParameters = DSPEqualLoudnessParameters()
+    ) -> DSPNodeConfiguration {
+        var node = DSPNodeConfiguration(
+            nodeID: nodeID,
+            typeID: Self.equalLoudnessTypeID,
+            enabled: enabled
+        )
+        node.equalLoudnessParameters = parameters
+        return node
+    }
+
+    nonisolated static func stereoWidth(
+        nodeID: UUID = UUID(),
+        enabled: Bool = true,
+        parameters: DSPStereoWidthParameters = DSPStereoWidthParameters(),
+        channelPolicy: String = "frontPair"
+    ) -> DSPNodeConfiguration {
+        var node = DSPNodeConfiguration(
+            nodeID: nodeID,
+            typeID: Self.stereoWidthTypeID,
+            enabled: enabled,
+            channelPolicy: channelPolicy,
+            quality: Self.standardQuality
+        )
+        node.stereoWidthParameters = parameters
+        return node
+    }
+
+    nonisolated static func virtualBass(
+        nodeID: UUID = UUID(),
+        enabled: Bool = true,
+        parameters: DSPVirtualBassParameters = DSPVirtualBassParameters(),
+        channelPolicy: String = "fullRange",
+        quality: String = "oversampling2x"
+    ) -> DSPNodeConfiguration {
+        var node = DSPNodeConfiguration(
+            nodeID: nodeID,
+            typeID: Self.virtualBassTypeID,
+            enabled: enabled,
+            channelPolicy: channelPolicy,
+            quality: quality
+        )
+        node.virtualBassParameters = parameters
+        return node
+    }
+
+    nonisolated static func tube(
+        nodeID: UUID = UUID(),
+        enabled: Bool = true,
+        parameters: DSPTubeParameters = DSPTubeParameters(),
+        channelPolicy: String = "fullRange",
+        quality: String = "oversampling2x"
+    ) -> DSPNodeConfiguration {
+        var node = DSPNodeConfiguration(
+            nodeID: nodeID,
+            typeID: Self.tubeTypeID,
+            enabled: enabled,
+            channelPolicy: channelPolicy,
+            quality: quality
+        )
+        node.tubeParameters = parameters
         return node
     }
 
@@ -303,6 +534,153 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
         )
     }
 
+}
+
+nonisolated struct DSPStereoWidthParameters: Codable, Equatable, Sendable {
+    nonisolated static let widthRange: ClosedRange<Double> = 0...2
+    nonisolated static let outputTrimRange: ClosedRange<Double> = -24...6
+    nonisolated static let supportedParameterKeys: Set<String> = ["width", "outputTrimDB"]
+
+    var width: Double
+    var outputTrimDB: Double
+
+    nonisolated init(width: Double = 1, outputTrimDB: Double = 0) {
+        self.width = width
+        self.outputTrimDB = outputTrimDB
+    }
+}
+
+nonisolated struct DSPVirtualBassParameters: Codable, Equatable, Sendable {
+    nonisolated static let lowFrequencyRange: ClosedRange<Double> = 20...180
+    nonisolated static let highFrequencyRange: ClosedRange<Double> = 40...300
+    nonisolated static let amountRange: ClosedRange<Double> = 0...1
+    nonisolated static let driveRange: ClosedRange<Double> = 0...18
+    nonisolated static let harmonicsRange: ClosedRange<Double> = 0...1
+    nonisolated static let mixRange: ClosedRange<Double> = 0...1
+    nonisolated static let outputTrimRange: ClosedRange<Double> = -24...6
+    nonisolated static let supportedParameterKeys: Set<String> = [
+        "lowFrequencyHz", "highFrequencyHz", "amount", "driveDB", "harmonics", "mix", "outputTrimDB",
+    ]
+
+    var lowFrequencyHz: Double
+    var highFrequencyHz: Double
+    var amount: Double
+    var driveDB: Double
+    var harmonics: Double
+    var mix: Double
+    var outputTrimDB: Double
+
+    nonisolated init(
+        lowFrequencyHz: Double = 40,
+        highFrequencyHz: Double = 120,
+        amount: Double = 0.5,
+        driveDB: Double = 6,
+        harmonics: Double = 0.5,
+        mix: Double = 0,
+        outputTrimDB: Double = 0
+    ) {
+        self.lowFrequencyHz = lowFrequencyHz
+        self.highFrequencyHz = highFrequencyHz
+        self.amount = amount
+        self.driveDB = driveDB
+        self.harmonics = harmonics
+        self.mix = mix
+        self.outputTrimDB = outputTrimDB
+    }
+}
+
+nonisolated struct DSPTubeParameters: Codable, Equatable, Sendable {
+    nonisolated static let driveRange: ClosedRange<Double> = 0...18
+    nonisolated static let biasRange: ClosedRange<Double> = -0.5...0.5
+    nonisolated static let mixRange: ClosedRange<Double> = 0...1
+    nonisolated static let inputTrimRange: ClosedRange<Double> = -24...12
+    nonisolated static let outputTrimRange: ClosedRange<Double> = -24...6
+    nonisolated static let dcBlockFrequencyRange: ClosedRange<Double> = 5...40
+    nonisolated static let supportedParameterKeys: Set<String> = [
+        "driveDB", "bias", "mix", "inputTrimDB", "outputTrimDB",
+        "dcRemovalEnabled", "dcBlockHz",
+    ]
+
+    var driveDB: Double
+    var bias: Double
+    var mix: Double
+    var inputTrimDB: Double
+    var outputTrimDB: Double
+    var dcRemovalEnabled: Bool
+    var dcBlockHz: Double
+
+    nonisolated init(
+        driveDB: Double = 6,
+        bias: Double = 0.15,
+        mix: Double = 0,
+        inputTrimDB: Double = 0,
+        outputTrimDB: Double = 0,
+        dcRemovalEnabled: Bool = true,
+        dcBlockHz: Double = 10
+    ) {
+        self.driveDB = driveDB
+        self.bias = bias
+        self.mix = mix
+        self.inputTrimDB = inputTrimDB
+        self.outputTrimDB = outputTrimDB
+        self.dcRemovalEnabled = dcRemovalEnabled
+        self.dcBlockHz = dcBlockHz
+    }
+}
+
+nonisolated struct DSPEqualLoudnessParameters: Codable, Equatable, Sendable {
+    nonisolated static let strengthRange: ClosedRange<Double> = 0...1
+    nonisolated static let bassFrequencyRange: ClosedRange<Double> = 20...500
+    nonisolated static let trebleFrequencyRange: ClosedRange<Double> = 1_000...20_000
+    nonisolated static let shelfSlopeRange = DSPParametricEQBand.shelfSlopeRange
+    nonisolated static let compensationWindowRange: ClosedRange<Double> = 1...60
+    nonisolated static let maxBassGainRange: ClosedRange<Double> = 0...12
+    nonisolated static let maxTrebleGainRange: ClosedRange<Double> = 0...6
+    nonisolated static let supportedParameterKeys: Set<String> = [
+        "strength",
+        "maxBassGainDB",
+        "maxTrebleGainDB",
+        "bassFrequencyHz",
+        "bassQ",
+        "trebleFrequencyHz",
+        "trebleQ",
+        "compensationWindowDB",
+        "headroomMode",
+    ]
+
+    var strength: Double
+    var maxBassGainDB: Double
+    var maxTrebleGainDB: Double
+    var bassFrequencyHz: Double
+    /// RBJ shelf slope S (0.25...1), retained as `Q` in the node schema.
+    var bassQ: Double
+    var trebleFrequencyHz: Double
+    /// RBJ shelf slope S (0.25...1), retained as `Q` in the node schema.
+    var trebleQ: Double
+    var compensationWindowDB: Double
+    var headroomMode: DSPHeadroomMode
+
+    nonisolated init(
+        strength: Double = 1,
+        maxBassGainDB: Double = 6,
+        maxTrebleGainDB: Double = 3,
+        bassFrequencyHz: Double = 70,
+        bassQ: Double = 0.71,
+        trebleFrequencyHz: Double = 3_500,
+        trebleQ: Double = 0.71,
+        compensationWindowDB: Double = 20,
+        headroomMode: DSPHeadroomMode = .automatic
+    ) {
+        self.strength = strength
+        self.maxBassGainDB = maxBassGainDB
+        self.maxTrebleGainDB = maxTrebleGainDB
+        self.bassFrequencyHz = bassFrequencyHz
+        self.bassQ = bassQ
+        self.trebleFrequencyHz = trebleFrequencyHz
+        self.trebleQ = trebleQ
+        self.compensationWindowDB = compensationWindowDB
+        self.headroomMode = headroomMode
+    }
 }
 
 nonisolated struct AudioDSPConfiguration: Codable, Equatable, Sendable {
@@ -344,15 +722,109 @@ nonisolated struct DSPAudioFormat: Codable, Equatable, Sendable {
     var layoutIsKnown: Bool
 }
 
+nonisolated struct AudioFadeConfiguration: Codable, Equatable, Sendable {
+    var enabled: Bool
+    var playFadeMs: Double
+    var pauseFadeMs: Double
+    var curve: String
+    var floorDB: Double
+
+    nonisolated init(
+        enabled: Bool = false,
+        playFadeMs: Double = 100,
+        pauseFadeMs: Double = 120,
+        curve: String = "perceptualDB",
+        floorDB: Double = -80
+    ) {
+        self.enabled = enabled
+        self.playFadeMs = playFadeMs
+        self.pauseFadeMs = pauseFadeMs
+        self.curve = curve
+        self.floorDB = floorDB
+    }
+}
+
+nonisolated struct AudioLoudnessConfiguration: Codable, Equatable, Sendable {
+    var enabled: Bool
+    var mode: String
+    var targetLUFS: Double
+    var maxBoostDB: Double
+    var maxAttenuationDB: Double
+    var truePeakCeilingDBTP: Double
+    var missingPolicy: String
+    var allowBackgroundScan: Bool
+
+    nonisolated init(
+        enabled: Bool = false,
+        mode: String = "auto",
+        targetLUFS: Double = -18,
+        maxBoostDB: Double = 12,
+        maxAttenuationDB: Double = 24,
+        truePeakCeilingDBTP: Double = -1,
+        missingPolicy: String = "unity",
+        allowBackgroundScan: Bool = true
+    ) {
+        self.enabled = enabled
+        self.mode = mode
+        self.targetLUFS = targetLUFS
+        self.maxBoostDB = maxBoostDB
+        self.maxAttenuationDB = maxAttenuationDB
+        self.truePeakCeilingDBTP = truePeakCeilingDBTP
+        self.missingPolicy = missingPolicy
+        self.allowBackgroundScan = allowBackgroundScan
+    }
+}
+
+nonisolated struct AudioProcessingGlobals: Codable, Equatable, Sendable {
+    var fade: AudioFadeConfiguration
+    var loudness: AudioLoudnessConfiguration
+    var deviceReferences: [String: Double]
+
+    nonisolated init(
+        fade: AudioFadeConfiguration = AudioFadeConfiguration(),
+        loudness: AudioLoudnessConfiguration = AudioLoudnessConfiguration(),
+        deviceReferences: [String: Double] = [:]
+    ) {
+        self.fade = fade
+        self.loudness = loudness
+        self.deviceReferences = deviceReferences
+    }
+}
+
+nonisolated struct AudioProcessingRuntimeState: Codable, Equatable, Sendable {
+    var transport: AudioTransportTransitionState?
+    var outputDeviceUID: String?
+    var appGain: Double
+    var volumeSource: String
+    var referenceDB: Double?
+
+    nonisolated init(
+        transport: AudioTransportTransitionState? = nil,
+        outputDeviceUID: String? = nil,
+        appGain: Double = 1,
+        volumeSource: String = "appOnly",
+        referenceDB: Double? = nil
+    ) {
+        self.transport = transport
+        self.outputDeviceUID = outputDeviceUID
+        self.appGain = appGain
+        self.volumeSource = volumeSource
+        self.referenceDB = referenceDB
+    }
+}
+
 nonisolated struct DSPDiagnostic: Codable, Equatable, Sendable, Identifiable {
     var code: String
     var message: String
     var fieldPath: String?
     var nodeID: UUID?
     var retryable: Bool
+    var line: Int?
+    var column: Int?
 
     nonisolated var id: String {
-        [code, fieldPath ?? "", nodeID?.uuidString ?? ""].joined(separator: "|")
+        ([code, fieldPath ?? "", nodeID?.uuidString ?? ""]
+            + [line, column].compactMap { $0.map(String.init) }).joined(separator: "|")
     }
 
     nonisolated init(
@@ -360,13 +832,17 @@ nonisolated struct DSPDiagnostic: Codable, Equatable, Sendable, Identifiable {
         message: String,
         fieldPath: String? = nil,
         nodeID: UUID? = nil,
-        retryable: Bool = false
+        retryable: Bool = false,
+        line: Int? = nil,
+        column: Int? = nil
     ) {
         self.code = code
         self.message = message
         self.fieldPath = fieldPath
         self.nodeID = nodeID
         self.retryable = retryable
+        self.line = line
+        self.column = column
     }
 }
 
@@ -388,6 +864,9 @@ nonisolated struct DSPApplyStatus: Codable, Equatable, Sendable {
     var scheduledPTS: Double?
     var audiblePTS: Double?
     var headroomDB: Double?
+    var processingLatencyFrames: Int?
+    var mediaMappingLatencyFrames: Int?
+    var peakGuarantee: String?
     var warnings: [DSPDiagnostic]
     var diagnostics: [DSPDiagnostic]
     var rebuffered: Bool
@@ -400,6 +879,9 @@ nonisolated struct DSPApplyStatus: Codable, Equatable, Sendable {
         scheduledPTS: Double? = nil,
         audiblePTS: Double? = nil,
         headroomDB: Double? = nil,
+        processingLatencyFrames: Int? = nil,
+        mediaMappingLatencyFrames: Int? = nil,
+        peakGuarantee: String? = nil,
         warnings: [DSPDiagnostic] = [],
         diagnostics: [DSPDiagnostic] = [],
         rebuffered: Bool = false
@@ -411,6 +893,9 @@ nonisolated struct DSPApplyStatus: Codable, Equatable, Sendable {
         self.scheduledPTS = scheduledPTS
         self.audiblePTS = audiblePTS
         self.headroomDB = headroomDB
+        self.processingLatencyFrames = processingLatencyFrames
+        self.mediaMappingLatencyFrames = mediaMappingLatencyFrames
+        self.peakGuarantee = peakGuarantee
         self.warnings = warnings
         self.diagnostics = diagnostics
         self.rebuffered = rebuffered
@@ -425,9 +910,42 @@ nonisolated struct DSPApplyEvent: Codable, Equatable, Sendable {
     var scheduledPTS: Double?
     var audiblePTS: Double?
     var headroomDB: Double?
+    var processingLatencyFrames: Int?
+    var mediaMappingLatencyFrames: Int?
+    var peakGuarantee: String?
     var warnings: [DSPDiagnostic]
     var diagnostics: [DSPDiagnostic]
     var rebuffered: Bool
+
+    nonisolated init(
+        requestID: UUID,
+        revisionString: String,
+        state: DSPApplyState,
+        format: DSPAudioFormat? = nil,
+        scheduledPTS: Double? = nil,
+        audiblePTS: Double? = nil,
+        headroomDB: Double? = nil,
+        processingLatencyFrames: Int? = nil,
+        mediaMappingLatencyFrames: Int? = nil,
+        peakGuarantee: String? = nil,
+        warnings: [DSPDiagnostic] = [],
+        diagnostics: [DSPDiagnostic] = [],
+        rebuffered: Bool = false
+    ) {
+        self.requestID = requestID
+        self.revisionString = revisionString
+        self.state = state
+        self.format = format
+        self.scheduledPTS = scheduledPTS
+        self.audiblePTS = audiblePTS
+        self.headroomDB = headroomDB
+        self.processingLatencyFrames = processingLatencyFrames
+        self.mediaMappingLatencyFrames = mediaMappingLatencyFrames
+        self.peakGuarantee = peakGuarantee
+        self.warnings = warnings
+        self.diagnostics = diagnostics
+        self.rebuffered = rebuffered
+    }
 
     nonisolated var status: DSPApplyStatus {
         DSPApplyStatus(
@@ -438,6 +956,9 @@ nonisolated struct DSPApplyEvent: Codable, Equatable, Sendable {
             scheduledPTS: scheduledPTS,
             audiblePTS: audiblePTS,
             headroomDB: headroomDB,
+            processingLatencyFrames: processingLatencyFrames,
+            mediaMappingLatencyFrames: mediaMappingLatencyFrames,
+            peakGuarantee: peakGuarantee,
             warnings: warnings,
             diagnostics: diagnostics,
             rebuffered: rebuffered

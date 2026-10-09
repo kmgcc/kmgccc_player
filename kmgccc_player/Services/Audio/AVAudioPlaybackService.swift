@@ -36,12 +36,30 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     var volume: Double {
         didSet {
             rendererPipeline.setVolume(Float(volume))
+            scheduleListeningContextUpdate()
             AppSettings.shared.volume = volume
             // Forward the output volume for spectrum diagnostics; analysis PCM
             // remains upstream of renderer master gain.
-            AudioVisualizationService.shared.updateVolume(Float(volume))
+            AudioVisualizationService.shared.updateVolume(Float(volume * (transportState?.envelopeGain ?? 1)))
         }
     }
+
+    private weak var globalsController: AudioProcessingGlobalsController?
+    private var processingGlobals = AudioProcessingGlobals()
+    private var listeningContextTask: Task<Void, Never>?
+    private var transportState: AudioTransportTransitionState?
+    private var pauseTransitionPending = false
+    private(set) var currentLoudnessGainDB = 0.0
+    private(set) var currentLoudnessSource = "unavailable"
+    private(set) var currentLoudnessPeakBasis = "unknown"
+    private(set) var currentLoudnessDiagnostics: [DSPDiagnostic] = []
+    private var activeNormalizationGain = 1.0
+    private var activeDecodedStartFrame: AVAudioFramePosition = 0
+    private var activeDecodedFrameCount: AVAudioFrameCount?
+    private var prefetchedDecodedRange: (start: AVAudioFramePosition, count: AVAudioFrameCount?)?
+    private var albumGainLock: (key: String, decision: LoudnessGainDecision)?
+    private var queuedLoudnessDecisions: [UUID: LoudnessGainDecision] = [:]
+    var loudnessGainProvider: ((Track, URL, AudioLoudnessConfiguration, Bool) -> LoudnessGainDecision)?
 
     // MARK: - Renderer Components
 
@@ -336,6 +354,92 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
     }
 
+    func bindAudioProcessingGlobals(_ controller: AudioProcessingGlobalsController) {
+        globalsController = controller
+        rendererPipeline.onTransportStateChange = { [weak self] state, generation in
+            Task { @MainActor [weak self] in
+                guard let self, self.rendererPipeline.isTimelineCurrent(generation) else { return }
+                self.transportState = state
+                AudioVisualizationService.shared.updateVolume(Float(self.volume * state.envelopeGain))
+                guard self.audioFile != nil else { self.publishProcessingRuntime(); return }
+                let wasPlaying = self.isPlaying
+                self.isPlaying = state.actualPlaying
+                if state.actualPlaying && (!wasPlaying || self.progressTimer == nil) {
+                    AudioAnalysisHub.shared.setPlaying(true)
+                    self.startProgressTimer()
+                } else if !state.actualPlaying && state.phase == "idle" {
+                    self.pauseTransitionPending = false
+                    AudioAnalysisHub.shared.setPlaying(false)
+                    self.stopProgressTimer()
+                    NowPlayingService.shared.syncLocalPlaybackState()
+                }
+                self.publishProcessingRuntime()
+            }
+        }
+        controller.bindPlayback { [weak self] configuration, _, _ in
+            guard let self else { return }
+            self.processingGlobals = configuration
+            self.rendererPipeline.setFadeConfiguration(configuration.fade)
+            self.scheduleListeningContextUpdate(immediate: true)
+        }
+    }
+
+    func unbindAudioProcessingGlobals() {
+        globalsController = nil
+        listeningContextTask?.cancel()
+        rendererPipeline.onTransportStateChange = nil
+        loudnessGainProvider = nil
+    }
+
+    func togglePlayPause() {
+        if isPlaying && !pauseTransitionPending { pause() } else { resume() }
+    }
+
+    private func scheduleListeningContextUpdate(immediate: Bool = false) {
+        listeningContextTask?.cancel()
+        listeningContextTask = Task { @MainActor [weak self] in
+            if !immediate { try? await Task.sleep(for: .milliseconds(35)) }
+            guard !Task.isCancelled, let self else { return }
+            let context = DSPEqualLoudnessContext(
+                appGain: self.volume, deviceUID: self.routedOutputDeviceUID,
+                referenceDB: self.routedOutputDeviceUID.flatMap { self.processingGlobals.deviceReferences[$0] }
+            )
+            self.rendererPipeline.setEqualLoudnessContext(context)
+            self.publishProcessingRuntime()
+        }
+    }
+
+    private func publishProcessingRuntime() {
+        globalsController?.publishRuntimeState(AudioProcessingRuntimeState(
+            transport: transportState, outputDeviceUID: routedOutputDeviceUID,
+            appGain: volume, volumeSource: "appOnly",
+            referenceDB: routedOutputDeviceUID.flatMap { processingGlobals.deviceReferences[$0] }
+        ))
+    }
+
+    private func lockLoudnessGain(track: Track, url: URL) -> (gain: Double, decision: LoudnessGainDecision?) {
+        guard processingGlobals.loudness.enabled else { return (1, nil) }
+        let queue = currentQueueTracks()
+        let continuousAlbum = !smartController.isShuffleEnabled && !track.albumGroupKey.isEmpty
+            && queue.count > 1 && queue.allSatisfy { $0.albumGroupKey == track.albumGroupKey }
+        let albumKey = track.albumGroupKey + ":" + queue.map { $0.id.uuidString }.joined(separator: ",")
+        if (processingGlobals.loudness.mode == "album" || (processingGlobals.loudness.mode == "auto" && continuousAlbum)), let locked = albumGainLock, locked.key == albumKey {
+            return (pow(10, locked.decision.gainDB / 20), locked.decision)
+        }
+        guard let decision = loudnessGainProvider?(track, url, processingGlobals.loudness, continuousAlbum) else { return (1, nil) }
+        if processingGlobals.loudness.mode == "album" || (processingGlobals.loudness.mode == "auto" && continuousAlbum) {
+            albumGainLock = (albumKey, decision)
+        } else { albumGainLock = nil }
+        return (pow(10, decision.gainDB / 20), decision)
+    }
+
+    private func publishLoudnessDecision(_ decision: LoudnessGainDecision?) {
+        currentLoudnessGainDB = decision?.gainDB ?? 0
+        currentLoudnessSource = decision?.source ?? (processingGlobals.loudness.enabled ? "unavailable" : "disabled")
+        currentLoudnessPeakBasis = decision?.peakBasis ?? "unknown"
+        currentLoudnessDiagnostics = decision?.diagnostics ?? []
+    }
+
     /// Refresh the active Core Audio output route at the same cadence as the
     /// playback presentation timer. The renderer itself is bound to the
     /// reported device UID so its synchronizer follows the device clock. The
@@ -362,6 +466,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
         if outputDeviceChanged {
             rendererPipeline.setAudioOutputDeviceUniqueID(selectedOutputUID)
+            pauseTransitionPending = false
+            scheduleListeningContextUpdate(immediate: true)
         }
     }
 
@@ -394,7 +500,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             category: .audio
         )
 
-        let wasPlaying = isPlaying
+        let wasPlaying = isPlaying && !pauseTransitionPending
         let resumeTime = currentTime
         cancelPendingCompletion()
         invalidateScheduleToken()
@@ -410,7 +516,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         activeLookaheadEnabled = desired
         currentTime = max(0, min(resumeTime, duration))
-        let provider = AVFilePCMProvider(file: file)
+        let provider = AVFilePCMProvider(file: file, startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
         let segmentID = UUID()
         spatialCurrentSegmentID = segmentID
         rendererLoadSegmentID = segmentID
@@ -435,7 +541,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             presentationStartSeconds: lookaheadSeconds,
             clockTimeSeconds: resumeTime,
             segmentID: segmentID,
-            autoplay: wasPlaying
+            autoplay: wasPlaying,
+            normalizationGain: activeNormalizationGain
         )
     }
 
@@ -449,7 +556,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private func invalidateScheduleToken() {
         activeTimelineToken = UUID()
-        resetGaplessSchedulingState(reason: "invalidateScheduleToken")
+        _ = resetGaplessSchedulingState(reason: "invalidateScheduleToken")
     }
 
     /// Invalidate the renderer's pending gapless source and release its scope
@@ -476,7 +583,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
                 discardedResource.lease.release()
             }
         }
+        if let id = spatialPendingBoundary?.descriptor.id { queuedLoudnessDecisions.removeValue(forKey: id) }
         spatialPendingBoundary = nil
+        prefetchedDecodedRange = nil
         return discardPendingRendererSegment ? nil : discardedResource
     }
 
@@ -724,11 +833,19 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         pendingRestorePositionSeconds = nil
         pendingRetryPositionSeconds = nil
 
-        let shouldAutoplay = !restorePaused && isPlaying
+        let shouldAutoplay = !restorePaused && isPlaying && !pauseTransitionPending
+        let trim = resolveAACTrim(resource)
+        activeDecodedStartFrame = trim?.headTrimFrames ?? 0
+        activeDecodedFrameCount = trim?.scheduledFrameCount
+        if let trim { duration = trim.scheduledDuration }
         let upperBound = duration > 0.5 ? duration - 0.5 : 0
         let position = max(0, min(requestedPosition, upperBound))
         let frame = AVAudioFramePosition(position * sampleRate)
-        let provider = AVFilePCMProvider(file: resource.file)
+        let provider = AVFilePCMProvider(file: resource.file, startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
+        let loudness = lockLoudnessGain(track: track, url: resource.resolvedURL)
+        activeNormalizationGain = loudness.gain
+        publishLoudnessDecision(loudness.decision)
+        pauseTransitionPending = false
         let segmentID = UUID()
 
         activeLookaheadEnabled = desiredLookaheadEnabled
@@ -756,7 +873,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             presentationStartSeconds: lookaheadSeconds,
             clockTimeSeconds: position,
             segmentID: segmentID,
-            autoplay: shouldAutoplay
+            autoplay: shouldAutoplay,
+            normalizationGain: activeNormalizationGain,
+            fadeOnStart: true
         )
 
         isPlaying = shouldAutoplay
@@ -874,7 +993,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     func pause() {
-        guard isPlaying else { return }
+        guard isPlaying, !pauseTransitionPending else { return }
+        pauseTransitionPending = true
 
         if LogConfig.audioVerbose {
             Log.info(
@@ -888,9 +1008,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             smartController.endSeek()
         }
         rendererPipeline.pause()
-        AudioAnalysisHub.shared.setPlaying(false)
-        isPlaying = false
-        stopProgressTimer()
     }
 
     func resume() {
@@ -908,7 +1025,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             }
             return
         }
-        guard !isPlaying else { return }
+        guard !isPlaying || pauseTransitionPending else { return }
+        pauseTransitionPending = false
 
         if LogConfig.audioVerbose {
             Log.info(
@@ -970,6 +1088,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         invalidatePreparation()
         cancelPendingCompletion()
+        pauseTransitionPending = false
+        queuedLoudnessDecisions.removeAll()
+        if clearQueue { albumGainLock = nil }
         activeTimelineToken = UUID()
         let prefetchedToRelease = resetGaplessSchedulingState(
             reason: "stopPlayback",
@@ -989,6 +1110,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         currentFileLease = nil
         currentFileURL = nil
         audioFile = nil
+        activeDecodedStartFrame = 0
+        activeDecodedFrameCount = nil
+        prefetchedDecodedRange = nil
+        activeNormalizationGain = 1
+        publishLoudnessDecision(nil)
         rendererPipeline.stop {
             currentLeaseToRelease?.release()
             prefetchedToRelease?.lease.release()
@@ -1022,7 +1148,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             return
         }
 
-        let wasPlaying = isPlaying
+        let wasPlaying = isPlaying && !pauseTransitionPending
         if LogConfig.audioVerbose {
             Log.info(
                 "[AudioDiagnostics] seek target=\(String(format: "%.3f", seconds)) wasPlaying=\(wasPlaying) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
@@ -1050,7 +1176,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
 
         let position = max(0, min(seconds, duration))
-        let provider = AVFilePCMProvider(file: file)
+        let provider = AVFilePCMProvider(file: file, startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
         let segmentID = UUID()
         spatialCurrentSegmentID = segmentID
         rendererLoadSegmentID = segmentID
@@ -1083,7 +1209,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             presentationStartSeconds: lookaheadSeconds,
             clockTimeSeconds: position,
             segmentID: segmentID,
-            autoplay: wasPlaying
+            autoplay: wasPlaying,
+            normalizationGain: activeNormalizationGain
         )
         isPlaying = wasPlaying
     }
@@ -1290,113 +1417,24 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let scheduledDuration: Double
     }
 
-    /// Decide whether to skip the prefetched AAC item's encoder priming/padding at
-    /// a gapless join. Returns `nil` (and logs a precise `[AACGapless] skipped
-    /// reason=…`) whenever trimming is disabled, the file is not AAC, metadata is
-    /// missing, the decoder already trimmed it, or the values fail safety checks —
-    /// in which case the caller schedules the full file exactly as Phase 1 did.
-    /// Only AAC files with reliable packet-table metadata are ever trimmed; WAV /
-    /// FLAC / MP3 and single-track playback are untouched.
+    /// Initial playback and gapless continuation use the same decoded AAC crop
+    /// as offline loudness. Reloads retain the range selected for this segment.
     private func resolveAACTrim(_ resource: PreparedAudioResource) -> AACTrimDecision? {
-        let idTag = resource.trackID.uuidString.prefix(8)
-
-        guard AppSettings.shared.audioAACGaplessTrimEnabled else {
-            gaplessLog("[AACGapless] skipped reason=disabled track=\(idTag)")
-            return nil
-        }
-
-        guard let info = resource.aacGaplessInfo else {
-            gaplessLog("[AACGapless] skipped reason=noMetadata track=\(idTag)")
-            return nil
-        }
-
-        guard info.isAAC else {
-            // MP3 / WAV / FLAC / ALAC: diagnostics only, never trimmed (Phase 1.2
-            // scope is AAC). Surface any priming the container reported.
-            gaplessLog("[AACGapless] skipped reason=unsupportedContainer track=\(idTag) format=\(info.formatTag) primingFrames=\(info.primingFrames) paddingFrames=\(info.paddingFrames) source=\(info.source)")
-            return nil
-        }
-
-        guard info.hasGaplessPadding else {
-            gaplessLog("[AACGapless] skipped reason=noMetadata track=\(idTag) format=\(info.formatTag) source=\(info.source)")
-            return nil
-        }
-
-        let priming = info.primingFrames
-        let padding = info.paddingFrames
-        let valid = info.validFrames
-
-        gaplessLog("[AACGapless] track=\(idTag) primingFrames=\(priming) paddingFrames=\(padding) source=\(info.source)")
-
-        // Determine how `AVAudioFile` presents the decoded stream so we never
-        // double-trim: compare the decoded length against the three plausible
-        // accountings and pick the closest. If none matches within tolerance the
-        // metadata is inconsistent with the decode → fall back (no trim).
-        let pcm = Int64(resource.frameLength)
-        let candIncludesBoth = valid + priming + padding   // priming + padding still in PCM
-        let candPaddingOnly = valid + padding              // priming consumed by edit list
-        let candFullyTrimmed = valid                       // decoder already removed both
-        let dBoth = abs(pcm - candIncludesBoth)
-        let dPadding = abs(pcm - candPaddingOnly)
-        let dTrimmed = abs(pcm - candFullyTrimmed)
-        let minDiff = min(dBoth, dPadding, dTrimmed)
-
-        let tolerance: Int64 = 256  // ~6ms @44.1k; far smaller than priming (~2112)
-        guard minDiff <= tolerance else {
-            // Metadata can't be reconciled with the decoded length — kept
-            // unconditional (this is the "unsafe AAC trim metadata" signal).
-            Log.warning(
-                "[AACGapless] skipped reason=unsafeValues track=\(idTag) pcm=\(pcm) valid=\(valid) priming=\(priming) padding=\(padding)",
-                category: .audio
-            )
-            return nil
-        }
-
-        let head: Int64
-        let tail: Int64
-        if minDiff == dBoth {
-            head = priming
-            tail = padding
-        } else if minDiff == dPadding {
-            head = 0
-            tail = padding
-        } else {
-            // Decoder already removed priming+padding (pcm ≈ validFrames): nothing
-            // to trim. Not an error — fall back to a full-file schedule.
-            gaplessLog("[AACGapless] skipped reason=noMetadata track=\(idTag) detail=decoderAlreadyTrimmed pcm=\(pcm) valid=\(valid)")
-            return nil
-        }
-
-        // Safety: trims non-negative, and head+tail must leave a positive segment
-        // that fits within the file's total frames.
-        let total = Int64(resource.frameLength)
-        guard head >= 0, tail >= 0, head + tail < total else {
-            Log.warning(
-                "[AACGapless] skipped reason=unsafeValues track=\(idTag) head=\(head) tail=\(tail) total=\(total)",
-                category: .audio
-            )
-            return nil
-        }
-        let scheduled = total - head - tail
-        guard scheduled > 0, scheduled <= Int64(AVAudioFrameCount.max) else {
-            Log.warning(
-                "[AACGapless] skipped reason=unsafeValues track=\(idTag) scheduledFrames=\(scheduled) total=\(total)",
-                category: .audio
-            )
-            return nil
-        }
-
-        let durationSec = resource.sampleRate > 0 ? Double(scheduled) / resource.sampleRate : resource.duration
-        let headMs = resource.sampleRate > 0 ? Double(head) / resource.sampleRate * 1000 : 0
-        let tailMs = resource.sampleRate > 0 ? Double(tail) / resource.sampleRate * 1000 : 0
-        gaplessLog("[AACGapless] applying headTrimFrames=\(head) tailTrimFrames=\(tail) track=\(idTag) headMs=\(String(format: "%.1f", headMs)) tailMs=\(String(format: "%.1f", tailMs)) scheduledFrames=\(scheduled)")
-
-        return AACTrimDecision(
-            headTrimFrames: AVAudioFramePosition(head),
-            tailTrimFrames: AVAudioFramePosition(tail),
-            scheduledFrameCount: AVAudioFrameCount(scheduled),
-            scheduledDuration: durationSec
+        let range = AACDecodedFrameRange.resolve(
+            metadata: resource.aacGaplessInfo, decodedFrames: Int64(resource.frameLength),
+            enabled: AppSettings.shared.audioAACGaplessTrimEnabled
         )
+        guard range.isTrimmed else {
+            if range.reason != "fullFile" {
+                Log.warning("[AACGapless] skipped reason=\(range.reason) track=\(resource.trackID.uuidString.prefix(8))", category: .audio)
+            }
+            return nil
+        }
+        let tail = Int64(resource.frameLength) - range.startingFrame - range.frameCount
+        gaplessLog("[AACGapless] applying headTrimFrames=\(range.startingFrame) tailTrimFrames=\(tail) track=\(resource.trackID.uuidString.prefix(8))")
+        return AACTrimDecision(headTrimFrames: range.startingFrame, tailTrimFrames: tail,
+            scheduledFrameCount: AVAudioFrameCount(range.frameCount),
+            scheduledDuration: Double(range.frameCount) / resource.sampleRate)
     }
 
     /// MainActor: append the prepared next source to the renderer timeline.
@@ -1404,19 +1442,21 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let trim = resolveAACTrim(resource)
         let startFrame = trim?.headTrimFrames ?? 0
         let frameCount = trim?.scheduledFrameCount
-            ?? AVAudioFrameCount(resource.file.length)
         let itemDuration = trim?.scheduledDuration
-            ?? (resource.sampleRate > 0 ? Double(frameCount) / resource.sampleRate : resource.duration)
+            ?? (resource.sampleRate > 0 ? Double(resource.file.length) / resource.sampleRate : resource.duration)
         let provider = AVFilePCMProvider(
             file: resource.file,
             startingFrame: startFrame,
             frameCount: frameCount
         )
 
+        let nextTrack = currentQueueTracks().first { $0.id == resource.trackID }
+        let loudness = nextTrack.map { lockLoudnessGain(track: $0, url: resource.resolvedURL) }
         guard let loadSegmentID = rendererLoadSegmentID,
               let descriptor = rendererPipeline.append(
                 source: provider,
-                expectedLoadSegmentID: loadSegmentID
+                expectedLoadSegmentID: loadSegmentID,
+                normalizationGain: loudness?.gain ?? 1
               ) else {
             logGaplessFallback(
                 .notScheduledInTime,
@@ -1426,8 +1466,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             return
         }
 
+        if let decision = loudness?.decision { queuedLoudnessDecisions[descriptor.id] = decision }
         let token = UUID()
         prefetchedResource = resource
+        prefetchedDecodedRange = (startFrame, frameCount)
         spatialPendingBoundary = SpatialPendingBoundary(
             trackID: resource.trackID,
             descriptor: descriptor,
@@ -1531,9 +1573,15 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         currentFileURL = resource.resolvedURL
         currentFileLease = resource.lease
         audioFile = resource.file
+        activeDecodedStartFrame = prefetchedDecodedRange?.start ?? 0
+        activeDecodedFrameCount = prefetchedDecodedRange?.count
+        prefetchedDecodedRange = nil
         sampleRate = resource.sampleRate
         duration = pending.duration
         spatialCurrentSegmentID = pending.descriptor.id
+        let decision = queuedLoudnessDecisions.removeValue(forKey: pending.descriptor.id)
+        activeNormalizationGain = pow(10, (decision?.gainDB ?? 0) / 20)
+        publishLoudnessDecision(decision)
         spatialCurrentLogicalStart = pending.descriptor.presentationStartSeconds - lookaheadSeconds
         spatialPendingBoundary = nil
         activeTimelineToken = pending.token

@@ -48,6 +48,7 @@ jobs list|get|wait|cancel|retry
 diagnostics health
 settings schema|get|patch|validate|reset
 audio get|patch
+audio loudness get|analyze --params-json <object>
 storage inspect|validate|orphans|backup|diff|reload|repair
 ```
 
@@ -362,6 +363,12 @@ player-automation dsp presets save --params-json '{"name":"我的均衡器"}'
 player-automation dsp presets select --params-json '{"presetID":"<UUID>"}'
 player-automation dsp wait --params-json '{"requestID":"<UUID>","timeoutMs":5000}'
 player-automation dsp errors get
+player-automation dsp patch --params-json '{"operations":[{"op":"setQuality","nodeID":"<UUID>","value":"oversampling4x"},{"op":"setChannelPolicy","nodeID":"<UUID>","value":"frontPair"}]}'
+player-automation dsp scripts get --params-json '{"nodeID":"<UUID>"}'
+player-automation dsp scripts update --params-json '{"nodeID":"<UUID>","source":"param gainDB(-24,12)=0; prepare { let gain=dbToGain(gainDB); } process { output=input*gain; }","values":{}}'
+player-automation dsp scripts compile --params-json '{"nodeID":"<UUID>"}'
+player-automation dsp scripts test --params-json '{"nodeID":"<UUID>","fixtures":[{"kind":"impulse","durationSeconds":0.1,"amplitude":0.5}]}'
+player-automation dsp nodes retry --params-json '{"nodeID":"<UUID>"}'
 ```
 
 `dsp validate` 和 `dsp patch --dry-run` 可预览完整配置或有序编辑。
@@ -369,3 +376,17 @@ player-automation dsp errors get
 `expectedPresetRevision` 放入 `--params-json`。所有子命令也可用
 `call dsp.<method> --params-json ...`。完整参数、预设 JSON 与可听状态说明见
 [DSP 与完整预设](automation-mcp.md#dsp-与完整预设)。
+
+脚本 update 默认保存独立草稿，`apply=true` 才编译并申请应用。草稿 CAS 使用 `expectedDraftRevision`，配置 CAS 使用 `--expected-revision`；读回返回的 draft revision 后再 apply。compile 不改变声音，test 返回可取消 Job，沿用 `jobs get|wait|cancel|retry`。自定义 PCM 测试不持久化样本，返回 `retrySupported:false`。语法、格式与 fixture 参数见 [脚本语言 v1](audio-dsp-script-language.md)。源码、静态检查与授权 Debug 编译已完成，测试运行和真实 Agent 验收待完成。
+
+### 全局音频处理与响度扫描
+
+`audio get` 包含 `fade`、`loudness`、`deviceReferences`、`processingRuntime` 和当前固定增益 `normalization`。`audio patch` 的 fade/loudness 子对象支持局部参数更新，与设备/无缝设置共同验证；`--dry-run` 不写设置。它们独立于 DSP 预设。
+
+```sh
+player-automation audio patch --params-json '{"fade":{"enabled":true,"playFadeMs":100,"pauseFadeMs":120},"loudness":{"enabled":true,"mode":"auto","targetLUFS":-18}}'
+player-automation audio loudness get --params-json '{"trackIDs":["TRACK_UUID"]}'
+player-automation audio loudness analyze --params-json '{"trackIDs":["TRACK_UUID"]}'
+```
+
+扫描返回既有 Job，使用 `jobs get|wait|cancel|retry` 观察与控制。后台结果供后续播放，当前曲目固定增益不随扫描更新。等响节点所有参数经 `dsp patch` 配置，设备参考由 `audio patch` 的 `deviceReferences` 保存。

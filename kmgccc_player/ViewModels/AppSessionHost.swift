@@ -53,6 +53,8 @@ final class AppSessionHost: ObservableObject {
 
     let uiState: UIStateViewModel
     let audioDSPController = AudioDSPController()
+    let audioDSPScriptController = DSPScriptController()
+    let audioProcessingGlobalsController = AudioProcessingGlobalsController()
     let librarySetupFlow = LibrarySetupViewModel()
     let activeLibraryBinding: ActiveLibraryBinding
 
@@ -1416,7 +1418,10 @@ final class AppSessionHost: ObservableObject {
         activeLibraryBinding.activeSession?.cacheServices.cancelArtworkColorPrefetch()
         uiState.clearLibraryImportFailureReports()
         audioDSPController.setSourceIsLocal(!session.playbackCoordinator.activeSource.isExternal)
+        audioProcessingGlobalsController.setSourceIsLocal(!session.playbackCoordinator.activeSource.isExternal)
+        audioDSPScriptController.bind(dspController: audioDSPController)
         session.bindAudioDSP(audioDSPController)
+        session.bindAudioProcessingGlobals(audioProcessingGlobalsController)
         activeLibraryBinding.publish(session)
         CacheManager.scheduleBackgroundDiskMaintenance(storage: session.cacheServices.storageLocations)
         await bindReferencedScanStatePush(for: session)
@@ -1472,8 +1477,9 @@ final class AppSessionHost: ObservableObject {
         self.lyricsPlaybackPipeline = lyricsPlaybackPipeline
         lyricsPlaybackPipeline.start()
 
-        playbackCoordinator.onActiveSourceChanged = { [weak ledMeterProvider, weak lyricsVM, weak audioDSPController] source in
+        playbackCoordinator.onActiveSourceChanged = { [weak ledMeterProvider, weak lyricsVM, weak audioDSPController, weak audioProcessingGlobalsController] source in
             audioDSPController?.setSourceIsLocal(!source.isExternal)
+            audioProcessingGlobalsController?.setSourceIsLocal(!source.isExternal)
             ledMeterProvider?.playbackSource = source
             AudioVisualizationService.shared.setExternalMode(source.isExternal)
             lyricsVM?.refreshConfigFromSettings()
@@ -1558,6 +1564,7 @@ final class AppSessionHost: ObservableObject {
 
     private func releaseActiveSessionBindings() async {
         audioDSPController.detachPlayback()
+        audioProcessingGlobalsController.detachPlayback()
         cacheServices?.cancelArtworkColorPrefetch()
         activeLibraryRescanTask?.cancel()
         activeLibraryRescanTask = nil

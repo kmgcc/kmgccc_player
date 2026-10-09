@@ -10,6 +10,10 @@
 | [架构概览](architecture.md) | 应用组合根、资料库 session、本地与外部播放、统一展示模型、歌词、主题和频谱的主链路 |
 | [本地音频输出统一计划](audio-renderer-unification-plan.md) | 单一 sample-buffer renderer、旧 engine 移除、设备恢复、无缝播放与分析迁移 |
 | [Renderer P0 实施记录](audio-renderer-p0-implementation.md) | 单一输出源码迁移、恢复与资源屏障、分析/录制接入，以及待执行的构建和设备验收 |
+| [DSP P6 实施记录](audio-dsp-p6-implementation.md) | 可编程节点、固定内存 VM、草稿/预设、运行隔离、Agent/Jobs 控制与验收边界 |
+| [DSP 脚本语言 v1](audio-dsp-script-language.md) | 源码语法、参数/状态原语、延迟声明、fixture 与 Agent 工作流 |
+| [DSP P5 实施记录](audio-dsp-p5-implementation.md) | 立体声扩展、虚拟低音、电子管模拟、过采样与时间映射、完整 AI 参数及验收边界 |
+| [DSP P3–P4 实施记录](audio-dsp-p3-p4-implementation.md) | 全局非线性淡化、固定响度、离线扫描与等响设备参考及验收边界 |
 | [DSP P1–P2 实施记录](audio-dsp-p1-p2-implementation.md) | 九段 EQ、完整预设、未来队列替换、统一设置和 AI 控制，以及待设备验收项目 |
 | [Renderer 音频 DSP 实施计划](audio-dsp-implementation-plan.md) | 自定义效果链、等响补偿、完整预设实时切换、全局淡化/固定响度均衡、音质性能与 MCP/AI 控制 |
 | [App 维护备忘](app-maintenance-backlog.md) | App 本体的职责拆分、播放发布与开发工具整理，以及核心测试和实际 UI 验收范围 |

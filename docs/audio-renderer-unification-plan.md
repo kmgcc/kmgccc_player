@@ -199,14 +199,14 @@ flowchart LR
 
 ## 8. 验证与交接要求
 
-此次交接文档不代表代码迁移已完成。后续实施属于跨模块输出与生命周期调整；Agent 不自行编译或运行编译型测试，除非用户在当前任务明确要求。针对性构建、编译型测试和主 App 实测由维护者执行。
+此次交接文档不代表代码迁移已完成。后续实施若仍涉及跨多个核心子系统的输出与生命周期接口，可在全部实现完成后按仓库重大工程变更标准做一次最终 Debug build-only 编译，并只为修复编译错误再次 build 确认；不运行测试或启动 App。编译型测试和主 App 实测由维护者执行，除非用户在当前任务明确要求。
 
 - 静态检查：`git diff --check`；检索 App 自有源码中的旧输出类型、后端选择、mixer 注入和旧回退日志，解释每个残留引用。
 - 重点测试：`RendererPipelineTests`、`SkinLifecycleCompletionTests`、`PlaybackKeyboardSeekTests`、`DynamicAuthorizedSourceRootsTests`，以及新补充的故障恢复/停止/过期事件测试。读取现有测试后再决定如何扩展；CodeGraph 的间接 caller 覆盖不能当作恢复路径已测。
 - 当前 `RendererPipelineTests` 主要覆盖 Stereo layout、sample 精确 PTS、PCM 切片、跨采样率时间线、非零起点和分析粒度，尚未直接证明设备故障恢复。
-- 维护者进行主 App 实测前运行 `./scripts/check-app-process-state.sh`；使用 `./scripts/build_and_run.sh`，确认精确 PID、启动二进制及只有一个主进程。Agent 仅在用户明确要求本轮构建时才运行该构建入口。
+- 维护者进行主 App 实测前运行 `./scripts/check-app-process-state.sh`；使用 `./scripts/build_and_run.sh`，确认精确 PID、启动二进制及只有一个主进程。重大改动的最终 build-only 许可不授权 Agent 启动 App；Agent 仅在用户明确要求本轮主 App 实测并授权构建时才运行该入口。
 - 构建遵守 `./scripts/check-melismakit-dependency.sh --require-local` 前置，确认实际输入来自本地组件。
-- 单元测试不能替代设备播放、蓝牙时钟、空间模式和可听 gapless 验收。完整 `verify.sh` 由维护者在合并/发布阶段手动执行；Agent 仅在用户明确要求本轮运行时才执行。
+- 单元测试不能替代设备播放、蓝牙时钟、空间模式和可听 gapless 验收。完整 `verify.sh` 由维护者在合并/发布阶段手动执行；重大改动的最终编译许可不包含它，Agent 仅在用户明确要求本轮运行时才执行。
 
 交接完成条件：App 本地播放及分析/开发播放入口无 AVAudioEngine 依赖；公共播放命令单一路径；恢复与终止可预测；验收矩阵逐项记录通过、失败或未覆盖的设备条件；架构文档与实际代码一致。
 

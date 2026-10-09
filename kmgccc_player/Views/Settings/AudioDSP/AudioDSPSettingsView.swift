@@ -106,6 +106,18 @@ struct AudioDSPSettingsView: View {
                     Text("静态余量估计 \(headroom, format: .number.precision(.fractionLength(1))) dB")
                         .settingsDescriptionStyle()
                 }
+                if let frames = controller.status.processingLatencyFrames {
+                    statusDetailRow("算法延迟", value: formatLatency(frames: frames))
+                }
+                if let frames = controller.status.mediaMappingLatencyFrames {
+                    statusDetailRow(
+                        "时间映射",
+                        value: frames == 0 ? "0 帧 · 已补偿" : "\(frames) 帧"
+                    )
+                }
+                if let peakGuarantee = controller.status.peakGuarantee {
+                    statusDetailRow("峰值估计", value: peakGuaranteeTitle(peakGuarantee))
+                }
             }
         }
     }
@@ -201,7 +213,7 @@ struct AudioDSPSettingsView: View {
                     let index = controller.configuration.nodes.firstIndex(where: { $0.nodeID == node.nodeID }) ?? 0
                     if node.typeID == DSPNodeConfiguration.parametricEQTypeID,
                        node.algorithmVersion == 1, node.quality == "standard",
-                       DSPNodeConfiguration.supportedChannelPolicies.contains(node.channelPolicy) {
+                       DSPNodeConfiguration.supportedChannelPolicies(forTypeID: node.typeID).contains(node.channelPolicy) {
                         AudioDSPNodeCard(
                             node: node,
                             index: index,
@@ -236,6 +248,117 @@ struct AudioDSPSettingsView: View {
                             onMove: { direction in moveNode(node.nodeID, by: direction) },
                             onRemove: { removeNode(node.nodeID) }
                         )
+                    } else if node.typeID == DSPNodeConfiguration.equalLoudnessTypeID,
+                              node.algorithmVersion == 1, node.quality == "standard",
+                              DSPNodeConfiguration.supportedChannelPolicies(forTypeID: node.typeID).contains(node.channelPolicy) {
+                        AudioDSPEqualLoudnessNodeCard(
+                            node: node,
+                            index: index,
+                            nodeCount: controller.configuration.nodes.count,
+                            context: appSession.audioProcessingGlobalsController.equalLoudnessContext,
+                            sampleRate: controller.status.format?.sampleRate ?? 48_000,
+                            isExpanded: expansionBinding(for: node.nodeID),
+                            onEnabledChange: { enabled in
+                                controller.updateConfiguration(commit: true) { candidate in
+                                    guard let nodeIndex = candidate.nodes.firstIndex(where: { $0.nodeID == node.nodeID }) else { return }
+                                    candidate.nodes[nodeIndex].enabled = enabled
+                                }
+                            },
+                            onChannelPolicyChange: { channelPolicy in
+                                controller.updateConfiguration(commit: true) { candidate in
+                                    guard let nodeIndex = candidate.nodes.firstIndex(where: { $0.nodeID == node.nodeID }) else { return }
+                                    candidate.nodes[nodeIndex].channelPolicy = channelPolicy
+                                }
+                            },
+                            onParametersChange: { parameters in
+                                controller.updateConfiguration { candidate in
+                                    guard let nodeIndex = candidate.nodes.firstIndex(where: { $0.nodeID == node.nodeID }) else { return }
+                                    candidate.nodes[nodeIndex].equalLoudnessParameters = parameters
+                                }
+                            },
+                            onCommit: controller.commitPendingApply,
+                            onMove: { direction in moveNode(node.nodeID, by: direction) },
+                            onRemove: { removeNode(node.nodeID) }
+                        )
+                    } else if [
+                        DSPNodeConfiguration.stereoWidthTypeID,
+                        DSPNodeConfiguration.virtualBassTypeID,
+                        DSPNodeConfiguration.tubeTypeID,
+                    ].contains(node.typeID), node.algorithmVersion == 1 {
+                        AudioDSPNativeEffectsNodeCard(
+                            node: node,
+                            index: index,
+                            nodeCount: controller.configuration.nodes.count,
+                            isExpanded: expansionBinding(for: node.nodeID),
+                            onEnabledChange: { enabled in
+                                controller.updateConfiguration(commit: true) { candidate in
+                                    guard let nodeIndex = candidate.nodes.firstIndex(where: { $0.nodeID == node.nodeID }) else { return }
+                                    candidate.nodes[nodeIndex].enabled = enabled
+                                }
+                            },
+                            onChannelPolicyChange: { channelPolicy in
+                                controller.updateConfiguration(commit: true) { candidate in
+                                    guard let nodeIndex = candidate.nodes.firstIndex(where: { $0.nodeID == node.nodeID }) else { return }
+                                    candidate.nodes[nodeIndex].channelPolicy = channelPolicy
+                                }
+                            },
+                            onQualityChange: { quality in
+                                controller.updateConfiguration(commit: true) { candidate in
+                                    guard let nodeIndex = candidate.nodes.firstIndex(where: { $0.nodeID == node.nodeID }) else { return }
+                                    candidate.nodes[nodeIndex].quality = quality
+                                }
+                            },
+                            onStereoWidthParametersChange: { parameters in
+                                controller.updateConfiguration { candidate in
+                                    guard let nodeIndex = candidate.nodes.firstIndex(where: { $0.nodeID == node.nodeID }) else { return }
+                                    candidate.nodes[nodeIndex].stereoWidthParameters = parameters
+                                }
+                            },
+                            onVirtualBassParametersChange: { parameters in
+                                controller.updateConfiguration { candidate in
+                                    guard let nodeIndex = candidate.nodes.firstIndex(where: { $0.nodeID == node.nodeID }) else { return }
+                                    candidate.nodes[nodeIndex].virtualBassParameters = parameters
+                                }
+                            },
+                            onTubeParametersChange: { parameters in
+                                controller.updateConfiguration { candidate in
+                                    guard let nodeIndex = candidate.nodes.firstIndex(where: { $0.nodeID == node.nodeID }) else { return }
+                                    candidate.nodes[nodeIndex].tubeParameters = parameters
+                                }
+                            },
+                            onCommit: controller.commitPendingApply,
+                            onMove: { direction in moveNode(node.nodeID, by: direction) },
+                            onRemove: { removeNode(node.nodeID) }
+                        )
+                    } else if node.typeID == DSPNodeConfiguration.scriptTypeID,
+                              node.algorithmVersion == 1,
+                              node.quality == DSPNodeConfiguration.standardQuality,
+                              node.scriptParameters != nil,
+                              DSPNodeConfiguration.supportedChannelPolicies(forTypeID: node.typeID).contains(node.channelPolicy) {
+                        AudioDSPScriptNodeCard(
+                            node: node,
+                            index: index,
+                            nodeCount: controller.configuration.nodes.count,
+                            format: scriptCompileFormat,
+                            dspController: controller,
+                            scriptController: appSession.audioDSPScriptController,
+                            isExpanded: expansionBinding(for: node.nodeID),
+                            onEnabledChange: { enabled in
+                                controller.updateConfiguration(commit: true) { candidate in
+                                    guard let nodeIndex = candidate.nodes.firstIndex(where: { $0.nodeID == node.nodeID }) else { return }
+                                    candidate.nodes[nodeIndex].enabled = enabled
+                                }
+                            },
+                            onChannelPolicyChange: { channelPolicy in
+                                controller.updateConfiguration(commit: true) { candidate in
+                                    guard let nodeIndex = candidate.nodes.firstIndex(where: { $0.nodeID == node.nodeID }) else { return }
+                                    candidate.nodes[nodeIndex].channelPolicy = channelPolicy
+                                }
+                            },
+                            onCommit: controller.commitPendingApply,
+                            onMove: { direction in moveNode(node.nodeID, by: direction) },
+                            onRemove: { removeNode(node.nodeID) }
+                        )
                     } else {
                         Label {
                             Text(node.enabled
@@ -249,12 +372,18 @@ struct AudioDSPSettingsView: View {
                     }
                 }
 
-                Button {
-                    let node = DSPNodeConfiguration.parametricEQ()
-                    controller.updateConfiguration(commit: true) { $0.nodes.append(node) }
-                    expandedNodeIDs.insert(node.nodeID)
+                Menu {
+                    Button("九段均衡器") { addNode(.parametricEQ()) }
+                    Button("等响补偿") { addNode(.equalLoudness()) }
+                    Button("立体声扩展") { addNode(.stereoWidth()) }
+                    Button("虚拟低音") { addNode(.virtualBass()) }
+                    Button("电子管模拟") { addNode(.tube()) }
+                    Button("可编程脚本") { addNode(.script()) }
+                        .disabled(controller.configuration.nodes.filter {
+                            $0.typeID == DSPNodeConfiguration.scriptTypeID
+                        }.count >= 4)
                 } label: {
-                    Label("添加九段均衡器", systemImage: "plus")
+                    Label("添加效果", systemImage: "plus")
                 }
                 .audioDSPCapsuleButtonStyle()
                 .disabled(controller.configuration.nodes.count >= AudioDSPConfiguration.maximumNodeCount)
@@ -301,18 +430,21 @@ struct AudioDSPSettingsView: View {
 
     @ViewBuilder
     private var diagnosticsSection: some View {
-        if let lastError = controller.lastError {
+        if let lastError = controller.lastError ?? appSession.audioDSPScriptController.lastError {
             SettingsSection("状态信息") {
                 HStack(alignment: .top, spacing: 10) {
                     Label(lastError.message, systemImage: "exclamationmark.circle")
                         .fixedSize(horizontal: false, vertical: true)
                         .settingsDescriptionStyle()
                     Spacer(minLength: 4)
-                    Button("清除", action: controller.clearErrors)
+                    Button("清除") {
+                        controller.clearErrors()
+                        appSession.audioDSPScriptController.clearDiagnostics()
+                    }
                         .audioDSPCapsuleButtonStyle()
                 }
             }
-        } else if !controller.status.warnings.isEmpty || !controller.status.diagnostics.isEmpty {
+        } else if !displayDiagnostics.isEmpty {
             SettingsSection("状态信息") {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(displayDiagnostics) { diagnostic in
@@ -367,7 +499,11 @@ struct AudioDSPSettingsView: View {
 
     private var displayDiagnostics: [DSPDiagnostic] {
         var seen = Set<String>()
-        return (controller.status.warnings + controller.status.diagnostics).filter { seen.insert($0.id).inserted }
+        let scriptDiagnostics = appSession.audioDSPScriptController.activityByNodeID.values.flatMap {
+            $0.compileDiagnostics + $0.testDiagnostics
+        }
+        return (controller.status.warnings + controller.status.diagnostics + scriptDiagnostics)
+            .filter { seen.insert($0.id).inserted }
     }
 
     private var selectedPresetBinding: Binding<UUID?> {
@@ -481,10 +617,59 @@ struct AudioDSPSettingsView: View {
         )
     }
 
+    private func addNode(_ node: DSPNodeConfiguration) {
+        guard controller.configuration.nodes.count < AudioDSPConfiguration.maximumNodeCount else { return }
+        if node.typeID == DSPNodeConfiguration.scriptTypeID,
+           controller.configuration.nodes.filter({ $0.typeID == DSPNodeConfiguration.scriptTypeID }).count >= 4 {
+            return
+        }
+        controller.updateConfiguration(commit: true) { $0.nodes.append(node) }
+        expandedNodeIDs.insert(node.nodeID)
+    }
+
+    private var scriptCompileFormat: DSPAudioFormat {
+        controller.status.format ?? DSPAudioFormat(
+            sampleRate: 48_000,
+            channelCount: 2,
+            rawLayoutData: nil,
+            channelLabels: nil,
+            layoutIsKnown: false
+        )
+    }
+
     private func formatDescription(_ format: DSPAudioFormat) -> String {
         let sampleRate = format.sampleRate / 1_000
         let formattedSampleRate = sampleRate.formatted(.number.precision(.fractionLength(1)))
         return "\(formattedSampleRate) kHz · \(format.channelCount) 声道"
+    }
+
+    private func formatLatency(frames: Int) -> String {
+        let frameValue = "\(frames) 帧"
+        guard let sampleRate = controller.status.format?.sampleRate,
+              sampleRate.isFinite, sampleRate > 0 else { return frameValue }
+        let milliseconds = (Double(frames) / sampleRate * 1_000)
+            .formatted(.number.precision(.fractionLength(2)))
+        return "\(frameValue) · \(milliseconds) ms"
+    }
+
+    private func statusDetailRow(_ title: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+            Spacer(minLength: 8)
+            Text(value)
+                .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
+        }
+        .settingsDescriptionStyle()
+    }
+
+    private func peakGuaranteeTitle(_ value: String) -> String {
+        switch value {
+        case "bypassed": "原始旁路"
+        case "estimatedLinearResponse": "线性频响估算"
+        case "unavailable": "非线性峰值待测"
+        default: "峰值信息不可用"
+        }
     }
 
     private func displayName(for document: DSPPresetDocument) -> String {
@@ -813,7 +998,7 @@ struct AudioDSPSettingsView: View {
     }
 }
 
-private struct DSPRangeSliderRow: View {
+struct DSPRangeSliderRow: View {
     let title: String
     @Binding var value: Double
     let range: ClosedRange<Double>

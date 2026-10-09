@@ -30,21 +30,19 @@ struct AutomationDSPHandler {
                     "schemaVersion": .number(1),
                     "configuration": AutomationDSPToolCatalog.configurationSchema,
                     "preset": AutomationDSPToolCatalog.presetSchema,
-                    "nodes": .array([.object([
-                        "typeID": .string("peq9"), "algorithmVersion": .number(1),
-                        "channelPolicies": .array([.string("fullRange"), .string("allChannels")]),
-                        "quality": .array([.string("standard")]),
-                        "parameters": AutomationDSPToolCatalog.equalizerParametersSchema
-                    ])]),
+                    "nodes": .array(AutomationDSPToolCatalog.builtInNodeSchemas),
+                    "scriptLanguage": AutomationDSPToolCatalog.scriptLanguageCapabilities,
                     "operationPaths": .object([
                         "setParameter": .string("Relative to node parameters, e.g. bands.0.gainDB."),
                         "setTrim": .string("value is an object containing inputTrimDB and/or outputTrimDB."),
                         "setHeadroom": .string("value contains mode and marginDB."),
-                        "setOrder": .string("nodeIDs must contain every existing node exactly once.")
+                        "setOrder": .string("nodeIDs must contain every existing node exactly once."),
+                        "setQuality": .string("value selects a declared quality for this node type."),
+                        "setChannelPolicy": .string("value selects a declared channel policy for this node type.")
                     ]),
                     "scope": .string("app"), "renderer": .string("AVSampleBufferAudioRenderer"),
                     "builtInPresetID": .string(DSPPresetDocument.flatPresetID.uuidString),
-                    "globalsExcluded": .array([.string("playPauseFade"), .string("loudnessNormalization")])
+                    "globalsExcluded": .array([.string("playPauseFade"), .string("loudnessNormalization"), .string("deviceListeningReferences")])
                 ]), for: request)
             case AutomationMethod.dspState:
                 return result(try state(controller), for: request)
@@ -161,11 +159,19 @@ struct AutomationDSPHandler {
                     "warnings": try value(preview.warnings), "diagnostics": try value(preview.diagnostics)
                 ]), for: request)
             case AutomationMethod.dspErrorsGet:
+                let activities = appSession?.audioDSPScriptController.activityByNodeID ?? [:]
+                let scriptDiagnostics = activities.values.flatMap { $0.compileDiagnostics + $0.testDiagnostics }
                 return result(.object(["revisionString": .string(controller.revisionString),
                     "lastError": try controller.lastError.map(value) ?? .null,
-                    "diagnostics": try value(controller.diagnostics), "warnings": try value(controller.status.warnings)]), for: request)
+                    "diagnostics": try value(controller.diagnostics + scriptDiagnostics), "warnings": try value(controller.status.warnings),
+                    "scripts": .array(activities.sorted { $0.key.uuidString < $1.key.uuidString }.map { pair in
+                        .object(["nodeID": .string(pair.key.uuidString),
+                                 "compilePhase": .string(pair.value.compilePhase.rawValue),
+                                 "testPhase": .string(pair.value.testPhase.rawValue)])
+                    })]), for: request)
             case AutomationMethod.dspErrorsClear:
                 controller.clearErrors()
+                appSession?.audioDSPScriptController.clearDiagnostics()
                 return result(.object(["cleared": .boolean(true)]), for: request)
             default:
                 return AutomationResponseSupport.unsupportedMethod(for: request)
@@ -207,6 +213,23 @@ struct AutomationDSPHandler {
             "effectiveRevision": controller.effectiveRevision.map(AutomationJSONValue.string) ?? .null,
             "audibleRevision": controller.audibleRevision.map(AutomationJSONValue.string) ?? .null,
             "status": try value(controller.status),
+            "processing": .object([
+                "processingLatencyFrames": controller.status.processingLatencyFrames.map { .number(Double($0)) } ?? .null,
+                "mediaMappingLatencyFrames": controller.status.mediaMappingLatencyFrames.map { .number(Double($0)) } ?? .null,
+                "latencyCompensation": .string("boundedSourceLookahead"),
+                "chainRuntimeBypassed": .boolean(controller.status.warnings.contains {
+                    $0.code == "dsp.nonFiniteChainOutput"
+                }),
+                "peakGuarantee": controller.status.peakGuarantee.map(AutomationJSONValue.string) ?? .null
+            ]),
+            "equalLoudness": equalLoudnessState(controller),
+            "scriptRuntime": .array(controller.configuration.nodes.filter {
+                $0.typeID == DSPNodeConfiguration.scriptTypeID
+            }.map { node in
+                .object(["nodeID": .string(node.nodeID.uuidString),
+                         "state": .string(scriptRuntimeState(node: node, controller: controller)),
+                         "diagnostics": (try? value(controller.status.warnings.filter { $0.nodeID == node.nodeID })) ?? .array([])])
+            }),
             "applicationPresentationLeadSeconds": controller.status.state == .inactiveExternalSource
                 ? .null : appSession?.activeLibraryBinding.activeSession.map {
                     AutomationJSONValue.number($0.audioDSPPresentationLeadSeconds)
@@ -214,6 +237,37 @@ struct AutomationDSPHandler {
             "outputClockDomain": .string("rendererDevice"),
             "selectedPresetID": controller.selectedPresetID.map { .string($0.uuidString) } ?? .null,
             "isModified": .boolean(controller.isModified), "diagnostics": try value(controller.diagnostics)
+        ])
+    }
+
+    private func scriptRuntimeState(node: DSPNodeConfiguration, controller: AudioDSPController) -> String {
+        guard controller.configuration.enabled, node.enabled else { return "disabled" }
+        if controller.status.state == .inactiveExternalSource { return "inactiveExternalSource" }
+        if controller.status.warnings.contains(where: { $0.code == "dsp.nonFiniteChainOutput" }) {
+            return "chainBypassed"
+        }
+        let warnings = controller.status.warnings.filter { $0.nodeID == node.nodeID }
+        if warnings.contains(where: { $0.fieldPath?.hasSuffix(".runtime") == true }) { return "faultedBypass" }
+        if warnings.contains(where: { $0.code.hasPrefix("script.") || $0.code.hasPrefix("dsp.script") }) {
+            return "preparationBypass"
+        }
+        return controller.status.state == .audible ? "active" : controller.status.state.rawValue
+    }
+
+    private func equalLoudnessState(_ controller: AudioDSPController) -> AutomationJSONValue {
+        let context = appSession?.audioProcessingGlobalsController.equalLoudnessContext ?? .appOnly
+        let nodes = controller.configuration.nodes.filter { $0.typeID == DSPNodeConfiguration.equalLoudnessTypeID }.map { node in
+            let gains = controller.configuration.enabled ? DSPEqualLoudnessMath.gains(node: node, context: context) : .zero
+            return AutomationJSONValue.object([
+                "nodeID": .string(node.nodeID.uuidString),
+                "expectedBassGainDB": .number(gains.bassDB), "expectedTrebleGainDB": .number(gains.trebleDB)
+            ])
+        }
+        return .object([
+            "volumeSource": .string("appOnly"), "appGain": .number(context.appGain),
+            "referenceDB": context.referenceDB.map(AutomationJSONValue.number) ?? .null,
+            "referenceMode": .string(context.referenceDB == nil ? "relativeUnity" : "deviceProfile"),
+            "applicationState": .string(controller.status.state.rawValue), "nodes": .array(nodes)
         ])
     }
 
@@ -236,7 +290,7 @@ struct AutomationDSPHandler {
         return trimmed
     }
 
-    private func candidateConfiguration(_ parameters: AutomationParameters, current: AudioDSPConfiguration) throws -> AudioDSPConfiguration {
+    func candidateConfiguration(_ parameters: AutomationParameters, current: AudioDSPConfiguration) throws -> AudioDSPConfiguration {
         guard (parameters.values["configuration"] != nil) != (parameters.values["operations"] != nil) else {
             throw AutomationParameterError.invalidValue("Supply configuration or operations, exclusively.")
         }
@@ -251,7 +305,7 @@ struct AutomationDSPHandler {
             switch op {
             case "setMaster", "setTrim", "setHeadroom": allowed = ["op", "value"]
             case "setParameter": allowed = ["op", "nodeID", "path", "value"]
-            case "setEnabled": allowed = ["op", "nodeID", "value"]
+            case "setEnabled", "setQuality", "setChannelPolicy": allowed = ["op", "nodeID", "value"]
             case "addNode": allowed = ["op", "node"]
             case "removeNode": allowed = ["op", "nodeID"]
             case "setOrder": allowed = ["op", "nodeIDs"]
@@ -284,6 +338,13 @@ struct AutomationDSPHandler {
                 let index = try nodeIndex()
                 guard case .boolean(let enabled)? = raw else { throw AutomationParameterError.invalidValue("value") }
                 candidate.nodes[index].enabled = enabled
+            case "setQuality", "setChannelPolicy":
+                let index = try nodeIndex()
+                guard case .string(let value)? = raw, !value.isEmpty else {
+                    throw AutomationParameterError.invalidValue("value")
+                }
+                if op == "setQuality" { candidate.nodes[index].quality = value }
+                else { candidate.nodes[index].channelPolicy = value }
             case "setParameter":
                 let index = try nodeIndex()
                 guard case .string(let path)? = fields["path"], let raw else { throw AutomationParameterError.missing("path/value") }

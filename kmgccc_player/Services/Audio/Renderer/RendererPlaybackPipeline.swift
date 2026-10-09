@@ -20,9 +20,35 @@ protocol RendererPCMProvider: AnyObject, Sendable {
 
     nonisolated func nextChunk(maxFrames: AVAudioFrameCount) throws -> CanonicalPCM?
     nonisolated func seek(to position: AVAudioFramePosition) throws
+    nonisolated func setDSPReadAheadEnabled(_ enabled: Bool)
+    /// Reads future PCM without consuming the live decode cursor. Providers
+    /// may cache this prefix so FIR compensation does not repeatedly seek.
+    nonisolated func peekChunk(
+        at position: AVAudioFramePosition,
+        maxFrames: AVAudioFrameCount,
+        restoringTo restorePosition: AVAudioFramePosition
+    ) throws -> CanonicalPCM?
 }
 
 nonisolated extension RendererPCMProvider {
+    func setDSPReadAheadEnabled(_ enabled: Bool) {}
+
+    func peekChunk(
+        at position: AVAudioFramePosition,
+        maxFrames: AVAudioFrameCount,
+        restoringTo restorePosition: AVAudioFramePosition
+    ) throws -> CanonicalPCM? {
+        do {
+            try seek(to: position)
+            let pcm = try nextChunk(maxFrames: maxFrames)
+            try seek(to: restorePosition)
+            return pcm
+        } catch {
+            try seek(to: restorePosition)
+            throw error
+        }
+    }
+
     /// Providers without a native layout source remain explicitly unknown.
     /// In particular, channel count alone never implies 5.1/7.1 speaker order.
     var sourceDSPFormat: DSPAudioFormat {
@@ -173,10 +199,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     nonisolated(unsafe) private(set) var renderer = AVSampleBufferAudioRenderer()
     let synchronizer = AVSampleBufferRenderSynchronizer()
 
-    private let pipelineQueue = DispatchQueue(
-        label: "kmg.myplayer2.renderer-pipeline",
-        qos: .userInitiated
-    )
+    private let pipelineQueue: DispatchQueue
     private let pipelineQueueKey = DispatchSpecificKey<Void>()
 
     private struct Segment {
@@ -185,6 +208,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let sourceFormat: DSPAudioFormat
         let formatDescription: CMAudioFormatDescription
         var nextSourceFrame: AVAudioFramePosition
+        var normalizationGain: Double = 1
         var didReportExhaustion = false
     }
 
@@ -232,6 +256,12 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let presentationTime: Double
         let frameCount: Int
         let format: DSPAudioFormat
+        let normalizationGain: Double
+        var request: DSPApplyRequest?
+        var headroomDB: Double
+        var processingLatencyFrames: Int
+        var peakGuarantee: String
+        var warnings: [DSPDiagnostic]
 
         var endPresentationTime: Double {
             presentationTime + Double(frameCount) / format.sampleRate
@@ -252,6 +282,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let revision: String
         let requestID: UUID
         let token: UUID
+        let context: DSPEqualLoudnessContext
     }
 
     private enum DSPApplyPreparationError: Error {
@@ -265,6 +296,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let oldOutput: CanonicalPCM
         let output: CanonicalPCM
         let sampleBuffer: CMSampleBuffer
+        let headroomDB: Double
+        let processingLatencyFrames: Int
+        let peakGuarantee: String
+        let warnings: [DSPDiagnostic]
     }
 
     private struct DSPReplacementTransaction {
@@ -281,6 +316,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let finalProcessor: AudioDSPProcessor
         let warnings: [DSPDiagnostic]
         let headroomDB: Double
+        let processingLatencyFrames: Int
+        let peakGuarantee: String
         let retryCount: Int
     }
 
@@ -316,10 +353,16 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     private var pendingDecodedPCM: PendingDecodedPCM?
     private var dspLedger: [DSPQueuedBlock] = []
     private var dspOutputBoundaries: [DSPOutputBoundary] = []
+    private var lastAudibleDSPFormat: DSPAudioFormat?
+    private var lastAudibleDSPDiagnosticIDs: Set<String> = []
     private var pendingAudibleDSPEvent: DSPApplyEvent?
     private var activeDSPTransaction: DSPReplacementTransaction?
     private var queuedDSPApply: DSPApplyRequest?
     private var currentVolume: Float = 1
+    private var fadeConfiguration = AudioFadeConfiguration()
+    private var desiredDSPContext = DSPEqualLoudnessContext.appOnly
+    private var dspContext = DSPEqualLoudnessContext.appOnly
+    private let outputGainController: PlaybackOutputGainController
     /// Core Audio UID currently selected for this renderer. On macOS the
     /// synchronizer uses the attached audio renderer's device clock, so keeping
     /// this value explicit avoids falling back to a host-time clock during a
@@ -353,6 +396,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     var onSegmentExhausted: ((RendererSegmentDescriptor) -> Void)?
     var onFailure: ((_ segmentID: UUID?, _ error: RendererPipelineError) -> Void)?
     var onDSPApplyEvent: (@Sendable (DSPApplyEvent) -> Void)?
+    var onTransportStateChange: (@Sendable (AudioTransportTransitionState, UUID) -> Void)?
 
     private static let feedInterval: TimeInterval = 0.1
     private static let analysisInterval: TimeInterval = 1.0 / 60.0
@@ -367,6 +411,14 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     nonisolated(unsafe) private var progressObserver: Any?
 
     init() {
+        let queue = DispatchQueue(label: "kmg.myplayer2.renderer-pipeline", qos: .userInitiated)
+        pipelineQueue = queue
+        outputGainController = PlaybackOutputGainController(queue: queue)
+        outputGainController.writeGain = { [weak self] gain in self?.renderer.volume = gain }
+        outputGainController.publish = { [weak self] state in
+            guard let self else { return }
+            self.onTransportStateChange?(state, self.timelineGeneration)
+        }
         pipelineQueue.setSpecific(key: pipelineQueueKey, value: ())
         timelineGeneration = timelineGenerationGate.current()
         configureRenderer(renderer)
@@ -393,7 +445,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     }
 
     private func configureRenderer(_ renderer: AVSampleBufferAudioRenderer) {
-        renderer.volume = currentVolume
+        outputGainController.restore { renderer.volume = $0 }
         // The SDK documents this property as nullable, but the current macOS
         // renderer asserts if nil is explicitly assigned. Leaving it untouched
         // is exactly the documented default-device behavior.
@@ -451,7 +503,27 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         pipelineQueue.async { [weak self] in
             guard let self else { return }
             self.currentVolume = volume
-            self.renderer.volume = volume
+            self.outputGainController.setMaster(Double(volume))
+        }
+    }
+
+    func isTimelineCurrent(_ generation: UUID) -> Bool { timelineGenerationGate.isCurrent(generation) }
+
+    func setFadeConfiguration(_ configuration: AudioFadeConfiguration) {
+        pipelineQueue.async { [weak self] in self?.fadeConfiguration = configuration }
+    }
+
+    func setEqualLoudnessContext(_ context: DSPEqualLoudnessContext) {
+        pipelineQueue.async { [weak self] in
+            guard let self, self.desiredDSPContext != context else { return }
+            self.desiredDSPContext = context
+            guard let request = self.latestAcceptedDSPRequest,
+                  request.configuration.enabled,
+                  request.configuration.nodes.contains(where: { $0.enabled && $0.typeID == "equalLoudness" }) else {
+                self.dspContext = context
+                return
+            }
+            self.applyDSP(request.configuration, revision: request.revision, requestID: request.requestID)
         }
     }
 
@@ -481,15 +553,13 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         revision: String,
         requestID: UUID
     ) {
-        let request = DSPApplyRequest(
-            configuration: configuration,
-            revision: revision,
-            requestID: requestID,
-            token: UUID()
-        )
         pipelineQueue.async { [weak self] in
             guard let self else { return }
-            if let superseded = self.queuedDSPApply {
+            let request = DSPApplyRequest(
+                configuration: configuration, revision: revision, requestID: requestID,
+                token: UUID(), context: self.desiredDSPContext
+            )
+            if let superseded = self.queuedDSPApply, superseded.requestID != request.requestID {
                 self.emitDSPEvent(
                     superseded,
                     state: .superseded,
@@ -506,6 +576,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             if !self.isLoaded {
                 self.dspConfiguration = configuration
                 self.dspRevision = revision
+                self.dspContext = request.context
                 self.dspProcessor = nil
                 self.effectiveDSPRequest = request
                 self.emitDSPEvent(
@@ -551,10 +622,18 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         scheduledPTS: Double?,
         audiblePTS: Double?,
         headroomDB: Double?,
+        processingLatencyFrames: Int? = nil,
+        peakGuarantee: String? = nil,
         warnings: [DSPDiagnostic],
         diagnostics: [DSPDiagnostic],
         rebuffered: Bool = false
     ) {
+        let runtime = dspProcessor.flatMap { processor -> AudioDSPProcessor? in
+            guard let format, processor.format == format,
+                  dspRevision == request.revision, dspContext == request.context else { return nil }
+            return processor
+        }
+        let latency = processingLatencyFrames ?? runtime?.processingLatencyFrames
         let event = DSPApplyEvent(
             requestID: request.requestID,
             revisionString: request.revision,
@@ -563,6 +642,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             scheduledPTS: scheduledPTS,
             audiblePTS: audiblePTS,
             headroomDB: headroomDB,
+            processingLatencyFrames: latency,
+            mediaMappingLatencyFrames: latency == nil ? nil : 0,
+            peakGuarantee: peakGuarantee ?? runtime?.peakGuarantee,
             warnings: warnings,
             diagnostics: diagnostics,
             rebuffered: rebuffered
@@ -615,7 +697,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         // format in the queue.
         let processor = AudioDSPProcessor(
             configuration: dspConfiguration,
-            format: firstBoundary.format
+            format: firstBoundary.format, context: dspContext
         )
         var warningsByID = [String: DSPDiagnostic]()
         for warning in processor.diagnostics + additionalWarnings {
@@ -630,6 +712,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             scheduledPTS: firstBoundary.presentationTime,
             audiblePTS: nil,
             headroomDB: processor.headroomDB,
+            processingLatencyFrames: processor.processingLatencyFrames,
+            mediaMappingLatencyFrames: 0,
+            peakGuarantee: processor.peakGuarantee,
             warnings: warnings,
             diagnostics: warnings,
             rebuffered: rebuffered
@@ -832,9 +917,11 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         }
         var runtime = AudioDSPProcessor(
             configuration: request.configuration,
-            format: startBoundary.format
+            format: startBoundary.format, context: request.context
         )
         let startHeadroomDB = runtime.headroomDB
+        let startLatencyFrames = runtime.processingLatencyFrames
+        let startPeakGuarantee = runtime.peakGuarantee
         var warningByID = [String: DSPDiagnostic]()
         for warning in runtime.diagnostics { warningByID[warning.id] = warning }
         runtime.warm(with: warmupBlocks.map(\.pcm))
@@ -846,16 +933,20 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         var replacements = [DSPReplacementBlock]()
         replacements.reserveCapacity(orderedFuture.count)
 
-        for raw in orderedFuture {
+        for (rawIndex, raw) in orderedFuture.enumerated() {
             if raw.format != runtime.format {
                 runtime = AudioDSPProcessor(
                     configuration: request.configuration,
-                    format: raw.format
+                    format: raw.format, context: request.context
                 )
                 runtime.reset()
                 for warning in runtime.diagnostics { warningByID[warning.id] = warning }
             }
-            let processed = runtime.process(raw.pcm)
+            let future = try dspLookahead(
+                after: raw, frameCount: runtime.processingLatencyFrames,
+                following: orderedFuture[(rawIndex + 1)...]
+            )
+            let processed = runtime.process(raw.pcm, lookahead: future)
             let oldOutput = oldOutputs[DSPBlockKey(raw)] ?? raw.pcm
             let output: CanonicalPCM
             if transitionOffsetSeconds < 0.03 {
@@ -885,7 +976,11 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 raw: raw,
                 oldOutput: oldOutput,
                 output: output,
-                sampleBuffer: sampleBuffer
+                sampleBuffer: sampleBuffer,
+                headroomDB: runtime.headroomDB,
+                processingLatencyFrames: runtime.processingLatencyFrames,
+                peakGuarantee: runtime.peakGuarantee,
+                warnings: runtime.diagnostics
             ))
         }
 
@@ -903,6 +998,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             finalProcessor: runtime,
             warnings: warningByID.values.sorted { $0.id < $1.id },
             headroomDB: startHeadroomDB,
+            processingLatencyFrames: startLatencyFrames,
+            peakGuarantee: startPeakGuarantee,
             retryCount: retryCount
         )
     }
@@ -985,7 +1082,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                             sourceFrameStart: boundary.sourceFrameStart,
                             presentationTime: boundary.presentationTime,
                             format: boundary.format,
-                            pcm: pcm
+                            pcm: Self.applyingFixedGain(pcm, gain: boundary.normalizationGain)
                         )
                         result[DSPBlockKey(boundary)] = block
                     }
@@ -1212,9 +1309,11 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     ) throws -> DSPReplacementTransaction {
         var runtime = AudioDSPProcessor(
             configuration: request.configuration,
-            format: transaction.blocks.first?.raw.format ?? transaction.finalProcessor.format
+            format: transaction.blocks.first?.raw.format ?? transaction.finalProcessor.format, context: request.context
         )
         let startHeadroomDB = runtime.headroomDB
+        let startLatencyFrames = runtime.processingLatencyFrames
+        let startPeakGuarantee = runtime.peakGuarantee
         var warningByID = [String: DSPDiagnostic]()
         for warning in runtime.diagnostics { warningByID[warning.id] = warning }
         runtime.warm(with: transaction.warmupBlocks.map(\.pcm))
@@ -1225,16 +1324,21 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         var transitionOffsetSeconds = 0.0
         var blocks = [DSPReplacementBlock]()
         blocks.reserveCapacity(transaction.blocks.count)
-        for original in transaction.blocks {
+        let orderedRaw = transaction.blocks.map(\.raw)
+        for (rawIndex, original) in transaction.blocks.enumerated() {
             if original.raw.format != runtime.format {
                 runtime = AudioDSPProcessor(
                     configuration: request.configuration,
-                    format: original.raw.format
+                    format: original.raw.format, context: request.context
                 )
                 runtime.reset()
                 for warning in runtime.diagnostics { warningByID[warning.id] = warning }
             }
-            let processed = runtime.process(original.raw.pcm)
+            let future = try dspLookahead(
+                after: original.raw, frameCount: runtime.processingLatencyFrames,
+                following: orderedRaw[(rawIndex + 1)...]
+            )
+            let processed = runtime.process(original.raw.pcm, lookahead: future)
             let output: CanonicalPCM
             if transitionOffsetSeconds < 0.03 {
                 output = AudioDSPProcessor.crossfade(
@@ -1261,7 +1365,11 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 raw: original.raw,
                 oldOutput: original.oldOutput,
                 output: output,
-                sampleBuffer: sampleBuffer
+                sampleBuffer: sampleBuffer,
+                headroomDB: runtime.headroomDB,
+                processingLatencyFrames: runtime.processingLatencyFrames,
+                peakGuarantee: runtime.peakGuarantee,
+                warnings: runtime.diagnostics
             ))
         }
         return DSPReplacementTransaction(
@@ -1278,6 +1386,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             finalProcessor: runtime,
             warnings: warningByID.values.sorted { $0.id < $1.id },
             headroomDB: startHeadroomDB,
+            processingLatencyFrames: startLatencyFrames,
+            peakGuarantee: startPeakGuarantee,
             retryCount: transaction.retryCount
         )
     }
@@ -1301,9 +1411,17 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         }
         // Crossfaded buffers retain their actual old/new mixture even when the
         // new processor is bypassed. A following edit may select an earlier T.
+        let replacementByKey = Dictionary(uniqueKeysWithValues: transaction.blocks.map { (DSPBlockKey($0.raw), $0) })
         for index in dspOutputBoundaries.indices
             where dspOutputBoundaries[index].presentationTime >= transaction.startPTS - 0.000_001 {
             dspOutputBoundaries[index].outputIsIdentity = false
+            if let block = replacementByKey[DSPBlockKey(dspOutputBoundaries[index])] {
+                dspOutputBoundaries[index].request = transaction.request
+                dspOutputBoundaries[index].headroomDB = block.headroomDB
+                dspOutputBoundaries[index].processingLatencyFrames = block.processingLatencyFrames
+                dspOutputBoundaries[index].peakGuarantee = block.peakGuarantee
+                dspOutputBoundaries[index].warnings = block.warnings
+            }
         }
         dspLedger.removeAll { $0.raw.presentationTime >= transaction.startPTS - 0.000_001 }
         dspLedger.append(contentsOf: transaction.blocks.map {
@@ -1311,6 +1429,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         })
         dspConfiguration = transaction.request.configuration
         dspRevision = transaction.request.revision
+        dspContext = transaction.request.context
         effectiveDSPRequest = transaction.request
         dspProcessor = transaction.finalProcessor
         nextPresentationTime = transaction.oldHorizonPTS
@@ -1322,6 +1441,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             scheduledPTS: transaction.startPTS,
             audiblePTS: nil,
             headroomDB: transaction.headroomDB,
+            processingLatencyFrames: transaction.processingLatencyFrames,
+            mediaMappingLatencyFrames: 0,
+            peakGuarantee: transaction.peakGuarantee,
             warnings: transaction.warnings,
             diagnostics: transaction.warnings,
             rebuffered: false
@@ -1333,6 +1455,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             scheduledPTS: transaction.startPTS,
             audiblePTS: nil,
             headroomDB: transaction.headroomDB,
+            processingLatencyFrames: transaction.processingLatencyFrames,
+            peakGuarantee: transaction.peakGuarantee,
             warnings: transaction.warnings,
             diagnostics: transaction.warnings
         )
@@ -1419,6 +1543,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         pendingDecodedPCM = nil
         dspConfiguration = request.configuration
         dspRevision = request.revision
+        dspContext = request.context
         effectiveDSPRequest = request
         guard recoverSources(atTimelineSeconds: clock, dspRebuffered: true), isLoaded else {
             emitDSPEvent(
@@ -1460,7 +1585,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             let oldUID = self.audioOutputDeviceUniqueID
             self.audioOutputDeviceUniqueID = uniqueID
             let clock = self.currentSynchronizerClockSeconds()
-            let wasPlaying = self.isPlaybackActive
+            let wasPlaying = self.outputGainController.desiredPlaying
+            self.isPlaybackActive = wasPlaying
+            self.outputGainController.reset(playing: wasPlaying)
             let rendererWasFailed = self.renderer.status == .failed
             self.lastSystemChangeWallTime = ProcessInfo.processInfo.systemUptime
 
@@ -1549,7 +1676,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         presentationStartSeconds: Double = 0,
         clockTimeSeconds: Double = 0,
         segmentID: UUID = UUID(),
-        autoplay: Bool = true
+        autoplay: Bool = true,
+        normalizationGain: Double = 1,
+        fadeOnStart: Bool = false
     ) {
         let requestedGeneration = timelineGenerationGate.advance()
         pipelineQueue.async { [weak self] in
@@ -1557,6 +1686,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             guard self.timelineGenerationGate.isCurrent(requestedGeneration) else { return }
             self.timelineGeneration = requestedGeneration
             self.stopFeedTimer()
+            self.outputGainController.reset(playing: false, publish: false)
             self.activeLoadSegmentID = segmentID
             self.rendererFailureRecoveryBudget.beginNewRequest()
             self.invalidateStallRecovery()
@@ -1581,11 +1711,13 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             self.pendingDecodedPCM = nil
             self.dspLedger.removeAll(keepingCapacity: false)
             self.dspOutputBoundaries.removeAll(keepingCapacity: false)
+            self.lastAudibleDSPFormat = nil
             self.activeDSPTransaction = nil
             self.pendingAudibleDSPEvent = nil
             if let request = self.latestAcceptedDSPRequest {
                 self.dspConfiguration = request.configuration
                 self.dspRevision = request.revision
+                self.dspContext = request.context
                 self.effectiveDSPRequest = request
             }
             self.queuedDSPApply = nil
@@ -1613,13 +1745,14 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 try source.seek(to: clamped)
                 var loadedSegment = segment
                 loadedSegment.nextSourceFrame = clamped
+                loadedSegment.normalizationGain = normalizationGain.isFinite ? max(0, normalizationGain) : 1
                 self.segments = [loadedSegment]
                 self.decodeIndex = clamped < source.totalFrames ? 0 : nil
                 self.nextPresentationTime = presentationStartSeconds
                     + Double(clamped) / source.sourceSampleRate
                 self.dspProcessor = AudioDSPProcessor(
                     configuration: self.dspConfiguration,
-                    format: loadedSegment.sourceFormat
+                    format: loadedSegment.sourceFormat, context: self.dspContext
                 )
                 self.dspProcessor?.reset()
                 self.pendingAudibleDSPEvent = nil
@@ -1661,6 +1794,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             let rate: Float = autoplay ? 1 : 0
             let clock = CMTime(seconds: max(0, clockTimeSeconds), preferredTimescale: 600)
             self.setSynchronizerRateSynchronously(rate, time: clock)
+            self.outputGainController.reset(playing: autoplay, envelope: autoplay && !fadeOnStart ? 1 : 0)
+            if autoplay && fadeOnStart {
+                self.beginPlaybackFadeIn()
+            }
             self.lastExplicitTimelineMutationWallTime = ProcessInfo.processInfo.systemUptime
             self.timelineMutationInProgress = false
             self.installRendererObservers(
@@ -1683,7 +1820,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     /// decoding remains on pipelineQueue.
     func append(
         source: RendererPCMProvider,
-        expectedLoadSegmentID: UUID? = nil
+        expectedLoadSegmentID: UUID? = nil,
+        normalizationGain: Double = 1
     ) -> RendererSegmentDescriptor? {
         let expectedTimelineGeneration = timelineGenerationGate.current()
         return pipelineQueue.sync {
@@ -1696,7 +1834,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             let start = segments.last?.descriptor.presentationEndSeconds
                 ?? max(0, synchronizer.currentTime().seconds)
             let segmentID = UUID()
-            guard let segment = makeSegment(
+            guard var segment = makeSegment(
                 source: source,
                 presentationStartSeconds: start,
                 id: segmentID
@@ -1721,7 +1859,21 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 )
                 return nil
             }
+            segment.normalizationGain = normalizationGain.isFinite ? max(0, normalizationGain) : 1
+            let previousSegment = segments.last
             segments.append(segment)
+            if let previousSegment, previousSegment.sourceFormat == segment.sourceFormat {
+                let generation = timelineGeneration
+                let appendedID = segment.descriptor.id
+                let previousID = previousSegment.descriptor.id
+                pipelineQueue.async { [weak self] in
+                    guard let self, self.isLoaded,
+                          self.timelineGenerationGate.isCurrent(generation),
+                          self.segments.contains(where: { $0.descriptor.id == appendedID }),
+                          let previous = self.segments.first(where: { $0.descriptor.id == previousID }) else { return }
+                    self.refreshDSPAfterLateAppend(previous)
+                }
+            }
             if decodeIndex == nil {
                 decodeIndex = segments.count - 1
                 nextPresentationTime = segment.descriptor.presentationStartSeconds
@@ -1730,6 +1882,46 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             startFeedTimerIfNeeded()
             return segment.descriptor
         }
+    }
+
+    /// A next source may arrive after the prior source's terminal FIR window
+    /// was queued with EOF padding. Replace that still-future audio through
+    /// the existing transaction before the new source becomes audible.
+    private func refreshDSPAfterLateAppend(_ previous: Segment) {
+        guard let processor = dspProcessor, processor.processingLatencyFrames > 0,
+              let base = latestAcceptedDSPRequest ?? effectiveDSPRequest,
+              dspOutputBoundaries.contains(where: {
+                  $0.segmentID == previous.descriptor.id && !$0.outputIsIdentity
+                      && $0.sourceFrameStart + AVAudioFramePosition($0.frameCount)
+                          + AVAudioFramePosition(processor.processingLatencyFrames) > previous.source.totalFrames
+              }) else { return }
+        let affectedStartPTS = previous.descriptor.presentationEndSeconds
+            - Double(processor.processingLatencyFrames) / previous.sourceFormat.sampleRate
+        let clock = currentSynchronizerClockSeconds()
+        let earliestSafePTS = max(clock, clock + analysisLeadSeconds - analysisDeliveryLeadSeconds + 0.005) + 0.05
+        if isPlaybackActive, !dspOutputBoundaries.contains(where: {
+            $0.presentationTime >= earliestSafePTS && $0.presentationTime + 0.03 <= affectedStartPTS
+        }) {
+            let warning = DSPDiagnostic(
+                code: "dsp.lateGaplessLookahead",
+                message: "The next source arrived after the prior FIR tail could be replaced safely; that queued tail retains its EOF boundary.",
+                fieldPath: "processingLatencyFrames", retryable: false
+            )
+            let reportedRequest = effectiveDSPRequest ?? base
+            let pending = pendingAudibleDSPEvent.flatMap { event -> DSPApplyEvent? in
+                event.requestID == reportedRequest.requestID && event.revisionString == reportedRequest.revision ? event : nil
+            }
+            emitDSPEvent(reportedRequest, state: pending?.state ?? .audible, format: processor.format,
+                scheduledPTS: pending?.scheduledPTS, audiblePTS: pending == nil ? clock : nil,
+                headroomDB: processor.headroomDB,
+                warnings: processor.diagnostics + [warning], diagnostics: processor.diagnostics + [warning])
+            return
+        }
+        let request = DSPApplyRequest(configuration: base.configuration, revision: base.revision,
+            requestID: base.requestID, token: UUID(), context: desiredDSPContext)
+        queuedDSPApply = request
+        latestAcceptedDSPRequest = request
+        if activeDSPTransaction == nil { startNextDSPApply(retryCount: 0, afterPTS: nil) }
     }
 
     /// Remove an already-queued prediction after the named segment. The
@@ -1829,6 +2021,21 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
 
     // MARK: - Transport
 
+    private func beginPlaybackFadeIn() {
+        let clock = currentSynchronizerClockSeconds()
+        // A fresh timeline has visualization lead before the first PCM PTS.
+        // Starting the envelope at rate=1 would finish a short fade in silence.
+        let firstUnplayedPTS = dspOutputBoundaries.first(where: {
+            $0.endPresentationTime > clock + 0.000_001
+        })?.presentationTime ?? clock
+        let startPTS = max(clock, firstUnplayedPTS)
+        let generation = timelineGeneration
+        outputGainController.transition(playing: true, configuration: fadeConfiguration, startWhen: { [weak self] in
+            guard let self, self.timelineGenerationGate.isCurrent(generation) else { return false }
+            return self.currentSynchronizerClockSeconds() >= startPTS
+        }) {}
+    }
+
     func play() {
         let expectedGeneration = timelineGenerationGate.current()
         pipelineQueue.async { [weak self] in
@@ -1851,6 +2058,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 time: CMTime(seconds: clock, preferredTimescale: 600)
             )
             self.startFeedTimerIfNeeded()
+            self.beginPlaybackFadeIn()
         }
     }
 
@@ -1860,13 +2068,12 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             guard let self,
                   self.timelineGeneration == expectedGeneration,
                   self.timelineGenerationGate.isCurrent(expectedGeneration) else { return }
-            self.isPlaybackActive = false
-            self.invalidateStallRecovery()
-            let clock = self.currentSynchronizerClockSeconds()
-            self.setSynchronizerRateSynchronously(
-                0,
-                time: CMTime(seconds: clock, preferredTimescale: 600)
-            )
+            self.outputGainController.transition(playing: false, configuration: self.fadeConfiguration) { [weak self] in
+                guard let self, self.timelineGenerationGate.isCurrent(expectedGeneration) else { return }
+                self.isPlaybackActive = false
+                self.invalidateStallRecovery()
+                self.setSynchronizerRateSynchronously(0, time: self.synchronizer.currentTime())
+            }
         }
     }
 
@@ -1885,6 +2092,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             }
             self.isLoaded = false
             self.isPlaybackActive = false
+            self.outputGainController.reset(playing: false)
             self.activeLoadSegmentID = nil
             self.pendingAutoFlushResync = false
             self.invalidateStallRecovery()
@@ -1896,11 +2104,13 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             self.pendingDecodedPCM = nil
             self.dspLedger.removeAll(keepingCapacity: false)
             self.dspOutputBoundaries.removeAll(keepingCapacity: false)
+            self.lastAudibleDSPFormat = nil
             self.pendingAudibleDSPEvent = nil
             self.activeDSPTransaction = nil
             if let request = self.latestAcceptedDSPRequest ?? self.effectiveDSPRequest {
                 self.dspConfiguration = request.configuration
                 self.dspRevision = request.revision
+                self.dspContext = request.context
                 self.effectiveDSPRequest = request
                 self.emitDSPEvent(
                     request,
@@ -1994,6 +2204,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             let token = enqueueToken
             let source = segments[index].source
             let sourceFrameStart = segments[index].nextSourceFrame
+            ensureDSPProcessor(for: segments[index].sourceFormat)
+            source.setDSPReadAheadEnabled((dspProcessor?.processingLatencyFrames ?? 0) > 0)
             do {
                 guard let pcm = try source.nextChunk(maxFrames: Self.chunkFrames) else {
                     reportExhaustionIfNeeded(at: index)
@@ -2044,10 +2256,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             return false
         }
 
-        let rawPCM = pending.pcm.slice(
-            frameOffset: pending.frameOffset,
-            frameCount: frameCount
-        )
+        let normalizationGain = segments[segmentIndex].normalizationGain
+        let rawPCM = Self.applyingFixedGain(pending.pcm.slice(
+            frameOffset: pending.frameOffset, frameCount: frameCount
+        ), gain: normalizationGain)
         let sourceFrameStart = pending.sourceFrameStart + AVAudioFramePosition(pending.frameOffset)
         let ptsSeconds = pending.presentationTime + Double(pending.frameOffset) / rawPCM.sampleRate
         let pts = CMSampleBufferFactory.time(
@@ -2056,7 +2268,18 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         )
         guard timelineGenerationGate.isCurrent(timelineGeneration) else { return false }
         ensureDSPProcessor(for: pending.format)
-        let outputPCM = dspProcessor?.process(rawPCM) ?? rawPCM
+        let outputPCM: CanonicalPCM
+        do {
+            let future = try dspLookahead(
+                after: sourceFrameStart + AVAudioFramePosition(rawPCM.frames),
+                segmentID: pending.segmentID, format: pending.format,
+                frameCount: dspProcessor?.processingLatencyFrames ?? 0
+            )
+            outputPCM = dspProcessor?.process(rawPCM, lookahead: future) ?? rawPCM
+        } catch {
+            finishWithFailure(.sourceError(underlying: error), segmentID: pending.segmentID)
+            return false
+        }
         guard let sampleBuffer = CMSampleBufferFactory.makeSampleBuffer(
             from: outputPCM,
             formatDescription: segments[segmentIndex].formatDescription,
@@ -2086,7 +2309,13 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             sourceFrameStart: rawBlock.sourceFrameStart,
             presentationTime: rawBlock.presentationTime,
             frameCount: rawBlock.pcm.frames,
-            format: rawBlock.format
+            format: rawBlock.format,
+            normalizationGain: normalizationGain,
+            request: effectiveDSPRequest,
+            headroomDB: dspProcessor?.headroomDB ?? 0,
+            processingLatencyFrames: dspProcessor?.processingLatencyFrames ?? 0,
+            peakGuarantee: dspProcessor?.peakGuarantee ?? "bypassed",
+            warnings: dspProcessor?.diagnostics ?? []
         ))
         if let dspProcessor, !dspProcessor.isBypassed {
             dspLedger.append(DSPQueuedBlock(
@@ -2119,9 +2348,84 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         return true
     }
 
+    /// Prepared replacements already own normalized, source-time raw PCM.
+    /// Reuse those blocks before consulting a provider, so a parameter edit
+    /// does not seek/decode the same future window for every output block.
+    private func dspLookahead(
+        after raw: DSPPCMBlock,
+        frameCount: Int,
+        following blocks: ArraySlice<DSPPCMBlock>
+    ) throws -> CanonicalPCM? {
+        guard frameCount > 0 else { return nil }
+        var data = [Float]()
+        data.reserveCapacity(frameCount * raw.format.channelCount)
+        var expectedPTS = raw.endPresentationTime
+        var lastSegmentID = raw.segmentID
+        var lastSourceFrame = raw.sourceFrameStart + AVAudioFramePosition(raw.pcm.frames)
+        for block in blocks {
+            guard block.format == raw.format,
+                  abs(block.presentationTime - expectedPTS) <= 0.5 / raw.format.sampleRate else {
+                let remaining = frameCount * raw.format.channelCount - data.count
+                data.append(contentsOf: repeatElement(Float(0), count: remaining))
+                return CanonicalPCM(frames: frameCount, channelCount: raw.format.channelCount,
+                                    sampleRate: raw.format.sampleRate, data: data)
+            }
+            let count = min(frameCount - data.count / raw.format.channelCount, block.pcm.frames)
+            data.append(contentsOf: block.pcm.data.prefix(count * raw.format.channelCount))
+            expectedPTS = block.presentationTime + Double(count) / raw.format.sampleRate
+            lastSegmentID = block.segmentID
+            lastSourceFrame = block.sourceFrameStart + AVAudioFramePosition(count)
+            if data.count == frameCount * raw.format.channelCount {
+                return CanonicalPCM(frames: frameCount, channelCount: raw.format.channelCount,
+                                    sampleRate: raw.format.sampleRate, data: data)
+            }
+        }
+        let remainingFrames = frameCount - data.count / raw.format.channelCount
+        if let tail = try dspLookahead(after: lastSourceFrame, segmentID: lastSegmentID,
+                                      format: raw.format, frameCount: remainingFrames) {
+            data.append(contentsOf: tail.data)
+        }
+        return CanonicalPCM(frames: frameCount, channelCount: raw.format.channelCount,
+                            sampleRate: raw.format.sampleRate, data: data)
+    }
+
+    private func dspLookahead(
+        after sourceFrame: AVAudioFramePosition,
+        segmentID: UUID,
+        format: DSPAudioFormat,
+        frameCount: Int
+    ) throws -> CanonicalPCM? {
+        guard frameCount > 0 else { return nil }
+        guard let index = segments.firstIndex(where: { $0.descriptor.id == segmentID }) else {
+            throw DSPApplyPreparationError.unavailablePCM
+        }
+        return try RendererDSPLookahead.read(
+            frameCount: frameCount, format: format, segmentIndex: index,
+            sourceFrame: sourceFrame, segmentCount: segments.count
+        ) { index in
+            let segment = self.segments[index]
+            let decoded = self.pendingDecodedPCM.flatMap { pending -> PendingDecodedPCM? in
+                pending.segmentID == segment.descriptor.id && pending.format == format ? pending : nil
+            }
+            return RendererDSPSourceRange(
+                source: segment.source, format: segment.sourceFormat,
+                presentationStartSeconds: segment.descriptor.presentationStartSeconds,
+                normalizationGain: segment.normalizationGain,
+                decodePosition: segment.nextSourceFrame,
+                decodedPCM: decoded?.pcm, decodedStartFrame: decoded?.sourceFrameStart ?? 0
+            )
+        }
+    }
+
+    private static func applyingFixedGain(_ pcm: CanonicalPCM, gain: Double) -> CanonicalPCM {
+        guard gain != 1 else { return pcm }
+        return CanonicalPCM(frames: pcm.frames, channelCount: pcm.channelCount,
+                            sampleRate: pcm.sampleRate, data: pcm.data.map { Float(Double($0) * gain) })
+    }
+
     private func ensureDSPProcessor(for format: DSPAudioFormat) {
         if let dspProcessor, dspProcessor.format == format { return }
-        let processor = AudioDSPProcessor(configuration: dspConfiguration, format: format)
+        let processor = AudioDSPProcessor(configuration: dspConfiguration, format: format, context: dspContext)
         processor.reset()
         dspProcessor = processor
     }
@@ -2230,12 +2534,33 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 event.state = .audible
                 event.audiblePTS = clock
                 pendingAudibleDSPEvent = nil
+                lastAudibleDSPFormat = event.format
+                lastAudibleDSPDiagnosticIDs = Set(event.warnings.map(\.id))
                 emitDSPEvent(event)
             }
+            publishAudibleDSPFormatIfNeeded(at: clock)
             detectStall(clock: clock)
         }
         prunePlayedSegments(clock: clock)
         pruneDSPHistory()
+    }
+
+    /// Decoding can lead playback by seconds. Publish format-dependent routing
+    /// and latency from the block reaching the output clock, not the decoder.
+    private func publishAudibleDSPFormatIfNeeded(at clock: Double) {
+        guard let boundary = dspOutputBoundaries.first(where: {
+            $0.presentationTime <= clock && clock < $0.endPresentationTime
+        }), let request = boundary.request,
+              boundary.format != lastAudibleDSPFormat
+                || Set(boundary.warnings.map(\.id)) != lastAudibleDSPDiagnosticIDs else { return }
+        lastAudibleDSPFormat = boundary.format
+        lastAudibleDSPDiagnosticIDs = Set(boundary.warnings.map(\.id))
+        emitDSPEvent(request, state: .audible, format: boundary.format,
+                     scheduledPTS: boundary.presentationTime, audiblePTS: clock,
+                     headroomDB: boundary.headroomDB,
+                     processingLatencyFrames: boundary.processingLatencyFrames,
+                     peakGuarantee: boundary.peakGuarantee,
+                     warnings: boundary.warnings, diagnostics: boundary.warnings)
     }
 
     private func prunePlayedSegments(clock: Double) {
@@ -2406,6 +2731,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         if let interruptedDSPRequest {
             dspConfiguration = interruptedDSPRequest.configuration
             dspRevision = interruptedDSPRequest.revision
+            dspContext = interruptedDSPRequest.context
             effectiveDSPRequest = interruptedDSPRequest
         }
         let reportDSPRebuffer = dspRebuffered || interruptedDSPRequest != nil
@@ -2418,6 +2744,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             decodeIndex = nil
             pendingDecodedPCM = nil
             dspOutputBoundaries.removeAll(keepingCapacity: false)
+            lastAudibleDSPFormat = nil
             dspLedger.removeAll(keepingCapacity: false)
             scheduleDSPRequestAtFirstQueuedPTS(effectiveDSPRequest, rebuffered: reportDSPRebuffer)
             return true
@@ -2432,7 +2759,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         var recoveryWarnings = [DSPDiagnostic]()
         let nextProcessor = AudioDSPProcessor(
             configuration: dspConfiguration,
-            format: selected.sourceFormat
+            format: selected.sourceFormat, context: dspContext
         )
         if !nextProcessor.isBypassed {
             let lowerBound = targetPTS - 2.0
@@ -2629,6 +2956,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         timelineGeneration = failureGeneration
         isLoaded = false
         isPlaybackActive = false
+        outputGainController.reset(playing: false)
         activeLoadSegmentID = nil
         pendingAutoFlushResync = false
         timelineMutationInProgress = false
@@ -2640,6 +2968,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         pendingDecodedPCM = nil
         dspLedger.removeAll(keepingCapacity: false)
         dspOutputBoundaries.removeAll(keepingCapacity: false)
+        lastAudibleDSPFormat = nil
         pendingAudibleDSPEvent = nil
         activeDSPTransaction = nil
         queuedDSPApply = nil

@@ -42,6 +42,7 @@ struct LibraryAutomationJobReporter {
 @MainActor
 final class LibrarySession: LibrarySessionLifecycle {
     let context: LibraryContext
+    let loudnessService: LibraryLoudnessService
     private let rootAccessLease: LibraryRootAccessLease
     private let writerLease: LibraryWriterLease
     let modelContainer: ModelContainer
@@ -72,6 +73,39 @@ final class LibrarySession: LibrarySessionLifecycle {
 
     func bindAudioDSP(_ controller: AudioDSPController) {
         playbackService.bindAudioDSP(controller)
+    }
+
+    func bindAudioProcessingGlobals(_ controller: AudioProcessingGlobalsController) {
+        playbackService.bindAudioProcessingGlobals(controller)
+        loudnessService.updatePlaybackTrimPolicy(enabled: AppSettings.shared.audioAACGaplessTrimEnabled)
+        playbackService.loudnessGainProvider = { [weak self] track, url, configuration, continuousAlbum in
+            guard let self else {
+                return LoudnessGainSelector.trackGain(configuration: configuration, measurement: nil)
+            }
+            self.loudnessService.updatePlaybackTrimPolicy(enabled: AppSettings.shared.audioAACGaplessTrimEnabled)
+            let album = track.albumGroupKey.isEmpty ? nil : self.libraryViewModel.allTracks.filter {
+                $0.albumGroupKey == track.albumGroupKey
+            }
+            return self.loudnessService.gainDecision(track: track, fileURL: url,
+                configuration: configuration, albumTracks: album, continuousAlbum: continuousAlbum)
+        }
+        loudnessService.onMissingMeasurement = { [weak self] id in
+            self?.scheduleMissingLoudnessMeasurement(trackID: id)
+        }
+        if controller.configuration.loudness.enabled {
+            Task { [weak self] in await self?.loudnessService.loadSnapshot() }
+        }
+    }
+
+    var audioNormalizationGainDB: Double { playbackService.currentLoudnessGainDB }
+    var audioNormalizationSource: String { playbackService.currentLoudnessSource }
+
+    var audioNormalizationState: [String: AutomationJSONValue] {
+        ["gainDB": .number(playbackService.currentLoudnessGainDB),
+         "source": .string(playbackService.currentLoudnessSource),
+         "peakBasis": .string(playbackService.currentLoudnessPeakBasis),
+         "diagnostics": (try? AutomationWireCoding.decoder().decode(AutomationJSONValue.self,
+             from: AutomationWireCoding.encoder().encode(playbackService.currentLoudnessDiagnostics))) ?? .array([])]
     }
 
     private let playbackService: AVAudioPlaybackService
@@ -114,6 +148,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         ledMeterProvider: LEDMeterServiceProvider
     ) {
         self.context = context
+        self.loudnessService = LibraryLoudnessService(libraryPaths: context.paths)
         self.rootAccessLease = rootAccessLease
         self.writerLease = writerLease
         self.modelContainer = modelContainer
@@ -367,6 +402,7 @@ final class LibrarySession: LibrarySessionLifecycle {
     @discardableResult
     func startAutomationJob(
         totalCount: Int,
+        retrySpec: LibraryOperationRetrySpec? = nil,
         work: @escaping @MainActor (LibraryAutomationJobReporter) async -> Void
     ) -> LibraryOperationTaskDescriptor? {
         guard !isClosed, totalCount > 0 else { return nil }
@@ -375,7 +411,7 @@ final class LibrarySession: LibrarySessionLifecycle {
             let reporter = LibraryAutomationJobReporter(operationCoordinator: self.operationCoordinator)
             reporter.recordProgress(completedCount: 0, totalCount: totalCount, phase: "Starting")
             await work(reporter)
-        }, kind: .automation)
+        }, kind: .automation, retrySpec: retrySpec)
         guard started else { return nil }
         return operationCoordinator.taskDescriptors.last
     }
@@ -427,6 +463,16 @@ final class LibrarySession: LibrarySessionLifecycle {
                 retryEnrichment: enrichmentPolicy == .standard,
                 enrichmentPolicy: enrichmentPolicy
             )
+        case .loudnessAnalyze:
+            return startAutomationLoudnessAnalyze(
+                trackIDs: descriptor.failedItemIDs.isEmpty
+                    ? retrySpec.trackIDs
+                    : descriptor.failedItemIDs
+            )
+        case .dspScriptTest:
+            // App-owned scripts are retried by AutomationDSPScriptsHandler;
+            // this library owner does not construct a second script service.
+            return nil
         }
     }
 
@@ -1618,6 +1664,8 @@ final class LibrarySession: LibrarySessionLifecycle {
     func quiesce() async {
         guard !isClosed else { return }
         operationCoordinator.stopAcceptingNewOperations()
+        loudnessService.cancel()
+        playbackService.unbindAudioProcessingGlobals()
         await libraryChangeMonitor?.stopAndWait()
         await operationCoordinator.cancelAndWait()
         await fileImportService.quiesce()
