@@ -2,7 +2,33 @@ import AVFoundation
 import XCTest
 @testable import kmgccc_player
 
-final class AudioDSPProcessorTests: XCTestCase {
+    func testConsecutiveBlocksDoNotMutateEarlierOutput() {
+        var bands = DSPParametricEQBand.defaultBands
+        bands[4] = DSPParametricEQBand(enabled: true, type: .bell, frequencyHz: 1_000, gainDB: 6)
+        let processor = AudioDSPProcessor(
+            configuration: AudioDSPConfiguration(
+                enabled: true,
+                headroom: DSPHeadroomConfiguration(mode: .off),
+                nodes: [.parametricEQ(bands: bands)]
+            ),
+            format: DSPAudioFormat(
+                sampleRate: 48_000,
+                channelCount: 2,
+                rawLayoutData: nil,
+                channelLabels: [UInt32(kAudioChannelLabel_Left), UInt32(kAudioChannelLabel_Right)],
+                layoutIsKnown: true
+            )
+        )
+        let firstInput = CanonicalPCM(frames: 256, channelCount: 2, sampleRate: 48_000,
+                                      data: (0..<512).map { Float(sin(Double($0) * 0.03)) })
+        let secondInput = CanonicalPCM(frames: 256, channelCount: 2, sampleRate: 48_000,
+                                       data: (0..<512).map { Float(cos(Double($0) * 0.07)) })
+        let firstOutput = processor.process(firstInput)
+        let firstSnapshot = firstOutput.data
+        _ = processor.process(secondInput)
+        XCTAssertEqual(firstOutput.data, firstSnapshot)
+    }
+
     func testAllSixRBJFilterKindsProduceStableDoubleCoefficients() throws {
         for type in DSPFilterType.allCases {
             let band = DSPParametricEQBand(

@@ -50,26 +50,20 @@ struct AudioDSPNativeEffectsNodeCard: View {
                 )
 
                 HStack(spacing: 8) {
-                    Picker("声道范围", selection: channelPolicyBinding) {
-                        if !policies.contains(node.channelPolicy) {
-                            Text("当前值：\(node.channelPolicy)").tag(node.channelPolicy)
-                        }
-                        ForEach(policies, id: \.self) { policy in
-                            Text(policyTitle(policy)).tag(policy)
-                        }
-                    }
-                    .pickerStyle(.menu)
+                    CapsulePicker(
+                        label: "声道范围",
+                        options: policies,
+                        selection: channelPolicyBinding,
+                        displayName: policyTitle
+                    )
 
                     if qualities.count > 1 || !qualities.contains(node.quality) {
-                        Picker("质量", selection: qualityBinding) {
-                            if !qualities.contains(node.quality) {
-                                Text("当前值：\(node.quality)").tag(node.quality)
-                            }
-                            ForEach(qualities, id: \.self) { quality in
-                                Text(qualityTitle(quality)).tag(quality)
-                            }
-                        }
-                        .pickerStyle(.menu)
+                        CapsulePicker(
+                            label: "质量",
+                            options: qualities,
+                            selection: qualityBinding,
+                            displayName: qualityTitle
+                        )
                     }
 
                     Spacer(minLength: 0)
@@ -145,10 +139,6 @@ struct AudioDSPNativeEffectsNodeCard: View {
                 step: 0.1,
                 onCommit: onCommit
             )
-            if node.channelPolicy == "frontPair" {
-                Text("只处理前置左右声道；单声道保持原样。")
-                    .settingsDescriptionStyle()
-            }
         }
     }
 
@@ -209,11 +199,6 @@ struct AudioDSPNativeEffectsNodeCard: View {
                 onCommit: onCommit
             )
             .disabled((node.virtualBassParameters ?? DSPVirtualBassParameters()).mix == 0)
-
-            Text(node.channelPolicy == "frontPair"
-                ? "只处理前置左右声道。"
-                : "全频范围策略适用于单声道与立体声。")
-                .settingsDescriptionStyle()
         }
     }
 

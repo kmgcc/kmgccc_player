@@ -34,11 +34,12 @@ struct AudioDSPNodeCard: View {
                 )
 
                 HStack(spacing: 8) {
-                    Picker("声道范围", selection: channelPolicyBinding) {
-                        Text("全频声道，保留 LFE").tag("fullRange")
-                        Text("所有声道").tag("allChannels")
-                    }
-                    .pickerStyle(.menu)
+                    CapsulePicker(
+                        label: "声道范围",
+                        options: ["fullRange", "allChannels"],
+                        selection: channelPolicyBinding,
+                        displayName: { $0 == "fullRange" ? "全频" : "所有声道" }
+                    )
 
                     Spacer(minLength: 0)
 
@@ -81,6 +82,7 @@ struct AudioDSPNodeCard: View {
                             onBandChange: onBandChange,
                             onCommit: onCommit
                         )
+                        .equatable()
                         .padding(.top, 10)
                     } else {
                         Text("均衡器参数无法读取。")
@@ -100,7 +102,7 @@ struct AudioDSPNodeCard: View {
     }
 }
 
-private struct AudioDSPEQEditor: View {
+struct AudioDSPEQEditor: View, Equatable {
     let configuration: AudioDSPConfiguration
     let node: DSPNodeConfiguration
     let bands: [DSPParametricEQBand]
@@ -111,6 +113,12 @@ private struct AudioDSPEQEditor: View {
 
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var draggedBandIndex: Int?
+    @State private var activeBandIndex: Int? = 0
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.node.nodeID == rhs.node.nodeID && lhs.bands == rhs.bands
+            && lhs.format == rhs.format && lhs.headroomDB == rhs.headroomDB
+    }
 
     private let dbSpan = 18.0
     private let fallbackPreviewSampleRate = 48_000.0
@@ -121,15 +129,6 @@ private struct AudioDSPEQEditor: View {
             return fallbackPreviewSampleRate
         }
         return sampleRate
-    }
-
-    private var responseConfiguration: AudioDSPConfiguration {
-        var result = configuration
-        var responseNode = node
-        responseNode.enabled = true
-        result.enabled = true
-        result.nodes = [responseNode]
-        return result
     }
 
     var body: some View {
@@ -160,19 +159,29 @@ private struct AudioDSPEQEditor: View {
             }
             .settingsDescriptionStyle()
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 8) {
-                    ForEach(bands.indices, id: \.self) { index in
-                        AudioDSPBandColumn(
-                            index: index,
-                            band: bands[index],
-                            width: bandColumnWidth,
-                            onChange: { changedBand in onBandChange(index, changedBand.normalized) },
+            HorizontalFadeScrollContainer(
+                spacing: 8,
+                fadeWidth: 16,
+                verticalPadding: 4,
+                leadingScrollPadding: 4,
+                trailingScrollPadding: 4,
+                showsEdgeFade: true,
+                showsScrollButtons: true
+            ) {
+                ForEach(bands.indices, id: \.self) { index in
+                    AudioDSPBandColumn(
+                        index: index,
+                        band: bands[index],
+                        width: bandColumnWidth,
+                        isActive: activeBandIndex == index,
+                        onSelect: { activeBandIndex = index },
+                        onChange: { changedBand in
+                            activeBandIndex = index
+                            onBandChange(index, changedBand.normalized)
+                        },
                             onCommit: onCommit
                         )
-                    }
                 }
-                .padding(.vertical, 4)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityLabel("九段均衡器参数")
@@ -199,7 +208,7 @@ private struct AudioDSPEQEditor: View {
             let thickness: CGFloat = db == 0 ? 0.9 : 0.55
             context.fill(
                 Path(CGRect(x: plot.minX, y: y - thickness / 2, width: plot.width, height: thickness)),
-                with: .color(Color.primary.opacity(db == 0 ? 0.18 : 0.07)),
+                with: .color(Color.primary.opacity(db == 0 ? 0.18 : 0.07))
             )
         }
 
@@ -215,18 +224,21 @@ private struct AudioDSPEQEditor: View {
 
     private func drawResponse(in context: inout GraphicsContext, plot: CGRect) {
         let pointCount = max(100, Int(plot.width * 1.2))
+        // Coefficients depend on the bands and sample rate, not on the plotted
+        // frequency. Prepare each filter once per drawing pass.
+        let coefficients = bands.filter(\.enabled).compactMap {
+            DSPParametricEQMath.coefficients(for: $0, sampleRate: sampleRate)
+        }
+        let logMin = log10(DSPParametricEQBand.frequencyRange.lowerBound)
+        let logMax = log10(DSPParametricEQBand.frequencyRange.upperBound)
         var responsePoints: [CGPoint] = []
         responsePoints.reserveCapacity(pointCount)
         for index in 0..<pointCount {
             let position = Double(index) / Double(pointCount - 1)
-            let logMin = log10(DSPParametricEQBand.frequencyRange.lowerBound)
-            let logMax = log10(DSPParametricEQBand.frequencyRange.upperBound)
             let frequency = pow(10, logMin + (logMax - logMin) * position)
-            let gain = DSPParametricEQMath.responseDB(
-                configuration: responseConfiguration,
-                at: frequency,
-                sampleRate: sampleRate
-            )
+            let gain = coefficients.reduce(0.0) {
+                $0 + $1.responseDB(at: frequency, sampleRate: sampleRate)
+            }
             let point = CGPoint(
                 x: plot.minX + plot.width * CGFloat(position),
                 y: dbToY(gain.isFinite ? gain : 0, in: plot)
@@ -274,14 +286,44 @@ private struct AudioDSPEQEditor: View {
     private func drawBandPoints(in context: inout GraphicsContext, plot: CGRect) {
         for (index, band) in bands.enumerated() where band.enabled {
             let point = bandPoint(band, in: plot)
-            let radius: CGFloat = draggedBandIndex == index ? 5 : 3.5
+            let isCurrent = (draggedBandIndex == index) || (activeBandIndex == index)
+            let radius: CGFloat = isCurrent ? 8.5 : 7.0
             let rect = CGRect(
                 x: point.x - radius,
                 y: point.y - radius,
                 width: radius * 2,
                 height: radius * 2
             )
-            context.fill(Path(ellipseIn: rect), with: .color(themeStore.accentColor))
+            if isCurrent {
+                // Outer radial accent halo ring
+                let outerRadius: CGFloat = 13.0
+                let outerRect = CGRect(
+                    x: point.x - outerRadius,
+                    y: point.y - outerRadius,
+                    width: outerRadius * 2,
+                    height: outerRadius * 2
+                )
+                let haloRing = Path(ellipseIn: outerRect).strokedPath(StrokeStyle(lineWidth: 1.5))
+                context.fill(haloRing, with: .color(themeStore.accentColor.opacity(0.55)))
+
+                context.fill(Path(ellipseIn: rect), with: .color(themeStore.accentColor))
+                context.draw(
+                    Text("\(index + 1)")
+                        .font(.system(size: 8, weight: .heavy, design: .rounded))
+                        .foregroundStyle(.white),
+                    at: point,
+                    anchor: .center
+                )
+            } else {
+                context.fill(Path(ellipseIn: rect), with: .color(themeStore.accentColor.opacity(0.24)))
+                context.draw(
+                    Text("\(index + 1)")
+                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                        .foregroundStyle(themeStore.accentColor),
+                    at: point,
+                    anchor: .center
+                )
+            }
         }
     }
 
@@ -318,6 +360,9 @@ private struct AudioDSPEQEditor: View {
             .onChanged { value in
                 if draggedBandIndex == nil {
                     draggedBandIndex = nearestEnabledBand(to: value.location, in: plot)
+                    if let draggedBandIndex {
+                        activeBandIndex = draggedBandIndex
+                    }
                 }
                 guard let draggedBandIndex else { return }
                 updateBand(draggedBandIndex, at: value.location, in: plot)
@@ -393,13 +438,18 @@ private struct AudioDSPBandColumn: View {
     let index: Int
     let band: DSPParametricEQBand
     let width: CGFloat
+    let isActive: Bool
+    let onSelect: () -> Void
     let onChange: (DSPParametricEQBand) -> Void
     let onCommit: () -> Void
 
+    @EnvironmentObject private var themeStore: ThemeStore
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(spacing: 7) {
             Text("\(index + 1)")
                 .font(.system(.caption, design: .rounded).weight(.bold))
+                .foregroundStyle(isActive ? themeStore.accentColor : .secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .accessibilityHidden(true)
 
@@ -414,6 +464,7 @@ private struct AudioDSPBandColumn: View {
                     Button(type.localizedDSPTitle) {
                         var updated = band
                         updated.type = type
+                        onSelect()
                         onChange(updated.normalized)
                         onCommit()
                     }
@@ -422,29 +473,63 @@ private struct AudioDSPBandColumn: View {
                 Text(band.type.localizedDSPTitle)
                     .font(.caption)
                     .lineLimit(1)
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
             .menuStyle(.borderlessButton)
+            .frame(maxWidth: .infinity, alignment: .center)
             .accessibilityLabel("第 \(index + 1) 段滤波器")
 
-            numericField(title: "频率 Hz", keyPath: \.frequencyHz, digits: 0)
+            scrubbableField(
+                title: "频率 Hz",
+                keyPath: \.frequencyHz,
+                range: DSPParametricEQBand.frequencyRange,
+                step: 10,
+                unit: "Hz",
+                digits: 0
+            )
+
             if band.type.usesGain {
-                numericField(title: "增益 dB", keyPath: \.gainDB, digits: 1)
+                scrubbableField(
+                    title: "增益 dB",
+                    keyPath: \.gainDB,
+                    range: DSPParametricEQBand.gainRange,
+                    step: 0.5,
+                    unit: "dB",
+                    digits: 1
+                )
             } else {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(spacing: 2) {
                     Text("增益 dB")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
                     Text("—")
                         .font(.caption.monospacedDigit())
                         .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 3)
                 }
+                .frame(maxWidth: .infinity, alignment: .center)
             }
-            numericField(title: band.type.usesSlope ? "Q/S" : "Q", keyPath: \.q, digits: 2)
+
+            scrubbableField(
+                title: band.type.usesSlope ? "斜率 S" : "Q",
+                keyPath: \.q,
+                range: band.type.usesSlope ? DSPParametricEQBand.shelfSlopeRange : DSPParametricEQBand.qRange,
+                step: 0.05,
+                unit: band.type.usesSlope ? "S" : "",
+                digits: 2
+            )
         }
         .frame(width: width, alignment: .top)
         .padding(8)
-        .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(isActive ? themeStore.accentColor.opacity(0.12) : Color.primary.opacity(0.035))
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onTapGesture {
+            onSelect()
+        }
     }
 
     private var enabledBinding: Binding<Bool> {
@@ -459,25 +544,32 @@ private struct AudioDSPBandColumn: View {
         )
     }
 
-    private func numericField(
+    private func scrubbableField(
         title: String,
         keyPath: WritableKeyPath<DSPParametricEQBand, Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        unit: String = "",
         digits: Int
     ) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(spacing: 2) {
             Text(title)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            TextField(
-                title,
+                .frame(maxWidth: .infinity, alignment: .center)
+
+            ScrubbableNumberField(
                 value: valueBinding(keyPath),
-                format: .number.precision(.fractionLength(digits))
+                range: range,
+                step: step,
+                unit: unit,
+                fractionDigits: digits,
+                alignment: .center,
+                onCommit: onCommit
             )
-            .textFieldStyle(.roundedBorder)
-            .font(.caption.monospacedDigit())
             .accessibilityLabel("第 \(index + 1) 段\(title)")
-            .onSubmit { onCommit() }
         }
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private func valueBinding(_ keyPath: WritableKeyPath<DSPParametricEQBand, Double>) -> Binding<Double> {

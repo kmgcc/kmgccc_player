@@ -34,11 +34,12 @@ struct AudioDSPEqualLoudnessNodeCard: View {
                 )
 
                 HStack(spacing: 8) {
-                    Picker("声道范围", selection: channelPolicyBinding) {
-                        Text("全频声道，保留 LFE").tag("fullRange")
-                        Text("所有声道").tag("allChannels")
-                    }
-                    .pickerStyle(.menu)
+                    CapsulePicker(
+                        label: "声道范围",
+                        options: ["fullRange", "allChannels"],
+                        selection: channelPolicyBinding,
+                        displayName: { $0 == "fullRange" ? "全频" : "所有声道" }
+                    )
 
                     Spacer(minLength: 0)
 
@@ -151,11 +152,12 @@ struct AudioDSPEqualLoudnessNodeCard: View {
                                 onCommit: onCommit
                             )
 
-                            Picker("余量参与", selection: headroomModeBinding) {
-                                Text("自动余量").tag(DSPHeadroomMode.automatic)
-                                Text("不计入余量").tag(DSPHeadroomMode.off)
-                            }
-                            .pickerStyle(.segmented)
+                            CapsulePicker(
+                                label: "余量参与",
+                                options: DSPHeadroomMode.allCases,
+                                selection: headroomModeBinding,
+                                displayName: { $0 == .automatic ? "自动余量" : "不计入余量" }
+                            )
                         }
                         .padding(.top, 10)
                     } else {
@@ -200,7 +202,7 @@ struct AudioDSPEqualLoudnessNodeCard: View {
     }
 }
 
-private struct AudioDSPEqualLoudnessResponseCurve: View {
+struct AudioDSPEqualLoudnessResponseCurve: View, Equatable {
     let node: DSPNodeConfiguration
     let context: DSPEqualLoudnessContext
     let sampleRate: Double
@@ -250,16 +252,16 @@ private struct AudioDSPEqualLoudnessResponseCurve: View {
         let lowLog = log10(20.0)
         let highLog = log10(max(20.1, highFrequency))
         let pointCount = max(80, Int(plot.width))
+        let coefficients = (DSPEqualLoudnessMath.bands(node: node, context: context) ?? [])
+            .filter(\.enabled)
+            .compactMap { DSPParametricEQMath.coefficients(for: $0, sampleRate: sampleRate) }
         var path = Path()
         for index in 0...pointCount {
             let position = Double(index) / Double(pointCount)
             let frequency = pow(10, lowLog + (highLog - lowLog) * position)
-            let response = DSPEqualLoudnessMath.responseDB(
-                node: node,
-                context: context,
-                at: frequency,
-                sampleRate: sampleRate
-            )
+            let response = coefficients.reduce(0.0) {
+                $0 + $1.responseDB(at: frequency, sampleRate: sampleRate)
+            }
             let x = plot.minX + plot.width * CGFloat(position)
             let boundedResponse = min(dbSpan, max(-dbSpan, response))
             let y = plot.midY - plot.height * CGFloat(boundedResponse / (dbSpan * 2))

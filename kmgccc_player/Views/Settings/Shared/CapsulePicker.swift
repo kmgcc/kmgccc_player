@@ -9,25 +9,63 @@ import SwiftUI
 
 /// A reusable capsule-style picker with buttons inside a capsule container.
 /// Matches the Liquid Glass aesthetic used throughout the app.
-struct CapsulePicker<T: Hashable & Identifiable>: View where T.ID: Hashable {
+/// Positions setting label on the left and options right-aligned on the right.
+struct CapsulePicker<Option: Hashable, Value: Hashable>: View {
     let label: String
-    let options: [T]
-    let displayName: (T) -> String
-    @Binding var selection: T.ID
-    let accentColor: Color
+    let options: [Option]
+    let optionID: (Option) -> Value
+    let displayName: (Option) -> String
+    @Binding var selection: Value
+    var accentColor: Color? = nil
 
+    @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.settingsAppForegroundColors) private var appColors
+
+    /// Initializer for Identifiable options where selection is Option.ID
+    init(
+        label: String,
+        options: [Option],
+        displayName: @escaping (Option) -> String,
+        selection: Binding<Value>,
+        accentColor: Color? = nil
+    ) where Option: Identifiable, Option.ID == Value {
+        self.label = label
+        self.options = options
+        self.optionID = { $0.id }
+        self.displayName = displayName
+        self._selection = selection
+        self.accentColor = accentColor
+    }
+
+    /// Initializer for self-identified options where Option == Value (e.g. Enums, Strings)
+    init(
+        label: String,
+        options: [Option],
+        selection: Binding<Value>,
+        displayName: @escaping (Option) -> String = { "\($0)" },
+        accentColor: Color? = nil
+    ) where Option == Value {
+        self.label = label
+        self.options = options
+        self.optionID = { $0 }
+        self.displayName = displayName
+        self._selection = selection
+        self.accentColor = accentColor
+    }
+
+    private var resolvedAccentColor: Color {
+        accentColor ?? themeStore.accentColor
+    }
 
     var body: some View {
         HStack(spacing: 8) {
             Text(label)
-                .font(.system(size: 12))
-                .foregroundStyle(appColors?.secondary ?? .secondary)
+                .settingsRowLabelStyle()
 
             Spacer()
 
             SlidingSelector(
-                segments: options.map(\.id),
+                segments: options.map(optionID),
                 selection: $selection,
                 hSpacing: 0,
                 background: {
@@ -35,15 +73,15 @@ struct CapsulePicker<T: Hashable & Identifiable>: View where T.ID: Hashable {
                 },
                 knob: {
                     Capsule()
-                        .fill(accentColor.opacity(0.18))
+                        .fill(resolvedAccentColor.opacity(0.18))
                 },
                 content: { id, isSelected in
-                    let title = options.first(where: { $0.id == id }).map(displayName) ?? ""
+                    let title = options.first(where: { optionID($0) == id }).map(displayName) ?? ""
                     Text(title)
                         .font(.system(size: 11, weight: isSelected ? .medium : .regular))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
-                        .foregroundStyle(isSelected ? accentColor : (appColors?.secondary ?? .secondary))
+                        .foregroundStyle(isSelected ? resolvedAccentColor : (appColors?.secondary ?? .secondary))
                 }
             )
             .padding(3)

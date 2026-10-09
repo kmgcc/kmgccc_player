@@ -166,6 +166,12 @@ final class AudioDSPController {
     ) {
         var candidate = configuration
         update(&candidate)
+        // Quantized sliders can produce the same value across many pointer
+        // events. Keep revisions, persistence and renderer requests unchanged.
+        guard candidate != configuration else {
+            if commit { commitPendingApply() }
+            return
+        }
         do {
             _ = try apply(candidate)
             if commit { commitPendingApply() }
