@@ -1,4 +1,5 @@
 import XCTest
+@testable import kmgccc_player
 
 final class SkinRoutePolicyTests: XCTestCase {
     func testKnownRouteIsPreserved() {

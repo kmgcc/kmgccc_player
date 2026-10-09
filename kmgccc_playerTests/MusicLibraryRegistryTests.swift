@@ -1,4 +1,5 @@
 import Foundation
+@testable import kmgccc_player
 import XCTest
 
 final class MusicLibraryManifestTests: XCTestCase {
