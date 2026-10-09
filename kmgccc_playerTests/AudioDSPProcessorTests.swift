@@ -295,4 +295,122 @@ final class AudioDSPProcessorTests: XCTestCase {
         XCTAssertTrue(processor.isBypassed)
         XCTAssertEqual(processor.process(input).data, input.data)
     }
+
+    func testEqualLoudnessIsFlatAtAndAboveReferenceAndBoundedBelowIt() {
+        let node = DSPNodeConfiguration.equalLoudness()
+        let reference = DSPEqualLoudnessContext(
+            appGain: pow(10, -6 / 20),
+            deviceUID: "test-output",
+            referenceDB: -6
+        )
+        let atReference = DSPEqualLoudnessMath.gains(node: node, context: reference)
+        XCTAssertEqual(atReference.bassDB, 0, accuracy: 1e-8)
+        XCTAssertEqual(atReference.trebleDB, 0, accuracy: 1e-8)
+
+        let aboveReference = DSPEqualLoudnessMath.gains(
+            node: node,
+            context: DSPEqualLoudnessContext(appGain: 1, deviceUID: "test-output", referenceDB: -6)
+        )
+        XCTAssertEqual(aboveReference, .zero)
+
+        let quieter = DSPEqualLoudnessMath.gains(
+            node: node,
+            context: DSPEqualLoudnessContext(
+                appGain: pow(10, -16 / 20),
+                deviceUID: "test-output",
+                referenceDB: -6
+            )
+        )
+        XCTAssertEqual(quieter.bassDB, 3, accuracy: 1e-8)
+        XCTAssertEqual(quieter.trebleDB, 1.5, accuracy: 1e-8)
+
+        let muchQuieter = DSPEqualLoudnessMath.gains(
+            node: node,
+            context: DSPEqualLoudnessContext(
+                appGain: pow(10, -40 / 20),
+                deviceUID: "test-output",
+                referenceDB: -6
+            )
+        )
+        XCTAssertEqual(muchQuieter.bassDB, 6, accuracy: 1e-8)
+        XCTAssertEqual(muchQuieter.trebleDB, 3, accuracy: 1e-8)
+        XCTAssertGreaterThanOrEqual(muchQuieter.bassDB, quieter.bassDB)
+        XCTAssertGreaterThanOrEqual(muchQuieter.trebleDB, quieter.trebleDB)
+
+        let muted = DSPEqualLoudnessMath.gains(
+            node: node,
+            context: DSPEqualLoudnessContext(appGain: 0, deviceUID: "test-output", referenceDB: 0)
+        )
+        XCTAssertEqual(muted, .zero)
+
+        let relativeDefault = DSPEqualLoudnessMath.gains(
+            node: node,
+            context: DSPEqualLoudnessContext(appGain: 0.1)
+        )
+        XCTAssertEqual(relativeDefault.bassDB, 6, accuracy: 1e-8)
+        XCTAssertEqual(relativeDefault.trebleDB, 3, accuracy: 1e-8)
+    }
+
+    func testEqualLoudnessParameterEditPreservesUnknownJSONFields() throws {
+        var node = DSPNodeConfiguration.equalLoudness()
+        node.parameters["futureParameter"] = .object(["preserve": .bool(true)])
+        var parameters = try XCTUnwrap(node.equalLoudnessParameters)
+        parameters.maxBassGainDB = 8
+        node.equalLoudnessParameters = parameters
+
+        XCTAssertEqual(node.parameters["futureParameter"], .object(["preserve": .bool(true)]))
+        XCTAssertEqual(node.equalLoudnessParameters?.maxBassGainDB, 8)
+    }
+
+    func testEqualLoudnessResponseAndAutomaticHeadroomUseTheActiveReference() throws {
+        let node = DSPNodeConfiguration.equalLoudness()
+        let context = DSPEqualLoudnessContext(appGain: 0.1, deviceUID: "test-output", referenceDB: 0)
+        let configuration = AudioDSPConfiguration(
+            enabled: true,
+            headroom: DSPHeadroomConfiguration(mode: .automatic, marginDB: 0),
+            nodes: [node]
+        )
+        let lowFrequencyResponse = DSPEqualLoudnessMath.responseDB(
+            node: node,
+            context: context,
+            at: 20,
+            sampleRate: 48_000
+        )
+        XCTAssertGreaterThan(lowFrequencyResponse, 5.5)
+
+        let processor = AudioDSPProcessor(
+            configuration: configuration,
+            format: DSPAudioFormat(
+                sampleRate: 48_000,
+                channelCount: 2,
+                rawLayoutData: nil,
+                channelLabels: [UInt32(kAudioChannelLabel_Left), UInt32(kAudioChannelLabel_Right)],
+                layoutIsKnown: true
+            ),
+            context: context
+        )
+        XCTAssertFalse(processor.isBypassed)
+        XCTAssertLessThan(processor.headroomDB, -5.5)
+
+        var parameters = try XCTUnwrap(node.equalLoudnessParameters)
+        parameters.headroomMode = .off
+        var excludedNode = node
+        excludedNode.equalLoudnessParameters = parameters
+        let noNodeHeadroom = AudioDSPProcessor(
+            configuration: AudioDSPConfiguration(
+                enabled: true,
+                headroom: DSPHeadroomConfiguration(mode: .automatic, marginDB: 0),
+                nodes: [excludedNode]
+            ),
+            format: DSPAudioFormat(
+                sampleRate: 48_000,
+                channelCount: 2,
+                rawLayoutData: nil,
+                channelLabels: [UInt32(kAudioChannelLabel_Left), UInt32(kAudioChannelLabel_Right)],
+                layoutIsKnown: true
+            ),
+            context: context
+        )
+        XCTAssertEqual(noNodeHeadroom.headroomDB, 0, accuracy: 1e-8)
+    }
 }

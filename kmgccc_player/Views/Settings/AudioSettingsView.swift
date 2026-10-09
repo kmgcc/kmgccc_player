@@ -10,6 +10,7 @@ import SwiftUI
 @MainActor
 struct AudioSettingsView: View {
     @Environment(AppSettings.self) private var settings
+    @EnvironmentObject private var appSession: AppSessionHost
 
     @State private var lookaheadEnabled: Bool = AppSettings.shared.audioLookaheadEnabled
 
@@ -25,6 +26,10 @@ struct AudioSettingsView: View {
                         .settingsDescriptionStyle()
                 }
             }
+
+            AudioProcessingGlobalsSettingsView(
+                controller: appSession.audioProcessingGlobalsController
+            )
 
             SettingsSection("音效处理") {
                 NavigationLink {

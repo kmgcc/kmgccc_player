@@ -1,6 +1,6 @@
 # Renderer 音频 DSP 实施计划
 
-决策日期：2026-10-08。状态：实施方案，尚未实现或通过运行验收。
+决策日期：2026-10-08。状态：分阶段实施中；P5 源码、静态检查及 2026-10-09 授权 Debug 编译已完成，运行验收待进行。P3–P4 已通过授权 Debug 编译。各阶段的验证结果以实施记录为准。
 
 本计划承接 [本地音频输出统一计划](audio-renderer-unification-plan.md)。本地播放统一使用 `AVSampleBufferAudioRenderer` / `AVSampleBufferRenderSynchronizer`，彻底移除 AVAudioEngine 后端和故障回退。DSP 只实现这一条输出路径。
 
@@ -652,11 +652,15 @@ DSP 读取使用 `audio.read`，DSP/预设/代码/全局音频更新使用 `audi
 
 验收：gain ratio 整首恒定、album gain 保留相对电平、缺测曲中不更新、ReplayGain/Opus 不重复增益、true peak fixture、扫描取消和文件变化；快速 play/pause/volume、seek 和输出恢复时 envelope 连续。
 
+2026-10-08 已完成 P3 源码接入、静态检查和授权 Debug 编译，详见 [P3–P4 实施记录](audio-dsp-p3-p4-implementation.md)。App、Xcode 测试目标及 CLI／MCP 均已编译通过；尚未执行测试或做设备验收，响度与 true peak 的标准 fixture 精度仍待确认。
+
 ### P4：等响补偿及设备聆听参考
 
 实现相对音量驱动的 shelves、平滑、余量合成和设备 profile。节点参与保存/排序；参考跟设备全局保存。主音量变化与部分 flush 合并，不引起无限重处理。
 
 验收：参考音量以上恒等、降低音量的补偿单调且有界、静音安全、淡化期间补偿不反向提升、设备断开/默认输出变化、appOnly 状态、preset modified 语义和低 CPU。
+
+2026-10-08 已完成 P4 源码接入、静态检查和授权 Debug 编译，详见 [P3–P4 实施记录](audio-dsp-p3-p4-implementation.md)。设备参考、频响、实时更新时间与 CPU 指标尚未实测。
 
 ### P5：立体声扩展、虚拟低音、电子管模拟
 
@@ -664,11 +668,15 @@ DSP 读取使用 `audio.read`，DSP/预设/代码/全局音频更新使用 `audi
 
 验收：M/S mono sum、width=1 旁路、低音湿路/DC/混叠、管模拟谐波/IMD/DC、不同顺序得到可预期输出、dry/wet 延迟对齐、48/96/192 kHz 性能及真实听感。
 
+2026-10-08 已完成三种效果的原生 Swift 核、2×/4× 非线性湿路过采样、保留 PTS/frame count 的源前瞻补偿、完整预设与 MCP 参数接入，详见 [P5 实施记录](audio-dsp-p5-implementation.md)。已补充测试源码，通过静态检查及 2026-10-09 授权 Debug 编译（App、Xcode 测试目标、CLI/MCP 与自动化测试源码）；尚未运行测试或做 CPU/设备验收。可编程执行继续进入 P6。
+
 ### P6：可编程节点与全量 Agent 闭环
 
 实现语言 grammar、编译器、固定内存 VM/执行计划、参数反射、line/column 错误、fixture tests、成本校验。代码参与 preset 保存/导出、实时应用、错误修正和运行隔离。补齐全部资源/Job/Task/CLI/bundled guides。
 
 验收：Agent 从读 schema → 写代码 → 编译失败 → 读错误 → 修正 → 测试 → 实时应用 → 排序 → 保存 → 切走再选回 → 重启读回的完整链路。scope 已授权时没有不必要的逐次人工弹窗。
+
+2026-10-09 已完成 P6 源码接入：内置 Swift DSL 编译器/固定内存 VM、参数反射、独立草稿与 CAS、延迟/成本预算、运行故障隔离、设置编辑器，以及完整 CLI/MCP/资源/Jobs/Tasks 接口。详见 [P6 实施记录](audio-dsp-p6-implementation.md) 与 [脚本语言 v1](audio-dsp-script-language.md)。静态检查与授权 Debug 编译通过（App、Xcode 测试目标、CLI/MCP 与自动化测试目标），本地 MelismaKit 输入已核查；未运行测试或启动 App，Agent 完整闭环及数值/性能/设备验收进入 P7。
 
 ### P7：完整质量与设备验收
 
@@ -717,9 +725,9 @@ DSP 读取使用 `audio.read`，DSP/预设/代码/全局音频更新使用 `audi
 
 原始与处理音频试听应匹配主观电平，避免把更响误判成更好。源质量、算法测量与真实 Apple/蓝牙输出分别留证；没有实际输出录制或设备试听不能声称到耳音质已验证。
 
-针对源码的测试在相关阶段完成整轮修改后集中运行。文档阶段不构建。UI 修改后运行 `./scripts/check-ui-consistency.sh --strict-copy`，并做主 App 界面验收；动画检查按具体变化运行。完整 `verify.sh` 仍按明确要求或合并/发布阶段执行。
+测试仍按阶段补充，但编译型测试由维护者运行，或仅在用户于当前任务明确要求时运行。常规改动不编译；符合仓库重大工程变更标准时，Agent 可在全部实现完成后做一次最终 Debug build-only 编译，并只为修复编译错误再次 build 确认；该例外不包括测试、启动 App、`build_and_run.sh`、`verify.sh` 或 Release 构建。文档阶段不构建。UI 修改可运行 `./scripts/check-ui-consistency.sh --strict-copy` 等静态检查；主 App 界面验收由维护者执行，除非用户明确要求。
 
-主 App 实测遵循 `check-app-process-state.sh`、精确 PID/路径记录和 `build_and_run.sh`；确认仅一个主进程，本地 MelismaKit 依赖前置保持。性能使用 clean Release、明确设备/采样率/输出路由；诊断工具自身开销单独记录，不能把 Debug trace 作为低 CPU 证明。
+主 App 实测由维护者按 `check-app-process-state.sh`、精确 PID/路径记录和 `build_and_run.sh` 流程执行；Agent 仅在用户于当前任务明确要求主 App 实测并授权构建后运行。性能使用 clean Release、明确设备/采样率/输出路由；诊断工具自身开销单独记录，不能把 Debug trace 作为低 CPU 证明。
 
 每阶段提交只完成一个可解释的范围，记录改动、测试、设备、音频样本及未覆盖边界。新增 Automation 能力与当阶段实际功能一起交付；不能提前在 catalog 声称已支持尚未实现的节点。
 

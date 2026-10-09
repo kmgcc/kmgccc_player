@@ -114,7 +114,11 @@ actor LRCConverterService {
     // MARK: - Public Methods
     
     /// Convert LRC content to TTML format
-    func convertToTTML(lrcContent: String, stripMetadata: Bool = true) throws -> String {
+    func convertToTTML(
+        lrcContent: String,
+        stripMetadata: Bool = true,
+        fixTimingIssues: Bool = true
+    ) throws -> String {
         let lines = lrcContent.components(separatedBy: .newlines)
         
         var metadata: [String: String] = [:]
@@ -157,7 +161,7 @@ actor LRCConverterService {
         
         switch lyricType {
         case .line:
-            processedLyricsData = calculateLineEndTimes(processedLyricsData)
+            processedLyricsData = calculateLineEndTimes(processedLyricsData, fixTimingIssues: fixTimingIssues)
         case .char:
             processedLyricsData = processedLyricsData.enumerated().map { index, line in
                 let nextLineStart = index + 1 < processedLyricsData.count
@@ -174,7 +178,8 @@ actor LRCConverterService {
     func convertToTTMLWithTranslation(
         origContent: String,
         transContent: String,
-        stripMetadata: Bool = true
+        stripMetadata: Bool = true,
+        fixTimingIssues: Bool = true
     ) throws -> String {
         // Parse original
         let origLines = origContent.components(separatedBy: .newlines)
@@ -222,7 +227,7 @@ actor LRCConverterService {
         
         switch lyricType {
         case .line:
-            lyricsData = calculateLineEndTimes(lyricsData)
+            lyricsData = calculateLineEndTimes(lyricsData, fixTimingIssues: fixTimingIssues)
         case .char:
             lyricsData = lyricsData.enumerated().map { index, line in
                 let nextLineStart = index + 1 < lyricsData.count
@@ -739,7 +744,7 @@ actor LRCConverterService {
         return lineLevelIndicators > charLevelIndicators ? .line : .char
     }
     
-    private func calculateLineEndTimes(_ lyricsData: [LyricLine]) -> [LyricLine] {
+    private func calculateLineEndTimes(_ lyricsData: [LyricLine], fixTimingIssues: Bool = true) -> [LyricLine] {
         var result: [LyricLine] = []
         let count = lyricsData.count
         
@@ -763,20 +768,24 @@ actor LRCConverterService {
                 segment.endTime = max(segment.time, clippedEnd)
             } else if i + 1 < count && !lyricsData[i + 1].segments.isEmpty {
                 let nextLineStart = lyricsData[i + 1].segments[0].time
-                let rawDuration = nextLineStart - segment.time
-                let trimmed = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                let textLen = max(1, trimmed.count)
-                let words = trimmed.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
-                let syllableEstimate: Double
-                if words.count > 1 {
-                    syllableEstimate = Double(words.count) * 0.45
-                } else {
-                    syllableEstimate = Double(textLen) * 0.35
-                }
-                let estimatedSingingDuration = max(2.5, min(syllableEstimate + 1.2, 8.0))
-                let interludeThreshold: Double = 4.0
-                if rawDuration > estimatedSingingDuration + interludeThreshold {
-                    segment.endTime = segment.time + estimatedSingingDuration
+                if fixTimingIssues {
+                    let rawDuration = nextLineStart - segment.time
+                    let trimmed = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let textLen = max(1, trimmed.count)
+                    let words = trimmed.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+                    let syllableEstimate: Double
+                    if words.count > 1 {
+                        syllableEstimate = Double(words.count) * 0.45
+                    } else {
+                        syllableEstimate = Double(textLen) * 0.35
+                    }
+                    let estimatedSingingDuration = max(2.5, min(syllableEstimate + 1.2, 8.0))
+                    let interludeThreshold: Double = 4.0
+                    if rawDuration > estimatedSingingDuration + interludeThreshold {
+                        segment.endTime = segment.time + estimatedSingingDuration
+                    } else {
+                        segment.endTime = max(segment.time, nextLineStart)
+                    }
                 } else {
                     segment.endTime = max(segment.time, nextLineStart)
                 }

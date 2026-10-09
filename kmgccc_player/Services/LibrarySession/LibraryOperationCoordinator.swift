@@ -50,6 +50,8 @@ nonisolated struct LibraryOperationRetrySpec: Codable, Equatable, Sendable {
         case lyricsRefresh
         case sourceRefresh
         case libraryImport
+        case loudnessAnalyze
+        case dspScriptTest
     }
 
     let kind: Kind
@@ -58,6 +60,12 @@ nonisolated struct LibraryOperationRetrySpec: Codable, Equatable, Sendable {
     let force: Bool
     let targetPlaylistID: UUID?
     let enrichmentPolicy: String
+    let scriptNodeID: UUID?
+    let scriptRevision: String?
+    let scriptSampleRate: Double?
+    let scriptChannelCount: Int?
+    let scriptUsesDraft: Bool?
+    let scriptFixtures: AutomationJSONValue?
 
     init(
         kind: Kind,
@@ -65,7 +73,13 @@ nonisolated struct LibraryOperationRetrySpec: Codable, Equatable, Sendable {
         sourceID: UUID? = nil,
         force: Bool = false,
         targetPlaylistID: UUID? = nil,
-        enrichmentPolicy: String = "standard"
+        enrichmentPolicy: String = "standard",
+        scriptNodeID: UUID? = nil,
+        scriptRevision: String? = nil,
+        scriptSampleRate: Double? = nil,
+        scriptChannelCount: Int? = nil,
+        scriptUsesDraft: Bool? = nil,
+        scriptFixtures: AutomationJSONValue? = nil
     ) {
         self.kind = kind
         self.trackIDs = trackIDs
@@ -73,6 +87,12 @@ nonisolated struct LibraryOperationRetrySpec: Codable, Equatable, Sendable {
         self.force = force
         self.targetPlaylistID = targetPlaylistID
         self.enrichmentPolicy = enrichmentPolicy
+        self.scriptNodeID = scriptNodeID
+        self.scriptRevision = scriptRevision
+        self.scriptSampleRate = scriptSampleRate
+        self.scriptChannelCount = scriptChannelCount
+        self.scriptUsesDraft = scriptUsesDraft
+        self.scriptFixtures = scriptFixtures
     }
 
     static func lyricsRefresh(trackIDs: [UUID], force: Bool) -> Self {
@@ -109,8 +129,26 @@ nonisolated struct LibraryOperationRetrySpec: Codable, Equatable, Sendable {
         )
     }
 
+    static func loudnessAnalyze(trackIDs: [UUID]) -> Self {
+        Self(
+            kind: .loudnessAnalyze,
+            trackIDs: trackIDs,
+            sourceID: nil,
+            force: false,
+            targetPlaylistID: nil
+        )
+    }
+
+    static func dspScriptTest(nodeID: UUID, revision: String, sampleRate: Double,
+                              channelCount: Int, usesDraft: Bool, fixtures: AutomationJSONValue? = nil) -> Self {
+        Self(kind: .dspScriptTest, scriptNodeID: nodeID, scriptRevision: revision,
+             scriptSampleRate: sampleRate, scriptChannelCount: channelCount, scriptUsesDraft: usesDraft,
+             scriptFixtures: fixtures)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case kind, trackIDs, sourceID, force, targetPlaylistID, enrichmentPolicy
+        case scriptNodeID, scriptRevision, scriptSampleRate, scriptChannelCount, scriptUsesDraft, scriptFixtures
     }
 
     init(from decoder: Decoder) throws {
@@ -121,6 +159,12 @@ nonisolated struct LibraryOperationRetrySpec: Codable, Equatable, Sendable {
         force = try container.decodeIfPresent(Bool.self, forKey: .force) ?? false
         targetPlaylistID = try container.decodeIfPresent(UUID.self, forKey: .targetPlaylistID)
         enrichmentPolicy = try container.decodeIfPresent(String.self, forKey: .enrichmentPolicy) ?? "standard"
+        scriptNodeID = try container.decodeIfPresent(UUID.self, forKey: .scriptNodeID)
+        scriptRevision = try container.decodeIfPresent(String.self, forKey: .scriptRevision)
+        scriptSampleRate = try container.decodeIfPresent(Double.self, forKey: .scriptSampleRate)
+        scriptChannelCount = try container.decodeIfPresent(Int.self, forKey: .scriptChannelCount)
+        scriptUsesDraft = try container.decodeIfPresent(Bool.self, forKey: .scriptUsesDraft)
+        scriptFixtures = try container.decodeIfPresent(AutomationJSONValue.self, forKey: .scriptFixtures)
     }
 }
 

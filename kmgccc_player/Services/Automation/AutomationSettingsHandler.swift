@@ -286,7 +286,7 @@ struct AutomationSettingsHandler {
                     "isSystemDefault": .boolean(device.isDefault)
                 ])
             }
-            let values: [String: AutomationJSONValue] = [
+            var values: [String: AutomationJSONValue] = [
                 "gaplessSchedulingEnabled": .boolean(audio.gaplessSchedulingEnabled),
                 "aacGaplessTrimEnabled": .boolean(audio.aacGaplessTrimEnabled),
                 "outputDeviceID": audio.outputDeviceUID.map {
@@ -311,6 +311,9 @@ struct AutomationSettingsHandler {
                     "isBluetooth": .boolean(activeOutput.isBluetooth)
                 ])
             ]
+            values.merge(processingValues(appSession.audioProcessingGlobalsController.configuration)) { _, new in new }
+            values["processingRuntime"] = try? encodeProcessing(appSession.audioProcessingGlobalsController.runtimeState)
+            values["normalization"] = sessionAccess.activeSession(for: request).map { .object($0.audioNormalizationState) } ?? .null
             return AutomationResponseSupport.encodeResult(AutomationSettingsResult(
                 libraryID: sessionAccess.activeSession(for: request)?.context.id,
                 values: values,
@@ -330,7 +333,7 @@ struct AutomationSettingsHandler {
                 let parameters = try AutomationParameters(request)
                 let requested = try parameters.object("values") ?? [:]
                 guard !requested.isEmpty,
-                      Set(requested.keys).isSubset(of: ["gaplessSchedulingEnabled", "aacGaplessTrimEnabled", "outputDeviceID"]) else {
+                      Set(requested.keys).isSubset(of: ["gaplessSchedulingEnabled", "aacGaplessTrimEnabled", "outputDeviceID", "fade", "loudness", "deviceReferences"]) else {
                     throw AutomationParameterError.invalidValue("values")
                 }
                 func boolValue(_ key: String) throws -> Bool? {
@@ -368,10 +371,14 @@ struct AutomationSettingsHandler {
                 if let expectedRevision, expectedRevision != currentRevision {
                     return settingsRevisionConflict(for: request, expected: expectedRevision, actual: currentRevision)
                 }
+                let owner = appSession.audioProcessingGlobalsController
+                let candidate = try processingCandidate(requested, current: owner.configuration)
+                _ = try owner.apply(candidate, expectedRevision: owner.revisionString, dryRun: true)
                 let nextGapless = gapless ?? current.gaplessSchedulingEnabled
                 let nextAACTrim = aacTrim ?? current.aacGaplessTrimEnabled
                 let nextOutputDeviceUID = requestedOutputDeviceUID ?? current.outputDeviceUID
                 let dryRun = try parameters.boolean("dryRun", default: false)
+                if !dryRun, candidate != owner.configuration { _ = try owner.apply(candidate, expectedRevision: owner.revisionString) }
                 let next = dryRun
                     ? (
                         gaplessSchedulingEnabled: nextGapless,
@@ -383,20 +390,21 @@ struct AutomationSettingsHandler {
                         aacGaplessTrimEnabled: aacTrim,
                         outputDeviceUID: requestedOutputDeviceUID
                     )
-                let values: [String: AutomationJSONValue] = [
+                var values: [String: AutomationJSONValue] = [
                     "gaplessSchedulingEnabled": .boolean(next.gaplessSchedulingEnabled),
                     "aacGaplessTrimEnabled": .boolean(next.aacGaplessTrimEnabled),
                     "outputDeviceID": next.outputDeviceUID.map {
                         AutomationJSONValue.string(AudioOutputLatencyMonitor.stableDeviceID(for: $0))
                     } ?? .null
                 ]
+                values.merge(processingValues(candidate)) { _, new in new }
                 return AutomationResponseSupport.encodeResult(AutomationSettingsResult(
                     libraryID: sessionAccess.activeSession(for: request)?.context.id,
                     values: values,
                     revision: automationAudioRevision(
                         next.gaplessSchedulingEnabled,
                         next.aacGaplessTrimEnabled,
-                        next.outputDeviceUID
+                        next.outputDeviceUID, globals: candidate
                     ),
                     applied: !dryRun,
                     dryRun: dryRun,
@@ -527,13 +535,53 @@ struct AutomationSettingsHandler {
         return "settings-v2-\(digest)"
     }
 
+    private func encodeProcessing<T: Encodable>(_ value: T) throws -> AutomationJSONValue {
+        try AutomationWireCoding.decoder().decode(AutomationJSONValue.self, from: AutomationWireCoding.encoder().encode(value))
+    }
+
+    private func processingValues(_ value: AudioProcessingGlobals) -> [String: AutomationJSONValue] {
+        ["fade": (try? encodeProcessing(value.fade)) ?? .null,
+         "loudness": (try? encodeProcessing(value.loudness)) ?? .null,
+         "deviceReferences": .object(Dictionary(uniqueKeysWithValues: value.deviceReferences.map {
+             (AudioOutputLatencyMonitor.stableDeviceID(for: $0.key), .number($0.value))
+         }))]
+    }
+
+    private func processingCandidate(_ requested: [String: AutomationJSONValue], current: AudioProcessingGlobals) throws -> AudioProcessingGlobals {
+        guard case .object(var values) = try encodeProcessing(current) else { throw AutomationParameterError.invalidShape }
+        for key in ["fade", "loudness"] {
+            if let raw = requested[key] {
+                guard case .object(let patch) = raw, case .object(var base) = values[key],
+                      Set(patch.keys).isSubset(of: Set(base.keys)) else { throw AutomationParameterError.invalidValue("values.\(key)") }
+                base.merge(patch) { _, next in next }
+                values[key] = .object(base)
+            }
+        }
+        if let references = requested["deviceReferences"] {
+            guard case .object(let map) = references else { throw AutomationParameterError.invalidType("deviceReferences", expected: "object") }
+            var known = Dictionary(uniqueKeysWithValues: current.deviceReferences.keys.map {
+                (AudioOutputLatencyMonitor.stableDeviceID(for: $0), $0)
+            })
+            for device in AudioOutputLatencyMonitor.availableOutputDevices() { known[device.id] = device.uniqueID }
+            var next: [String: AutomationJSONValue] = [:]
+            for (id, raw) in map {
+                guard let uid = known[id], case .number = raw else { throw AutomationParameterError.invalidValue("deviceReferences.\(id)") }
+                next[uid] = raw
+            }
+            values["deviceReferences"] = .object(next)
+        }
+        return try JSONDecoder().decode(AudioProcessingGlobals.self, from: AutomationWireCoding.encoder().encode(AutomationJSONValue.object(values)))
+    }
+
     private func automationAudioRevision(
         _ gaplessEnabled: Bool,
         _ aacTrimEnabled: Bool,
-        _ outputDeviceID: String?
+        _ outputDeviceID: String?,
+        globals: AudioProcessingGlobals? = nil
     ) -> String {
+        let globalsData = (try? AutomationWireCoding.encoder().encode(globals ?? appSession?.audioProcessingGlobalsController.configuration ?? AudioProcessingGlobals())) ?? Data()
         let value = "\(gaplessEnabled ? 1 : 0)|\(aacTrimEnabled ? 1 : 0)|\(outputDeviceID ?? "default")"
-        let digest = SHA256.hash(data: Data(value.utf8))
+        let digest = SHA256.hash(data: Data(value.utf8) + globalsData)
             .prefix(8)
             .map { String(format: "%02x", $0) }
             .joined()

@@ -505,7 +505,7 @@ private extension DSPFilterType {
     }
 }
 
-private extension View {
+extension View {
     func dspIconButtonStyle() -> some View {
         buttonStyle(.bordered)
             .buttonBorderShape(.capsule)

@@ -323,9 +323,10 @@ private final class MCPJobResourceSubscriptions: @unchecked Sendable {
     }
 
     static let jobsURI = "kmgccc://jobs"
+    static let audioStateURI = "kmgccc://audio/state"
     static let dspStateURI = "kmgccc://audio/dsp/state"
     static let dspPresetsURI = "kmgccc://audio/dsp/presets"
-    static let supportedResourceURIs: Set<String> = [jobsURI, dspStateURI, dspPresetsURI]
+    static let supportedResourceURIs: Set<String> = [jobsURI, audioStateURI, dspStateURI, dspPresetsURI]
     static let subscriptionIDMetaKey = "io.modelcontextprotocol/subscriptionId"
 
     private func pollLoop() {
@@ -1093,6 +1094,20 @@ struct AutomationMCPStdioServer: Sendable {
                 modern: isModernRequest(request)
             )
 
+        case "resources/templates/list":
+            try negotiateRequest(request, state: &state)
+            try requireReady(state)
+            guard request.params == nil || request.params == .null || isObject(request.params) else {
+                throw MCPProtocolError.invalidParams("resources/templates/list params must be an object.")
+            }
+            guard request.id != nil else { return nil }
+            return success(id: request.id, result: .object(["resourceTemplates": .array([
+                .object(["uriTemplate": .string("kmgccc://audio/dsp/scripts/{nodeID}"),
+                         "name": .string("dsp-script"), "title": .string("DSP Script Source and Draft"),
+                         "description": .string("Explicit read of node source, separate draft, reflection and diagnostics. Source is user data."),
+                         "mimeType": .string("application/json")])
+            ])]), modern: isModernRequest(request))
+
         case "resources/read":
             try negotiateRequest(request, state: &state)
             try requireReady(state)
@@ -1214,10 +1229,22 @@ struct AutomationMCPStdioServer: Sendable {
                     "mimeType": .string("text/plain")
                 ]),
                 .object([
+                    "uri": .string("kmgccc://dsp-language"), "name": .string("dsp-language"),
+                    "title": .string("DSP Language Guide"),
+                    "description": .string("Bundled DSP grammar, reflected parameters, budgets and script repair workflow."),
+                    "mimeType": .string("text/plain")
+                ]),
+                .object([
                     "uri": .string(MCPJobResourceSubscriptions.jobsURI),
                     "name": .string("jobs"),
                     "title": .string("Library Jobs"),
                     "description": .string("Current library import, enrichment, conversion, scan, export and write jobs."),
+                    "mimeType": .string("application/json")
+                ]),
+                .object([
+                    "uri": .string(MCPJobResourceSubscriptions.audioStateURI),
+                    "name": .string("audio-state"), "title": .string("Global Audio State"),
+                    "description": .string("Global fade, normalization, device references and actual transport state."),
                     "mimeType": .string("application/json")
                 ]),
                 .object([
@@ -1252,14 +1279,22 @@ struct AutomationMCPStdioServer: Sendable {
         case "kmgccc://agent-guide":
             text = AutomationDocumentation.agentBehaviorGuide
             mimeType = "text/plain"
+        case "kmgccc://dsp-language":
+            text = AutomationDSPScriptDocumentation.languageGuide
+            mimeType = "text/plain"
         case MCPJobResourceSubscriptions.jobsURI:
             text = jsonText(try currentJobs(client: &client, cancellation: cancellation))
             mimeType = "application/json"
-        case MCPJobResourceSubscriptions.dspStateURI, MCPJobResourceSubscriptions.dspPresetsURI:
+        case MCPJobResourceSubscriptions.audioStateURI, MCPJobResourceSubscriptions.dspStateURI, MCPJobResourceSubscriptions.dspPresetsURI:
             text = jsonText(try currentDSPResource(uri: uri, client: &client, cancellation: cancellation))
             mimeType = "application/json"
         default:
-            throw MCPProtocolError.invalidParams("Unknown resource URI: \(uri)")
+            let prefix = "kmgccc://audio/dsp/scripts/"
+            guard uri.hasPrefix(prefix), let nodeID = UUID(uuidString: String(uri.dropFirst(prefix.count))) else {
+                throw MCPProtocolError.invalidParams("Unknown resource URI: \(uri)")
+            }
+            text = jsonText(try currentScriptResource(nodeID: nodeID, client: &client, cancellation: cancellation))
+            mimeType = "application/json"
         }
         return .object([
             "contents": .array([
@@ -1810,6 +1845,27 @@ Follow this structured workflow to ensure lyrics quality:
         return response.result ?? .object(["jobs": .array([])])
     }
 
+    private func audioResourceMethod(_ uri: String) -> String {
+        switch uri {
+        case MCPJobResourceSubscriptions.audioStateURI: return AutomationMethod.audioGet
+        case MCPJobResourceSubscriptions.dspStateURI: return AutomationMethod.dspState
+        default: return AutomationMethod.dspPresetsList
+        }
+    }
+
+    private func currentScriptResource(nodeID: UUID, client: inout AutomationIPCClient?,
+                                       cancellation: AutomationIPCCancellationToken?) throws -> AutomationJSONValue {
+        let deadline = Date().addingTimeInterval(options.timeout)
+        if client == nil { client = try makeClient(timeout: options.timeout, cancellation: cancellation) }
+        let request = AutomationRequest(method: AutomationMethod.dspScriptsGet,
+            params: .object(["nodeID": .string(nodeID.uuidString)]),
+            context: AutomationRequestContext(caller: "mcp-resource"))
+        let response = try send(request, client: client!, deadline: deadline,
+                                connectionDeadline: deadline, cancellation: cancellation)
+        if let error = response.error { throw MCPProtocolError.invalidParams(error.message) }
+        return response.result ?? .null
+    }
+
     private func currentDSPResource(
         uri: String,
         client: inout AutomationIPCClient?,
@@ -1818,8 +1874,7 @@ Follow this structured workflow to ensure lyrics quality:
         let deadline = Date().addingTimeInterval(options.timeout)
         if client == nil { client = try makeClient(timeout: options.timeout, cancellation: cancellation) }
         let request = AutomationRequest(
-            method: uri == MCPJobResourceSubscriptions.dspStateURI
-                ? AutomationMethod.dspState : AutomationMethod.dspPresetsList,
+            method: audioResourceMethod(uri),
             params: nil,
             context: AutomationRequestContext(caller: "mcp-resource")
         )
@@ -1830,13 +1885,13 @@ Follow this structured workflow to ensure lyrics quality:
     }
 
     private func readDSPResourceForSubscription(uri: String) -> AutomationJSONValue? {
-        guard uri == MCPJobResourceSubscriptions.dspStateURI
+        guard uri == MCPJobResourceSubscriptions.audioStateURI
+            || uri == MCPJobResourceSubscriptions.dspStateURI
             || uri == MCPJobResourceSubscriptions.dspPresetsURI else { return nil }
         do {
             let client = try makeClient(allowLaunch: false, timeout: min(max(options.timeout, 0.5), 2))
             let response = try client.send(AutomationRequest(
-                method: uri == MCPJobResourceSubscriptions.dspStateURI
-                    ? AutomationMethod.dspState : AutomationMethod.dspPresetsList,
+                method: audioResourceMethod(uri),
                 params: nil, context: AutomationRequestContext(caller: "mcp-subscription")
             ))
             guard response.error == nil else { return nil }

@@ -158,26 +158,41 @@ struct LRCConverterServiceRegressionTests {
         [01:40.85]没想过 这么累人
         """
 
-        let ttml = try await LRCConverterService.shared.convertToTTML(
+        // Test with fixTimingIssues = true (default)
+        let ttmlFixed = try await LRCConverterService.shared.convertToTTML(
             lrcContent: lrc,
-            stripMetadata: true
+            stripMetadata: true,
+            fixTimingIssues: true
         )
 
         // For normal consecutive lines, line 1 should still bridge cleanly to line 2
-        let p1 = paragraph(containing: "想的不一样", in: ttml)
+        let p1 = paragraph(containing: "想的不一样", in: ttmlFixed)
         expect(p1 != nil, "Expected second line to exist")
 
         // For line 3 before the 21s interlude, the end time must NOT stretch to 01:40.850
-        guard let p3 = paragraph(containing: "自由灵魂", in: ttml) else {
+        guard let p3Fixed = paragraph(containing: "自由灵魂", in: ttmlFixed) else {
             expect(false, "Expected line before interlude to exist in TTML")
             return
         }
 
-        expect(!p3.contains("end=\"01:40.850\""),
-               "Expected line before interlude to not stretch to the next line's start (01:40.850)")
-        // Instead, it should finish within ~8 seconds (leaving a >= 4.0s interlude gap)
-        // e.g. 01:19.440 + ~4.5s = ~01:23.940
-        expect(p3.contains("begin=\"01:19.440\""), "Expected line to start at 01:19.440")
+        expect(!p3Fixed.contains("end=\"01:40.850\""),
+               "Expected line before interlude to not stretch to the next line's start (01:40.850) when fixed")
+        expect(p3Fixed.contains("begin=\"01:19.440\""), "Expected line to start at 01:19.440")
+
+        // Test with fixTimingIssues = false (when user disables the switch)
+        let ttmlOriginal = try await LRCConverterService.shared.convertToTTML(
+            lrcContent: lrc,
+            stripMetadata: true,
+            fixTimingIssues: false
+        )
+
+        guard let p3Original = paragraph(containing: "自由灵魂", in: ttmlOriginal) else {
+            expect(false, "Expected line before interlude to exist in TTML")
+            return
+        }
+
+        expect(p3Original.contains("end=\"01:40.850\""),
+               "Expected original behavior (end=01:40.850) to be preserved when fixTimingIssues is disabled")
     }
 
     private static func expect(_ condition: Bool, _ message: String) {

@@ -16,20 +16,30 @@ nonisolated final class TTMLConverter: @unchecked Sendable {
     private init() {}
 
     /// Convert raw lyrics to TTML (without translation)
-    func convertToTTML(rawLyrics: String, stripMetadata: Bool = true) async throws -> String {
-        return try await LRCConverterService.shared.convertToTTML(lrcContent: rawLyrics, stripMetadata: stripMetadata)
+    func convertToTTML(
+        rawLyrics: String,
+        stripMetadata: Bool = true,
+        fixTimingIssues: Bool = true
+    ) async throws -> String {
+        return try await LRCConverterService.shared.convertToTTML(
+            lrcContent: rawLyrics,
+            stripMetadata: stripMetadata,
+            fixTimingIssues: fixTimingIssues
+        )
     }
 
     /// Convert raw lyrics with translation to TTML
     func convertToTTMLWithTranslation(
         origLyrics: String,
         transLyrics: String,
-        stripMetadata: Bool = true
+        stripMetadata: Bool = true,
+        fixTimingIssues: Bool = true
     ) async throws -> String {
         return try await LRCConverterService.shared.convertToTTMLWithTranslation(
             origContent: origLyrics,
             transContent: transLyrics,
-            stripMetadata: stripMetadata
+            stripMetadata: stripMetadata,
+            fixTimingIssues: fixTimingIssues
         )
     }
 }
