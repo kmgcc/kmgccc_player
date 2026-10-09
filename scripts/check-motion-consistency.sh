@@ -72,6 +72,7 @@ is_allowlisted() {
     case "$path" in
       kmgccc_player/Views/Fullscreen/FullscreenMiniPlayerView.swift|\
       kmgccc_player/Views/Fullscreen/FullscreenPlayerView.swift|\
+      kmgccc_player/Views/Fullscreen/FullscreenLeadingControlsPill.swift|\
       kmgccc_player/Views/Controls/ExpandableVolumeControl.swift)
         printf 'explicit foreground rendering transaction isolation'
         return 0
@@ -132,6 +133,18 @@ is_allowlisted() {
         return 0
       fi
       ;;
+    kmgccc_player/Views/Library/BlurredArtworkBackgroundView.swift)
+      if [[ "$text" == *scrollInterpolation* ]]; then
+        printf 'scroll-driven background follower interpolation'
+        return 0
+      fi
+      ;;
+    kmgccc_player/Skins/NowPlaying/SkinSceneNativeLyricsLifecycle.swift)
+      if [[ "$text" == *enableSpring* ]]; then
+        printf 'lyrics spring opt-out forwarded to the MelismaKit surface; lyrics animation stays outside MotionKit'
+        return 0
+      fi
+      ;;
   esac
 
   return 1
@@ -167,6 +180,15 @@ while IFS= read -r path; do
   scanned=$((scanned + 1))
   motion_animation_count="$(rg -c --no-filename '\.motionAnimation' "$path" || true)"
   motion_animation_count="${motion_animation_count:-0}"
+  imports_swiftui=0
+  if rg -q '^import SwiftUI' "$path"; then
+    imports_swiftui=1
+  fi
+
+  # SwiftUI animation recipes only apply to modules that build SwiftUI views. Audio,
+  # DSP and renderer modules legitimately contain `.smooth(...)` IR opcodes and audio
+  # gain `.transition(...)` calls that are not UI motion.
+  if ((imports_swiftui)); then
 
   while IFS=: read -r line text; do
     [[ -n "$line" ]] || continue
@@ -213,6 +235,7 @@ while IFS= read -r path; do
     [[ "$text" == *motionAnimation* ]] && continue
     [[ "$text" == *"policy.animation("* ]] && continue
     [[ "$text" == *"Policy.animation("* ]] && continue
+    [[ "$text" == *".animation(for:"* ]] && continue
     [[ "$text" == *"swiftUIAnimation("* ]] && continue
     [[ "$text" == *"coreAnimation("* ]] && continue
     report_match "IMPLICIT_ANIM" "$path" "$line" "$text"
@@ -236,10 +259,14 @@ while IFS= read -r path; do
     [[ -n "$line" ]] || continue
     trimmed="${text#"${text%%[![:space:]]*}"}"
     [[ "$trimmed" == //* ]] && continue
+    # A transition whose animation is a MotionKit token lookup is already parameterized.
+    [[ "$text" == *".animation(for:"* ]] && continue
     if ((motion_animation_count == 0)); then
       report_match "UNBOUND_TRANSITION" "$path" "$line" "$text"
     fi
   done < <(rg -n '\.transition\(' "$path" || true)
+
+  fi
 
   while IFS=: read -r line text; do
     [[ -n "$line" ]] || continue
