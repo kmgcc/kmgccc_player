@@ -317,10 +317,11 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
     /// Uploads a complete source set as one replacement. Called before a user
     /// transition, never from `draw(in:)`; a previous complete set stays live
     /// until all three textures have succeeded.
-    func install(_ sourceSet: BokehTransitionPreparedSourceSet) {
+    @discardableResult
+    func install(_ sourceSet: BokehTransitionPreparedSourceSet) -> Bool {
         guard let device = context.device else {
             failureReason = "No Metal device"
-            return
+            return false
         }
 
         do {
@@ -350,9 +351,11 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
             #if DEBUG
             logger.debug("Bokeh source textures uploaded for \(sourceSet.identity.artworkChecksum, privacy: .public)")
             #endif
+            return true
         } catch {
             failureReason = "Texture upload failed: \(error.localizedDescription)"
             logger.error("Bokeh texture upload failed: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 

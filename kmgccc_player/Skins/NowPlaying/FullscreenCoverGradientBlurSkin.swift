@@ -179,6 +179,28 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         bokehSourceSets[0]
     }
 
+    /// Keep a complete source set available across layout reversals while the
+    /// idle prewarm prepares its next copy. Transition selection must not
+    /// depend on a transient SwiftUI state slot being populated at start time.
+    private var reusableBokehSourceSet: BokehTransitionPreparedSourceSet? {
+        let checksum = latestTrackArtworkChecksum
+        guard checksum != 0 else { return nil }
+
+        if let bokehPreparedSourceSet,
+           bokehPreparedSourceSet.identity.artworkChecksum == checksum {
+            return bokehPreparedSourceSet
+        }
+        if let activeBokehSourceSet,
+           activeBokehSourceSet.identity.artworkChecksum == checksum {
+            return activeBokehSourceSet
+        }
+        if let cached = bokehSourcePreparer.currentSourceSet,
+           cached.identity.artworkChecksum == checksum {
+            return cached
+        }
+        return nil
+    }
+
     private var motionPolicy: MotionPolicy {
         configuredMotionPolicy.resolving(
             accessibilityReduceMotion: accessibilityReduceMotion
@@ -540,7 +562,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         }
 
         let tier = preferredBokehTier()
-        if let sourceSet = bokehPreparedSourceSet {
+        if let sourceSet = reusableBokehSourceSet {
             // A prepared source set is usable even if the performance policy
             // has since decided on a different tier; tier only affects sample
             // budget, and the shader reads the actual tier from the snapshot.
@@ -549,7 +571,8 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             if sourceSet.identity.tier != tier {
                 Log.debug("CoverBlur transition: tier mismatch, using prepared \(sourceSet.identity.tier.rawValue) source set while decision is \(tier.rawValue)", category: .fullscreen)
             }
-            bokehSourceSets[0] = bokehPreparedSourceSet
+            bokehPreparedSourceSet = sourceSet
+            bokehSourceSets[0] = sourceSet
             return .bokeh
         }
 
@@ -810,9 +833,13 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             // next transition and clear the overlay. Both optical opacities
             // are zeroed (the surfaces are dormant); the next
             // startTransitionEffect raises the base again.
-            bokehSourceSets[0] = bokehPreparedSourceSet
+            // Retain the current artwork's complete source set across layout
+            // reversals. Clearing this reference made the next center-to-left
+            // move look cold even though surface 0 still held the textures.
+            let sourceSetForNextTransition = reusableBokehSourceSet
+            bokehSourceSets[0] = sourceSetForNextTransition
             bokehSourceSets[1] = nil
-            bokehPreparedSourceSet = nil
+            bokehPreparedSourceSet = sourceSetForNextTransition
             withoutSwiftUIAnimation {
                 bokehOpticalOpacities[0] = 0
                 bokehOpticalOpacities[1] = 0
