@@ -1,8 +1,8 @@
 # MotionKit 动画标准化与渐进迁移计划
 
-> 状态：Phase 1–5 的代码迁移已完成第一轮，Phase 6 的静态门禁、构建和首轮真实交互 smoke 已收口；AppKit 弹窗与 Home 横向滚动已接入统一 adapter；代码与基础性能检查完成，完整 Reduce Motion 与播放场景留给日常人工验收
+> 状态：Phase 1–5 的代码迁移已完成第一轮，Phase 6 的静态门禁、构建和首轮真实交互 smoke 已收口；AppKit 弹窗与 Home 横向滚动已接入统一 adapter。剩余验收是真实 Reduce Motion、快速反向、拖拽与窗口 resize，以及前台播放下的 hitch／渲染延迟 trace
 >
-> 更新时间：2026-09-22
+> 更新时间：2026-10-09（2026-09-22 首次收口）
 >
 > 适用范围：`kmgccc_player` 以及后续可复用同一套基础设施的 macOS App
 
@@ -15,7 +15,7 @@
 - 已加入报告模式的 `scripts/check-motion-consistency.sh`；截至 2026-09-22，全量 `--strict` 报告为 0 个未登记项、0 个 review finding，所有输出均为带理由的连续动画或渲染隔离 allowlist。检查器现在也阻止业务层直接构造 `MotionSpec`、直接分支系统 `reduceMotion`、在没有同文件 MotionKit 绑定时使用可见 transition，只允许已登记的 CapsuleSpectrum 连续物理后端。
 - 2026-10-09 复查：`./scripts/check-motion-consistency.sh --all --strict` 当前有 8 条未登记 finding，集中在 DSP/Renderer 与皮肤新增代码（`DSPScriptCompiler`/`DSPScriptRuntime` 的 `.smooth(...)` 节点被当作 raw timing curve，属误报；`RendererPlaybackPipeline` 的 `outputGainController.transition`、`LibraryViewModel` 导航动画、`SkinSceneNativeLyricsLifecycle` 的 reduceMotion 分支、`SkinMiniPlayerComponent` 两处 withAnimation 需分诊）。在把它作为合并门禁或列入 agent 必跑命令之前，先清零或登记 allowlist；脚本默认仍是报告模式，结果行会明确打印 `RESULT: REPORT`。
 - `CapsuleSpectrumHostView` 的 `CADisplayLink` 频谱跟随器已登记为连续渲染例外：它保留每帧闭式振子所需的 `response`/`dampingFraction`，不作为普通 UI 状态动画迁移；静态检查会单独报告并验证这类保留项。
-- 已在主要 AppKit/SwiftUI 根节点注入标准 `MotionTokens` 与可覆盖的 `MotionPolicy`；叶子视图统一通过 policy 解析系统 Reduce Motion，拖拽松手会把运行时速度归一化后传入 Apple `interpolatingSpring` token 弹簧。拖拽代理的视觉清理延迟现在从解析后的 token 和初速度计算，禁用动画会立即清理，不再使用固定的 `0.18`/`0.42`/`0.44` 秒等待；主窗口、资料库、设置、侧栏和全屏的首轮真实 smoke 已完成，剩余是完整 Reduce Motion、快速反向、拖拽和性能矩阵。
+- 已在主要 AppKit/SwiftUI 根节点注入标准 `MotionTokens` 与可覆盖的 `MotionPolicy`；叶子视图统一通过 policy 解析系统 Reduce Motion，拖拽松手会把运行时速度归一化后传入 Apple `interpolatingSpring` token 弹簧。拖拽代理的视觉清理延迟现在从解析后的 token 和初速度计算，禁用动画会立即清理，不再使用固定的 `0.18`/`0.42`/`0.44` 秒等待；主窗口、资料库、设置、侧栏和全屏的首轮真实 smoke 已完成，剩余是完整 Reduce Motion、快速反向、拖拽、窗口 resize 和前台播放下的性能矩阵。
 - 2026-09-22 13:48–14:07（Asia/Singapore）已用当前工作树构建的 PID `12274` 做首轮真实 smoke：主窗口 Home/资料库切换、设置打开/关闭、侧栏隐藏/恢复，以及全屏播放器打开后的内容稳定渲染均可观察到，未见崩溃。全屏首帧先显示过渡背景，等待约 2 秒后内容完成，符合低频背景与封面异步加载边界；这不是逐帧性能结论。
 - 当前系统 `com.apple.universalaccess` 的 `reduceMotion` 读数为 `0`；没有修改系统设置，因此真实 Reduce Motion 视觉路径仍未完成，现阶段只由 MotionKit 的 policy 注入测试覆盖。播放 hitch、渲染延迟、CPU/GPU 与内存也尚未用有效播放 trace 验收。
 - 2026-09-22 19:31–19:32（Asia/Singapore）对当前人工使用中的已安装 App 做了 15 秒 Activity Monitor 空闲采样：平均 CPU `8 ms/s`、峰值 `11 ms/s`、平均内存约 `104 MB`。这是空闲基线，不代表播放、歌词滚动或连续交互的 hitch 结论；后者交给日常人工使用观察。
@@ -35,6 +35,7 @@
 - 2026-09-22 后续收口使用 `/tmp/myPlayer2-motion-kit-dd9` 完成主工程 Debug 编译与 App bundle presence 检查；`check-motion-consistency.sh --all --strict` 仍为 0 个 finding，`check-ui-consistency.sh` 为 49 个文件通过，`git diff --check` 通过。剩余 `reduceMotion` 引用均位于系统环境解析或已登记的连续渲染边界，不再作为页面动画参数直接分叉。
 - 现有 PID `9864` 的 `lsof` 仍显示它持有 `/Volumes/SSD/Music/kmgccc_player Library/Settings/.writer.lock` 以及三套 SQLite WAL/SHM；PID `10605` 为 `/Applications/kmgccc_player.app`，未持有该资料库锁。对 PID `9864` 的一次“重试”只重新生成错误页按钮，未恢复 Home，因此不能把当前实例当作新 build 的真实动画验收。
 - 后续 `dd10` 编译确认 Home 启动 loading transition 与资料库重排 placeholder 的局部 token 绑定没有破坏主工程；静态检查的 `POLICY_BYPASS` 现在也会计入 strict 阻断集合，而不是只报告不失败。
+- 2026-10-09 状态复核：Phase 1–5 的迁移与 Phase 6 的静态门禁、主工程 Debug 构建、首轮真实交互 smoke 均已收口，此后没有新的迁移批次。仍缺的验收是系统 Reduce Motion 真实路径（`com.apple.universalaccess` 的 `reduceMotion` 读数仍为 `0`，未修改系统设置）、快速反向、拖拽与窗口 resize，以及前台播放下的 hitch／渲染延迟／CPU-GPU trace。前述 8 条 `--all --strict` finding 在清零或登记 allowlist 之前，检查器保持报告模式。
 
 ## 1. 目标与结论
 
