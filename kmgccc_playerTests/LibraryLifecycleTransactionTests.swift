@@ -1311,3 +1311,77 @@ private func XCTAssertThrowsErrorAsync<T>(
         errorHandler(error)
     }
 }
+
+/// Regression: zero tracks is not proof of an orphan. An incomplete scan can
+/// hide every track of an artist or album whose folder still holds user-edited
+/// metadata, so only entries the sync flagged as orphaned and free of user
+/// content may be removed.
+@MainActor
+final class LibraryMetadataOrphanCleanupTests: XCTestCase {
+    func testCleanupRemovesOnlyPlainOrphans() {
+        let editedArtist = makeArtist(hasUserEditedContent: true)
+        let plainArtist = makeArtist()
+        let editedAlbum = makeAlbum(hasUserEditedContent: true)
+        let plainAlbum = makeAlbum()
+
+        let report = LibraryMaintenanceService().cleanupOrphanMetadataEntries(
+            artistEntries: [editedArtist, plainArtist],
+            albumEntries: [editedAlbum, plainAlbum],
+            reason: "regressionTest"
+        )
+
+        XCTAssertEqual(report.deletedArtistIDs, [plainArtist.id])
+        XCTAssertEqual(report.deletedAlbumIDs, [plainAlbum.id])
+    }
+
+    func testCleanupKeepsZeroTrackEntriesThatAreNotOrphans() {
+        let artist = makeArtist(isOrphaned: false)
+        let album = makeAlbum(isOrphaned: false)
+
+        let report = LibraryMaintenanceService().cleanupOrphanMetadataEntries(
+            artistEntries: [artist],
+            albumEntries: [album],
+            reason: "regressionTest"
+        )
+
+        XCTAssertTrue(report.deletedArtistIDs.isEmpty)
+        XCTAssertTrue(report.deletedAlbumIDs.isEmpty)
+    }
+
+    private func makeArtist(
+        isOrphaned: Bool = true,
+        hasUserEditedContent: Bool = false
+    ) -> ArtistEntry {
+        ArtistEntry(
+            id: UUID(),
+            canonicalName: "artist-\(UUID().uuidString)",
+            displayName: "Artist",
+            createdAt: Date(),
+            updatedAt: Date(),
+            trackCount: 0,
+            albumCount: 0,
+            totalDuration: 0,
+            isOrphaned: isOrphaned,
+            hasUserEditedContent: hasUserEditedContent
+        )
+    }
+
+    private func makeAlbum(
+        isOrphaned: Bool = true,
+        hasUserEditedContent: Bool = false
+    ) -> AlbumEntry {
+        AlbumEntry(
+            id: UUID(),
+            canonicalKey: "album-\(UUID().uuidString)",
+            displayTitle: "Album",
+            primaryArtistCanonicalName: "artist",
+            primaryArtistDisplayName: "Artist",
+            createdAt: Date(),
+            updatedAt: Date(),
+            trackCount: 0,
+            totalDuration: 0,
+            isOrphaned: isOrphaned,
+            hasUserEditedContent: hasUserEditedContent
+        )
+    }
+}

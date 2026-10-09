@@ -135,6 +135,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     // MARK: - Boot/Reload
 
     func reloadFromLibrary() async {
+        let previousTrackCount = allTracks.count
         libraryService.ensureLibraryFolders()
         playlistItemAddedAtMap.removeAll()
 
@@ -189,12 +190,28 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
         await scheduleSearchIndexRebuild(reason: "repositoryReload")
-        await applyMetadataSync(
-            artistSidecars: snapshot.artistSidecars,
-            albumSidecars: snapshot.albumSidecars,
-            reason: "repositoryReload"
-        )
-        await performLibraryMaintenanceAfterReload(reason: "repositoryReload")
+
+        // A scan that could not read part of the library, or that lost every
+        // track a previous scan could see, is not evidence that the metadata
+        // entries are orphans. Syncing it would delete artist/album folders
+        // that still hold user-edited content.
+        let lostEveryTrack = tracks.isEmpty
+            && (previousTrackCount > 0
+                || snapshot.previousTrackCount > 0
+                || snapshot.unreadableTrackFolderCount > 0)
+        if snapshot.hasEnumerationFailure || lostEveryTrack {
+            Log.error(
+                "[LibraryReload] untrusted scan enumerationFailure=\(snapshot.hasEnumerationFailure) scanTracks=\(tracks.count) previousTracks=\(previousTrackCount) manifestTracks=\(snapshot.previousTrackCount) unreadableTrackFolders=\(snapshot.unreadableTrackFolderCount); skipping metadata sync and maintenance",
+                category: .library
+            )
+        } else {
+            await applyMetadataSync(
+                artistSidecars: snapshot.artistSidecars,
+                albumSidecars: snapshot.albumSidecars,
+                reason: "repositoryReload"
+            )
+            await performLibraryMaintenanceAfterReload(reason: "repositoryReload")
+        }
     }
 
     // MARK: - Track Operations
@@ -245,13 +262,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
         let capturedPaths = paths
-        let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
+        let (artistScan, albumScan) = await Task.detached { @Sendable in
             let scanner = LibraryDiskScanner(paths: capturedPaths)
             return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
         }.value
         await applyMetadataSync(
-            artistSidecars: artistSidecars,
-            albumSidecars: albumSidecars,
+            artistSidecars: artistScan.sidecars,
+            albumSidecars: albumScan.sidecars,
+            listingFailed: artistScan.listingFailed || albumScan.listingFailed,
             reason: "addTrack"
         )
     }
@@ -263,13 +281,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
         let capturedPaths = paths
-        let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
+        let (artistScan, albumScan) = await Task.detached { @Sendable in
             let scanner = LibraryDiskScanner(paths: capturedPaths)
             return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
         }.value
         await applyMetadataSync(
-            artistSidecars: artistSidecars,
-            albumSidecars: albumSidecars,
+            artistSidecars: artistScan.sidecars,
+            albumSidecars: albumScan.sidecars,
+            listingFailed: artistScan.listingFailed || albumScan.listingFailed,
             reason: "addTracks"
         )
     }
@@ -301,13 +320,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
         let capturedPaths = paths
-        let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
+        let (artistScan, albumScan) = await Task.detached { @Sendable in
             let scanner = LibraryDiskScanner(paths: capturedPaths)
             return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
         }.value
         await applyMetadataSync(
-            artistSidecars: artistSidecars,
-            albumSidecars: albumSidecars,
+            artistSidecars: artistScan.sidecars,
+            albumSidecars: albumScan.sidecars,
+            listingFailed: artistScan.listingFailed || albumScan.listingFailed,
             reason: "attachImportedTracks"
         )
     }
@@ -428,13 +448,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
         await scheduleSearchIndexRebuild(reason: "refreshTracks")
-        let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
+        let (artistScan, albumScan) = await Task.detached { @Sendable in
             let scanner = LibraryDiskScanner(paths: capturedPaths)
             return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
         }.value
         await applyMetadataSync(
-            artistSidecars: artistSidecars,
-            albumSidecars: albumSidecars,
+            artistSidecars: artistScan.sidecars,
+            albumSidecars: albumScan.sidecars,
+            listingFailed: artistScan.listingFailed || albumScan.listingFailed,
             reason: "refreshTracks"
         )
 
@@ -1066,8 +1087,19 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private func applyMetadataSync(
         artistSidecars: [(sidecar: ArtistSidecar, folderURL: URL)],
         albumSidecars: [(sidecar: AlbumSidecar, folderURL: URL)],
+        listingFailed: Bool = false,
         reason: String
     ) async {
+        guard !listingFailed else {
+            // An unreadable Artists/Albums root looks exactly like "no entry
+            // has metadata"; syncing it would mint duplicate sidecars and let
+            // the duplicate repair delete the real folder later.
+            Log.error(
+                "[LibraryMetadataSync] \(reason) skipped: artist/album folders could not be listed; keeping the last metadata projection",
+                category: .library
+            )
+            return
+        }
         let apply = { @MainActor [self] in
             let (artists, albums) = try metadataSync.sync(
                 derivedArtists: runtimeArtists,
