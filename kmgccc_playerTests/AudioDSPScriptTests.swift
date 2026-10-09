@@ -18,7 +18,8 @@ final class AudioDSPScriptTests: XCTestCase {
         XCTAssertEqual(program.parameterValues["gainDB"], 0.0)
         XCTAssertEqual(program.format.channelCount, 1)
         XCTAssertEqual(program.latencyFrames, 0)
-        XCTAssertEqual(program.weightedOperationsPerFrame, 3)
+        // input 读取 + gain 常量 + 乘法 + output 写入；emit 对常量也保底计 1。
+        XCTAssertEqual(program.weightedOperationsPerFrame, 4)
         XCTAssertFalse(program.sourceHash.isEmpty)
     }
 
