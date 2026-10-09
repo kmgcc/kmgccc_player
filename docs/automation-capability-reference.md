@@ -40,6 +40,7 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 | Jobs | `jobs.list/get/wait/cancel/retry`；MCP `tasks/get/update/cancel`；Resource `kmgccc://jobs` | 每个资料库保留有界历史；支持可重建的 Lyrics/Source Job 重试；`jobs.wait` 单次最多等待 25 秒；现代 stdio MCP 可订阅 Jobs 资源变化，也可逐请求声明 Tasks 后接收 Task 状态通知、轮询与取消 |
 | Batch | `operations.batch` | 最多 100 项 Metadata/Artwork/Lyrics mutation 依序经现有 App owner 执行；逐项保存完整响应与冲突；dry-run、scope、revision、confirm 和 idempotency 沿用原 handler |
 | Diagnostics | `diagnostics.health` | 返回机器可读的 Library/Source/missing/Job/storage/Playlist-reference 健康报告，并统计缺歌词、缺封面和关键 Metadata 字段覆盖率；一致性 issues 与媒体路径 mediaIssues 分页分开 |
+| DSP | `dsp.schema/state/validate/patch/wait`, `dsp.presets.*`, `dsp.errors.*`, `dsp.scripts.*`, `dsp.nodes.retry` | App-wide 有序效果链、完整预设与实时切换；脚本草稿/编译/fixture Jobs；audio.read/write，测试另需 library.read；状态资源支持变化订阅 |
 | Settings / Audio | `settings.schema/get/patch/validate/reset`, `audio.get/patch` | Settings 覆盖导入补全时序、外观、封面着色、可视化 HDR、Dock 进度及 referenced 删除策略；支持 schema、无副作用校验、revision 和默认值 reset；Audio 读取 gapless scheduling/AAC trim、可用输出设备及系统／App 路由状态，并控制 gapless scheduling/AAC trim 和 App 输出设备选择 |
 | Storage | `storage.inspect/validate/orphans/backup/diff/reload/repair` | inspect/validate/orphans/diff 只读；backup 只复制 JSON/sidecar/enrichment 文件；reload 重新载入当前存储；repair 仅补齐 App-owned scaffolding，不改 domain data |
 | Files | `files.inspect/reveal/export/rename/move/delete` | reveal 使用已授权路径；export 经 App folder picker 把音频拷贝到用户选择的目录并保留原件；rename/move 遵守 Source 授权和路径 containment，批量需 preview/App confirmation；delete 默认 scope 拒绝且始终前台确认 |
@@ -292,3 +293,9 @@ App 已能访问的文件直接导入；缺少访问权限时使用 App 的文�
 取消的导入 Job 可重试，retry spec 保留目标 Playlist ID；调用方重新提供 `filePaths`，App 再次
 检查并取得所需授权，已入库文件按既有 identity 规则复用。retry spec 不保存路径或书签，逐文件失败
 结果仍可能包含诊断路径。新的独立导入请求应使用新的 idempotency key。
+
+- P3–P4 音频：`audio.get/patch` 包含全局淡化、固定响度与设备参考；`audio.loudness.get/analyze` 读取测量或创建既有资料库扫描 Job。`equalLoudness` 作为正式 DSP v1 节点参与完整预设与链排序，补偿只随 App 主音量和设备参考变化。
+
+- P5 音频：`stereoWidth`、`virtualBass`、`tube` 的参数、质量、声道策略及顺序均进入完整预设与 `dsp.patch`；`setQuality`、`setChannelPolicy` 支持原子编辑。`dsp.state.processing` 返回算法延迟、App 时间映射延迟与峰值保证状态。源码与授权 Debug 编译已完成，数值/性能及主 App 验收待完成，详见 [P5 实施记录](audio-dsp-p5-implementation.md)。
+
+- P6 音频：`script` v1 提供有界 VM、参数反射、独立持久草稿、双 revision 与故障隔离。`dsp.scripts.get/update/compile/test`、`dsp.nodes.retry` 与既有预设/排序形成完整控制接口；测试使用可取消 Jobs/现代 Tasks。资源为 `kmgccc://dsp-language` 与 `kmgccc://audio/dsp/scripts/{nodeID}`。源码、静态检查与授权 Debug 编译已完成，测试运行和实际运行验收待完成，详见 [P6 实施记录](audio-dsp-p6-implementation.md)。

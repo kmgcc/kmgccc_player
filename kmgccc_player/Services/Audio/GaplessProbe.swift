@@ -11,7 +11,7 @@
 //  (encoder delay / padding / leading silence).
 //
 //  It reads only ~50ms per side, OFF the main thread, from independent file
-//  handles — never the player node's own `AVAudioFile`. It performs no trimming
+//  handles — separate from the renderer's `AVAudioFile`. It performs no trimming
 //  and does not alter playback in any way.
 //
 

@@ -23,7 +23,7 @@ import Foundation
 /// Gapless metadata for one audio file. Frame counts are in the file's native
 /// PCM sample frames (the same units as `AVAudioFile.length`), so they can be
 /// compared directly against the decoded length.
-struct AACGaplessInfo: Sendable {
+nonisolated struct AACGaplessInfo: Sendable {
     /// The file's data format is MPEG-4 AAC. Only AAC is trimmed; other formats
     /// (MP3 / WAV / FLAC / ALAC) report their info for diagnostics but are never
     /// trimmed by the gapless path.

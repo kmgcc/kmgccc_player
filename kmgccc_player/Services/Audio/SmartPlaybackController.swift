@@ -342,7 +342,7 @@ final class SmartPlaybackController {
     }
 
     /// Commit a natural advance whose audio is ALREADY scheduled and playing on
-    /// the player node (gapless transition). Mirrors `autoAdvance()` EXCEPT it
+    /// the renderer timeline (gapless transition). Mirrors `autoAdvance()` EXCEPT it
     /// never calls `onPlayTrack` — there is no audio to (re)start. It determines
     /// the next track first (no side effects), and only if one exists does it
     /// finalize the current session as a natural completion, advance the
@@ -375,7 +375,7 @@ final class SmartPlaybackController {
         }
 
         // Fires onTrackChanged → currentTrack = track. Deliberately NO onPlayTrack:
-        // the audio for this track is already rendering on the player node.
+        // the audio for this track is already queued on the renderer timeline.
         startTrackSession(track: track)
         return track
     }

@@ -30,7 +30,7 @@ struct AudioPrepRequest: Sendable {
 ///
 /// INVARIANT (single-owner handoff): `file` (AVAudioFile) is created ONLY
 /// inside `AudioFilePreparationActor`. After creation the actor never touches
-/// it again. It is handed to `AVAudioPlaybackService` / `playerNode` for
+/// it again. It is handed through `AVAudioPlaybackService` to the renderer for
 /// single-point scheduling — there is NO concurrent multi-thread access.
 /// AVAudioFile is not Sendable; this type is `@unchecked Sendable` solely
 /// because that single-owner handoff is upheld by construction.

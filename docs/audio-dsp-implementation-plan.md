@@ -1,6 +1,6 @@
 # Renderer 音频 DSP 实施计划
 
-决策日期：2026-10-08。状态：实施方案，尚未实现或通过运行验收。
+决策日期：2026-10-08。状态：分阶段实施中；P5 源码、静态检查及 2026-10-09 授权 Debug 编译已完成，运行验收待进行。P3–P4 已通过授权 Debug 编译。各阶段的验证结果以实施记录为准。
 
 本计划承接 [本地音频输出统一计划](audio-renderer-unification-plan.md)。本地播放统一使用 `AVSampleBufferAudioRenderer` / `AVSampleBufferRenderSynchronizer`，彻底移除 AVAudioEngine 后端和故障回退。DSP 只实现这一条输出路径。
 
@@ -51,7 +51,7 @@ EQ 会改变样本和相位；立体声扩展会改变声道关系；虚拟低�
 | `Services/Audio/Renderer/CMSampleBufferFactory.swift` | canonical Float32 转换、格式描述、PCM 封装 | 保留布局和 frame 精确 PTS；接收已处理 PCM |
 | `Services/Audio/Renderer/RendererPlaybackPipeline.swift` | 串行队列、segments、feed、analysis、设备/恢复 | 唯一连续 DSP runtime；统一预设应用和时间线事务 |
 | 同文件 `enqueueOneChunk` | `nextChunk` → `onEnqueue` → sample buffer → analysis slices → `renderer.enqueue` | DSP 插在 `nextChunk` 后、输出和分析分支之前 |
-| 同文件缓冲常量 | decode chunk 8192 frames，target ahead 1.5 秒，analysis slice 1024 frames | 已排队 PCM 必须参与实时编辑设计；不能仅修改后续解码块 |
+| 同文件缓冲常量 | decode chunk 8192 frames，旁路 target ahead 1.5 秒；DSP 开启时采用 0.6 秒可替换窗口，analysis slice 1024 frames | 已排队 PCM 必须参与实时编辑设计；不能仅修改后续解码块 |
 | `Services/Audio/AVAudioPlaybackService.swift` | 当前曲目、队列、gapless 边界、lease、播放意图 | 保留 owner；全局固定增益与 segment 关联，淡出结束后提交 pause |
 | `Models/AppSettings.swift` | App 级音频偏好 | 全局功能、当前 DSP 配置引用及设备聆听参考 |
 | `Views/Settings/AudioSettingsView.swift` | 音频设置容器 | 增加全局功能与 DSP 入口，复用共享行和颜色 |
@@ -632,6 +632,8 @@ DSP 读取使用 `audio.read`，DSP/预设/代码/全局音频更新使用 `audi
 
 按统一计划删除 engine/旧 tap/旧回退，完成恢复、输出设备、180 ms lead、AAC/gapless、分析和开发录制验收。记录该版本作为 DSP A/B 基线。输出迁移未完成时不新增第二条 DSP 后端。
 
+2026-10-08 已完成 P0 源码迁移，详情见 [实施记录](audio-renderer-p0-implementation.md)。编译、测试执行与设备验收尚未完成，DSP A/B 基线版本仍待实测后确定。
+
 ### P1：EQ、基础节点契约和可观测状态
 
 新增最小配置 owner/processor、9 段 EQ、Double 状态、真实旁路、静态余量和 source format/layout 传递。复用既有 EQ 交互，在音频设置接入。同步新增 schema/state/validate/patch 及基础 MCP/CLI handler，UI/Agent 从首阶段共用 owner。
@@ -650,11 +652,15 @@ DSP 读取使用 `audio.read`，DSP/预设/代码/全局音频更新使用 `audi
 
 验收：gain ratio 整首恒定、album gain 保留相对电平、缺测曲中不更新、ReplayGain/Opus 不重复增益、true peak fixture、扫描取消和文件变化；快速 play/pause/volume、seek 和输出恢复时 envelope 连续。
 
+2026-10-08 已完成 P3 源码接入、静态检查和授权 Debug 编译，详见 [P3–P4 实施记录](audio-dsp-p3-p4-implementation.md)。App、Xcode 测试目标及 CLI／MCP 均已编译通过；尚未执行测试或做设备验收，响度与 true peak 的标准 fixture 精度仍待确认。
+
 ### P4：等响补偿及设备聆听参考
 
 实现相对音量驱动的 shelves、平滑、余量合成和设备 profile。节点参与保存/排序；参考跟设备全局保存。主音量变化与部分 flush 合并，不引起无限重处理。
 
 验收：参考音量以上恒等、降低音量的补偿单调且有界、静音安全、淡化期间补偿不反向提升、设备断开/默认输出变化、appOnly 状态、preset modified 语义和低 CPU。
+
+2026-10-08 已完成 P4 源码接入、静态检查和授权 Debug 编译，详见 [P3–P4 实施记录](audio-dsp-p3-p4-implementation.md)。设备参考、频响、实时更新时间与 CPU 指标尚未实测。
 
 ### P5：立体声扩展、虚拟低音、电子管模拟
 
@@ -662,11 +668,15 @@ DSP 读取使用 `audio.read`，DSP/预设/代码/全局音频更新使用 `audi
 
 验收：M/S mono sum、width=1 旁路、低音湿路/DC/混叠、管模拟谐波/IMD/DC、不同顺序得到可预期输出、dry/wet 延迟对齐、48/96/192 kHz 性能及真实听感。
 
+2026-10-08 已完成三种效果的原生 Swift 核、2×/4× 非线性湿路过采样、保留 PTS/frame count 的源前瞻补偿、完整预设与 MCP 参数接入，详见 [P5 实施记录](audio-dsp-p5-implementation.md)。已补充测试源码，通过静态检查及 2026-10-09 授权 Debug 编译（App、Xcode 测试目标、CLI/MCP 与自动化测试源码）；尚未运行测试或做 CPU/设备验收。可编程执行继续进入 P6。
+
 ### P6：可编程节点与全量 Agent 闭环
 
 实现语言 grammar、编译器、固定内存 VM/执行计划、参数反射、line/column 错误、fixture tests、成本校验。代码参与 preset 保存/导出、实时应用、错误修正和运行隔离。补齐全部资源/Job/Task/CLI/bundled guides。
 
 验收：Agent 从读 schema → 写代码 → 编译失败 → 读错误 → 修正 → 测试 → 实时应用 → 排序 → 保存 → 切走再选回 → 重启读回的完整链路。scope 已授权时没有不必要的逐次人工弹窗。
+
+2026-10-09 已完成 P6 源码接入：内置 Swift DSL 编译器/固定内存 VM、参数反射、独立草稿与 CAS、延迟/成本预算、运行故障隔离、设置编辑器，以及完整 CLI/MCP/资源/Jobs/Tasks 接口。详见 [P6 实施记录](audio-dsp-p6-implementation.md) 与 [脚本语言 v1](audio-dsp-script-language.md)。静态检查与授权 Debug 编译通过（App、Xcode 测试目标、CLI/MCP 与自动化测试目标），本地 MelismaKit 输入已核查；未运行测试或启动 App，Agent 完整闭环及数值/性能/设备验收进入 P7。
 
 ### P7：完整质量与设备验收
 
@@ -715,9 +725,9 @@ DSP 读取使用 `audio.read`，DSP/预设/代码/全局音频更新使用 `audi
 
 原始与处理音频试听应匹配主观电平，避免把更响误判成更好。源质量、算法测量与真实 Apple/蓝牙输出分别留证；没有实际输出录制或设备试听不能声称到耳音质已验证。
 
-针对源码的测试在相关阶段完成整轮修改后集中运行。文档阶段不构建。UI 修改后运行 `./scripts/check-ui-consistency.sh --strict-copy`，并做主 App 界面验收；动画检查按具体变化运行。完整 `verify.sh` 仍按明确要求或合并/发布阶段执行。
+测试仍按阶段补充，但编译型测试由维护者运行，或仅在用户于当前任务明确要求时运行。常规改动不编译；符合仓库重大工程变更标准时，Agent 可在全部实现完成后做一次最终 Debug build-only 编译，并只为修复编译错误再次 build 确认；该例外不包括测试、启动 App、`build_and_run.sh`、`verify.sh` 或 Release 构建。文档阶段不构建。UI 修改可运行 `./scripts/check-ui-consistency.sh --strict-copy` 等静态检查；主 App 界面验收由维护者执行，除非用户明确要求。
 
-主 App 实测遵循 `check-app-process-state.sh`、精确 PID/路径记录和 `build_and_run.sh`；确认仅一个主进程，本地 MelismaKit 依赖前置保持。性能使用 clean Release、明确设备/采样率/输出路由；诊断工具自身开销单独记录，不能把 Debug trace 作为低 CPU 证明。
+主 App 实测由维护者按 `check-app-process-state.sh`、精确 PID/路径记录和 `build_and_run.sh` 流程执行；Agent 仅在用户于当前任务明确要求主 App 实测并授权构建后运行。性能使用 clean Release、明确设备/采样率/输出路由；诊断工具自身开销单独记录，不能把 Debug trace 作为低 CPU 证明。
 
 每阶段提交只完成一个可解释的范围，记录改动、测试、设备、音频样本及未覆盖边界。新增 Automation 能力与当阶段实际功能一起交付；不能提前在 catalog 声称已支持尚未实现的节点。
 
@@ -747,3 +757,23 @@ DSP 读取使用 `audio.read`，DSP/预设/代码/全局音频更新使用 `audi
 全部用户要求的效果、预设、全局功能和 AI 接口均按本计划形成可运行实现；本地音频只走 renderer；所有可编辑参数及源码都由正式 schema/owner 控制；预设真实可听切换与全局设置边界正确；正常无缝播放、设备时钟、空间模式和延迟保留；音质与资源目标有实际证据。
 
 在完成矩阵前，本文件保持计划状态。实施里程碑追加简短记录：目标与范围、关键决定、改动文件、实际测试、未解决边界和下一步。不要把未完成的后续阶段写成现有产品能力。
+
+### 2026-10-09：DSP 切换崩溃与节点页交互修复
+
+截图确认 `prepareDSPReplacement` 使用 `Dictionary(uniqueKeysWithValues:)` 时遇到重复 `DSPBlockKey` 而终止进程。源码中，renderer 恢复仅移除起点之后的旧记录，会保留跨过恢复起点的音频块；原键只记录 segment/源帧/长度，无法区分重新排队的时间线位置。本轮为缓存键补入输出采样帧位置，恢复时移除跨界记录，替换直接沿用 `rawBlocks` 返回的有序数组，并检查未来区间连续性。提交替换时也移除了要求唯一键的字典初始化。尚未实测确认用户现场的重复来源与恢复路径完全一致。
+
+节点页保留展开状态，以一次捕获的坐标和行高驱动本地排序预览，松手后才向原 controller 提交顺序。几何测量缓存不再触发 SwiftUI 状态刷新；浮卡不绘制信号线；每行拥有后续间距，连线始终在自身绘制范围内。旁路改用相切的圆滑曲线，线条使用统一语义强调色与透明度，空链也保持输入到输出连通。EQ/等响曲线每次绘制只准备一次系数；参数未变时跳过重新生成 revision、保存和 DSP 申请。
+
+改动涉及 `RendererPlaybackPipeline`、`AudioDSPController`、`AudioDSPLinearNodeRack`、`AudioDSPEQEditor` 和等响曲线，以及 `RendererPipelineTests` / `AudioDSPControllerTests`。新增回归用例覆盖块内重复恢复后的 DSP 替换和重复参数输入后的最终提交。保留工作树中已有的 DSP 核与其他设置修改。
+
+已验证：`git diff --check`、UI/文案静态检查、三处受影响 UI 的严格动画检查、Swift 源码解析。全工作树动画检查将 renderer 原有的音频增益 `transition` 调用识别为视图转场；受影响 UI 的检查无此问题。本轮没有编译、运行测试、启动 App 或采集性能 trace。
+
+后续由维护者运行 `AudioDSPControllerTests` 和 `RendererTimelineTests`，并在主 App 按以下矩阵验收；P7 尚未完成。
+
+| 路径 | 必须观察的结果 | 当前状态 |
+| --- | --- | --- |
+| 播放/暂停中逐个启用六类效果，快速切换与调参 | 无崩溃，最后设置生效，错误可见 | 待实测 |
+| seek、输出设备/空间模式切换与连续专辑后修改 DSP | 无重叠或重复播放，原时序、延迟与布局保留 | 待实测 |
+| 混合展开/收起节点，首尾互换、反向拖回与连续拖动 | 浮卡跟手，顺序只提交一次，展开状态保留 | 待实测 |
+| 空链、旁路、展开/收起、浅/深色与减少动态效果 | 输入到输出连通，曲线圆滑，连线无长线闪烁 | 待实测 |
+| 打开设置、滚动、拖动 EQ 与等响参数 | UI 响应改善；用相同工作负载比较耗时 | 待实测 |

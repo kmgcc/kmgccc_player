@@ -289,6 +289,7 @@ struct LyricsSearchHelper {
         mode: LDDCMode = .verbatim,
         translation: Bool = true,
         stripMetadata: Bool = true,
+        fixTimingIssues: Bool = UserDefaults.standard.object(forKey: "lddc.fixTimingProblems") as? Bool ?? true,
         amllDBService: AMLLDBService
     ) async -> FetchLyricsContentResult {
         guard !Task.isCancelled else { return .failed }
@@ -336,7 +337,8 @@ struct LyricsSearchHelper {
                         ttml = try await TTMLConverter.shared.convertToTTMLWithTranslation(
                             origLyrics: origLyrics,
                             transLyrics: trans,
-                            stripMetadata: stripMetadata
+                            stripMetadata: stripMetadata,
+                            fixTimingIssues: fixTimingIssues
                         )
                     } catch {
                         throw error
@@ -351,7 +353,8 @@ struct LyricsSearchHelper {
                     do {
                         ttml = try await TTMLConverter.shared.convertToTTML(
                             rawLyrics: origLyrics,
-                            stripMetadata: stripMetadata
+                            stripMetadata: stripMetadata,
+                            fixTimingIssues: fixTimingIssues
                         )
                     } catch {
                         throw error
@@ -381,7 +384,8 @@ struct LyricsSearchHelper {
                 do {
                     ttml = try await TTMLConverter.shared.convertToTTML(
                         rawLyrics: lyrics,
-                        stripMetadata: stripMetadata
+                        stripMetadata: stripMetadata,
+                        fixTimingIssues: fixTimingIssues
                     )
                 } catch {
                     throw error

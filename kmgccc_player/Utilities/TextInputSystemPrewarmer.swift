@@ -19,8 +19,8 @@ import AppKit
 ///
 /// Because that block lands on the main thread while music plays, the UI (scrubber,
 /// spectrum, lyrics) freezes for the duration and is easily misperceived as an
-/// audio glitch — even though `AVAudioEngine` keeps rendering from its real-time
-/// thread, unaffected by main-thread stalls. Running this warm-up once at launch
+/// audio glitch while the renderer continues consuming its queued samples.
+/// Running this warm-up once at launch
 /// idle front-loads the services so the first real text edit (e.g. opening the
 /// song-Info editor) is cheap, with no change to the open-to-edit interaction.
 @MainActor
