@@ -1,4 +1,5 @@
 import XCTest
+@testable import kmgccc_player
 
 @MainActor
 final class LibrarySessionControllerTests: XCTestCase {

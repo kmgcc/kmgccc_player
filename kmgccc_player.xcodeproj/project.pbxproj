@@ -28,37 +28,14 @@
 		A0100000000000000000000D /* LegalDocuments in Resources */ = {isa = PBXBuildFile; fileRef = B0100000000000000000000D /* LegalDocuments */; };
 		C02000000000000000000001 /* kmgccc_playerTests/MetadataMatchScorerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000011 /* kmgccc_playerTests/MetadataMatchScorerTests.swift */; };
 		C02000000000000000000002 /* kmgccc_playerTests/SkinRoutePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000012 /* kmgccc_playerTests/SkinRoutePolicyTests.swift */; };
-		C02000000000000000000003 /* ExternalPlaybackTextNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000013 /* ExternalPlaybackTextNormalizer.swift */; };
-		C02000000000000000000004 /* SkinRoutePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000014 /* SkinRoutePolicy.swift */; };
 		C02000000000000000000005 /* kmgccc_playerTests/CrashReportingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000016 /* kmgccc_playerTests/CrashReportingTests.swift */; };
-		C02000000000000000000006 /* CrashReportModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000017 /* CrashReportModels.swift */; };
-		C02000000000000000000007 /* CrashReportSanitizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000018 /* CrashReportSanitizer.swift */; };
-		C02000000000000000000008 /* CrashReportStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000019 /* CrashReportStore.swift */; };
-		C02000000000000000000009 /* MetricKitDiagnosticModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0200000000000000000001A /* MetricKitDiagnosticModels.swift */; };
-		C0200000000000000000000A /* MetricKitDiagnosticSanitizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0200000000000000000001B /* MetricKitDiagnosticSanitizer.swift */; };
-		C0200000000000000000000B /* MetricKitDiagnosticStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0200000000000000000001C /* MetricKitDiagnosticStore.swift */; };
 		C0200000000000000000000C /* kmgccc_playerTests/UpdatePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0200000000000000000001D /* kmgccc_playerTests/UpdatePolicyTests.swift */; };
-		C0200000000000000000000D /* UpdatePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0200000000000000000001E /* UpdatePolicy.swift */; };
 		C03000000000000000000001 /* kmgccc_playerTests/MusicLibraryRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000011 /* kmgccc_playerTests/MusicLibraryRegistryTests.swift */; };
 		C03000000000000000000002 /* kmgccc_playerTests/LibraryPathsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000012 /* kmgccc_playerTests/LibraryPathsTests.swift */; };
 		C03000000000000000000003 /* kmgccc_playerTests/LegacyLibraryBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000013 /* kmgccc_playerTests/LegacyLibraryBootstrapTests.swift */; };
-		C03000000000000000000004 /* MusicLibraryManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000014 /* MusicLibraryManifest.swift */; };
-		C03000000000000000000005 /* MusicLibraryRegistryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000015 /* MusicLibraryRegistryStore.swift */; };
-		C03000000000000000000006 /* LibraryContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000016 /* LibraryContext.swift */; };
-		C03000000000000000000007 /* LibraryPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000017 /* LibraryPaths.swift */; };
-		C03000000000000000000008 /* LegacyLibraryBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000018 /* LegacyLibraryBootstrap.swift */; };
-		C03000000000000000000009 /* LibraryUpgradeJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000019 /* LibraryUpgradeJournal.swift */; };
-		C0300000000000000000000A /* LibraryLocationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0300000000000000000001A /* LibraryLocationStore.swift */; };
 		C0300000000000000000000B /* kmgccc_playerTests/LibrarySessionControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0300000000000000000001B /* kmgccc_playerTests/LibrarySessionControllerTests.swift */; };
-		C0300000000000000000000C /* LibrarySessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0300000000000000000001C /* LibrarySessionController.swift */; };
 		C04000000000000000000001 /* kmgccc_playerTests/TrackMediaLocatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000011 /* kmgccc_playerTests/TrackMediaLocatorTests.swift */; };
 		C04000000000000000000002 /* kmgccc_playerTests/AudioLocatorResolutionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000012 /* kmgccc_playerTests/AudioLocatorResolutionTests.swift */; };
-		C04000000000000000000003 /* kmgccc_player/Models/ReferencedFileIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000013 /* kmgccc_player/Models/ReferencedFileIdentity.swift */; };
-		C04000000000000000000004 /* kmgccc_player/Models/TrackMediaLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000014 /* kmgccc_player/Models/TrackMediaLocator.swift */; };
-		C04000000000000000000005 /* kmgccc_player/Models/TrackAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000015 /* kmgccc_player/Models/TrackAvailability.swift */; };
-		C04000000000000000000006 /* kmgccc_player/Services/Audio/AudioLocatorResolution.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000016 /* kmgccc_player/Services/Audio/AudioLocatorResolution.swift */; };
-		C04000000000000000000007 /* kmgccc_player/Models/TrackPreferenceStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000017 /* kmgccc_player/Models/TrackPreferenceStats.swift */; };
-		C04000000000000000000008 /* kmgccc_player/Services/Library/LibrarySidecars.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000018 /* kmgccc_player/Services/Library/LibrarySidecars.swift */; };
 		C05000000000000000000001 /* kmgccc_playerTests/LocatorPersistenceIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C05000000000000000000011 /* kmgccc_playerTests/LocatorPersistenceIntegrationTests.swift */; };
 		C06000000000000000000001 /* kmgccc_playerTests/ReferencedNCMConversionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C06000000000000000000011 /* kmgccc_playerTests/ReferencedNCMConversionTests.swift */; };
 		C07000000000000000000001 /* kmgccc_playerTests/ReferencedSourceReconcilerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C07000000000000000000011 /* kmgccc_playerTests/ReferencedSourceReconcilerTests.swift */; };
@@ -68,9 +45,6 @@
 		C0A10000000000000000000001 /* kmgccc_playerTests/LibraryReimportGrowthIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A10000000000000000000011 /* kmgccc_playerTests/LibraryReimportGrowthIntegrationTests.swift */; };
 		C0B000000000000000000001 /* kmgccc_playerTests/MusicSettingsRenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0B000000000000000000011 /* kmgccc_playerTests/MusicSettingsRenderTests.swift */; };
 		C0C000000000000000000001 /* kmgccc_playerTests/SourceReconnectMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0C000000000000000000011 /* kmgccc_playerTests/SourceReconnectMatcherTests.swift */; };
-		C0D000000000000000000001 /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D000000000000000000011 /* Log.swift */; };
-		C0E000000000000000000001 /* TrackCredit.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0E000000000000000000011 /* TrackCredit.swift */; };
-		C0F000000000000000000001 /* LibraryTextNormalization.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0F000000000000000000011 /* LibraryTextNormalization.swift */; };
 		C11000000000000000000001 /* kmgccc_playerTests/CrossSourceMoveIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11000000000000000000011 /* kmgccc_playerTests/CrossSourceMoveIntegrationTests.swift */; };
 		C12000000000000000000001 /* kmgccc_playerTests/ReferencedLibraryDomainMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12000000000000000000011 /* kmgccc_playerTests/ReferencedLibraryDomainMigrationTests.swift */; };
 		C13000000000000000000001 /* kmgccc_playerTests/TrackIdentityResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C13000000000000000000011 /* kmgccc_playerTests/TrackIdentityResolverTests.swift */; };
@@ -789,39 +763,16 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C02000000000000000000003 /* ExternalPlaybackTextNormalizer.swift in Sources */,
-				C02000000000000000000004 /* SkinRoutePolicy.swift in Sources */,
 				C02000000000000000000001 /* kmgccc_playerTests/MetadataMatchScorerTests.swift in Sources */,
 				C02000000000000000000002 /* kmgccc_playerTests/SkinRoutePolicyTests.swift in Sources */,
 				C02000000000000000000005 /* kmgccc_playerTests/CrashReportingTests.swift in Sources */,
-				C02000000000000000000006 /* CrashReportModels.swift in Sources */,
-				C02000000000000000000007 /* CrashReportSanitizer.swift in Sources */,
-				C02000000000000000000008 /* CrashReportStore.swift in Sources */,
-				C02000000000000000000009 /* MetricKitDiagnosticModels.swift in Sources */,
-				C0200000000000000000000A /* MetricKitDiagnosticSanitizer.swift in Sources */,
-				C0200000000000000000000B /* MetricKitDiagnosticStore.swift in Sources */,
 				C0200000000000000000000C /* kmgccc_playerTests/UpdatePolicyTests.swift in Sources */,
-				C0200000000000000000000D /* UpdatePolicy.swift in Sources */,
 				C03000000000000000000001 /* kmgccc_playerTests/MusicLibraryRegistryTests.swift in Sources */,
 				C03000000000000000000002 /* kmgccc_playerTests/LibraryPathsTests.swift in Sources */,
 				C03000000000000000000003 /* kmgccc_playerTests/LegacyLibraryBootstrapTests.swift in Sources */,
-				C03000000000000000000004 /* MusicLibraryManifest.swift in Sources */,
-				C03000000000000000000005 /* MusicLibraryRegistryStore.swift in Sources */,
-				C03000000000000000000006 /* LibraryContext.swift in Sources */,
-				C03000000000000000000007 /* LibraryPaths.swift in Sources */,
-				C03000000000000000000008 /* LegacyLibraryBootstrap.swift in Sources */,
-				C03000000000000000000009 /* LibraryUpgradeJournal.swift in Sources */,
-				C0300000000000000000000A /* LibraryLocationStore.swift in Sources */,
 				C0300000000000000000000B /* kmgccc_playerTests/LibrarySessionControllerTests.swift in Sources */,
-				C0300000000000000000000C /* LibrarySessionController.swift in Sources */,
 				C04000000000000000000001 /* kmgccc_playerTests/TrackMediaLocatorTests.swift in Sources */,
 				C04000000000000000000002 /* kmgccc_playerTests/AudioLocatorResolutionTests.swift in Sources */,
-				C04000000000000000000003 /* kmgccc_player/Models/ReferencedFileIdentity.swift in Sources */,
-				C04000000000000000000004 /* kmgccc_player/Models/TrackMediaLocator.swift in Sources */,
-				C04000000000000000000005 /* kmgccc_player/Models/TrackAvailability.swift in Sources */,
-				C04000000000000000000006 /* kmgccc_player/Services/Audio/AudioLocatorResolution.swift in Sources */,
-				C04000000000000000000007 /* kmgccc_player/Models/TrackPreferenceStats.swift in Sources */,
-				C04000000000000000000008 /* kmgccc_player/Services/Library/LibrarySidecars.swift in Sources */,
 				C05000000000000000000001 /* kmgccc_playerTests/LocatorPersistenceIntegrationTests.swift in Sources */,
 				C06000000000000000000001 /* kmgccc_playerTests/ReferencedNCMConversionTests.swift in Sources */,
 				C07000000000000000000001 /* kmgccc_playerTests/ReferencedSourceReconcilerTests.swift in Sources */,
@@ -842,9 +793,6 @@
 				C18000000000000000000001 /* kmgccc_playerTests/RepositoryImportCommitTests.swift in Sources */,
 				C19000000000000000000001 /* kmgccc_playerTests/PlaylistMembershipRollbackTests.swift in Sources */,
 				C1A000000000000000000001 /* kmgccc_playerTests/LibraryBackendImportTests.swift in Sources */,
-				C0D000000000000000000001 /* Log.swift in Sources */,
-				C0E000000000000000000001 /* TrackCredit.swift in Sources */,
-				C0F000000000000000000001 /* LibraryTextNormalization.swift in Sources */,
 				C3F000000000000000000001 /* PlaybackOutputGainControllerTests.swift in Sources */,
 				C3F000000000000000000002 /* AudioProcessingGlobalsControllerTests.swift in Sources */,
 				C3F000000000000000000003 /* AudioLoudnessTests.swift in Sources */,
