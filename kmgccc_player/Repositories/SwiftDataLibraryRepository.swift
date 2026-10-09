@@ -1888,11 +1888,15 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             }
 
             if impactedArtistCanonicalNames.contains(entry.canonicalName) {
-                if hasUserContent(entry) {
+                // `hasUserEditedContent` carries the sync's verdict for user data
+                // the entry itself does not project (track sort keys and manual
+                // order), so it must be honoured here too.
+                if hasUserContent(entry) || entry.hasUserEditedContent {
                     entry.trackCount = 0
                     entry.albumCount = 0
                     entry.totalDuration = 0
                     entry.isOrphaned = true
+                    entry.hasUserEditedContent = true
                     nextArtistEntries.append(entry)
                 } else {
                     artistEntryIDsToDelete.append(entry.id)
@@ -1929,10 +1933,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             }
 
             if impactedAlbumKeys.contains(entry.canonicalKey) {
-                if hasUserContent(entry) {
+                if hasUserContent(entry) || entry.hasUserEditedContent {
                     entry.trackCount = 0
                     entry.totalDuration = 0
                     entry.isOrphaned = true
+                    entry.hasUserEditedContent = true
                     if entry.artworkFileName == nil {
                         entry.artworkData = nil
                     }
