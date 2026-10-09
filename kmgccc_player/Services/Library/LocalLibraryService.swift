@@ -245,12 +245,23 @@ final class LocalLibraryService {
     // MARK: - Library-owned ordering
 
     func loadLibraryOrderingSidecar() -> LibraryOrderingSidecar {
-        guard let data = try? Data(contentsOf: paths.libraryOrderingURL),
-              let sidecar = try? decoder.decode(LibraryOrderingSidecar.self, from: data)
-        else {
+        let url = paths.libraryOrderingURL
+        // Never written: one-time legacy UserDefaults migration is still allowed.
+        guard fileManager.fileExists(atPath: url.path) else {
             return LibraryOrderingSidecar()
         }
-        return sidecar
+        do {
+            let data = try Data(contentsOf: url)
+            return try decoder.decode(LibraryOrderingSidecar.self, from: data)
+        } catch {
+            // Present but unreadable: must not read as "never written", otherwise
+            // this library would borrow another library's global defaults.
+            Log.error(
+                "Failed to read library ordering sidecar, using local defaults: \(error)",
+                category: .library
+            )
+            return LibraryOrderingSidecar(legacyUserDefaultsMigrationCompleted: true)
+        }
     }
 
     @discardableResult
