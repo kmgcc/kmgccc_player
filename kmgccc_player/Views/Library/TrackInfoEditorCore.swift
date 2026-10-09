@@ -43,7 +43,7 @@ struct TrackInfoEditorCore: View {
     let saveTitle: LocalizedStringKey
     let descriptionFallback: String?
     let showsDetailedMetadata: Bool
-    let onSave: () -> Void
+    let onSave: () -> Bool
     let onCancel: () -> Void
     let onClearOverride: (() -> Void)?
     let onRestoreAutomatic: (() -> Void)?
@@ -72,6 +72,7 @@ struct TrackInfoEditorCore: View {
     @State private var isMetadataLookupInFlight = false
     @State private var metadataLookupMessage: String?
     @State private var lyricsValidationMessage: String?
+    @State private var saveFailureMessage: String?
     @State private var coverFetchTask: Task<Void, Never>?
     @State private var metadataFetchTask: Task<Void, Never>?
     @State private var artworkPreviewTask: Task<Void, Never>?
@@ -106,6 +107,16 @@ struct TrackInfoEditorCore: View {
             }
 
             Divider()
+
+            if let saveFailureMessage {
+                Text(saveFailureMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+            }
 
             footerView
         }
@@ -779,8 +790,12 @@ struct TrackInfoEditorCore: View {
                     lyricsValidationMessage = message
                     return
                 }
-                onSave()
-                dismiss()
+                saveFailureMessage = nil
+                if onSave() {
+                    dismiss()
+                } else {
+                    saveFailureMessage = "无法保存，请重试。"
+                }
             }
             .buttonStyle(.borderedProminent)
             .clipShape(Capsule())

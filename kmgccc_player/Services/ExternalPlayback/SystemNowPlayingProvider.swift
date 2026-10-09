@@ -2427,7 +2427,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
                 await self.prepareAndCommitArtwork(networkArtwork, source: .network, identity: identity, displayTrackID: displayTrackID)
                 await MainActor.run {
-                    metadataStore.storeNetworkArtwork(networkArtwork, for: identity, source: "network")
+                    _ = metadataStore.storeNetworkArtwork(networkArtwork, for: identity, source: "network")
                 }
                 return
             }
