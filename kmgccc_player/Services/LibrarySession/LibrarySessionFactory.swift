@@ -447,10 +447,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
                 sensitivity: AppSettings.shared.ledSensitivity,
                 speed: Float(AppSettings.shared.ledSpeed),
                 targetHz: AppSettings.shared.ledTargetHz
-            ),
-            mixerProvider: { [weak playbackService] in
-                playbackService?.analysisMixerNode ?? AVAudioEngine().mainMixerNode
-            }
+            )
         )
         let playerViewModel = PlayerViewModel(
             playbackService: playbackService,

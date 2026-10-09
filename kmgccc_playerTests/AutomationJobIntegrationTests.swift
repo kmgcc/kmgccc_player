@@ -8,6 +8,25 @@ import PlayerAutomationProtocol
 
 @MainActor
 final class AutomationJobIntegrationTests: XCTestCase {
+    func testMCPResourceSubscriptionAndTaskRequestsRespectTheMCPControlPlaneSwitch() async throws {
+        try await withFixture { fixture in
+            let previous = AppSettings.shared.automationMCPEnabled
+            defer { AppSettings.shared.automationMCPEnabled = previous }
+            AppSettings.shared.automationMCPEnabled = false
+            for caller in ["mcp", "mcp-resource", "mcp-subscription", "mcp-tasks"] {
+                let response = try await fixture.send(AutomationRequest(method: AutomationMethod.dspSchema,
+                    context: AutomationRequestContext(libraryID: fixture.session.context.id, caller: caller)))
+                XCTAssertEqual(response.error?.code, .authorizationRequired)
+                guard case .object(let details)? = response.error?.details else {
+                    XCTFail("Expected control-plane error details.")
+                    continue
+                }
+                XCTAssertEqual(details["controlPlane"], .string("mcp"))
+                XCTAssertEqual(details["setting"], .string("automationMCPEnabled"))
+            }
+        }
+    }
+
     func testJobsWaitReportsTimeoutAndTerminalStateAndWaitCancellationLeavesJobRunning() async throws {
         try await withFixture { fixture in
             let gate = AutomationJobIntegrationGate()
@@ -212,6 +231,210 @@ final class AutomationJobIntegrationTests: XCTestCase {
             let afterConflict = await fixture.session.repository.fetchTracks(in: nil)
             XCTAssertEqual(afterConflict.first(where: { $0.id == first.id })?.title, "Batch title A")
             XCTAssertEqual(afterConflict.first(where: { $0.id == second.id })?.album, "Batch album B")
+        }
+    }
+
+    func testDomainDispatchAndGlobalValidationRetainIPCContract() async throws {
+        try await withFixture { fixture in
+            let methods = [
+                AutomationMethod.systemPing, AutomationMethod.systemInfo,
+                AutomationMethod.libraryList, AutomationMethod.libraryStats,
+                AutomationMethod.playlistList, AutomationMethod.playbackState,
+                AutomationMethod.queueGet, AutomationMethod.queueUpcoming,
+                AutomationMethod.historyList, AutomationMethod.historyStats,
+                AutomationMethod.jobsList, AutomationMethod.settingsGet,
+                AutomationMethod.settingsSchema, AutomationMethod.audioGet,
+                AutomationMethod.storageInspect, AutomationMethod.automationCapabilities,
+                AutomationMethod.automationScopes
+            ]
+            for method in methods {
+                let request = AutomationRequest(method: method, context: fixture.requestContext)
+                let response = try await fixture.send(request)
+                XCTAssertNil(response.error, method)
+                XCTAssertNotNil(response.result, method)
+                XCTAssertEqual(response.requestID, request.requestID, method)
+            }
+            let track = try XCTUnwrap(fixture.session.libraryViewModel.allTracks.first)
+            for method in [AutomationMethod.metadataGet, AutomationMethod.artworkGet, AutomationMethod.lyricsGet] {
+                let response = try await fixture.send(AutomationRequest(
+                    method: method,
+                    params: .object(["trackID": .string(track.id.uuidString)]),
+                    context: fixture.requestContext
+                ))
+                XCTAssertNil(response.error, method)
+                XCTAssertNotNil(response.result, method)
+            }
+            let fileParams: AutomationJSONValue = .object(["trackIDs": .array([.string(track.id.uuidString)])])
+            let denied = try await fixture.send(AutomationRequest(
+                method: AutomationMethod.filesDelete, params: fileParams, context: fixture.requestContext
+            ))
+            XCTAssertEqual(denied.error?.code, .authorizationRequired)
+            let unknownParameters = try await fixture.send(AutomationRequest(
+                method: AutomationMethod.filesDelete,
+                params: .object(["unknown": .boolean(true)]), context: fixture.requestContext
+            ))
+            XCTAssertEqual(unknownParameters.error?.code, .invalidRequest,
+                           "Unknown parameters must still precede scope denial.")
+            let preview = try await fixture.send(AutomationRequest(
+                method: AutomationMethod.filesDelete,
+                params: .object(["trackIDs": .array([.string(track.id.uuidString)]), "dryRun": .boolean(true)]),
+                context: fixture.requestContext
+            ))
+            XCTAssertEqual(preview.error?.code, .invalidRequest,
+                           "The managed Library restriction follows the dry-run delete-scope exemption.")
+            let wrongLibrary = try await fixture.send(AutomationRequest(
+                method: AutomationMethod.queueGet,
+                context: AutomationRequestContext(libraryID: UUID(), caller: "test")
+            ))
+            XCTAssertEqual(wrongLibrary.error?.code, .libraryNotActive)
+            let unknownMethod = try await fixture.send(AutomationRequest(
+                method: "unknown.operation", context: fixture.requestContext
+            ))
+            XCTAssertEqual(unknownMethod.error?.code, .methodNotFound)
+        }
+    }
+
+    func testIdempotencyAndPlaylistSelectionRetainIPCBehavior() async throws {
+        try await withFixture { fixture in
+            let context = AutomationRequestContext(
+                libraryID: fixture.session.context.id, idempotencyKey: UUID().uuidString, caller: "test"
+            )
+            let params: AutomationJSONValue = .object(["name": .string("Idempotent Playlist")])
+            let first = try await fixture.send(AutomationRequest(
+                method: AutomationMethod.playlistCreate, params: params, context: context
+            ))
+            XCTAssertNil(first.error)
+            let replayRequest = AutomationRequest(method: AutomationMethod.playlistCreate, params: params, context: context)
+            let replay = try await fixture.send(replayRequest)
+            XCTAssertEqual(replay.requestID, replayRequest.requestID)
+            XCTAssertEqual(replay.result, first.result)
+            XCTAssertEqual(replay.serverTime, first.serverTime)
+            XCTAssertEqual(fixture.session.libraryViewModel.playlists.filter { $0.name == "Idempotent Playlist" }.count, 1)
+            let conflict = try await fixture.send(AutomationRequest(
+                method: AutomationMethod.playlistCreate,
+                params: .object(["name": .string("Different Playlist")]), context: context
+            ))
+            XCTAssertEqual(conflict.error?.code, .invalidRequest)
+            let playlist = try XCTUnwrap(fixture.session.libraryViewModel.playlists.first { $0.name == "Idempotent Playlist" })
+            let trackIDs = fixture.session.libraryViewModel.allTracks.map(\.id)
+            let selectionResponse = try await fixture.send(AutomationRequest(
+                method: AutomationMethod.librarySelectionCreate,
+                params: .object(["trackIDs": .array(trackIDs.map { .string($0.uuidString) })]),
+                context: fixture.requestContext
+            ))
+            XCTAssertNil(selectionResponse.error)
+            let selections = try await fixture.send(AutomationRequest(
+                method: AutomationMethod.librarySelectionList, context: fixture.requestContext
+            ))
+            let data = try AutomationWireCoding.encoder().encode(try XCTUnwrap(selections.result))
+            let result = try AutomationWireCoding.decoder().decode(AutomationSelectionListResult.self, from: data)
+            let selection = try XCTUnwrap(result.selections.first)
+            let preview = try await fixture.send(AutomationRequest(
+                method: AutomationMethod.playlistAddSelection,
+                params: .object([
+                    "playlistID": .string(playlist.id.uuidString),
+                    "selectionID": .string(selection.id.uuidString),
+                    "expectedSelectionRevision": .string(selection.revision),
+                    "dryRun": .boolean(true)
+                ]), context: fixture.requestContext
+            ))
+            XCTAssertNil(preview.error)
+            XCTAssertTrue(playlist.tracks.isEmpty)
+            let mutation = try await fixture.send(AutomationRequest(
+                method: AutomationMethod.playlistAddSelection,
+                params: .object([
+                    "playlistID": .string(playlist.id.uuidString),
+                    "selectionID": .string(selection.id.uuidString),
+                    "expectedSelectionRevision": .string(selection.revision)
+                ]), context: fixture.requestContext
+            ))
+            XCTAssertNil(mutation.error)
+            XCTAssertEqual(playlist.tracks.map(\.id), trackIDs)
+        }
+    }
+
+    func testFileWorkerCopyPreservesCollisionNamesAndMissingFileErrors() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("source/Audio.wav")
+        let destination = root.appendingPathComponent("export")
+        try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = Data([1, 2, 3, 4])
+        try bytes.write(to: source)
+        try bytes.write(to: destination.appendingPathComponent("Audio.wav"))
+        let worker = AutomationFileWorker()
+        let trackID = UUID()
+        async let first = worker.copy(source: source, trackID: trackID, to: destination)
+        async let second = worker.copy(source: source, trackID: trackID, to: destination)
+        let outputs = try await [first, second]
+        XCTAssertEqual(outputs.map(\.lastPathComponent).sorted(), ["Audio (2).wav", "Audio (3).wav"])
+        for output in outputs { XCTAssertEqual(try Data(contentsOf: output), bytes) }
+        XCTAssertEqual(try Data(contentsOf: source), bytes)
+        do {
+            _ = try await worker.copy(source: root.appendingPathComponent("missing.wav"), trackID: trackID, to: destination)
+            XCTFail("A missing source must fail.")
+        } catch AutomationFileOperationError.fileUnavailable(let failedID) {
+            XCTAssertEqual(failedID, trackID)
+        }
+    }
+
+    func testFileWorkerMoveRestoresEarlierFilesAfterPartialFailure() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("original.wav")
+        let destination = root.appendingPathComponent("moved/audio.wav")
+        let bytes = Data([4, 3, 2, 1])
+        try bytes.write(to: source)
+        do {
+            try await AutomationFileWorker().move([
+                .init(from: source, destination: destination),
+                .init(from: root.appendingPathComponent("missing.wav"), destination: root.appendingPathComponent("other.wav"))
+            ])
+            XCTFail("The second move must fail.")
+        } catch AutomationFileOperationError.operationFailed {
+            XCTAssertEqual(try Data(contentsOf: source), bytes)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        }
+    }
+
+    func testLibraryQuiesceWaitsForFileIOCompletionAfterCancellation() async throws {
+        try await withFixture { fixture in
+            let queue = DispatchQueue(label: "automation.file-test-gate")
+            queue.suspend()
+            var queueNeedsResume = true
+            defer { if queueNeedsResume { queue.resume() } }
+            let worker = AutomationFileWorker(queue: queue)
+            let destination = fixture.rootURL.appendingPathComponent("export")
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            let source = fixture.rootURL.appendingPathComponent("Audio/First.wav")
+            let task = Task { @MainActor in
+                try await fixture.session.runLibraryOperation(as: .other) {
+                    try await worker.copy(source: source, trackID: UUID(), to: destination)
+                }
+            }
+            var descriptor: LibraryOperationTaskDescriptor?
+            for _ in 0..<200 {
+                descriptor = fixture.session.libraryJobDescriptorsSnapshot().first { $0.kind == .other && $0.state == .running }
+                if descriptor != nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            _ = try XCTUnwrap(descriptor)
+            var didQuiesce = false
+            let quiesce = Task { @MainActor in
+                await fixture.session.quiesce()
+                didQuiesce = true
+            }
+            try await Task.sleep(for: .milliseconds(30))
+            XCTAssertFalse(didQuiesce, "Library access must remain alive while a queued copy owns it.")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent("First.wav").path))
+            queue.resume()
+            queueNeedsResume = false
+            let output = try await task.value
+            await quiesce.value
+            XCTAssertTrue(didQuiesce)
+            XCTAssertEqual(try Data(contentsOf: output), try Data(contentsOf: source))
         }
     }
 

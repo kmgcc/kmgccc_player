@@ -9,6 +9,12 @@
 | [实现约束与坑](PITFALLS.md) | 只收仍生效的实现约束与坑；**改对应功能代码前先读** |
 | [架构概览](architecture.md) | 应用组合根、资料库 session、本地与外部播放、统一展示模型、歌词、主题和频谱的主链路 |
 | [本地音频输出统一计划](audio-renderer-unification-plan.md) | 单一 sample-buffer renderer、旧 engine 移除、设备恢复、无缝播放与分析迁移 |
+| [Renderer P0 实施记录](audio-renderer-p0-implementation.md) | 单一输出源码迁移、恢复与资源屏障、分析/录制接入，以及待执行的构建和设备验收 |
+| [DSP P6 实施记录](audio-dsp-p6-implementation.md) | 可编程节点、固定内存 VM、草稿/预设、运行隔离、Agent/Jobs 控制与验收边界 |
+| [DSP 脚本语言 v1](audio-dsp-script-language.md) | 源码语法、参数/状态原语、延迟声明、fixture 与 Agent 工作流 |
+| [DSP P5 实施记录](audio-dsp-p5-implementation.md) | 立体声扩展、虚拟低音、电子管模拟、过采样与时间映射、完整 AI 参数及验收边界 |
+| [DSP P3–P4 实施记录](audio-dsp-p3-p4-implementation.md) | 全局非线性淡化、固定响度、离线扫描与等响设备参考及验收边界 |
+| [DSP P1–P2 实施记录](audio-dsp-p1-p2-implementation.md) | 九段 EQ、完整预设、未来队列替换、统一设置和 AI 控制，以及待设备验收项目 |
 | [Renderer 音频 DSP 实施计划](audio-dsp-implementation-plan.md) | 自定义效果链、等响补偿、完整预设实时切换、全局淡化/固定响度均衡、音质性能与 MCP/AI 控制 |
 | [App 维护备忘](app-maintenance-backlog.md) | App 本体的职责拆分、播放发布与开发工具整理，以及核心测试和实际 UI 验收范围 |
 | [皮肤体系演进计划](skin-system-evolution-plan.md) | 皮肤解耦、组件与自由排版、ZIP 导入与重载、Web 效果、开发工具及 Folium 兼容阶段 |
@@ -30,6 +36,7 @@
 | [AI Agent Automation 实施计划](ai-agent-automation-plan.md) | 面向外部 Agent 的持续实施计划、阶段状态、Source/文件验收和安全边界 |
 | [Automation 计划实现审计（2026-10-03）](automation-plan-audit-2026-10-03.md) | 逐领域实现差距、导入闭环、Source 配置交换、Metadata 快照读取与实际验收边界 |
 | [MCP 实测优化验收（2026-10-07）](automation-improvement-audit-2026-10-07.md) | 报告核对、请求可靠性、批量操作、任务等待、诊断和迁移验收 |
+| [Automation Server 架构审计与重构（2026-10-08）](automation-server-refactor-audit-2026-10-08.md) | Handler 职责、请求约束、阶段验证、后台文件操作与剩余技术债务 |
 | [Automation Capability Reference](automation-capability-reference.md) | 当前可用的领域能力（含 Metadata/Artwork 控制）、组合查询、文件操作、风险、scope、revision 和 Jobs |
 | [Agent Behavior Guide](agent-behavior-guide.md) | Agent 的领域语义、安全规则、推荐 workflow 和 Storage fallback |
 | [Automation CLI Reference](automation-cli-reference.md) | 人、脚本和 Agent 可用的命令、JSON、exit code 和 batch 约定 |

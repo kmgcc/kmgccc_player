@@ -244,11 +244,13 @@ private final class MCPJobResourceSubscriptions: @unchecked Sendable {
         var lastJobs: AutomationJSONValue?
         var hasSnapshot: Bool
         var lastTaskSnapshots: [String: AutomationJSONValue]
+        var lastResourceSnapshots: [String: AutomationJSONValue]
     }
 
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "com.kmgccc.player.mcp-job-subscriptions", qos: .utility)
     private let output: MCPStdioOutput
+    private let readResource: @Sendable (String) -> AutomationJSONValue?
     private let readJobs: @Sendable () -> AutomationJSONValue?
     private let taskNotificationValue: @Sendable (AutomationJobSummary) -> AutomationJSONValue?
     private var subscriptions: [String: Subscription] = [:]
@@ -258,9 +260,11 @@ private final class MCPJobResourceSubscriptions: @unchecked Sendable {
     init(
         output: MCPStdioOutput,
         readJobs: @escaping @Sendable () -> AutomationJSONValue?,
-        taskNotificationValue: @escaping @Sendable (AutomationJobSummary) -> AutomationJSONValue?
+        taskNotificationValue: @escaping @Sendable (AutomationJobSummary) -> AutomationJSONValue?,
+        readResource: @escaping @Sendable (String) -> AutomationJSONValue? = { _ in nil }
     ) {
         self.output = output
+        self.readResource = readResource
         self.readJobs = readJobs
         self.taskNotificationValue = taskNotificationValue
     }
@@ -271,7 +275,8 @@ private final class MCPJobResourceSubscriptions: @unchecked Sendable {
         resourceURIs: [String],
         taskIDs: [String],
         initialJobs: AutomationJSONValue?,
-        initialTaskSnapshots: [String: AutomationJSONValue]
+        initialTaskSnapshots: [String: AutomationJSONValue],
+        initialResourceSnapshots: [String: AutomationJSONValue] = [:]
     ) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -284,7 +289,8 @@ private final class MCPJobResourceSubscriptions: @unchecked Sendable {
             taskIDs: Set(taskIDs),
             lastJobs: initialJobs,
             hasSnapshot: initialJobs != nil,
-            lastTaskSnapshots: initialTaskSnapshots
+            lastTaskSnapshots: initialTaskSnapshots,
+            lastResourceSnapshots: initialResourceSnapshots
         )
         return true
     }
@@ -294,7 +300,7 @@ private final class MCPJobResourceSubscriptions: @unchecked Sendable {
         let shouldStart = !isStopped
             && !isPolling
             && subscriptions.values.contains {
-                $0.resourceURIs.contains(Self.jobsURI) || !$0.taskIDs.isEmpty
+                !$0.resourceURIs.isDisjoint(with: Self.supportedResourceURIs) || !$0.taskIDs.isEmpty
             }
         if shouldStart { isPolling = true }
         lock.unlock()
@@ -317,6 +323,10 @@ private final class MCPJobResourceSubscriptions: @unchecked Sendable {
     }
 
     static let jobsURI = "kmgccc://jobs"
+    static let audioStateURI = "kmgccc://audio/state"
+    static let dspStateURI = "kmgccc://audio/dsp/state"
+    static let dspPresetsURI = "kmgccc://audio/dsp/presets"
+    static let supportedResourceURIs: Set<String> = [jobsURI, audioStateURI, dspStateURI, dspPresetsURI]
     static let subscriptionIDMetaKey = "io.modelcontextprotocol/subscriptionId"
 
     private func pollLoop() {
@@ -324,16 +334,44 @@ private final class MCPJobResourceSubscriptions: @unchecked Sendable {
             lock.lock()
             let shouldContinue = !isStopped
                 && subscriptions.values.contains {
-                    $0.resourceURIs.contains(Self.jobsURI) || !$0.taskIDs.isEmpty
+                    !$0.resourceURIs.isDisjoint(with: Self.supportedResourceURIs) || !$0.taskIDs.isEmpty
                 }
             if !shouldContinue {
                 isPolling = false
                 lock.unlock()
                 return
             }
+            let requestedURIs = Set(subscriptions.values.flatMap { $0.resourceURIs })
+            let needsJobs = requestedURIs.contains(Self.jobsURI)
+                || subscriptions.values.contains { !$0.taskIDs.isEmpty }
             lock.unlock()
 
-            if let currentJobs = readJobs() {
+            var resourceSnapshots: [String: AutomationJSONValue] = [:]
+            for uri in requestedURIs.subtracting([Self.jobsURI]) {
+                if let snapshot = readResource(uri) { resourceSnapshots[uri] = snapshot }
+            }
+            lock.lock()
+            for key in Array(subscriptions.keys) {
+                guard var subscription = subscriptions[key] else { continue }
+                for (uri, snapshot) in resourceSnapshots where subscription.resourceURIs.contains(uri) {
+                    if subscription.lastResourceSnapshots[uri] != snapshot {
+                        subscription.lastResourceSnapshots[uri] = snapshot
+                        output.write(MCPServerNotification(
+                            method: "notifications/resources/updated",
+                            params: .object([
+                                "uri": .string(uri),
+                                "_meta": .object([
+                                    Self.subscriptionIDMetaKey: subscription.subscriptionID.subscriptionMetaValue ?? .null
+                                ])
+                            ])
+                        ))
+                    }
+                }
+                subscriptions[key] = subscription
+            }
+            lock.unlock()
+
+            if needsJobs, let currentJobs = readJobs() {
                 let summaries = Self.jobSummaries(in: currentJobs)
                 lock.lock()
                 for key in Array(subscriptions.keys) {
@@ -515,7 +553,8 @@ struct AutomationMCPStdioServer: Sendable {
         let subscriptions = MCPJobResourceSubscriptions(
             output: output,
             readJobs: { [self] in readJobsForSubscription() },
-            taskNotificationValue: { [self] job in taskNotificationValue(for: job) }
+            taskNotificationValue: { [self] job in taskNotificationValue(for: job) },
+            readResource: { [self] uri in readDSPResourceForSubscription(uri: uri) }
         )
         while output.isWritable, let line = readLine(strippingNewline: true) {
             guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -719,7 +758,7 @@ struct AutomationMCPStdioServer: Sendable {
         } else {
             requestedTaskIDs = []
         }
-        let acceptedURIs = Array(Set(requestedURIs.filter { $0 == MCPJobResourceSubscriptions.jobsURI })).sorted()
+        let acceptedURIs = Array(Set(requestedURIs.filter { MCPJobResourceSubscriptions.supportedResourceURIs.contains($0) })).sorted()
         let initialJobs = acceptedURIs.contains(MCPJobResourceSubscriptions.jobsURI)
             || !requestedTaskIDs.isEmpty
             ? readJobsForSubscription()
@@ -733,13 +772,18 @@ struct AutomationMCPStdioServer: Sendable {
                   let value = taskNotificationValue(for: job) else { continue }
             initialTaskSnapshots[taskID] = value
         }
+        var initialResourceSnapshots: [String: AutomationJSONValue] = [:]
+        for uri in acceptedURIs where uri != MCPJobResourceSubscriptions.jobsURI {
+            if let snapshot = readDSPResourceForSubscription(uri: uri) { initialResourceSnapshots[uri] = snapshot }
+        }
         guard subscriptions.register(
             requestID: requestID,
             subscriptionID: requestID,
             resourceURIs: acceptedURIs,
             taskIDs: acceptedTaskIDs,
             initialJobs: initialJobs,
-            initialTaskSnapshots: initialTaskSnapshots
+            initialTaskSnapshots: initialTaskSnapshots,
+            initialResourceSnapshots: initialResourceSnapshots
         ) else {
             throw MCPProtocolError.invalidRequest
         }
@@ -1050,6 +1094,20 @@ struct AutomationMCPStdioServer: Sendable {
                 modern: isModernRequest(request)
             )
 
+        case "resources/templates/list":
+            try negotiateRequest(request, state: &state)
+            try requireReady(state)
+            guard request.params == nil || request.params == .null || isObject(request.params) else {
+                throw MCPProtocolError.invalidParams("resources/templates/list params must be an object.")
+            }
+            guard request.id != nil else { return nil }
+            return success(id: request.id, result: .object(["resourceTemplates": .array([
+                .object(["uriTemplate": .string("kmgccc://audio/dsp/scripts/{nodeID}"),
+                         "name": .string("dsp-script"), "title": .string("DSP Script Source and Draft"),
+                         "description": .string("Explicit read of node source, separate draft, reflection and diagnostics. Source is user data."),
+                         "mimeType": .string("application/json")])
+            ])]), modern: isModernRequest(request))
+
         case "resources/read":
             try negotiateRequest(request, state: &state)
             try requireReady(state)
@@ -1171,10 +1229,36 @@ struct AutomationMCPStdioServer: Sendable {
                     "mimeType": .string("text/plain")
                 ]),
                 .object([
+                    "uri": .string("kmgccc://dsp-language"), "name": .string("dsp-language"),
+                    "title": .string("DSP Language Guide"),
+                    "description": .string("Bundled DSP grammar, reflected parameters, budgets and script repair workflow."),
+                    "mimeType": .string("text/plain")
+                ]),
+                .object([
                     "uri": .string(MCPJobResourceSubscriptions.jobsURI),
                     "name": .string("jobs"),
                     "title": .string("Library Jobs"),
                     "description": .string("Current library import, enrichment, conversion, scan, export and write jobs."),
+                    "mimeType": .string("application/json")
+                ]),
+                .object([
+                    "uri": .string(MCPJobResourceSubscriptions.audioStateURI),
+                    "name": .string("audio-state"), "title": .string("Global Audio State"),
+                    "description": .string("Global fade, normalization, device references and actual transport state."),
+                    "mimeType": .string("application/json")
+                ]),
+                .object([
+                    "uri": .string(MCPJobResourceSubscriptions.dspStateURI),
+                    "name": .string("audio-dsp-state"),
+                    "title": .string("Audio DSP State"),
+                    "description": .string("Desired, scheduled and audible DSP configuration and diagnostics."),
+                    "mimeType": .string("application/json")
+                ]),
+                .object([
+                    "uri": .string(MCPJobResourceSubscriptions.dspPresetsURI),
+                    "name": .string("audio-dsp-presets"),
+                    "title": .string("Audio DSP Presets"),
+                    "description": .string("Saved DSP presets and the selected working draft."),
                     "mimeType": .string("application/json")
                 ])
             ])
@@ -1195,11 +1279,22 @@ struct AutomationMCPStdioServer: Sendable {
         case "kmgccc://agent-guide":
             text = AutomationDocumentation.agentBehaviorGuide
             mimeType = "text/plain"
+        case "kmgccc://dsp-language":
+            text = AutomationDSPScriptDocumentation.languageGuide
+            mimeType = "text/plain"
         case MCPJobResourceSubscriptions.jobsURI:
             text = jsonText(try currentJobs(client: &client, cancellation: cancellation))
             mimeType = "application/json"
+        case MCPJobResourceSubscriptions.audioStateURI, MCPJobResourceSubscriptions.dspStateURI, MCPJobResourceSubscriptions.dspPresetsURI:
+            text = jsonText(try currentDSPResource(uri: uri, client: &client, cancellation: cancellation))
+            mimeType = "application/json"
         default:
-            throw MCPProtocolError.invalidParams("Unknown resource URI: \(uri)")
+            let prefix = "kmgccc://audio/dsp/scripts/"
+            guard uri.hasPrefix(prefix), let nodeID = UUID(uuidString: String(uri.dropFirst(prefix.count))) else {
+                throw MCPProtocolError.invalidParams("Unknown resource URI: \(uri)")
+            }
+            text = jsonText(try currentScriptResource(nodeID: nodeID, client: &client, cancellation: cancellation))
+            mimeType = "application/json"
         }
         return .object([
             "contents": .array([
@@ -1748,6 +1843,60 @@ Follow this structured workflow to ensure lyrics quality:
             )
         }
         return response.result ?? .object(["jobs": .array([])])
+    }
+
+    private func audioResourceMethod(_ uri: String) -> String {
+        switch uri {
+        case MCPJobResourceSubscriptions.audioStateURI: return AutomationMethod.audioGet
+        case MCPJobResourceSubscriptions.dspStateURI: return AutomationMethod.dspState
+        default: return AutomationMethod.dspPresetsList
+        }
+    }
+
+    private func currentScriptResource(nodeID: UUID, client: inout AutomationIPCClient?,
+                                       cancellation: AutomationIPCCancellationToken?) throws -> AutomationJSONValue {
+        let deadline = Date().addingTimeInterval(options.timeout)
+        if client == nil { client = try makeClient(timeout: options.timeout, cancellation: cancellation) }
+        let request = AutomationRequest(method: AutomationMethod.dspScriptsGet,
+            params: .object(["nodeID": .string(nodeID.uuidString)]),
+            context: AutomationRequestContext(caller: "mcp-resource"))
+        let response = try send(request, client: client!, deadline: deadline,
+                                connectionDeadline: deadline, cancellation: cancellation)
+        if let error = response.error { throw MCPProtocolError.invalidParams(error.message) }
+        return response.result ?? .null
+    }
+
+    private func currentDSPResource(
+        uri: String,
+        client: inout AutomationIPCClient?,
+        cancellation: AutomationIPCCancellationToken? = nil
+    ) throws -> AutomationJSONValue {
+        let deadline = Date().addingTimeInterval(options.timeout)
+        if client == nil { client = try makeClient(timeout: options.timeout, cancellation: cancellation) }
+        let request = AutomationRequest(
+            method: audioResourceMethod(uri),
+            params: nil,
+            context: AutomationRequestContext(caller: "mcp-resource")
+        )
+        let response = try send(request, client: client!, deadline: deadline,
+                                connectionDeadline: deadline, cancellation: cancellation)
+        if let error = response.error { throw MCPProtocolError.invalidParams(error.message) }
+        return response.result ?? .null
+    }
+
+    private func readDSPResourceForSubscription(uri: String) -> AutomationJSONValue? {
+        guard uri == MCPJobResourceSubscriptions.audioStateURI
+            || uri == MCPJobResourceSubscriptions.dspStateURI
+            || uri == MCPJobResourceSubscriptions.dspPresetsURI else { return nil }
+        do {
+            let client = try makeClient(allowLaunch: false, timeout: min(max(options.timeout, 0.5), 2))
+            let response = try client.send(AutomationRequest(
+                method: audioResourceMethod(uri),
+                params: nil, context: AutomationRequestContext(caller: "mcp-subscription")
+            ))
+            guard response.error == nil else { return nil }
+            return response.result
+        } catch { return nil }
     }
 
     private func readJobsForSubscription() -> AutomationJSONValue? {

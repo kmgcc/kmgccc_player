@@ -82,6 +82,7 @@ struct LDDCSearchSection: View {
     @State private var applyError: String?
     @State private var applyNotice: String?
     @AppStorage("lddc.stripExtraInfo") private var stripExtraInfo = true
+    @AppStorage("lddc.fixTimingProblems") private var fixTimingProblems = true
 
     // Selection requests are modeled as state so SwiftUI owns cancellation.
     @State private var pendingCandidate: LDDCCandidate?
@@ -632,6 +633,10 @@ struct LDDCSearchSection: View {
                 .toggleStyle(.switch)
                 .font(.caption)
 
+            Toggle("修复可能存在的时间问题（beta）", isOn: $fixTimingProblems)
+                .toggleStyle(.switch)
+                .font(.caption)
+
             Spacer()
 
             Button {
@@ -1023,7 +1028,8 @@ struct LDDCSearchSection: View {
                 let converted = try await TTMLConverter.shared.convertToTTMLWithTranslation(
                     origLyrics: origLyrics,
                     transLyrics: trans,
-                    stripMetadata: stripExtraInfo
+                    stripMetadata: stripExtraInfo,
+                    fixTimingIssues: fixTimingProblems
                 )
                 guard let normalized = LyricsFormatSupport.normalizedTTMLText(converted) else {
                     throw TTMLConversionError.conversionFailed("LDDC 转换结果 TTML 结构无效")
@@ -1033,7 +1039,8 @@ struct LDDCSearchSection: View {
             } else {
                 let converted = try await TTMLConverter.shared.convertToTTML(
                     rawLyrics: origLyrics,
-                    stripMetadata: stripExtraInfo
+                    stripMetadata: stripExtraInfo,
+                    fixTimingIssues: fixTimingProblems
                 )
                 guard let normalized = LyricsFormatSupport.normalizedTTMLText(converted) else {
                     throw TTMLConversionError.conversionFailed("LDDC 转换结果 TTML 结构无效")

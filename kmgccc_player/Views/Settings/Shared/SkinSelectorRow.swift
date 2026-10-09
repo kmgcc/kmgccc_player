@@ -37,7 +37,7 @@ struct SkinSelectorRow: View {
     var itemSpacing: CGFloat = 10
     var edgePadding: CGFloat = 10
     var verticalPadding: CGFloat = 4
-    var showsScrollButtons: Bool = false
+    var showsScrollButtons: Bool = true
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
