@@ -161,6 +161,34 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: coverURL.path))
     }
 
+    func testMissingOrderingSidecarKeepsLegacyMigrationOpen() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let sidecar = fixture.service.loadLibraryOrderingSidecar()
+
+        XCTAssertFalse(sidecar.legacyUserDefaultsMigrationCompleted)
+        XCTAssertNil(sidecar.allSongs)
+    }
+
+    func testCorruptOrderingSidecarDoesNotBorrowLegacyDefaults() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let sidecarURL = fixture.paths.libraryOrderingURL
+        try FileManager.default.createDirectory(
+            at: sidecarURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("not json".utf8).write(to: sidecarURL)
+
+        let sidecar = fixture.service.loadLibraryOrderingSidecar()
+
+        XCTAssertTrue(sidecar.legacyUserDefaultsMigrationCompleted)
+        XCTAssertNil(sidecar.allSongs)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sidecarURL.path))
+    }
+
     private func makeFixture() throws -> (
         root: URL,
         paths: kmgccc_player.LibraryPaths,

@@ -65,21 +65,41 @@ actor CrashReportStore {
                     let data = try Data(contentsOf: url)
                     decoded.append(try JSONDecoder.crashReportDecoder().decode(CrashReportRecord.self, from: data))
                 } catch {
+                    Log.warning(
+                        "[CrashReporting] failed to read report \(url.lastPathComponent): \(error)",
+                        category: .telemetry
+                    )
                     quarantine(url)
                 }
             }
             return decoded.sorted { $0.report.occurredAt > $1.report.occurredAt }
         } catch {
+            Log.error("[CrashReporting] failed to list crash reports: \(error)", category: .telemetry)
             return []
         }
     }
 
     func record(reportID: String) -> CrashReportRecord? {
-        guard UUID(uuidString: reportID) != nil,
-              let data = try? Data(contentsOf: fileURL(for: reportID)) else {
+        guard UUID(uuidString: reportID) != nil else { return nil }
+        let url = fileURL(for: reportID)
+        guard let data = try? Data(contentsOf: url) else {
+            if fileManager.fileExists(atPath: url.path) {
+                Log.error(
+                    "[CrashReporting] failed to read report file \(url.lastPathComponent)",
+                    category: .telemetry
+                )
+            }
             return nil
         }
-        return try? JSONDecoder.crashReportDecoder().decode(CrashReportRecord.self, from: data)
+        do {
+            return try JSONDecoder.crashReportDecoder().decode(CrashReportRecord.self, from: data)
+        } catch {
+            Log.error(
+                "[CrashReporting] failed to decode report \(reportID): \(error)",
+                category: .telemetry
+            )
+            return nil
+        }
     }
 
     func remove(reportID: String) throws {
@@ -120,7 +140,14 @@ actor CrashReportStore {
         let destination = corruptURL.appendingPathComponent(
             "\(url.deletingPathExtension().lastPathComponent)-\(UUID().uuidString.lowercased()).json"
         )
-        try? fileManager.moveItem(at: url, to: destination)
+        do {
+            try fileManager.moveItem(at: url, to: destination)
+        } catch {
+            Log.warning(
+                "[CrashReporting] failed to quarantine \(url.lastPathComponent): \(error)",
+                category: .telemetry
+            )
+        }
     }
 
     private func enforceCapacity() throws {

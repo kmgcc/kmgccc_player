@@ -18,7 +18,14 @@ final class CrashReporterBootstrap {
     }
 
     func enable() {
-        guard !isEnabled, let reporter else { return }
+        guard !isEnabled else { return }
+        guard let reporter else {
+            Log.error(
+                "[CrashReporting] PLCrashReporter unavailable; crash capture stays disabled",
+                category: .telemetry
+            )
+            return
+        }
         guard !Self.isDebuggerAttached() else {
             Log.info(
                 "[CrashReporting] PLCrashReporter disabled while a debugger is attached",

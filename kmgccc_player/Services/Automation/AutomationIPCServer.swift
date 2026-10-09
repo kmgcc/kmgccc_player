@@ -860,12 +860,12 @@ final class AutomationIPCServer {
                 try FileManager.default.moveItem(at: url, to: rotatedURL)
                 FileManager.default.createFile(atPath: url.path, contents: nil)
             }
-            guard let handle = try? FileHandle(forWritingTo: url) else { return }
+            let handle = try FileHandle(forWritingTo: url)
             handle.seekToEndOfFile()
             handle.write(line)
             try? handle.close()
         } catch {
-            Log.debug("[Automation] audit write failed: \(error)", category: .library)
+            Log.warning("[Automation] audit write failed: \(error)", category: .library)
         }
     }
 
