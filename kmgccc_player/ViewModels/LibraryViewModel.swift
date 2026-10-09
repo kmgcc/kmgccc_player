@@ -531,7 +531,9 @@ final class LibraryViewModel {
         if isSameSelection {
             searchResetTrigger += 1
         } else {
-            let navAnimation = MotionPolicy.full.animation(for: MotionTokens.standard[.navigation])
+            let navAnimation = MotionPolicy.system(
+                accessibilityReduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            ).animation(for: MotionTokens.standard[.navigation])
             withAnimation(navAnimation) {
                 currentSelection = selection
             }

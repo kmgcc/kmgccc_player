@@ -38,11 +38,12 @@ struct PagePresentation<Content: View, Placeholder: View>: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let resolvedPolicy = policy.resolving(accessibilityReduceMotion: reduceMotion)
             NativePagePresentation(
                 revision: revision,
                 isPresented: isPresented,
-                spec: policy.resolving(accessibilityReduceMotion: reduceMotion).resolve(tokens.pageSwitch),
-                usesSpatialMotion: !reduceMotion && policy == .full,
+                spec: resolvedPolicy.resolve(tokens.pageSwitch),
+                usesSpatialMotion: resolvedPolicy == .full,
                 content: AnyView(content()
                     .environment(\.self, environment)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
