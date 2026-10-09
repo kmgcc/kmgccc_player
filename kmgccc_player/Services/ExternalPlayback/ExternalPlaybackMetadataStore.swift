@@ -388,13 +388,6 @@ final class ExternalPlaybackMetadataStore {
         }
     }
 
-    func clearAutoLyricsCache(for stableKey: String) {
-        updateRecord(stableKey: stableKey) { record in
-            record.networkLyrics = nil
-            record.lyricsSource = nil
-        }
-    }
-
     func updateArtworkSource(_ source: String, for stableKey: String) {
         updateRecord(stableKey: stableKey) { record in
             record.artworkSource = source

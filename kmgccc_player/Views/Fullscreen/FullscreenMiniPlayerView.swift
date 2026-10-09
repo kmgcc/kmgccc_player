@@ -140,13 +140,6 @@ struct FullscreenMiniPlayerView: View {
         return policy.animation(for: motionTokens[.layout])
     }
 
-    private var contentReplacementAnimation: Animation? {
-        let policy = configuredMotionPolicy.resolving(
-            accessibilityReduceMotion: reduceMotion
-        )
-        return policy.animation(for: motionTokens[.contentReplacement])
-    }
-
     var body: some View {
         let _ = ContextMenuDiagnostics.markBodyUpdate(
             "contextMenu.miniPlayerBodyUpdate",
@@ -176,7 +169,6 @@ struct FullscreenMiniPlayerView: View {
                 emptyTitleKey: playbackCoordinator.stablePresentation.emptyTitleKey,
                 artworkImage: artworkImage,
                 isPlaying: playbackCoordinator.stablePresentation.isPlaying,
-                isRefetchingLyrics: playbackCoordinator.stablePresentation.isRefetchingLyrics,
                 scale: scale,
                 textForegroundProfile: miniPlayerTextForegroundProfile,
                 placeholderColor: lyricsDynamicSecondaryColor,
@@ -671,7 +663,6 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
     let emptyTitleKey: String
     let artworkImage: NSImage?
     let isPlaying: Bool
-    let isRefetchingLyrics: Bool
     let scale: CGFloat
     let textForegroundProfile: PlusBlendTextForegroundProfile
     let placeholderColor: Color
@@ -685,9 +676,6 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
     let onInteraction: () -> Void
 
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.motionTokens) private var motionTokens
-    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     // Layout derived from scale (mirrors FullscreenMiniPlayerView formulas)
     private var artworkSize: CGFloat { 60 * 0.73 * scale }
@@ -696,12 +684,6 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
     private var trackInfoVSpacing: CGFloat { 6 * scale }
     private var titleFontSize: CGFloat { 15 * scale }
     private var artistFontSize: CGFloat { 12.5 * scale }
-    private var contentReplacementAnimation: Animation? {
-        let policy = configuredMotionPolicy.resolving(
-            accessibilityReduceMotion: reduceMotion
-        )
-        return policy.animation(for: motionTokens[.contentReplacement])
-    }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.hasTrack == rhs.hasTrack
@@ -711,7 +693,6 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
             && lhs.emptyTitleKey == rhs.emptyTitleKey
             && lhs.artworkImage === rhs.artworkImage
             && lhs.isPlaying == rhs.isPlaying
-            && lhs.isRefetchingLyrics == rhs.isRefetchingLyrics
             && lhs.scale == rhs.scale
             && lhs.textForegroundProfile == rhs.textForegroundProfile
             && lhs.placeholderColor == rhs.placeholderColor
@@ -760,23 +741,10 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.trailing, isRefetchingLyrics ? 20 * scale : 0)
-
-                if isRefetchingLyrics {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(activityIndicatorColor)
-                        .foregroundStyle(activityIndicatorColor)
-                        .scaleEffect(scale)
-                        .allowsHitTesting(false)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                        .transition(.opacity)
-                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .motionAnimation(.contentReplacement, value: isRefetchingLyrics)
         .contextMenu {
             // Closure is lazy — evaluated only when NSMenu appears, not during body computation.
             nowPlayingInfoContextMenu
@@ -956,9 +924,7 @@ private nonisolated enum MiniPlayerFGDiagnostics {
         localPlayback: playerVM,
         appleMusicAdapter: appleMusicAdapter,
         systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryTracksProvider: { [weak libraryVM] in libraryVM?.allTracks ?? [] }),
-        artworkCache: cacheServices.trackArtworkCache,
-        lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
-        amllDBService: cacheServices.amllDBService
+        artworkCache: cacheServices.trackArtworkCache
     )
 
     let track = Track(
