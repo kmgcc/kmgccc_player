@@ -60,7 +60,7 @@ OUTPUT_DIR=/tmp/kmgccc-player-release \
 
 ### `verify.sh`
 
-手动运行的完整门禁：bootstrap、ARM64 无签名 Debug 构建、LRC 回归、XCTest 和 App bundle 检查。构建与测试阶段显式禁用本机构建扩展。GitHub macOS CI 只接受手动触发，不会在 push 或 PR 时自动编译。
+手动运行的完整门禁：bootstrap、ARM64 无签名 Debug 构建、LRC 回归、XCTest 和 App bundle 检查。构建与测试阶段显式禁用本机构建扩展。仓库不设 GitHub macOS CI，push 与 PR 不触发远端编译；该门禁由维护者在本机运行。
 它会检查每次 App/XCTest 构建的 MelismaKit 来源；远程依赖门禁需显式设置
 `MELISMAKIT_EXPECTED_SOURCE=remote`。
 
