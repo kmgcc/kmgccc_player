@@ -2,6 +2,7 @@ import AVFoundation
 import XCTest
 @testable import kmgccc_player
 
+final class AudioDSPProcessorTests: XCTestCase {
     func testConsecutiveBlocksDoNotMutateEarlierOutput() {
         var bands = DSPParametricEQBand.defaultBands
         bands[4] = DSPParametricEQBand(enabled: true, type: .bell, frequencyHz: 1_000, gainDB: 6)
