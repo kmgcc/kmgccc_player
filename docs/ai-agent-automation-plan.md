@@ -10,13 +10,21 @@ Pi runtime 和远程聊天 provider；本轮先把播放器本身建设成一个
 
 ## 1. 原实施基线与当前状态
 
-- 工作树：独立工作树 `myPlayer2-ai-agent-automation`
-- 分支：`codex/ai-agent-automation-next`
-- 基线：`main/origin/main`，commit `236a1b5d`
+- 工作树：主检出 `myPlayer2`；分支 `main`，最近合并 `b0cdf629`。自动化工作已回到主线，
+  此前的 `myPlayer2-ai-agent-automation` 工作树和 `codex/ai-agent-automation-next` 分支只作历史记录。
 - 历史完成范围：共享协议、Tool Catalog、CLI、AF_UNIX IPC、MCP stdio，以及部分领域能力。
-  Phase A–K 的基础落地不表示第 5 节所有目标都已完成。
-- 当前阶段（2026-10-04）：跨模式导入、跨来源元数据、Source/Metadata 文档交换、Artwork 质量、Library bundle、MP3 embedded-tag 写回、持久播放偏好查询、导入 Job 重试、History 分页检索、音频输出状态与 App 路由控制、现代 MCP Jobs 资源订阅已实现；逐项验收与格式边界见
-  [计划实现审计](automation-plan-audit-2026-10-03.md)。下文各日期 checkpoint 为历史证据。
+  Phase A–K 的基础落地不表示第 5 节所有目标都已完成；多数阶段的目标已被后续审计逐项覆盖，
+  未完成项集中在 §29。
+- 当前阶段（2026-10-09）：10-04 之后的进展集中在两处——Automation Server 按领域拆分
+  （12,000 行入口降到 1,425 行、`execute` 从 6,700 行降到 181 行，文件 I/O 移出主线程），
+  以及 10-07 MCP 实测问题的闭环（超时与取消、adapter 退出后存活、批次逐项结果、`jobs.wait`、
+  歌曲级诊断清单、导入迁移策略）。逐项证据见
+  [计划实现审计](automation-plan-audit-2026-10-03.md)、
+  [MCP 实测与优化验收](automation-improvement-audit-2026-10-07.md) 和
+  [Automation Server 架构审计](automation-server-refactor-audit-2026-10-08.md)；
+  下文各日期 checkpoint 为历史证据。
+- 合并门禁：2026-10-09 移除 GitHub macOS CI（PR #60），XCTest 改为串行执行（PR #62），
+  完整门禁由维护者在本机运行 `./scripts/verify.sh`。
 - 暂缓：Built-in Agent runtime 和任何独立模型数据层
 
 公开仓库地址以当前 `git remote -v` 为准，当前已验证为
@@ -328,6 +336,9 @@ JSON。
 按真实用户场景进行 temporary fixture、App、MCP、CLI、权限、重启和 GUI regression 验收，
 派独立只读 Agent review 当前分支，修复问题后再形成最终阶段 commit；全程不 push。
 
+2026-10-09 状态：Phase L 未按此定义整体执行。自动化服务与 MCP 侧已完成 temporary fixture、App、
+MCP、CLI 与重启验收（见 §29），第三方 MCP 客户端、真实 provider/NCM 与 sandbox 分发仍未覆盖。
+
 ## 12. 验收矩阵
 
 至少保留以下测试族：
@@ -344,6 +355,9 @@ JSON。
 - CLI：human/JSON、stdout/stderr、exit code、pagination、dry-run、noninteractive；
 - Destructive：preview、App confirmation、cancel、confirm、失败恢复；
 - Regression：现有 UI workflow、切库、退出、冷启动和真实 signed App。
+
+2026-10-09 起仓库不设 GitHub macOS CI；上列测试族的完整门禁由维护者在本机运行
+`./scripts/verify.sh`（其中 XCTest 串行执行）。
 
 ### 核心 Source / Playlist 场景
 
@@ -737,3 +751,34 @@ CLI/stdin 结束时也会取消所有尚未完成的请求。当前范围限于�
 
 PlayerAutomation SwiftPM build、App ARM64 Debug build、依赖 preflight 与 `git diff --check` 通过；
 没有启动主 App，也没有第三方 Agent 实测。
+
+## 29. 当前 checkpoint（2026-10-09，Automation Server 拆分与 MCP 实测收口）
+
+10-04 之后有两批工作：Automation Server 职责拆分，以及 MCP 实测问题的闭环。两者都已合并到 `main`。
+
+**服务端拆分（2026-10-08，PR #59）**：`AutomationIPCServer.swift` 从约 12,000 行降到 1,425 行
+（`execute` 从近 6,700 行降到 181 行），保留 listener 生命周期、全局校验、显式分发、policy、
+幂等与审计、batch/background 编排；按领域拆出的 Handler 现有 15 个（拆分范围 12 个，
+音频 DSP 后续新增 3 个）。`files.export`/`rename`/`move` 的复制、唯一命名、移动与回滚进入
+Server 持有的串行 `AutomationFileWorker`，只接受 Sendable URL/UUID/Move 值，不新增 `Task.detached`、
+全局单例或数据库 owner。每个阶段都做了归一化比对（原 helper 与 switch body 语句保持一致），
+未删除 legacy MCP、scope schema 1 或任何未确认的兼容实现。
+
+证据：PlayerAutomation 40 项、App Debug 全量 XCTest 453 项、增量与独立 DerivedData 的 Debug 构建、
+本地 MelismaKit 编译输入检查，以及标准运行入口下的真实 App 只读 smoke（现代 discovery/tools/resources/
+tools-call 与兼容 initialize/ping，18 次 CLI 调用覆盖全部领域）。未覆盖：Finder 授权拒绝与取消、
+外部卷、大文件、GUI 切库、进程重启后的 Job 恢复、真实 provider/NCM、sandbox 分发；
+query/report 遍历与同步持久化仍可能占用 MainActor，只有一条未归因的 runtime warning，没有全 App trace。
+
+**MCP 实测闭环（2026-10-07/10-08）**：传输层加入会话级默认幂等键、连接与业务期限，以及
+`requestOutcomeUnknown`/`delivery:notSent` 失败分类；导入层加入 `enrichmentPolicy: standard | migration`
+与 `fileTrackMappings`，迁移及其重试跳过在线补全；补充 `jobs.wait` 有界等待、歌曲级诊断清单、
+后台 storage/metadata Job。App 定向 XCTest 9 项与 SwiftPM 40 项通过；在临时托管资料库上完成
+迁移导入、逐首不同 Metadata/TTML/Artwork 批次、重复导入身份复用、后台 Job 与缺失媒体诊断实测；
+主 App 退出后同一 adapter 存活，重启后恢复连接。未覆盖：真实 NCM 内容转换、完整跨库 bundle 搬迁、
+第三方客户端交互。
+
+**仍未完成**：Phase L 未按原定义整体执行；Metadata/Library Handler 内仍有较长但内聚的分支，
+需围绕文档 import 与实体 mutation 单独测试后再拆；幂等 replay 的授权撤销顺序、Lyrics 候选跨 Library
+UUID/TTL、`runModal` 在途取消和并行 MCP 测试 harness 的退出/EOF 停滞保持原有行为，需要独立决策。
+本轮判定为“拆分与实测收口完成、第三方与系统边界验收待做”。
