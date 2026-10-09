@@ -43,7 +43,8 @@ struct NowPlayingGeneralTabView: View {
                     SkinPackageSettingsActions(skin: SkinRegistry.skin(for: nowPlayingSkin))
                     SkinSelectorRow(
                         skins: SkinRegistry.nowPlayingOptions,
-                        selectedSkinID: $nowPlayingSkin
+                        selectedSkinID: $nowPlayingSkin,
+                        showsScrollButtons: true
                     )
                 }
             }

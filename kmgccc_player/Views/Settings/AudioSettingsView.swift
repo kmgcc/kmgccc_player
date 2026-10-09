@@ -12,6 +12,8 @@ struct AudioSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var appSession: AppSessionHost
 
+    @Environment(\.navigateSettingsSubpage) private var navigateSettingsSubpage
+
     @State private var lookaheadEnabled: Bool = AppSettings.shared.audioLookaheadEnabled
 
     var body: some View {
@@ -22,7 +24,7 @@ struct AudioSettingsView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     SettingsSwitchRow(title: "音频延迟补偿", isOn: $lookaheadEnabled)
 
-                    Text("开启后声音输出将延迟以改善LED、频谱等音频可视化效果的同步。")
+                    Text("延迟音频输出以对齐频谱与可视化动效。")
                         .settingsDescriptionStyle()
                 }
             }
@@ -32,8 +34,8 @@ struct AudioSettingsView: View {
             )
 
             SettingsSection("音效处理") {
-                NavigationLink {
-                    AudioDSPSettingsView()
+                Button {
+                    navigateSettingsSubpage(.audioDSP)
                 } label: {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {

@@ -179,6 +179,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     )
 
     static let targetAheadSeconds: Double = 1.5
+    private static let dspTargetAheadSeconds: Double = 0.6
     static let chunkFrames: AVAudioFrameCount = 8192
     static let enqueueBlockFrames: Int = 2048
     private static let dspLedgerByteLimit = 32 * 1_024 * 1_024
@@ -194,6 +195,25 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             return dspOutputBoundaries.count
         }
         return pipelineQueue.sync { dspOutputBoundaries.count }
+    }
+
+    var dspOutputHistoryIsNonoverlappingForTesting: Bool {
+        pipelineQueue.sync {
+            zip(dspOutputBoundaries, dspOutputBoundaries.dropFirst()).allSatisfy { previous, next in
+                previous.endPresentationTime <= next.presentationTime
+                    + max(1 / next.format.sampleRate, 0.000_1)
+            }
+        }
+    }
+
+    @discardableResult
+    func recoverSourcesForTesting(atTimelineSeconds clock: Double) -> Bool {
+        pipelineQueue.sync {
+            renderer.flush()
+            analysisQueue.removeAll(keepingCapacity: true)
+            synchronizer.setRate(0, time: CMTime(seconds: clock, preferredTimescale: 1_000_000))
+            return recoverSources(atTimelineSeconds: clock)
+        }
     }
 
     nonisolated(unsafe) private(set) var renderer = AVSampleBufferAudioRenderer()
@@ -234,17 +254,22 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let segmentID: UUID
         let sourceFrameStart: AVAudioFramePosition
         let frameCount: Int
+        // A source range can be enqueued again after renderer recovery. Its
+        // output identity includes the sample-precise position on the timeline.
+        let presentationFrame: Int64
 
         init(_ block: DSPPCMBlock) {
             segmentID = block.segmentID
             sourceFrameStart = block.sourceFrameStart
             frameCount = block.pcm.frames
+            presentationFrame = Int64((block.presentationTime * block.format.sampleRate).rounded())
         }
 
         init(_ boundary: DSPOutputBoundary) {
             segmentID = boundary.segmentID
             sourceFrameStart = boundary.sourceFrameStart
             frameCount = boundary.frameCount
+            presentationFrame = Int64((boundary.presentationTime * boundary.format.sampleRate).rounded())
         }
     }
 
@@ -852,6 +877,12 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
               abs(last.endPresentationTime - horizon) <= max(1 / last.format.sampleRate, 0.000_1) else {
             throw DSPApplyPreparationError.incompleteQueue
         }
+        for (previous, next) in zip(replacementBoundaries, replacementBoundaries.dropFirst()) {
+            let tolerance = max(1 / next.format.sampleRate, 0.000_1)
+            guard abs(previous.endPresentationTime - next.presentationTime) <= tolerance else {
+                throw DSPApplyPreparationError.incompleteQueue
+            }
+        }
 
         let warmupLowerBound = startBoundary.presentationTime - 2.0
         var warmupBoundaries = dspOutputBoundaries[..<startIndex].filter { boundary in
@@ -908,13 +939,11 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             oldOutputs[DSPBlockKey(raw)] = raw.pcm
         }
 
-        let warmupByKey = Dictionary(uniqueKeysWithValues: warmupRaw.map { (DSPBlockKey($0), $0) })
-        let futureByKey = Dictionary(uniqueKeysWithValues: futureRaw.map { (DSPBlockKey($0), $0) })
-        let warmupBlocks = warmupBoundaries.compactMap { warmupByKey[DSPBlockKey($0)] }
-        let orderedFuture = replacementBoundaries.compactMap { futureByKey[DSPBlockKey($0)] }
-        guard orderedFuture.count == replacementBoundaries.count else {
-            throw DSPApplyPreparationError.unavailablePCM
-        }
+        // rawBlocks already returns one block per boundary, in timeline order.
+        // Re-keying those arrays loses enqueue identity and traps on replayed
+        // source ranges; process the authoritative ordered result directly.
+        let warmupBlocks = warmupRaw
+        let orderedFuture = futureRaw
         var runtime = AudioDSPProcessor(
             configuration: request.configuration,
             format: startBoundary.format, context: request.context
@@ -1411,7 +1440,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         }
         // Crossfaded buffers retain their actual old/new mixture even when the
         // new processor is bypassed. A following edit may select an earlier T.
-        let replacementByKey = Dictionary(uniqueKeysWithValues: transaction.blocks.map { (DSPBlockKey($0.raw), $0) })
+        var replacementByKey = [DSPBlockKey: DSPReplacementBlock]()
+        for block in transaction.blocks { replacementByKey[DSPBlockKey(block.raw)] = block }
         for index in dspOutputBoundaries.indices
             where dspOutputBoundaries[index].presentationTime >= transaction.startPTS - 0.000_001 {
             dspOutputBoundaries[index].outputIsIdentity = false
@@ -2481,7 +2511,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         // when that one-block reserve consumes the entire future budget.
         let minimumQueueingQuantum = maximumSampleRate > 0 ? 1 / maximumSampleRate : 0
         return min(
-            Self.targetAheadSeconds,
+            Self.dspTargetAheadSeconds,
             max(remainingBudgetSeconds, minimumQueueingQuantum)
         )
     }
@@ -2848,8 +2878,12 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             leadSeconds: analysisLeadSeconds
         )
         dspProcessor = nextProcessor
-        dspOutputBoundaries.removeAll { $0.presentationTime >= nextPresentationTime - 0.000_001 }
-        dspLedger.removeAll { $0.raw.presentationTime >= nextPresentationTime - 0.000_001 }
+        // Discard a buffer that straddles the recovery anchor as well. Keeping
+        // its prefix metadata alongside freshly decoded output creates overlap.
+        dspOutputBoundaries.removeAll { $0.endPresentationTime > nextPresentationTime + 0.000_001 }
+        dspLedger.removeAll {
+            $0.raw.presentationTime + $0.raw.pcm.seconds > nextPresentationTime + 0.000_001
+        }
         let previouslyQueuedBlocks = Set(dspOutputBoundaries.map(\.enqueueID))
         enqueueToken = UUID()
         primeOneBatch()

@@ -74,6 +74,8 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
     private let outputGain: Double
     private var nodes: [RuntimeNode]
     private var previewNodes: [RuntimeNode]
+    private var frameScratch: [Double] = []
+    private var futureInputScratch: [Float] = []
 
     init(
         configuration: AudioDSPConfiguration,
@@ -420,7 +422,8 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
     func warm(with rawHistory: [CanonicalPCM]) {
         for pcm in rawHistory {
             guard isCompatible(pcm), !isBypassed else { continue }
-            _ = processCore(pcm, nodes: &nodes)
+            var warmupOutput: [Float] = []
+            processCore(pcm, nodes: &nodes, output: &warmupOutput, frameValues: &frameScratch)
         }
     }
 
@@ -431,7 +434,8 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         guard isCompatible(input), input.frames > 0 else { return input }
         guard !isBypassed, outputFault == nil else { return input }
 
-        var currentOutput = processCore(input, nodes: &nodes)
+        var currentOutput: [Float] = []
+        processCore(input, nodes: &nodes, output: &currentOutput, frameValues: &frameScratch)
         guard outputFault == nil else { return input }
         guard processingLatencyFrames > 0 else {
             return CanonicalPCM(
@@ -445,19 +449,34 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         let latency = processingLatencyFrames
         Self.copyRuntimeStates(from: nodes, to: &previewNodes, previewFrames: latency)
         let channelCount = format.channelCount
-        var futureData = [Float](repeating: 0, count: latency * channelCount)
+        let futureSampleCount = latency * channelCount
+        if futureInputScratch.count != futureSampleCount {
+            futureInputScratch = Array(repeating: 0, count: futureSampleCount)
+        } else {
+            for index in futureInputScratch.indices {
+                futureInputScratch[index] = 0
+            }
+        }
         if let lookahead, isCompatible(lookahead), lookahead.frames > 0 {
             let copiedFrames = min(latency, lookahead.frames)
             let copiedSamples = copiedFrames * channelCount
-            for index in 0..<copiedSamples { futureData[index] = lookahead.data[index] }
+            for index in 0..<copiedSamples {
+                futureInputScratch[index] = lookahead.data[index]
+            }
         }
         let futureInput = CanonicalPCM(
             frames: latency,
             channelCount: channelCount,
             sampleRate: format.sampleRate,
-            data: futureData
+            data: futureInputScratch
         )
-        let futureOutput = processCore(futureInput, nodes: &previewNodes)
+        var futureOutput: [Float] = []
+        processCore(
+            futureInput,
+            nodes: &previewNodes,
+            output: &futureOutput,
+            frameValues: &frameScratch
+        )
         guard outputFault == nil else { return input }
 
         for frame in 0..<input.frames {
@@ -493,10 +512,23 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         return abs(pcm.sampleRate - format.sampleRate) < 0.5
     }
 
-    private func processCore(_ input: CanonicalPCM, nodes: inout [RuntimeNode]) -> [Float] {
-        var output = [Float](repeating: 0, count: input.frames * input.channelCount)
-        guard outputFault == nil else { return output }
-        var frameValues = [Double](repeating: 0, count: input.channelCount)
+    private func processCore(
+        _ input: CanonicalPCM,
+        nodes: inout [RuntimeNode],
+        output: inout [Float],
+        frameValues: inout [Double]
+    ) {
+        let requiredSamples = input.frames * input.channelCount
+        if output.count != requiredSamples {
+            output = Array(repeating: 0, count: requiredSamples)
+        }
+        if frameValues.count != input.channelCount {
+            frameValues = Array(repeating: 0, count: input.channelCount)
+        }
+        guard outputFault == nil else {
+            output = Array(repeating: 0, count: requiredSamples)
+            return
+        }
         let channelCount = input.channelCount
 
         for frameIndex in 0..<input.frames {
@@ -534,21 +566,16 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             for channel in 0..<channelCount {
                 let sample = frameValues[channel] * outputGain
                 guard sample.isFinite, abs(sample) <= Double(Float.greatestFiniteMagnitude) else {
-                    // A script can be finite locally but overflow after a later
-                    // filter or trim. Return the original source-time block at
-                    // the outer boundary, then bypass this prepared chain until
-                    // reset/replacement; never emit a partially shifted block.
                     outputFault = DSPDiagnostic(code: "dsp.nonFiniteChainOutput",
                         message: "The DSP chain output exceeds finite Float32 audio and was bypassed.",
                         fieldPath: "processing.output", retryable: true)
                     collectScriptFaults(from: nodes)
-                    return output
+                    return
                 }
                 output[base + channel] = Float(sample)
             }
         }
         collectScriptFaults(from: nodes)
-        return output
     }
 
     private static func resetRuntimeStates(_ nodes: inout [RuntimeNode]) {

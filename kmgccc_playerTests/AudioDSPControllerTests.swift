@@ -4,6 +4,31 @@ import XCTest
 
 @MainActor
 final class AudioDSPControllerTests: XCTestCase {
+    func testRepeatedUnchangedUIEditsKeepRevisionAndCommitPendingValue() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let controller = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        await controller.ensureLoaded()
+        var appliedValues: [Double] = []
+        controller.bindPlayback { configuration, _, _ in
+            appliedValues.append(configuration.inputTrimDB)
+        }
+        controller.commitPendingApply()
+        appliedValues.removeAll()
+
+        controller.updateConfiguration { $0.inputTrimDB = -3 }
+        let revision = controller.revisionString
+        for _ in 0..<50 {
+            controller.updateConfiguration { $0.inputTrimDB = -3 }
+        }
+        XCTAssertEqual(controller.revisionString, revision)
+        XCTAssertTrue(appliedValues.isEmpty)
+
+        controller.updateConfiguration(commit: true) { $0.inputTrimDB = -3 }
+        XCTAssertEqual(controller.revisionString, revision)
+        XCTAssertEqual(appliedValues, [-3])
+    }
+
     func testRecursiveUnknownParametersSurvivePresetRoundTrip() async throws {
         let unknownParameters: [String: DSPJSONValue] = [
             "future": .object([

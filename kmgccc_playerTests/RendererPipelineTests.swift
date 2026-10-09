@@ -285,6 +285,50 @@ final class RendererTimelineTests: XCTestCase {
         pipeline.stop()
     }
 
+    func testDSPApplyAfterRepeatedRecoveryInsideAnOutputBlock() {
+        let pipeline = RendererPlaybackPipeline()
+        pipeline.setVolume(0)
+        defer { pipeline.stop() }
+        let provider = MemoryRendererPCMProvider(
+            sampleRate: 44_100, channels: 2, frames: 3 * 44_100, marker: 0.125
+        )
+        let primed = expectation(description: "original output is queued")
+        let gate = OneShotGate()
+        pipeline.onEnqueue = { _, pts in
+            if pts > 0.5, gate.claim() { primed.fulfill() }
+        }
+        pipeline.load(source: provider, autoplay: false)
+        wait(for: [primed], timeout: 2)
+
+        // An anchor inside a 2048-frame buffer must discard the old overlap,
+        // including when the same source frames are replayed more than once.
+        let clock = 0.081
+        XCTAssertTrue(pipeline.recoverSourcesForTesting(atTimelineSeconds: clock))
+        XCTAssertTrue(pipeline.recoverSourcesForTesting(atTimelineSeconds: clock))
+        XCTAssertTrue(pipeline.dspOutputHistoryIsNonoverlappingForTesting)
+
+        let scheduled = expectation(description: "DSP replacement after recovery is scheduled")
+        let requestID = UUID()
+        let scheduleGate = OneShotGate()
+        pipeline.onDSPApplyEvent = { event in
+            if event.requestID == requestID, event.state == .scheduled, scheduleGate.claim() {
+                scheduled.fulfill()
+            }
+            if event.requestID == requestID, event.state == .failed {
+                XCTFail("DSP replacement failed: \(event.diagnostics)")
+            }
+        }
+        pipeline.applyDSP(
+            AudioDSPConfiguration(
+                enabled: true, inputTrimDB: -3,
+                headroom: DSPHeadroomConfiguration(mode: .off)
+            ),
+            revision: "recovered-output-test", requestID: requestID
+        )
+        wait(for: [scheduled], timeout: 3)
+        XCTAssertTrue(pipeline.dspOutputHistoryIsNonoverlappingForTesting)
+    }
+
     func testDSPApplyReplaysQueuedBlocksAcrossGaplessSegmentBoundary() throws {
         let pipeline = RendererPlaybackPipeline()
         pipeline.setVolume(0)

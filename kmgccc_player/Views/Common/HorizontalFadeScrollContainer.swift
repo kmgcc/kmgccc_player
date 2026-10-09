@@ -123,7 +123,7 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
             content: content
         )
         .contentShape(Rectangle())
-        .highPriorityGesture(dragGesture)
+        .gesture(dragGesture)
         .modifier(ConditionalFadeMask(showsEdgeFade: showsEdgeFade, mask: scrollFadeMask))
         .overlay {
             if effectiveShowsScrollButtons {
@@ -137,7 +137,6 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
                     activeScrollEdge = edge
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .allowsHitTesting(false)
             }
         }
         .overlay(alignment: .leading) {
@@ -728,7 +727,7 @@ private final class EdgeHoverTrackingView: NSView {
 
         let area = NSTrackingArea(
             rect: bounds,
-            options: [.activeInKeyWindow, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
+            options: [.activeInActiveApp, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
             owner: self,
             userInfo: nil
         )

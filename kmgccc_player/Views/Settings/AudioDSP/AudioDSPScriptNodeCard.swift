@@ -94,15 +94,12 @@ struct AudioDSPScriptNodeCard: View {
                 )
 
                 HStack(spacing: 8) {
-                    Picker("声道范围", selection: channelPolicyBinding) {
-                        if !policies.contains(node.channelPolicy) {
-                            Text("当前值：\(node.channelPolicy)").tag(node.channelPolicy)
-                        }
-                        ForEach(policies, id: \.self) { policy in
-                            Text(policyTitle(policy)).tag(policy)
-                        }
-                    }
-                    .pickerStyle(.menu)
+                    CapsulePicker(
+                        label: "声道范围",
+                        options: policies,
+                        selection: channelPolicyBinding,
+                        displayName: policyTitle
+                    )
 
                     Text("质量：标准")
                         .settingsDescriptionStyle()
@@ -251,14 +248,21 @@ struct AudioDSPScriptNodeCard: View {
 
     private var fixtureControls: some View {
         HStack(spacing: 8) {
-            Picker("测试信号", selection: $fixtureSelection) {
-                Text("静音").tag("silence")
-                Text("脉冲").tag("impulse")
-                Text("正弦").tag("sine")
-                Text("扫频").tag("sweep")
-                Text("粉红噪声").tag("pinkNoise")
-            }
-            .pickerStyle(.menu)
+            CapsulePicker(
+                label: "测试信号",
+                options: ["silence", "impulse", "sine", "sweep", "pinkNoise"],
+                selection: $fixtureSelection,
+                displayName: { fix in
+                    switch fix {
+                    case "silence": "静音"
+                    case "impulse": "脉冲"
+                    case "sine": "正弦"
+                    case "sweep": "扫频"
+                    case "pinkNoise": "粉红噪声"
+                    default: fix
+                    }
+                }
+            )
             Spacer(minLength: 0)
         }
     }

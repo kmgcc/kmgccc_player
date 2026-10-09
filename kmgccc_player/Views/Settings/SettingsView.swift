@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 /// Settings view with sidebar categories.
@@ -18,13 +19,32 @@ struct SettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     // MARK: - Navigation State
 
     @State private var selection: SettingsCategory = .appearance
     @State private var columnVisibility = NavigationSplitViewVisibility.all
+    @State private var currentSubpage: SettingsSubpage? = nil
 
+    private var motionPolicy: MotionPolicy {
+        configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
+    }
 
+    private var navigationSpec: MotionSpec {
+        motionTokens.phaseSpec(
+            for: .navigation,
+            duration: 0.32,
+            bounce: 0,
+            blendDuration: 0.1
+        )
+    }
+
+    private var navigationAnimation: Animation? {
+        motionPolicy.animation(for: navigationSpec)
+    }
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -35,12 +55,43 @@ struct SettingsView: View {
                     max: 300
                 )
         } detail: {
-            NavigationStack {
+            ZStack(alignment: .topLeading) {
                 detailView
+                    .id(selection)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .offset(x: currentSubpage == nil ? 0 : -60)
+                    .opacity(currentSubpage == nil ? 1 : 0)
+                    .allowsHitTesting(currentSubpage == nil)
+
+                if let subpage = currentSubpage {
+                    subpageView(for: subpage)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .background {
+                            ThemedBaseBackgroundColorView()
+                                .padding(.horizontal, -40)
+                        }
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .trailing),
+                            removal: .move(edge: .trailing)
+                        ))
+                }
+
+                if currentSubpage != nil {
+                    settingsBackButton
+                        .padding(.top, 18)
+                        .padding(.leading, 24)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .leading)),
+                            removal: .opacity
+                        ))
+                }
             }
-            .id(selection)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .navigationTitle(selection.title)
+            .clipped()
+            .motionAnimation(navigationSpec, value: currentSubpage)
+            .environment(\.navigateSettingsSubpage) { page in
+                navigateToSubpage(page)
+            }
         }
         .navigationSplitViewStyle(.prominentDetail)
         .tint(themeStore.accentColor)
@@ -49,6 +100,18 @@ struct SettingsView: View {
             settingsCloseButton
                 .padding(.top, 18)
                 .padding(.trailing, 20)
+        }
+        .onExitCommand {
+            if currentSubpage != nil {
+                navigateToSubpage(nil)
+            } else {
+                dismiss()
+            }
+        }
+        .onChange(of: selection) { _, _ in
+            if currentSubpage != nil {
+                currentSubpage = nil
+            }
         }
         .frame(minWidth: 760, minHeight: 680)
         .scrollContentBackground(.hidden)
@@ -154,6 +217,61 @@ struct SettingsView: View {
         .buttonStyle(.plain)
         .help("关闭")
         .accessibilityLabel(Text("关闭"))
+    }
+
+    private var settingsBackButton: some View {
+        Button {
+            navigateToSubpage(nil)
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.system(size: GlassStyleTokens.headerStandardIconSize, weight: .semibold))
+                .foregroundStyle(themeStore.accentColor.opacity(colorScheme == .dark ? 0.94 : 0.84))
+                .frame(
+                    width: GlassStyleTokens.headerControlHeight,
+                    height: GlassStyleTokens.headerControlHeight
+                )
+                .contentShape(Circle())
+                .liquidGlassCircle(
+                    colorScheme: colorScheme,
+                    accentColor: nil as Color?,
+                    isFloating: true
+                )
+        }
+        .buttonStyle(.plain)
+        .help("返回")
+        .accessibilityLabel(Text("返回"))
+    }
+
+    private func navigateToSubpage(_ subpage: SettingsSubpage?) {
+        withAnimation(navigationAnimation) {
+            currentSubpage = subpage
+        }
+    }
+
+    @ViewBuilder
+    private func subpageView(for subpage: SettingsSubpage) -> some View {
+        switch subpage {
+        case .audioDSP:
+            AudioDSPSettingsView()
+                .groupBoxStyle(SettingsWindowGroupBoxStyle())
+        }
+    }
+}
+
+// MARK: - Settings Subpage Navigation
+
+enum SettingsSubpage: Hashable, Sendable {
+    case audioDSP
+}
+
+private struct SettingsSubpageActionKey: EnvironmentKey {
+    static let defaultValue: (SettingsSubpage?) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    var navigateSettingsSubpage: (SettingsSubpage?) -> Void {
+        get { self[SettingsSubpageActionKey.self] }
+        set { self[SettingsSubpageActionKey.self] = newValue }
     }
 }
 

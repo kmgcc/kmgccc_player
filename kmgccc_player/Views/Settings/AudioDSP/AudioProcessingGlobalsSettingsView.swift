@@ -29,38 +29,41 @@ struct AudioProcessingGlobalsSettingsView: View {
                     isOn: fadeBinding(\.enabled)
                 )
 
-                Text("播放和暂停时，以平滑音量曲线切换。")
-                    .settingsDescriptionStyle()
-
-                AudioProcessingRangeSliderRow(
+                DSPRangeSliderRow(
                     title: "播放淡入",
                     value: fadeBinding(\.playFadeMs),
                     range: 10...2_000,
                     step: 10,
-                    unit: "ms"
+                    unit: "ms",
+                    fractionDigits: 0
                 )
                 .disabled(!controller.configuration.fade.enabled)
 
-                AudioProcessingRangeSliderRow(
+                DSPRangeSliderRow(
                     title: "暂停淡出",
                     value: fadeBinding(\.pauseFadeMs),
                     range: 10...2_000,
                     step: 10,
-                    unit: "ms"
+                    unit: "ms",
+                    fractionDigits: 0
                 )
                 .disabled(!controller.configuration.fade.enabled)
 
-                Picker("曲线", selection: fadeBinding(\.curve)) {
-                    Text("感知音量").tag("perceptualDB")
-                }
+                CapsulePicker(
+                    label: "曲线",
+                    options: ["perceptualDB"],
+                    selection: fadeBinding(\.curve),
+                    displayName: { _ in "感知音量" }
+                )
                 .disabled(!controller.configuration.fade.enabled)
 
-                AudioProcessingRangeSliderRow(
+                DSPRangeSliderRow(
                     title: "淡化底值",
                     value: fadeBinding(\.floorDB),
                     range: -100 ... -40,
                     step: 1,
-                    unit: "dB"
+                    unit: "dB",
+                    fractionDigits: 0
                 )
                 .disabled(!controller.configuration.fade.enabled)
             }
@@ -75,15 +78,22 @@ struct AudioProcessingGlobalsSettingsView: View {
                     isOn: loudnessBinding(\.enabled)
                 )
 
-                Picker("应用范围", selection: loudnessBinding(\.mode)) {
-                    Text("自动").tag("auto")
-                    Text("曲目").tag("track")
-                    Text("专辑").tag("album")
-                }
-                .pickerStyle(.segmented)
+                CapsulePicker(
+                    label: "应用范围",
+                    options: ["auto", "track", "album"],
+                    selection: loudnessBinding(\.mode),
+                    displayName: { mode in
+                        switch mode {
+                        case "auto": "自动"
+                        case "track": "曲目"
+                        case "album": "专辑"
+                        default: mode
+                        }
+                    }
+                )
                 .disabled(!controller.configuration.loudness.enabled)
 
-                AudioProcessingRangeSliderRow(
+                DSPRangeSliderRow(
                     title: "目标响度",
                     value: loudnessBinding(\.targetLUFS),
                     range: -30 ... -10,
@@ -92,7 +102,7 @@ struct AudioProcessingGlobalsSettingsView: View {
                 )
                 .disabled(!controller.configuration.loudness.enabled)
 
-                AudioProcessingRangeSliderRow(
+                DSPRangeSliderRow(
                     title: "最大提升",
                     value: loudnessBinding(\.maxBoostDB),
                     range: 0...24,
@@ -101,7 +111,7 @@ struct AudioProcessingGlobalsSettingsView: View {
                 )
                 .disabled(!controller.configuration.loudness.enabled)
 
-                AudioProcessingRangeSliderRow(
+                DSPRangeSliderRow(
                     title: "最大衰减",
                     value: loudnessBinding(\.maxAttenuationDB),
                     range: 0...60,
@@ -110,7 +120,7 @@ struct AudioProcessingGlobalsSettingsView: View {
                 )
                 .disabled(!controller.configuration.loudness.enabled)
 
-                AudioProcessingRangeSliderRow(
+                DSPRangeSliderRow(
                     title: "真实峰值上限",
                     value: loudnessBinding(\.truePeakCeilingDBTP),
                     range: -12...0,
@@ -124,9 +134,6 @@ struct AudioProcessingGlobalsSettingsView: View {
                     isOn: loudnessBinding(\.allowBackgroundScan)
                 )
                 .disabled(!controller.configuration.loudness.enabled)
-
-                Text("没有完整响度数据时保持原音量。")
-                    .settingsDescriptionStyle()
             }
         }
     }
@@ -151,9 +158,6 @@ struct AudioProcessingGlobalsSettingsView: View {
 
                     if let referenceDB = controller.runtimeState.referenceDB {
                         Text("当前设备参考 \(referenceDB.formatted(.number.precision(.fractionLength(1)))) dB")
-                            .settingsDescriptionStyle()
-                    } else {
-                        Text("按满音量基准进行相对补偿。")
                             .settingsDescriptionStyle()
                     }
 
@@ -180,7 +184,7 @@ struct AudioProcessingGlobalsSettingsView: View {
                         }
                     }
                 } else {
-                    Text("当前输出设备尚未识别；将按满音量基准进行相对补偿。")
+                    Text("当前输出设备未识别")
                         .settingsDescriptionStyle()
                 }
 
@@ -227,9 +231,6 @@ struct AudioProcessingGlobalsSettingsView: View {
                         .monospacedDigit()
                 }
 
-                Text("测量完成后，后续播放使用新结果。")
-                    .settingsDescriptionStyle()
-
                 HStack(spacing: 8) {
                     Button("分析当前曲目") {
                         guard let context = activeLocalTrack else { return }
@@ -240,10 +241,7 @@ struct AudioProcessingGlobalsSettingsView: View {
 
                     Button("分析当前专辑") {
                         guard let context = activeLocalTrack else { return }
-                        let albumIDs = context.session.libraryViewModel.allTracks
-                            .filter { $0.albumGroupKey == context.track.albumGroupKey }
-                            .map(\.id)
-                        startLoudnessAnalysis(albumIDs, in: context.session)
+                        startLoudnessAnalysis(currentAlbumTrackIDs, in: context.session)
                     }
                     .disabled(activeLocalTrack == nil || currentAlbumTrackIDs.isEmpty)
                     .audioDSPCapsuleButtonStyle()
@@ -299,15 +297,6 @@ struct AudioProcessingGlobalsSettingsView: View {
         controller.runtimeState.volumeSource == "appOnly" ? "应用音量" : "其他音量来源"
     }
 
-    private var activeLocalTrack: (session: LibrarySession, track: Track)? {
-        guard appSession.playbackCoordinator?.activeSource == .local,
-              let session = appSession.activeLibraryBinding.activeSession,
-              let track = session.playerViewModel.currentTrack else {
-            return nil
-        }
-        return (session, track)
-    }
-
     private var currentLoudnessGainText: String {
         guard let gainDB = activeLocalTrack?.session.audioNormalizationGainDB else { return "—" }
         return "\(gainDB.formatted(.number.precision(.fractionLength(1)))) dB"
@@ -333,6 +322,15 @@ struct AudioProcessingGlobalsSettingsView: View {
         }
     }
 
+    private var activeLocalTrack: (session: LibrarySession, track: Track)? {
+        guard appSession.playbackCoordinator?.activeSource == .local,
+              let session = appSession.activeLibraryBinding.activeSession,
+              let track = session.playerViewModel.currentTrack else {
+            return nil
+        }
+        return (session, track)
+    }
+
     private var currentAlbumTrackIDs: [UUID] {
         guard let context = activeLocalTrack,
               !context.track.albumGroupKey.isEmpty else { return [] }
@@ -355,56 +353,5 @@ struct AudioProcessingGlobalsSettingsView: View {
                 .priority: NSAccessibilityPriorityLevel.medium.rawValue
             ]
         )
-    }
-}
-
-private struct AudioProcessingRangeSliderRow: View {
-    let title: String
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-    let step: Double
-    let unit: String
-
-    @State private var draftValue: Double
-    @State private var isEditing = false
-
-    init(
-        title: String,
-        value: Binding<Double>,
-        range: ClosedRange<Double>,
-        step: Double,
-        unit: String
-    ) {
-        self.title = title
-        _value = value
-        self.range = range
-        self.step = step
-        self.unit = unit
-        _draftValue = State(initialValue: value.wrappedValue)
-    }
-
-    var body: some View {
-        HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .settingsRowLabelStyle()
-                Text("\(draftValue.formatted(.number.precision(.fractionLength(1)))) \(unit)")
-                    .font(.caption.monospacedDigit())
-                    .settingsDescriptionStyle()
-            }
-            .frame(minWidth: 116, alignment: .leading)
-
-            Slider(value: $draftValue, in: range, step: step, onEditingChanged: { editing in
-                isEditing = editing
-                if !editing {
-                    value = draftValue
-                }
-            })
-            .accessibilityLabel(title)
-            .accessibilityValue("\(draftValue.formatted(.number.precision(.fractionLength(1)))) \(unit)")
-        }
-        .onChange(of: value) { _, updatedValue in
-            if !isEditing { draftValue = updatedValue }
-        }
     }
 }
