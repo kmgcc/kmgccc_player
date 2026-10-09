@@ -239,7 +239,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
                     sourceStore: sourceStore
                 )
                 if failedChecks.isEmpty {
-                    try? await domainMigration?.commit()
+                    await Self.commitDomainMigration(domainMigration)
                 } else {
                     // The migration steps are idempotent and already applied,
                     // so the session still opens; keeping the journal pending
@@ -251,7 +251,12 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
                     )
                 }
             } else {
-                try? await domainMigration?.commit()
+                // No pre-migration snapshot to validate against: keep the
+                // journal pending instead of publishing an unverified schema.
+                Log.warning(
+                    "[LibrarySession] referenced domain migration not committed: validation snapshot unavailable, journal kept recoverable",
+                    category: .library
+                )
             }
         }
         let playbackHistoryStore = PlaybackHistoryStore(context: context)
@@ -544,6 +549,20 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         )
         return try ModelContainer(for: schema, configurations: [configuration])
     }
+
+    /// Publishes the migrated schema. A failed commit keeps the journal pending
+    /// so the next launch re-validates; it must not be dropped silently.
+    private static func commitDomainMigration(_ migration: ReferencedLibraryDomainMigration?) async {
+        guard let migration else { return }
+        do {
+            try await migration.commit()
+        } catch {
+            Log.error(
+                "[LibrarySession] referenced domain migration commit failed; journal stays pending: \(error.localizedDescription)",
+                category: .library
+            )
+        }
+    }
 }
 
 /// Lightweight pre/post comparison guarding the referenced-domain migration
@@ -561,10 +580,22 @@ enum ReferencedDomainMigrationValidator {
     static func capture(
         repository: SwiftDataLibraryRepository,
         sourceStore: ReferencedSourceStore
-    ) async -> Snapshot {
+    ) async -> Snapshot? {
         let tracks = await repository.fetchTracks(in: nil)
         let playlists = await repository.fetchPlaylists()
-        let descriptors = (try? await sourceStore.loadAll()) ?? []
+        let descriptors: [ReferencedSourceDescriptor]
+        do {
+            descriptors = try await sourceStore.loadAll()
+        } catch {
+            // Without a pre-migration snapshot the validation gate cannot
+            // prove the transition changed nothing; do not let an unreadable
+            // store pass as "no descriptors".
+            Log.error(
+                "[LibrarySession] migration validation snapshot unavailable: \(error.localizedDescription)",
+                category: .library
+            )
+            return nil
+        }
         return Snapshot(
             trackCount: tracks.count,
             playlistTrackIDs: Dictionary(
@@ -584,7 +615,12 @@ enum ReferencedDomainMigrationValidator {
     ) async -> [String] {
         let tracks = await repository.fetchTracks(in: nil)
         let playlists = await repository.fetchPlaylists()
-        let descriptors = (try? await sourceStore.loadAll()) ?? []
+        let descriptors: [ReferencedSourceDescriptor]
+        do {
+            descriptors = try await sourceStore.loadAll()
+        } catch {
+            return ["descriptorStoreUnreadable(\(error.localizedDescription))"]
+        }
         return evaluate(
             pre: pre,
             postTrackCount: tracks.count,
