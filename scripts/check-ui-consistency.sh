@@ -6,14 +6,16 @@ cd "$ROOT"
 
 usage() {
   printf '%s\n' \
-    "Usage: ./scripts/check-ui-consistency.sh [--all] [--strict-copy] [path ...]" \
+    "Usage: ./scripts/check-ui-consistency.sh [--all] [--strict-copy] [--base <ref>] [path ...]" \
     "" \
     "Default mode checks added lines in changed tracked files and all lines in untracked files." \
-    "--all checks the tracked UI source tree instead."
+    "--all checks the tracked UI source tree instead." \
+    "--base <ref> compares against <ref> (default HEAD); use it in a gate to check the commits under review."
 }
 
 audit_all=0
 strict_copy=0
+base_ref="HEAD"
 explicit_paths=()
 explicit_count=0
 
@@ -24,6 +26,15 @@ while (($# > 0)); do
       ;;
     --strict-copy)
       strict_copy=1
+      ;;
+    --base)
+      base_ref="${2:-}"
+      if [[ -z "$base_ref" ]]; then
+        printf 'Missing value for --base\n' >&2
+        usage >&2
+        exit 2
+      fi
+      shift
       ;;
     --help|-h)
       usage
@@ -71,7 +82,7 @@ changed_paths() {
       'kmgccc_player/Utilities'
   else
     {
-      git diff --name-only --diff-filter=ACMRTUXB HEAD --
+      git diff --name-only --diff-filter=ACMRTUXB "$base_ref" --
       git ls-files --others --exclude-standard
     } | sort -u
   fi
@@ -86,7 +97,7 @@ read_scan_content() {
   fi
 
   if git ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
-    git diff --no-ext-diff --unified=0 HEAD -- "$path" |
+    git diff --no-ext-diff --unified=0 "$base_ref" -- "$path" |
       sed -n '/^+++/! s/^+//p'
   else
     sed -n '1,$p' "$path"
