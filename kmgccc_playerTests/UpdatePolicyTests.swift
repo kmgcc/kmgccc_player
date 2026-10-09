@@ -2,6 +2,7 @@ import Foundation
 @testable import kmgccc_player
 import XCTest
 
+@MainActor
 final class UpdatePreferencesTests: XCTestCase {
     func testMigrationDefaultsAutomaticUpdatesToEnabled() {
         withDefaults { defaults in
