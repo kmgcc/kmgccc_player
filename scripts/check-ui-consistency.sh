@@ -157,7 +157,7 @@ while IFS= read -r path; do
 done <<< "$path_source"
 
 if ((path_count == 0)); then
-  printf 'RESULT: PASS (no changed UI source files to inspect)\n'
+  printf 'RESULT: NOTHING TO CHECK (no added UI source lines to inspect)\n'
   exit 0
 fi
 

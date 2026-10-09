@@ -8,7 +8,7 @@ usage() {
   printf '%s\n' \
     "Usage: ./scripts/check-motion-consistency.sh [--all] [--strict] [path ...]" \
     "" \
-    "Default mode reports changed Swift files and all untracked Swift files." \
+    "Default mode reports changed Swift files and all untracked Swift files and prints RESULT: REPORT (findings are not enforced; exit code stays 0)." \
     "--all scans the full application Swift source tree." \
     "--strict exits non-zero for unallowlisted raw spring recipes, timing curves, raw dynamics, custom curves, direct MotionSpec constructors, policy bypasses, unparameterized animations, unbound transitions, AppKit timing groups, or Core Animation instances."
 }
@@ -259,5 +259,12 @@ done < <(scan_paths)
 printf '%s\n' "Scanned $scanned Swift file(s); $findings review finding(s); $blocking_findings strict finding(s)."
 
 if ((strict && blocking_findings > 0)); then
+  printf 'RESULT: FAIL (%s blocking finding(s), strict mode)\n' "$blocking_findings"
   exit 1
+fi
+
+if ((strict)); then
+  printf 'RESULT: PASS (strict mode, 0 blocking finding(s))\n'
+else
+  printf 'RESULT: REPORT (%s blocking finding(s) not enforced; rerun with --strict to gate)\n' "$blocking_findings"
 fi
