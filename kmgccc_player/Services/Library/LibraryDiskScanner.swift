@@ -13,6 +13,17 @@ nonisolated struct LibraryDiskSnapshot: Sendable {
     let playlistSidecars: [PlaylistSidecar]
     let artistSidecars: [(sidecar: ArtistSidecar, folderURL: URL)]
     let albumSidecars: [(sidecar: AlbumSidecar, folderURL: URL)]
+    /// True when a library root could not be listed. The scan is then an
+    /// incomplete view of the library, and anything it cannot see would look
+    /// like an orphan to the metadata sync.
+    let hasEnumerationFailure: Bool
+    /// Track count of the previous scan manifest, used to notice a scan that
+    /// lost every track the last scan could see.
+    let previousTrackCount: Int
+    /// Track folders that exist but whose meta.json could not be read in this
+    /// scan. A scan that returns no tracks while it saw such folders is a
+    /// failed scan, not an empty library.
+    let unreadableTrackFolderCount: Int
 }
 
 nonisolated struct LibraryDiskScanner: Sendable {
@@ -40,11 +51,19 @@ nonisolated struct LibraryDiskScanner: Sendable {
         let artists = scanArtists(using: previousManifest, rootURL: rootURL, now: now)
         let albums = scanAlbums(using: previousManifest, rootURL: rootURL, now: now)
 
+        let enumerationFailure = tracks.enumerationFailed
+            || playlists.enumerationFailed
+            || artists.enumerationFailed
+            || albums.enumerationFailed
+
         let snapshot = LibraryDiskSnapshot(
             trackMetas: tracks.values,
             playlistSidecars: playlists.values,
             artistSidecars: artists.values,
-            albumSidecars: albums.values
+            albumSidecars: albums.values,
+            hasEnumerationFailure: enumerationFailure,
+            previousTrackCount: previousManifest?.tracks.count ?? 0,
+            unreadableTrackFolderCount: tracks.stats.missingMeta
         )
 
         let newManifest = LibraryManifest(
@@ -55,7 +74,10 @@ nonisolated struct LibraryDiskScanner: Sendable {
             artists: artists.manifestEntries,
             albums: albums.manifestEntries
         )
-        if writeManifest(newManifest, at: paths.libraryScanManifestURL) {
+        // Never overwrite the cache with a listing that failed to read part of
+        // the library; the previous manifest still describes the real folders.
+        if !enumerationFailure,
+           writeManifest(newManifest, at: paths.libraryScanManifestURL) {
             try? FileManager.default.removeItem(at: legacyManifestURL)
         }
 
@@ -107,7 +129,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
         var missingMeta = 0
         var seen = Set<String>()
 
-        for folderURL in folders {
+        for folderURL in folders.urls {
             let folderRelativePath = "Tracks/\(folderURL.lastPathComponent)"
             let metaRelativePath = "\(folderRelativePath)/meta.json"
             seen.insert(folderRelativePath)
@@ -157,7 +179,8 @@ nonisolated struct LibraryDiskScanner: Sendable {
         return ScanResult(
             values: values,
             manifestEntries: manifestEntries,
-            stats: ScanStats(total: values.count, cached: cached, rescanned: rescanned, removed: removed, missingMeta: missingMeta)
+            stats: ScanStats(total: values.count, cached: cached, rescanned: rescanned, removed: removed, missingMeta: missingMeta),
+            enumerationFailed: folders.failed
         )
     }
 
@@ -173,7 +196,8 @@ nonisolated struct LibraryDiskScanner: Sendable {
         now: Date
     ) -> ScanResult<PlaylistSidecar, ManifestSidecarEntry<PlaylistSidecar>> {
         let decoder = makeDecoder()
-        let files = directFiles(at: paths.playlistsRootURL)
+        let listing = directFiles(at: paths.playlistsRootURL)
+        let files = listing.urls
             .filter { $0.pathExtension.lowercased() == "json" }
 
         return scanJSONSidecars(
@@ -181,7 +205,8 @@ nonisolated struct LibraryDiskScanner: Sendable {
             rootURL: rootURL,
             sectionName: "playlist",
             previousEntries: manifest?.playlists ?? [:],
-            now: now
+            now: now,
+            enumerationFailed: listing.failed
         ) { data in
             try decoder.decode(PlaylistSidecar.self, from: data)
         }
@@ -192,8 +217,15 @@ nonisolated struct LibraryDiskScanner: Sendable {
 
     // MARK: - Artist Sidecars
 
-    func loadArtistSidecars() -> [(sidecar: ArtistSidecar, folderURL: URL)] {
-        scanArtists(using: loadManifestForActiveRoot(), rootURL: paths.rootURL, now: Date()).values
+    /// Sidecars plus whether the Artists root could be listed at all. Callers
+    /// that merge the sidecars into the library must not treat a failed listing
+    /// as "no artist has metadata".
+    func loadArtistSidecars() -> (
+        sidecars: [(sidecar: ArtistSidecar, folderURL: URL)],
+        listingFailed: Bool
+    ) {
+        let result = scanArtists(using: loadManifestForActiveRoot(), rootURL: paths.rootURL, now: Date())
+        return (result.values, result.enumerationFailed)
     }
 
     private func scanArtists(
@@ -202,7 +234,8 @@ nonisolated struct LibraryDiskScanner: Sendable {
         now: Date
     ) -> ScanResult<(sidecar: ArtistSidecar, folderURL: URL), ManifestSidecarEntry<ArtistSidecar>> {
         let decoder = makeDecoder()
-        let files = directDirectories(at: paths.artistsRootURL)
+        let listing = directDirectories(at: paths.artistsRootURL)
+        let files = listing.urls
             .map { $0.appendingPathComponent("meta.json") }
 
         return scanJSONSidecars(
@@ -210,7 +243,8 @@ nonisolated struct LibraryDiskScanner: Sendable {
             rootURL: rootURL,
             sectionName: "artist",
             previousEntries: manifest?.artists ?? [:],
-            now: now
+            now: now,
+            enumerationFailed: listing.failed
         ) { data in
             try decoder.decode(ArtistSidecar.self, from: data)
         }
@@ -221,8 +255,12 @@ nonisolated struct LibraryDiskScanner: Sendable {
 
     // MARK: - Album Sidecars
 
-    func loadAlbumSidecars() -> [(sidecar: AlbumSidecar, folderURL: URL)] {
-        scanAlbums(using: loadManifestForActiveRoot(), rootURL: paths.rootURL, now: Date()).values
+    func loadAlbumSidecars() -> (
+        sidecars: [(sidecar: AlbumSidecar, folderURL: URL)],
+        listingFailed: Bool
+    ) {
+        let result = scanAlbums(using: loadManifestForActiveRoot(), rootURL: paths.rootURL, now: Date())
+        return (result.values, result.enumerationFailed)
     }
 
     private func scanAlbums(
@@ -231,7 +269,8 @@ nonisolated struct LibraryDiskScanner: Sendable {
         now: Date
     ) -> ScanResult<(sidecar: AlbumSidecar, folderURL: URL), ManifestSidecarEntry<AlbumSidecar>> {
         let decoder = makeDecoder()
-        let files = directDirectories(at: paths.albumsRootURL)
+        let listing = directDirectories(at: paths.albumsRootURL)
+        let files = listing.urls
             .map { $0.appendingPathComponent("meta.json") }
 
         return scanJSONSidecars(
@@ -239,7 +278,8 @@ nonisolated struct LibraryDiskScanner: Sendable {
             rootURL: rootURL,
             sectionName: "album",
             previousEntries: manifest?.albums ?? [:],
-            now: now
+            now: now,
+            enumerationFailed: listing.failed
         ) { data in
             try decoder.decode(AlbumSidecar.self, from: data)
         }
@@ -256,6 +296,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
         sectionName: String,
         previousEntries: [String: ManifestSidecarEntry<T>],
         now: Date,
+        enumerationFailed: Bool = false,
         decode: (Data) throws -> T
     ) -> ScanResult<(sidecar: T, fileURL: URL), ManifestSidecarEntry<T>> {
         var values: [(sidecar: T, fileURL: URL)] = []
@@ -304,7 +345,8 @@ nonisolated struct LibraryDiskScanner: Sendable {
         return ScanResult(
             values: values,
             manifestEntries: manifestEntries,
-            stats: ScanStats(total: values.count, cached: cached, rescanned: rescanned, removed: removed, missingMeta: 0)
+            stats: ScanStats(total: values.count, cached: cached, rescanned: rescanned, removed: removed, missingMeta: 0),
+            enumerationFailed: enumerationFailed
         )
     }
 
@@ -371,28 +413,52 @@ nonisolated struct LibraryDiskScanner: Sendable {
 
     // MARK: - File Helpers
 
-    private func directDirectories(at url: URL) -> [URL] {
-        ((try? FileManager.default.contentsOfDirectory(
-            at: url,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        )) ?? [])
-        .filter {
-            ((try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true)
+    private func directDirectories(at url: URL) -> DirectoryListing {
+        do {
+            let contents = try FileManager.default.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )
+            return DirectoryListing(
+                urls: contents
+                    .filter {
+                        ((try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true)
+                    }
+                    .sorted { $0.lastPathComponent < $1.lastPathComponent },
+                failed: false
+            )
+        } catch {
+            Log.error(
+                "[LibraryScan] failed to enumerate directory \(url.path): \(error.localizedDescription)",
+                category: .library
+            )
+            return DirectoryListing(urls: [], failed: true)
         }
-        .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
-    private func directFiles(at url: URL) -> [URL] {
-        ((try? FileManager.default.contentsOfDirectory(
-            at: url,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        )) ?? [])
-        .filter {
-            ((try? $0.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true)
+    private func directFiles(at url: URL) -> DirectoryListing {
+        do {
+            let contents = try FileManager.default.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+            return DirectoryListing(
+                urls: contents
+                    .filter {
+                        ((try? $0.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true)
+                    }
+                    .sorted { $0.lastPathComponent < $1.lastPathComponent },
+                failed: false
+            )
+        } catch {
+            Log.error(
+                "[LibraryScan] failed to enumerate directory \(url.path): \(error.localizedDescription)",
+                category: .library
+            )
+            return DirectoryListing(urls: [], failed: true)
         }
-        .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     private func fingerprint(for url: URL) -> FileFingerprint? {
@@ -444,10 +510,16 @@ nonisolated private struct ScanStats {
     let missingMeta: Int
 }
 
+nonisolated private struct DirectoryListing {
+    let urls: [URL]
+    let failed: Bool
+}
+
 nonisolated private struct ScanResult<Value, Entry> {
     let values: [Value]
     let manifestEntries: [String: Entry]
     let stats: ScanStats
+    let enumerationFailed: Bool
 }
 
 private extension ScanResult {
@@ -457,7 +529,8 @@ private extension ScanResult {
         ScanResult<MappedValue, Entry>(
             values: values.map { transform($0.sidecar, $0.fileURL) },
             manifestEntries: manifestEntries,
-            stats: stats
+            stats: stats,
+            enumerationFailed: enumerationFailed
         )
     }
 }
