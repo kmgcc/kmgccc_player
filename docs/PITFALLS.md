@@ -37,5 +37,5 @@
 
 ## 提交与验证
 
-- 常规改动不编译。只有跨核心子系统并改动共享接口/owner、资料库迁移或实质改变组件依赖边界等重大工程变更，才可在全部实现完成后做一次最终 Debug build-only 编译；文件数和 diff 大小不算，判断不确定时不编译。失败时只修编译错误并再次 build 确认。该例外不包括测试、启动 App、`build_and_run.sh`、`verify.sh` 或 Release 构建；这些仍需用户本轮明确要求。GitHub macOS CI 仅手动触发；发布审计与私有资源验证**不进** verify.sh。
+- 常规改动不编译。只有跨核心子系统并改动共享接口/owner、资料库迁移或实质改变组件依赖边界等重大工程变更，才可在全部实现完成后做一次最终 Debug build-only 编译；文件数和 diff 大小不算，判断不确定时不编译。失败时只修编译错误并再次 build 确认。该例外不包括测试、启动 App、`build_and_run.sh`、`verify.sh` 或 Release 构建；这些仍需用户本轮明确要求。仓库不设 GitHub macOS CI；发布审计与私有资源验证**不进** verify.sh，合并门禁由维护者在本机执行。
 - 本仓库常有并行会话同时工作：动 git 分支、删产物、跑大规模清理前，先 `git status` + `git log` 确认没人在干活；squash 合并的分支不是 main 的祖先，删分支前先打 tag。
