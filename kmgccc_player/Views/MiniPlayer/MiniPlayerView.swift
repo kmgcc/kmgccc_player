@@ -825,7 +825,6 @@ private struct MiniPlayerLeftSection: View, Equatable {
                 diagnosticSurface: "MiniPlayerContextMenu"
             )
             Divider()
-            MiniPlayerRefetchLyricsButton()
             if presentation.source.isExternal, presentation.externalStableKey != nil {
                 Button {
                     let actionToken = ContextMenuDiagnostics.beginActionInvoke(
@@ -839,7 +838,6 @@ private struct MiniPlayerLeftSection: View, Equatable {
                 }
             }
         } else if presentation.source.isExternal, presentation.externalStableKey != nil {
-            MiniPlayerRefetchLyricsButton()
             Divider()
             Button {
                 let actionToken = ContextMenuDiagnostics.beginActionInvoke(
