@@ -617,6 +617,11 @@ actor QQMusicHelperProcess {
         let timeoutTask: Task<Void, Never>
     }
 
+    private struct ProtocolAnomaly {
+        let at: Date
+        let detail: String
+    }
+
     private struct QQMusicHelperRequest<Params: Encodable>: Encodable {
         let id: String
         let method: String
@@ -674,6 +679,8 @@ actor QQMusicHelperProcess {
     private let failureWindow: TimeInterval = 120
     private let circuitOpenDuration: TimeInterval = 300
     private let failureThreshold = 3
+    private let protocolAnomalyWindow: TimeInterval = 300
+    private let protocolAnomalyLimit = 10
     private let recentLogLimit = 8_000
 
     private var process: Process?
@@ -685,6 +692,7 @@ actor QQMusicHelperProcess {
     private var pendingRequests: [String: PendingRequest] = [:]
     private var idleShutdownTask: Task<Void, Never>?
     private var recentFailureDates: [Date] = []
+    private var recentProtocolAnomalies: [ProtocolAnomaly] = []
     private var circuitOpenUntil: Date?
     private var circuitLastReason = ""
     private var lastActivity = Date()
@@ -1030,21 +1038,48 @@ actor QQMusicHelperProcess {
         do {
             response = try decoder.decode(QQMusicHelperResponse.self, from: data)
         } catch {
+            noteProtocolAnomaly("undecodable stdout line (\(data.count) bytes)")
             recordFailure(reason: "JSON IPC invalid response")
             Log.warning("[QQMusicHelperProcess] JSON IPC invalid response reason=\(error)", category: .import)
             return
         }
 
-        guard let id = response.id,
-              let pending = pendingRequests.removeValue(forKey: id)
-        else {
-            Log.warning("[QQMusicHelperProcess] JSON IPC unknown response id=\(response.id ?? "nil")", category: .import)
+        if let id = response.id, let pending = pendingRequests.removeValue(forKey: id) {
+            pending.timeoutTask.cancel()
+            markActivity()
+            pending.continuation.resume(returning: response)
             return
         }
 
-        pending.timeoutTask.cancel()
-        markActivity()
-        pending.continuation.resume(returning: response)
+        // The helper answers a stdin line it cannot parse with `"id": null` and the real
+        // error. With one request in flight that answer belongs to it; dropping it turns a
+        // protocol error into a 15 second timeout.
+        if response.id == nil, pendingRequests.count == 1, let (id, pending) = pendingRequests.first {
+            pendingRequests.removeValue(forKey: id)
+            pending.timeoutTask.cancel()
+            markActivity()
+            Log.warning(
+                "[QQMusicHelperProcess] response without id delivered to the only pending request method=\(pending.method) ok=\(response.ok) error=\(response.error ?? "nil")",
+                category: .import
+            )
+            pending.continuation.resume(returning: response)
+            return
+        }
+
+        if pendingRequests.isEmpty {
+            Log.debug(
+                "[QQMusicHelperProcess] late response id=\(response.id ?? "nil") with no pending request",
+                category: .import
+            )
+            return
+        }
+
+        noteProtocolAnomaly(
+            response.id == nil
+                ? "response without id while \(pendingRequests.count) requests are pending"
+                : "response id not pending while \(pendingRequests.count) requests are pending"
+        )
+        Log.warning("[QQMusicHelperProcess] JSON IPC unknown response id=\(response.id ?? "nil")", category: .import)
     }
 
     private func handleTermination(_ terminatedProcess: Process) {
@@ -1057,9 +1092,31 @@ actor QQMusicHelperProcess {
         recordFailure(reason: reason)
     }
 
+    private func noteProtocolAnomaly(_ detail: String) {
+        let now = Date()
+        recentProtocolAnomalies.removeAll { now.timeIntervalSince($0.at) > protocolAnomalyWindow }
+        recentProtocolAnomalies.append(ProtocolAnomaly(at: now, detail: detail))
+        if recentProtocolAnomalies.count > protocolAnomalyLimit {
+            recentProtocolAnomalies.removeFirst(recentProtocolAnomalies.count - protocolAnomalyLimit)
+        }
+    }
+
+    private func protocolAnomalyDetails(since: Date) -> [String] {
+        recentProtocolAnomalies.filter { $0.at >= since }.map(\.detail)
+    }
+
     private func failPendingRequest(id: String, error: Error) {
         guard let pending = pendingRequests.removeValue(forKey: id) else { return }
         pending.timeoutTask.cancel()
+        if let helperError = error as? QQMusicHelperError, case .requestTimedOut = helperError {
+            let anomalies = protocolAnomalyDetails(since: pending.startedAt)
+            if !anomalies.isEmpty {
+                Log.warning(
+                    "[QQMusicHelperProcess] request id=\(id) method=\(pending.method) timed out with \(anomalies.count) unattributable stdout line(s): \(anomalies.joined(separator: "; "))",
+                    category: .import
+                )
+            }
+        }
         pending.continuation.resume(throwing: error)
         recordFailure(reason: String(describing: error))
     }
@@ -1141,8 +1198,14 @@ actor QQMusicHelperProcess {
         circuitLastReason = reason
         if recentFailureDates.count >= failureThreshold {
             circuitOpenUntil = now.addingTimeInterval(circuitOpenDuration)
+            let anomalies = protocolAnomalyDetails(since: now.addingTimeInterval(-failureWindow))
+            let failureError: QQMusicHelperError = anomalies.isEmpty
+                ? .requestFailed("circuit opened")
+                : .invalidResponse(
+                    "circuit opened after \(anomalies.count) unattributable stdout line(s): \(anomalies.joined(separator: "; "))"
+                )
             Log.warning("[QQMusicHelperProcess] circuit open until=\(circuitOpenUntil!) reason=\(reason)", category: .import)
-            stopProcess(failingPendingWith: QQMusicHelperError.requestFailed("circuit opened"))
+            stopProcess(failingPendingWith: failureError)
         }
     }
 
