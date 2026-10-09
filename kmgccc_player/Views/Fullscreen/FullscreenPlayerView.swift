@@ -105,6 +105,10 @@ struct FullscreenPlayerView: View {
     @State private var rightPanelDisplayState: RightPanelDisplayState = .lyrics
     @State private var lastRightPanelDisplayStateBeforeQueue: RightPanelDisplayState = .lyrics
     @State private var lyricsCoordinator = FullscreenLyricsCoordinator()
+#if DEBUG
+    @State private var lifecycleInvariantBaseline: FullscreenHostLifecycleInvariant.Snapshot?
+    @State private var lifecycleInvariantTask: Task<Void, Never>?
+#endif
     @State private var lastFullscreenLyricsReloadSignature: FullscreenLyricsReloadSignature?
     @State private var lastFullscreenLyricsReloadAt: TimeInterval = 0
     /// Last fully decoded artwork committed to the skin layer. Track metadata
@@ -458,6 +462,11 @@ struct FullscreenPlayerView: View {
 
     private func handleFullscreenAppear() {
         skinSession.activate(settings.fullscreen.skinID, revision: SkinRegistry.catalog.revision(for: settings.fullscreen.skinID))
+#if DEBUG
+        lifecycleInvariantTask?.cancel()
+        lifecycleInvariantTask = nil
+        lifecycleInvariantBaseline = FullscreenHostLifecycleInvariant.capture(meter: ledMeterProvider)
+#endif
         guard !didHandleFullscreenAppear else { return }
         FSDiagnostics.emit(
             "handleFullscreenAppear ENTER host=\(hostContext.rawValue) skin=\(settings.fullscreen.skinID) external=\(playbackCoordinator.presentation.source.isExternal) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
@@ -554,6 +563,22 @@ struct FullscreenPlayerView: View {
         // removed before its initial geometry/theme gate completed. The
         // manager updates the native surface state before the next appearance.
         LyricsSurfaceManager.shared.reportFullscreenVisible(false)
+
+#if DEBUG
+        lifecycleInvariantTask?.cancel()
+        if let baseline = lifecycleInvariantBaseline {
+            lifecycleInvariantBaseline = nil
+            let context = hostContext.rawValue
+            let meter = ledMeterProvider
+            lifecycleInvariantTask = Task {
+                await FullscreenHostLifecycleInvariant.verify(
+                    baseline: baseline,
+                    context: context,
+                    meter: meter
+                )
+            }
+        }
+#endif
     }
 
     private var fullscreenDetailReaderTargetTrack: Track? {
