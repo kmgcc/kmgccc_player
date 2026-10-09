@@ -71,6 +71,17 @@ nonisolated enum LibraryBackgroundPersistenceError: Error, Equatable, LocalizedE
         }
     }
 }
+
+nonisolated enum TrackSidecarReadError: Error, Equatable, LocalizedError, Sendable {
+    case unreadable(trackID: UUID, reason: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unreadable(let trackID, let reason):
+            return "歌曲 \(trackID) 的 meta.json 存在但读不出（\(reason)），已跳过写入以免覆盖其中的封面、歌词与 TTML 引用"
+        }
+    }
+}
 import ImageIO
 
 nonisolated struct TrackPersistenceReferences: Sendable {
@@ -306,7 +317,7 @@ final class LocalLibraryService {
         guard Self.isPersistable(track.mediaLocator) else { return false }
 
         do {
-            let references = loadTrackPersistenceReferences(for: track.id)
+            let references = try loadTrackPersistenceReferences(for: track.id)
             let trackFolder = try ensureTrackFolder(for: track.id)
             let artworkFileName = try writeArtworkIfChanged(
                 for: track,
@@ -349,7 +360,7 @@ final class LocalLibraryService {
         guard Self.isPersistable(locator) else { return false }
 
         do {
-            let references = loadTrackPersistenceReferences(for: track.id)
+            let references = try loadTrackPersistenceReferences(for: track.id)
             logTrackPersistence(track: track, reason: reason, action: "meta-only", artwork: "not-requested")
             try writeTrackMeta(
                 for: track,
@@ -440,7 +451,7 @@ final class LocalLibraryService {
         guard Self.isPersistable(track.mediaLocator) else { return false }
 
         do {
-            let references = loadTrackPersistenceReferences(for: track.id)
+            let references = try loadTrackPersistenceReferences(for: track.id)
             let trackFolder = try ensureTrackFolder(for: track.id)
             let updatedReferences = try writeLyricsAssets(for: track, folder: trackFolder, existing: references)
             logTrackPersistence(track: track, reason: reason, action: "meta+lyrics", artwork: "not-requested")
@@ -457,7 +468,7 @@ final class LocalLibraryService {
         guard Self.isPersistable(track.mediaLocator) else { return false }
 
         do {
-            let references = loadTrackPersistenceReferences(for: track.id)
+            let references = try loadTrackPersistenceReferences(for: track.id)
             let artworkFileName = try writeArtworkIfChanged(
                 for: track,
                 reason: reason,
@@ -482,7 +493,7 @@ final class LocalLibraryService {
         guard Self.isPersistable(track.mediaLocator) else { return false }
 
         do {
-            let references = loadTrackPersistenceReferences(for: track.id)
+            let references = try loadTrackPersistenceReferences(for: track.id)
             let trackFolder = try ensureTrackFolder(for: track.id)
             let artworkFileName = try writeArtworkIfChanged(
                 for: track,
@@ -515,7 +526,7 @@ final class LocalLibraryService {
         }
 
         do {
-            let existingReferences = loadTrackPersistenceReferencesOnBackground(
+            let existingReferences = try loadTrackPersistenceReferencesOnBackground(
                 for: snapshot.id,
                 paths: paths
             )
@@ -645,12 +656,26 @@ final class LocalLibraryService {
         }
     }
 
-    private func loadTrackPersistenceReferences(for trackID: UUID) -> TrackPersistenceReferences {
+    /// Reads the references the existing sidecar holds. A sidecar that exists but
+    /// cannot be read must not be treated as "no references": callers rewrite the
+    /// sidecar from the result, which would drop the artwork/lyrics/TTML files it
+    /// still points at.
+    private func loadTrackPersistenceReferences(for trackID: UUID) throws -> TrackPersistenceReferences {
         let metaURL = paths.trackMetaURL(for: trackID)
-        guard let data = try? Data(contentsOf: metaURL),
-              let sidecar = try? decoder.decode(TrackSidecar.self, from: data)
-        else {
+        guard fileManager.fileExists(atPath: metaURL.path) else {
             return TrackPersistenceReferences()
+        }
+        let data: Data
+        do {
+            data = try Data(contentsOf: metaURL)
+        } catch {
+            throw TrackSidecarReadError.unreadable(
+                trackID: trackID,
+                reason: error.localizedDescription
+            )
+        }
+        guard let sidecar = try? decoder.decode(TrackSidecar.self, from: data) else {
+            throw TrackSidecarReadError.unreadable(trackID: trackID, reason: "decode failed")
         }
 
         let resolvedArtworkFileName = resolvedTrackArtworkFileName(
@@ -669,13 +694,23 @@ final class LocalLibraryService {
     private nonisolated static func loadTrackPersistenceReferencesOnBackground(
         for trackID: UUID,
         paths: LibraryPaths
-    ) -> TrackPersistenceReferences {
+    ) throws -> TrackPersistenceReferences {
         let metaURL = paths.trackMetaURL(for: trackID)
         let decoder = makeJSONDecoder()
-        guard let data = try? Data(contentsOf: metaURL),
-              let sidecar = try? decoder.decode(TrackSidecar.self, from: data)
-        else {
+        guard FileManager.default.fileExists(atPath: metaURL.path) else {
             return TrackPersistenceReferences()
+        }
+        let data: Data
+        do {
+            data = try Data(contentsOf: metaURL)
+        } catch {
+            throw TrackSidecarReadError.unreadable(
+                trackID: trackID,
+                reason: error.localizedDescription
+            )
+        }
+        guard let sidecar = try? decoder.decode(TrackSidecar.self, from: data) else {
+            throw TrackSidecarReadError.unreadable(trackID: trackID, reason: "decode failed")
         }
 
         let resolvedArtworkFileName = resolvedTrackArtworkFileNameOnBackground(
@@ -853,12 +888,27 @@ final class LocalLibraryService {
                 preferredFileName: existingArtworkFileName
             )
             var removedAny = false
+            var unreadableFileName: String?
             for fileName in candidateFileNames {
                 let candidateURL = trackFolder.appendingPathComponent(fileName)
-                if fileManager.fileExists(atPath: candidateURL.path) {
-                    try fileManager.removeItem(at: candidateURL)
-                    removedAny = true
+                guard fileManager.fileExists(atPath: candidateURL.path) else { continue }
+                guard fileManager.isReadableFile(atPath: candidateURL.path) else {
+                    // A cover that is on disk but cannot be read now is not a
+                    // cleared cover; deleting it would destroy the user's file.
+                    unreadableFileName = fileName
+                    continue
                 }
+                try fileManager.removeItem(at: candidateURL)
+                removedAny = true
+            }
+            if let unreadableFileName {
+                logTrackPersistence(
+                    track: track,
+                    reason: reason,
+                    action: "artwork-error",
+                    artwork: "unreadable-existing"
+                )
+                return unreadableFileName
             }
             logTrackPersistence(
                 track: track,
@@ -939,12 +989,25 @@ final class LocalLibraryService {
                 preferredFileName: existingArtworkFileName
             )
             var removedAny = false
+            var unreadableFileName: String?
             for fileName in candidateFileNames {
                 let candidateURL = trackFolder.appendingPathComponent(fileName)
-                if fileManager.fileExists(atPath: candidateURL.path) {
-                    try fileManager.removeItem(at: candidateURL)
-                    removedAny = true
+                guard fileManager.fileExists(atPath: candidateURL.path) else { continue }
+                guard fileManager.isReadableFile(atPath: candidateURL.path) else {
+                    unreadableFileName = fileName
+                    continue
                 }
+                try fileManager.removeItem(at: candidateURL)
+                removedAny = true
+            }
+            if let unreadableFileName {
+                logTrackPersistenceOnBackground(
+                    snapshot: snapshot,
+                    reason: reason,
+                    action: "artwork-error",
+                    artwork: "unreadable-existing"
+                )
+                return unreadableFileName
             }
             logTrackPersistenceOnBackground(
                 snapshot: snapshot,

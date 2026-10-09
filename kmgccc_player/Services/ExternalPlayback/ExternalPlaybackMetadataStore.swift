@@ -247,9 +247,18 @@ final class ExternalPlaybackMetadataStore {
         guard !data.isEmpty else { return }
         let fileName = "\(sanitize(stableKey))-\(ArtworkAssetStore.checksum(for: data)).img"
         let directory = artworkCacheDirectory()
-        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let fileURL = directory.appendingPathComponent(fileName)
-        try? data.write(to: fileURL, options: .atomic)
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            // Do not point the index at a file that is not on disk.
+            Log.error(
+                "[ExternalPlayback] failed to cache artwork for \(stableKey): \(error.localizedDescription)",
+                category: .library
+            )
+            return
+        }
         updateRecord(stableKey: stableKey) { record in
             record.networkArtworkFileName = fileName
             record.artworkSource = source
@@ -465,8 +474,15 @@ final class ExternalPlaybackMetadataStore {
     }
 
     private func persistOverrides() {
-        guard let data = try? encoder.encode(overrides) else { return }
-        defaults.set(data, forKey: Keys.overrides)
+        do {
+            let data = try encoder.encode(overrides)
+            defaults.set(data, forKey: Keys.overrides)
+        } catch {
+            Log.error(
+                "[ExternalPlayback] failed to encode match overrides: \(error.localizedDescription)",
+                category: .library
+            )
+        }
     }
 
     private func persistRecords() {
@@ -477,9 +493,25 @@ final class ExternalPlaybackMetadataStore {
     }
 
     private func persist<T: Encodable>(_ value: T, to url: URL) {
-        guard let data = try? encoder.encode(value) else { return }
-        try? fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: url, options: .atomic)
+        let data: Data
+        do {
+            data = try encoder.encode(value)
+        } catch {
+            Log.error(
+                "[ExternalPlayback] failed to encode \(url.lastPathComponent): \(error.localizedDescription)",
+                category: .library
+            )
+            return
+        }
+        do {
+            try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            Log.error(
+                "[ExternalPlayback] failed to write \(url.path): \(error.localizedDescription)",
+                category: .library
+            )
+        }
     }
 
     private static func load<T: Decodable>(
