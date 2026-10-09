@@ -770,7 +770,6 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
     private func startProgressPolling(generation: UInt64) {
         progressPollTask?.cancel()
-        guard !progressPollingCircuitOpen else { return }
         progressPollTask = Task { [weak self] in
             while !Task.isCancelled {
                 let interval = await MainActor.run { self?.currentPollInterval() ?? 1_000_000_000 }
@@ -816,6 +815,9 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     }
 
     private func currentPollInterval() -> UInt64 {
+        if progressPollingCircuitOpen {
+            return 30 * 1_000_000_000
+        }
         if consecutiveProgressPollFailures > 0 {
             let exponent = min(consecutiveProgressPollFailures - 1, 4)
             return UInt64(1 << exponent) * 1_000_000_000
@@ -833,13 +835,16 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         consecutiveProgressPollFailures += 1
         let failures = consecutiveProgressPollFailures
         if failures >= 5 {
+            // Degrade to a slow probe instead of stopping progress for the rest of the
+            // session: one successful poll resets the counter and restores the cadence.
+            let isFirstDegradation = !progressPollingCircuitOpen
             progressPollingCircuitOpen = true
-            progressPollTask?.cancel()
-            progressPollTask = nil
-            Log.warning(
-                "[SystemNowPlaying] progress polling circuit opened after \(failures) failures: \(reason)",
-                category: .playback
-            )
+            if isFirstDegradation {
+                Log.warning(
+                    "[SystemNowPlaying] progress polling degraded to slow probe after \(failures) failures: \(reason)",
+                    category: .playback
+                )
+            }
         } else {
             Log.warning(
                 "[SystemNowPlaying] progress polling failed count=\(failures); backing off: \(reason)",

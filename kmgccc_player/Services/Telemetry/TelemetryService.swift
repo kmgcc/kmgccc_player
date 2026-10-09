@@ -749,7 +749,17 @@ private final class AnonymousInstallIdentityStore {
 
     func resetInstallID() {
         UserDefaults.standard.removeObject(forKey: TelemetryDefaults.installIDKey)
-        try? FileManager.default.removeItem(at: TelemetryFilePaths.installIDFileURL)
+        let fileURL = TelemetryFilePaths.installIDFileURL
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: fileURL)
+        } catch {
+            Log.warning(
+                "[Telemetry] failed to remove install_id file, writing a new ID instead: \(error)",
+                category: .telemetry
+            )
+            persist(UUID().uuidString)
+        }
     }
 
     private func loadPersistedInstallID() -> String? {
