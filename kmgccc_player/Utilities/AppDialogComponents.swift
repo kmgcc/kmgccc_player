@@ -320,8 +320,7 @@ struct AppDialogFooter<Content: View>: View {
 }
 
 // MARK: - Progress Dialog Header
-// Shared by BatchImportProgressDialog, NCMImportProgressDialog and
-// LyricsFetchProgressDialog.
+// Shared by BatchImportProgressDialog.
 
 struct AppDialogProgressHeader: View {
     let title: String
