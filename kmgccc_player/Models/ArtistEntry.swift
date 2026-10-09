@@ -31,6 +31,7 @@ struct ArtistEntry: Identifiable {
     var albumCount: Int
     var totalDuration: Double
     var isOrphaned: Bool        // runtime-only: true if no matching songs exist
+    var hasUserEditedContent: Bool // runtime-only: true when user-edited fields must survive zero-track cleanup
 
     var existingArtworkURL: URL? {
         guard let artworkFileURL,
@@ -68,7 +69,8 @@ struct ArtistEntry: Identifiable {
         trackCount: Int,
         albumCount: Int,
         totalDuration: Double,
-        isOrphaned: Bool
+        isOrphaned: Bool,
+        hasUserEditedContent: Bool = false
     ) {
         self.id = id
         self.canonicalName = canonicalName
@@ -90,5 +92,6 @@ struct ArtistEntry: Identifiable {
         self.albumCount = albumCount
         self.totalDuration = totalDuration
         self.isOrphaned = isOrphaned
+        self.hasUserEditedContent = hasUserEditedContent
     }
 }

@@ -36,6 +36,7 @@ struct AlbumEntry: Identifiable {
     var trackCount: Int
     var totalDuration: Double
     var isOrphaned: Bool            // runtime-only: true if no matching songs exist
+    var hasUserEditedContent: Bool // runtime-only: true when user-edited fields must survive zero-track cleanup
 
     var isCompilation: Bool {
         LibraryNormalization.isCompilationAlbumType(
@@ -89,7 +90,8 @@ struct AlbumEntry: Identifiable {
         updatedAt: Date,
         trackCount: Int,
         totalDuration: Double,
-        isOrphaned: Bool
+        isOrphaned: Bool,
+        hasUserEditedContent: Bool = false
     ) {
         self.id = id
         self.canonicalKey = canonicalKey
@@ -116,5 +118,6 @@ struct AlbumEntry: Identifiable {
         self.trackCount = trackCount
         self.totalDuration = totalDuration
         self.isOrphaned = isOrphaned
+        self.hasUserEditedContent = hasUserEditedContent
     }
 }

@@ -191,6 +191,11 @@ nonisolated struct LibraryMaintenanceService {
         var deletedAlbumIDs: [UUID] = []
 
         for entry in artistEntries where entry.trackCount == 0 {
+            // Zero tracks is not proof of an orphan: an incomplete scan can
+            // hide every track of an artist that still owns user-edited
+            // metadata. Only entries the sync itself declared orphaned and
+            // free of user content may be removed.
+            guard entry.isOrphaned, entry.hasUserEditedContent == false else { continue }
             Log.warning(
                 "[LibraryMaintenance] deleting zero-track artist reason=\(reason) artistID=\(entry.id.uuidString) name=\(entry.displayName) references=0 orphan=\(entry.isOrphaned)",
                 category: .library
@@ -199,6 +204,7 @@ nonisolated struct LibraryMaintenanceService {
         }
 
         for entry in albumEntries where entry.trackCount == 0 {
+            guard entry.isOrphaned, entry.hasUserEditedContent == false else { continue }
             Log.warning(
                 "[LibraryMaintenance] deleting zero-track album reason=\(reason) albumID=\(entry.id.uuidString) title=\(entry.displayTitle) artist=\(entry.primaryArtistDisplayName) references=0 orphan=\(entry.isOrphaned)",
                 category: .library

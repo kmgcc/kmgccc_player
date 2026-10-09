@@ -160,7 +160,8 @@ final class LibraryMetadataSync {
                     trackCount: 0,
                     albumCount: 0,
                     totalDuration: 0,
-                    isOrphaned: true
+                    isOrphaned: true,
+                    hasUserEditedContent: true
                 ))
             } else {
                 if FileManager.default.fileExists(atPath: folderURL.path) {
@@ -299,7 +300,8 @@ final class LibraryMetadataSync {
                     updatedAt: sidecar.updatedAt,
                     trackCount: 0,
                     totalDuration: 0,
-                    isOrphaned: true
+                    isOrphaned: true,
+                    hasUserEditedContent: true
                 ))
             } else {
                 if FileManager.default.fileExists(atPath: folderURL.path) {
