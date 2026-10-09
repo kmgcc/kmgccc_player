@@ -105,6 +105,18 @@ require_command git
 
 run_step "Bootstrap" 3600 "$ROOT/scripts/bootstrap.sh"
 
+# Static motion/UI gates run before the build so they fail fast. Motion audits the whole
+# app tree in strict mode; the UI check compares against the merge base so it gates the
+# lines under review instead of the pre-existing legacy tree.
+UI_BASE_REF="origin/main"
+if ! git -C "$ROOT" rev-parse --verify --quiet "${UI_BASE_REF}^{commit}" >/dev/null 2>&1; then
+  UI_BASE_REF="HEAD"
+fi
+run_step "Motion consistency (strict)" 300 \
+  "$ROOT/scripts/check-motion-consistency.sh" --all --strict
+run_step "UI consistency" 300 \
+  "$ROOT/scripts/check-ui-consistency.sh" --base "$UI_BASE_REF" --strict-copy
+
 run_step "ARM64 unsigned Debug build" 2400 \
   xcodebuild -verbose \
     -project "$PROJECT" \
@@ -126,6 +138,27 @@ run_step "LRC regression" 180 \
     "$ROOT/Tests/LRCConverterServiceRegressionTests.swift" \
     -o "$LRC_EXECUTABLE"
 run_step "LRC regression execution" 60 "$LRC_EXECUTABLE"
+
+# Standalone regressions compile one or two sources directly so library and telemetry
+# rules stay honest without dragging the SwiftData/AppKit app target in.
+COST_BOUNDED_CACHE_EXECUTABLE="$WORK_DIR/cost-bounded-cache-regression"
+run_step "CostBoundedCache regression" 180 \
+  xcrun swiftc -parse-as-library \
+    "$ROOT/kmgccc_player/Utilities/CostBoundedCache.swift" \
+    "$ROOT/Tests/CostBoundedCacheRegressionTests.swift" \
+    -o "$COST_BOUNDED_CACHE_EXECUTABLE"
+run_step "CostBoundedCache regression execution" 60 "$COST_BOUNDED_CACHE_EXECUTABLE"
+
+DEVICE_TELEMETRY_EXECUTABLE="$WORK_DIR/device-telemetry-regression"
+run_step "DeviceTelemetry regression" 180 \
+  xcrun swiftc -parse-as-library \
+    "$ROOT/kmgccc_player/Services/Telemetry/DeviceTelemetryClassifier.swift" \
+    "$ROOT/Tests/DeviceTelemetryClassifierRegressionTests.swift" \
+    -o "$DEVICE_TELEMETRY_EXECUTABLE"
+run_step "DeviceTelemetry regression execution" 60 "$DEVICE_TELEMETRY_EXECUTABLE"
+
+run_step "LibraryNormalization regression" 240 \
+  "$ROOT/Tests/run_library_normalization_regression.sh"
 
 # Integration tests share app-global state and sockets; parallel test classes have
 # caused job-cancellation flakes, so the merge gate runs XCTest serially.
