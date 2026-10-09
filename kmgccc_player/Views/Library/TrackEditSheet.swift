@@ -180,6 +180,7 @@ struct TrackEditSheet: View {
             showsDetailedMetadata: true,
             onSave: {
                 saveChanges()
+                return true
             },
             onCancel: {},
             onClearOverride: nil,

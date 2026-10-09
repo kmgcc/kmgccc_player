@@ -134,8 +134,8 @@ struct ExternalPlaybackInfoEditorView: View {
             || lyricsTimeOffsetMs != initialLyricsTimeOffsetMs
     }
 
-    private func saveExternalEdits() {
-        guard let stableKey else { return }
+    private func saveExternalEdits() -> Bool {
+        guard let stableKey else { return false }
         let onlyOffsetChanged = (title == initialTitle)
             && (artist == initialArtist)
             && (album == initialAlbum)
@@ -153,25 +153,28 @@ struct ExternalPlaybackInfoEditorView: View {
             lyricsTimeOffsetMs: lyricsTimeOffsetMs == 0 ? nil : lyricsTimeOffsetMs,
             updatedAt: Date()
         )
-        metadataStore.saveOverride(override, for: stableKey)
+        var saved = metadataStore.saveOverride(override, for: stableKey)
 
         if let artworkData, artworkData != initialArtworkData {
-            metadataStore.storeNetworkArtwork(
+            saved = metadataStore.storeNetworkArtwork(
                 artworkData,
                 for: stableKey,
                 source: "manualOverride"
-            )
+            ) && saved
         }
 
         if lyricsText != initialLyricsText {
-            metadataStore.saveManualLyrics(
+            saved = metadataStore.saveManualLyrics(
                 lyricsText,
                 source: "manualOverride",
                 for: stableKey
-            )
+            ) && saved
         }
 
-        onSaved(onlyOffsetChanged)
+        if saved {
+            onSaved(onlyOffsetChanged)
+        }
+        return saved
     }
 
     private func clearOverride() {
