@@ -30,8 +30,9 @@
 
 ## 工程
 
-- 工程使用 Xcode **文件夹同步组**（PBXFileSystemSynchronizedRootGroup，无 membershipExceptions）：在同步目录里新建 `.swift` 文件即自动入 target，不需要也不应该手改 project.pbxproj 登记文件。
-- 两套测试定位不同：`kmgccc_playerTests/` 是挂在 scheme 上的 XCTest target；`Tests/` 是用 `xcrun swiftc -parse-as-library` 直接编译被测源码的轻量脚本回归（刻意不依赖 App / SwiftData target）。新增测试先想清楚进哪条轨。
+- 工程使用 Xcode **文件夹同步组**（PBXFileSystemSynchronizedRootGroup，无 membershipExceptions）：**App target** 的 9 个同步目录（AppKit、Models、Rendering、Repositories、Services、Skins、Utilities、ViewModels、Views）里新建 `.swift` 文件即自动入 target，不需要也不应该手改 project.pbxproj 登记文件。
+- `kmgccc_playerTests/` **不是**同步组：新增测试文件必须显式登记进 test target 的 Sources，否则文件会安静地永不编译、永不运行（已有先例：两个测试文件自 2026-09-03 起从未执行）。提交测试前对一次账：`ls kmgccc_playerTests/*.swift` 的文件必须都能在 project.pbxproj 里找到对应登记项。
+- 两套测试定位不同：`kmgccc_playerTests/` 是挂在 scheme 上的 XCTest target（宿主测试，经 `TEST_HOST` 链接 App）；`Tests/` 是用 `xcrun swiftc -parse-as-library` 直接编译被测源码的轻量脚本回归（刻意不依赖 App / SwiftData target）。新增测试先想清楚进哪条轨。
 - 日志使用现有 `Log` 分类，**不加临时 `print`**——严禁在业务逻辑中引入裸 print，统一走现有 `Log` 分类。
 
 ## 提交与验证
