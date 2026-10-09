@@ -1140,9 +1140,7 @@ private struct ScrollOffsetSensor: View {
             localPlayback: playerVM,
             appleMusicAdapter: AppleMusicPlaybackAdapter(previewLibraryTracksProvider: { [weak libraryVM] in libraryVM?.allTracks ?? [] }),
             systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryTracksProvider: { [weak libraryVM] in libraryVM?.allTracks ?? [] }),
-            artworkCache: cacheServices.trackArtworkCache,
-            lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
-            amllDBService: cacheServices.amllDBService
+            artworkCache: cacheServices.trackArtworkCache
         ))
         .environment(cacheServices)
         .environment(UIStateViewModel())

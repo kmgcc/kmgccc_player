@@ -476,8 +476,6 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             systemNowPlayingProvider: systemNowPlayingProvider,
             preferenceStatsService: preferenceStatsService,
             artworkCache: cacheServices.trackArtworkCache,
-            lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
-            amllDBService: cacheServices.amllDBService,
             meterProvider: ledMeterProvider
         )
         let lyricsViewModel = LyricsViewModel(settings: AppSettings.shared)

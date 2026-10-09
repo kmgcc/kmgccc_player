@@ -197,7 +197,6 @@ final class AppleMusicPlaybackAdapter {
     private var lastPollFailureWarningSignature: String?
 
     private(set) var presentation: NowPlayingPresentation = .emptyAppleMusic
-    private(set) var isRefetchingLyrics: Bool = false
 
     init(
         bridge: AppleMusicBridge? = nil,
@@ -289,53 +288,12 @@ final class AppleMusicPlaybackAdapter {
         updatePresentationFromLatestInfo()
     }
 
-    func reResolveCurrentTrack() {
-        guard let info = latestInfo, let raw = latestRawMetadata, let identity = latestIdentity else {
-            schedulePoll()
-            return
-        }
-        cancelPerTrackTasks()
-        resolutionTask?.cancel()
-        resolutionTask = nil
-        resolvedRawMetadata = nil
-        latestEffectiveMetadata = nil
-        latestMatchResult = nil
-        latestMatchedTrack = nil
-        autoLyricsLookupState = .idle
-        pendingArtworkIdentity = identity
-        startResolutionIfNeeded(for: info, raw: raw, identity: identity)
-        updatePresentationFromLatestInfo()
-    }
-
     func clearRuntimeResolutionCaches() {
         lyricsSearchTimestamps.removeAll()
         Task {
             await artworkResolver.clearCache()
         }
         invalidateCurrentResolution()
-    }
-
-    func forceRefetchLyrics() async {
-        guard let identity = latestIdentity else { return }
-
-        isRefetchingLyrics = true
-        defer { isRefetchingLyrics = false }
-
-        metadataStore.clearAutoLyricsCache(for: identity)
-        reResolveCurrentTrack()
-
-        await withTaskCancellationHandler {
-            let resolutionTask = self.resolutionTask
-            await resolutionTask?.value
-            let lyricsTask = self.lyricsTask
-            await lyricsTask?.value
-        } onCancel: {
-            Task { @MainActor [weak self] in
-                self?.cancelPerTrackTasks()
-                self?.resolutionTask?.cancel()
-                self?.resolutionTask = nil
-            }
-        }
     }
 
     func playPause() {
@@ -817,7 +775,6 @@ final class AppleMusicPlaybackAdapter {
             artworkIdentity: displayedArtworkForPresentation.presentationIdentity,
             artworkDisplayTrackID: displayedArtworkForPresentation.displayTrackID,
             isArtworkLoading: isArtworkLoading,
-            isRefetchingLyrics: isRefetchingLyrics,
             duration: info.duration,
             currentTime: info.position,
             isPlaying: info.state == .playing,

@@ -80,7 +80,6 @@ struct MiniPlayerView: View {
                     isPlaying: presentation.isPlaying,
                     contextMenuRefreshTrigger: libraryVM.refreshTrigger,
                     isFullscreenPresented: fullscreenWindowManager.isFullscreenPlayerPresented,
-                    isRefetchingLyrics: presentation.isRefetchingLyrics,
                     textForegroundProfile: miniPlayerTextForegroundProfile,
                     trackToEdit: $trackToEdit,
                     trackForDetailReader: $trackForDetailReader,
@@ -631,7 +630,6 @@ private struct MiniPlayerLeftSection: View, Equatable {
     let isPlaying: Bool
     let contextMenuRefreshTrigger: Int
     let isFullscreenPresented: Bool
-    let isRefetchingLyrics: Bool
     let textForegroundProfile: PlusBlendTextForegroundProfile
 
     @Binding var trackToEdit: Track?
@@ -660,7 +658,6 @@ private struct MiniPlayerLeftSection: View, Equatable {
             && lhs.isPlaying == rhs.isPlaying
             && lhs.contextMenuRefreshTrigger == rhs.contextMenuRefreshTrigger
             && lhs.isFullscreenPresented == rhs.isFullscreenPresented
-            && lhs.isRefetchingLyrics == rhs.isRefetchingLyrics
             && lhs.textForegroundProfile == rhs.textForegroundProfile
     }
 
@@ -780,15 +777,6 @@ private struct MiniPlayerLeftSection: View, Equatable {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.trailing, isRefetchingLyrics ? 20 : 0)
-
-            if isRefetchingLyrics {
-                ProgressView()
-                    .controlSize(.small)
-                    .allowsHitTesting(false)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                    .transition(.opacity)
-            }
         }
         .frame(
             minWidth: trackInfoMinWidth,
@@ -797,7 +785,6 @@ private struct MiniPlayerLeftSection: View, Equatable {
             alignment: .leading
         )
         .clipped()
-        .motionAnimation(.contentReplacement, value: isRefetchingLyrics)
     }
 
     @ViewBuilder
@@ -1481,9 +1468,7 @@ struct AppleMusicPlaybackModeSlider: View {
         localPlayback: playerVM,
         appleMusicAdapter: appleMusicAdapter,
         systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryTracksProvider: { [weak libraryVM] in libraryVM?.allTracks ?? [] }),
-        artworkCache: cacheServices.trackArtworkCache,
-        lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
-        amllDBService: cacheServices.amllDBService
+        artworkCache: cacheServices.trackArtworkCache
     )
     let uiState = UIStateViewModel()
 
