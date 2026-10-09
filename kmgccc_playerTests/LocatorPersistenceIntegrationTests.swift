@@ -117,6 +117,50 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: trackFolder), Data([0]))
     }
 
+    /// An unreadable sidecar must not be treated as "no references": rewriting
+    /// it from an empty reference set drops the artwork/lyrics/TTML pointers.
+    func testMetaOnlyWriteRefusesToRewriteUndecodableSidecar() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        XCTAssertTrue(fixture.service.writeMetaOnly(for: fixture.track, reason: "seed"))
+        let metaURL = fixture.paths.trackMetaURL(for: fixture.track.id)
+        let damaged = Data("not a sidecar".utf8)
+        try damaged.write(to: metaURL, options: .atomic)
+
+        XCTAssertFalse(fixture.service.writeMetaOnly(for: fixture.track, reason: "damagedSidecar"))
+        XCTAssertEqual(try Data(contentsOf: metaURL), damaged)
+    }
+
+    /// A cover that exists on disk but cannot be read is not a cleared cover;
+    /// the writer must keep it instead of deleting the user's file.
+    func testArtworkWriteKeepsUnreadableCover() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        try FileManager.default.createDirectory(
+            at: fixture.paths.trackFolderURL(for: fixture.track.id),
+            withIntermediateDirectories: true
+        )
+        let coverName = kmgccc_player.LibraryPaths.preferredTrackArtworkFileName
+        let coverURL = try XCTUnwrap(
+            fixture.paths.trackArtworkURL(for: fixture.track.id, fileName: coverName)
+        )
+        try Data([0xFF, 0xD8, 0xFF]).write(to: coverURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: coverURL.path)
+        fixture.track.artworkFileName = coverName
+        fixture.track.artworkData = nil
+
+        let writtenName = try fixture.service.writeArtworkIfChanged(
+            for: fixture.track,
+            reason: "unreadableCover",
+            existingFileName: coverName
+        )
+
+        XCTAssertEqual(writtenName, coverName)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: coverURL.path))
+    }
+
     private func makeFixture() throws -> (
         root: URL,
         paths: kmgccc_player.LibraryPaths,
