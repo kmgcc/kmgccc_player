@@ -127,6 +127,8 @@ run_step "LRC regression" 180 \
     -o "$LRC_EXECUTABLE"
 run_step "LRC regression execution" 60 "$LRC_EXECUTABLE"
 
+# Integration tests share app-global state and sockets; parallel test classes have
+# caused job-cancellation flakes, so the merge gate runs XCTest serially.
 run_step "XCTest" 1800 \
   xcodebuild -verbose \
     -project "$PROJECT" \
@@ -135,6 +137,7 @@ run_step "XCTest" 1800 \
     -destination 'platform=macOS,arch=arm64' \
     -derivedDataPath "$DERIVED_DATA" \
     -clonedSourcePackagesDirPath "$PACKAGE_CACHE" \
+    -parallel-testing-enabled NO \
     BUILD_EXTENSION_MODE=disabled \
     CODE_SIGNING_ALLOWED=NO \
     test
