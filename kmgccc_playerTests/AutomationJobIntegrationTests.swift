@@ -122,9 +122,8 @@ final class AutomationJobIntegrationTests: XCTestCase {
             let firstRevision = fixture.session.libraryViewModel.automationTrackRevision(for: first)
             let secondRevision = fixture.session.libraryViewModel.automationTrackRevision(for: second)
 
-            let jobsBeforePreflight = Set(
-                fixture.session.libraryJobDescriptorsSnapshot().map(\.id)
-            )
+            let jobsBeforePreflight = fixture.session.libraryJobDescriptorsSnapshot()
+            let jobIDsBeforePreflight = Set(jobsBeforePreflight.map(\.id))
             let invalidBatch = AutomationRequest(
                 method: AutomationMethod.operationsBatch,
                 params: .object([
@@ -144,10 +143,17 @@ final class AutomationJobIntegrationTests: XCTestCase {
             )
             let invalidResponse = try await fixture.send(invalidBatch)
             XCTAssertEqual(invalidResponse.error?.code, .invalidRequest)
-            XCTAssertEqual(
-                Set(fixture.session.libraryJobDescriptorsSnapshot().map(\.id)),
-                jobsBeforePreflight,
-                "An invalid child method must be rejected before a Job is created."
+            let jobsAfterPreflight = fixture.session.libraryJobDescriptorsSnapshot()
+            let jobIDsAfterPreflight = Set(jobsAfterPreflight.map(\.id))
+            let addedJobs = jobsAfterPreflight.filter { !jobIDsBeforePreflight.contains($0.id) }
+            let retiredJobs = jobsBeforePreflight.filter { !jobIDsAfterPreflight.contains($0.id) }
+            XCTAssertTrue(
+                addedJobs.isEmpty,
+                """
+                An invalid child method must be rejected before a Job is created.
+                added: \(addedJobs.map { "\($0.kind)/\($0.state)/\($0.currentPhase ?? "-")" })
+                retired: \(retiredJobs.map { "\($0.kind)/\($0.state)" })
+                """
             )
             let afterPreflight = await fixture.session.repository.fetchTracks(in: nil)
             XCTAssertEqual(afterPreflight.first(where: { $0.id == first.id })?.title, originalFirstTitle)
