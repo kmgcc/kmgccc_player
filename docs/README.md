@@ -26,6 +26,7 @@
 | [外部组件与构建依赖](dependencies.md) | AMLL、LDDC、QQ Music Helper、MediaRemoteAdapter、SACAD 与 Swift Package 依赖 |
 | [原生 Swift 歌词系统](native-lyrics.md) | 原生 Swift 渲染架构、Core Text 字体排版、Core Animation 动效与硬件时钟同步 |
 | [歌词渲染系统](lyric-rendering.md) | TTML 解析、多 surface 生命周期管理、时间偏移计算与多后端适配层 |
+| [歌词视频分享计划](lyric-video-sharing-plan.md) | 歌词片段选择与视频导出的可行性、独立 Package 方案、时间模型和实施边界（尚未开工） |
 | [色彩系统](color-system.md) | 封面分析、OKLCH 语义色、Display P3 输出和局部可读性判断 |
 | [产品文案与界面规范](product-ui-guidelines.md) | 用户文案、设置页、按钮、弹窗和跨页面视觉一致性 |
 | [现代本地音乐资料库体系](library-system.md) | 原位引用与托管双模式、多资料库隔离、标签与目录双轴浏览哲学 |
