@@ -9,7 +9,8 @@ usage() {
         "Usage: ./scripts/check-app-process-state.sh [--terminate-existing]" \
         "" \
         "Default mode reports the exact app process without changing it." \
-        "--terminate-existing gracefully stops matching app processes and uses KILL only if needed."
+        "--terminate-existing gracefully stops matching app processes and uses KILL only if needed." \
+        "XCTest hosts are refused: the test host is the App binary, so a running test session owns this name."
 }
 
 while (($# > 0)); do
@@ -32,6 +33,18 @@ done
 
 running_pids() {
     /usr/bin/pgrep -x "$APP_NAME" || true
+}
+
+# The XCTest host is the App binary itself, so `xcodebuild test` shows up under
+# APP_NAME. Terminating it aborts the run with "test runner exited ... before
+# finishing running tests" and makes the gate result unattributable. The host is
+# launched with XCTest's own arguments; macOS does not expose another process's
+# environment, so the command line is the marker.
+is_xctest_host() {
+    local pid="$1"
+
+    /bin/ps -p "$pid" -o command= 2>/dev/null \
+        | /usr/bin/grep -qE -- '-NSTreatUnknownArgumentsAsOpen|-ApplePersistenceIgnoreState|XCTest'
 }
 
 print_processes() {
@@ -58,6 +71,24 @@ terminate_processes() {
     local pids="$1"
     local remaining
     local pid
+    local test_host_pids=""
+    local app_pids=""
+
+    for pid in $pids; do
+        if is_xctest_host "$pid"; then
+            test_host_pids="$test_host_pids $pid"
+        else
+            app_pids="$app_pids $pid"
+        fi
+    done
+
+    if [[ -n "${test_host_pids// /}" ]]; then
+        printf 'Refusing to terminate XCTest host process(es):%s\n' "$test_host_pids" >&2
+        printf '%s\n' "A test run is using the App binary as its host. Wait for it to finish, or stop the xcodebuild that owns it." >&2
+        return 1
+    fi
+
+    pids="$app_pids"
 
     printf 'Sending TERM to existing %s process(es).\n' "$APP_NAME"
     for pid in $pids; do

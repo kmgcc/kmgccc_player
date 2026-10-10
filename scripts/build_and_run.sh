@@ -10,7 +10,10 @@ BUNDLE_ID="kmgccc.player"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$REPO_ROOT/build/DerivedData}"
+# Keep manual runs out of the ad-hoc test/agent build directory: sharing one
+# DerivedData lets a rebuild swap the App bundle while another session's XCTest
+# host is running from it. Override with DERIVED_DATA_PATH when needed.
+DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$REPO_ROOT/build/DerivedData-run}"
 APP_BUNDLE="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/$APP_NAME.app"
 PREBUILT_APP="${KMGCCC_PREBUILT_APP:-}"
 if [[ -n "$PREBUILT_APP" ]]; then
