@@ -178,7 +178,7 @@ struct ReadingSkin: NowPlayingSkin {
 
 ## 当前边界
 
-包格式尚处于原生 v1 演进期；公开 [JSON Schema](skin-package-v1.schema.json) 覆盖当前词汇。App 另检查组件是否存在、单个原生歌词、同级节点/参数 ID 唯一、参数范围与默认值类型。Debug 构建、主 App 启动已通过；当前 UI 操作工具断连，导入面板、样例视觉和全屏/频繁缩放需人工确认，见 [实施记录](skin-system-p3.md)。目录监听热重载、Web 桥接、Folia/Folium 兼容与市场均在后续阶段。
+包格式尚处于原生 v1 演进期；公开 [JSON Schema](skin-package-v1.schema.json) 覆盖当前词汇。App 另检查组件是否存在、单个原生歌词、同级节点/参数 ID 唯一、参数范围与默认值类型。目录监听热重载、Web 桥接、Folia/Folium 兼容与市场均在后续阶段。
 
 
 ## 原生歌词配置
