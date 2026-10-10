@@ -12,7 +12,7 @@
 //  compares the two candidate foregrounds' WCAG contrast directly. The result
 //  may override the global polarity for that one surface only.
 //
-//  Layering rules (see docs/readability-foreground-region-system.md):
+//  Layering rules:
 //    - `RenderedBackdropReadabilityMap` owns final-backdrop pixels + region
 //      stats only. It never touches hue/chroma semantics.
 //    - The contrast engine receives the exact dark/light primary colours the

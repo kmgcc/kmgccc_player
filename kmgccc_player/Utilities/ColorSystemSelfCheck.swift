@@ -4118,8 +4118,7 @@ nonisolated enum ColorSystemSelfCheck {
     /// Direct exercise of the strict global polarity gate with the calibrated
     /// boundary inputs. The gate must keep mid-tone covers on light foreground
     /// and only commit to dark when one of the three "clearly bright" signals
-    /// fires. See `docs/readability-foreground-region-system.md` section 4 for
-    /// the calibrated table.
+    /// fires.
     private static func checkArtworkForegroundPolarityGlobalPolicy(_ report: inout CheckReport) {
         let T = ColorSystemTokens.ReadabilityForeground.self
         struct Case {

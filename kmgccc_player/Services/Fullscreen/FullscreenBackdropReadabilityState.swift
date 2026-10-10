@@ -13,8 +13,6 @@
 //  different canvases, and a shared singleton would let a stale window's
 //  snapshot leak into another host.
 //
-//  See docs/readability-foreground-region-system.md section 8.
-//
 
 import SwiftUI
 
