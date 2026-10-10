@@ -101,6 +101,32 @@ require_command xcodebuild
 require_command xcrun
 require_command git
 
+APP_PROCESS_NAME="${KMGCCC_APP_PROCESS_NAME:-kmgccc_player}"
+
+# The XCTest host is the App binary itself, so it carries the App's process name.
+# Another session that clears or launches the App during this run kills that host
+# and turns the gate red for reasons that have nothing to do with the commit under
+# review. Refuse to start instead of reporting an unattributable result.
+preflight_isolation() {
+  local pids foreign
+  pids="$(/usr/bin/pgrep -x "$APP_PROCESS_NAME" 2>/dev/null || true)"
+  if [[ -n "$pids" ]]; then
+    printf '[FAIL] %s is already running (PIDs: %s).\n' "$APP_PROCESS_NAME" "$(printf '%s' "$pids" | tr '\n' ' ')" >&2
+    printf 'The XCTest host uses the same process name, so a running App or a process preflight\n' >&2
+    printf 'would terminate it mid-run. Close it first:\n  %s/scripts/check-app-process-state.sh --terminate-existing\n' "$ROOT" >&2
+    exit 1
+  fi
+
+  foreign="$(/usr/bin/pgrep -fl xcodebuild 2>/dev/null | grep -F "$ROOT" || true)"
+  if [[ -n "$foreign" ]]; then
+    printf '[FAIL] Another build of this workspace is running:\n%s\n' "$foreign" >&2
+    printf 'Concurrent builds share the source tree and can swap the products mid-run; wait for it to finish.\n' >&2
+    exit 1
+  fi
+}
+
+preflight_isolation
+
 "$ROOT/scripts/check-melismakit-dependency.sh" "$MELISMAKIT_DEPENDENCY_FLAG"
 
 run_step "Bootstrap" 3600 "$ROOT/scripts/bootstrap.sh"
@@ -161,7 +187,10 @@ run_step "LibraryNormalization regression" 240 \
   "$ROOT/Tests/run_library_normalization_regression.sh"
 
 # Integration tests share app-global state and sockets; parallel test classes have
-# caused job-cancellation flakes, so the merge gate runs XCTest serially.
+# caused job-cancellation flakes, so the merge gate runs XCTest serially. Re-check
+# isolation here: the whole window from now until the step ends is when a foreign
+# App launch would terminate the test host.
+preflight_isolation
 run_step "XCTest" 1800 \
   xcodebuild -verbose \
     -project "$PROJECT" \
