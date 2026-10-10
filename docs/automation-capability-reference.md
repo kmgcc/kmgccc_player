@@ -296,6 +296,6 @@ App 已能访问的文件直接导入；缺少访问权限时使用 App 的文�
 
 - P3–P4 音频：`audio.get/patch` 包含全局淡化、固定响度与设备参考；`audio.loudness.get/analyze` 读取测量或创建既有资料库扫描 Job。`equalLoudness` 作为正式 DSP v1 节点参与完整预设与链排序，补偿只随 App 主音量和设备参考变化。
 
-- P5 音频：`stereoWidth`、`virtualBass`、`tube` 的参数、质量、声道策略及顺序均进入完整预设与 `dsp.patch`；`setQuality`、`setChannelPolicy` 支持原子编辑。`dsp.state.processing` 返回算法延迟、App 时间映射延迟与峰值保证状态。源码与授权 Debug 编译已完成，数值/性能及主 App 验收待完成，详见 [P5 实施记录](audio-dsp-p5-implementation.md)。
+- P5 音频：`stereoWidth`、`virtualBass`、`tube` 的参数、质量、声道策略及顺序均进入完整预设与 `dsp.patch`；`setQuality`、`setChannelPolicy` 支持原子编辑。`dsp.state.processing` 返回算法延迟、App 时间映射延迟与峰值保证状态。
 
-- P6 音频：`script` v1 提供有界 VM、参数反射、独立持久草稿、双 revision 与故障隔离。`dsp.scripts.get/update/compile/test`、`dsp.nodes.retry` 与既有预设/排序形成完整控制接口；测试使用可取消 Jobs/现代 Tasks。资源为 `kmgccc://dsp-language` 与 `kmgccc://audio/dsp/scripts/{nodeID}`。源码、静态检查与授权 Debug 编译已完成，测试运行和实际运行验收待完成，详见 [P6 实施记录](audio-dsp-p6-implementation.md)。
+- P6 音频：`script` v1 提供有界 VM、参数反射、独立持久草稿、双 revision 与故障隔离。`dsp.scripts.get/update/compile/test`、`dsp.nodes.retry` 与既有预设/排序形成完整控制接口；测试使用可取消 Jobs/现代 Tasks。资源为 `kmgccc://dsp-language` 与 `kmgccc://audio/dsp/scripts/{nodeID}`。

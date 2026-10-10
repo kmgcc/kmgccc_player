@@ -243,7 +243,7 @@ CLI 使用 `--idempotency-key`；每次调参沿用 audio 授权，不弹额外�
 
 P5 节点的全部参数、默认值、质量与声道策略见 `dsp.schema.nodes`。使用 `setQuality(nodeID, value)` 切换 `oversampling2x/oversampling4x`，使用 `setChannelPolicy(nodeID, value)` 切换节点支持的声道范围；它们与 `setParameter`、`setOrder` 可以组成一次原子编辑，并沿用 revision 和 dry-run。宽度节点使用 `standard/frontPair`；低音默认 `fullRange` 仅处理明确的 mono/stereo，多声道可选择 `frontPair`；管模拟默认 `fullRange` 排除 LFE，可明确选择 `allChannels`。
 
-`dsp.state.processing` 及 apply status 包含 `processingLatencyFrames`、`mediaMappingLatencyFrames`、`peakGuarantee`。活跃非线性节点固定 64 源帧算法延迟，源前瞻补偿后 App 时间映射延迟为 0；尚未准备时返回 null。非线性链的峰值保证为 `unavailable`，不能将余量估计当作真实峰值保证。参数、质量、策略与链顺序均随完整预设保存。源码边界与待验收项目见 [P5 实施记录](audio-dsp-p5-implementation.md)。
+`dsp.state.processing` 及 apply status 包含 `processingLatencyFrames`、`mediaMappingLatencyFrames`、`peakGuarantee`。活跃非线性节点固定 64 源帧算法延迟，源前瞻补偿后 App 时间映射延迟为 0；尚未准备时返回 null。非线性链的峰值保证为 `unavailable`，不能将余量估计当作真实峰值保证。参数、质量、策略与链顺序均随完整预设保存。
 
 ### P6 可编程 DSP
 
@@ -255,7 +255,7 @@ P5 节点的全部参数、默认值、质量与声道策略见 `dsp.schema.node
 
 数学/非有限故障使该脚本淡至对齐 dry，状态公开 `faultedBypass`。最终链输出溢出时，`processing.chainRuntimeBypassed=true`、脚本为 `chainBypassed`；修正配置并 apply/retry 重建。`dsp.nodes.retry` 使用当前有效代码，不应用错误草稿；`dsp.errors.clear` 仅清历史展示。
 
-工作量预算包括常规 2048 帧块上的总延迟预览。fixture 的 elapsed 包含生成与统计，estimatedProcessingMilliseconds 为预算等价时间，不是设备 CPU 预测。语法与验收边界见 [脚本语言 v1](audio-dsp-script-language.md) 和 [P6 实施记录](audio-dsp-p6-implementation.md)。
+工作量预算包括常规 2048 帧块上的总延迟预览。fixture 的 elapsed 包含生成与统计，estimatedProcessingMilliseconds 为预算等价时间，不是设备 CPU 预测。语法见 [脚本语言 v1](audio-dsp-script-language.md)。
 
 ### P3–P4 全局处理与等响
 
