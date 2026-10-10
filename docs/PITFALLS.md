@@ -34,6 +34,7 @@
 - 工程使用 Xcode **文件夹同步组**（PBXFileSystemSynchronizedRootGroup，无 membershipExceptions）：**App target** 的 9 个同步目录（AppKit、Models、Rendering、Repositories、Services、Skins、Utilities、ViewModels、Views）里新建 `.swift` 文件即自动入 target，不需要也不应该手改 project.pbxproj 登记文件。
 - `kmgccc_playerTests/` **不是**同步组：新增测试文件必须显式登记进 test target 的 Sources，否则文件会安静地永不编译、永不运行（先例：两个测试文件自 2026-09-03 起从未执行，2026-10-09 已按删除处理）。提交测试前对一次账：`ls kmgccc_playerTests/*.swift` 的文件必须都能在 project.pbxproj 里找到对应登记项。test target 现在只编译测试文件，类型统一经 `@testable import kmgccc_player` 取自 App 模块；2026-10-09 已清掉此前显式编译的 26 个重复生产源，不要再把生产源码加进 test target。
 - 两套测试定位不同：`kmgccc_playerTests/` 是挂在 scheme 上的 XCTest target（宿主测试，经 `TEST_HOST` 链接 App）；`Tests/` 是用 `xcrun swiftc -parse-as-library` 直接编译被测源码的轻量脚本回归（刻意不依赖 App / SwiftData target）。新增测试先想清楚进哪条轨。
+- XCTest 宿主就是 App 本体，进程名与真 App 相同（都是 `kmgccc_player`）。门禁运行期间按名字清场会杀掉测试宿主，报错形态是 `The test runner exited with code 0 before finishing running tests`，与提交内容无关，且会让整次门禁结果无法归因。`check-app-process-state.sh --terminate-existing` 现在识别 XCTest 宿主并拒绝终止；`verify.sh` 在开跑前与 XCTest 前各检查一次，发现已有 App 实例或本工作区的并发 `xcodebuild` 时直接拒绝运行。手工运行 App 走 `build_and_run.sh`，它使用独立的 `build/DerivedData-run`，不要与临时测试构建共用产物目录。
 - 日志使用现有 `Log` 分类，**不加临时 `print`**——严禁在业务逻辑中引入裸 print，统一走现有 `Log` 分类。
 
 ## 提交与验证
