@@ -3,7 +3,8 @@
 //  myPlayer2
 //
 //  Unified slider and scrubbable numeric row for DSP and audio settings.
-//  Left: parameter title. Center: compact slider. Right: scrubbable/editable number.
+//  Left: parameter title. Right: fixed-width slider and scrubbable number, so
+//  the controls of consecutive rows share one column.
 //
 
 import SwiftUI
@@ -17,33 +18,28 @@ struct DSPRangeSliderRow: View {
     var fractionDigits: Int = 1
     var onCommit: (() -> Void)? = nil
 
-    private var sliderStep: Double {
-        if unit == "ms" {
-            return max(step, 50.0)
-        } else if unit == "dB" || unit == "dBTP" || unit == "LUFS" {
-            return max(step, 0.5)
-        } else {
-            return step
-        }
-    }
+    static let sliderWidth: CGFloat = 168
+    static let valueWidth: CGFloat = 78
 
     var body: some View {
         HStack(spacing: 12) {
             Text(title)
                 .settingsRowLabelStyle()
-                .frame(minWidth: 84, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help(title)
 
-            Spacer(minLength: 8)
-
+            // The slider stays continuous and snaps through the same quantizer
+            // as the number field, so both controls land on identical values.
             Slider(
-                value: $value,
+                value: sliderBinding,
                 in: range,
-                step: sliderStep,
                 onEditingChanged: { isEditing in
                     if !isEditing { onCommit?() }
                 }
             )
-            .frame(width: 140)
+            .frame(width: Self.sliderWidth)
             .accessibilityLabel(title)
 
             ScrubbableNumberField(
@@ -55,7 +51,23 @@ struct DSPRangeSliderRow: View {
                 alignment: .trailing,
                 onCommit: onCommit
             )
-            .frame(minWidth: 70, alignment: .trailing)
+            .frame(width: Self.valueWidth, alignment: .trailing)
+            .accessibilityLabel(title)
         }
+    }
+
+    private var sliderBinding: Binding<Double> {
+        Binding(
+            get: { min(max(value, range.lowerBound), range.upperBound) },
+            set: { raw in
+                let next = ScrubbableNumberField.quantize(
+                    raw,
+                    range: range,
+                    step: step,
+                    fractionDigits: fractionDigits
+                )
+                if next != value { value = next }
+            }
+        )
     }
 }

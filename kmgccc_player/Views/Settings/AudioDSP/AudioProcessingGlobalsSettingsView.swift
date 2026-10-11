@@ -226,7 +226,9 @@ struct AudioProcessingGlobalsSettingsView: View {
                     Text("当前增益")
                         .settingsRowLabelStyle()
                     Spacer(minLength: 8)
-                    Text("\(currentLoudnessGainText) · \(loudnessSourceLabel)")
+                    Text(loudnessSourceLabel)
+                        .settingsDescriptionStyle()
+                    Text(currentLoudnessGainText)
                         .settingsDescriptionStyle()
                         .monospacedDigit()
                 }
