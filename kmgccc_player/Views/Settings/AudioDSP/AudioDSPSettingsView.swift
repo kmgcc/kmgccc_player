@@ -27,17 +27,20 @@ struct AudioDSPSettingsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                enablementSection
+            VStack(alignment: .leading, spacing: SettingsStyleTokens.sectionSpacing) {
+                SettingsHeaderLabel("音效处理", systemImage: "slider.vertical.3")
+                overviewSection
                 presetsSection
                 linearNodeRackSection
                 diagnosticsSection
             }
-            .frame(maxWidth: 900, alignment: .leading)
+            // Matches the main settings column; the top inset clears the
+            // floating back button.
+            .padding(.horizontal, 32)
+            .padding(.top, 66)
+            .padding(.bottom, 40)
+            .frame(maxWidth: 800, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 24)
-            .padding(.top, 52)
-            .padding(.bottom, 32)
         }
         .tint(themeStore.accentColor)
         .onAppear {
@@ -69,36 +72,17 @@ struct AudioDSPSettingsView: View {
         )
     }
 
-    private var enablementSection: some View {
-        SettingsSection("处理状态") {
+    private var overviewSection: some View {
+        SettingsSection {
             VStack(alignment: .leading, spacing: 12) {
                 SettingsSwitchRow(
                     title: "启用音效处理",
                     isOn: configurationBinding(\.enabled)
                 )
 
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 7, height: 7)
-                    Text(statusTitle)
+                if let notice = statusNotice {
+                    Label(notice, systemImage: "exclamationmark.circle")
                         .settingsDescriptionStyle()
-                    Spacer(minLength: 8)
-                    Text("自动保存")
-                        .settingsDescriptionStyle()
-                }
-
-                if let format = controller.status.format {
-                    HStack {
-                        Text("当前格式")
-                        Spacer()
-                        Text(formatDescription(format))
-                    }
-                    .settingsDescriptionStyle()
-                    if !format.layoutIsKnown {
-                        Text("声道布局未知")
-                            .settingsDescriptionStyle()
-                    }
                 }
             }
         }
@@ -107,82 +91,94 @@ struct AudioDSPSettingsView: View {
     private var presetsSection: some View {
         SettingsSection("预设") {
             VStack(alignment: .leading, spacing: 12) {
-                Picker("当前预设", selection: selectedPresetBinding) {
-                    ForEach(controller.presets) { preset in
-                        let compatibility = presetCompatibility(for: preset)
-                        Text(displayName(for: preset) + (compatibility.canSelect ? "" : "（不兼容）"))
-                            .tag(Optional(preset.presetID))
-                            .disabled(!compatibility.canSelect)
+                HStack(spacing: 12) {
+                    Text("当前预设")
+                        .settingsRowLabelStyle()
+
+                    Spacer(minLength: 16)
+
+                    Picker("当前预设", selection: selectedPresetBinding) {
+                        ForEach(controller.presets) { preset in
+                            let compatibility = presetCompatibility(for: preset)
+                            Text(presetMenuTitle(for: preset, compatibility: compatibility))
+                                .tag(Optional(preset.presetID))
+                                .disabled(!compatibility.canSelect)
+                        }
+                        if controller.selectedPresetID == nil {
+                            Text("草稿").tag(Optional<UUID>.none)
+                        }
                     }
-                    if controller.selectedPresetID == nil {
-                        Text("草稿").tag(Optional<UUID>.none)
-                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
                 }
-                .pickerStyle(.menu)
-                .accessibilityLabel("当前预设")
 
                 HStack(spacing: 8) {
-                    Button("新建预设", systemImage: "plus") {
+                    Button("新建", systemImage: "plus") {
                         beginPresetNameAction(.create)
                     }
                     .audioDSPCapsuleButtonStyle()
 
-                    Button("复制", systemImage: "doc.on.doc") {
+                    Button("复制", systemImage: "plus.square.on.square") {
                         beginPresetNameAction(.copyCurrent)
                     }
                     .audioDSPCapsuleButtonStyle()
 
-                    Menu("更多") {
-                        Button("重命名", systemImage: "pencil") {
-                            beginPresetNameAction(.rename(selectedPresetID ?? DSPPresetDocument.flatPresetID))
-                        }
-                        .disabled(isBuiltInSelection || selectedPresetID == nil)
-                        Button("删除", systemImage: "trash", role: .destructive) {
-                            if let selectedPreset {
-                                activeDialog = .deletePreset(selectedPreset.presetID)
-                            }
-                        }
-                        .disabled(isBuiltInSelection || selectedPresetID == nil)
-                        Divider()
-                        Menu("管理预设") {
-                            ForEach(controller.presets.filter { !$0.isBuiltIn }) { preset in
-                                let compatibility = presetCompatibility(for: preset)
-                                Menu {
-                                    if let diagnostic = compatibility.diagnostics.first {
-                                        Button("不兼容：\(diagnostic.message)") {}
-                                            .disabled(true)
-                                        if compatibility.diagnostics.count > 1 {
-                                            Button("还有 \(compatibility.diagnostics.count - 1) 项诊断") {}
-                                                .disabled(true)
-                                        }
-                                        Divider()
-                                    }
-                                    Button("重命名") { beginPresetNameAction(.rename(preset.presetID)) }
-                                    Button("复制") { beginPresetNameAction(.duplicate(preset.presetID)) }
-                                    Button("导出 JSON…") { exportPreset(preset) }
-                                    Button("删除", role: .destructive) { activeDialog = .deletePreset(preset.presetID) }
-                                } label: {
-                                    Text(displayName(for: preset) + (compatibility.canSelect ? "" : "（不兼容）"))
-                                }
-                            }
-                        }
-                        .disabled(controller.presets.allSatisfy(\.isBuiltIn))
-                        Button("导入 JSON…", systemImage: "square.and.arrow.down.on.square") {
-                            isShowingImportPicker = true
-                        }
-                        Button("导出 JSON…", systemImage: "square.and.arrow.up.on.square") {
-                            exportSelectedPreset()
-                        }
-                        .disabled(selectedPresetID == nil)
+                    Button("重命名", systemImage: "pencil") {
+                        if let selectedPresetID { beginPresetNameAction(.rename(selectedPresetID)) }
                     }
                     .audioDSPCapsuleButtonStyle()
+                    .disabled(!canEditSelectedPreset)
+
+                    Button("删除", systemImage: "trash") {
+                        if let selectedPresetID { activeDialog = .deletePreset(selectedPresetID) }
+                    }
+                    .audioDSPCapsuleButtonStyle()
+                    .disabled(!canEditSelectedPreset)
+
+                    Spacer(minLength: 8)
+
+                    Button("导入", systemImage: "square.and.arrow.down") {
+                        isShowingImportPicker = true
+                    }
+                    .audioDSPCapsuleButtonStyle()
+
+                    Button("导出", systemImage: "square.and.arrow.up") {
+                        exportSelectedPreset()
+                    }
+                    .audioDSPCapsuleButtonStyle()
+                    .disabled(!canEditSelectedPreset)
+                }
+
+                // Incompatible presets cannot be selected, so they keep their
+                // own export and delete actions here.
+                ForEach(incompatiblePresets) { preset in
+                    HStack(spacing: 8) {
+                        Text("“\(preset.name)”与当前版本不兼容")
+                            .settingsDescriptionStyle()
+                        Spacer(minLength: 8)
+                        Button("导出") { exportPreset(preset) }
+                            .audioDSPCapsuleButtonStyle()
+                        Button("删除") { activeDialog = .deletePreset(preset.presetID) }
+                            .audioDSPCapsuleButtonStyle()
+                    }
                 }
             }
         }
     }
 
+    private var canEditSelectedPreset: Bool {
+        selectedPresetID != nil && !isBuiltInSelection
+    }
+
+    private var incompatiblePresets: [DSPPresetDocument] {
+        controller.presets.filter { !$0.isBuiltIn && !presetCompatibility(for: $0).canSelect }
+    }
+
     private var linearNodeRackSection: some View {
         SettingsSection("效果链") {
+            AudioDSPAddNodeMenu(nodes: controller.configuration.nodes) { node in addNode(node) }
+        } content: {
             AudioDSPLinearNodeRack(
                 nodes: Binding(
                     get: { controller.configuration.nodes },
@@ -190,7 +186,6 @@ struct AudioDSPSettingsView: View {
                         controller.updateConfiguration(commit: true) { $0.nodes = newNodes }
                     }
                 ),
-                configuration: controller.configuration,
                 format: controller.status.format,
                 headroomDB: controller.status.headroomDB,
                 expandedNodeIDs: $expandedNodeIDs,
@@ -199,7 +194,6 @@ struct AudioDSPSettingsView: View {
                 headroomMode: headroomModeBinding,
                 headroomMarginDB: headroomMarginBinding,
                 onCommit: controller.commitPendingApply,
-                onAddNode: { node in addNode(node) },
                 onRemoveNode: { nodeID in removeNode(nodeID) },
                 onUpdateNode: { nodeID, mutate in
                     controller.updateConfiguration { candidate in
@@ -213,18 +207,18 @@ struct AudioDSPSettingsView: View {
 
     @ViewBuilder
     private var diagnosticsSection: some View {
-        if let lastError = controller.lastError ?? appSession.audioDSPScriptController.lastError {
+        if let lastError = pageLevelError {
             SettingsSection("状态信息") {
-                HStack(alignment: .top, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Label(lastError.message, systemImage: "exclamationmark.circle")
-                        .fixedSize(horizontal: false, vertical: true)
                         .settingsDescriptionStyle()
-                    Spacer(minLength: 4)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 8)
                     Button("清除") {
                         controller.clearErrors()
                         appSession.audioDSPScriptController.clearDiagnostics()
                     }
-                        .audioDSPCapsuleButtonStyle()
+                    .audioDSPCapsuleButtonStyle()
                 }
             }
         } else if !displayDiagnostics.isEmpty {
@@ -232,11 +226,26 @@ struct AudioDSPSettingsView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(displayDiagnostics) { diagnostic in
                         Label(diagnostic.message, systemImage: "info.circle")
-                            .fixedSize(horizontal: false, vertical: true)
                             .settingsDescriptionStyle()
+                            .textSelection(.enabled)
                     }
                 }
             }
+        }
+    }
+
+    /// Script errors tied to a node in the chain appear inside that node's
+    /// editor, so the page only repeats errors that have no other home.
+    private var pageLevelError: DSPDiagnostic? {
+        if let error = controller.lastError { return error }
+        guard let scriptError = appSession.audioDSPScriptController.lastError else { return nil }
+        if let nodeID = scriptError.nodeID, isScriptNodeInChain(nodeID) { return nil }
+        return scriptError
+    }
+
+    private func isScriptNodeInChain(_ nodeID: UUID) -> Bool {
+        controller.configuration.nodes.contains {
+            $0.nodeID == nodeID && $0.typeID == DSPNodeConfiguration.scriptTypeID
         }
     }
 
@@ -285,13 +294,20 @@ struct AudioDSPSettingsView: View {
         }
     }
 
+    /// Renderer warnings and diagnostics. Script compile, test and runtime
+    /// messages are shown inside their node's editor instead.
     private var displayDiagnostics: [DSPDiagnostic] {
         var seen = Set<String>()
-        let scriptDiagnostics = appSession.audioDSPScriptController.activityByNodeID.values.flatMap {
-            $0.compileDiagnostics + $0.testDiagnostics
-        }
-        return (controller.status.warnings + controller.status.diagnostics + scriptDiagnostics)
+        return (controller.status.warnings + controller.status.diagnostics)
+            .filter { diagnostic in
+                guard let nodeID = diagnostic.nodeID else { return true }
+                return !isScriptNodeInChain(nodeID)
+            }
             .filter { seen.insert($0.id).inserted }
+    }
+
+    private func presetMenuTitle(for preset: DSPPresetDocument, compatibility: PresetCompatibility) -> String {
+        displayName(for: preset) + (compatibility.canSelect ? "" : "（不兼容）")
     }
 
     private var selectedPresetBinding: Binding<UUID?> {
@@ -344,23 +360,14 @@ struct AudioDSPSettingsView: View {
         )
     }
 
-    private var statusTitle: String {
+    /// Shown only when the switch alone would mislead: processing is on but
+    /// not reaching the output. Normal states are evident from the switch.
+    private var statusNotice: String? {
+        guard controller.configuration.enabled else { return nil }
         switch controller.status.state {
-        case .ready: "就绪"
-        case .preparing: "正在准备"
-        case .scheduled: "已排队"
-        case .audible: "已应用"
-        case .superseded: "已由新设置替代"
-        case .failed: "应用失败"
-        case .inactiveExternalSource: "外部来源未处理"
-        }
-    }
-
-    private var statusColor: Color {
-        switch controller.status.state {
-        case .failed: .secondary
-        case .inactiveExternalSource, .superseded: .secondary
-        case .ready, .preparing, .scheduled, .audible: themeStore.accentColor
+        case .failed: return "当前设置未能生效"
+        case .inactiveExternalSource: return "外部播放来源暂不支持音效处理"
+        case .ready, .preparing, .scheduled, .audible, .superseded: return nil
         }
     }
 
@@ -394,19 +401,6 @@ struct AudioDSPSettingsView: View {
         )
     }
 
-    private func expansionBinding(for nodeID: UUID) -> Binding<Bool> {
-        Binding(
-            get: { expandedNodeIDs.contains(nodeID) },
-            set: { isExpanded in
-                if isExpanded {
-                    expandedNodeIDs.insert(nodeID)
-                } else {
-                    expandedNodeIDs.remove(nodeID)
-                }
-            }
-        )
-    }
-
     private func addNode(_ node: DSPNodeConfiguration) {
         guard controller.configuration.nodes.count < AudioDSPConfiguration.maximumNodeCount else { return }
         if node.typeID == DSPNodeConfiguration.scriptTypeID,
@@ -415,51 +409,6 @@ struct AudioDSPSettingsView: View {
         }
         controller.updateConfiguration(commit: true) { $0.nodes.append(node) }
         expandedNodeIDs.insert(node.nodeID)
-    }
-
-    private var scriptCompileFormat: DSPAudioFormat {
-        controller.status.format ?? DSPAudioFormat(
-            sampleRate: 48_000,
-            channelCount: 2,
-            rawLayoutData: nil,
-            channelLabels: nil,
-            layoutIsKnown: false
-        )
-    }
-
-    private func formatDescription(_ format: DSPAudioFormat) -> String {
-        let sampleRate = format.sampleRate / 1_000
-        let formattedSampleRate = sampleRate.formatted(.number.precision(.fractionLength(1)))
-        return "\(formattedSampleRate) kHz · \(format.channelCount) 声道"
-    }
-
-    private func formatLatency(frames: Int) -> String {
-        let frameValue = "\(frames) 帧"
-        guard let sampleRate = controller.status.format?.sampleRate,
-              sampleRate.isFinite, sampleRate > 0 else { return frameValue }
-        let milliseconds = (Double(frames) / sampleRate * 1_000)
-            .formatted(.number.precision(.fractionLength(2)))
-        return "\(frameValue) · \(milliseconds) ms"
-    }
-
-    private func statusDetailRow(_ title: String, value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(title)
-            Spacer(minLength: 8)
-            Text(value)
-                .multilineTextAlignment(.trailing)
-                .textSelection(.enabled)
-        }
-        .settingsDescriptionStyle()
-    }
-
-    private func peakGuaranteeTitle(_ value: String) -> String {
-        switch value {
-        case "bypassed": "原始旁路"
-        case "estimatedLinearResponse": "线性频响估算"
-        case "unavailable": "非线性峰值待测"
-        default: "峰值信息不可用"
-        }
     }
 
     private func displayName(for document: DSPPresetDocument) -> String {
@@ -542,15 +491,6 @@ struct AudioDSPSettingsView: View {
             } catch {
                 controller.report(error: error)
             }
-        }
-    }
-
-    private func moveNode(_ nodeID: UUID, by offset: Int) {
-        controller.updateConfiguration(commit: true) { candidate in
-            guard let index = candidate.nodes.firstIndex(where: { $0.nodeID == nodeID }) else { return }
-            let destination = index + offset
-            guard candidate.nodes.indices.contains(destination) else { return }
-            candidate.nodes.swapAt(index, destination)
         }
     }
 

@@ -3,9 +3,13 @@
 //  myPlayer2
 //
 //  Linear Node Rack for audio DSP effect chain.
-//  Expresses processing order via a continuous vertical signal bus and connection terminals.
-//  Supports bypass wire routing (detour around disabled nodes), compact node summaries,
-//  smooth parameter expansion, and fluid drag reordering.
+//  Expresses processing order via a continuous vertical signal bus. Bypassed
+//  nodes are routed around on an outer lane; a run of adjacent bypassed nodes
+//  shares one detour that rejoins the bus at the next active node.
+//
+//  While a node is dragged its wire collapses into its terminal, the wires of
+//  its neighbours retract into their own connection points, and everything
+//  reconnects once the node settles into its new slot.
 //
 
 import MotionKit
@@ -13,7 +17,6 @@ import SwiftUI
 
 struct AudioDSPLinearNodeRack: View {
     @Binding var nodes: [DSPNodeConfiguration]
-    let configuration: AudioDSPConfiguration
     let format: DSPAudioFormat?
     let headroomDB: Double?
     @Binding var expandedNodeIDs: Set<UUID>
@@ -23,7 +26,6 @@ struct AudioDSPLinearNodeRack: View {
     @Binding var headroomMarginDB: Double
 
     let onCommit: () -> Void
-    let onAddNode: (DSPNodeConfiguration) -> Void
     let onRemoveNode: (UUID) -> Void
     let onUpdateNode: (UUID, (inout DSPNodeConfiguration) -> Void) -> Void
 
@@ -42,15 +44,21 @@ struct AudioDSPLinearNodeRack: View {
     @State private var dragRowFrames: [UUID: CGRect] = [:]
     @State private var dragFloatingX: CGFloat = 0
     @State private var dragFloatingY: CGFloat = 0
+    @State private var isLifted = false
     @State private var isFinishingDrag = false
     @State private var dragCleanupTask: Task<Void, Never>?
     @State private var rowGeometry = DSPRackGeometryCache()
 
     private let rackSpace = "dspLinearNodeRackCoordinateSpace"
-    private let nodeHeaderHeight: CGFloat = 44
-    private let nodeSpacing: CGFloat = 12
+    private let nodeHeaderHeight: CGFloat = DSPRackMetrics.nodeHeaderHeight
+    private let nodeSpacing: CGFloat = 10
     private let dragHorizontalDamping: CGFloat = 0.4
     private let dragHorizontalLimit: CGFloat = 24
+    private let liftedScale: CGFloat = 1.015
+
+    private var palette: DSPRackPalette {
+        DSPRackPalette(themeStore: themeStore, colorScheme: colorScheme)
+    }
 
     private var rackNodes: [DSPNodeConfiguration] {
         guard let order = dragNodeOrder else { return nodes }
@@ -74,23 +82,23 @@ struct AudioDSPLinearNodeRack: View {
     }
 
     var body: some View {
+        let palette = self.palette
+        let ordered = rackNodes
+        let slotIndex = draggingNodeID.flatMap { id in ordered.firstIndex { $0.nodeID == id } }
+
         VStack(alignment: .leading, spacing: 0) {
-            inputEndpointView
-
-            // Continuous vertical signal line between input and first node
-            rackConnectingWire(height: 18)
-
-            // Reorderable nodes rack
-            nodesRackList
+            inputEndpointView(palette: palette)
+            BusWireSegment(anchor: .top, isConnected: slotIndex != 0, color: palette.wire)
+                .frame(height: 14)
+            nodesRackList(ordered: ordered, palette: palette)
                 .coordinateSpace(name: rackSpace)
-
-            // Continuous vertical signal line between last node and output
-            rackConnectingWire(height: 18)
-
-            outputEndpointView
-
-            addNodeBar
-                .padding(.top, 16)
+            BusWireSegment(
+                anchor: .bottom,
+                isConnected: slotIndex == nil || slotIndex != ordered.count - 1,
+                color: palette.wire
+            )
+            .frame(height: 14)
+            outputEndpointView(palette: palette)
         }
         .onDisappear(perform: cancelDrag)
         .onChange(of: nodes.map(\.nodeID)) { _, _ in
@@ -99,26 +107,10 @@ struct AudioDSPLinearNodeRack: View {
         }
     }
 
-    // MARK: - Input Endpoint (Audio Input Stage)
+    // MARK: - Endpoints
 
-    private var inputEndpointView: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "waveform.badge.magnifyingglass")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(themeStore.accentColor)
-
-                Text("输入阶段")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.primary)
-
-                Spacer()
-
-                Text("原始输入")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
+    private func inputEndpointView(palette: DSPRackPalette) -> some View {
+        endpointCard(title: "输入", systemImage: "waveform", trailing: nil, palette: palette) {
             DSPRangeSliderRow(
                 title: "输入增益",
                 value: $inputTrimDB,
@@ -127,33 +119,17 @@ struct AudioDSPLinearNodeRack: View {
                 onCommit: onCommit
             )
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(endpointBackground)
     }
 
-    // MARK: - Output Endpoint (Audio Output Stage)
-
-    private var outputEndpointView: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "speaker.wave.3")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(themeStore.accentColor)
-
-                Text("输出阶段")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.primary)
-
-                Spacer()
-
-                if let headroomDB {
-                    Text("预估余量 \(headroomDB.formatted(.number.precision(.fractionLength(1)))) dB")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            }
-
+    private func outputEndpointView(palette: DSPRackPalette) -> some View {
+        endpointCard(
+            title: "输出",
+            systemImage: "speaker.wave.2",
+            trailing: headroomDB.map {
+                "预估余量 \($0.formatted(.number.precision(.fractionLength(1)))) dB"
+            },
+            palette: palette
+        ) {
             DSPRangeSliderRow(
                 title: "输出增益",
                 value: $outputTrimDB,
@@ -163,7 +139,7 @@ struct AudioDSPLinearNodeRack: View {
             )
 
             CapsulePicker(
-                label: "余量策略",
+                label: "余量保护",
                 options: DSPHeadroomMode.allCases,
                 selection: $headroomMode,
                 displayName: { $0 == .automatic ? "自动" : "关闭" }
@@ -171,42 +147,68 @@ struct AudioDSPLinearNodeRack: View {
 
             if headroomMode == .automatic {
                 DSPRangeSliderRow(
-                    title: "余量安全边距",
+                    title: "安全边距",
                     value: $headroomMarginDB,
                     range: 0...12,
                     step: 0.1,
-                    unit: "dB",
                     onCommit: onCommit
                 )
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(endpointBackground)
     }
 
-    private var endpointBackground: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Color.primary.opacity(colorScheme == .dark ? 0.04 : 0.025))
+    private func endpointCard<Content: View>(
+        title: String,
+        systemImage: String,
+        trailing: String?,
+        palette: DSPRackPalette,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(themeStore.accentColor)
+                    .frame(width: 16)
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 8)
+                if let trailing {
+                    Text(trailing)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            content()
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(palette.endpointSurface)
+        )
     }
 
     // MARK: - Nodes Rack List
 
     @ViewBuilder
-    private var nodesRackList: some View {
+    private func nodesRackList(ordered: [DSPNodeConfiguration], palette: DSPRackPalette) -> some View {
         if nodes.isEmpty {
-            emptyRackPlaceholder
+            emptyRackPlaceholder(palette: palette)
         } else {
             VStack(spacing: 0) {
-                ForEach(Array(rackNodes.enumerated()), id: \.element.nodeID) { index, node in
-                    nodeRackRow(node: node, index: index)
+                ForEach(Array(ordered.enumerated()), id: \.element.nodeID) { index, node in
+                    nodeRackRow(node: node, index: index, ordered: ordered, palette: palette)
                 }
             }
             .overlay(alignment: .top) {
                 if let draggingID = draggingNodeID,
                    let draggingNode = nodes.first(where: { $0.nodeID == draggingID }) {
-                    let dragIndex = rackNodes.firstIndex(where: { $0.nodeID == draggingID }) ?? 0
-                    floatingNodeCard(node: draggingNode, index: dragIndex)
+                    let dragIndex = ordered.firstIndex(where: { $0.nodeID == draggingID }) ?? 0
+                    floatingNodeCard(node: draggingNode, index: dragIndex, palette: palette)
+                        .scaleEffect(isLifted ? liftedScale : 1, anchor: .leading)
+                        // Applied inside the pointer-follow override below, so
+                        // lifting and landing keep their own motion.
+                        .motionAnimation(.control, value: isLifted)
                         .offset(x: dragFloatingX, y: dragFloatingY)
                         .transaction { transaction in
                             // Direct manipulation follows the pointer. Only
@@ -219,59 +221,51 @@ struct AudioDSPLinearNodeRack: View {
         }
     }
 
-    private var emptyRackPlaceholder: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
-                .font(.title3)
+    private func emptyRackPlaceholder(palette: DSPRackPalette) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("尚未添加效果")
+                .font(.system(size: 13, weight: .medium))
+            Text("信号原样通过。")
+                .font(.caption)
                 .foregroundStyle(.secondary)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("直通无效果")
-                    .font(.system(size: 13, weight: .medium))
-                Text("点击下方添加效果向处理链插入节点")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
         }
-        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.primary.opacity(0.025))
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(palette.bypassedNodeSurface)
         )
-        .padding(.leading, 28)
+        .padding(.leading, DSPRackMetrics.gutterWidth)
         .background(alignment: .leading) {
-            themeStore.accentColor.opacity(0.45)
-                .frame(width: 1.5)
-                .padding(.leading, 13.25)
+            BusWireSegment(anchor: .top, isConnected: true, color: palette.wire)
+                .frame(width: DSPRackMetrics.gutterWidth)
         }
     }
 
     // MARK: - Node Rack Row
 
-    private func nodeRackRow(node: DSPNodeConfiguration, index: Int) -> some View {
+    private func nodeRackRow(
+        node: DSPNodeConfiguration,
+        index: Int,
+        ordered: [DSPNodeConfiguration],
+        palette: DSPRackPalette
+    ) -> some View {
         let isDragging = draggingNodeID == node.nodeID
         let isExpanded = expandedNodeIDs.contains(node.nodeID)
-        let isLast = index == rackNodes.count - 1
+        let isLast = index == ordered.count - 1
 
-        return nodeCardContent(node: node, index: index, isExpanded: isExpanded)
+        return nodeCardContent(node: node, index: index, isExpanded: isExpanded, palette: palette)
             .opacity(isDragging ? 0 : 1)
-            .background {
-                if isDragging {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.primary.opacity(0.02))
-                }
-            }
-            .padding(.leading, 28)
+            .padding(.leading, DSPRackMetrics.gutterWidth)
             // Each row owns the following gap, so its wire stays inside its
             // drawing bounds and meets the next row without clipped extensions.
             .padding(.bottom, isLast ? 0 : nodeSpacing)
             .background(alignment: .leading) {
                 NodeWireGutter(
-                    isBypassed: !node.enabled,
+                    routing: routing(for: index, in: ordered),
                     headerHeight: nodeHeaderHeight,
-                    accentColor: themeStore.accentColor
+                    wireColor: palette.wire,
+                    terminalColor: themeStore.accentColor
                 )
             }
             .onGeometryChange(for: CGRect.self) { proxy in
@@ -283,194 +277,220 @@ struct AudioDSPLinearNodeRack: View {
             }
     }
 
+    /// Wiring for one row. The dragged slot is detached from the chain, and
+    /// its neighbours end at their own terminals instead of reaching across it.
+    private func routing(for index: Int, in ordered: [DSPNodeConfiguration]) -> DSPWireRouting {
+        let node = ordered[index]
+        let isSlot = node.nodeID == draggingNodeID
+        let previous = index > 0 ? ordered[index - 1] : nil
+        let next = index + 1 < ordered.count ? ordered[index + 1] : nil
+        let previousIsSlot = previous.map { $0.nodeID == draggingNodeID } ?? false
+        let nextIsSlot = next.map { $0.nodeID == draggingNodeID } ?? false
+        let connectsAbove = !isSlot && !previousIsSlot
+        let connectsBelow = !isSlot && !nextIsSlot
+
+        return DSPWireRouting(
+            isBypassed: !node.enabled,
+            joinsAbove: connectsAbove && !node.enabled && previous?.enabled == false,
+            joinsBelow: connectsBelow && !node.enabled && next?.enabled == false,
+            connectsAbove: connectsAbove,
+            connectsBelow: connectsBelow,
+            showsTerminal: !isSlot
+        )
+    }
+
     // MARK: - Node Card Content
 
     private func nodeCardContent(
         node: DSPNodeConfiguration,
         index: Int,
-        isExpanded: Bool
+        isExpanded: Bool,
+        palette: DSPRackPalette
     ) -> some View {
-        let isBypassed = !node.enabled
+        VStack(alignment: .leading, spacing: 0) {
+            nodeHeader(node: node, index: index, isExpanded: isExpanded)
 
-        return VStack(alignment: .leading, spacing: 0) {
-            // Node Header
-            HStack(spacing: 8) {
-                // Node Index
-                Text(String(format: "%02d", index + 1))
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(isBypassed ? .secondary.opacity(0.6) : themeStore.accentColor)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(
-                        Capsule()
-                            .fill(isBypassed
-                                ? Color.secondary.opacity(0.08)
-                                : themeStore.accentColor.opacity(0.12)
-                            )
-                    )
-
-                // Node Icon
-                Image(systemName: nodeIcon(for: node.typeID))
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(isBypassed ? .secondary : .primary)
-                    .frame(width: 18)
-
-                // Title & Summary
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
-                        Text(nodeTitle(for: node.typeID))
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(isBypassed ? .secondary : .primary)
-
-                        if isBypassed {
-                            Text("已旁路")
-                                .font(.system(size: 9, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(Capsule().fill(Color.secondary.opacity(0.12)))
-                        }
-                    }
-
-                    Text(nodeSummary(for: node))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 8)
-
-                // Bypass / Enable Switch
-                Toggle("", isOn: Binding(
-                    get: { node.enabled },
-                    set: { enabled in
-                        onUpdateNode(node.nodeID) { $0.enabled = enabled }
-                        onCommit()
-                    }
-                ))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .accessibilityLabel("\(nodeTitle(for: node.typeID))启用状态")
-
-                // Remove button
-                Button {
-                    withAnimation(reorderAnimation) {
-                        onRemoveNode(node.nodeID)
-                    }
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("移除节点")
-                .accessibilityLabel("移除\(nodeTitle(for: node.typeID))")
-
-                // Drag handle
-                Image(systemName: "line.3.horizontal")
-                    .font(.caption)
-                    .foregroundStyle(.secondary.opacity(0.7))
-                    .padding(.horizontal, 4)
-                    .contentShape(Rectangle())
-                    .highPriorityGesture(reorderGesture(for: node.nodeID))
-                    .help("拖动排序")
-                    .accessibilityLabel("拖动排序")
-
-                // Expand / Collapse chevron
-                Button {
-                    withAnimation(reorderAnimation) {
-                        if isExpanded {
-                            expandedNodeIDs.remove(node.nodeID)
-                        } else {
-                            expandedNodeIDs.insert(node.nodeID)
-                        }
-                    }
-                } label: {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18, height: 18)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isExpanded ? "收起参数" : "展开参数")
-            }
-            .frame(height: nodeHeaderHeight)
-            .padding(.horizontal, 12)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                withAnimation(reorderAnimation) {
-                    if isExpanded {
-                        expandedNodeIDs.remove(node.nodeID)
-                    } else {
-                        expandedNodeIDs.insert(node.nodeID)
-                    }
-                }
-            }
-
-            // Expanded Editor
             if isExpanded {
-                Divider()
-                    .padding(.horizontal, 10)
-
-                nodeDetailEditor(node: node, index: index)
-                    .padding(12)
+                nodeDetailEditor(node: node)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 2)
+                    .padding(.bottom, 12)
                     .transition(.opacity)
             }
         }
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(colorScheme == .dark
-                    ? (isBypassed ? 0.025 : 0.05)
-                    : (isBypassed ? 0.018 : 0.038)
-                ))
+                .fill(node.enabled ? palette.nodeSurface : palette.bypassedNodeSurface)
         )
-        .opacity(isBypassed ? 0.72 : 1.0)
-        .motionAnimation(.control, value: isExpanded)
+    }
+
+    /// Header shared by the rack row and the floating drag card, so lifting a
+    /// node keeps every element in place.
+    private func nodeHeader(node: DSPNodeConfiguration, index: Int, isExpanded: Bool) -> some View {
+        let isBypassed = !node.enabled
+        let title = DSPNodeDescriptor.title(for: node.typeID)
+
+        return HStack(spacing: 10) {
+            Button {
+                toggleExpansion(node.nodeID)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .frame(width: 12)
+
+                    Text("\(index + 1)")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(isBypassed ? AnyShapeStyle(HierarchicalShapeStyle.secondary) : AnyShapeStyle(themeStore.accentColor))
+                        .frame(minWidth: 14)
+
+                    Image(systemName: DSPNodeDescriptor.icon(for: node.typeID))
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(isBypassed ? .secondary : .primary)
+                        .frame(width: 18)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(isBypassed ? .secondary : .primary)
+                        let summary = DSPNodeDescriptor.summary(for: node)
+                        if !summary.isEmpty {
+                            Text(summary)
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .lineLimit(1)
+
+                    Spacer(minLength: 8)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(title)
+            .accessibilityValue(isExpanded ? "已展开" : "已收起")
+
+            Toggle("", isOn: Binding(
+                get: { node.enabled },
+                set: { enabled in
+                    guard enabled != node.enabled else { return }
+                    onUpdateNode(node.nodeID) { $0.enabled = enabled }
+                    onCommit()
+                }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .accessibilityLabel("启用\(title)")
+
+            Button {
+                withAnimation(reorderAnimation) { onRemoveNode(node.nodeID) }
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("移除")
+            .accessibilityLabel("移除\(title)")
+
+            Image(systemName: "line.3.horizontal")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 20, height: nodeHeaderHeight)
+                .contentShape(Rectangle())
+                .highPriorityGesture(reorderGesture(for: node.nodeID))
+                .help("拖动排序")
+                .accessibilityLabel("排序")
+                .accessibilityAction(named: "上移") { moveNode(node.nodeID, by: -1) }
+                .accessibilityAction(named: "下移") { moveNode(node.nodeID, by: 1) }
+        }
+        .frame(height: nodeHeaderHeight)
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+    }
+
+    private func toggleExpansion(_ nodeID: UUID) {
+        withAnimation(reorderAnimation) {
+            if expandedNodeIDs.contains(nodeID) {
+                expandedNodeIDs.remove(nodeID)
+            } else {
+                expandedNodeIDs.insert(nodeID)
+            }
+        }
+    }
+
+    /// Keyboard and VoiceOver path for reordering; pointer users drag the handle.
+    private func moveNode(_ nodeID: UUID, by offset: Int) {
+        guard let index = nodes.firstIndex(where: { $0.nodeID == nodeID }) else { return }
+        let destination = index + offset
+        guard nodes.indices.contains(destination) else { return }
+        var reordered = nodes
+        reordered.swapAt(index, destination)
+        withAnimation(reorderAnimation) { nodes = reordered }
     }
 
     // MARK: - Detailed Node Editors
 
     @ViewBuilder
-    private func nodeDetailEditor(node: DSPNodeConfiguration, index: Int) -> some View {
-        if node.typeID == DSPNodeConfiguration.parametricEQTypeID,
-           let bands = node.parametricEQBands {
-            VStack(alignment: .leading, spacing: 12) {
+    private func nodeDetailEditor(node: DSPNodeConfiguration) -> some View {
+        switch node.typeID {
+        case DSPNodeConfiguration.parametricEQTypeID:
+            if let bands = node.parametricEQBands {
                 AudioDSPEQEditor(
-                    configuration: configuration,
                     node: node,
                     bands: bands,
-                    format: format,
-                    headroomDB: headroomDB,
+                    sampleRate: format?.sampleRate,
                     onBandChange: { bandIndex, band in
                         onUpdateNode(node.nodeID) { candidate in
-                            guard var b = candidate.parametricEQBands,
-                                  b.indices.contains(bandIndex) else { return }
-                            b[bandIndex] = band
-                            candidate.parametricEQBands = b
+                            guard var updated = candidate.parametricEQBands,
+                                  updated.indices.contains(bandIndex) else { return }
+                            updated[bandIndex] = band
+                            candidate.parametricEQBands = updated
                         }
                     },
                     onCommit: onCommit
                 )
                 .equatable()
+            } else {
+                unreadableParameters
             }
-        } else if node.typeID == DSPNodeConfiguration.equalLoudnessTypeID,
-                  let parameters = node.equalLoudnessParameters {
-            equalLoudnessEditor(node: node, parameters: parameters)
-        } else if [DSPNodeConfiguration.stereoWidthTypeID, DSPNodeConfiguration.virtualBassTypeID, DSPNodeConfiguration.tubeTypeID].contains(node.typeID) {
+        case DSPNodeConfiguration.equalLoudnessTypeID:
+            if node.equalLoudnessParameters != nil {
+                equalLoudnessEditor(node: node)
+            } else {
+                unreadableParameters
+            }
+        case DSPNodeConfiguration.stereoWidthTypeID,
+             DSPNodeConfiguration.virtualBassTypeID,
+             DSPNodeConfiguration.tubeTypeID:
             nativeEffectsEditor(node: node)
-        } else if node.typeID == DSPNodeConfiguration.scriptTypeID {
-            scriptEditor(node: node, index: index)
-        } else {
-            Text("该节点暂无更多参数。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        case DSPNodeConfiguration.scriptTypeID:
+            AudioDSPScriptNodeCard(
+                node: node,
+                format: scriptCompileFormat,
+                dspController: appSession.audioDSPController,
+                scriptController: appSession.audioDSPScriptController,
+                onCommit: onCommit
+            )
+        default:
+            unreadableParameters
         }
     }
 
-    private func equalLoudnessEditor(node: DSPNodeConfiguration, parameters: DSPEqualLoudnessParameters) -> some View {
+    private var unreadableParameters: some View {
+        Text("参数无法读取。")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private func equalLoudnessEditor(node: DSPNodeConfiguration) -> some View {
         let context = appSession.audioProcessingGlobalsController.equalLoudnessContext
-        return VStack(alignment: .leading, spacing: 12) {
+        return VStack(alignment: .leading, spacing: 10) {
             AudioDSPEqualLoudnessResponseCurve(
                 node: node,
                 context: context,
@@ -485,6 +505,7 @@ struct AudioDSPLinearNodeRack: View {
                 range: DSPEqualLoudnessParameters.strengthRange,
                 step: 0.01,
                 unit: "",
+                fractionDigits: 2,
                 onCommit: onCommit
             )
 
@@ -506,28 +527,29 @@ struct AudioDSPLinearNodeRack: View {
         }
     }
 
+    @ViewBuilder
     private func nativeEffectsEditor(node: DSPNodeConfiguration) -> some View {
         let qualities = DSPNodeConfiguration.supportedQualities(forTypeID: node.typeID)
 
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                if qualities.count > 1 {
-                    CapsulePicker(
-                        label: "质量",
-                        options: Array(qualities),
-                        selection: qualityBinding(for: node.nodeID),
-                        displayName: qualityShortTitle
-                    )
-                }
+        VStack(alignment: .leading, spacing: 10) {
+            if qualities.count > 1 {
+                CapsulePicker(
+                    label: "质量",
+                    options: Array(qualities).sorted(by: DSPNodeDescriptor.qualityOrder),
+                    selection: qualityBinding(for: node.nodeID),
+                    displayName: DSPNodeDescriptor.qualityTitle
+                )
             }
 
-            if node.typeID == DSPNodeConfiguration.stereoWidthTypeID {
+            switch node.typeID {
+            case DSPNodeConfiguration.stereoWidthTypeID:
                 DSPRangeSliderRow(
                     title: "宽度",
                     value: stereoWidthBinding(for: node.nodeID, keyPath: \.width),
                     range: DSPStereoWidthParameters.widthRange,
                     step: 0.01,
                     unit: "×",
+                    fractionDigits: 2,
                     onCommit: onCommit
                 )
                 DSPRangeSliderRow(
@@ -537,13 +559,14 @@ struct AudioDSPLinearNodeRack: View {
                     step: 0.1,
                     onCommit: onCommit
                 )
-            } else if node.typeID == DSPNodeConfiguration.virtualBassTypeID {
+            case DSPNodeConfiguration.virtualBassTypeID:
                 DSPRangeSliderRow(
                     title: "强度",
                     value: virtualBassBinding(for: node.nodeID, keyPath: \.amount),
                     range: DSPVirtualBassParameters.amountRange,
                     step: 0.01,
                     unit: "",
+                    fractionDigits: 2,
                     onCommit: onCommit
                 )
                 DSPRangeSliderRow(
@@ -552,9 +575,10 @@ struct AudioDSPLinearNodeRack: View {
                     range: DSPVirtualBassParameters.mixRange,
                     step: 0.01,
                     unit: "",
+                    fractionDigits: 2,
                     onCommit: onCommit
                 )
-            } else if node.typeID == DSPNodeConfiguration.tubeTypeID {
+            case DSPNodeConfiguration.tubeTypeID:
                 DSPRangeSliderRow(
                     title: "驱动",
                     value: tubeBinding(for: node.nodeID, keyPath: \.driveDB),
@@ -568,8 +592,11 @@ struct AudioDSPLinearNodeRack: View {
                     range: DSPTubeParameters.mixRange,
                     step: 0.01,
                     unit: "",
+                    fractionDigits: 2,
                     onCommit: onCommit
                 )
+            default:
+                EmptyView()
             }
         }
     }
@@ -584,53 +611,19 @@ struct AudioDSPLinearNodeRack: View {
         )
     }
 
-    private func scriptEditor(node: DSPNodeConfiguration, index: Int) -> some View {
-        AudioDSPScriptNodeCard(
-            node: node,
-            index: index,
-            nodeCount: nodes.count,
-            format: scriptCompileFormat,
-            dspController: appSession.audioDSPController,
-            scriptController: appSession.audioDSPScriptController,
-            isExpanded: .constant(true),
-            onEnabledChange: { enabled in
-                onUpdateNode(node.nodeID) { $0.enabled = enabled }
-                onCommit()
-            },
-            onCommit: onCommit,
-            onMove: { _ in },
-            onRemove: { onRemoveNode(node.nodeID) }
-        )
-    }
-
     // MARK: - Floating Drag Card
 
-    private func floatingNodeCard(node: DSPNodeConfiguration, index: Int) -> some View {
-            HStack(spacing: 8) {
-                Image(systemName: nodeIcon(for: node.typeID))
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(node.enabled ? themeStore.accentColor : .secondary)
-
-                Text(nodeTitle(for: node.typeID))
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(node.enabled ? .primary : .secondary)
-
-                Text(nodeSummary(for: node))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                Image(systemName: "line.3.horizontal")
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 14)
-            .frame(height: nodeHeaderHeight)
+    private func floatingNodeCard(
+        node: DSPNodeConfiguration,
+        index: Int,
+        palette: DSPRackPalette
+    ) -> some View {
+        nodeHeader(node: node, index: index, isExpanded: expandedNodeIDs.contains(node.nodeID))
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(nsColor: themeStore.semanticPalette.ambientSurface))
+                    .fill(node.enabled ? palette.nodeSurface : palette.bypassedNodeSurface)
             )
-            .padding(.leading, 28)
+            .padding(.leading, DSPRackMetrics.gutterWidth)
     }
 
     // MARK: - Reorder Gesture
@@ -647,8 +640,15 @@ struct AudioDSPLinearNodeRack: View {
                     for node in nodes.dropLast() {
                         dragRowFrames[node.nodeID]?.size.height -= nodeSpacing
                     }
+                    dragFloatingX = 0
+                    dragFloatingY = origin.y
                     dragNodeOrder = nodes.map(\.nodeID)
                     draggingNodeID = nodeID
+                    // The floating card first appears at rest, then lifts on
+                    // the next turn so the change is animated.
+                    Task { @MainActor in
+                        if draggingNodeID == nodeID, !isFinishingDrag { isLifted = true }
+                    }
                 }
                 guard draggingNodeID == nodeID, var order = dragNodeOrder else { return }
 
@@ -692,6 +692,7 @@ struct AudioDSPLinearNodeRack: View {
                 withAnimation(settleAnimation(initialVelocity: initialVelocity)) {
                     dragFloatingX = 0
                     dragFloatingY = finalY
+                    isLifted = false
                 }
                 let delay = motionPolicy.visualCompletionDelay(
                     for: motionTokens[.gestureSettle], initialVelocity: initialVelocity
@@ -701,6 +702,8 @@ struct AudioDSPLinearNodeRack: View {
                         try? await Task.sleep(for: .seconds(delay))
                     }
                     guard !Task.isCancelled, draggingNodeID == nodeID else { return }
+                    // Clearing the slot reconnects the wires through the
+                    // gutter's own routing animation.
                     cancelDrag()
                 }
             }
@@ -713,52 +716,18 @@ struct AudioDSPLinearNodeRack: View {
         dragNodeOrder = nil
         dragRowFrames = [:]
         isFinishingDrag = false
+        isLifted = false
         dragFloatingX = 0
         dragFloatingY = 0
     }
 
-    // MARK: - Signal Bus Wires
-
-    private func rackConnectingWire(height: CGFloat) -> some View {
-        HStack(spacing: 0) {
-            Canvas { context, size in
-                var path = Path()
-                path.move(to: CGPoint(x: 14, y: 0))
-                path.addLine(to: CGPoint(x: 14, y: height))
-                let strokeStyle = StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round)
-                context.fill(path.strokedPath(strokeStyle), with: .color(themeStore.accentColor.opacity(0.45)))
-            }
-            .frame(width: 28, height: height)
-
-            Spacer()
-        }
-    }
-
-    // MARK: - Add Node Menu
-
-    private var addNodeBar: some View {
-        Menu {
-            Button("九段均衡器") { onAddNode(.parametricEQ()) }
-            Button("等响补偿") { onAddNode(.equalLoudness()) }
-            Button("立体声扩展") { onAddNode(.stereoWidth()) }
-            Button("虚拟低音") { onAddNode(.virtualBass()) }
-            Button("电子管模拟") { onAddNode(.tube()) }
-            Button("可编程脚本") { onAddNode(.script()) }
-                .disabled(nodes.filter { $0.typeID == DSPNodeConfiguration.scriptTypeID }.count >= 4)
-        } label: {
-            Label("添加处理节点", systemImage: "plus")
-        }
-        .audioDSPCapsuleButtonStyle()
-        .disabled(nodes.count >= AudioDSPConfiguration.maximumNodeCount)
-    }
-
-    // MARK: - Helpers & Bindings
+    // MARK: - Bindings
 
     private func qualityBinding(for nodeID: UUID) -> Binding<String> {
         Binding(
-            get: { nodes.first(where: { $0.nodeID == nodeID })?.quality ?? "standard" },
-            set: { val in
-                onUpdateNode(nodeID) { $0.quality = val }
+            get: { nodes.first(where: { $0.nodeID == nodeID })?.quality ?? DSPNodeConfiguration.standardQuality },
+            set: { quality in
+                onUpdateNode(nodeID) { $0.quality = quality }
                 onCommit()
             }
         )
@@ -772,11 +741,11 @@ struct AudioDSPLinearNodeRack: View {
             get: {
                 nodes.first(where: { $0.nodeID == nodeID })?.equalLoudnessParameters?[keyPath: keyPath] ?? 0
             },
-            set: { val in
+            set: { value in
                 onUpdateNode(nodeID) { candidate in
-                    var p = candidate.equalLoudnessParameters ?? DSPEqualLoudnessParameters()
-                    p[keyPath: keyPath] = val
-                    candidate.equalLoudnessParameters = p
+                    var parameters = candidate.equalLoudnessParameters ?? DSPEqualLoudnessParameters()
+                    parameters[keyPath: keyPath] = value
+                    candidate.equalLoudnessParameters = parameters
                 }
             }
         )
@@ -790,11 +759,11 @@ struct AudioDSPLinearNodeRack: View {
             get: {
                 nodes.first(where: { $0.nodeID == nodeID })?.stereoWidthParameters?[keyPath: keyPath] ?? 0
             },
-            set: { val in
+            set: { value in
                 onUpdateNode(nodeID) { candidate in
-                    var p = candidate.stereoWidthParameters ?? DSPStereoWidthParameters()
-                    p[keyPath: keyPath] = val
-                    candidate.stereoWidthParameters = p
+                    var parameters = candidate.stereoWidthParameters ?? DSPStereoWidthParameters()
+                    parameters[keyPath: keyPath] = value
+                    candidate.stereoWidthParameters = parameters
                 }
             }
         )
@@ -808,11 +777,11 @@ struct AudioDSPLinearNodeRack: View {
             get: {
                 nodes.first(where: { $0.nodeID == nodeID })?.virtualBassParameters?[keyPath: keyPath] ?? 0
             },
-            set: { val in
+            set: { value in
                 onUpdateNode(nodeID) { candidate in
-                    var p = candidate.virtualBassParameters ?? DSPVirtualBassParameters()
-                    p[keyPath: keyPath] = val
-                    candidate.virtualBassParameters = p
+                    var parameters = candidate.virtualBassParameters ?? DSPVirtualBassParameters()
+                    parameters[keyPath: keyPath] = value
+                    candidate.virtualBassParameters = parameters
                 }
             }
         )
@@ -826,150 +795,416 @@ struct AudioDSPLinearNodeRack: View {
             get: {
                 nodes.first(where: { $0.nodeID == nodeID })?.tubeParameters?[keyPath: keyPath] ?? 0
             },
-            set: { val in
+            set: { value in
                 onUpdateNode(nodeID) { candidate in
-                    var p = candidate.tubeParameters ?? DSPTubeParameters()
-                    p[keyPath: keyPath] = val
-                    candidate.tubeParameters = p
+                    var parameters = candidate.tubeParameters ?? DSPTubeParameters()
+                    parameters[keyPath: keyPath] = value
+                    candidate.tubeParameters = parameters
                 }
             }
         )
     }
+}
 
-    private func nodeIcon(for typeID: String) -> String {
-        switch typeID {
-        case DSPNodeConfiguration.parametricEQTypeID: return "waveform"
-        case DSPNodeConfiguration.equalLoudnessTypeID: return "speaker.wave.2"
-        case DSPNodeConfiguration.stereoWidthTypeID: return "arrow.left.and.right"
-        case DSPNodeConfiguration.virtualBassTypeID: return "wave.3.forward"
-        case DSPNodeConfiguration.tubeTypeID: return "dial.low"
-        case DSPNodeConfiguration.scriptTypeID: return "curlybraces"
-        default: return "gearshape"
-        }
+// MARK: - Add Node Menu
+
+/// Effect picker shown in the effect-chain section header.
+struct AudioDSPAddNodeMenu: View {
+    let nodes: [DSPNodeConfiguration]
+    let onAddNode: (DSPNodeConfiguration) -> Void
+
+    private static let maximumScriptNodeCount = 4
+
+    private var scriptLimitReached: Bool {
+        nodes.filter { $0.typeID == DSPNodeConfiguration.scriptTypeID }.count >= Self.maximumScriptNodeCount
     }
 
-    private func nodeTitle(for typeID: String) -> String {
-        switch typeID {
-        case DSPNodeConfiguration.parametricEQTypeID: return "九段均衡器"
-        case DSPNodeConfiguration.equalLoudnessTypeID: return "等响补偿"
-        case DSPNodeConfiguration.stereoWidthTypeID: return "立体声扩展"
-        case DSPNodeConfiguration.virtualBassTypeID: return "虚拟低音"
-        case DSPNodeConfiguration.tubeTypeID: return "电子管模拟"
-        case DSPNodeConfiguration.scriptTypeID: return "自定义脚本"
-        default: return typeID
+    var body: some View {
+        Menu {
+            Section("均衡") {
+                addButton(.parametricEQ())
+                addButton(.equalLoudness())
+            }
+            Section("空间与音色") {
+                addButton(.stereoWidth())
+                addButton(.virtualBass())
+                addButton(.tube())
+            }
+            Section("自定义") {
+                addButton(.script())
+                    .disabled(scriptLimitReached)
+            }
+        } label: {
+            Label("添加效果", systemImage: "plus")
         }
+        .audioDSPCapsuleButtonStyle()
+        .fixedSize()
+        .disabled(nodes.count >= AudioDSPConfiguration.maximumNodeCount)
     }
 
-    private func nodeSummary(for node: DSPNodeConfiguration) -> String {
-        switch node.typeID {
-        case DSPNodeConfiguration.parametricEQTypeID:
-            let count = node.parametricEQBands?.filter(\.enabled).count ?? 0
-            return "\(count) 频段启用"
-        case DSPNodeConfiguration.equalLoudnessTypeID:
-            if let p = node.equalLoudnessParameters {
-                return "强度 \(Int(p.strength * 100))%"
-            }
-            return "等响补偿"
-        case DSPNodeConfiguration.stereoWidthTypeID:
-            if let p = node.stereoWidthParameters {
-                return "宽幅 \(Int(p.width * 100))%"
-            }
-            return "立体声扩展"
-        case DSPNodeConfiguration.virtualBassTypeID:
-            if let p = node.virtualBassParameters {
-                return "强度 \(Int(p.amount * 100))%"
-            }
-            return "虚拟低音"
-        case DSPNodeConfiguration.tubeTypeID:
-            if let p = node.tubeParameters {
-                return "驱动 \(p.driveDB.formatted(.number.precision(.fractionLength(1)))) dB"
-            }
-            return "电子管模拟"
-        case DSPNodeConfiguration.scriptTypeID:
-            return "自定义 VM 脚本"
-        default:
-            return ""
-        }
-    }
-
-    private func qualityShortTitle(_ quality: String) -> String {
-        switch quality {
-        case DSPNodeConfiguration.oversampling2xQuality: return "2× 过采样"
-        case DSPNodeConfiguration.oversampling4xQuality: return "4× 过采样"
-        default: return "标准"
+    private func addButton(_ node: DSPNodeConfiguration) -> some View {
+        Button(
+            DSPNodeDescriptor.title(for: node.typeID),
+            systemImage: DSPNodeDescriptor.icon(for: node.typeID)
+        ) {
+            onAddNode(node)
         }
     }
 }
 
-// MARK: - Node Signal Wire & Bypass Gutter
+// MARK: - Palette
+
+/// Opaque colours for the effect rack, so a card or wire moving over another
+/// never reveals what lies underneath.
+///
+/// Wire and mark colours come from the app foreground tiers. Those tiers are
+/// defined as a source colour plus alpha; here each one is composited once
+/// onto the surface it sits on, which keeps the colour system's hue and
+/// lightness ladder while making the result solid.
+struct DSPRackPalette {
+    let endpointSurface: Color
+    let nodeSurface: Color
+    let bypassedNodeSurface: Color
+    let bandSurface: Color
+    let activeBandSurface: Color
+    /// Signal wires: the tertiary foreground tier.
+    let wire: Color
+    /// Inactive marks on a node, such as EQ points: the quaternary tier.
+    let mutedMark: Color
+
+    init(themeStore: ThemeStore, colorScheme: ColorScheme) {
+        let semantic = themeStore.semanticPalette
+        let foreground = themeStore.appForegroundPalette
+        let base = ColorRenderingAdapter.makeSwiftUIColor(
+            HomeAmbientPalette.ambientBaseColor(
+                from: semantic.ambientSurface,
+                analysis: semantic.analysis,
+                colorScheme: themeStore.colorScheme
+            )
+        )
+        let isDark = colorScheme == .dark
+        let ink: Color = isDark ? .white : .black
+        // The settings section card tints the page with the same ink amount.
+        let section = base.mix(with: ink, by: isDark ? 0.045 : 0.035, in: .device)
+        let node = section.mix(with: ink, by: isDark ? 0.06 : 0.045, in: .device)
+
+        endpointSurface = section.mix(with: ink, by: isDark ? 0.035 : 0.025, in: .device)
+        nodeSurface = node
+        bypassedNodeSurface = section.mix(with: ink, by: isDark ? 0.025 : 0.018, in: .device)
+        bandSurface = node.mix(with: ink, by: isDark ? 0.05 : 0.035, in: .device)
+        activeBandSurface = themeStore.accentColor.mix(with: node, by: 0.84)
+        wire = Self.composite(foreground.tertiary, over: section)
+        mutedMark = Self.composite(foreground.quaternary, over: node)
+    }
+
+    /// Flattens a translucent tier colour onto an opaque surface.
+    private static func composite(_ foreground: NSColor, over surface: Color) -> Color {
+        let solid = ColorRenderingAdapter.makeSwiftUIColor(foreground.withAlphaComponent(1))
+        return surface.mix(with: solid, by: Double(foreground.alphaComponent), in: .device)
+    }
+}
+
+// MARK: - Node Descriptors
+
+private enum DSPRackMetrics {
+    static let gutterWidth: CGFloat = 28
+    static let nodeHeaderHeight: CGFloat = 44
+}
+
+/// Display names, icons and one-line summaries shared by the rack header,
+/// the drag preview and the add menu.
+enum DSPNodeDescriptor {
+    static func icon(for typeID: String) -> String {
+        switch typeID {
+        case DSPNodeConfiguration.parametricEQTypeID: "slider.vertical.3"
+        case DSPNodeConfiguration.equalLoudnessTypeID: "ear"
+        case DSPNodeConfiguration.stereoWidthTypeID: "arrow.left.and.right"
+        case DSPNodeConfiguration.virtualBassTypeID: "wave.3.forward"
+        case DSPNodeConfiguration.tubeTypeID: "dial.low"
+        case DSPNodeConfiguration.scriptTypeID: "curlybraces"
+        default: "questionmark.square.dashed"
+        }
+    }
+
+    static func title(for typeID: String) -> String {
+        switch typeID {
+        case DSPNodeConfiguration.parametricEQTypeID: "九段均衡器"
+        case DSPNodeConfiguration.equalLoudnessTypeID: "等响补偿"
+        case DSPNodeConfiguration.stereoWidthTypeID: "立体声扩展"
+        case DSPNodeConfiguration.virtualBassTypeID: "虚拟低音"
+        case DSPNodeConfiguration.tubeTypeID: "电子管模拟"
+        case DSPNodeConfiguration.scriptTypeID: "可编程脚本"
+        default: typeID
+        }
+    }
+
+    /// Summaries use the same precision and units as the node's own controls.
+    static func summary(for node: DSPNodeConfiguration) -> String {
+        switch node.typeID {
+        case DSPNodeConfiguration.parametricEQTypeID:
+            let count = node.parametricEQBands?.filter(\.enabled).count ?? 0
+            return "\(count) 个频段"
+        case DSPNodeConfiguration.equalLoudnessTypeID:
+            return node.equalLoudnessParameters.map { "强度 \(format($0.strength, digits: 2))" } ?? ""
+        case DSPNodeConfiguration.stereoWidthTypeID:
+            return node.stereoWidthParameters.map { "宽度 \(format($0.width, digits: 2))×" } ?? ""
+        case DSPNodeConfiguration.virtualBassTypeID:
+            return node.virtualBassParameters.map { "强度 \(format($0.amount, digits: 2))" } ?? ""
+        case DSPNodeConfiguration.tubeTypeID:
+            return node.tubeParameters.map { "驱动 \(format($0.driveDB, digits: 1)) dB" } ?? ""
+        case DSPNodeConfiguration.scriptTypeID:
+            let count = node.scriptParameters?.values.count ?? 0
+            return count > 0 ? "\(count) 个参数" : ""
+        default:
+            return "此版本无法处理"
+        }
+    }
+
+    static func qualityTitle(_ quality: String) -> String {
+        switch quality {
+        case DSPNodeConfiguration.oversampling2xQuality: "2× 过采样"
+        case DSPNodeConfiguration.oversampling4xQuality: "4× 过采样"
+        default: "标准"
+        }
+    }
+
+    static func qualityOrder(_ lhs: String, _ rhs: String) -> Bool {
+        rank(lhs) < rank(rhs)
+    }
+
+    private static func rank(_ quality: String) -> Int {
+        switch quality {
+        case DSPNodeConfiguration.oversampling2xQuality: 1
+        case DSPNodeConfiguration.oversampling4xQuality: 2
+        default: 0
+        }
+    }
+
+    private static func format(_ value: Double, digits: Int) -> String {
+        value.formatted(.number.precision(.fractionLength(digits)))
+    }
+}
+
+// MARK: - Signal Wires
 
 @MainActor
 private final class DSPRackGeometryCache {
     var frames: [UUID: CGRect] = [:]
 }
 
-// Signal wires express routing, rather than card hierarchy. Drawing is
-// bounded by the owning row (including its trailing gap), with round terminals.
-private struct AnimatedWireGutter: View, Animatable {
-    var bypassProgress: Double
-    let headerHeight: CGFloat
-    let accentColor: Color
+/// How the signal passes one rack row.
+private nonisolated struct DSPWireRouting: Equatable {
+    /// The signal detours around the node on the outer lane.
+    var isBypassed: Bool
+    /// The lane continues from a bypassed row above without returning to the bus.
+    var joinsAbove: Bool
+    /// The lane continues into a bypassed row below.
+    var joinsBelow: Bool
+    /// The wire reaches the row's top edge; otherwise it ends at the terminal.
+    var connectsAbove: Bool
+    /// The wire reaches the row's bottom edge; otherwise it ends at the terminal.
+    var connectsBelow: Bool
+    /// The node keeps its terminal; a dragged slot collapses into nothing.
+    var showsTerminal: Bool
+}
 
-    var animatableData: Double {
-        get { bypassProgress }
-        set { bypassProgress = newValue }
+/// Six-component animatable vector for the wire geometry.
+private nonisolated struct WireGeometry: VectorArithmetic {
+    var bypass: Double
+    var joinAbove: Double
+    var joinBelow: Double
+    var reachAbove: Double
+    var reachBelow: Double
+    var terminal: Double
+
+    init(_ routing: DSPWireRouting) {
+        bypass = routing.isBypassed ? 1 : 0
+        joinAbove = routing.joinsAbove ? 1 : 0
+        joinBelow = routing.joinsBelow ? 1 : 0
+        reachAbove = routing.connectsAbove ? 1 : 0
+        reachBelow = routing.connectsBelow ? 1 : 0
+        terminal = routing.showsTerminal ? 1 : 0
     }
 
-    var body: some View {
-        Canvas { context, size in
-            let midX: CGFloat = 14
-            let centerY = headerHeight / 2
-            let progress = min(1, max(0, bypassProgress))
-            let detourX = midX - 9 * progress
-            let startY = centerY - 18
-            let endY = centerY + 18
+    private init(_ values: [Double]) {
+        bypass = values[0]
+        joinAbove = values[1]
+        joinBelow = values[2]
+        reachAbove = values[3]
+        reachBelow = values[4]
+        terminal = values[5]
+    }
 
-            var path = Path()
-            path.move(to: CGPoint(x: midX, y: 0))
-            path.addLine(to: CGPoint(x: midX, y: startY))
-            path.addCurve(
-                to: CGPoint(x: detourX, y: centerY),
-                control1: CGPoint(x: midX, y: startY + 10),
-                control2: CGPoint(x: detourX, y: centerY - 10)
-            )
-            path.addCurve(
-                to: CGPoint(x: midX, y: endY),
-                control1: CGPoint(x: detourX, y: centerY + 10),
-                control2: CGPoint(x: midX, y: endY - 10)
-            )
-            path.addLine(to: CGPoint(x: midX, y: size.height))
-            let style = StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round)
-            context.fill(path.strokedPath(style), with: .color(accentColor.opacity(0.45)))
+    private var components: [Double] {
+        [bypass, joinAbove, joinBelow, reachAbove, reachBelow, terminal]
+    }
 
-            let dot = CGRect(x: midX - 3, y: centerY - 3, width: 6, height: 6)
-            context.fill(Path(ellipseIn: dot), with: .color(accentColor.opacity(1 - progress)))
-            let ring = Path(ellipseIn: dot).strokedPath(StrokeStyle(lineWidth: 1.2))
-            context.fill(ring, with: .color(.secondary.opacity(0.35 * progress)))
-        }
+    static var zero: WireGeometry { WireGeometry([0, 0, 0, 0, 0, 0]) }
+
+    static func + (lhs: WireGeometry, rhs: WireGeometry) -> WireGeometry {
+        WireGeometry(zip(lhs.components, rhs.components).map(+))
+    }
+
+    static func - (lhs: WireGeometry, rhs: WireGeometry) -> WireGeometry {
+        WireGeometry(zip(lhs.components, rhs.components).map(-))
+    }
+
+    mutating func scale(by rhs: Double) {
+        self = WireGeometry(components.map { $0 * rhs })
+    }
+
+    var magnitudeSquared: Double {
+        components.reduce(0) { $0 + $1 * $1 }
     }
 }
 
 private struct NodeWireGutter: View {
-    let isBypassed: Bool
+    let routing: DSPWireRouting
     let headerHeight: CGFloat
-    let accentColor: Color
+    let wireColor: Color
+    let terminalColor: Color
 
     var body: some View {
         GeometryReader { geometry in
             AnimatedWireGutter(
-                bypassProgress: isBypassed ? 1 : 0,
+                geometry: WireGeometry(routing),
                 headerHeight: headerHeight,
-                accentColor: accentColor
+                wireColor: wireColor,
+                terminalColor: terminalColor
             )
-            .frame(width: 28, height: geometry.size.height)
-            .motionAnimation(.control, value: isBypassed)
+            .frame(width: DSPRackMetrics.gutterWidth, height: geometry.size.height)
+            .motionAnimation(.control, value: routing)
         }
-        .frame(width: 28)
+        .frame(width: DSPRackMetrics.gutterWidth)
         .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Wire through one row, drawn as two halves that start at the node's
+/// connection point: on the bus for an active node, on the outer lane for a
+/// bypassed one. Each half grows outward to the row edge, so retracting a
+/// half pulls the wire back into the connection point with a round tip.
+/// Rows draw inside their own bounds and adjacent halves meet exactly.
+private struct AnimatedWireGutter: View, Animatable {
+    var geometry: WireGeometry
+    let headerHeight: CGFloat
+    let wireColor: Color
+    let terminalColor: Color
+
+    private static let busX: CGFloat = 14
+    private static let laneX: CGFloat = 3
+    private static let lineWidth: CGFloat = 1.5
+    private static let terminalRadius: CGFloat = 3
+    /// Vertical distance from the connection point at which the lane leaves
+    /// or rejoins the bus.
+    private static let detourReach: CGFloat = 20
+
+    var animatableData: WireGeometry {
+        get { geometry }
+        set { geometry = newValue }
+    }
+
+    var body: some View {
+        Canvas { context, size in
+            let style = StrokeStyle(lineWidth: Self.lineWidth, lineCap: .round, lineJoin: .round)
+            let bypass = Self.unit(geometry.bypass)
+            let offset = Self.busX - Self.laneX
+            let center = CGPoint(x: Self.busX - offset * bypass, y: headerHeight / 2)
+            let topX = Self.busX - offset * Self.unit(geometry.joinAbove)
+            let bottomX = Self.busX - offset * Self.unit(geometry.joinBelow)
+            let exitY = center.y - Self.detourReach
+            let returnY = center.y + Self.detourReach
+            let handle = Self.detourReach * 0.6
+
+            var upper = Path()
+            upper.move(to: center)
+            upper.addCurve(
+                to: CGPoint(x: topX, y: exitY),
+                control1: CGPoint(x: center.x, y: center.y - handle),
+                control2: CGPoint(x: topX, y: exitY + handle)
+            )
+            upper.addLine(to: CGPoint(x: topX, y: 0))
+
+            var lower = Path()
+            lower.move(to: center)
+            lower.addCurve(
+                to: CGPoint(x: bottomX, y: returnY),
+                control1: CGPoint(x: center.x, y: center.y + handle),
+                control2: CGPoint(x: bottomX, y: returnY - handle)
+            )
+            lower.addLine(to: CGPoint(x: bottomX, y: size.height))
+
+            for (half, reach) in [(upper, geometry.reachAbove), (lower, geometry.reachBelow)] {
+                let amount = Self.unit(reach)
+                guard amount > 0.001 else { continue }
+                let visible = amount < 0.999 ? half.trimmedPath(from: 0, to: amount) : half
+                context.fill(visible.strokedPath(style), with: .color(wireColor))
+            }
+
+            // Active nodes show a solid terminal on the bus. It shrinks away
+            // when the node is bypassed, and a dragged slot keeps it until the
+            // last part of the collapse so the wire visibly gathers into it.
+            let terminalScale = min(1, Self.unit(geometry.terminal) * 1.6) * (1 - bypass)
+            let radius = Self.terminalRadius * terminalScale
+            if radius > 0.05 {
+                let dot = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+                context.fill(Path(ellipseIn: dot), with: .color(terminalColor))
+            }
+        }
+    }
+
+    private static func unit(_ value: Double) -> CGFloat {
+        CGFloat(min(1, max(0, value)))
+    }
+}
+
+/// Straight bus between an endpoint card and the node list. When the slot
+/// next to it is detached, the segment retracts toward its endpoint.
+private struct BusWireSegment: View {
+    enum Anchor { case top, bottom }
+
+    let anchor: Anchor
+    let isConnected: Bool
+    let color: Color
+
+    var body: some View {
+        AnimatedBusWire(reach: isConnected ? 1 : 0, anchor: anchor, color: color)
+            .frame(width: DSPRackMetrics.gutterWidth)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .motionAnimation(.control, value: isConnected)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct AnimatedBusWire: View, Animatable {
+    var reach: Double
+    let anchor: BusWireSegment.Anchor
+    let color: Color
+
+    var animatableData: Double {
+        get { reach }
+        set { reach = newValue }
+    }
+
+    var body: some View {
+        Canvas { context, size in
+            let amount = CGFloat(min(1, max(0, reach)))
+            guard amount > 0.001 else { return }
+            let x: CGFloat = 14
+            let length = size.height * amount
+            var path = Path()
+            switch anchor {
+            case .top:
+                path.move(to: CGPoint(x: x, y: 0))
+                path.addLine(to: CGPoint(x: x, y: length))
+            case .bottom:
+                path.move(to: CGPoint(x: x, y: size.height))
+                path.addLine(to: CGPoint(x: x, y: size.height - length))
+            }
+            let style = StrokeStyle(lineWidth: 1.5, lineCap: amount < 0.999 ? .round : .butt)
+            context.fill(path.strokedPath(style), with: .color(color))
+        }
     }
 }

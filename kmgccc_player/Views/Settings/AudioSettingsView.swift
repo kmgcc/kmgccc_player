@@ -33,15 +33,15 @@ struct AudioSettingsView: View {
                 controller: appSession.audioProcessingGlobalsController
             )
 
-            SettingsSection("音效处理") {
+            SettingsSection {
                 Button {
                     navigateSettingsSubpage(.audioDSP)
                 } label: {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("DSP 音效")
+                            Text("音效处理")
                                 .settingsRowLabelStyle()
-                            Text("九段均衡器、增益与预设")
+                            Text("均衡器、效果链与预设")
                                 .settingsDescriptionStyle()
                         }
                         Spacer(minLength: 8)

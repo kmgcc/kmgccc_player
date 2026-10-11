@@ -1,76 +1,89 @@
+//
+//  AudioDSPScriptNodeCard.swift
+//  myPlayer2
+//
+//  Expanded editor for a programmable script node. The effect rack owns the
+//  node header (enable switch, ordering, removal); this view edits the source,
+//  the parameters of the applied script, and fixture tests.
+//
+//  The applied script lives in the persisted DSP configuration, so its
+//  parameters are read from there and stay adjustable across launches
+//  without compiling again. One action saves, compiles and applies the source.
+//
+
 import SwiftUI
 
 @MainActor
 struct AudioDSPScriptNodeCard: View {
     let node: DSPNodeConfiguration
-    let index: Int
-    let nodeCount: Int
     let format: DSPAudioFormat
     let dspController: AudioDSPController
     let scriptController: DSPScriptController
-    @Binding var isExpanded: Bool
-    let onEnabledChange: @MainActor @Sendable (Bool) -> Void
     let onCommit: () -> Void
-    let onMove: (Int) -> Void
-    let onRemove: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var sourceText: String
     @State private var languageVersion: Int
     @State private var values: [String: Double]
     @State private var hasLocalEdits = false
+    @State private var isApplying = false
+    @State private var isSourceExpanded = false
     @State private var fixtureSelection = "sine"
+
+    private static let collapsedLineCount = 10
+    private static let expandedLineLimit = 40
+    private static let sourceLineHeight: CGFloat = 15
+    private static let sourcePadding: CGFloat = 8
 
     private var nodeID: UUID { node.nodeID }
     private var draft: DSPScriptDraftDocument? { scriptController.drafts[nodeID] }
     private var activity: DSPScriptNodeActivity {
         scriptController.activityByNodeID[nodeID] ?? DSPScriptNodeActivity()
     }
+    private var appliedScript: DSPScriptNodeParameters? { node.scriptParameters }
+
     private var isDraftDirty: Bool {
         guard let draft else { return true }
         return draft.source != sourceText
             || draft.languageVersion != languageVersion
             || draft.values != values
     }
-    private var compileForCurrentSource: DSPScriptCompileResult? {
-        guard let draft,
-              draft.source == sourceText,
-              draft.languageVersion == languageVersion,
-              activity.compileResult?.draftRevision == draft.revisionString else { return nil }
-        return activity.compileResult
+
+    private var editorMatchesApplied: Bool {
+        guard let appliedScript else { return false }
+        return appliedScript.source == sourceText && appliedScript.languageVersion == languageVersion
     }
-    private var canApplyCompiledDraft: Bool {
-        compileForCurrentSource != nil && !isDraftDirty
-    }
-    private var activeSourceMatchesEditor: Bool {
-        guard let activeNode = dspController.configuration.nodes.first(where: { $0.nodeID == nodeID }),
-              let activeScript = activeNode.scriptParameters else { return false }
-        return activeScript.source == sourceText && activeScript.languageVersion == languageVersion
+
+    /// Parameters declared by the applied script. Reflection is cached by the
+    /// compiler, so reading it on every render stays cheap.
+    private var appliedParameters: [DSPScriptParameter] {
+        guard let appliedScript else { return [] }
+        if let declared = try? DSPScriptCompiler.validateSource(
+            source: appliedScript.source,
+            languageVersion: appliedScript.languageVersion,
+            parameterValues: appliedScript.values
+        ) {
+            return declared
+        }
+        return (try? DSPScriptCompiler.validateSource(
+            source: appliedScript.source,
+            languageVersion: appliedScript.languageVersion
+        )) ?? []
     }
 
     init(
         node: DSPNodeConfiguration,
-        index: Int,
-        nodeCount: Int,
         format: DSPAudioFormat,
         dspController: AudioDSPController,
         scriptController: DSPScriptController,
-        isExpanded: Binding<Bool>,
-        onEnabledChange: @escaping @MainActor @Sendable (Bool) -> Void,
-        onCommit: @escaping () -> Void,
-        onMove: @escaping (Int) -> Void,
-        onRemove: @escaping () -> Void
+        onCommit: @escaping () -> Void
     ) {
         self.node = node
-        self.index = index
-        self.nodeCount = nodeCount
         self.format = format
         self.dspController = dspController
         self.scriptController = scriptController
-        _isExpanded = isExpanded
-        self.onEnabledChange = onEnabledChange
         self.onCommit = onCommit
-        self.onMove = onMove
-        self.onRemove = onRemove
         let script = node.scriptParameters ?? DSPScriptNodeParameters()
         _sourceText = State(initialValue: script.source)
         _languageVersion = State(initialValue: script.languageVersion)
@@ -78,138 +91,13 @@ struct AudioDSPScriptNodeCard: View {
     }
 
     var body: some View {
-        SettingsSection("可编程脚本 \(index + 1)") {
-            VStack(alignment: .leading, spacing: 12) {
-                SettingsSwitchRow(
-                    title: "启用脚本",
-                    isOn: Binding(get: { node.enabled }, set: onEnabledChange)
-                )
-
-                HStack(spacing: 8) {
-                    Text("质量：标准")
-                        .settingsDescriptionStyle()
-                    Spacer(minLength: 0)
-                }
-
-                HStack(spacing: 8) {
-                    Spacer(minLength: 0)
-                    Button { onMove(-1) } label: {
-                        Label("上移", systemImage: "chevron.up").labelStyle(.iconOnly)
-                    }
-                    .dspIconButtonStyle()
-                    .accessibilityLabel("上移脚本")
-                    .disabled(index == 0)
-
-                    Button { onMove(1) } label: {
-                        Label("下移", systemImage: "chevron.down").labelStyle(.iconOnly)
-                    }
-                    .dspIconButtonStyle()
-                    .accessibilityLabel("下移脚本")
-                    .disabled(index == nodeCount - 1)
-
-                    Button(role: .destructive, action: onRemove) {
-                        Label("移除", systemImage: "trash").labelStyle(.iconOnly)
-                    }
-                    .dspIconButtonStyle()
-                    .accessibilityLabel("移除脚本")
-                }
-
-                DisclosureGroup("源码与参数", isExpanded: $isExpanded) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("源码")
-                            .settingsDescriptionStyle()
-                        TextEditor(text: $sourceText)
-                            .font(.system(.body, design: .monospaced))
-                            .frame(minHeight: 150)
-                            .accessibilityLabel("脚本源码")
-                            .onChange(of: sourceText) { _, _ in hasLocalEdits = isDraftDirty }
-                        if isDraftDirty {
-                            Text("草稿有未保存的修改")
-                                .settingsDescriptionStyle()
-                        }
-
-                        HStack(spacing: 8) {
-                            Button("保存草稿", action: saveDraft)
-                                .audioDSPCapsuleButtonStyle()
-                            Button("编译", action: compileDraft)
-                                .audioDSPCapsuleButtonStyle()
-                                .disabled(activity.compilePhase == .running)
-                            Button("应用脚本", action: applyCompiledDraft)
-                                .audioDSPCapsuleButtonStyle()
-                                .disabled(!canApplyCompiledDraft)
-                            if activity.compilePhase == .running {
-                                Button("取消") {
-                                    scriptController.cancelCompile(
-                                        nodeID: nodeID,
-                                        requestID: activity.compileRequestID
-                                    )
-                                }
-                                .audioDSPCapsuleButtonStyle()
-                            }
-                        }
-
-                        if activity.compilePhase == .running {
-                            Text("正在编译…")
-                                .settingsDescriptionStyle()
-                        } else if activity.compilePhase == .failed, activity.compileDiagnostics.isEmpty {
-                            Text("编译失败")
-                                .settingsDescriptionStyle()
-                        }
-                        diagnosticList(activity.compileDiagnostics)
-                        diagnosticList(dspController.diagnostics.filter { $0.nodeID == nodeID })
-                        if !runtimeWarnings.isEmpty {
-                            HStack(spacing: 8) {
-                                Text("运行错误 · 已旁路")
-                                    .settingsDescriptionStyle()
-                                Button("重试", action: retryRuntimeNode)
-                                    .audioDSPCapsuleButtonStyle()
-                            }
-                            diagnosticList(runtimeWarnings)
-                        }
-                        if let error = scriptController.lastError, error.nodeID == nodeID {
-                            diagnosticList([error])
-                        }
-
-                        if let compileForCurrentSource {
-                            compilerSummary(compileForCurrentSource)
-                            parameterControls(compileForCurrentSource)
-                            fixtureControls
-                            if activity.testPhase == .running {
-                                Button("取消测试") {
-                                    scriptController.cancelTest(
-                                        nodeID: nodeID,
-                                        requestID: activity.testRequestID
-                                    )
-                                }
-                                .audioDSPCapsuleButtonStyle()
-                            } else {
-                                Button("运行测试", action: runFixtureTest)
-                                    .audioDSPCapsuleButtonStyle()
-                                    .disabled(isDraftDirty)
-                            }
-                            if activity.testPhase == .running {
-                                Text("正在运行短时测试…")
-                                    .settingsDescriptionStyle()
-                            }
-                            diagnosticList(activity.testDiagnostics)
-                            if activity.testPhase == .failed, activity.testResult != nil {
-                                Text("测试发现运行问题")
-                                    .settingsDescriptionStyle()
-                            } else if activity.testPhase == .failed {
-                                Text("测试失败")
-                                    .settingsDescriptionStyle()
-                            }
-                            if let result = activity.testResult {
-                                fixtureResult(result)
-                            }
-                        } else {
-                            Text("编译后可查看参数范围并运行短时测试。")
-                                .settingsDescriptionStyle()
-                        }
-
-                    }
-                    .padding(.top, 10)
-                }
+        VStack(alignment: .leading, spacing: 12) {
+            sourceEditor
+            actionRow
+            messages
+            parameterControls
+            if editorMatchesApplied {
+                testControls
             }
         }
         .task(id: nodeID) {
@@ -219,6 +107,104 @@ struct AudioDSPScriptNodeCard: View {
             guard !hasLocalEdits, let newDraft else { return }
             load(newDraft)
         }
+        .onDisappear {
+            // Collapsing the node or leaving the page keeps unapplied edits.
+            guard hasLocalEdits else { return }
+            Task { _ = try? await persistDraftIfNeeded() }
+        }
+    }
+
+    // MARK: - Source
+
+    private var sourceLineCount: Int {
+        sourceText.reduce(into: 1) { count, character in
+            if character == "\n" { count += 1 }
+        }
+    }
+
+    private var sourceEditorHeight: CGFloat {
+        let lines = isSourceExpanded
+            ? min(max(sourceLineCount, Self.collapsedLineCount), Self.expandedLineLimit)
+            : Self.collapsedLineCount
+        return CGFloat(lines) * Self.sourceLineHeight + Self.sourcePadding * 2
+    }
+
+    private var sourceEditor: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            TextEditor(text: $sourceText)
+                .font(.system(size: 12, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .padding(Self.sourcePadding)
+                .frame(height: sourceEditorHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04))
+                )
+                .accessibilityLabel("脚本源码")
+                .onChange(of: sourceText) { _, _ in hasLocalEdits = isDraftDirty }
+
+            if sourceLineCount > Self.collapsedLineCount {
+                Button(isSourceExpanded ? "收起" : "展开全部") {
+                    isSourceExpanded.toggle()
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var actionRow: some View {
+        HStack(spacing: 8) {
+            Button(action: applySource) {
+                HStack(spacing: 6) {
+                    if isApplying {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text("应用")
+                }
+            }
+            .audioDSPCapsuleButtonStyle()
+            .disabled(isApplying || editorMatchesApplied)
+
+            if editorMatchesApplied == false, appliedScript != nil, !isApplying {
+                Button("还原") {
+                    if let appliedScript {
+                        sourceText = appliedScript.source
+                        languageVersion = appliedScript.languageVersion
+                    }
+                }
+                .audioDSPCapsuleButtonStyle()
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    // MARK: - Messages
+
+    @ViewBuilder
+    private var messages: some View {
+        if !runtimeWarnings.isEmpty {
+            HStack(spacing: 8) {
+                Label("脚本运行出错", systemImage: "exclamationmark.circle")
+                    .settingsDescriptionStyle()
+                Spacer(minLength: 8)
+                Button("重试", action: retryRuntimeNode)
+                    .audioDSPCapsuleButtonStyle()
+            }
+        }
+        let diagnostics = visibleDiagnostics
+        if !diagnostics.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(diagnostics, id: \.self) { diagnostic in
+                    Text(diagnostic)
+                        .settingsDescriptionStyle()
+                        .textSelection(.enabled)
+                }
+            }
+        }
     }
 
     private var runtimeWarnings: [DSPDiagnostic] {
@@ -227,61 +213,65 @@ struct AudioDSPScriptNodeCard: View {
         }
     }
 
-    private var fixtureControls: some View {
-        HStack(spacing: 8) {
-            CapsulePicker(
-                label: "测试信号",
-                options: ["silence", "impulse", "sine", "sweep", "pinkNoise"],
-                selection: $fixtureSelection,
-                displayName: { fix in
-                    switch fix {
-                    case "silence": "静音"
-                    case "impulse": "脉冲"
-                    case "sine": "正弦"
-                    case "sweep": "扫频"
-                    case "pinkNoise": "粉红噪声"
-                    default: fix
-                    }
-                }
-            )
-            Spacer(minLength: 0)
+    /// Compile, configuration, runtime and test diagnostics for this node,
+    /// rendered once each even when several owners report the same problem.
+    private var visibleDiagnostics: [String] {
+        var sources = activity.compileDiagnostics
+            + dspController.diagnostics.filter { $0.nodeID == nodeID }
+            + runtimeWarnings
+            + activity.testDiagnostics
+        if let error = scriptController.lastError, error.nodeID == nodeID {
+            sources.append(error)
         }
+        var seen = Set<String>()
+        return sources.map(describe).filter { seen.insert($0).inserted }
     }
 
+    private func describe(_ diagnostic: DSPDiagnostic) -> String {
+        guard let line = diagnostic.line else { return diagnostic.message }
+        let position = diagnostic.column.map { "第 \(line) 行第 \($0) 列" } ?? "第 \(line) 行"
+        return "\(position)：\(diagnostic.message)"
+    }
+
+    // MARK: - Parameters
+
     @ViewBuilder
-    private func parameterControls(_ compiled: DSPScriptCompileResult) -> some View {
-        if !compiled.parameters.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("参数")
-                    .settingsDescriptionStyle()
-                ForEach(compiled.parameters) { parameter in
+    private var parameterControls: some View {
+        let parameters = appliedParameters
+        if !parameters.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(parameters) { parameter in
+                    let span = parameter.maxValue - parameter.minValue
                     DSPRangeSliderRow(
                         title: parameter.name,
-                        value: parameterBinding(parameter, compiled: compiled),
+                        value: parameterBinding(parameter),
                         range: parameter.minValue...parameter.maxValue,
-                        step: max((parameter.maxValue - parameter.minValue) / 500, 0.0001),
-                        onCommit: { commitParameter(parameter, compiled: compiled) }
+                        step: max(span / 500, 0.0001),
+                        unit: "",
+                        fractionDigits: Self.fractionDigits(forSpan: span),
+                        onCommit: onCommit
                     )
                 }
             }
         }
     }
 
-    private func parameterBinding(
-        _ parameter: DSPScriptParameter,
-        compiled: DSPScriptCompileResult
-    ) -> Binding<Double> {
+    private static func fractionDigits(forSpan span: Double) -> Int {
+        switch span {
+        case ...1: 3
+        case ...10: 2
+        case ...1_000: 1
+        default: 0
+        }
+    }
+
+    /// Edits the applied script's values in the DSP configuration directly,
+    /// which is what persists them.
+    private func parameterBinding(_ parameter: DSPScriptParameter) -> Binding<Double> {
         Binding(
-            get: {
-                values[parameter.name]
-                    ?? compiled.parameterValues[parameter.name]
-                    ?? parameter.defaultValue
-            },
+            get: { appliedScript?.values[parameter.name] ?? parameter.defaultValue },
             set: { newValue in
                 let value = min(parameter.maxValue, max(parameter.minValue, newValue))
-                values[parameter.name] = value
-                hasLocalEdits = true
-                guard activeSourceMatchesEditor else { return }
                 dspController.updateConfiguration { candidate in
                     guard let index = candidate.nodes.firstIndex(where: { $0.nodeID == nodeID }),
                           var script = candidate.nodes[index].scriptParameters else { return }
@@ -292,39 +282,62 @@ struct AudioDSPScriptNodeCard: View {
         )
     }
 
-    private func commitParameter(
-        _ parameter: DSPScriptParameter,
-        compiled: DSPScriptCompileResult
-    ) {
-        guard activeSourceMatchesEditor,
-              values[parameter.name] != nil || compiled.parameterValues[parameter.name] != nil else { return }
-        onCommit()
-    }
+    // MARK: - Fixture Tests
 
-    private func compilerSummary(_ result: DSPScriptCompileResult) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("已编译 · \(result.parameters.count) 个参数 · 延迟 \(result.latencyFrames) 帧")
-                .settingsDescriptionStyle()
-            Text("估算成本 \(result.estimatedWeightedOperationsPerSecond.formatted(.number.precision(.fractionLength(0)))) 次/秒 · 状态 \(result.stateBytes.formatted()) 字节")
-                .settingsDescriptionStyle()
-        }
-    }
+    private var testControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                CapsulePicker(
+                    label: "测试信号",
+                    options: Self.fixtureNames,
+                    selection: $fixtureSelection,
+                    displayName: Self.fixtureTitle
+                )
+                if activity.testPhase == .running {
+                    Button("取消") {
+                        scriptController.cancelTest(nodeID: nodeID, requestID: activity.testRequestID)
+                    }
+                    .audioDSPCapsuleButtonStyle()
+                } else {
+                    Button("测试", action: runFixtureTest)
+                        .audioDSPCapsuleButtonStyle()
+                        .disabled(isApplying)
+                }
+            }
 
-    private func fixtureResult(_ result: DSPScriptFixtureResult) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("\(fixtureTitle(result.fixtureName)) · \(result.frames.formatted()) 帧 · 输出峰值 \(result.outputPeak.formatted(.number.precision(.fractionLength(4))))")
-                .settingsDescriptionStyle()
-            Text("实测 \(result.elapsedMilliseconds.formatted(.number.precision(.fractionLength(2)))) ms · 预算等价 \(result.estimatedProcessingMilliseconds.formatted(.number.precision(.fractionLength(2)))) ms · 非有限输出 \(result.nonFiniteOutputSampleCount)")
-                .settingsDescriptionStyle()
-            if let expectedLatencyFrames = result.expectedLatencyFrames {
-                let measuredPeak = result.measuredImpulsePeakFrame.map { "\($0) 帧" } ?? "未检测到"
-                Text("声明延迟 \(expectedLatencyFrames) 帧 · 脉冲峰值位置 \(measuredPeak)")
-                    .settingsDescriptionStyle()
+            if let result = activity.testResult {
+                fixtureResult(result)
             }
         }
     }
 
-    private func fixtureTitle(_ name: String) -> String {
+    private func fixtureResult(_ result: DSPScriptFixtureResult) -> some View {
+        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+            resultRow("输出峰值", result.outputPeak.formatted(.number.precision(.fractionLength(4))))
+            resultRow("耗时", "\(result.elapsedMilliseconds.formatted(.number.precision(.fractionLength(2)))) ms")
+            resultRow("预算", "\(result.estimatedProcessingMilliseconds.formatted(.number.precision(.fractionLength(2)))) ms")
+            if result.nonFiniteOutputSampleCount > 0 {
+                resultRow("异常采样", "\(result.nonFiniteOutputSampleCount)")
+            }
+            if let expectedLatencyFrames = result.expectedLatencyFrames {
+                resultRow("声明延迟", "\(expectedLatencyFrames) 帧")
+                resultRow("脉冲峰值", result.measuredImpulsePeakFrame.map { "第 \($0) 帧" } ?? "未检测到")
+            }
+        }
+        .settingsDescriptionStyle()
+        .textSelection(.enabled)
+    }
+
+    private func resultRow(_ title: String, _ value: String) -> some View {
+        GridRow {
+            Text(title)
+            Text(value).monospacedDigit()
+        }
+    }
+
+    private static let fixtureNames = ["silence", "impulse", "sine", "sweep", "pinkNoise"]
+
+    private static func fixtureTitle(_ name: String) -> String {
         switch name {
         case "silence": "静音"
         case "impulse": "脉冲"
@@ -336,33 +349,41 @@ struct AudioDSPScriptNodeCard: View {
         }
     }
 
-    @ViewBuilder
-    private func diagnosticList(_ diagnostics: [DSPDiagnostic]) -> some View {
-        ForEach(Array(diagnostics.enumerated()), id: \.offset) { _, diagnostic in
-            VStack(alignment: .leading, spacing: 3) {
-                if let line = diagnostic.line {
-                    Text("\(diagnostic.code) · 第 \(line) 行\(diagnostic.column.map { "，第 \($0) 列" } ?? "")")
-                        .settingsDescriptionStyle()
-                } else {
-                    Text(diagnostic.code)
-                        .settingsDescriptionStyle()
-                }
-                Text(diagnostic.message)
-                    .settingsDescriptionStyle()
+    private var selectedFixture: DSPScriptFixture {
+        switch fixtureSelection {
+        case "silence": .silence(durationSeconds: 0.25)
+        case "impulse": .impulse(durationSeconds: 0.25, amplitude: 0.25)
+        case "sweep": .sweep(
+            durationSeconds: 0.25,
+            startFrequencyHz: 30,
+            endFrequencyHz: min(18_000, format.sampleRate * 0.45),
+            amplitude: 0.25
+        )
+        case "pinkNoise": .pinkNoise(durationSeconds: 0.25, amplitude: 0.2, seed: 0xD5)
+        default: .sine(durationSeconds: 0.25, frequencyHz: 440, amplitude: 0.25)
+        }
+    }
+
+    // MARK: - Actions
+
+    /// Saves the draft, compiles it and applies it in one step. Current values
+    /// carry over for every parameter the new source still declares.
+    private func applySource() {
+        guard !isApplying else { return }
+        isApplying = true
+        let declared = (try? DSPScriptCompiler.validateSource(
+            source: sourceText,
+            languageVersion: languageVersion
+        )) ?? []
+        let currentValues = appliedScript?.values ?? [:]
+        values = declared.reduce(into: [String: Double]()) { result, parameter in
+            if let value = currentValues[parameter.name],
+               (parameter.minValue...parameter.maxValue).contains(value) {
+                result[parameter.name] = value
             }
-            .accessibilityElement(children: .combine)
         }
-    }
-
-    private func saveDraft() {
         Task {
-            do { _ = try await persistDraftIfNeeded() }
-            catch { }
-        }
-    }
-
-    private func compileDraft() {
-        Task {
+            defer { isApplying = false }
             do {
                 let savedDraft = try await persistDraftIfNeeded()
                 _ = try await scriptController.compileDraft(
@@ -370,23 +391,15 @@ struct AudioDSPScriptNodeCard: View {
                     format: format,
                     expectedDraftRevision: savedDraft.revisionString
                 )
+                _ = try scriptController.applyCompiledDraft(
+                    nodeID: nodeID,
+                    expectedDraftRevision: savedDraft.revisionString,
+                    expectedConfigurationRevision: dspController.revisionString
+                )
+                hasLocalEdits = false
             } catch {
-                // The controller publishes a structured diagnostic for the card.
+                // Both owners publish structured diagnostics for this node.
             }
-        }
-    }
-
-    private func applyCompiledDraft() {
-        guard let draft else { return }
-        do {
-            _ = try scriptController.applyCompiledDraft(
-                nodeID: nodeID,
-                expectedDraftRevision: draft.revisionString,
-                expectedConfigurationRevision: dspController.revisionString
-            )
-            hasLocalEdits = false
-        } catch {
-            // Both owners retain the structured error for the settings status rows.
         }
     }
 
@@ -410,7 +423,7 @@ struct AudioDSPScriptNodeCard: View {
                     expectedDraftRevision: savedDraft.revisionString
                 )
             } catch {
-                // The controller publishes a structured diagnostic for the card.
+                // The controller publishes a structured diagnostic for the node.
             }
         }
     }
@@ -452,20 +465,5 @@ struct AudioDSPScriptNodeCard: View {
         languageVersion = draft.languageVersion
         values = draft.values
         hasLocalEdits = false
-    }
-
-    private var selectedFixture: DSPScriptFixture {
-        switch fixtureSelection {
-        case "silence": .silence(durationSeconds: 0.25)
-        case "impulse": .impulse(durationSeconds: 0.25, amplitude: 0.25)
-        case "sweep": .sweep(
-            durationSeconds: 0.25,
-            startFrequencyHz: 30,
-            endFrequencyHz: min(18_000, format.sampleRate * 0.45),
-            amplitude: 0.25
-        )
-        case "pinkNoise": .pinkNoise(durationSeconds: 0.25, amplitude: 0.2, seed: 0xD5)
-        default: .sine(durationSeconds: 0.25, frequencyHz: 440, amplitude: 0.25)
-        }
     }
 }
