@@ -731,6 +731,81 @@ final class AudioDSPControllerTests: XCTestCase {
         await dsp.flushPendingPersistence()
     }
 
+    func testDefaultFlatSelectionReusesItsEditablePresetAfterClearingAndRestart() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (defaults, suite) = deviceDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = DSPPresetStore(rootURL: root)
+        let dsp = AudioDSPController(store: store)
+        let devices = AudioDSPDeviceController(dsp: dsp, userDefaults: defaults)
+        await devices.ensureLoaded()
+        devices.receiveOutputDeviceUID("speakers")
+        try await devices.setDefaultPreset(DSPPresetDocument.flatPresetID)
+        let defaultID = try XCTUnwrap(devices.settings.defaultPresetID)
+        dsp.updateConfiguration(commit: true) { $0.inputTrimDB = -2 }
+        let presetCount = dsp.presets.count
+        for _ in 0..<5 {
+            try await devices.setDefaultPreset(nil)
+            XCTAssertNil(devices.settings.defaultPresetID)
+            XCTAssertFalse(dsp.configuration.enabled)
+            XCTAssertEqual(dsp.presets.count, presetCount)
+            try await devices.setDefaultPreset(DSPPresetDocument.flatPresetID)
+            XCTAssertEqual(devices.settings.defaultPresetID, defaultID)
+            XCTAssertEqual(dsp.selectedPresetID, defaultID)
+            XCTAssertEqual(dsp.configuration.inputTrimDB, -2)
+            XCTAssertEqual(dsp.presets.count, presetCount)
+        }
+        let revision = dsp.revisionString
+        try await devices.setDefaultPreset(defaultID)
+        XCTAssertEqual(dsp.revisionString, revision)
+        try await devices.setDefaultPreset(nil)
+        await dsp.flushPendingPersistence()
+
+        let restoredDSP = AudioDSPController(store: store)
+        let restoredDevices = AudioDSPDeviceController(dsp: restoredDSP, userDefaults: defaults)
+        await restoredDevices.ensureLoaded()
+        try await restoredDevices.setDefaultPreset(DSPPresetDocument.flatPresetID)
+        XCTAssertEqual(restoredDevices.settings.defaultPresetID, defaultID)
+        XCTAssertEqual(restoredDSP.presets.count, presetCount)
+        await restoredDSP.flushPendingPersistence()
+    }
+
+    func testDeviceSettingsWithoutFlatCopyCacheRetainExistingBindings() throws {
+        let presetID = UUID()
+        let binding = DSPDeviceBinding(deviceUID: "headphones", name: "Headphones", transportType: 0, presetID: presetID)
+        let settings = DSPDeviceSettings(enabled: true, defaultPresetID: nil, bindings: [binding.deviceUID: binding])
+        let data = try JSONEncoder().encode(settings)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertNil(object["flatPresetCopies"])
+        let restored = try JSONDecoder().decode(DSPDeviceSettings.self, from: data)
+        XCTAssertTrue(restored.enabled)
+        XCTAssertEqual(restored.bindings[binding.deviceUID]?.presetID, presetID)
+    }
+
+    func testDeviceFlatCopyIsReusedAndDeletionAllowsOneReplacement() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (defaults, suite) = deviceDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let dsp = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        let devices = AudioDSPDeviceController(dsp: dsp, userDefaults: defaults)
+        await devices.ensureLoaded()
+        let device = testDevice("headphones")
+        try await devices.bindPreset(DSPPresetDocument.flatPresetID, to: device)
+        let copyID = try XCTUnwrap(devices.settings.bindings[device.id]?.presetID)
+        let presetCount = dsp.presets.count
+        try await devices.bindPreset(nil, to: device)
+        try await devices.bindPreset(DSPPresetDocument.flatPresetID, to: device)
+        XCTAssertEqual(devices.settings.bindings[device.id]?.presetID, copyID)
+        XCTAssertEqual(dsp.presets.count, presetCount)
+        try await dsp.deletePreset(id: copyID)
+        try await devices.bindPreset(DSPPresetDocument.flatPresetID, to: device)
+        XCTAssertNotEqual(devices.settings.bindings[device.id]?.presetID, copyID)
+        XCTAssertEqual(dsp.presets.count, presetCount)
+        await dsp.flushPendingPersistence()
+    }
+
     private func deviceDefaults() -> (UserDefaults, String) {
         let suite = "AudioDSPDeviceTests-\(UUID().uuidString)"
         return (UserDefaults(suiteName: suite)!, suite)

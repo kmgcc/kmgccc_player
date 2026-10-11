@@ -8,6 +8,8 @@ struct SettingsSubpageLink: View {
     let page: SettingsSubpage
 
     @Environment(\.navigateSettingsSubpage) private var navigate
+    @Environment(\.settingsAppForegroundColors) private var appColors
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     var body: some View {
         Button {
@@ -17,7 +19,7 @@ struct SettingsSubpageLink: View {
                 if let systemImage {
                     Image(systemName: systemImage)
                         .font(.title3)
-                        .settingsDescriptionStyle()
+                        .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
                         .frame(width: 28)
                 }
                 VStack(alignment: .leading, spacing: 4) {
@@ -27,7 +29,7 @@ struct SettingsSubpageLink: View {
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
-                    .settingsDescriptionStyle()
+                    .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Capsule())
