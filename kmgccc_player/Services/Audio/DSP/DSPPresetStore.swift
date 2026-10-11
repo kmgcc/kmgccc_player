@@ -222,6 +222,25 @@ actor DSPPresetStore {
         )
     }
 
+    /// Update only the edited configuration, preserving the preset's latest name.
+    /// An edit of a deleted preset must not recreate its file.
+    func saveEditedPreset(
+        _ document: DSPPresetDocument,
+        createIfMissing: Bool = false
+    ) throws -> DSPPresetDocument? {
+        guard !document.isBuiltIn else { throw DSPPresetStoreError.immutableBuiltIn }
+        let destination = presetURL(for: document.presetID)
+        guard FileManager.default.fileExists(atPath: destination.path) else {
+            guard createIfMissing else { return nil }
+            return try save(document)
+        }
+        var existing = try readExistingPreset(at: destination)
+        guard existing.configuration != document.configuration else { return existing }
+        let expectedRevision = existing.revisionString
+        existing.configuration = document.configuration
+        return try save(existing, expectedRevision: expectedRevision)
+    }
+
     func export(_ document: DSPPresetDocument) throws -> Data {
         try encoder.encode(document)
     }

@@ -340,14 +340,6 @@ struct AudioDSPLinearNodeRack: View {
 
                 Spacer(minLength: 8)
 
-                // Channel policy tag
-                Text(policyShortTitle(node.channelPolicy))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.primary.opacity(0.05)))
-
                 // Bypass / Enable Switch
                 Toggle("", isOn: Binding(
                     get: { node.enabled },
@@ -444,13 +436,6 @@ struct AudioDSPLinearNodeRack: View {
         if node.typeID == DSPNodeConfiguration.parametricEQTypeID,
            let bands = node.parametricEQBands {
             VStack(alignment: .leading, spacing: 12) {
-                CapsulePicker(
-                    label: "声道范围",
-                    options: ["fullRange", "allChannels"],
-                    selection: channelPolicyBinding(for: node.nodeID),
-                    displayName: { $0 == "fullRange" ? "全频" : "所有声道" }
-                )
-
                 AudioDSPEQEditor(
                     configuration: configuration,
                     node: node,
@@ -486,13 +471,6 @@ struct AudioDSPLinearNodeRack: View {
     private func equalLoudnessEditor(node: DSPNodeConfiguration, parameters: DSPEqualLoudnessParameters) -> some View {
         let context = appSession.audioProcessingGlobalsController.equalLoudnessContext
         return VStack(alignment: .leading, spacing: 12) {
-            CapsulePicker(
-                label: "声道范围",
-                options: ["fullRange", "allChannels"],
-                selection: channelPolicyBinding(for: node.nodeID),
-                displayName: { $0 == "fullRange" ? "全频" : "所有声道" }
-            )
-
             AudioDSPEqualLoudnessResponseCurve(
                 node: node,
                 context: context,
@@ -529,18 +507,10 @@ struct AudioDSPLinearNodeRack: View {
     }
 
     private func nativeEffectsEditor(node: DSPNodeConfiguration) -> some View {
-        let policies = DSPNodeConfiguration.supportedChannelPolicies(forTypeID: node.typeID)
         let qualities = DSPNodeConfiguration.supportedQualities(forTypeID: node.typeID)
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                CapsulePicker(
-                    label: "声道范围",
-                    options: Array(policies),
-                    selection: channelPolicyBinding(for: node.nodeID),
-                    displayName: policyShortTitle
-                )
-
                 if qualities.count > 1 {
                     CapsulePicker(
                         label: "质量",
@@ -625,10 +595,6 @@ struct AudioDSPLinearNodeRack: View {
             isExpanded: .constant(true),
             onEnabledChange: { enabled in
                 onUpdateNode(node.nodeID) { $0.enabled = enabled }
-                onCommit()
-            },
-            onChannelPolicyChange: { policy in
-                onUpdateNode(node.nodeID) { $0.channelPolicy = policy }
                 onCommit()
             },
             onCommit: onCommit,
@@ -788,16 +754,6 @@ struct AudioDSPLinearNodeRack: View {
 
     // MARK: - Helpers & Bindings
 
-    private func channelPolicyBinding(for nodeID: UUID) -> Binding<String> {
-        Binding(
-            get: { nodes.first(where: { $0.nodeID == nodeID })?.channelPolicy ?? "fullRange" },
-            set: { val in
-                onUpdateNode(nodeID) { $0.channelPolicy = val }
-                onCommit()
-            }
-        )
-    }
-
     private func qualityBinding(for nodeID: UUID) -> Binding<String> {
         Binding(
             get: { nodes.first(where: { $0.nodeID == nodeID })?.quality ?? "standard" },
@@ -933,14 +889,6 @@ struct AudioDSPLinearNodeRack: View {
             return "自定义 VM 脚本"
         default:
             return ""
-        }
-    }
-
-    private func policyShortTitle(_ policy: String) -> String {
-        switch policy {
-        case "frontPair": return "前置声道"
-        case "allChannels": return "所有声道"
-        default: return "全频"
         }
     }
 

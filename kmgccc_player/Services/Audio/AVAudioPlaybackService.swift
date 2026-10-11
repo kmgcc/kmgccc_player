@@ -19,6 +19,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     // MARK: - Published State
 
+    /// Latest transport intent shared by every playback surface. The renderer
+    /// can remain audible briefly while a pause fades out.
     private(set) var isPlaying: Bool = false
     private(set) var currentTime: Double = 0
     private(set) var duration: Double = 0
@@ -356,18 +358,19 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     func bindAudioProcessingGlobals(_ controller: AudioProcessingGlobalsController) {
         globalsController = controller
-        rendererPipeline.onTransportStateChange = { [weak self] state, generation in
+        rendererPipeline.onTransportStateChange = { [weak self] state, generation, commandGeneration in
             Task { @MainActor [weak self] in
-                guard let self, self.rendererPipeline.isTimelineCurrent(generation) else { return }
+                guard let self,
+                      self.rendererPipeline.isTimelineCurrent(generation),
+                      self.rendererPipeline.isTransportCommandCurrent(commandGeneration) else { return }
                 self.transportState = state
                 AudioVisualizationService.shared.updateVolume(Float(self.volume * state.envelopeGain))
                 guard self.audioFile != nil else { self.publishProcessingRuntime(); return }
-                let wasPlaying = self.isPlaying
-                self.isPlaying = state.actualPlaying
-                if state.actualPlaying && (!wasPlaying || self.progressTimer == nil) {
+                if state.actualPlaying && self.progressTimer == nil {
                     AudioAnalysisHub.shared.setPlaying(true)
                     self.startProgressTimer()
                 } else if !state.actualPlaying && state.phase == "idle" {
+                    self.updateSpatialRendererProgress()
                     self.pauseTransitionPending = false
                     AudioAnalysisHub.shared.setPlaying(false)
                     self.stopProgressTimer()
@@ -392,7 +395,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     func togglePlayPause() {
-        if isPlaying && !pauseTransitionPending { pause() } else { resume() }
+        if isPlaying { pause() } else { resume() }
     }
 
     private func scheduleListeningContextUpdate(immediate: Bool = false) {
@@ -993,8 +996,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     func pause() {
-        guard isPlaying, !pauseTransitionPending else { return }
-        pauseTransitionPending = true
+        guard isPlaying else { return }
+        pauseTransitionPending = audioFile != nil
+        isPlaying = false
 
         if LogConfig.audioVerbose {
             Log.info(
@@ -1012,6 +1016,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     func resume() {
         guard let currentTrack else { return }
+        pauseTransitionPending = false
         if audioFile == nil {
             if prepTask != nil {
                 if restorePausedGeneration == playGeneration {
@@ -1025,8 +1030,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             }
             return
         }
-        guard !isPlaying || pauseTransitionPending else { return }
-        pauseTransitionPending = false
+        guard !isPlaying else { return }
 
         if LogConfig.audioVerbose {
             Log.info(
@@ -1302,7 +1306,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private func updateSpatialRendererProgress() {
-        guard isPlaying, spatialPendingSeek == nil else { return }
+        guard isPlaying || pauseTransitionPending, spatialPendingSeek == nil else { return }
 
         let mediaTime = spatialClockTime - spatialCurrentLogicalStart
         currentTime = max(0, min(mediaTime, duration))
@@ -1310,6 +1314,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             smartController.updateProgress(currentTime: currentTime, duration: duration)
         }
 
+        // A pause fade still advances the audible clock, but cannot prefetch or
+        // auto-advance into another track after the user's pause command.
+        guard isPlaying else { return }
         maybeTriggerGaplessPrefetch()
 
         guard duration > 0, mediaTime >= duration - 0.02 else { return }

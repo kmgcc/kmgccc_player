@@ -37,7 +37,13 @@ final class AudioDSPController {
     @ObservationIgnored private var sourceIsLocal = true
     @ObservationIgnored private var latestRequestID: UUID?
     @ObservationIgnored private var pendingApplyTask: Task<Void, Never>?
+    @ObservationIgnored private var lastApplyDispatchTime: TimeInterval = 0
     @ObservationIgnored private var draftWriteTask: Task<Void, Never>?
+    @ObservationIgnored private var draftWriteDelayTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingWorkingDraft: DSPWorkingDraftDocument?
+    @ObservationIgnored private var pendingPresetEdits: [UUID: DSPPresetDocument] = [:]
+    @ObservationIgnored private var pendingNewPresetIDs: Set<UUID> = []
+    @ObservationIgnored private var immediatePersistenceRequested = false
     @ObservationIgnored private var pendingConfiguration: AudioDSPConfiguration?
     @ObservationIgnored private var pendingRevision: String?
     @ObservationIgnored private var pendingRequestID: UUID?
@@ -92,10 +98,10 @@ final class AudioDSPController {
 
         hasReceivedUserConfiguration = true
         supersedeLatestPendingRequest()
-        pendingApplyTask?.cancel()
         let nextRevision = UUID().uuidString
         let requestID = UUID()
         configuration = validated
+        ensureEditablePreset()
         revisionString = nextRevision
         latestRequestID = requestID
         pendingConfiguration = validated
@@ -138,19 +144,14 @@ final class AudioDSPController {
             return status
         }
 
-        status = DSPApplyStatus(
-            requestID: requestID,
-            revisionString: nextRevision,
-            state: .preparing,
-            format: status.format
-        )
+        status = preparingStatus(requestID: requestID, revision: nextRevision)
         remember(status)
-        scheduleApplyAfterDebounce()
+        scheduleApply()
         return status
     }
 
-    /// Coalesces continuous edits into one renderer request. Call this when an
-    /// interaction ends so the final value is sent without waiting for debounce.
+    /// Continuous edits publish at most once per 35 ms. Ending an interaction
+    /// sends its final value immediately.
     func commitPendingApply() {
         pendingApplyTask?.cancel()
         pendingApplyTask = nil
@@ -290,9 +291,22 @@ final class AudioDSPController {
         guard event.requestID == latestRequestID,
               event.revisionString == revisionString else { return }
 
+        if event.state == .preparing {
+            eventStatus = preparingStatus(requestID: event.requestID, revision: event.revisionString)
+            remember(eventStatus)
+        }
         status = eventStatus
-        diagnostics = event.diagnostics
-        lastError = event.state == .failed ? event.diagnostics.first : nil
+        // A preparing event carries no diagnostics and is not an outcome. Keep
+        // the previous set so the status section does not blink on every edit.
+        if event.state != .preparing {
+            diagnostics = event.diagnostics
+        }
+        if event.state == .failed {
+            lastError = event.diagnostics.first
+        } else if [.ready, .scheduled, .audible].contains(event.state) {
+            // Report the failure until a later configuration is actually applied.
+            lastError = nil
+        }
         switch event.state {
         case .ready:
             preparedRevision = event.revisionString
@@ -376,7 +390,13 @@ final class AudioDSPController {
         configuration explicitConfiguration: AudioDSPConfiguration? = nil
     ) async throws -> DSPPresetDocument {
         let savedConfiguration = try validate(explicitConfiguration ?? configuration)
+        let selectionAtSave = selectedPresetID
         var expectedStoreRevision = expectedPresetRevision
+        if let id {
+            expectedStoreRevision = await flushPresetEdits(id: id, expectedRevision: expectedPresetRevision)
+        } else {
+            await flushPendingPersistence()
+        }
         if expectedStoreRevision == nil, let id {
             if let existing = presets.first(where: { $0.presetID == id }) {
                 expectedStoreRevision = existing.revisionString
@@ -391,11 +411,33 @@ final class AudioDSPController {
         )
         let saved = try await store.save(document, expectedRevision: expectedStoreRevision)
         await reloadPresets()
-        if saved.configuration == configuration {
+        if saved.configuration == configuration, selectedPresetID == selectionAtSave {
             selectedPresetID = saved.presetID
             refreshModifiedState()
             scheduleWorkingDraftWrite(immediate: true)
         }
+        return saved
+    }
+
+    @discardableResult
+    func copyCurrentPreset(name: String) async throws -> DSPPresetDocument {
+        let sourceID = selectedPresetID
+        let snapshot = configuration
+        let saved = try await savePreset(name: name, configuration: snapshot)
+        if selectedPresetID == sourceID {
+            selectedPresetID = saved.presetID
+            refreshModifiedState()
+            scheduleWorkingDraftWrite(immediate: true)
+        }
+        return saved
+    }
+
+    @discardableResult
+    func createPreset(name: String) async throws -> DSPPresetDocument {
+        let emptyConfiguration = AudioDSPConfiguration(enabled: configuration.enabled, nodes: [])
+        let saved = try await savePreset(name: name, configuration: emptyConfiguration)
+        _ = try selectPreset(id: saved.presetID, expectedPresetRevision: saved.revisionString)
+        commitPendingApply()
         return saved
     }
 
@@ -408,15 +450,16 @@ final class AudioDSPController {
         guard id != DSPPresetDocument.flatPresetID else {
             throw DSPPresetStoreError.immutableBuiltIn
         }
+        let resolvedExpectedRevision = await flushPresetEdits(id: id, expectedRevision: expectedPresetRevision)
         var document = try await store.preset(id: id)
-        if let expectedPresetRevision,
-           document.revisionString != expectedPresetRevision {
+        if let resolvedExpectedRevision,
+           document.revisionString != resolvedExpectedRevision {
             throw DSPPresetStoreError.revisionConflict
         }
         document.name = name
         let saved = try await store.save(
             document,
-            expectedRevision: expectedPresetRevision ?? document.revisionString
+            expectedRevision: resolvedExpectedRevision ?? document.revisionString
         )
         await reloadPresets()
         refreshModifiedState()
@@ -425,7 +468,8 @@ final class AudioDSPController {
 
     @discardableResult
     func duplicatePreset(id: UUID, name: String, expectedPresetRevision: String? = nil) async throws -> DSPPresetDocument {
-        let expected = expectedPresetRevision ?? presets.first(where: { $0.presetID == id })?.revisionString
+        let expected = await flushPresetEdits(id: id, expectedRevision: expectedPresetRevision)
+            ?? presets.first(where: { $0.presetID == id })?.revisionString
         let source = try await store.preset(id: id)
         if let expected, source.revisionString != expected { throw DSPPresetStoreError.revisionConflict }
         let copied = try await store.importPreset(source, name: name)
@@ -434,7 +478,7 @@ final class AudioDSPController {
     }
 
     func deletePreset(id: UUID, expectedPresetRevision: String? = nil) async throws {
-        var expectedStoreRevision = expectedPresetRevision
+        var expectedStoreRevision = await flushPresetEdits(id: id, expectedRevision: expectedPresetRevision)
         if expectedStoreRevision == nil {
             if let existing = presets.first(where: { $0.presetID == id }) {
                 expectedStoreRevision = existing.revisionString
@@ -444,6 +488,8 @@ final class AudioDSPController {
             }
         }
         try await store.delete(id: id, expectedRevision: expectedStoreRevision)
+        pendingPresetEdits[id] = nil
+        pendingNewPresetIDs.remove(id)
         await reloadPresets()
         if selectedPresetID == id {
             selectedPresetID = nil
@@ -467,8 +513,9 @@ final class AudioDSPController {
         if let expectedPresetRevision, expectedPresetRevision != document.revisionString {
             throw DSPPresetStoreError.revisionConflict
         }
-        let validated = try validate(document.configuration)
+        let validated = try validate(pendingPresetEdits[id]?.configuration ?? document.configuration)
         let previousID = selectedPresetID
+        scheduleWorkingDraftWrite(immediate: true)
         selectedPresetID = id
         do {
             let newStatus = try apply(validated)
@@ -598,6 +645,9 @@ final class AudioDSPController {
 
     private func merge(_ result: DSPPresetStoreLoadResult) {
         presets = [.flat] + result.presets
+        for document in pendingPresetEdits.values where !presets.contains(where: { $0.presetID == document.presetID }) {
+            upsertPreset(document)
+        }
         diagnostics = result.diagnostics
         lastError = result.diagnostics.first
         refreshModifiedState()
@@ -610,17 +660,63 @@ final class AudioDSPController {
             isModified = true
             return
         }
-        isModified = configuration != selected.configuration
+        isModified = pendingNewPresetIDs.contains(selectedPresetID)
+            || pendingPresetEdits[selectedPresetID] != nil
+            || configuration != selected.configuration
     }
 
-    private func scheduleApplyAfterDebounce() {
-        pendingApplyTask?.cancel()
+    private func ensureEditablePreset() {
+        if let selectedPresetID,
+           let selected = presets.first(where: { $0.presetID == selectedPresetID }),
+           !selected.isBuiltIn || selected.configuration == configuration {
+            return
+        }
+        let document = DSPPresetDocument(
+            name: selectedPresetID == DSPPresetDocument.flatPresetID ? "Flat 副本" : "我的预设",
+            configuration: configuration
+        )
+        selectedPresetID = document.presetID
+        pendingNewPresetIDs.insert(document.presetID)
+        upsertPreset(document)
+    }
+
+    private func upsertPreset(_ document: DSPPresetDocument) {
+        if let index = presets.firstIndex(where: { $0.presetID == document.presetID }) {
+            guard presets[index] != document else { return }
+            presets[index] = document
+        } else {
+            presets.append(document)
+        }
+        presets.sort {
+            if $0.isBuiltIn != $1.isBuiltIn { return $0.isBuiltIn }
+            let order = $0.name.localizedStandardCompare($1.name)
+            return order == .orderedSame
+                ? $0.presetID.uuidString < $1.presetID.uuidString
+                : order == .orderedAscending
+        }
+    }
+
+    private func scheduleApply() {
+        guard pendingApplyTask == nil else { return }
+        let delay = max(0, 0.035 - (ProcessInfo.processInfo.systemUptime - lastApplyDispatchTime))
+        if delay == 0 {
+            dispatchPendingApply()
+            return
+        }
         pendingApplyTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(35))
+            try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self else { return }
             self.pendingApplyTask = nil
             self.dispatchPendingApply()
         }
+    }
+
+    private func preparingStatus(requestID: UUID?, revision: String) -> DSPApplyStatus {
+        DSPApplyStatus(requestID: requestID, revisionString: revision, state: .preparing,
+            format: status.format, headroomDB: status.headroomDB,
+            processingLatencyFrames: status.processingLatencyFrames,
+            mediaMappingLatencyFrames: status.mediaMappingLatencyFrames, peakGuarantee: status.peakGuarantee,
+            warnings: status.warnings)
     }
 
     private func dispatchPendingApply() {
@@ -644,13 +740,9 @@ final class AudioDSPController {
         }
 
         if let applyConfiguration {
-            status = DSPApplyStatus(
-                requestID: requestID,
-                revisionString: revision,
-                state: .preparing,
-                format: status.format
-            )
+            status = preparingStatus(requestID: requestID, revision: revision)
             remember(status)
+            lastApplyDispatchTime = ProcessInfo.processInfo.systemUptime
             applyConfiguration(configuration, revision, requestID)
         } else {
             status = DSPApplyStatus(
@@ -665,24 +757,76 @@ final class AudioDSPController {
     }
 
     private func scheduleWorkingDraftWrite(immediate: Bool = false) {
-        draftWriteTask?.cancel()
-        let draft = DSPWorkingDraftDocument(
+        pendingWorkingDraft = DSPWorkingDraftDocument(
             revisionString: revisionString,
             selectedPresetID: selectedPresetID,
             configuration: configuration
         )
-        draftWriteTask = Task { [weak self] in
-            if !immediate {
-                try? await Task.sleep(for: .milliseconds(250))
-                guard !Task.isCancelled else { return }
-            }
-            guard let self else { return }
-            do {
-                try await self.store.saveWorkingDraft(draft)
-            } catch {
-                self.record(error)
-            }
+        if let selectedPresetID,
+           var document = presets.first(where: { $0.presetID == selectedPresetID }),
+           !document.isBuiltIn {
+            document.configuration = configuration
+            pendingPresetEdits[selectedPresetID] = document
         }
+        if immediate {
+            immediatePersistenceRequested = true
+            draftWriteDelayTask?.cancel()
+        }
+        guard draftWriteTask == nil else { return }
+        draftWriteTask = Task { [weak self] in
+            guard let self else { return }
+            await self.persistPendingEdits()
+        }
+    }
+
+    /// A single writer takes the latest value every 150 ms, including during a
+    /// continuous drag. Pending edits retain each preset's identity across selection.
+    private func persistPendingEdits() async {
+        while pendingWorkingDraft != nil || !pendingPresetEdits.isEmpty {
+            if !immediatePersistenceRequested {
+                let delay = Task<Void, Never> {
+                    do { try await Task.sleep(for: .milliseconds(150)) }
+                    catch { }
+                }
+                draftWriteDelayTask = delay
+                await delay.value
+                draftWriteDelayTask = nil
+            }
+            immediatePersistenceRequested = false
+            if let draft = pendingWorkingDraft {
+                do { try await store.saveWorkingDraft(draft) }
+                catch { record(error) }
+                if pendingWorkingDraft == draft { pendingWorkingDraft = nil }
+            }
+            for id in Array(pendingPresetEdits.keys) {
+                guard let edit = pendingPresetEdits[id] else { continue }
+                do {
+                    if let saved = try await store.saveEditedPreset(
+                        edit, createIfMissing: pendingNewPresetIDs.contains(id)
+                    ) {
+                        pendingNewPresetIDs.remove(id)
+                        upsertPreset(saved)
+                    }
+                } catch {
+                    record(error)
+                }
+                if pendingPresetEdits[id] == edit { pendingPresetEdits[id] = nil }
+            }
+            refreshModifiedState()
+        }
+        draftWriteTask = nil
+    }
+
+    func flushPendingPersistence() async {
+        scheduleWorkingDraftWrite(immediate: true)
+        await draftWriteTask?.value
+    }
+
+    private func flushPresetEdits(id: UUID, expectedRevision: String?) async -> String? {
+        let previousRevision = presets.first(where: { $0.presetID == id })?.revisionString
+        await flushPendingPersistence()
+        guard let expectedRevision, expectedRevision == previousRevision else { return expectedRevision }
+        return presets.first(where: { $0.presetID == id })?.revisionString ?? expectedRevision
     }
 
     private func supersedeLatestPendingRequest() {

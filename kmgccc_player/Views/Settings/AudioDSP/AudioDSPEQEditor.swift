@@ -16,7 +16,6 @@ struct AudioDSPNodeCard: View {
     let headroomDB: Double?
     @Binding var isExpanded: Bool
     let onEnabledChange: @MainActor @Sendable (Bool) -> Void
-    let onChannelPolicyChange: @MainActor @Sendable (String) -> Void
     let onBandChange: (Int, DSPParametricEQBand) -> Void
     let onCommit: () -> Void
     let onMove: (Int) -> Void
@@ -34,13 +33,6 @@ struct AudioDSPNodeCard: View {
                 )
 
                 HStack(spacing: 8) {
-                    CapsulePicker(
-                        label: "声道范围",
-                        options: ["fullRange", "allChannels"],
-                        selection: channelPolicyBinding,
-                        displayName: { $0 == "fullRange" ? "全频" : "所有声道" }
-                    )
-
                     Spacer(minLength: 0)
 
                     Button {
@@ -93,13 +85,6 @@ struct AudioDSPNodeCard: View {
             }
         }
     }
-
-    private var channelPolicyBinding: Binding<String> {
-        Binding(
-            get: { node.channelPolicy },
-            set: onChannelPolicyChange
-        )
-    }
 }
 
 struct AudioDSPEQEditor: View, Equatable {
@@ -114,6 +99,7 @@ struct AudioDSPEQEditor: View, Equatable {
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var draggedBandIndex: Int?
     @State private var activeBandIndex: Int? = 0
+    @State private var curveCache = DSPEQCurveCache()
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.node.nodeID == rhs.node.nodeID && lhs.bands == rhs.bands
@@ -223,64 +209,13 @@ struct AudioDSPEQEditor: View, Equatable {
     }
 
     private func drawResponse(in context: inout GraphicsContext, plot: CGRect) {
-        let pointCount = max(100, Int(plot.width * 1.2))
-        // Coefficients depend on the bands and sample rate, not on the plotted
-        // frequency. Prepare each filter once per drawing pass.
-        let coefficients = bands.filter(\.enabled).compactMap {
-            DSPParametricEQMath.coefficients(for: $0, sampleRate: sampleRate)
-        }
-        let logMin = log10(DSPParametricEQBand.frequencyRange.lowerBound)
-        let logMax = log10(DSPParametricEQBand.frequencyRange.upperBound)
-        var responsePoints: [CGPoint] = []
-        responsePoints.reserveCapacity(pointCount)
-        for index in 0..<pointCount {
-            let position = Double(index) / Double(pointCount - 1)
-            let frequency = pow(10, logMin + (logMax - logMin) * position)
-            let gain = coefficients.reduce(0.0) {
-                $0 + $1.responseDB(at: frequency, sampleRate: sampleRate)
-            }
-            let point = CGPoint(
-                x: plot.minX + plot.width * CGFloat(position),
-                y: dbToY(gain.isFinite ? gain : 0, in: plot)
-            )
-            responsePoints.append(point)
-        }
-        guard responsePoints.count > 1 else { return }
-
-        let normals = responsePoints.indices.map { index -> CGVector in
-            let previous = responsePoints[max(0, index - 1)]
-            let next = responsePoints[min(responsePoints.count - 1, index + 1)]
-            let dx = next.x - previous.x
-            let dy = next.y - previous.y
-            let length = max(CGFloat(0.001), (dx * dx + dy * dy).squareRoot())
-            return CGVector(dx: -dy / length, dy: dx / length)
-        }
-
-        let halfWidth: CGFloat = 0.8
-        var responseArea = Path()
-        let firstNormal = normals[0]
-        responseArea.move(to: CGPoint(
-            x: responsePoints[0].x + firstNormal.dx * halfWidth,
-            y: responsePoints[0].y + firstNormal.dy * halfWidth
-        ))
-        for index in responsePoints.indices.dropFirst() {
-            let point = responsePoints[index]
-            let normal = normals[index]
-            responseArea.addLine(to: CGPoint(
-                x: point.x + normal.dx * halfWidth,
-                y: point.y + normal.dy * halfWidth
-            ))
-        }
-        for index in responsePoints.indices.reversed() {
-            let point = responsePoints[index]
-            let normal = normals[index]
-            responseArea.addLine(to: CGPoint(
-                x: point.x - normal.dx * halfWidth,
-                y: point.y - normal.dy * halfWidth
-            ))
-        }
-        responseArea.closeSubpath()
-        context.fill(responseArea, with: .color(themeStore.accentColor))
+        // The ribbon depends only on this node's bands, the sample rate and the
+        // plot rect. Every other parameter edit redraws the canvas without
+        // changing any of them, so the response is memoized by that key.
+        guard let ribbon = curveCache.ribbon(
+            bands: bands, sampleRate: sampleRate, plot: plot, dbSpan: dbSpan
+        ) else { return }
+        context.fill(ribbon, with: .color(themeStore.accentColor))
     }
 
     private func drawBandPoints(in context: inout GraphicsContext, plot: CGRect) {
@@ -431,6 +366,104 @@ struct AudioDSPEQEditor: View, Equatable {
 
     private func formatSampleRate(_ sampleRate: Double) -> String {
         "\((sampleRate / 1_000).formatted(.number.precision(.fractionLength(1)))) kHz"
+    }
+}
+
+/// Memoizes the filled response ribbon for one band set, sample rate and plot
+/// rect. Building it costs one `DSPBiquadCoefficients.responseDB` evaluation per
+/// plotted sample per enabled band, which is far too heavy to repeat on every
+/// unrelated parameter edit.
+private final class DSPEQCurveCache {
+    private struct Key: Equatable {
+        var bands: [DSPParametricEQBand]
+        var sampleRate: Double
+        var plot: CGRect
+        var dbSpan: Double
+    }
+
+    private var key: Key?
+    private var ribbon: Path?
+
+    func ribbon(
+        bands: [DSPParametricEQBand],
+        sampleRate: Double,
+        plot: CGRect,
+        dbSpan: Double
+    ) -> Path? {
+        let candidate = Key(bands: bands, sampleRate: sampleRate, plot: plot, dbSpan: dbSpan)
+        if key == candidate { return ribbon }
+        let computed = Self.makeRibbon(
+            bands: bands, sampleRate: sampleRate, plot: plot, dbSpan: dbSpan
+        )
+        key = candidate
+        ribbon = computed
+        return computed
+    }
+
+    private static func makeRibbon(
+        bands: [DSPParametricEQBand],
+        sampleRate: Double,
+        plot: CGRect,
+        dbSpan: Double
+    ) -> Path? {
+        let pointCount = max(100, Int(plot.width * 1.2))
+        // Coefficients depend on the bands and sample rate, not on the plotted
+        // frequency. Prepare each filter once per ribbon.
+        let coefficients = bands.filter(\.enabled).compactMap {
+            DSPParametricEQMath.coefficients(for: $0, sampleRate: sampleRate)
+        }
+        let logMin = log10(DSPParametricEQBand.frequencyRange.lowerBound)
+        let logMax = log10(DSPParametricEQBand.frequencyRange.upperBound)
+        var responsePoints: [CGPoint] = []
+        responsePoints.reserveCapacity(pointCount)
+        for index in 0..<pointCount {
+            let position = Double(index) / Double(pointCount - 1)
+            let frequency = pow(10, logMin + (logMax - logMin) * position)
+            let gain = coefficients.reduce(0.0) {
+                $0 + $1.responseDB(at: frequency, sampleRate: sampleRate)
+            }
+            let bounded = min(max(gain.isFinite ? gain : 0, -dbSpan), dbSpan)
+            responsePoints.append(CGPoint(
+                x: plot.minX + plot.width * CGFloat(position),
+                y: plot.midY - plot.height * CGFloat(bounded / (dbSpan * 2))
+            ))
+        }
+        guard responsePoints.count > 1 else { return nil }
+
+        let normals = responsePoints.indices.map { index -> CGVector in
+            let previous = responsePoints[max(0, index - 1)]
+            let next = responsePoints[min(responsePoints.count - 1, index + 1)]
+            let dx = next.x - previous.x
+            let dy = next.y - previous.y
+            let length = max(CGFloat(0.001), (dx * dx + dy * dy).squareRoot())
+            return CGVector(dx: -dy / length, dy: dx / length)
+        }
+
+        let halfWidth: CGFloat = 0.8
+        var responseArea = Path()
+        let firstNormal = normals[0]
+        responseArea.move(to: CGPoint(
+            x: responsePoints[0].x + firstNormal.dx * halfWidth,
+            y: responsePoints[0].y + firstNormal.dy * halfWidth
+        ))
+        for index in responsePoints.indices.dropFirst() {
+            let point = responsePoints[index]
+            let normal = normals[index]
+            responseArea.addLine(to: CGPoint(
+                x: point.x + normal.dx * halfWidth,
+                y: point.y + normal.dy * halfWidth
+            ))
+        }
+        for index in responsePoints.indices.reversed() {
+            let point = responsePoints[index]
+            let normal = normals[index]
+            responseArea.addLine(to: CGPoint(
+                x: point.x - normal.dx * halfWidth,
+                y: point.y - normal.dy * halfWidth
+            ))
+        }
+        responseArea.closeSubpath()
+        return responseArea
     }
 }
 

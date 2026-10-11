@@ -80,6 +80,20 @@ final class AudioProcessingGlobalsControllerTests: XCTestCase {
         XCTAssertNil(defaults.data(forKey: storageKey))
     }
 
+    func testFadeFloorAcceptsMinusTwentyDBAndPersistsAcrossReload() throws {
+        let (defaults, suiteName, storageKey) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let controller = AudioProcessingGlobalsController(userDefaults: defaults, storageKey: storageKey)
+        var candidate = controller.configuration
+        candidate.fade.floorDB = -20
+        _ = try controller.apply(candidate)
+        let reloaded = AudioProcessingGlobalsController(userDefaults: defaults, storageKey: storageKey)
+        XCTAssertEqual(reloaded.configuration.fade.floorDB, -20)
+        candidate.fade.floorDB = -19
+        XCTAssertThrowsError(try controller.apply(candidate))
+        XCTAssertEqual(controller.configuration.fade.floorDB, -20)
+    }
+
     private func makeDefaults() -> (UserDefaults, String, String) {
         let suiteName = "AudioProcessingGlobalsControllerTests.\(UUID().uuidString)"
         let storageKey = "audio.processing-globals.test"
