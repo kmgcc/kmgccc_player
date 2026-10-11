@@ -1775,8 +1775,10 @@ final class AppSessionHost: ObservableObject {
 
         let libraryVM = self.libraryVM
         let preferenceStatsService = activeLibraryBinding.activeSession?.preferenceStatsService
+        let audioDSPController = self.audioDSPController
         Task { @MainActor [weak self, weak libraryVM] in
             async let helperTermination: Void = QQMusicHelperProcess.shared.terminate()
+            async let dspPersistence: Void = audioDSPController.flushPendingPersistence()
             if let libraryVM, let preferenceStatsService {
                 let tracksByID = Dictionary(
                     uniqueKeysWithValues: libraryVM.allTracks.map { ($0.id, $0) }
@@ -1786,6 +1788,7 @@ final class AppSessionHost: ObservableObject {
                 }
             }
             await helperTermination
+            await dspPersistence
             self?.finishTerminationPreparation(generation: generation)
         }
 

@@ -10,7 +10,6 @@ struct AudioDSPScriptNodeCard: View {
     let scriptController: DSPScriptController
     @Binding var isExpanded: Bool
     let onEnabledChange: @MainActor @Sendable (Bool) -> Void
-    let onChannelPolicyChange: @MainActor @Sendable (String) -> Void
     let onCommit: () -> Void
     let onMove: (Int) -> Void
     let onRemove: () -> Void
@@ -25,11 +24,6 @@ struct AudioDSPScriptNodeCard: View {
     private var draft: DSPScriptDraftDocument? { scriptController.drafts[nodeID] }
     private var activity: DSPScriptNodeActivity {
         scriptController.activityByNodeID[nodeID] ?? DSPScriptNodeActivity()
-    }
-    private var policies: [String] {
-        ["fullRange", "allChannels"].filter(
-            DSPNodeConfiguration.supportedChannelPolicies(forTypeID: node.typeID).contains
-        )
     }
     private var isDraftDirty: Bool {
         guard let draft else { return true }
@@ -62,7 +56,6 @@ struct AudioDSPScriptNodeCard: View {
         scriptController: DSPScriptController,
         isExpanded: Binding<Bool>,
         onEnabledChange: @escaping @MainActor @Sendable (Bool) -> Void,
-        onChannelPolicyChange: @escaping @MainActor @Sendable (String) -> Void,
         onCommit: @escaping () -> Void,
         onMove: @escaping (Int) -> Void,
         onRemove: @escaping () -> Void
@@ -75,7 +68,6 @@ struct AudioDSPScriptNodeCard: View {
         self.scriptController = scriptController
         _isExpanded = isExpanded
         self.onEnabledChange = onEnabledChange
-        self.onChannelPolicyChange = onChannelPolicyChange
         self.onCommit = onCommit
         self.onMove = onMove
         self.onRemove = onRemove
@@ -94,13 +86,6 @@ struct AudioDSPScriptNodeCard: View {
                 )
 
                 HStack(spacing: 8) {
-                    CapsulePicker(
-                        label: "声道范围",
-                        options: policies,
-                        selection: channelPolicyBinding,
-                        displayName: policyTitle
-                    )
-
                     Text("质量：标准")
                         .settingsDescriptionStyle()
                     Spacer(minLength: 0)
@@ -234,10 +219,6 @@ struct AudioDSPScriptNodeCard: View {
             guard !hasLocalEdits, let newDraft else { return }
             load(newDraft)
         }
-    }
-
-    private var channelPolicyBinding: Binding<String> {
-        Binding(get: { node.channelPolicy }, set: onChannelPolicyChange)
     }
 
     private var runtimeWarnings: [DSPDiagnostic] {
@@ -485,14 +466,6 @@ struct AudioDSPScriptNodeCard: View {
         )
         case "pinkNoise": .pinkNoise(durationSeconds: 0.25, amplitude: 0.2, seed: 0xD5)
         default: .sine(durationSeconds: 0.25, frequencyHz: 440, amplitude: 0.25)
-        }
-    }
-
-    private func policyTitle(_ policy: String) -> String {
-        switch policy {
-        case "fullRange": "全频声道"
-        case "allChannels": "所有声道"
-        default: policy
         }
     }
 }

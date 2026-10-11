@@ -17,7 +17,7 @@ struct AudioDSPSettingsView: View {
     @State private var isShowingImportPicker = false
     @State private var isShowingExportPicker = false
     @State private var presetName = ""
-    @State private var presetNameAction: PresetNameAction = .saveAs
+    @State private var presetNameAction: PresetNameAction = .create
     @State private var exportDocument: DSPPresetExportFileDocument?
     @State private var exportFilename = "AudioDSP.json"
     @State private var expandedNodeIDs: Set<UUID> = []
@@ -44,7 +44,11 @@ struct AudioDSPSettingsView: View {
             refreshPresetCompatibility()
             Task { await controller.ensureLoaded() }
         }
+        .onDisappear { controller.commitPendingApply() }
         .onChange(of: controller.presets) { _, _ in
+            refreshPresetCompatibility()
+        }
+        .onChange(of: controller.status.format) { _, _ in
             refreshPresetCompatibility()
         }
         .sheet(item: $activeDialog) { dialog in
@@ -80,11 +84,8 @@ struct AudioDSPSettingsView: View {
                     Text(statusTitle)
                         .settingsDescriptionStyle()
                     Spacer(minLength: 8)
-                    if controller.isModified {
-                        Text("已修改")
-                            .settingsDescriptionStyle()
-                            .accessibilityLabel("当前预设已修改")
-                    }
+                    Text("自动保存")
+                        .settingsDescriptionStyle()
                 }
 
                 if let format = controller.status.format {
@@ -114,26 +115,24 @@ struct AudioDSPSettingsView: View {
                             .disabled(!compatibility.canSelect)
                     }
                     if controller.selectedPresetID == nil {
-                        Text("未保存草稿").tag(Optional<UUID>.none)
+                        Text("草稿").tag(Optional<UUID>.none)
                     }
                 }
                 .pickerStyle(.menu)
                 .accessibilityLabel("当前预设")
 
                 HStack(spacing: 8) {
-                    Button(action: saveCurrentPreset) {
-                        Label("保存", systemImage: "square.and.arrow.down")
+                    Button("新建预设", systemImage: "plus") {
+                        beginPresetNameAction(.create)
                     }
-                    .disabled(!controller.isModified && !isBuiltInSelection)
                     .audioDSPCapsuleButtonStyle()
 
-                    Button("另存为", action: { beginPresetNameAction(.saveAs) })
-                        .audioDSPCapsuleButtonStyle()
+                    Button("复制", systemImage: "doc.on.doc") {
+                        beginPresetNameAction(.copyCurrent)
+                    }
+                    .audioDSPCapsuleButtonStyle()
 
                     Menu("更多") {
-                        Button("复制", systemImage: "plus.square.on.square") {
-                            beginPresetNameAction(.duplicate(selectedPresetID ?? DSPPresetDocument.flatPresetID))
-                        }
                         Button("重命名", systemImage: "pencil") {
                             beginPresetNameAction(.rename(selectedPresetID ?? DSPPresetDocument.flatPresetID))
                         }
@@ -243,7 +242,8 @@ struct AudioDSPSettingsView: View {
 
     private func presetCompatibility(for preset: DSPPresetDocument) -> PresetCompatibility {
         if let cached = presetCompatibilityByID[preset.presetID],
-           cached.revisionString == preset.revisionString {
+           cached.revisionString == preset.revisionString,
+           cached.format == controller.status.format {
             return cached
         }
         return makePresetCompatibility(for: preset)
@@ -252,7 +252,7 @@ struct AudioDSPSettingsView: View {
     private func refreshPresetCompatibility() {
         var compatibilityByID: [UUID: PresetCompatibility] = [:]
         for preset in controller.presets {
-            compatibilityByID[preset.presetID] = makePresetCompatibility(for: preset)
+            compatibilityByID[preset.presetID] = presetCompatibility(for: preset)
         }
         presetCompatibilityByID = compatibilityByID
     }
@@ -261,6 +261,7 @@ struct AudioDSPSettingsView: View {
         guard preset.schemaVersion == DSPPresetDocument.schemaVersion else {
             return PresetCompatibility(
                 revisionString: preset.revisionString,
+                format: controller.status.format,
                 diagnostics: [DSPDiagnostic(
                     code: "dsp.presetIncompatible",
                     message: DSPPresetStoreError.unsupportedSchema(preset.schemaVersion).localizedDescription,
@@ -270,11 +271,14 @@ struct AudioDSPSettingsView: View {
         }
         do {
             _ = try controller.validate(preset.configuration)
-            return PresetCompatibility(revisionString: preset.revisionString, diagnostics: [])
+            return PresetCompatibility(revisionString: preset.revisionString,
+                format: controller.status.format, diagnostics: [])
         } catch let error as DSPConfigurationValidationError {
-            return PresetCompatibility(revisionString: preset.revisionString, diagnostics: error.diagnostics)
+            return PresetCompatibility(revisionString: preset.revisionString,
+                format: controller.status.format, diagnostics: error.diagnostics)
         } catch {
-            return PresetCompatibility(revisionString: preset.revisionString, diagnostics: [DSPDiagnostic(
+            return PresetCompatibility(revisionString: preset.revisionString,
+                format: controller.status.format, diagnostics: [DSPDiagnostic(
                 code: "dsp.presetIncompatible",
                 message: error.localizedDescription
             )])
@@ -362,7 +366,8 @@ struct AudioDSPSettingsView: View {
 
     private var presetNameDialogTitle: String {
         switch presetNameAction {
-        case .saveAs: "另存预设"
+        case .create: "新建预设"
+        case .copyCurrent: "复制预设"
         case .rename: "重命名预设"
         case .duplicate: "复制预设"
         }
@@ -370,7 +375,8 @@ struct AudioDSPSettingsView: View {
 
     private var presetNameConfirmTitle: String {
         switch presetNameAction {
-        case .saveAs: "保存"
+        case .create: "新建"
+        case .copyCurrent: "复制"
         case .rename: "重命名"
         case .duplicate: "复制"
         }
@@ -468,7 +474,9 @@ struct AudioDSPSettingsView: View {
     private func beginPresetNameAction(_ action: PresetNameAction) {
         presetNameAction = action
         switch action {
-        case .saveAs:
+        case .create:
+            presetName = "新预设"
+        case .copyCurrent:
             presetName = selectedPreset.map { "\(displayName(for: $0)) 副本" } ?? "我的预设"
         case .rename(let id), .duplicate(let id):
             presetName = controller.presets.first(where: { $0.presetID == id }).map {
@@ -482,9 +490,14 @@ struct AudioDSPSettingsView: View {
         let name = presetName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         switch presetNameAction {
-        case .saveAs:
+        case .create:
             Task {
-                do { _ = try await controller.savePreset(name: name) }
+                do { _ = try await controller.createPreset(name: name) }
+                catch { controller.report(error: error) }
+            }
+        case .copyCurrent:
+            Task {
+                do { _ = try await controller.copyCurrentPreset(name: name) }
                 catch { controller.report(error: error) }
             }
         case .rename(let id):
@@ -504,32 +517,16 @@ struct AudioDSPSettingsView: View {
             guard let document = controller.presets.first(where: { $0.presetID == id }) else { return }
             Task {
                 do {
-                    _ = try await controller.duplicatePreset(
+                    let copied = try await controller.duplicatePreset(
                         id: id,
                         name: name,
                         expectedPresetRevision: document.revisionString
                     )
+                    _ = try controller.selectPreset(id: copied.presetID)
+                    controller.commitPendingApply()
                 } catch {
                     controller.report(error: error)
                 }
-            }
-        }
-    }
-
-    private func saveCurrentPreset() {
-        guard let document = selectedPreset, !document.isBuiltIn else {
-            beginPresetNameAction(.saveAs)
-            return
-        }
-        Task {
-            do {
-                _ = try await controller.savePreset(
-                    name: document.name,
-                    id: document.presetID,
-                    expectedPresetRevision: document.revisionString
-                )
-            } catch {
-                controller.report(error: error)
             }
         }
     }
@@ -651,7 +648,7 @@ struct AudioDSPSettingsView: View {
             SettingsTaskDialog(
                 title: "删除预设",
                 subtitle: controller.selectedPresetID == presetID
-                    ? "当前声音会保留为未保存草稿。" : "删除保存的音效配置。",
+                    ? "当前声音会保留为草稿。" : "删除保存的音效配置。",
                 systemImage: "trash",
                 iconColor: themeStore.accentColor
             ) {
@@ -743,7 +740,8 @@ struct AudioDSPSettingsView: View {
     }
 
     private enum PresetNameAction {
-        case saveAs
+        case create
+        case copyCurrent
         case rename(UUID)
         case duplicate(UUID)
 
@@ -755,6 +753,7 @@ struct AudioDSPSettingsView: View {
 
     private struct PresetCompatibility {
         let revisionString: String
+        let format: DSPAudioFormat?
         let diagnostics: [DSPDiagnostic]
 
         var canSelect: Bool { diagnostics.isEmpty }
@@ -770,7 +769,8 @@ struct AudioDSPSettingsView: View {
             switch self {
             case .presetName(let action):
                 switch action {
-                case .saveAs: "preset-name-save"
+                case .create: "preset-name-create"
+                case .copyCurrent: "preset-name-copy-current"
                 case .rename(let id): "preset-name-rename-\(id.uuidString)"
                 case .duplicate(let id): "preset-name-duplicate-\(id.uuidString)"
                 }

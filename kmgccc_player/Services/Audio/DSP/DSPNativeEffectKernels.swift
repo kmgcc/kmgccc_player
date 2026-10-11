@@ -10,6 +10,8 @@ nonisolated struct DSPPolyphaseFIRPlan {
     let historyCount: Int
     let interpolationWeights: [[Double]]
     let decimationWeights: [Double]
+    private let interpolationPlans: [DSPFIRDotPlan]
+    private let decimationPlan: DSPFIRDotPlan
 
     init?(factor: Int) {
         guard factor == 2 || factor == 4 else { return nil }
@@ -38,7 +40,7 @@ nonisolated struct DSPPolyphaseFIRPlan {
         guard sum.isFinite, abs(sum) > 1e-15 else { return nil }
         for index in impulse.indices { impulse[index] /= sum }
 
-        interpolationWeights = (0..<factor).map { phase in
+        let weights = (0..<factor).map { phase in
             var sourceDelayWeights = [Double](repeating: 0, count: historyCount)
             for delay in 0..<historyCount {
                 let tap = phase + delay * factor
@@ -52,15 +54,53 @@ nonisolated struct DSPPolyphaseFIRPlan {
             }
             return Array(sourceDelayWeights.reversed())
         }
-        decimationWeights = Array(impulse.reversed())
+        interpolationWeights = weights
+        interpolationPlans = weights.map(DSPFIRDotPlan.init)
+        let reconstruction = Array(impulse.reversed())
+        decimationWeights = reconstruction
+        decimationPlan = DSPFIRDotPlan(weights: reconstruction)
     }
 
     func interpolate(phase: Int, history: DSPMirroredFIRHistory) -> Double {
-        history.dot(interpolationWeights[phase])
+        history.dot(interpolationPlans[phase])
     }
 
     func decimate(history: DSPMirroredFIRHistory) -> Double {
-        history.dot(decimationWeights)
+        history.dot(decimationPlan)
+    }
+}
+
+/// Elide the sinc's exact zero taps and fold symmetric tap pairs. Phase zero
+/// reduces to a single delayed sample; no vector-library call is needed.
+fileprivate nonisolated struct DSPFIRDotPlan {
+    let count: Int
+    let left: [Int]
+    let right: [Int]
+    let weights: [Double]
+
+    init(weights: [Double]) {
+        count = weights.count
+        var a = [Int](), b = [Int](), c = [Double]()
+        var index = 0
+        while index < weights.count {
+            let mirror = weights.count - 1 - index
+            if index <= mirror, abs(weights[index] - weights[mirror]) < 1e-15 {
+                let weight = (weights[index] + weights[mirror]) * 0.5
+                if abs(weight) > 1e-15 { a.append(index); b.append(mirror); c.append(weight) }
+                index += 1
+                if index > mirror { break }
+            } else {
+                // Non-symmetric polyphase arms retain their original taps.
+                a.removeAll(keepingCapacity: true)
+                b.removeAll(keepingCapacity: true)
+                c.removeAll(keepingCapacity: true)
+                for tap in weights.indices where abs(weights[tap]) > 1e-15 {
+                    a.append(tap); b.append(tap); c.append(weights[tap])
+                }
+                break
+            }
+        }
+        left = a; right = b; self.weights = c
     }
 }
 
@@ -102,6 +142,26 @@ nonisolated struct DSPMirroredFIRHistory {
         return result
     }
 
+    fileprivate func dot(_ plan: DSPFIRDotPlan) -> Double {
+        guard cursor >= 0, plan.count == capacity else { return 0 }
+        let start = cursor + 1
+        return storage.withUnsafeBufferPointer { history in
+            plan.weights.withUnsafeBufferPointer { weights in
+                plan.left.withUnsafeBufferPointer { left in
+                    plan.right.withUnsafeBufferPointer { right in
+                        let samples = history.baseAddress!.advanced(by: start)
+                        var sum = 0.0
+                        for index in weights.indices {
+                            let a = left[index], b = right[index]
+                            sum += weights[index] * (a == b ? samples[a] : samples[a] + samples[b])
+                        }
+                        return sum
+                    }
+                }
+            }
+        }
+    }
+
     mutating func copyState(from source: DSPMirroredFIRHistory) {
         guard capacity == source.capacity, storage.count == source.storage.count else { return }
         for index in storage.indices { storage[index] = source.storage[index] }
@@ -123,6 +183,13 @@ nonisolated struct DSPNativeBiquadState {
 
     init(coefficients: DSPBiquadCoefficients) {
         self.coefficients = coefficients
+    }
+
+    mutating func copyState(from source: DSPNativeBiquadState) {
+        x1 = source.x1
+        x2 = source.x2
+        y1 = source.y1
+        y2 = source.y2
     }
 
     mutating func process(_ input: Double) -> Double {
@@ -176,6 +243,20 @@ nonisolated struct DSPStereoWidthKernel {
     let width: Double
     let outputGain: Double
 
+    func processBlock(_ samples: inout [Double], frames: Int, channels: Int) {
+        samples.withUnsafeMutableBufferPointer { buffer in
+            for frame in 0..<frames {
+                let offset = frame * channels
+                let left = buffer[offset + leftChannel]
+                let right = buffer[offset + rightChannel]
+                let mid = (left + right) * 0.5
+                let side = (left - right) * 0.5 * width
+                buffer[offset + leftChannel] = (mid + side) * outputGain
+                buffer[offset + rightChannel] = (mid - side) * outputGain
+            }
+        }
+    }
+
     func processFrame(_ frame: inout [Double]) {
         let left = frame[leftChannel]
         let right = frame[rightChannel]
@@ -225,10 +306,10 @@ nonisolated struct DSPVirtualBassKernel {
             bassInput.copyState(from: source.bassInput)
             reconstruction.copyState(from: source.reconstruction)
             dryDelay.copyState(from: source.dryDelay)
-            sourceHighPass = source.sourceHighPass
-            sourceLowPass = source.sourceLowPass
-            wetHighPass = source.wetHighPass
-            wetLowPass = source.wetLowPass
+            sourceHighPass.copyState(from: source.sourceHighPass)
+            sourceLowPass.copyState(from: source.sourceLowPass)
+            wetHighPass.copyState(from: source.wetHighPass)
+            wetLowPass.copyState(from: source.wetLowPass)
             dcInput = source.dcInput
             dcOutput = source.dcOutput
         }
@@ -346,7 +427,8 @@ nonisolated struct DSPVirtualBassKernel {
     }
 
     mutating func copyState(from source: DSPVirtualBassKernel) {
-        guard states.count == source.states.count else { return }
+        guard states.count == source.states.count, plan.factor == source.plan.factor,
+              selectedChannels == source.selectedChannels else { return }
         for index in states.indices { states[index].copyState(from: source.states[index]) }
     }
 
@@ -505,7 +587,8 @@ nonisolated struct DSPTubeKernel {
     }
 
     mutating func copyState(from source: DSPTubeKernel) {
-        guard states.count == source.states.count else { return }
+        guard states.count == source.states.count, plan.factor == source.plan.factor,
+              selectedChannels == source.selectedChannels else { return }
         for index in states.indices { states[index].copyState(from: source.states[index]) }
     }
 

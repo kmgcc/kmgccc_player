@@ -235,10 +235,12 @@ final class AudioDSPControllerTests: XCTestCase {
         _ = try controller.apply(changed)
         XCTAssertTrue(controller.isModified)
         _ = try controller.selectPreset(id: saved.presetID, expectedPresetRevision: saved.revisionString)
-        XCTAssertEqual(controller.configuration, savedConfiguration)
+        XCTAssertEqual(controller.configuration, changed)
+        await controller.flushPendingPersistence()
         XCTAssertFalse(controller.isModified)
-        try await controller.deletePreset(id: saved.presetID, expectedPresetRevision: saved.revisionString)
-        XCTAssertEqual(controller.configuration, savedConfiguration)
+        let persisted = try XCTUnwrap(controller.presets.first(where: { $0.presetID == saved.presetID }))
+        try await controller.deletePreset(id: saved.presetID, expectedPresetRevision: persisted.revisionString)
+        XCTAssertEqual(controller.configuration, changed)
         XCTAssertNil(controller.selectedPresetID)
         XCTAssertTrue(controller.isModified)
     }
@@ -427,6 +429,146 @@ final class AudioDSPControllerTests: XCTestCase {
             rebuffered: false
         ))
         XCTAssertEqual(controller.requestStatus(id: firstRequestID)?.state, .audible)
+    }
+
+    func testContinuousEditsSaveBeforeTheDragEnds() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DSPPresetStore(rootURL: root)
+        let controller = AudioDSPController(store: store)
+        await controller.ensureLoaded()
+        let preset = try await controller.createPreset(name: "Live")
+        var observedSavedEdit = false
+
+        for index in 1...18 {
+            controller.updateConfiguration { $0.inputTrimDB = -Double(index) / 2 }
+            try await Task.sleep(for: .milliseconds(20))
+            let saved = try await store.preset(id: preset.presetID)
+            if index < 18, saved.configuration.inputTrimDB < 0 {
+                observedSavedEdit = true
+            }
+        }
+
+        XCTAssertTrue(observedSavedEdit, "Continuous input must not postpone every disk write until release.")
+        controller.commitPendingApply()
+        await controller.flushPendingPersistence()
+        let saved = try await store.preset(id: preset.presetID)
+        XCTAssertEqual(saved.configuration, controller.configuration)
+        XCTAssertFalse(controller.isModified)
+    }
+
+    func testImmediatePresetSwitchRetainsEditsToThePreviousPreset() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DSPPresetStore(rootURL: root)
+        let controller = AudioDSPController(store: store)
+        await controller.ensureLoaded()
+        let first = try await controller.createPreset(name: "First")
+        let second = try await controller.createPreset(name: "Second")
+
+        _ = try controller.selectPreset(id: first.presetID)
+        controller.updateConfiguration { $0.outputTrimDB = -6 }
+        _ = try controller.selectPreset(id: second.presetID)
+        await controller.flushPendingPersistence()
+
+        let persistedFirst = try await store.preset(id: first.presetID)
+        let persistedSecond = try await store.preset(id: second.presetID)
+        XCTAssertEqual(persistedFirst.configuration.outputTrimDB, -6)
+        XCTAssertEqual(persistedSecond.configuration.outputTrimDB, 0)
+        _ = try controller.selectPreset(id: first.presetID)
+        XCTAssertEqual(controller.configuration.outputTrimDB, -6)
+        await controller.flushPendingPersistence()
+    }
+
+    func testCopyUsesCurrentEditsAndSubsequentChangesStayInTheCopy() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DSPPresetStore(rootURL: root)
+        let controller = AudioDSPController(store: store)
+        await controller.ensureLoaded()
+        let original = try await controller.createPreset(name: "Original")
+        controller.updateConfiguration {
+            $0.inputTrimDB = -4
+            $0.nodes.append(DSPNodeConfiguration(typeID: "future.effect", enabled: false,
+                parameters: ["opaque": .string("preserve me")]))
+        }
+        let snapshot = controller.configuration
+        var applyCount = 0
+        controller.bindPlayback { _, _, _ in applyCount += 1 }
+        controller.commitPendingApply()
+        applyCount = 0
+
+        let copy = try await controller.copyCurrentPreset(name: "Copy")
+        XCTAssertNotEqual(copy.presetID, original.presetID)
+        XCTAssertEqual(copy.configuration, snapshot)
+        XCTAssertEqual(controller.selectedPresetID, copy.presetID)
+        XCTAssertEqual(applyCount, 0, "Copying identical parameters must not rebuild the audio chain.")
+        controller.updateConfiguration { $0.inputTrimDB = -9 }
+        await controller.flushPendingPersistence()
+
+        let persistedOriginal = try await store.preset(id: original.presetID)
+        let persistedCopy = try await store.preset(id: copy.presetID)
+        XCTAssertEqual(persistedOriginal.configuration, snapshot)
+        XCTAssertEqual(persistedCopy.configuration.inputTrimDB, -9)
+    }
+
+    func testFlatEditCreatesAnEditablePresetAndRestoresAfterReload() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DSPPresetStore(rootURL: root)
+        let controller = AudioDSPController(store: store)
+        await controller.ensureLoaded()
+        controller.updateConfiguration { $0.inputTrimDB = -3 }
+        let editedID = try XCTUnwrap(controller.selectedPresetID)
+        XCTAssertNotEqual(editedID, DSPPresetDocument.flatPresetID)
+        await controller.flushPendingPersistence()
+
+        let flat = try await store.preset(id: DSPPresetDocument.flatPresetID)
+        XCTAssertEqual(flat.configuration, .defaultFlat)
+        let restored = AudioDSPController(store: store)
+        await restored.ensureLoaded()
+        XCTAssertEqual(restored.selectedPresetID, editedID)
+        XCTAssertEqual(restored.configuration, controller.configuration)
+        XCTAssertFalse(restored.isModified)
+    }
+
+    func testNewPresetStartsWithAnEmptyChainAndPreservesEnablement() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let controller = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        await controller.ensureLoaded()
+        controller.updateConfiguration { $0.enabled = true; $0.inputTrimDB = -4 }
+        let saved = try await controller.createPreset(name: "Empty")
+
+        XCTAssertEqual(controller.selectedPresetID, saved.presetID)
+        XCTAssertTrue(controller.configuration.enabled)
+        XCTAssertTrue(controller.configuration.nodes.isEmpty)
+        XCTAssertEqual(controller.configuration.inputTrimDB, 0)
+        XCTAssertEqual(controller.configuration.outputTrimDB, 0)
+        await controller.flushPendingPersistence()
+    }
+
+    func testAutosavePreservesRenamingAndDoesNotRecreateDeletedPreset() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DSPPresetStore(rootURL: root)
+        let controller = AudioDSPController(store: store)
+        await controller.ensureLoaded()
+        let original = try await controller.createPreset(name: "Original")
+        controller.updateConfiguration { $0.inputTrimDB = -3 }
+        _ = try await controller.renamePreset(id: original.presetID, name: "Renamed",
+            expectedPresetRevision: original.revisionString)
+        controller.updateConfiguration { $0.outputTrimDB = -2 }
+        await controller.flushPendingPersistence()
+        let renamed = try await store.preset(id: original.presetID)
+        XCTAssertEqual(renamed.name, "Renamed")
+        XCTAssertEqual(renamed.configuration.inputTrimDB, -3)
+        XCTAssertEqual(renamed.configuration.outputTrimDB, -2)
+
+        try await store.delete(id: renamed.presetID, expectedRevision: renamed.revisionString)
+        let obsoleteEdit = try await store.saveEditedPreset(renamed)
+        XCTAssertNil(obsoleteEdit)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("\(renamed.presetID.uuidString).json").path))
     }
 
     private func temporaryDirectory() -> URL {

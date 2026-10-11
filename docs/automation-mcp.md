@@ -241,7 +241,7 @@ CLI 使用 `--idempotency-key`；每次调参沿用 audio 授权，不弹额外�
 写工具使用 `audio.write`；`dsp.errors.get/clear` 公开报错与清除操作。
 当前源码支持 `peq9`、`equalLoudness`、`stereoWidth`、`virtualBass`、`tube`、`script`。P5 与 P6 已通过授权 Debug 编译（App、Xcode 测试目标、CLI/MCP 与自动化测试目标），尚待测试运行和实际运行验收。
 
-P5 节点的全部参数、默认值、质量与声道策略见 `dsp.schema.nodes`。使用 `setQuality(nodeID, value)` 切换 `oversampling2x/oversampling4x`，使用 `setChannelPolicy(nodeID, value)` 切换节点支持的声道范围；它们与 `setParameter`、`setOrder` 可以组成一次原子编辑，并沿用 revision 和 dry-run。宽度节点使用 `standard/frontPair`；低音默认 `fullRange` 仅处理明确的 mono/stereo，多声道可选择 `frontPair`；管模拟默认 `fullRange` 排除 LFE，可明确选择 `allChannels`。
+P5 节点的全部参数、默认值、质量与声道策略见 `dsp.schema.nodes`。使用 `setQuality(nodeID, value)` 切换 `oversampling2x/oversampling4x`，使用 `setChannelPolicy(nodeID, value)` 设置节点请求的声道范围；它们与 `setParameter`、`setOrder` 可以组成一次原子编辑，并沿用 revision 和 dry-run。设置界面不暴露声道范围；请求值只在源能支持时生效，否则处理器会放宽而不是旁路：宽度节点固定 `frontPair`；低音在明确的 mono/stereo 上保持 `fullRange`，否则退到 `frontPair`；其余节点在布局完整已知时使用 `fullRange`（排除 LFE），布局未知时处理全部声道。
 
 `dsp.state.processing` 及 apply status 包含 `processingLatencyFrames`、`mediaMappingLatencyFrames`、`peakGuarantee`。活跃非线性节点固定 64 源帧算法延迟，源前瞻补偿后 App 时间映射延迟为 0；尚未准备时返回 null。非线性链的峰值保证为 `unavailable`，不能将余量估计当作真实峰值保证。参数、质量、策略与链顺序均随完整预设保存。
 

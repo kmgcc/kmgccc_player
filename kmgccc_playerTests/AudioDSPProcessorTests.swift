@@ -132,7 +132,7 @@ final class AudioDSPProcessorTests: XCTestCase {
         XCTAssertNotEqual(output.data[0], input.data[0])
     }
 
-    func testUnknownFullRangeLayoutBypassesWithDiagnosticButAllChannelsIsExplicit() throws {
+    func testChannelScopeWidensToEveryChannelWithoutAChannelMap() {
         var bands = DSPParametricEQBand.defaultBands
         bands[1] = DSPParametricEQBand(
             enabled: true,
@@ -153,33 +153,88 @@ final class AudioDSPProcessorTests: XCTestCase {
             sampleRate: 48_000,
             data: (0..<384).map { $0.isMultiple(of: 6) ? 1 : 0 }
         )
-        let fullRange = AudioDSPProcessor(
-            configuration: AudioDSPConfiguration(
-                enabled: true,
-                headroom: DSPHeadroomConfiguration(mode: .off),
-                nodes: [.parametricEQ(bands: bands)]
-            ),
-            format: unknownFormat
-        )
-        XCTAssertTrue(fullRange.isBypassed)
-        XCTAssertTrue(fullRange.diagnostics.contains { $0.code == "unknownChannelLayout" })
-        XCTAssertEqual(fullRange.process(input).data, input.data)
+        var requestedFullRange = DSPNodeConfiguration.parametricEQ(bands: bands)
+        requestedFullRange.channelPolicy = "fullRange"
 
-        var allChannelsNode = DSPNodeConfiguration.parametricEQ(bands: bands)
-        allChannelsNode.channelPolicy = "allChannels"
-        let allChannels = AudioDSPProcessor(
+        let processor = AudioDSPProcessor(
             configuration: AudioDSPConfiguration(
                 enabled: true,
                 headroom: DSPHeadroomConfiguration(mode: .off),
-                nodes: [allChannelsNode]
+                nodes: [requestedFullRange]
             ),
             format: unknownFormat
         )
-        XCTAssertFalse(allChannels.isBypassed)
-        XCTAssertNotEqual(allChannels.process(input).data, input.data)
+
+        XCTAssertFalse(processor.isBypassed)
+        XCTAssertFalse(processor.diagnostics.contains { $0.code == "unknownChannelLayout" })
+        XCTAssertNotEqual(processor.process(input).data, input.data)
     }
 
-    func testAutomaticHeadroomHonorsCombinedGainAbove120DB() {
+    func testChannelScopeFollowsTheSourceInsteadOfAStoredChoice() {
+        let stereo = DSPAudioFormat(
+            sampleRate: 48_000,
+            channelCount: 2,
+            rawLayoutData: nil,
+            channelLabels: [
+                UInt32(kAudioChannelLabel_Left),
+                UInt32(kAudioChannelLabel_Right),
+            ],
+            layoutIsKnown: true
+        )
+        let mono = DSPAudioFormat(
+            sampleRate: 48_000,
+            channelCount: 1,
+            rawLayoutData: nil,
+            channelLabels: [UInt32(kAudioChannelLabel_Mono)],
+            layoutIsKnown: true
+        )
+        let surround = DSPAudioFormat(
+            sampleRate: 48_000,
+            channelCount: 6,
+            rawLayoutData: nil,
+            channelLabels: [
+                UInt32(kAudioChannelLabel_Left),
+                UInt32(kAudioChannelLabel_Right),
+                UInt32(kAudioChannelLabel_Center),
+                UInt32(kAudioChannelLabel_LFEScreen),
+                UInt32(kAudioChannelLabel_LeftSurround),
+                UInt32(kAudioChannelLabel_RightSurround),
+            ],
+            layoutIsKnown: true
+        )
+        let unidentified = DSPAudioFormat(
+            sampleRate: 48_000,
+            channelCount: 6,
+            rawLayoutData: nil,
+            channelLabels: nil,
+            layoutIsKnown: false
+        )
+        func resolved(_ typeID: String, _ requested: String, _ format: DSPAudioFormat) -> String {
+            DSPNodeConfiguration.effectiveChannelPolicy(
+                forTypeID: typeID,
+                requested: requested,
+                format: format
+            )
+        }
+        let equalizer = DSPNodeConfiguration.parametricEQTypeID
+
+        XCTAssertEqual(resolved(equalizer, "fullRange", stereo), "fullRange")
+        XCTAssertEqual(resolved(equalizer, "fullRange", surround), "fullRange")
+        XCTAssertEqual(resolved(equalizer, "fullRange", unidentified), "allChannels")
+
+        let virtualBass = DSPNodeConfiguration.virtualBassTypeID
+        XCTAssertEqual(resolved(virtualBass, "fullRange", stereo), "fullRange")
+        XCTAssertEqual(resolved(virtualBass, "fullRange", mono), "fullRange")
+        XCTAssertEqual(resolved(virtualBass, "fullRange", surround), "frontPair")
+        XCTAssertEqual(resolved(virtualBass, "frontPair", mono), "fullRange")
+
+        XCTAssertEqual(
+            resolved(DSPNodeConfiguration.stereoWidthTypeID, "allChannels", surround),
+            "frontPair"
+        )
+    }
+
+    func testAutomaticHeadroomIsBoundedInsteadOfCancellingExtremeGain() {
         var bands = DSPParametricEQBand.defaultBands
         bands[4] = DSPParametricEQBand(
             enabled: true,
@@ -202,23 +257,42 @@ final class AudioDSPProcessorTests: XCTestCase {
                 layoutIsKnown: true
             )
         )
-        XCTAssertLessThan(processor.headroomDB, -120)
+        // Eight stacked +18 dB stages exceed the compensation budget. The cut
+        // stops at the bound and the residual peak is reported, instead of
+        // attenuating the whole chain into silence.
+        XCTAssertEqual(
+            processor.headroomDB,
+            -AudioDSPProcessor.maximumAutomaticHeadroomDB,
+            accuracy: 1e-8
+        )
+        XCTAssertTrue(processor.diagnostics.contains { $0.code == "headroomLimited" })
+        XCTAssertFalse(processor.isBypassed)
 
-        let sampleRate = 48_000.0
-        let frames = 9_600
-        let tone = (0..<frames).map { frame in
-            Float(sin(2 * Double.pi * 1_000 * Double(frame) / sampleRate))
-        }
-        let output = processor.process(CanonicalPCM(
-            frames: frames,
-            channelCount: 1,
-            sampleRate: sampleRate,
-            data: tone
-        ))
-        let tail = output.data.suffix(4_800)
-        let rms = sqrt(tail.reduce(0.0) { $0 + Double($1 * $1) } / Double(tail.count))
-        XCTAssertLessThan(rms, 0.65)
-        XCTAssertGreaterThan(rms, 0.45)
+        // A chain inside the budget still receives its full compensation.
+        var moderateBands = DSPParametricEQBand.defaultBands
+        moderateBands[4] = DSPParametricEQBand(
+            enabled: true,
+            type: .bell,
+            frequencyHz: 1_000,
+            gainDB: 6
+        )
+        let moderate = AudioDSPProcessor(
+            configuration: AudioDSPConfiguration(
+                enabled: true,
+                headroom: DSPHeadroomConfiguration(mode: .automatic, marginDB: 0),
+                nodes: [.parametricEQ(bands: moderateBands)]
+            ),
+            format: DSPAudioFormat(
+                sampleRate: 48_000,
+                channelCount: 1,
+                rawLayoutData: nil,
+                channelLabels: [UInt32(kAudioChannelLabel_Mono)],
+                layoutIsKnown: true
+            )
+        )
+        XCTAssertGreaterThan(moderate.headroomDB, -6.5)
+        XCTAssertLessThan(moderate.headroomDB, -5.9)
+        XCTAssertFalse(moderate.diagnostics.contains { $0.code == "headroomLimited" })
     }
 
     func testAutomaticHeadroomMeasuresShelfPlatformsAcrossTheSourceBand() {

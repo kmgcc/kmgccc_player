@@ -5,6 +5,7 @@
 //  Value types shared by the DSP controller, preset store, and renderer.
 //
 
+import AudioToolbox
 import Foundation
 
 nonisolated enum DSPJSONValue: Codable, Equatable, Sendable {
@@ -415,6 +416,27 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
         typeID == stereoWidthTypeID ? "frontPair" : defaultChannelPolicy
     }
 
+    /// The channel scope of an effect follows the source rather than a
+    /// listener choice. A stored scope the source cannot honour falls back to
+    /// the widest scope it can, so an effect never disappears silently.
+    nonisolated static func effectiveChannelPolicy(
+        forTypeID typeID: String,
+        requested: String,
+        format: DSPAudioFormat
+    ) -> String {
+        switch typeID {
+        case stereoWidthTypeID:
+            return "frontPair"
+        case virtualBassTypeID:
+            if requested == "frontPair", format.frontStereoPair != nil { return "frontPair" }
+            if requested == "fullRange", format.isMonoOrStereoLayout { return "fullRange" }
+            return format.frontStereoPair != nil ? "frontPair" : "fullRange"
+        default:
+            if requested == "fullRange", format.hasIdentifiedChannelMap { return "fullRange" }
+            return "allChannels"
+        }
+    }
+
     nonisolated static func supportedQualities(forTypeID typeID: String) -> Set<String> {
         switch typeID {
         case parametricEQTypeID, equalLoudnessTypeID, stereoWidthTypeID, scriptTypeID:
@@ -720,6 +742,46 @@ nonisolated struct DSPAudioFormat: Codable, Equatable, Sendable {
     var rawLayoutData: Data?
     var channelLabels: [UInt32]?
     var layoutIsKnown: Bool
+}
+
+nonisolated extension DSPAudioFormat {
+    nonisolated static let lowFrequencyEffectLabels: Set<UInt32> = [
+        UInt32(kAudioChannelLabel_LFEScreen),
+        UInt32(kAudioChannelLabel_LFE2),
+        UInt32(kAudioChannelLabel_LFE3),
+    ]
+
+    /// Speaker roles require a complete, identified channel map. A channel
+    /// count alone never establishes which channel is which.
+    var hasIdentifiedChannelMap: Bool {
+        layoutIsKnown && channelLabels?.count == channelCount
+    }
+
+    /// The single identifiable left and right channel, when the source
+    /// carries them.
+    var frontStereoPair: (left: Int, right: Int)? {
+        guard hasIdentifiedChannelMap, let labels = channelLabels else { return nil }
+        let left = labels.indices.filter { labels[$0] == UInt32(kAudioChannelLabel_Left) }
+        let right = labels.indices.filter { labels[$0] == UInt32(kAudioChannelLabel_Right) }
+        guard left.count == 1, right.count == 1 else { return nil }
+        return (left[0], right[0])
+    }
+
+    /// True for a known mono or stereo layout.
+    var isMonoOrStereoLayout: Bool {
+        guard hasIdentifiedChannelMap, let labels = channelLabels, channelCount <= 2 else {
+            return false
+        }
+        if channelCount == 1 { return labels[0] == UInt32(kAudioChannelLabel_Mono) }
+        return Set(labels) == Set([UInt32(kAudioChannelLabel_Left), UInt32(kAudioChannelLabel_Right)])
+    }
+
+    /// True for every channel that is not a low-frequency effects channel, or
+    /// nil when the source has no channel map to identify one.
+    var fullRangeChannelMask: [Bool]? {
+        guard hasIdentifiedChannelMap, let labels = channelLabels else { return nil }
+        return labels.map { !Self.lowFrequencyEffectLabels.contains($0) }
+    }
 }
 
 nonisolated struct AudioFadeConfiguration: Codable, Equatable, Sendable {

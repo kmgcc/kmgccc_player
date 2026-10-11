@@ -22,6 +22,7 @@ struct ScrubbableNumberField: View {
     @State private var isHovering = false
     @State private var isEditingText = false
     @State private var textInput = ""
+    @State private var textEditStartValue: Double = 0
     @State private var dragStartValue: Double = 0
     @State private var hasDragged = false
 
@@ -41,7 +42,14 @@ struct ScrubbableNumberField: View {
                     .onSubmit {
                         commitText()
                     }
+                    .onChange(of: textInput) { _, input in
+                        guard let parsed = Double(input.trimmingCharacters(in: .whitespaces)),
+                              parsed.isFinite, range.contains(parsed) else { return }
+                        value = roundedToFraction(parsed)
+                    }
                     .onExitCommand {
+                        value = textEditStartValue
+                        onCommit?()
                         isEditingText = false
                     }
             } else {
@@ -122,7 +130,10 @@ struct ScrubbableNumberField: View {
                         NSCursor.pop()
                         isHovering = false
                     }
-                    textInput = formattedNumber(value)
+                    textEditStartValue = value
+                    textInput = value.formatted(
+                        .number.grouping(.never).precision(.fractionLength(fractionDigits))
+                    )
                     isEditingText = true
                 } else {
                     onCommit?()
@@ -142,7 +153,7 @@ struct ScrubbableNumberField: View {
 
     private func commitText() {
         let trimmed = textInput.trimmingCharacters(in: .whitespaces)
-        if let parsed = Double(trimmed) {
+        if let parsed = Double(trimmed), parsed.isFinite {
             let clamped = min(max(parsed, range.lowerBound), range.upperBound)
             value = roundedToFraction(clamped)
             onCommit?()

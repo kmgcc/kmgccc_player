@@ -9,7 +9,6 @@ struct AudioDSPEqualLoudnessNodeCard: View {
     let sampleRate: Double
     @Binding var isExpanded: Bool
     let onEnabledChange: @MainActor @Sendable (Bool) -> Void
-    let onChannelPolicyChange: @MainActor @Sendable (String) -> Void
     let onParametersChange: (DSPEqualLoudnessParameters) -> Void
     let onCommit: () -> Void
     let onMove: (Int) -> Void
@@ -34,13 +33,6 @@ struct AudioDSPEqualLoudnessNodeCard: View {
                 )
 
                 HStack(spacing: 8) {
-                    CapsulePicker(
-                        label: "声道范围",
-                        options: ["fullRange", "allChannels"],
-                        selection: channelPolicyBinding,
-                        displayName: { $0 == "fullRange" ? "全频" : "所有声道" }
-                    )
-
                     Spacer(minLength: 0)
 
                     Button {
@@ -168,10 +160,6 @@ struct AudioDSPEqualLoudnessNodeCard: View {
                 }
             }
         }
-    }
-
-    private var channelPolicyBinding: Binding<String> {
-        Binding(get: { node.channelPolicy }, set: onChannelPolicyChange)
     }
 
     private var headroomModeBinding: Binding<DSPHeadroomMode> {

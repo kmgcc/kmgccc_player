@@ -60,7 +60,7 @@ struct AudioProcessingGlobalsSettingsView: View {
                 DSPRangeSliderRow(
                     title: "淡化底值",
                     value: fadeBinding(\.floorDB),
-                    range: -100 ... -40,
+                    range: -100 ... -20,
                     step: 1,
                     unit: "dB",
                     fractionDigits: 0

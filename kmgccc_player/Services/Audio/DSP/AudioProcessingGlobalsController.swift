@@ -250,8 +250,8 @@ final class AudioProcessingGlobalsController {
         if !(10...2_000).contains(configuration.fade.pauseFadeMs) || !configuration.fade.pauseFadeMs.isFinite {
             add("暂停淡出时长范围为 10 至 2,000 ms。", "fade.pauseFadeMs")
         }
-        if !(-100 ... -40).contains(configuration.fade.floorDB) || !configuration.fade.floorDB.isFinite {
-            add("淡化底值范围为 −100 至 −40 dB。", "fade.floorDB")
+        if !(-100 ... -20).contains(configuration.fade.floorDB) || !configuration.fade.floorDB.isFinite {
+            add("淡化底值范围为 −100 至 −20 dB。", "fade.floorDB")
         }
         if configuration.fade.curve != "perceptualDB" {
             add("当前只支持 perceptualDB 淡化曲线。", "fade.curve")

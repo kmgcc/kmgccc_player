@@ -11,6 +11,7 @@ nonisolated enum DSPScriptCompiler {
     static let maximumSampleRate = 768_000.0
     static let maximumCachedPrograms = 32
     static let maximumCachedArtifactBytes = 16 * 1_024 * 1_024
+    static let maximumCachedReflections = 64
     static let maximumChainWeightedOperationsPerSecond = 48_000_000.0
     // Keep this nominal block size aligned with the renderer enqueue contract.
     // Short EOF/split blocks and transition warmup need separate benchmarks.
@@ -596,6 +597,15 @@ nonisolated enum DSPScriptCompiler {
         guard source.utf8.count <= maximumSourceBytes else {
             throw failure("script.sourceBudgetExceeded", "The script source exceeds the 64 KiB limit.", at: Location(line: 1, column: 1))
         }
+        // Reflection is a pure function of source, language and supplied values.
+        // Tuning any other node must not re-lex and re-parse an unchanged script
+        // on the main actor.
+        let reflectionKey = Self.reflectionKey(
+            source: source, languageVersion: languageVersion, parameterValues: parameterValues
+        )
+        if let cached = DSPScriptReflectionCache.shared.lookup(reflectionKey) {
+            return cached
+        }
         var lexer = Lexer(source: source)
         let tokens = try lexer.lex()
         var parser = Parser(tokens: tokens)
@@ -678,6 +688,7 @@ nonisolated enum DSPScriptCompiler {
         guard outputAssignmentCount > 0 else {
             throw failure("script.missingOutputAssignment", "The process block must assign output at least once.", at: syntax.process.first.map { location(of: $0) } ?? Location(line: 1, column: 1))
         }
+        DSPScriptReflectionCache.shared.insert(reflected, key: reflectionKey)
         return reflected
     }
 
@@ -1794,6 +1805,44 @@ nonisolated enum DSPScriptCompiler {
 
     private static func sha256(_ source: String) -> String {
         SHA256.hash(data: Data(source.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Identity of a front-end reflection result. Supplied values participate
+    /// because a value outside its declared range is a validation failure.
+    private static func reflectionKey(
+        source: String,
+        languageVersion: Int,
+        parameterValues: [String: Double]
+    ) -> String {
+        var valueKey = ""
+        for name in parameterValues.keys.sorted() {
+            valueKey += "\(name)=\(parameterValues[name]?.bitPattern ?? 0);"
+        }
+        return "\(sha256(source))|\(languageVersion)|\(valueKey)"
+    }
+
+    private final class DSPScriptReflectionCache: @unchecked Sendable {
+        static let shared = DSPScriptReflectionCache()
+
+        private let lock = NSLock()
+        private var entries = [String: [DSPScriptParameter]]()
+        private var order = [String]()
+
+        func lookup(_ key: String) -> [DSPScriptParameter]? {
+            lock.lock()
+            defer { lock.unlock() }
+            return entries[key]
+        }
+
+        func insert(_ parameters: [DSPScriptParameter], key: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            if entries[key] == nil { order.append(key) }
+            entries[key] = parameters
+            while order.count > DSPScriptCompiler.maximumCachedReflections {
+                entries[order.removeFirst()] = nil
+            }
+        }
     }
 
     private static func formatKey(_ format: DSPAudioFormat) -> String {
