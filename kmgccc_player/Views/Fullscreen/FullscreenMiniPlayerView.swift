@@ -482,12 +482,13 @@ struct FullscreenMiniPlayerView: View {
                 .blendMode(isEnabled ? controlBlendMode : .normal)
                 .frame(width: 24)
 
-            Slider(
-                value: Binding(
+            VolumeSlider(
+                volume: Binding(
                     get: { presentation.volume },
                     set: { playbackCoordinator.setVolume($0) }
                 ),
-                in: 0...1
+                markerColor: controlPrimaryColor.opacity(0.85),
+                hidesMarkerAtDefault: true
             )
             .controlSize(.regular)
             .tint(controlPrimaryColor)

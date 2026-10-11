@@ -32,6 +32,7 @@ final class AudioDSPController {
     private(set) var diagnostics: [DSPDiagnostic] = []
 
     var applyConfiguration: (@MainActor (AudioDSPConfiguration, String, UUID) -> Void)?
+    var onPresetDeleted: (@MainActor (UUID) -> Void)?
 
     @ObservationIgnored private let store: DSPPresetStore
     @ObservationIgnored private var sourceIsLocal = true
@@ -80,7 +81,8 @@ final class AudioDSPController {
     func apply(
         _ candidate: AudioDSPConfiguration,
         expectedRevision: String? = nil,
-        dryRun: Bool = false
+        dryRun: Bool = false,
+        createEditablePreset: Bool = true
     ) throws -> DSPApplyStatus {
         if let expectedRevision, expectedRevision != revisionString {
             throw DSPConfigurationValidationError(diagnostics: [DSPDiagnostic(
@@ -101,7 +103,7 @@ final class AudioDSPController {
         let nextRevision = UUID().uuidString
         let requestID = UUID()
         configuration = validated
-        ensureEditablePreset()
+        if createEditablePreset { ensureEditablePreset() }
         revisionString = nextRevision
         latestRequestID = requestID
         pendingConfiguration = validated
@@ -179,6 +181,18 @@ final class AudioDSPController {
         } catch {
             record(error)
         }
+    }
+
+    /// An automatic bypass preserves the selected preset identity, including
+    /// an empty selection after deletion, rather than creating a new preset.
+    func disableForOutputDevice() {
+        guard configuration.enabled else { return }
+        var candidate = configuration
+        candidate.enabled = false
+        do {
+            _ = try apply(candidate, createEditablePreset: false)
+            commitPendingApply()
+        } catch { record(error) }
     }
 
     func bindPlayback(
@@ -496,9 +510,10 @@ final class AudioDSPController {
             isModified = true
             scheduleWorkingDraftWrite(immediate: true)
         }
+        onPresetDeleted?(id)
     }
 
-    func selectPreset(id: UUID, expectedRevision: String? = nil, expectedPresetRevision: String? = nil) throws -> DSPApplyStatus {
+    func selectPreset(id: UUID, expectedRevision: String? = nil, expectedPresetRevision: String? = nil, enableDSP: Bool? = nil) throws -> DSPApplyStatus {
         if let expectedRevision, expectedRevision != revisionString {
             throw DSPConfigurationValidationError(diagnostics: [DSPDiagnostic(
                 code: "dsp.revisionConflict",
@@ -513,7 +528,9 @@ final class AudioDSPController {
         if let expectedPresetRevision, expectedPresetRevision != document.revisionString {
             throw DSPPresetStoreError.revisionConflict
         }
-        let validated = try validate(pendingPresetEdits[id]?.configuration ?? document.configuration)
+        var candidate = pendingPresetEdits[id]?.configuration ?? document.configuration
+        if let enableDSP { candidate.enabled = enableDSP }
+        let validated = try validate(candidate)
         let previousID = selectedPresetID
         scheduleWorkingDraftWrite(immediate: true)
         selectedPresetID = id

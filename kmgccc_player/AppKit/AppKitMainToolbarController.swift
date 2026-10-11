@@ -1185,7 +1185,7 @@ final class AppKitMainToolbarController: NSObject,
             let generation = attachmentGeneration
             withObservationTracking {
                 _ = historyVM.searchText
-            } onChange: {
+            } onChange: { [weak self] in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isCurrentAttachment(generation) else { return }
                     self.syncSearchFieldFromModel()
@@ -1200,7 +1200,7 @@ final class AppKitMainToolbarController: NSObject,
             withObservationTracking {
                 _ = libraryVM.referencedSourceSearchText
                 _ = libraryVM.referencedSourceSearchScopeTitle
-            } onChange: {
+            } onChange: { [weak self] in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isCurrentAttachment(generation) else { return }
                     self.syncSearchFieldFromModel()
@@ -1214,7 +1214,7 @@ final class AppKitMainToolbarController: NSObject,
         let generation = attachmentGeneration
         withObservationTracking {
             _ = pageController.searchText
-        } onChange: {
+        } onChange: { [weak self] in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentAttachment(generation) else { return }
                 self.syncSearchFieldFromModel()
@@ -1231,7 +1231,7 @@ final class AppKitMainToolbarController: NSObject,
             withObservationTracking {
                 _ = historyVM.isMultiselectMode
                 _ = historyVM.selectedEventIDs.count
-            } onChange: {
+            } onChange: { [weak self] in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isCurrentAttachment(generation) else { return }
                     self.syncMultiselectItemPresentation()
@@ -1247,7 +1247,7 @@ final class AppKitMainToolbarController: NSObject,
         withObservationTracking {
             _ = pageController.isMultiselectMode
             _ = pageController.selectedTrackIDs.count
-        } onChange: {
+        } onChange: { [weak self] in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentAttachment(generation) else { return }
                 if self.currentPageController?.isMultiselectMode != true {
@@ -1266,7 +1266,7 @@ final class AppKitMainToolbarController: NSObject,
         let generation = attachmentGeneration
         withObservationTracking {
             _ = uiState.contentMode
-        } onChange: {
+        } onChange: { [weak self] in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentAttachment(generation) else { return }
                 self.applyToolbarLayoutForCurrentState()
@@ -1284,7 +1284,7 @@ final class AppKitMainToolbarController: NSObject,
         let generation = attachmentGeneration
         withObservationTracking {
             _ = uiState.lyricsVisible
-        } onChange: {
+        } onChange: { [weak self] in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentAttachment(generation) else { return }
                 self.syncLyricsToggleItemPresentation()
@@ -1511,7 +1511,7 @@ final class AppKitMainToolbarController: NSObject,
         let generation = attachmentGeneration
         withObservationTracking {
             _ = libraryVM.searchResetTrigger
-        } onChange: {
+        } onChange: { [weak self] in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentAttachment(generation) else { return }
                 if self.isPlaybackHistoryMode {
@@ -1557,7 +1557,7 @@ final class AppKitMainToolbarController: NSObject,
             _ = appSession.libraryVM?.currentSelection
             _ = appSession.libraryVM?.referencedSourceSearchScopeID
             _ = appSession.libraryVM?.referencedSourceSearchScopeTitle
-        } onChange: {
+        } onChange: { [weak self] in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentAttachment(generation) else { return }
                 self.applyToolbarLayoutForCurrentState()
@@ -1580,7 +1580,7 @@ final class AppKitMainToolbarController: NSObject,
                 _ = historyVM.searchRange
                 _ = historyVM.isMultiselectMode
                 _ = historyVM.selectedEventIDs.count
-            } onChange: {
+            } onChange: { [weak self] in
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isCurrentAttachment(generation) else { return }
                     self.syncMultiselectItemPresentation()
@@ -1601,7 +1601,7 @@ final class AppKitMainToolbarController: NSObject,
             _ = pageController.phase
             _ = pageController.hasMultiselectRowsForCurrentSelection
             _ = pageController.isSearchFilteringCurrentList
-        } onChange: {
+        } onChange: { [weak self] in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentAttachment(generation) else { return }
                 self.syncMultiselectItemPresentation()
@@ -1619,7 +1619,7 @@ final class AppKitMainToolbarController: NSObject,
         withObservationTracking {
             _ = playerVM.currentTrack?.id
             _ = playerVM.activeLibraryQueueSource
-        } onChange: {
+        } onChange: { [weak self] in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentAttachment(generation) else { return }
                 self.syncRevealNowPlayingItemPresentation()

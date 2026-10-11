@@ -71,8 +71,9 @@ final class LibrarySession: LibrarySessionLifecycle {
 
     var audioDSPPresentationLeadSeconds: Double { playbackService.audioOutputDelay }
 
-    func bindAudioDSP(_ controller: AudioDSPController) {
+    func bindAudioDSP(_ controller: AudioDSPController, devices: AudioDSPDeviceController) {
         playbackService.bindAudioDSP(controller)
+        playbackService.bindAudioDSPDevices(devices)
     }
 
     func bindAudioProcessingGlobals(_ controller: AudioProcessingGlobalsController) {
@@ -1666,6 +1667,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         operationCoordinator.stopAcceptingNewOperations()
         loudnessService.cancel()
         playbackService.unbindAudioProcessingGlobals()
+        playbackService.unbindAudioDSPDevices()
         await libraryChangeMonitor?.stopAndWait()
         await operationCoordinator.cancelAndWait()
         await fileImportService.quiesce()

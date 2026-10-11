@@ -593,7 +593,7 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
             for: motionTokens[.gestureSettle],
             initialVelocity: initialVelocity
         )
-        let clearDrag = {
+        let clearDrag: @MainActor @Sendable () -> Void = {
             guard isFinishingDrag, self.draggingID == draggingID else { return }
             let keepVisualOrder = commitSucceeded
                 && settledOrder != nil
@@ -622,7 +622,7 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
         let cleanupDelay = motionPolicy.visualCompletionDelay(
             for: motionTokens[.gestureSettle]
         )
-        let clearDrag = {
+        let clearDrag: @MainActor @Sendable () -> Void = {
             guard !isFinishingDrag else { return }
             clearDragState(keepVisualOrder: false)
         }

@@ -29,6 +29,14 @@ struct AudioDSPSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: SettingsStyleTokens.sectionSpacing) {
                 SettingsHeaderLabel("音效处理", systemImage: "slider.vertical.3")
+                SettingsSection {
+                    SettingsSubpageLink(
+                        title: "设备音效",
+                        subtitle: "按输出设备切换预设",
+                        systemImage: "headphones",
+                        page: .audioDSPDevices
+                    )
+                }
                 overviewSection
                 presetsSection
                 linearNodeRackSection
@@ -91,60 +99,53 @@ struct AudioDSPSettingsView: View {
     private var presetsSection: some View {
         SettingsSection("预设") {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 12) {
-                    Text("当前预设")
-                        .settingsRowLabelStyle()
-
-                    Spacer(minLength: 16)
-
-                    Picker("当前预设", selection: selectedPresetBinding) {
-                        ForEach(controller.presets) { preset in
-                            let compatibility = presetCompatibility(for: preset)
-                            Text(presetMenuTitle(for: preset, compatibility: compatibility))
-                                .tag(Optional(preset.presetID))
-                                .disabled(!compatibility.canSelect)
-                        }
-                        if controller.selectedPresetID == nil {
-                            Text("草稿").tag(Optional<UUID>.none)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .fixedSize()
-                }
-
                 HStack(spacing: 8) {
+                    presetNameButton
+
+                    Spacer(minLength: 12)
+
+                    Menu {
+                        Picker("切换预设", selection: selectedPresetBinding) {
+                            ForEach(controller.presets) { preset in
+                                let compatibility = presetCompatibility(for: preset)
+                                Text(presetMenuTitle(for: preset, compatibility: compatibility))
+                                    .tag(Optional(preset.presetID))
+                                    .disabled(!compatibility.canSelect)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                        .labelsHidden()
+                    } label: {
+                        Label("切换", systemImage: "arrow.left.arrow.right")
+                    }
+                    .audioDSPCapsuleButtonStyle()
+                    .fixedSize()
+
                     Button("新建", systemImage: "plus") {
                         beginPresetNameAction(.create)
                     }
                     .audioDSPCapsuleButtonStyle()
 
-                    Button("复制", systemImage: "plus.square.on.square") {
-                        beginPresetNameAction(.copyCurrent)
+                    Menu {
+                        Button("复制", systemImage: "plus.square.on.square") {
+                            beginPresetNameAction(.copyCurrent)
+                        }
+                        Divider()
+                        Button("导入", systemImage: "square.and.arrow.down") {
+                            isShowingImportPicker = true
+                        }
+                        Button("导出", systemImage: "square.and.arrow.up") {
+                            exportSelectedPreset()
+                        }
+                        .disabled(!canEditSelectedPreset)
+                    } label: {
+                        Text("更多")
                     }
                     .audioDSPCapsuleButtonStyle()
-
-                    Button("重命名", systemImage: "pencil") {
-                        if let selectedPresetID { beginPresetNameAction(.rename(selectedPresetID)) }
-                    }
-                    .audioDSPCapsuleButtonStyle()
-                    .disabled(!canEditSelectedPreset)
+                    .fixedSize()
 
                     Button("删除", systemImage: "trash") {
-                        if let selectedPresetID { activeDialog = .deletePreset(selectedPresetID) }
-                    }
-                    .audioDSPCapsuleButtonStyle()
-                    .disabled(!canEditSelectedPreset)
-
-                    Spacer(minLength: 8)
-
-                    Button("导入", systemImage: "square.and.arrow.down") {
-                        isShowingImportPicker = true
-                    }
-                    .audioDSPCapsuleButtonStyle()
-
-                    Button("导出", systemImage: "square.and.arrow.up") {
-                        exportSelectedPreset()
+                        if let selectedPresetID { deletePreset(id: selectedPresetID) }
                     }
                     .audioDSPCapsuleButtonStyle()
                     .disabled(!canEditSelectedPreset)
@@ -159,12 +160,40 @@ struct AudioDSPSettingsView: View {
                         Spacer(minLength: 8)
                         Button("导出") { exportPreset(preset) }
                             .audioDSPCapsuleButtonStyle()
-                        Button("删除") { activeDialog = .deletePreset(preset.presetID) }
+                        Button("删除") { deletePreset(id: preset.presetID) }
                             .audioDSPCapsuleButtonStyle()
                     }
                 }
             }
         }
+    }
+
+    /// The current preset's name; clicking it renames a user preset.
+    private var presetNameButton: some View {
+        Button {
+            if let selectedPresetID, canEditSelectedPreset {
+                beginPresetNameAction(.rename(selectedPresetID))
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(selectedPreset.map(displayName(for:)) ?? "草稿")
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if canEditSelectedPreset {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canEditSelectedPreset)
+        .help(canEditSelectedPreset ? "重命名" : "")
+        .accessibilityLabel("当前预设")
+        .accessibilityValue(selectedPreset.map(displayName(for:)) ?? "草稿")
+        .accessibilityHint(canEditSelectedPreset ? "重命名" : "")
     }
 
     private var canEditSelectedPreset: Bool {
@@ -480,14 +509,21 @@ struct AudioDSPSettingsView: View {
         }
     }
 
-    private func deleteSelectedPreset(id: UUID) {
+    /// Deletes without confirmation. Deleting the current preset returns the
+    /// chain to the built-in flat preset rather than keeping a draft.
+    private func deletePreset(id: UUID) {
         guard let document = controller.presets.first(where: { $0.presetID == id }), !document.isBuiltIn else { return }
+        let wasSelected = controller.selectedPresetID == id
         Task {
             do {
                 try await controller.deletePreset(
                     id: document.presetID,
                     expectedPresetRevision: document.revisionString
                 )
+                if wasSelected, controller.selectedPresetID == nil {
+                    _ = try controller.selectPreset(id: DSPPresetDocument.flatPresetID)
+                    controller.commitPendingApply()
+                }
             } catch {
                 controller.report(error: error)
             }
@@ -578,30 +614,6 @@ struct AudioDSPSettingsView: View {
                         disabled: presetName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     ) {
                         performPresetNameAction()
-                        activeDialog = nil
-                    }
-                }
-            }
-            .frame(minWidth: 460, idealWidth: 500, maxWidth: 560)
-
-        case .deletePreset(let presetID):
-            SettingsTaskDialog(
-                title: "删除预设",
-                subtitle: controller.selectedPresetID == presetID
-                    ? "当前声音会保留为草稿。" : "删除保存的音效配置。",
-                systemImage: "trash",
-                iconColor: themeStore.accentColor
-            ) {
-                EmptyView()
-                    .frame(minHeight: 12)
-            } footer: {
-                HStack {
-                    Spacer()
-                    SettingsTaskDialogButton("取消", kind: .secondary) {
-                        activeDialog = nil
-                    }
-                    SettingsTaskDialogButton("删除", kind: .destructive) {
-                        deleteSelectedPreset(id: presetID)
                         activeDialog = nil
                     }
                 }
@@ -701,7 +713,6 @@ struct AudioDSPSettingsView: View {
 
     private enum AudioDSPDialogPresentation: Identifiable {
         case presetName(PresetNameAction)
-        case deletePreset(UUID)
         case importPreview(DSPPresetImportPreview)
         case error(String)
 
@@ -714,7 +725,6 @@ struct AudioDSPSettingsView: View {
                 case .rename(let id): "preset-name-rename-\(id.uuidString)"
                 case .duplicate(let id): "preset-name-duplicate-\(id.uuidString)"
                 }
-            case .deletePreset(let id): "delete-\(id.uuidString)"
             case .importPreview(let preview): "import-\(preview.document.presetID.uuidString)-\(preview.document.revisionString)"
             case .error: "error"
             }

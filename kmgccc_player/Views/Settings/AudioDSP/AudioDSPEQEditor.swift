@@ -29,7 +29,7 @@ struct AudioDSPEQEditor: View, Equatable {
 
     private let dbSpan = 18.0
     private let fallbackPreviewSampleRate = 48_000.0
-    private let bandColumnWidth: CGFloat = 80
+    private let bandColumnWidth: CGFloat = 60
     /// A press must land this close to a control point to start dragging it.
     private let bandHitRadius: CGFloat = 14
 
@@ -505,7 +505,7 @@ private struct AudioDSPBandColumn: View {
             .opacity(band.enabled ? 1 : 0.5)
         }
         .frame(width: width, alignment: .top)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 5)
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)

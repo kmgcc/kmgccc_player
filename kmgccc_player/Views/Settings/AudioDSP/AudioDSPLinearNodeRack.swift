@@ -265,7 +265,8 @@ struct AudioDSPLinearNodeRack: View {
                     routing: routing(for: index, in: ordered),
                     headerHeight: nodeHeaderHeight,
                     wireColor: palette.wire,
-                    terminalColor: themeStore.accentColor
+                    terminalColor: themeStore.accentColor,
+                    bypassedTerminalColor: palette.wire
                 )
             }
             .onGeometryChange(for: CGRect.self) { proxy in
@@ -1063,6 +1064,7 @@ private struct NodeWireGutter: View {
     let headerHeight: CGFloat
     let wireColor: Color
     let terminalColor: Color
+    let bypassedTerminalColor: Color
 
     var body: some View {
         GeometryReader { geometry in
@@ -1070,7 +1072,8 @@ private struct NodeWireGutter: View {
                 geometry: WireGeometry(routing),
                 headerHeight: headerHeight,
                 wireColor: wireColor,
-                terminalColor: terminalColor
+                terminalColor: terminalColor,
+                bypassedTerminalColor: bypassedTerminalColor
             )
             .frame(width: DSPRackMetrics.gutterWidth, height: geometry.size.height)
             .motionAnimation(.control, value: routing)
@@ -1091,14 +1094,15 @@ private struct AnimatedWireGutter: View, Animatable {
     let headerHeight: CGFloat
     let wireColor: Color
     let terminalColor: Color
+    let bypassedTerminalColor: Color
 
-    private static let busX: CGFloat = 14
-    private static let laneX: CGFloat = 3
-    private static let lineWidth: CGFloat = 1.5
-    private static let terminalRadius: CGFloat = 3
+    private nonisolated static let busX: CGFloat = 14
+    private nonisolated static let laneX: CGFloat = 3
+    private nonisolated static let lineWidth: CGFloat = 1.5
+    private nonisolated static let terminalRadius: CGFloat = 3
     /// Vertical distance from the connection point at which the lane leaves
     /// or rejoins the bus.
-    private static let detourReach: CGFloat = 20
+    private nonisolated static let detourReach: CGFloat = 20
 
     var animatableData: WireGeometry {
         get { geometry }
@@ -1139,23 +1143,43 @@ private struct AnimatedWireGutter: View, Animatable {
                 let amount = Self.unit(reach)
                 guard amount > 0.001 else { continue }
                 let visible = amount < 0.999 ? half.trimmedPath(from: 0, to: amount) : half
-                context.fill(visible.strokedPath(style), with: .color(wireColor))
+                // The last stretch of a retraction fades out while it shortens,
+                // so the tip never lingers as a dot at its shortest length.
+                context.fill(
+                    visible.strokedPath(style),
+                    with: .color(wireColor.opacity(Self.fadeNearEnd(amount)))
+                )
             }
 
-            // Active nodes show a solid terminal on the bus. It shrinks away
-            // when the node is bypassed, and a dragged slot keeps it until the
-            // last part of the collapse so the wire visibly gathers into it.
-            let terminalScale = min(1, Self.unit(geometry.terminal) * 1.6) * (1 - bypass)
-            let radius = Self.terminalRadius * terminalScale
-            if radius > 0.05 {
-                let dot = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
-                context.fill(Path(ellipseIn: dot), with: .color(terminalColor))
+            // The terminal stays on the bus at the node. Bypassing only bends
+            // the wire away and softens the terminal to the wire tone; a
+            // dragged slot shrinks and fades its terminal as the wire gathers.
+            let terminal = Self.unit(geometry.terminal)
+            if terminal > 0.001 {
+                let radius = Self.terminalRadius * (0.35 + 0.65 * terminal)
+                let dot = CGRect(
+                    x: Self.busX - radius,
+                    y: center.y - radius,
+                    width: radius * 2,
+                    height: radius * 2
+                )
+                let color = terminalColor.mix(with: bypassedTerminalColor, by: Double(bypass))
+                context.fill(
+                    Path(ellipseIn: dot),
+                    with: .color(color.opacity(Self.fadeNearEnd(terminal)))
+                )
             }
         }
     }
 
-    private static func unit(_ value: Double) -> CGFloat {
+    private nonisolated static func unit(_ value: Double) -> CGFloat {
         CGFloat(min(1, max(0, value)))
+    }
+
+    /// 1 for most of the range, easing to 0 over the final 35 percent.
+    nonisolated static func fadeNearEnd(_ amount: CGFloat) -> Double {
+        let t = Double(min(1, max(0, amount / 0.35)))
+        return t * t * (3 - 2 * t)
     }
 }
 
@@ -1204,7 +1228,10 @@ private struct AnimatedBusWire: View, Animatable {
                 path.addLine(to: CGPoint(x: x, y: size.height - length))
             }
             let style = StrokeStyle(lineWidth: 1.5, lineCap: amount < 0.999 ? .round : .butt)
-            context.fill(path.strokedPath(style), with: .color(color))
+            context.fill(
+                path.strokedPath(style),
+                with: .color(color.opacity(AnimatedWireGutter.fadeNearEnd(amount)))
+            )
         }
     }
 }
