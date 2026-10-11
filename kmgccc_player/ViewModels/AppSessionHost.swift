@@ -53,6 +53,7 @@ final class AppSessionHost: ObservableObject {
 
     let uiState: UIStateViewModel
     let audioDSPController = AudioDSPController()
+    lazy var audioDSPDeviceController = AudioDSPDeviceController(dsp: audioDSPController)
     let audioDSPScriptController = DSPScriptController()
     let audioProcessingGlobalsController = AudioProcessingGlobalsController()
     let librarySetupFlow = LibrarySetupViewModel()
@@ -1097,6 +1098,9 @@ final class AppSessionHost: ObservableObject {
         guard !hasSetupDependencies else { return }
         hasSetupDependencies = true
 
+        audioDSPDeviceController.start()
+        await audioDSPDeviceController.ensureLoaded()
+
         Log.debug("[Lifecycle] AppSessionHost initial setup", category: .ui)
         mainThreadStallMonitor.start()
         startMemoryPressureMonitoring()
@@ -1420,7 +1424,7 @@ final class AppSessionHost: ObservableObject {
         audioDSPController.setSourceIsLocal(!session.playbackCoordinator.activeSource.isExternal)
         audioProcessingGlobalsController.setSourceIsLocal(!session.playbackCoordinator.activeSource.isExternal)
         audioDSPScriptController.bind(dspController: audioDSPController)
-        session.bindAudioDSP(audioDSPController)
+        session.bindAudioDSP(audioDSPController, devices: audioDSPDeviceController)
         session.bindAudioProcessingGlobals(audioProcessingGlobalsController)
         activeLibraryBinding.publish(session)
         CacheManager.scheduleBackgroundDiskMaintenance(storage: session.cacheServices.storageLocations)

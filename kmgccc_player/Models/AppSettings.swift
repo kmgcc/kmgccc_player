@@ -153,6 +153,7 @@ struct FullscreenLyricsTypography: Codable, Equatable {
 extension Notification.Name {
     static let lyricSpringSettingsDidSettle = Notification.Name("kmgccc_player.lyricSpringSettingsDidSettle")
     static let lyricHighlightModeDidChange = Notification.Name("kmgccc_player.lyricHighlightModeDidChange")
+    static let volumeControlTargetDidChange = Notification.Name("kmgccc_player.volumeControlTargetDidChange")
 }
 
 /// Observable app settings using AppStorage for persistence.
@@ -211,9 +212,53 @@ public final class AppSettings {
 
     // MARK: - Audio Settings
 
+    public enum VolumeControlTarget: String, CaseIterable, Identifiable, Sendable {
+        case app = "app"
+        case system = "system"
+
+        public var id: String { rawValue }
+
+        public var title: String {
+            switch self {
+            case .app: return "应用音量"
+            case .system: return "系统音量"
+            }
+        }
+    }
+
+    private enum AudioKeys {
+        static let volumeControlTarget = "volumeControlTarget"
+        static let didMigrateVolumeTargetToSystem = "didMigrateVolumeControlTargetToSystem"
+    }
+
     /// Master volume (0.0 to 1.0)
     @ObservationIgnored
     @AppStorage("volume") var volume: Double = AppSettings.defaultVolume
+
+    /// Volume control target (app or system).
+    public var volumeControlTarget: VolumeControlTarget {
+        get {
+            access(keyPath: \.volumeControlTarget)
+            if !UserDefaults.standard.bool(forKey: AudioKeys.didMigrateVolumeTargetToSystem) {
+                UserDefaults.standard.set(true, forKey: AudioKeys.didMigrateVolumeTargetToSystem)
+                UserDefaults.standard.set(VolumeControlTarget.system.rawValue, forKey: AudioKeys.volumeControlTarget)
+                return .system
+            }
+            let raw = UserDefaults.standard.string(forKey: AudioKeys.volumeControlTarget)
+                ?? VolumeControlTarget.system.rawValue
+            return VolumeControlTarget(rawValue: raw) ?? .system
+        }
+        set {
+            UserDefaults.standard.set(true, forKey: AudioKeys.didMigrateVolumeTargetToSystem)
+            withMutation(keyPath: \.volumeControlTarget) {
+                UserDefaults.standard.set(newValue.rawValue, forKey: AudioKeys.volumeControlTarget)
+            }
+            NotificationCenter.default.post(
+                name: .volumeControlTargetDidChange,
+                object: nil
+            )
+        }
+    }
 
     // MARK: - LED Meter Settings
 

@@ -7,8 +7,12 @@ struct SkinVolumeComponent: View {
 
     var body: some View {
         let presentation = playback.stablePresentation
+        let setVolume = actions.setVolume
         VolumeSlider(
-            volume: Binding(get: { playback.stablePresentation.volume }, set: actions.setVolume),
+            volume: Binding(
+                get: { playback.stablePresentation.volume },
+                set: setVolume
+            ),
             markerColor: theme.accentColor.opacity(0.85), hidesMarkerAtDefault: true
         )
         .controlSize(.small)

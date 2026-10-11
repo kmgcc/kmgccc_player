@@ -27,7 +27,9 @@ struct SettingsView: View {
 
     @State private var selection: SettingsCategory = .appearance
     @State private var columnVisibility = NavigationSplitViewVisibility.all
-    @State private var currentSubpage: SettingsSubpage? = nil
+    @State private var subpagePath: [SettingsSubpage] = []
+
+    private var currentSubpage: SettingsSubpage? { subpagePath.last }
 
     private var motionPolicy: MotionPolicy {
         configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
@@ -62,14 +64,21 @@ struct SettingsView: View {
                     .offset(x: currentSubpage == nil ? 0 : -60)
                     .opacity(currentSubpage == nil ? 1 : 0)
                     .allowsHitTesting(currentSubpage == nil)
+                    .disabled(currentSubpage != nil)
+                    .accessibilityHidden(currentSubpage != nil)
 
-                if let subpage = currentSubpage {
+                ForEach(subpagePath, id: \.self) { subpage in
                     subpageView(for: subpage)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .background {
                             ThemedBaseBackgroundColorView()
                                 .padding(.horizontal, -40)
                         }
+                        .offset(x: currentSubpage == subpage ? 0 : -60)
+                        .opacity(currentSubpage == subpage ? 1 : 0)
+                        .allowsHitTesting(currentSubpage == subpage)
+                        .disabled(currentSubpage != subpage)
+                        .accessibilityHidden(currentSubpage != subpage)
                         .transition(.asymmetric(
                             insertion: .move(edge: .trailing),
                             removal: .move(edge: .trailing)
@@ -88,7 +97,7 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .clipped()
-            .motionAnimation(navigationSpec, value: currentSubpage)
+            .motionAnimation(navigationSpec, value: subpagePath)
             .environment(\.navigateSettingsSubpage) { page in
                 navigateToSubpage(page)
             }
@@ -110,7 +119,7 @@ struct SettingsView: View {
         }
         .onChange(of: selection) { _, _ in
             if currentSubpage != nil {
-                currentSubpage = nil
+                subpagePath = []
             }
         }
         .frame(minWidth: 760, minHeight: 680)
@@ -244,7 +253,12 @@ struct SettingsView: View {
 
     private func navigateToSubpage(_ subpage: SettingsSubpage?) {
         withAnimation(navigationAnimation) {
-            currentSubpage = subpage
+            if let subpage {
+                guard !subpagePath.contains(subpage) else { return }
+                subpagePath.append(subpage)
+            } else if !subpagePath.isEmpty {
+                subpagePath.removeLast()
+            }
         }
     }
 
@@ -254,6 +268,9 @@ struct SettingsView: View {
         case .audioDSP:
             AudioDSPSettingsView()
                 .groupBoxStyle(SettingsWindowGroupBoxStyle())
+        case .audioDSPDevices:
+            AudioDSPDeviceSettingsView()
+                .groupBoxStyle(SettingsWindowGroupBoxStyle())
         }
     }
 }
@@ -262,6 +279,7 @@ struct SettingsView: View {
 
 enum SettingsSubpage: Hashable, Sendable {
     case audioDSP
+    case audioDSPDevices
 }
 
 private struct SettingsSubpageActionKey: EnvironmentKey {

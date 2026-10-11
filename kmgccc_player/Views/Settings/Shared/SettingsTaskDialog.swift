@@ -189,6 +189,9 @@ struct SettingsTaskDialogButton: View {
                 tint: themeStore.accentColor
             )
         )
+        // Return confirms the dialog through its primary action. Destructive
+        // and secondary actions stay pointer-only.
+        .keyboardShortcut(kind == .primary ? .defaultAction : nil)
         .disabled(disabled)
     }
 

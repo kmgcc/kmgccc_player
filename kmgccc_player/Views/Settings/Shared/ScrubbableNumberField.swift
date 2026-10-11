@@ -109,8 +109,10 @@ struct ScrubbableNumberField: View {
             }
         }
         .lineLimit(1)
+        // Narrow columns shrink the digits slightly instead of truncating them.
+        .minimumScaleFactor(0.8)
         .frame(maxWidth: .infinity, alignment: frameAlignment)
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 4)
         .padding(.vertical, 3)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)

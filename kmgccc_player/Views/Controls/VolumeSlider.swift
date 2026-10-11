@@ -55,15 +55,31 @@ struct VolumeSlider: View {
     var snapTolerance: Double = VolumeControlBehavior.defaultSnapTolerance
     var markerColor: Color = .secondary.opacity(0.72)
     var hidesMarkerAtDefault = false
+    var isSnappingEnabled: Bool? = nil
+
+    @Environment(AppSettings.self) private var environmentSettings: AppSettings?
 
     @State private var isEditing = false
     @State private var movedAwayFromDefault = false
     @State private var hasSnappedDuringEditing = false
 
+    private var effectiveSettings: AppSettings {
+        environmentSettings ?? AppSettings.shared
+    }
+
+    private var isSnappingActive: Bool {
+        isSnappingEnabled ?? (effectiveSettings.volumeControlTarget == .app)
+    }
+
     private var sliderBinding: Binding<Double> {
         Binding(
             get: { volume },
             set: { proposedVolume in
+                guard isSnappingActive else {
+                    volume = VolumeControlBehavior.clamped(proposedVolume)
+                    return
+                }
+
                 let result = VolumeControlBehavior.snapped(
                     proposedVolume,
                     tolerance: snapTolerance
@@ -96,8 +112,8 @@ struct VolumeSlider: View {
         ) { editing in
             isEditing = editing
             if editing {
-                movedAwayFromDefault = abs(volume - AppSettings.defaultVolume)
-                    > snapTolerance
+                movedAwayFromDefault = isSnappingActive
+                    && abs(volume - AppSettings.defaultVolume) > snapTolerance
                 hasSnappedDuringEditing = false
                 onInteraction()
             } else {
@@ -128,7 +144,8 @@ struct VolumeSlider: View {
     }
 
     private var shouldShowMarker: Bool {
-        !hidesMarkerAtDefault
+        guard isSnappingActive else { return false }
+        return !hidesMarkerAtDefault
             || abs(volume - AppSettings.defaultVolume) > snapTolerance
     }
 

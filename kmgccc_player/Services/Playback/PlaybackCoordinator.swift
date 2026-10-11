@@ -123,6 +123,16 @@ final class PlaybackCoordinator {
             externalProvider(for: activeSource)?.start()
         }
         AudioVisualizationVisibilityRegistry.shared.setExternalMode(activeSource.isExternal)
+        SystemVolumeService.shared.onVolumeChanged = { [weak self] _ in
+            guard let self, self.settings.volumeControlTarget == .system else { return }
+            self.refreshPresentation()
+        }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleVolumeControlTargetDidChange),
+            name: .volumeControlTargetDidChange,
+            object: nil
+        )
         refreshPresentation()
         startPresentationTimer()
         NowPlayingService.shared.register(coordinator: self)
@@ -222,6 +232,16 @@ final class PlaybackCoordinator {
         onActiveSourceChanged = nil
         onTelemetryPlaybackStateChanged = nil
         onPresentationChanged = nil
+        NotificationCenter.default.removeObserver(self, name: .volumeControlTargetDidChange, object: nil)
+        SystemVolumeService.shared.onVolumeChanged = nil
+    }
+
+    @objc private func handleVolumeControlTargetDidChange() {
+        if settings.volumeControlTarget == .system {
+            localPlayback?.setVolume(AppSettings.defaultVolume)
+        }
+        refreshPresentation()
+        NowPlayingService.shared.updateNowPlaying(force: true)
     }
 
     func stop() {
@@ -325,6 +345,16 @@ final class PlaybackCoordinator {
     }
 
     func setVolume(_ volume: Double) {
+        if settings.volumeControlTarget == .system {
+            SystemVolumeService.shared.setSystemVolume(volume)
+            if let local = localPlayback, abs(local.volume - AppSettings.defaultVolume) > 0.001 {
+                local.setVolume(AppSettings.defaultVolume)
+            }
+            refreshPresentation()
+            NowPlayingService.shared.updateNowPlaying(force: true)
+            return
+        }
+
         switch activeSource {
         case .local:
             localPlayback?.setVolume(volume)
@@ -553,15 +583,21 @@ final class PlaybackCoordinator {
     }
 
     func refreshPresentation() {
-        let newPresentation: NowPlayingPresentation
+        let basePresentation: NowPlayingPresentation
         switch activeSource {
         case .local:
-            newPresentation = makeLocalPresentation()
+            basePresentation = makeLocalPresentation()
         case .appleMusic, .systemNowPlaying:
             activeExternalProvider?.tickPresentation()
             let externalPresentation = activeExternalProvider?.presentation
                 ?? NowPlayingPresentation.emptySystemNowPlaying
-            newPresentation = externalPresentation
+            basePresentation = externalPresentation
+        }
+
+        var newPresentation = basePresentation
+        if settings.volumeControlTarget == .system {
+            newPresentation.volume = SystemVolumeService.shared.systemVolume
+            newPresentation.isVolumeControlEnabled = true
         }
 
         let isPlaying = newPresentation.isPlaying
@@ -684,7 +720,9 @@ final class PlaybackCoordinator {
         guard let track = playback.currentTrack else {
             presentation.localTrack?.releaseFileBackedArtworkData()
             var empty = NowPlayingPresentation.emptyLocal
-            empty.volume = playback.volume
+            empty.volume = settings.volumeControlTarget == .system
+                ? SystemVolumeService.shared.systemVolume
+                : playback.volume
             return empty
         }
 
@@ -722,7 +760,9 @@ final class PlaybackCoordinator {
             currentTime: playback.currentTime,
             audioOutputDelay: playback.audioOutputDelay,
             isPlaying: playback.isPlaying,
-            volume: playback.volume,
+            volume: settings.volumeControlTarget == .system
+                ? SystemVolumeService.shared.systemVolume
+                : playback.volume,
             lyricsText: lyricsText,
             lyricsIdentity: track.id.uuidString,
             appleMusicPlaybackMode: nil,

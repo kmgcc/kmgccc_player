@@ -482,6 +482,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     /// The segment ID lets the owner discard a callback from an older seek.
     var onTimelineMutationCommitted: ((UUID, Double, Bool) -> Void)?
     var onSystemReconfigEvent: (() -> Void)?
+    /// Main-queue confirmation after the renderer commits an output route.
+    var onOutputDeviceChange: ((String?) -> Void)?
     var onEnqueue: (@Sendable (CanonicalPCM, Double) -> Void)?
     var onAnalysisPCM: (@Sendable (CanonicalPCM) -> Void)?
     var onSegmentExhausted: ((RendererSegmentDescriptor) -> Void)?
@@ -1491,7 +1493,11 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     /// new device has become active.
     func setAudioOutputDeviceUniqueID(_ uniqueID: String?) {
         pipelineQueue.async { [weak self] in
-            guard let self, self.audioOutputDeviceUniqueID != uniqueID else { return }
+            guard let self else { return }
+            guard self.audioOutputDeviceUniqueID != uniqueID else {
+                self.publishOutputDevice(uniqueID)
+                return
+            }
 
             let oldUID = self.audioOutputDeviceUniqueID
             self.audioOutputDeviceUniqueID = uniqueID
@@ -1511,6 +1517,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 Self.pipelineLog.info(
                     "output device clock selected old=\(oldUID ?? "default", privacy: .public) new=\(uniqueID ?? "default", privacy: .public) loaded=false"
                 )
+                self.publishOutputDevice(uniqueID)
                 return
             }
 
@@ -1529,6 +1536,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 self.recoverFailedRenderer(atTimelineClock: clock)
                 self.timelineMutationInProgress = false
                 self.resetStallBaseline(clock: clock)
+                self.publishOutputDevice(uniqueID)
                 return
             }
             if uniqueID == nil, oldUID != nil {
@@ -1555,10 +1563,17 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             self.timelineMutationInProgress = false
             self.resetStallBaseline(clock: clock)
 
+            self.publishOutputDevice(uniqueID)
+
             Self.pipelineLog.info(
                 "output device clock changed old=\(oldUID ?? "default", privacy: .public) new=\(uniqueID ?? "default", privacy: .public) anchor=\(clock, format: .fixed(precision: 3)) rate=\(wasPlaying ? 1 : 0)"
             )
         }
+    }
+
+    private func publishOutputDevice(_ uid: String?) {
+        guard renderer.status != .failed else { return }
+        DispatchQueue.main.async { [weak self] in self?.onOutputDeviceChange?(uid) }
     }
 
     /// Recreate the renderer when returning to the default output device. The
@@ -3037,6 +3052,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         resetStallBaseline(clock: clock)
         lastRecoveryWallTime = ProcessInfo.processInfo.systemUptime
         startFeedTimerIfNeeded()
+        publishOutputDevice(audioOutputDeviceUniqueID)
     }
 
     var diagnosticStatus: AVQueuedSampleBufferRenderingStatus { renderer.status }

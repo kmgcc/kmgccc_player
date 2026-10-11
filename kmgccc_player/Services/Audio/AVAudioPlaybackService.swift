@@ -39,7 +39,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         didSet {
             rendererPipeline.setVolume(Float(volume))
             scheduleListeningContextUpdate()
-            AppSettings.shared.volume = volume
+            if AppSettings.shared.volumeControlTarget != .system {
+                AppSettings.shared.volume = volume
+            }
             // Forward the output volume for spectrum diagnostics; analysis PCM
             // remains upstream of renderer master gain.
             AudioVisualizationService.shared.updateVolume(Float(volume * (transportState?.envelopeGain ?? 1)))
@@ -47,6 +49,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private weak var globalsController: AudioProcessingGlobalsController?
+    private weak var dspDeviceController: AudioDSPDeviceController?
     private var processingGlobals = AudioProcessingGlobals()
     private var listeningContextTask: Task<Void, Never>?
     private var transportState: AudioTransportTransitionState?
@@ -243,13 +246,23 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         self.smartController = smartController
         self.libraryPaths = libraryPaths
         self.authorizedSourceRootsProvider = authorizedSourceRootsProvider
-        self.volume = AppSettings.shared.volume
+        if AppSettings.shared.volumeControlTarget == .system {
+            self.volume = AppSettings.defaultVolume
+        } else {
+            self.volume = AppSettings.shared.volume
+        }
         setupSmartController()
         setupRendererPipeline()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleOutputDevicePreferenceChange),
             name: .audioOutputDevicePreferenceDidChange,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleVolumeControlTargetDidChange),
+            name: .volumeControlTargetDidChange,
             object: nil
         )
         refreshOutputLatency(force: true)
@@ -354,6 +367,24 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         controller.bindPlayback { [weak self] configuration, revision, requestID in
             self?.rendererPipeline.applyDSP(configuration, revision: revision, requestID: requestID)
         }
+    }
+
+    func bindAudioDSPDevices(_ controller: AudioDSPDeviceController) {
+        dspDeviceController = controller
+        controller.attachOutputRoute(owner: self) { [weak self] in self?.refreshOutputLatency(force: true) }
+        rendererPipeline.onOutputDeviceChange = { [weak self] uid in
+            guard let self, self.routedOutputDeviceUID == uid else { return }
+            // Availability can change while the renderer commits its route.
+            let availableUID = AudioOutputLatencyMonitor.currentSnapshot(forDeviceUID: uid).deviceUID
+            self.dspDeviceController?.receiveOutputDeviceUID(availableUID, ownerID: ObjectIdentifier(self))
+        }
+        refreshOutputLatency(force: true)
+    }
+
+    func unbindAudioDSPDevices() {
+        dspDeviceController?.detachOutputRoute(owner: self)
+        dspDeviceController = nil
+        rendererPipeline.onOutputDeviceChange = nil
     }
 
     func bindAudioProcessingGlobals(_ controller: AudioProcessingGlobalsController) {
@@ -471,12 +502,25 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             rendererPipeline.setAudioOutputDeviceUniqueID(selectedOutputUID)
             pauseTransitionPending = false
             scheduleListeningContextUpdate(immediate: true)
+        } else if force {
+            rendererPipeline.setAudioOutputDeviceUniqueID(selectedOutputUID)
         }
     }
 
     @objc nonisolated private func handleOutputDevicePreferenceChange(_ notification: Notification) {
         Task { @MainActor [weak self] in
             self?.refreshOutputLatency(force: true)
+        }
+    }
+
+    @objc nonisolated private func handleVolumeControlTargetDidChange(_ notification: Notification) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if AppSettings.shared.volumeControlTarget == .system {
+                self.volume = AppSettings.defaultVolume
+            } else {
+                self.volume = AppSettings.shared.volume
+            }
         }
     }
 
