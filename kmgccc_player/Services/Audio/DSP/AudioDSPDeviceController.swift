@@ -15,6 +15,7 @@ nonisolated struct DSPDeviceSettings: Codable, Equatable, Sendable {
     var enabled = false
     var defaultPresetID: UUID?
     var bindings: [String: DSPDeviceBinding] = [:]
+    var flatPresetCopies: [String: UUID]?
 }
 
 nonisolated struct DSPOutputDevice: Identifiable, Equatable, Sendable {
@@ -169,8 +170,9 @@ final class AudioDSPDeviceController {
     func bindPreset(_ id: UUID?, to device: DSPOutputDevice) async throws {
         await ensureLoaded()
         if let id, let owner = presetOwner(id, excluding: device.id) { throw occupiedPreset(owner) }
-        let presetID = try await editablePresetID(id, name: "平直 · \(device.name)")
+        let presetID = try await editablePresetID(id, name: "平直 · \(device.name)", copyKey: "device:\(device.id)")
         if let presetID, let owner = presetOwner(presetID, excluding: device.id) { throw occupiedPreset(owner) }
+        guard settings.bindings[device.id]?.presetID != presetID || (presetID != nil && !settings.enabled) else { return }
         if let presetID {
             settings.bindings[device.id] = DSPDeviceBinding(
                 deviceUID: device.id, name: device.name, transportType: device.transportType, presetID: presetID
@@ -186,23 +188,31 @@ final class AudioDSPDeviceController {
     func setDefaultPreset(_ id: UUID?) async throws {
         await ensureLoaded()
         if let id, settings.defaultPresetID != id, let owner = presetOwner(id) { throw occupiedPreset(owner) }
-        let presetID = try await editablePresetID(id, name: "默认音效")
+        let presetID = try await editablePresetID(id, name: "默认音效", copyKey: "default")
         if let presetID, settings.defaultPresetID != presetID, let owner = presetOwner(presetID) {
             throw occupiedPreset(owner)
         }
+        guard settings.defaultPresetID != presetID || !settings.enabled else { return }
         settings.defaultPresetID = presetID
         settings.enabled = true
         persist()
         if let uid = currentOutputDeviceUID, settings.bindings[uid] == nil { applyCurrentRule() }
     }
 
-    private func editablePresetID(_ id: UUID?, name: String) async throws -> UUID? {
+    private func editablePresetID(_ id: UUID?, name: String, copyKey: String) async throws -> UUID? {
         guard let id else { return nil }
         let preset = try await dsp.preset(id: id)
         guard preset.isBuiltIn else { return id }
+        if let copyID = settings.flatPresetCopies?[copyKey], dsp.presets.contains(where: { $0.presetID == copyID }) {
+            return copyID
+        }
         // The built-in flat preset is immutable. Give a rule its own editable
-        // copy so later parameter edits keep the same bound identity.
-        return try await dsp.duplicatePreset(id: id, name: name).presetID
+        // copy once, including when the user clears and later restores the rule.
+        let copyID = try await dsp.duplicatePreset(id: id, name: name).presetID
+        var copies = settings.flatPresetCopies ?? [:]
+        copies[copyKey] = copyID
+        settings.flatPresetCopies = copies
+        return copyID
     }
 
     private func applyCurrentRule() {
@@ -224,6 +234,7 @@ final class AudioDSPDeviceController {
         let affectsCurrent = currentOutputDeviceUID.flatMap { settings.bindings[$0]?.presetID } == id
             || (settings.defaultPresetID == id && currentOutputDeviceUID.flatMap { settings.bindings[$0] } == nil)
         settings.bindings = settings.bindings.filter { $0.value.presetID != id }
+        settings.flatPresetCopies = settings.flatPresetCopies?.filter { $0.value != id }
         if settings.defaultPresetID == id { settings.defaultPresetID = nil }
         persist()
         if affectsCurrent { applyCurrentRule() }
@@ -232,6 +243,7 @@ final class AudioDSPDeviceController {
     private func removeMissingPresets() {
         let ids = Set(dsp.presets.map(\.presetID))
         settings.bindings = settings.bindings.filter { ids.contains($0.value.presetID) }
+        settings.flatPresetCopies = settings.flatPresetCopies?.filter { ids.contains($0.value) }
         if let id = settings.defaultPresetID, !ids.contains(id) { settings.defaultPresetID = nil }
         persist()
     }

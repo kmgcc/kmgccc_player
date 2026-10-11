@@ -42,24 +42,16 @@ struct AudioDSPDeviceSettingsView: View {
     }
 
     private var defaultSection: some View {
-        SettingsSection("未绑定设备") {
+        SettingsSection("未指定音效的设备") {
             HStack(spacing: 12) {
                 Text("默认音效").settingsRowLabelStyle()
                 Spacer(minLength: 16)
-                Picker("默认音效", selection: Binding(
-                    get: { controller.settings.defaultPresetID },
-                    set: { id in update { try await controller.setDefaultPreset(id) } }
-                )) {
-                    Text("关闭音效").tag(Optional<UUID>.none)
-                    ForEach(dsp.presets) { preset in
-                        presetOption(preset, deviceUID: nil, isDefault: true)
-                    }
+                presetMenu(
+                    title: "默认音效", selectedID: controller.settings.defaultPresetID,
+                    emptyTitle: "关闭音效", deviceUID: nil, isDefault: true
+                ) { id in
+                    update { try await controller.setDefaultPreset(id) }
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .audioDSPCapsuleButtonStyle()
-                .frame(maxWidth: 240, alignment: .trailing)
-                .disabled(!controller.isLoaded || isUpdating)
             }
         }
     }
@@ -99,33 +91,64 @@ struct AudioDSPDeviceSettingsView: View {
                 }
             }
             Spacer(minLength: 12)
-            Picker("\(device.name)的音效", selection: Binding(
-                get: { controller.settings.bindings[device.id]?.presetID },
-                set: { id in update { try await controller.bindPreset(id, to: device) } }
-            )) {
-                Text("未绑定").tag(Optional<UUID>.none)
-                ForEach(dsp.presets) { preset in
-                    presetOption(preset, deviceUID: device.id, isDefault: false)
-                }
+            presetMenu(
+                title: "\(device.name)的音效", selectedID: controller.settings.bindings[device.id]?.presetID,
+                emptyTitle: "未指定", deviceUID: device.id, isDefault: false
+            ) { id in
+                update { try await controller.bindPreset(id, to: device) }
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .audioDSPCapsuleButtonStyle()
-            .frame(maxWidth: 240, alignment: .trailing)
-            .disabled(!controller.isLoaded || isUpdating)
         }
     }
 
-    private func presetOption(_ preset: DSPPresetDocument, deviceUID: String?, isDefault: Bool) -> some View {
+    private func presetMenu(
+        title: String, selectedID: UUID?, emptyTitle: String, deviceUID: String?, isDefault: Bool,
+        select: @escaping (UUID?) -> Void
+    ) -> some View {
+        let selectedName = dsp.presets.first(where: { $0.presetID == selectedID })?.name ?? emptyTitle
+        return Menu {
+            Button { select(nil) } label: {
+                menuOptionLabel(emptyTitle, isSelected: selectedID == nil)
+            }
+            ForEach(dsp.presets) { preset in
+                presetOption(preset, selectedID: selectedID, deviceUID: deviceUID, isDefault: isDefault, select: select)
+            }
+        } label: {
+            Text(selectedName)
+                .settingsRowLabelStyle()
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .audioDSPCapsuleButtonStyle()
+        .frame(width: 240)
+        .disabled(!controller.isLoaded)
+        .accessibilityLabel(title)
+        .help(selectedName)
+    }
+
+    @ViewBuilder
+    private func menuOptionLabel(_ title: String, isSelected: Bool) -> some View {
+        if isSelected {
+            Label(title, systemImage: "checkmark")
+        } else {
+            Text(title)
+        }
+    }
+
+    private func presetOption(
+        _ preset: DSPPresetDocument, selectedID: UUID?, deviceUID: String?, isDefault: Bool,
+        select: @escaping (UUID?) -> Void
+    ) -> some View {
         let isSelectedDefault = isDefault && controller.settings.defaultPresetID == preset.presetID
         let owner = isSelectedDefault ? nil : controller.presetOwner(preset.presetID, excluding: deviceUID)
         var candidate = preset.configuration
         candidate.enabled = true
         let incompatible = (try? dsp.validate(candidate)) == nil
         let suffix = owner.map { "（\($0)）" } ?? (incompatible ? "（不兼容）" : "")
-        return Text(preset.name + suffix)
-            .tag(Optional(preset.presetID))
-            .disabled(owner != nil || incompatible)
+        return Button { select(preset.presetID) } label: {
+            menuOptionLabel(preset.name + suffix, isSelected: selectedID == preset.presetID)
+        }
+        .disabled(owner != nil || incompatible)
     }
 
     private func update(_ operation: @escaping @MainActor () async throws -> Void) {
