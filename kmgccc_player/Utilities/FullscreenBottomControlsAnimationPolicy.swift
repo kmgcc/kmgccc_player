@@ -8,7 +8,20 @@
 //  to their final state instead of inheriting the layout transaction.
 //
 
+import MotionKit
 import SwiftUI
+
+extension MotionTokens {
+    /// A little rebound for the player's compact controls, without changing
+    /// navigation or the rest of the application's layout motion.
+    var miniPlayerLayout: MotionSpec {
+        phaseSpec(for: .layout, duration: 0.46, bounce: 0.24)
+    }
+
+    var miniPlayerControl: MotionSpec {
+        phaseSpec(for: .control, duration: 0.30, bounce: 0.18)
+    }
+}
 
 private struct FullscreenBottomControlsGeometryAnimationKey: TransactionKey {
     static let defaultValue = false

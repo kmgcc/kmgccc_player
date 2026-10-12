@@ -3,12 +3,13 @@
 //  myPlayer2
 //
 //  Shared style tokens, panel factory, and view components for app-native
-//  dialog panels (NSPanel + popover material). All import-related dialogs,
+//  dialog panels (NSPanel + PopupKit). All import-related dialogs,
 //  wizards, and confirmation dialogs should use these definitions.
 //
 
 import AppKit
 import MotionKit
+import PopupKit
 import SwiftUI
 
 // MARK: - Style Tokens
@@ -19,7 +20,7 @@ enum AppDialogTokens {
     /// Corner radius for the floating glass card. Deliberately compact so the
     /// dialog reads as a small utility surface (matches settings section
     /// cards rather than large-format artwork cards).
-    static let windowCornerRadius: CGFloat = 18
+    static let windowCornerRadius: CGFloat = PopupStyle().cornerRadius
 
     // MARK: Panel layout helpers
     static let progressDialogWidth: CGFloat = 580
@@ -35,21 +36,21 @@ enum AppDialogTokens {
     }
 
     // MARK: Shared spacing
-    static let headerHorizontalPadding: CGFloat = 20
-    static let headerVerticalPadding: CGFloat = 16
+    static let headerHorizontalPadding: CGFloat = PopupStyle().padding
+    static let headerVerticalPadding: CGFloat = PopupStyle().padding
     static let headerSpacing: CGFloat = 8
 
-    static let footerHorizontalPadding: CGFloat = 20
-    static let footerVerticalPadding: CGFloat = 12
+    static let footerHorizontalPadding: CGFloat = PopupStyle().buttonMarginTrailing
+    static let footerVerticalPadding: CGFloat = PopupStyle().buttonMarginTop
     /// Bottom padding so footer buttons clear the rounded bottom corners.
-    static let footerBottomPadding: CGFloat = 24
+    static let footerBottomPadding: CGFloat = PopupStyle().buttonMarginBottom
 
-    static let contentHorizontalPadding: CGFloat = 16
+    static let contentHorizontalPadding: CGFloat = PopupStyle().padding
     static let contentRowVerticalPadding: CGFloat = 4
 
     // MARK: Header type
     static let headerTitleFontSize: CGFloat = 18
-    static let headerSubtitleFontSize: CGFloat = 12
+    static let headerSubtitleFontSize: CGFloat = PopupStyle().bodySize
 
     // MARK: Item rows
     static let rowCornerRadius: CGFloat = 8
@@ -86,17 +87,17 @@ enum AppDialogTokens {
 // MARK: - NSPanel Factory
 
 extension AppDialogTokens {
-    /// Creates a standard floating NSPanel styled as a large-radius glass card, matching
-    /// the app's floating dialog windows: popover material, clear background,
-    /// hidden traffic-light buttons, and a rounded, clipped visual-effect content view.
-    /// The caller must add its hosting view to the returned effectView.
+    /// Creates a transparent floating host. PopupKit supplies the sole material layer.
+    /// The caller adds its hosting view to effectView (the retained compatibility label).
     @MainActor
-    static func makePanel(width: CGFloat, height: CGFloat) -> (panel: NSPanel, effectView: NSVisualEffectView) {
+    static func makePanel(width: CGFloat, height: CGFloat, closable: Bool = true) -> (
+        panel: NSPanel, effectView: NSView
+    ) {
         let size = NSSize(width: width, height: height)
 
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: size),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+            styleMask: closable ? [.titled, .closable, .fullSizeContentView] : [.titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -115,15 +116,9 @@ extension AppDialogTokens {
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
-        let ve = NSVisualEffectView()
-        ve.material = .popover
-        ve.blendingMode = .behindWindow
-        ve.state = .active
-        ve.frame = NSRect(origin: .zero, size: size)
+        let ve = NSView(frame: NSRect(origin: .zero, size: size))
         ve.autoresizingMask = [.width, .height]
-        ve.wantsLayer = true
-        ve.layer?.cornerRadius = windowCornerRadius
-        ve.layer?.masksToBounds = true
+        panel.hasShadow = false
         panel.contentView = ve
 
         return (panel, ve)
@@ -183,7 +178,7 @@ extension AppDialogTokens {
 
 // MARK: - Dialog Window Frame
 // The unified chrome skeleton for every app dialog:
-// header / divider / content / divider / footer.
+// header / content / footer, rendered on one shared surface.
 
 struct AppDialogFrame<Header: View, Content: View, Footer: View>: View {
     private let header: Header
@@ -201,18 +196,21 @@ struct AppDialogFrame<Header: View, Content: View, Footer: View>: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            AppDialogDivider()
-            content
-            AppDialogDivider()
-            footer
+        PopupSurface {
+            VStack(spacing: 0) {
+                header
+                content
+                footer
+            }
         }
+        .appPopupAppearance()
+        .presentationBackground(.clear)
+        .presentationCornerRadius(PopupStyle().cornerRadius)
     }
 }
 
 // MARK: - Dialog Header
-// Unified leading header: glass icon capsule + title + subtitle (+ optional
+// Unified leading header: first-line aligned icon + title + subtitle (+ optional
 // trailing accessory such as a close button or live counter).
 
 struct AppDialogHeader<Accessory: View>: View {
@@ -252,52 +250,13 @@ struct AppDialogHeader<Accessory: View>: View {
     }
 
     var body: some View {
-        HStack(spacing: 16) {
-            if let systemImage {
-                ZStack {
-                    Circle()
-                        .fill(iconColor.opacity(colorScheme == .dark ? 0.18 : 0.12))
-                        .frame(
-                            width: AppDialogTokens.confirmIconBoxSize,
-                            height: AppDialogTokens.confirmIconBoxSize
-                        )
-                    Image(systemName: systemImage)
-                        .font(.system(size: 21, weight: .semibold))
-                        .foregroundStyle(iconColor)
-                }
-                .liquidGlassCircle(
-                    colorScheme: colorScheme,
-                    accentColor: iconColor,
-                    prominence: .prominent,
-                    isFloating: true
-                )
-            }
-
-            VStack(alignment: .leading, spacing: AppDialogTokens.confirmTitleBodySpacing) {
-                Text(title)
-                    .font(.system(size: AppDialogTokens.headerTitleFontSize, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.leading)
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.system(size: AppDialogTokens.headerSubtitleFontSize))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Spacer(minLength: 8)
-
-            accessory
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        PopupHeader(title: title, subtitle: subtitle, systemImage: systemImage) { accessory }
+            .appPopupAppearance(accent: iconColor)
     }
 }
 
 // MARK: - Dialog Footer
-// Unified bottom button area: consistent horizontal/vertical padding, subtle
-// material fill, and a hairline divider above the buttons.
+// Intrinsic glass actions with margins relative to the popup edges.
 
 struct AppDialogFooter<Content: View>: View {
     private let content: Content
@@ -307,15 +266,14 @@ struct AppDialogFooter<Content: View>: View {
     }
 
     var body: some View {
-        content
-            .padding(.horizontal, AppDialogTokens.footerHorizontalPadding)
-            .padding(.top, AppDialogTokens.footerVerticalPadding)
-            .padding(.bottom, AppDialogTokens.footerBottomPadding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.thinMaterial)
-            .overlay(alignment: .top) {
-                AppDialogDivider()
-            }
+        PopupActionGroup { content }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(
+                EdgeInsets(
+                    top: PopupStyle().buttonMarginTop,
+                    leading: PopupStyle().buttonMarginLeading,
+                    bottom: PopupStyle().buttonMarginBottom,
+                    trailing: PopupStyle().buttonMarginTrailing))
     }
 }
 
@@ -352,7 +310,6 @@ struct AppDialogProgressHeader: View {
         .padding(.horizontal, AppDialogTokens.headerHorizontalPadding)
         .padding(.vertical, AppDialogTokens.headerVerticalPadding)
         .frame(maxWidth: .infinity)
-        .background(.thinMaterial)
     }
 }
 
@@ -366,39 +323,8 @@ struct AppDialogConfirmHeader: View {
     var description: String? = nil
 
     var body: some View {
-        HStack(spacing: AppDialogTokens.confirmHeaderSpacing) {
-            Image(systemName: iconName)
-                .font(.system(size: AppDialogTokens.confirmIconSize, weight: .medium))
-                .foregroundStyle(iconColor)
-                .frame(
-                    width: AppDialogTokens.confirmIconBoxSize,
-                    height: AppDialogTokens.confirmIconBoxSize
-                )
-                .background(
-                    RoundedRectangle(
-                        cornerRadius: AppDialogTokens.confirmIconBoxCornerRadius,
-                        style: .continuous
-                    )
-                    .fill(iconColor.opacity(AppDialogTokens.confirmIconOpacity))
-                )
-
-            VStack(alignment: .leading, spacing: AppDialogTokens.confirmTitleBodySpacing) {
-                Text(title)
-                    .font(.system(size: AppDialogTokens.headerTitleFontSize, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.leading)
-                if let description {
-                    Text(description)
-                        .font(.system(size: AppDialogTokens.headerSubtitleFontSize))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.leading)
-                }
-            }
-        }
-        .padding(.horizontal, AppDialogTokens.headerHorizontalPadding)
-        .padding(.vertical, AppDialogTokens.confirmHeaderVerticalPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial)
+        PopupHeader(title: title, subtitle: description, systemImage: iconName)
+            .appPopupAppearance(accent: iconColor)
     }
 }
 
@@ -408,47 +334,31 @@ struct AppDialogConfirmHeader: View {
 struct AppDialogDropImportOverlay: View {
     let isVisible: Bool
 
-    @StateObject private var themeStore = ThemeStore.shared
+    @ObservedObject private var themeStore = ThemeStore.shared
 
     var body: some View {
         ZStack {
             Color.clear
 
             if isVisible {
-                VStack(spacing: AppDialogTokens.dropImportSpacing) {
-                    Image(systemName: "tray.and.arrow.down.fill")
-                        .font(.system(size: AppDialogTokens.dropImportIconSize, weight: .semibold))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(themeStore.accentColor)
+                PopupSurface {
+                    VStack(spacing: AppDialogTokens.dropImportSpacing) {
+                        Image(systemName: "tray.and.arrow.down.fill")
+                            .font(.system(size: AppDialogTokens.dropImportIconSize, weight: .semibold))
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(themeStore.accentColor)
 
-                    Text("释放以导入")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.primary)
+                        Text("释放以导入")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(.primary)
+                    }
+                    .frame(
+                        width: AppDialogTokens.dropImportCardWidth,
+                        height: AppDialogTokens.dropImportCardHeight
+                    )
                 }
-                .frame(
-                    width: AppDialogTokens.dropImportCardWidth,
-                    height: AppDialogTokens.dropImportCardHeight
-                )
-                .background(
-                    .regularMaterial,
-                    in: RoundedRectangle(
-                        cornerRadius: AppDialogTokens.windowCornerRadius,
-                        style: .continuous
-                    )
-                )
-                .overlay(
-                    RoundedRectangle(
-                        cornerRadius: AppDialogTokens.windowCornerRadius,
-                        style: .continuous
-                    )
-                    .strokeBorder(GlassStyleTokens.glassBorderColor, lineWidth: 0.75)
-                )
-                .shadow(
-                    color: GlassStyleTokens.subtleShadowColor,
-                    radius: GlassStyleTokens.subtleShadowRadius,
-                    x: 0,
-                    y: 10
-                )
+                .appPopupAppearance()
+                .environmentObject(themeStore)
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
             }
         }
@@ -497,10 +407,8 @@ struct AppDialogDivider: View {
 }
 
 // MARK: - Glass Capsule Button Style
-// Shared button style for app dialog footers. Mirrors the update window
-// (`UpdateAlertView`) so import, confirmation, and update dialogs share one
-// button language.
-//   - `.primary`    : accent-filled, white label, subtle floating shadow.
+// Compatibility adapter into PopupKit's shared button renderer.
+//   - `.primary`    : accent glass, contrasting label.
 //   - `.secondary`  : subtle neutral fill, primary label (cancel / close).
 //   - `.destructive`: red-filled, white label (irreversible actions).
 
@@ -512,55 +420,28 @@ struct AppDialogGlassButtonStyle: ButtonStyle {
     }
 
     var kind: Kind = .secondary
-    /// Accent tint for the `.primary` kind. Pass `ThemeStore.shared.accentColor`
-    /// to match the rest of the app; ignored for `.secondary` / `.destructive`.
-    var tint: Color = .accentColor
+    /// Optional override; by default inherit the popup's ThemeStore palette.
+    var tint: Color? = nil
 
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.popupStyle) private var popupStyle
+    @Environment(\.popupPalette) private var popupPalette
 
     func makeBody(configuration: Configuration) -> some View {
-        let isProminent = kind != .secondary
-
-        return configuration.label
-            .font(.system(size: 13, weight: isProminent ? .semibold : .medium))
-            .foregroundStyle(isProminent ? Color.white : Color.primary)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 7)
-            .glassEffect(.clear, in: Capsule())
-            .background(Capsule().fill(fillColor))
-            .overlay(
-                Capsule()
-                    .strokeBorder(GlassStyleTokens.glassBorderColor, lineWidth: 0.5)
-            )
-            .shadow(
-                color: isProminent ? GlassStyleTokens.subtleShadowColor : .clear,
-                radius: isProminent ? GlassStyleTokens.subtleShadowRadius : 0,
-                x: 0,
-                y: isProminent ? 2 : 0
-            )
-            .opacity(opacity(isPressed: configuration.isPressed))
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .motionAnimation(.microInteraction, value: configuration.isPressed)
-            .contentShape(Capsule())
-    }
-
-    private var fillColor: Color {
-        switch kind {
-        case .primary:
-            return tint.opacity(colorScheme == .dark ? 0.96 : 0.88)
-        case .destructive:
-            return Color.red.opacity(colorScheme == .dark ? 0.92 : 0.88)
-        case .secondary:
-            return colorScheme == .dark
-                ? Color.white.opacity(0.08)
-                : Color.black.opacity(0.08)
+        var palette = popupPalette
+        if let tint { palette.accent = tint }
+        return PopupButtonAppearance(kind: popupKind(for: configuration.role), isPressed: configuration.isPressed) {
+            configuration.label
         }
+        .popupAppearance(style: popupStyle, palette: palette)
     }
 
-    private func opacity(isPressed: Bool) -> Double {
-        guard isEnabled else { return 0.4 }
-        return isPressed ? 0.75 : 1
+    private func popupKind(for role: ButtonRole?) -> PopupActionKind {
+        if case .secondary = kind, role == .destructive { return .destructive }
+        switch kind {
+        case .primary: return .primary
+        case .secondary: return .secondary
+        case .destructive: return .destructive
+        }
     }
 }
 
@@ -639,7 +520,7 @@ struct AppDialogOptionMenu<Value: Hashable>: View {
         } label: {
             HStack(spacing: 8) {
                 Text(currentLabel)
-                    .font(.system(size: 13))
+                    .font(.system(size: PopupStyle().bodySize))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -647,29 +528,19 @@ struct AppDialogOptionMenu<Value: Hashable>: View {
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .contentShape(Capsule())
-            .background(
-                Capsule()
-                    .fill(colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.05))
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
-            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(AppDialogGlassButtonStyle())
         .popover(isPresented: $isOpen, arrowEdge: .bottom) {
-            ScrollView {
-                LazyVStack(spacing: 2) {
+            AppPopupScrollRegion {
+                LazyVStack(spacing: PopupStyle().rowSpacing) {
                     ForEach(options) { option in
                         optionRow(option)
                     }
                 }
-                .padding(6)
+                .padding(PopupStyle().rowPadding)
             }
             .frame(minWidth: 240, maxWidth: 360, maxHeight: 280)
+            .appPopupAppearance()
         }
     }
 
@@ -683,7 +554,7 @@ struct AppDialogOptionMenu<Value: Hashable>: View {
         } label: {
             HStack(spacing: 8) {
                 Text(option.label)
-                    .font(.system(size: 13))
+                    .font(.system(size: PopupStyle().bodySize))
                     .foregroundStyle(.primary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
@@ -694,8 +565,7 @@ struct AppDialogOptionMenu<Value: Hashable>: View {
                         .foregroundStyle(themeStore.accentColor)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .padding(PopupStyle().rowPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .background(
@@ -710,6 +580,7 @@ struct AppDialogOptionMenu<Value: Hashable>: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .onHover { hovering in
             hoveredValue = hovering ? option.value : nil
         }

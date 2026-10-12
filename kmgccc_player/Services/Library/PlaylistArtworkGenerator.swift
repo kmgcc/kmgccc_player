@@ -37,9 +37,10 @@ actor PlaylistArtworkGenerator {
     func generateArtwork(
         playlistID: UUID,
         snapshots: [PlaylistArtworkSnapshot],
-        variationSeed: Int? = nil
+        variationSeed: Int? = nil,
+        priority: TaskPriority = .userInitiated
     ) async -> NSImage? {
-        return await Task.detached(priority: .userInitiated) {
+        return await Task.detached(priority: priority) {
             PlaylistArtworkGenerator.generate(
                 playlistID: playlistID,
                 snapshots: snapshots,
@@ -478,7 +479,12 @@ final class DetailHeaderArtworkResolver {
         }
     }
 
-    func resolveDeferredArtwork(for request: DetailHeaderArtworkRequest) async -> ResolvedHeaderArtwork? {
+    /// `priority` is the quality of service of the generation; background
+    /// preparation passes its own so idle work does not run at user level.
+    func resolveDeferredArtwork(
+        for request: DetailHeaderArtworkRequest,
+        priority: TaskPriority = .userInitiated
+    ) async -> ResolvedHeaderArtwork? {
         switch request {
         case .playlist(let selectionIdentity, let playlistID, let tracks):
             // If immediate resolved, use existing artwork (Rule: artwork is stable)
@@ -491,7 +497,8 @@ final class DetailHeaderArtworkResolver {
 
             guard let image = await generator.generateArtwork(
                 playlistID: playlistID,
-                snapshots: snapshots
+                snapshots: snapshots,
+                priority: priority
             ) else {
                 logResolver("selectionType=playlist selectionIdentity=\(playlistID) source=first-generation phase=generation-failed")
                 return nil

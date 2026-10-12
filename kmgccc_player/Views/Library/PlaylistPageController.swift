@@ -166,6 +166,7 @@ final class PlaylistPageController {
     private var uiState: UIStateViewModel?
     private var headerColorExtractor: HeaderColorExtractor?
     private var playlistArtworkPipeline: PlaylistArtworkPipeline?
+    private var cacheServices: LibraryCacheServices?
 
     private var rebuildTask: Task<Void, Never>?
     private var snapshotUpdateTask: Task<Void, Never>?
@@ -188,9 +189,9 @@ final class PlaylistPageController {
     private var didFadeHeaderIdentity: String?
     private var didFadeHaloIdentity: String?
     @ObservationIgnored
-    private var artworkPrefetchTasks: [String: Task<Void, Never>] = [:]
+    private var artworkPrefetchTasks: [String: BackgroundTaskHandle] = [:]
     @ObservationIgnored
-    private var rowArtworkPrefetchTask: Task<Void, Never>?
+    private var rowArtworkPrefetchTask: BackgroundTaskHandle?
     @ObservationIgnored
     private var rowArtworkPrefetchKey: String?
     @ObservationIgnored
@@ -228,6 +229,7 @@ final class PlaylistPageController {
         self.uiState = uiState
         self.headerColorExtractor = cacheServices.headerColorExtractor
         self.playlistArtworkPipeline = cacheServices.playlistArtworkPipeline
+        self.cacheServices = cacheServices
     }
 
     func bindCollectionList(libraryVM: LibraryViewModel, uiState: UIStateViewModel) {
@@ -1275,8 +1277,7 @@ final class PlaylistPageController {
 
         startArtworkPrefetch(
             key: "\(pageModel.selectionIdentity)-initial-\(pageModel.sourceFingerprint)",
-            requests: requests,
-            priority: playbackActive ? .background : .utility
+            requests: requests
         )
 
         if let currentTrackID = playerVM?.currentTrack?.id {
@@ -1463,26 +1464,34 @@ final class PlaylistPageController {
         }
     }
 
+    /// Submits a prefetch as upcoming work of the App scheduler. Nothing is
+    /// started while the library is not bound to a scheduler; the covers then
+    /// load when their rows appear.
+    private func submitPrefetch(requests: [PlaylistArtworkRequest]) -> BackgroundTaskHandle? {
+        guard let pipeline = playlistArtworkPipeline, let cacheServices else { return nil }
+        return cacheServices.submitArtworkPrefetch(domain: .listArtwork, resources: [.compute]) { context in
+            await pipeline.prefetch(requests, context: context)
+        }
+    }
+
     private func startArtworkPrefetch(
         key: String,
-        requests: [PlaylistArtworkRequest],
-        priority: TaskPriority = .background
+        requests: [PlaylistArtworkRequest]
     ) {
         guard !requests.isEmpty, !prefetchedArtworkKeys.contains(key) else { return }
-        prefetchedArtworkKeys.insert(key)
 
         if artworkPrefetchTasks.count >= 6, let oldestKey = artworkPrefetchTasks.keys.first {
             artworkPrefetchTasks[oldestKey]?.cancel()
             artworkPrefetchTasks.removeValue(forKey: oldestKey)
         }
 
-        guard let pipeline = playlistArtworkPipeline,
-              let task = pipeline.prefetch(requests, priority: priority) else { return }
+        guard let task = submitPrefetch(requests: requests) else { return }
+        prefetchedArtworkKeys.insert(key)
         artworkPrefetchTasks[key] = task
 
-        Task { @MainActor in
-            await task.value
-            self.artworkPrefetchTasks.removeValue(forKey: key)
+        Task { @MainActor [weak self] in
+            _ = await task.value()
+            self?.artworkPrefetchTasks.removeValue(forKey: key)
         }
     }
 
@@ -1491,17 +1500,15 @@ final class PlaylistPageController {
         requests: [PlaylistArtworkRequest]
     ) {
         guard !requests.isEmpty, !prefetchedArtworkKeys.contains(key) else { return }
-        prefetchedArtworkKeys.insert(key)
 
+        guard let task = submitPrefetch(requests: requests) else { return }
+        prefetchedArtworkKeys.insert(key)
         rowArtworkPrefetchTask?.cancel()
         rowArtworkPrefetchKey = key
-
-        guard let pipeline = playlistArtworkPipeline,
-              let task = pipeline.prefetch(requests, priority: .background) else { return }
         rowArtworkPrefetchTask = task
 
         Task { @MainActor [weak self] in
-            await task.value
+            _ = await task.value()
             guard let self, self.rowArtworkPrefetchKey == key else { return }
             self.rowArtworkPrefetchTask = nil
             self.rowArtworkPrefetchKey = nil

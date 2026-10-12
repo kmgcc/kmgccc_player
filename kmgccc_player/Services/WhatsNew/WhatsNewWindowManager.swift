@@ -41,19 +41,12 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
         FeatureTipPresentationCoordinator.shared.setSuspended(true, reason: .whatsNew)
         let whatsNewView = WhatsNewView(whatsNew: whatsNew)
 
-        let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 620),
-            styleMask: [.titled, .closable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
+        let (panel, _) = AppDialogTokens.makePanel(width: 520, height: 620)
 
         panel.title = ""
         panel.titlebarAppearsTransparent = true
         panel.titleVisibility = .hidden
         panel.isMovableByWindowBackground = true
-        panel.backgroundColor = NSColor.windowBackgroundColor
-        panel.isOpaque = true
         panel.level = .floating
         panel.isReleasedWhenClosed = false
         panel.delegate = self
@@ -66,6 +59,7 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
         panel.minSize = NSSize(width: 480, height: 560)
 
         let themedView = whatsNewView
+            .appPopupSurface()
             .environment(AppSettings.shared)
             .environmentObject(ThemeStore.shared)
             .tint(ThemeStore.shared.accentColor)

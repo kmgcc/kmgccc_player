@@ -5,6 +5,7 @@
 //  App-owned configuration, apply state, and preset operations for audio DSP.
 //
 
+import AppKit
 import Foundation
 import Observation
 
@@ -19,10 +20,23 @@ nonisolated struct DSPConfigurationValidationError: Error, LocalizedError, Senda
 @Observable
 @MainActor
 final class AudioDSPController {
+    let processingLoad = DSPProcessingLoadPresentation()
+    @ObservationIgnored private var processingLoadObservers: Set<UUID> = []
+    @ObservationIgnored private var processingLoadGeneration = UUID()
+    @ObservationIgnored private var processingLoadBindingID = UUID()
+    @ObservationIgnored private var monitorProcessingLoad: (@MainActor (Bool, UUID) -> Void)?
     private(set) var configuration: AudioDSPConfiguration
     private(set) var revisionString: String
     private(set) var presets: [DSPPresetDocument]
-    private(set) var selectedPresetID: UUID?
+    private(set) var selectedPresetID: UUID? {
+        didSet {
+            guard oldValue != selectedPresetID else { return }
+            // Undo history belongs to one preset. The editable copy made by
+            // the first edit of a built-in preset continues that history.
+            if !isApplyingUndoableEdit { discardEditHistory() }
+            onSelectedPresetChange?(selectedPresetID)
+        }
+    }
     private(set) var isModified = false
     private(set) var status: DSPApplyStatus
     private(set) var preparedRevision: String?
@@ -33,6 +47,9 @@ final class AudioDSPController {
 
     var applyConfiguration: (@MainActor (AudioDSPConfiguration, String, UUID) -> Void)?
     var onPresetDeleted: (@MainActor (UUID) -> Void)?
+    /// Every change of the selected preset, including the editable copy made
+    /// when the built-in preset is edited. The device owner remembers it.
+    @ObservationIgnored var onSelectedPresetChange: (@MainActor (UUID?) -> Void)?
 
     @ObservationIgnored private let store: DSPPresetStore
     @ObservationIgnored private var sourceIsLocal = true
@@ -52,6 +69,12 @@ final class AudioDSPController {
     @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
     @ObservationIgnored private var requestStatusByID: [UUID: DSPApplyStatus] = [:]
     @ObservationIgnored private var requestStatusOrder: [UUID] = []
+    /// Lent by the settings view while it is shown, so Edit > Undo and
+    /// ⌘Z / ⇧⌘Z in that window step through parameter edits.
+    @ObservationIgnored private weak var undoManager: UndoManager?
+    @ObservationIgnored private var isApplyingUndoableEdit = false
+    @ObservationIgnored private var isEditStepOpen = false
+    @ObservationIgnored private var editStepCloseTask: Task<Void, Never>?
 
     init(store: DSPPresetStore? = nil) {
         let initialRevision = UUID().uuidString
@@ -98,6 +121,9 @@ final class AudioDSPController {
             return DSPApplyStatus(revisionString: revisionString, state: .ready)
         }
 
+        // Automation, script application and preset loading change the chain
+        // outside the history, so earlier steps no longer describe it.
+        if !isApplyingUndoableEdit, validated != configuration { discardEditHistory() }
         hasReceivedUserConfiguration = true
         supersedeLatestPendingRequest()
         let nextRevision = UUID().uuidString
@@ -155,6 +181,7 @@ final class AudioDSPController {
     /// Continuous edits publish at most once per 35 ms. Ending an interaction
     /// sends its final value immediately.
     func commitPendingApply() {
+        closeEditStep()
         pendingApplyTask?.cancel()
         pendingApplyTask = nil
         dispatchPendingApply()
@@ -163,8 +190,10 @@ final class AudioDSPController {
 
     /// Convenience path for UI bindings. Validation failures stay visible in
     /// the shared controller state instead of escaping a SwiftUI setter.
+    /// Edits become undo steps unless `recordsUndo` is false.
     func updateConfiguration(
         commit: Bool = false,
+        recordsUndo: Bool = true,
         _ update: (inout AudioDSPConfiguration) -> Void
     ) {
         var candidate = configuration
@@ -175,31 +204,106 @@ final class AudioDSPController {
             if commit { commitPendingApply() }
             return
         }
+        let previous = configuration
+        isApplyingUndoableEdit = recordsUndo
+        defer { isApplyingUndoableEdit = false }
         do {
             _ = try apply(candidate)
+            if recordsUndo { recordEditStep(restoring: previous, isDiscrete: commit) }
             if commit { commitPendingApply() }
         } catch {
             record(error)
         }
     }
 
-    /// An automatic bypass preserves the selected preset identity, including
-    /// an empty selection after deletion, rather than creating a new preset.
-    func disableForOutputDevice() {
-        guard configuration.enabled else { return }
-        var candidate = configuration
-        candidate.enabled = false
-        do {
-            _ = try apply(candidate, createEditablePreset: false)
-            commitPendingApply()
-        } catch { record(error) }
+    // MARK: - Undo
+
+    func attachUndoManager(_ manager: UndoManager?) {
+        guard let manager, manager !== undoManager else { return }
+        discardEditHistory()
+        undoManager = manager
     }
 
+    /// Steps left behind would change the sound from a page that no longer
+    /// shows it.
+    func detachUndoManager(_ manager: UndoManager?) {
+        guard let manager, manager === undoManager else { return }
+        discardEditHistory()
+        undoManager = nil
+    }
+
+    /// A drag, or a quick run of key presses, is one step. The step is
+    /// registered when it opens; undo reads the chain as it stands then.
+    private func recordEditStep(restoring previous: AudioDSPConfiguration, isDiscrete: Bool) {
+        if isDiscrete { closeEditStep() }
+        if !isEditStepOpen {
+            isEditStepOpen = true
+            registerEditStepUndo(restoring: previous)
+        }
+        if !isDiscrete { scheduleEditStepClose() }
+    }
+
+    private func scheduleEditStepClose() {
+        editStepCloseTask?.cancel()
+        editStepCloseTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, let self else { return }
+            // Holding a control still to listen keeps the drag in one step;
+            // its release commits.
+            if NSEvent.pressedMouseButtons != 0 {
+                self.scheduleEditStepClose()
+            } else {
+                self.closeEditStep()
+            }
+        }
+    }
+
+    private func closeEditStep() {
+        editStepCloseTask?.cancel()
+        editStepCloseTask = nil
+        isEditStepOpen = false
+    }
+
+    private func registerEditStepUndo(restoring target: AudioDSPConfiguration) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: self) { controller in
+            controller.restoreEditStep(target)
+        }
+        undoManager.setActionName("音效调整")
+    }
+
+    /// Registering from inside undo files the inverse as redo, and the reverse.
+    private func restoreEditStep(_ target: AudioDSPConfiguration) {
+        closeEditStep()
+        let current = configuration
+        isApplyingUndoableEdit = true
+        defer { isApplyingUndoableEdit = false }
+        do {
+            _ = try apply(target)
+            commitPendingApply()
+            registerEditStepUndo(restoring: current)
+        } catch {
+            record(error)
+        }
+    }
+
+    private func discardEditHistory() {
+        closeEditStep()
+        undoManager?.removeAllActions(withTarget: self)
+    }
+
+    @discardableResult
     func bindPlayback(
+        monitorLoad: (@MainActor (Bool, UUID) -> Void)? = nil,
         apply handler: @escaping @MainActor (AudioDSPConfiguration, String, UUID) -> Void
-    ) {
+    ) -> UUID {
         supersedeLatestPendingRequest()
         applyConfiguration = handler
+        monitorProcessingLoad?(false, UUID())
+        processingLoadBindingID = UUID()
+        monitorProcessingLoad = monitorLoad
+        processingLoad.clear()
+        refreshProcessingLoadMonitoring()
         guard sourceIsLocal else {
             let requestID = UUID()
             latestRequestID = requestID
@@ -209,7 +313,7 @@ final class AudioDSPController {
                 state: .inactiveExternalSource
             )
             remember(status)
-            return
+            return processingLoadBindingID
         }
         pendingConfiguration = configuration
         pendingRevision = revisionString
@@ -222,12 +326,44 @@ final class AudioDSPController {
         )
         remember(status)
         dispatchPendingApply()
+        return processingLoadBindingID
+    }
+
+    /// Multiple settings windows can observe the same live chain. Leaving one
+    /// window must not turn off another window's measurement.
+    func setProcessingLoadVisible(_ visible: Bool, observerID: UUID) {
+        let wasVisible = !processingLoadObservers.isEmpty
+        if visible { processingLoadObservers.insert(observerID) }
+        else { processingLoadObservers.remove(observerID) }
+        guard wasVisible != !processingLoadObservers.isEmpty else { return }
+        refreshProcessingLoadMonitoring()
+    }
+
+    private func refreshProcessingLoadMonitoring() {
+        processingLoadGeneration = UUID()
+        monitorProcessingLoad?(!processingLoadObservers.isEmpty && sourceIsLocal, processingLoadGeneration)
+    }
+
+    func receiveProcessingLoad(_ update: DSPProcessingLoadUpdate, bindingID: UUID) {
+        guard bindingID == processingLoadBindingID,
+              update.monitoringGeneration == processingLoadGeneration,
+              sourceIsLocal, !processingLoadObservers.isEmpty else { return }
+        if let snapshot = update.snapshot {
+            guard configuration.enabled,
+                  snapshot.revision == revisionString,
+                  snapshot.requestID == latestRequestID else { return }
+        }
+        guard let snapshot = update.snapshot else { return }
+        let nodeIDs = Set(configuration.nodes.map(\.nodeID) + [DSPEqualLoudnessStage.nodeID, DSPLimiterConfiguration.nodeID])
+        processingLoad.update(snapshot, retainingNodeIDs: nodeIDs)
     }
 
     func setSourceIsLocal(_ isLocal: Bool) {
         guard sourceIsLocal != isLocal else { return }
         supersedeLatestPendingRequest()
         sourceIsLocal = isLocal
+        if !isLocal { processingLoad.clear() }
+        refreshProcessingLoadMonitoring()
         pendingApplyTask?.cancel()
         pendingApplyTask = nil
         pendingConfiguration = nil
@@ -272,6 +408,10 @@ final class AudioDSPController {
     }
 
     func detachPlayback() {
+        monitorProcessingLoad?(false, UUID())
+        monitorProcessingLoad = nil
+        processingLoadBindingID = UUID()
+        processingLoad.clear()
         supersedeLatestPendingRequest()
         pendingApplyTask?.cancel()
         pendingApplyTask = nil
@@ -929,8 +1069,17 @@ final class AudioDSPController {
         if !configuration.outputTrimDB.isFinite || !(-24...24).contains(configuration.outputTrimDB) {
             add("dsp.invalidParameter", "输出增益范围为 −24 至 +24 dB。", "outputTrimDB")
         }
-        if !configuration.headroom.marginDB.isFinite || !(0...12).contains(configuration.headroom.marginDB) {
-            add("dsp.invalidParameter", "余量范围为 0 至 12 dB。", "headroom.marginDB")
+        if !configuration.headroom.maximumAttenuationDB.isFinite
+            || !DSPHeadroomConfiguration.maximumAttenuationRange.contains(configuration.headroom.maximumAttenuationDB) {
+            add("dsp.invalidParameter", "最大衰减范围为 0 至 12 dB。", "headroom.maximumAttenuationDB")
+        }
+        if !configuration.limiter.ceilingDB.isFinite
+            || !DSPLimiterConfiguration.ceilingRange.contains(configuration.limiter.ceilingDB) {
+            add("dsp.invalidParameter", "限幅上限范围为 −6 至 0 dB。", "limiter.ceilingDB")
+        }
+        if !configuration.limiter.releaseMilliseconds.isFinite
+            || !DSPLimiterConfiguration.releaseRange.contains(configuration.limiter.releaseMilliseconds) {
+            add("dsp.invalidParameter", "释放时间范围为 20 至 1000 ms。", "limiter.releaseMilliseconds")
         }
 
         let scriptNodeCount = configuration.nodes.filter {
@@ -949,7 +1098,10 @@ final class AudioDSPController {
             if node.typeID == DSPNodeConfiguration.tubeTypeID,
                let parameters = node.tubeParameters, parameters.mix > 0 { return total + 64 }
             return total
-        }
+        } + (configuration.limiter.enabled
+            ? format.map { DSPPeakLimiterKernel.lookaheadFrames(sampleRate: $0.sampleRate) }
+                ?? DSPPeakLimiterKernel.maximumLookaheadFrames
+            : 0)
         var seenIDs = Set<UUID>()
         for (index, node) in configuration.nodes.enumerated() {
             let prefix = "nodes.\(index)"
@@ -962,7 +1114,6 @@ final class AudioDSPController {
             }
             guard node.enabled else { continue }
             guard node.typeID == DSPNodeConfiguration.parametricEQTypeID
-                    || node.typeID == DSPNodeConfiguration.equalLoudnessTypeID
                     || node.typeID == DSPNodeConfiguration.stereoWidthTypeID
                     || node.typeID == DSPNodeConfiguration.virtualBassTypeID
                     || node.typeID == DSPNodeConfiguration.tubeTypeID
@@ -1244,59 +1395,6 @@ final class AudioDSPController {
                 continue
             }
 
-            if node.typeID == DSPNodeConfiguration.equalLoudnessTypeID {
-                for parameterKey in node.parameters.keys.sorted()
-                    where !DSPEqualLoudnessParameters.supportedParameterKeys.contains(parameterKey) {
-                    add(
-                        "dsp.unsupportedParameter",
-                        "此等响参数暂不支持：\(parameterKey)。",
-                        "\(prefix).parameters.\(parameterKey)",
-                        nodeID: node.nodeID
-                    )
-                }
-                guard let parameters = node.equalLoudnessParameters else {
-                    add(
-                        "dsp.invalidParameter",
-                        "等响补偿参数不完整。",
-                        "\(prefix).parameters",
-                        nodeID: node.nodeID
-                    )
-                    continue
-                }
-                if !parameters.strength.isFinite
-                    || !DSPEqualLoudnessParameters.strengthRange.contains(parameters.strength) {
-                    add("dsp.invalidParameter", "强度范围为 0 至 1。", "\(prefix).parameters.strength", nodeID: node.nodeID)
-                }
-                if !parameters.bassFrequencyHz.isFinite
-                    || !DSPEqualLoudnessParameters.bassFrequencyRange.contains(parameters.bassFrequencyHz) {
-                    add("dsp.invalidParameter", "低架频率范围为 20 至 500 Hz。", "\(prefix).parameters.bassFrequencyHz", nodeID: node.nodeID)
-                }
-                if !parameters.trebleFrequencyHz.isFinite
-                    || !DSPEqualLoudnessParameters.trebleFrequencyRange.contains(parameters.trebleFrequencyHz) {
-                    add("dsp.invalidParameter", "高架频率范围为 1,000 至 20,000 Hz。", "\(prefix).parameters.trebleFrequencyHz", nodeID: node.nodeID)
-                }
-                if !parameters.bassQ.isFinite
-                    || !DSPEqualLoudnessParameters.shelfSlopeRange.contains(parameters.bassQ) {
-                    add("dsp.invalidParameter", "低架斜率 S 范围为 0.25 至 1。", "\(prefix).parameters.bassQ", nodeID: node.nodeID)
-                }
-                if !parameters.trebleQ.isFinite
-                    || !DSPEqualLoudnessParameters.shelfSlopeRange.contains(parameters.trebleQ) {
-                    add("dsp.invalidParameter", "高架斜率 S 范围为 0.25 至 1。", "\(prefix).parameters.trebleQ", nodeID: node.nodeID)
-                }
-                if let rawCalibrations = node.parameters["calibrations"] {
-                    let readable: Bool
-                    if case .array(let values) = rawCalibrations {
-                        readable = values.allSatisfy { EqualLoudnessCalibration(json: $0) != nil }
-                    } else {
-                        readable = false
-                    }
-                    if !readable {
-                        add("dsp.invalidParameter", "等响标定数据无法读取。", "\(prefix).parameters.calibrations", nodeID: node.nodeID)
-                    }
-                }
-                continue
-            }
-
             for parameterKey in node.parameters.keys.sorted() where parameterKey != "bands" {
                 add(
                     "dsp.unsupportedParameter",
@@ -1362,6 +1460,31 @@ final class AudioDSPController {
                 }
             }
         }
+        let stage = configuration.equalLoudness.parameters
+        if !stage.strength.isFinite || !DSPEqualLoudnessParameters.strengthRange.contains(stage.strength) {
+            add("dsp.invalidParameter", "强度范围为 0 至 1。", "equalLoudness.parameters.strength")
+        }
+        if !stage.bassFrequencyHz.isFinite
+            || !DSPEqualLoudnessParameters.bassFrequencyRange.contains(stage.bassFrequencyHz) {
+            add("dsp.invalidParameter", "低架频率范围为 20 至 500 Hz。", "equalLoudness.parameters.bassFrequencyHz")
+        }
+        if !stage.trebleFrequencyHz.isFinite
+            || !DSPEqualLoudnessParameters.trebleFrequencyRange.contains(stage.trebleFrequencyHz) {
+            add("dsp.invalidParameter", "高架频率范围为 1,000 至 20,000 Hz。", "equalLoudness.parameters.trebleFrequencyHz")
+        }
+        if !stage.bassQ.isFinite || !DSPEqualLoudnessParameters.shelfSlopeRange.contains(stage.bassQ) {
+            add("dsp.invalidParameter", "低架斜率 S 范围为 0.25 至 1。", "equalLoudness.parameters.bassQ")
+        }
+        if !stage.trebleQ.isFinite || !DSPEqualLoudnessParameters.shelfSlopeRange.contains(stage.trebleQ) {
+            add("dsp.invalidParameter", "高架斜率 S 范围为 0.25 至 1。", "equalLoudness.parameters.trebleQ")
+        }
+        if let calibration = configuration.equalLoudness.calibration,
+           !calibration.points.allSatisfy({
+               $0.coordinate.isFinite && $0.bassDB.isFinite && $0.trebleDB.isFinite
+           }) {
+            add("dsp.invalidParameter", "等响标定数据无法读取。", "equalLoudness.calibration")
+        }
+
         let renderCost = DSPScriptCompiler.estimatedRendererOperationsPerSecond(
             baseOperationsPerSecond: totalScriptOperationsPerSecond,
             latencyFrames: scriptLatencyFrames + nativeLatencyFrames)

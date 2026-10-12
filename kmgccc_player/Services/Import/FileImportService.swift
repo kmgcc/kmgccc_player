@@ -153,6 +153,13 @@ final class FileImportService: FileImportServiceProtocol {
     private var lastImportPossibleDuplicateCount = 0
     private var lastImportPendingNCMCount = 0
     private var lastImportAlreadyInPlaylistCount = 0
+    private weak var backgroundScheduler: BackgroundWorkScheduler?
+
+    /// An import runs at full speed. It tells the scheduler so that idle work
+    /// pauses for as long as it lasts; the scheduler never slows the import.
+    func bindBackgroundWork(scheduler: BackgroundWorkScheduler) {
+        backgroundScheduler = scheduler
+    }
 
     /// Main-actor UI hook.  The service remains independent of presentation;
     /// AppSessionHost stores the failures in UI state for the sidebar report.
@@ -606,6 +613,8 @@ final class FileImportService: FileImportServiceProtocol {
             category: .import
         )
 
+        let backgroundHold = backgroundScheduler?.acquireHold(.importing)
+        defer { backgroundHold?.release() }
         await LibraryImportCoordinator.shared.beginBatch(reason: "fileImport")
         defer {
             Task {

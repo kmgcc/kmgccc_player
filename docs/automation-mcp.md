@@ -221,8 +221,14 @@ P1–P2 的 `dsp.*` 工具通过 App 唯一 `AudioDSPController` 操作 renderer
 `desiredRevision`／`preparedRevision`／`effectiveRevision`／`audibleRevision` 和诊断。
 `dsp.validate` 无副作用；`dsp.patch` 接受完整 `configuration` 或有序 `operations`，
 在全部参数通过后原子提交。`expectedRevision` 使用 `dsp.state.desiredRevision`。
-操作类型是 `setMaster`、`setTrim`、`setHeadroom`、`setParameter`、`setEnabled`、
+操作类型是 `setMaster`、`setTrim`、`setHeadroom`、`setLimiter`、`setEqualLoudness`、`setParameter`、`setEnabled`、
 `addNode`、`removeNode`、`setOrder`；`setParameter.path` 相对节点参数，例如 `bands.0.gainDB`。
+
+自动余量只按 EQ、等响补偿和效果节点自身增加的峰值压低链路输入，不超过 `headroom.maximumAttenuationDB`（0–12 dB，默认 6）；
+调低的输入增益计入已留出的余量，调高的输入增益与输出增益保持原样。`limiter` 是等响补偿之后的固定限幅器：
+5 ms 前瞻把每次压缩展开成同样长的渐变，压缩后保持 20 ms，再按 dB 刻度释放。`ceilingDB`（−6–0 dBFS，默认 −1）是最终输出的样本峰值上限，
+`releaseMilliseconds`（20–1000 ms，默认 200）是释放时间常数；`setLimiter` 可只改其中几项。链路无处理时限幅器不启用。
+旧预设缺少这些字段时按默认值读取。
 
 `dsp.patch`／预设选择返回 `status.requestID`。`dsp.wait` 最多等待 30 秒；
 `scheduled` 表示已排入队列，`audible` 才表示输出时钟已到达切换点，`timedOut` 独立返回。App 只保留最近 64 个请求的状态；未知或已淘汰的 ID 返回参数错误，不会伪装为 superseded。`applicationPresentationLeadSeconds` 单独报告 App 的可视化 lead。
@@ -239,11 +245,11 @@ CLI 使用 `--idempotency-key`；每次调参沿用 audio 授权，不弹额外�
 `subscriptions/listen`。沿用现有约 2 秒快照订阅循环，仅变化时发送
 `notifications/resources/updated`；订阅不会自动启动 App。读工具使用 `audio.read`，
 写工具使用 `audio.write`；`dsp.errors.get/clear` 公开报错与清除操作。
-当前源码支持 `peq9`、`equalLoudness`、`stereoWidth`、`virtualBass`、`tube`、`script`。P5 与 P6 已通过授权 Debug 编译（App、Xcode 测试目标、CLI/MCP 与自动化测试目标），尚待测试运行和实际运行验收。
+当前源码支持节点 `peq9`、`stereoWidth`、`virtualBass`、`tube`、`script`，以及预设固定阶段 `equalLoudness`。P5 与 P6 已通过授权 Debug 编译（App、Xcode 测试目标、CLI/MCP 与自动化测试目标），尚待测试运行和实际运行验收。
 
 P5 节点的全部参数、默认值、质量与声道策略见 `dsp.schema.nodes`。使用 `setQuality(nodeID, value)` 切换 `oversampling2x/oversampling4x`，使用 `setChannelPolicy(nodeID, value)` 设置节点请求的声道范围；它们与 `setParameter`、`setOrder` 可以组成一次原子编辑，并沿用 revision 和 dry-run。设置界面不暴露声道范围；请求值只在源能支持时生效，否则处理器会放宽而不是旁路：宽度节点固定 `frontPair`；低音在明确的 mono/stereo 上保持 `fullRange`，否则退到 `frontPair`；其余节点在布局完整已知时使用 `fullRange`（排除 LFE），布局未知时处理全部声道。
 
-`dsp.state.processing` 及 apply status 包含 `processingLatencyFrames`、`mediaMappingLatencyFrames`、`peakGuarantee`。活跃非线性节点固定 64 源帧算法延迟，源前瞻补偿后 App 时间映射延迟为 0；尚未准备时返回 null。非线性链的峰值保证为 `unavailable`，不能将余量估计当作真实峰值保证。参数、质量、策略与链顺序均随完整预设保存。
+`dsp.state.processing` 及 apply status 包含 `processingLatencyFrames`、`mediaMappingLatencyFrames`、`peakGuarantee`。活跃非线性节点各固定 64 源帧算法延迟，限幅器为 5 ms 对应的源帧数（48 kHz 时 240 帧），源前瞻补偿后 App 时间映射延迟为 0；尚未准备时返回 null。限幅器生效时峰值保证为 `samplePeakLimited`；关闭限幅器后，非线性链为 `unavailable`，不能将余量估计当作真实峰值保证。参数、质量、策略与链顺序均随完整预设保存。
 
 ### P6 可编程 DSP
 
@@ -261,4 +267,6 @@ P5 节点的全部参数、默认值、质量与声道策略见 `dsp.schema.node
 
 `audio.get/patch` 开放全局 fade 与音量均衡（开关和目标响度）。`audio.loudness.get` 使用 audio.read/library.read 读取派生缓存；`audio.loudness.analyze` 使用 audio.write/library.read 创建支持取消、重试和 MCP Tasks 的 Job，不占用资料库写入队列。测量结果不改变当前曲目的增益，唯一例外是专辑增益首次就绪时的缓慢过渡。
 
-`dsp.schema` 增加可排序、可保存的 `equalLoudness` v1 节点，节点参数只调节补偿强度与架式滤波器形状；补偿量来自实际输出设备的系统音量与该设备的标定曲线（未标定时使用默认曲线）。`dsp.state.equalLoudness` 报告设备、音量、曲线来源与预期 shelf 增益。`kmgccc://audio/state` 可读取和订阅全局与实际 transport 状态，沿用现有订阅 worker。
+`dsp.schema.equalLoudness` 描述预设中的固定等响阶段：位于效果节点之后、输出增益之前，不可排序或移除，经 `setEqualLoudness` 编辑；参数只调节补偿强度与架式滤波器形状，补偿量来自实际输出设备的系统音量与预设内的标定曲线（标定只在记录它的输出路线上生效，否则使用默认曲线）。`dsp.state.equalLoudness` 报告设备、音量、曲线来源与预期 shelf 增益。
+
+每条输出路线（设备 UID，设备可切换 data source 时再加上当前 data source，例如同一台 Mac 的扬声器与耳机孔）记住自己的预设，未设置时播放平直；`dsp.state` 与 `dsp.presets.list` 的 `deviceProfiles` 用哈希后的 `deviceID` 列出各路线及其预设。一个预设只属于一条路线：`dsp.presets.select` 为当前路线选用并记住预设，选用其他路线的预设时须传 `copyForCurrentDevice`，得到不带原标定的独立副本，否则请求失败。`kmgccc://audio/state` 可读取和订阅全局与实际 transport 状态，沿用现有订阅 worker。

@@ -68,9 +68,6 @@ struct FullscreenBottomBarView: View {
         let geometry = metrics.controlsGeometry
         let scaledLeadingOriginX = geometry.leadingControlsRect.minX * scale
         let scaledLeadingWidth = geometry.leadingControlsRect.width * scale
-        let scaledMiniPlayerOriginX = geometry.miniPlayerRect.minX * scale
-        let scaledMiniPlayerWidth = geometry.miniPlayerRect.width * scale
-        let scaledVolumeOriginX = geometry.volumeRect.minX * scale
         let scaledVolumeWidth = geometry.volumeRect.width * scale
         let scaledCanvasWidth = metrics.canvasSize.width * scale
         let canvasBottomMargin = max(0, (metrics.screenSize.height - metrics.canvasSize.height * scale) / 2)
@@ -119,14 +116,12 @@ struct FullscreenBottomBarView: View {
                         }
 
                     GlassEffectContainer(spacing: 0) {
-                        ZStack(alignment: .leading) {
+                        MiniPlayerCapsuleRowLayout(
+                            leadingWidth: scaledLeadingWidth, volumeWidth: scaledVolumeWidth,
+                            spacing: metrics.geometryConfiguration.spacing * scale, height: buttonSize
+                        ) {
                             leadingControlsPill(size: buttonSize)
                                 .glassEffectID(BottomControlGlassID.leading, in: glassNamespace)
-                                .frame(width: scaledLeadingWidth, height: buttonSize)
-                                .position(
-                                    x: scaledLeadingOriginX + scaledLeadingWidth / 2,
-                                    y: controlsCenterY
-                                )
 
                             FullscreenMiniPlayerView(
                                 scale: scale,
@@ -147,12 +142,7 @@ struct FullscreenBottomBarView: View {
                                 foregroundProfile: presentation.miniPlayerForegroundProfile
                             )
                             .glassEffectID(BottomControlGlassID.miniPlayer, in: glassNamespace)
-                            .frame(width: scaledMiniPlayerWidth, height: buttonSize)
                             .environment(\.colorScheme, presentation.glassStyle.colorScheme)
-                            .position(
-                                x: scaledMiniPlayerOriginX + scaledMiniPlayerWidth / 2,
-                                y: controlsCenterY
-                            )
 
                             ExpandableVolumeControl(
                                 volume: $volume,
@@ -166,16 +156,14 @@ struct FullscreenBottomBarView: View {
                                 usesAdaptiveForeground: presentation.usesAdaptiveVolumeForeground,
                                 forceDarkForegroundProfile: false,
                                 usesInternalHoverExpansion: false,
-                                foregroundProfile: presentation.miniPlayerForegroundProfile
+                                foregroundProfile: presentation.miniPlayerForegroundProfile,
+                                usesContainerWidth: true
                             )
                             .glassEffectID(BottomControlGlassID.volume, in: glassNamespace)
-                            .frame(width: scaledVolumeWidth, height: buttonSize)
                             .environment(\.colorScheme, presentation.glassStyle.colorScheme)
-                            .position(
-                                x: scaledVolumeOriginX + scaledVolumeWidth / 2,
-                                y: controlsCenterY
-                            )
                         }
+                        .frame(width: scaledGroupWidth, height: buttonSize)
+                        .position(x: scaledLeadingOriginX + scaledGroupWidth / 2, y: controlsCenterY)
                     }
                     .opacity(controls.isVisible ? 1 : 0)
                     .allowsHitTesting(controls.isVisible)
@@ -235,6 +223,8 @@ struct FullscreenBottomBarView: View {
     }
 
     private func leadingControlsPill(size: CGFloat) -> some View {
-        FullscreenLeadingControlsPill(size: size, presentation: presentation, actions: actions, controls: controls)
+        FullscreenLeadingControlsPill(
+            size: size, presentation: presentation, actions: actions, controls: controls, usesContainerWidth: true
+        )
     }
 }

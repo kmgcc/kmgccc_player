@@ -402,8 +402,16 @@ final class LibraryViewModel {
 
     /// All tracks loaded from Music Library (in-memory snapshot).
     private(set) var allTracks: [Track] = [] {
-        didSet { albumKeyFirstTrackMap = nil }
+        didSet {
+            albumKeyFirstTrackMap = nil
+            tracksRevision &+= 1
+        }
     }
+
+    /// Bumped whenever `allTracks` is reassigned. Background work sources
+    /// compare it to know when to include added songs. Not observed.
+    @ObservationIgnored
+    private(set) var tracksRevision = 0
     private(set) var playlistItemAddedAtMap: [UUID: [UUID: Date]] = [:]
 
     /// Rebuildable quality and duplicate projection for the Data settings
@@ -2812,6 +2820,37 @@ final class LibraryViewModel {
             selectionIdentities: selectionIdentityVariants(for: .playlist(playlist.id))
         )
         markRefreshTrigger(affectsHome: true)
+    }
+
+    /// Whether a playlist with songs has no cover on disk yet, neither its own
+    /// nor a generated one. Reads only the small sidecar file.
+    func playlistLacksPersistedCover(_ playlist: Playlist) -> Bool {
+        guard !playlist.tracks.isEmpty else { return false }
+        guard let sidecar = libraryService.loadPlaylistSidecar(playlistID: playlist.id) else { return true }
+        return sidecar.headerArtworkSource != .custom
+            && sidecar.customHeaderArtworkFileName == nil
+            && sidecar.generatedHeaderArtworkFileName == nil
+    }
+
+    /// Generates and saves the first cover of a playlist ahead of its first
+    /// visit. The resolver keeps an existing cover, so a cover made meanwhile
+    /// by a visible page wins. Returns whether the playlist now has a cover.
+    func generateMissingPlaylistCover(
+        playlistID: UUID,
+        priority: TaskPriority
+    ) async -> Bool {
+        guard let playlist = playlists.first(where: { $0.id == playlistID }),
+              !playlist.tracks.isEmpty else { return false }
+        let request = DetailHeaderArtworkRequest.playlist(
+            selectionIdentity: "playlist-\(playlistID)",
+            playlistID: playlistID,
+            tracks: playlist.tracks
+        )
+        let resolved = await detailHeaderArtworkResolver.resolveDeferredArtwork(
+            for: request,
+            priority: priority
+        )
+        return resolved != nil
     }
 
     private func refreshGeneratedArtworkIfPlaylistBecameNonEmpty(

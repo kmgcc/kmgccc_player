@@ -47,52 +47,24 @@ struct DetailDescriptionReaderSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            headerBar
-
-            Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    if hasEntitySummary {
-                        minimalEntityHeader
-                    }
-
+        AppPopupFrame(
+            title: title, systemImage: systemImage, onClose: { dismiss() }, showsFooter: false,
+            foreground: foregroundPalette, accent: accentColor
+        ) {
+            AppPopupScrollRegion(height: AppPopupStyle().readerHeight) {
+                VStack(alignment: .leading, spacing: AppPopupStyle().sectionSpacing) {
+                    if hasEntitySummary { minimalEntityHeader }
                     textContentSection
                 }
-                .padding(.horizontal, 32)
-                .padding(.top, 20)
-                .padding(.bottom, 28)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            } actions: {
+                Button("关闭") { dismiss() }
+                    .buttonStyle(AppDialogGlassButtonStyle())
+                    .keyboardShortcut(.cancelAction)
             }
+        } footer: {
+            EmptyView()
         }
-        .frame(width: 580, height: 580)
-        .tint(accentColor)
-    }
-
-    // MARK: - Top Header Bar
-
-    private var headerBar: some View {
-        HStack(spacing: 10) {
-            Label(title, systemImage: systemImage)
-                .font(.headline)
-                .foregroundStyle(foregroundPalette.primaryColor)
-
-            Spacer()
-
-            Button(action: { dismiss() }) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(foregroundPalette.secondaryColor)
-                    .frame(width: 32, height: 32)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("关闭")
-            .keyboardShortcut(.escape)
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 14)
+        .frame(width: AppPopupStyle().width)
     }
 
     // MARK: - Minimal Entity Header
@@ -114,14 +86,7 @@ struct DetailDescriptionReaderSheet: View {
                             ? AnyShape(Circle())
                             : AnyShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     )
-                    .overlay {
-                        if isCircleArtwork {
-                            Circle().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
-                        } else {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
-                        }
-                    }
+
             }
 
             VStack(alignment: .leading, spacing: 3) {
@@ -154,8 +119,8 @@ struct DetailDescriptionReaderSheet: View {
             } else {
                 ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, paragraph in
                     Text(paragraph)
-                        .font(.system(size: 15, weight: .regular))
-                        .lineSpacing(8.5)
+                        .font(.system(size: AppPopupStyle().bodySize))
+                        .lineSpacing(AppPopupStyle().bodyLineSpacing)
                         .foregroundStyle(foregroundPalette.primaryColor.opacity(0.92))
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)

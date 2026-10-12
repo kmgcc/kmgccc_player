@@ -596,12 +596,14 @@ nonisolated enum CacheManager {
         maintainedLibraryRoots.insert(storage.libraryRootURL)
         scheduler.submit(
             key: "cache-maintenance:\(storage.libraryRootURL.path)",
-            group: "cache-maintenance",
+            owner: .app,
+            domain: .cacheMaintenance,
             priority: .idleBatch,
-            resources: [.diskRead]
+            resources: [.disk]
         ) { context in
-            guard (try? await context.checkpoint()) != nil else { return }
+            guard (try? await context.checkpoint()) != nil else { return .cancelled }
             _ = await trimAllDiskCaches(storage: storage)
+            return .completed
         }
     }
 

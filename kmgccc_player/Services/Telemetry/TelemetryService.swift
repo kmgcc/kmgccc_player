@@ -163,6 +163,12 @@ final class TelemetryService: NSObject {
         consentStore.isEnabled
     }
 
+    /// Supplies the background scheduling summary attached to the session
+    /// summary. It is only read when telemetry consent is on, and holds
+    /// bands and ratios, never library content. Set by the App dependency
+    /// owner.
+    var backgroundSchedulingProvider: (@MainActor () -> BackgroundSchedulingSummary?)?
+
     var anonymousInstallID: String {
         guard Self.isReportingAllowed else { return "" }
         return identityStore.installID
@@ -274,7 +280,7 @@ final class TelemetryService: NSObject {
     func endSession(reason: TelemetrySessionEndReason) {
         guard Self.isReportingAllowed else { return }
         guard consentStore.isEnabled, let summary = accumulator?.finish(reason: reason) else { return }
-        queue.enqueue(summaryEvent(from: summary))
+        queue.enqueue(summaryEvent(from: summary, background: backgroundSchedulingProvider?()))
         accumulator = nil
         if reason != .appTerminated {
             CrashBreadcrumbRecorder.shared.updateSessionID(nil)
@@ -648,44 +654,77 @@ final class TelemetryService: NSObject {
         )
     }
 
-    private func summaryEvent(from summary: TelemetrySessionSummary) -> TelemetryQueuedEvent {
-        baseEvent(
+    private func summaryEvent(
+        from summary: TelemetrySessionSummary,
+        background: BackgroundSchedulingSummary? = nil
+    ) -> TelemetryQueuedEvent {
+        var properties: [String: TelemetryJSONValue] = [
+            "session_duration_seconds": .int(summary.sessionDurationSeconds),
+            "foreground_duration_seconds": .int(summary.foregroundDurationSeconds),
+            "mode_duration_seconds": .object([
+                "local": .int(summary.localModeDurationSeconds),
+                "apple_music": .int(summary.appleMusicModeDurationSeconds),
+                "external": .int(summary.externalModeDurationSeconds)
+            ]),
+            "playback_duration_seconds": .object([
+                "total": .int(summary.playbackTotalDurationSeconds),
+                "local": .int(summary.playbackLocalDurationSeconds),
+                "apple_music": .int(summary.playbackAppleMusicDurationSeconds),
+                "external": .int(summary.playbackExternalDurationSeconds)
+            ]),
+            "session_end_reason": .string(summary.endReason.rawValue),
+            "timeline_segments": .array(summary.timelineSegments.map { segment in
+                .object([
+                    "kind": .string(segment.kind.rawValue),
+                    "value": .string(segment.value.rawValue),
+                    "start_offset_seconds": .int(segment.startOffsetSeconds),
+                    "end_offset_seconds": .int(segment.endOffsetSeconds)
+                ])
+            }),
+            "skin_usage": .array(summary.skinUsage.map { usage in
+                .object([
+                    "skin_id": .string(usage.skinID),
+                    "context": .string(usage.context.rawValue),
+                    "duration_seconds": .int(usage.durationSeconds)
+                ])
+            })
+        ]
+        if let background {
+            properties["background_scheduling"] = Self.backgroundSchedulingProperties(background)
+        }
+        return baseEvent(
             eventID: UUID().uuidString,
             occurredAt: summary.endedAt,
             sessionID: summary.sessionID,
             eventType: "app_session_summary",
-            properties: [
-                "session_duration_seconds": .int(summary.sessionDurationSeconds),
-                "foreground_duration_seconds": .int(summary.foregroundDurationSeconds),
-                "mode_duration_seconds": .object([
-                    "local": .int(summary.localModeDurationSeconds),
-                    "apple_music": .int(summary.appleMusicModeDurationSeconds),
-                    "external": .int(summary.externalModeDurationSeconds)
-                ]),
-                "playback_duration_seconds": .object([
-                    "total": .int(summary.playbackTotalDurationSeconds),
-                    "local": .int(summary.playbackLocalDurationSeconds),
-                    "apple_music": .int(summary.playbackAppleMusicDurationSeconds),
-                    "external": .int(summary.playbackExternalDurationSeconds)
-                ]),
-                "session_end_reason": .string(summary.endReason.rawValue),
-                "timeline_segments": .array(summary.timelineSegments.map { segment in
-                    .object([
-                        "kind": .string(segment.kind.rawValue),
-                        "value": .string(segment.value.rawValue),
-                        "start_offset_seconds": .int(segment.startOffsetSeconds),
-                        "end_offset_seconds": .int(segment.endOffsetSeconds)
-                    ])
-                }),
-                "skin_usage": .array(summary.skinUsage.map { usage in
-                    .object([
-                        "skin_id": .string(usage.skinID),
-                        "context": .string(usage.context.rawValue),
-                        "duration_seconds": .int(usage.durationSeconds)
-                    ])
-                })
-            ]
+            properties: properties
         )
+    }
+
+    /// Bands and whole-number percentages only: no time series, no content.
+    private static func backgroundSchedulingProperties(
+        _ summary: BackgroundSchedulingSummary
+    ) -> TelemetryJSONValue {
+        func percent(_ ratio: Double) -> TelemetryJSONValue {
+            .int(Int((min(1, max(0, ratio)) * 100).rounded()))
+        }
+        func percents(_ ratios: [String: Double]) -> TelemetryJSONValue {
+            .object(ratios.mapValues(percent))
+        }
+        var values: [String: TelemetryJSONValue] = [
+            "ac_power_percent": percent(summary.acPowerRatio),
+            "thermal_percent": percents(summary.thermalRatios),
+            "memory_pressure_percent": percents(summary.memoryRatios),
+            "idle_pending_percent": percent(summary.idlePendingRatio),
+            "idle_run_percent": percent(summary.idleRunRatio),
+            "idle_wait_percent": percents(summary.waitRatios),
+            "pacing": .string(summary.pacing),
+            "preparation_enabled": .int(summary.preparationEnabled ? 1 : 0),
+        ]
+        if let band = summary.cpuBaselineBand {
+            values["cpu_baseline_band"] = .string(band)
+        }
+        return .object(values)
     }
 
     private func currentWindowSkinID() -> String {

@@ -67,8 +67,10 @@ final class AMLLDBRawIndexCache: ObservableObject {
     /// URL session for downloads
     private let session: URLSession
 
-    /// Background update task
-    private var updateTask: Task<Void, Never>?
+    /// Idle-time refresh of a stale index, owned by the App scheduler.
+    private var updateHandle: BackgroundTaskHandle?
+    private weak var backgroundScheduler: BackgroundWorkScheduler?
+    private var backgroundOwner: BackgroundWorkOwner = .app
 
     init(cacheDirectory: URL) {
         self.cacheDirectory = cacheDirectory
@@ -80,6 +82,15 @@ final class AMLLDBRawIndexCache: ObservableObject {
     }
 
     // MARK: - Public API
+
+    /// Connects the cache to the App scheduler. A stale index that was
+    /// downloaded before is then refreshed in idle time, without waiting for
+    /// the next lyric search.
+    func bindBackgroundWork(scheduler: BackgroundWorkScheduler, owner: BackgroundWorkOwner) {
+        backgroundScheduler = scheduler
+        backgroundOwner = owner
+        if hasLocalCache() { startBackgroundUpdateCheck() }
+    }
 
     /// Check if local cache exists
     func hasLocalCache() -> Bool {
@@ -124,6 +135,8 @@ final class AMLLDBRawIndexCache: ObservableObject {
     /// Force refresh the index
     func refreshIndex() async -> Bool {
         Self.logger.info("[AMLLDB] Force refresh requested")
+        updateHandle?.cancel()
+        updateHandle = nil
         return await downloadIndex()
     }
 
@@ -181,8 +194,10 @@ final class AMLLDBRawIndexCache: ObservableObject {
 
     // MARK: - Index Download
 
-    /// Download index from remote
-    private func downloadIndex() async -> Bool {
+    /// Download index from remote. The scheduler passes its context when the
+    /// download is idle-time work; it then pauses between the steps and runs
+    /// at the unit's quality of service.
+    private func downloadIndex(context: BackgroundWorkContext? = nil) async -> Bool {
         isDownloading = true
         downloadProgress = 0
         lastError = nil
@@ -192,10 +207,13 @@ final class AMLLDBRawIndexCache: ObservableObject {
         do {
             // Create cache directory if needed
             try ensureCacheDirectory()
+            try await context?.checkpoint()
 
-            // Download with progress
+            // The transfer runs in the URL loading system, so the main actor
+            // does not touch the bytes while they arrive.
             let request = URLRequest(url: indexURL, timeoutInterval: 120)
-            let (asyncBytes, response) = try await session.bytes(for: request)
+            let (downloadedFile, response) = try await session.download(for: request)
+            defer { try? FileManager.default.removeItem(at: downloadedFile) }
 
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw AMLLDBCacheError.invalidResponse
@@ -205,29 +223,14 @@ final class AMLLDBRawIndexCache: ObservableObject {
                 throw AMLLDBCacheError.httpError(httpResponse.statusCode)
             }
 
-            // Collect data with progress
-            var data = Data()
-            let expectedLength = response.expectedContentLength
-            var receivedLength: Int64 = 0
-
-            for try await byte in asyncBytes {
-                data.append(byte)
-                receivedLength += 1
-
-                // Update progress every 100KB
-                if receivedLength % 102400 == 0 {
-                    let progress = expectedLength > 0 ? Double(receivedLength) / Double(expectedLength) : 0
-                    await MainActor.run {
-                        self.downloadProgress = min(progress, 1.0)
-                    }
-                }
-            }
-
+            let data = try Data(contentsOf: downloadedFile, options: .mappedIfSafe)
+            downloadProgress = 0.9
             Self.logger.info("[AMLLDB] Downloaded \(data.count) bytes")
+            try await context?.checkpoint()
 
             // Parse the data
             let downloadedData = data
-            let parseResult = try await Task.detached(priority: .utility) { @Sendable in
+            let parseResult = try await Task.detached(priority: context?.taskPriority ?? .utility) { @Sendable in
                 let token = FirstUseHitchDiagnostics.begin(
                     "AMLLDBRawIndexCache.parseDownloadedIndex.background",
                     detail: "bytes=\(downloadedData.count)"
@@ -246,7 +249,8 @@ final class AMLLDBRawIndexCache: ObservableObject {
             }.value
 
             // Save to cache
-            try data.write(to: localIndexURL)
+            try await context?.checkpoint()
+            try data.write(to: localIndexURL, options: .atomic)
 
             // Save timestamp
             let timestamp = ISO8601DateFormatter().string(from: Date())
@@ -264,9 +268,13 @@ final class AMLLDBRawIndexCache: ObservableObject {
             return isReady
 
         } catch {
+            isDownloading = false
+            if Task.isCancelled || context?.isCancelled == true || error is CancellationError {
+                Self.logger.info("[AMLLDB] Index download cancelled")
+                return false
+            }
             Self.logger.error("[AMLLDB] Index download failed: \(error.localizedDescription)")
             lastError = "下载失败: \(error.localizedDescription)"
-            isDownloading = false
             return false
         }
     }
@@ -281,26 +289,40 @@ final class AMLLDBRawIndexCache: ObservableObject {
 
     // MARK: - Background Update
 
-    /// Start background update check
+    /// Queues a refresh of a stale index as idle work (network and compute).
+    /// Without a scheduler the index is refreshed on a later search.
     private func startBackgroundUpdateCheck() {
-        // Check if update is needed
-        if !shouldUpdate() {
+        guard let scheduler = backgroundScheduler else { return }
+        guard shouldUpdate() else {
             Self.logger.info("[AMLLDB] Index is fresh, no update needed")
             return
         }
 
-        Self.logger.info("[AMLLDB] Starting background index update")
-
-        updateTask = Task { [weak self] in
-            guard let self = self else { return }
-
-            let success = await self.downloadIndex()
-            if success {
-                Self.logger.info("[AMLLDB] Background update completed successfully")
-            } else {
-                Self.logger.warning("[AMLLDB] Background update failed")
-            }
+        Self.logger.info("[AMLLDB] Queueing background index update")
+        updateHandle = scheduler.submit(
+            key: "lyrics-index:\(cacheDirectory.path)",
+            owner: backgroundOwner,
+            domain: .lyricsIndex,
+            priority: .idleBatch,
+            resources: [.network, .compute],
+            networkHost: indexURL.host
+        ) { [weak self] context in
+            guard let self else { return .cancelled }
+            return await self.runBackgroundUpdate(context: context)
         }
+    }
+
+    private func runBackgroundUpdate(context: BackgroundWorkContext) async -> BackgroundWorkOutcome {
+        // A download the listener asked for is already refreshing the index.
+        guard !isDownloading else { return .cancelled }
+        let success = await downloadIndex(context: context)
+        if success {
+            Self.logger.info("[AMLLDB] Background update completed successfully")
+            return .completed
+        }
+        if context.isCancelled || Task.isCancelled { return .cancelled }
+        Self.logger.warning("[AMLLDB] Background update failed")
+        return .failed(lastError ?? "")
     }
 
     /// Check if index should be updated
@@ -318,8 +340,8 @@ final class AMLLDBRawIndexCache: ObservableObject {
     // MARK: - Cache Management
 
     func close() {
-        updateTask?.cancel()
-        updateTask = nil
+        updateHandle?.cancel()
+        updateHandle = nil
     }
 
     /// Clear local cache

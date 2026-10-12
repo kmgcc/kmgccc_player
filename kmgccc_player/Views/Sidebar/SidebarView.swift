@@ -13,6 +13,7 @@
 import Observation
 import AppKit
 import MotionKit
+import PopupKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -746,17 +747,22 @@ struct SidebarView: View {
     private var backgroundLoudnessSidebarProgress: SidebarTaskProgress? {
         guard let session = activeSessionForLoudness,
               session.loudnessService.isBackgroundAnalysisVisible,
-              activeLibraryImportTask?.kind != .loudnessAnalysis else { return nil }
+              !appSession.activeLibraryTasks.contains(where: {
+                  !$0.state.isTerminal && $0.kind == .loudnessAnalysis
+              }) else { return nil }
         let ids = session.libraryViewModel.allTracks.map(\.id)
         let progress = session.loudnessService.libraryProgress(trackIDs: ids)
+        // Only a large library pass interrupts; a short one stays on the
+        // Background Tasks page.
+        guard progress.remaining >= SidebarTaskVisibility.largeBatchCount else { return nil }
         let done = progress.measured + progress.failed
         let total = max(ids.count, 1)
         return SidebarTaskProgress(
-            title: "正在后台分析歌曲响度",
-            detail: "以提供音量均衡 · 剩余 \(progress.remaining.formatted()) 首",
+            title: "正在分析",
+            detail: "分析歌曲音量以提供音量均衡",
             fractionCompleted: Double(done) / Double(total),
             state: .running,
-            systemImage: "waveform"
+            systemImage: "minus.forwardslash.plus"
         )
     }
 
@@ -830,14 +836,17 @@ struct SidebarView: View {
             }
 
             if importEnrichmentService.hasOutstandingWork {
-                Button {
-                    EnrichmentStatusDialogPresenter.present(service: importEnrichmentService)
-                } label: {
-                    SidebarTaskProgressView(progress: importEnrichmentSidebarProgress)
+                // A few songs fill in quietly; only a large batch interrupts.
+                if importEnrichmentService.progress.totalEnqueued >= SidebarTaskVisibility.largeBatchCount {
+                    Button {
+                        EnrichmentStatusDialogPresenter.present(service: importEnrichmentService)
+                    } label: {
+                        SidebarTaskProgressView(progress: importEnrichmentSidebarProgress)
+                    }
+                    .buttonStyle(.plain)
+                    .help("点击查看每首歌曲的补全状态")
+                    .transition(.opacity)
                 }
-                .buttonStyle(.plain)
-                .help("点击查看每首歌曲的补全状态")
-                .transition(.opacity)
             } else if let summary = importEnrichmentService.completionSummary {
                 SidebarEnrichmentCompletionNotice(
                     summary: summary,
@@ -849,19 +858,12 @@ struct SidebarView: View {
         }
     }
 
+    /// The latest running task the sidebar shows. Each task kind registers its
+    /// own rule (see `SidebarTaskVisibility`); the host applies it and the
+    /// anti-flicker delay.
     private var activeLibraryImportTask: LibraryOperationTaskDescriptor? {
         appSession.activeLibraryTasks.reversed().first { task in
-            !task.state.isTerminal
-                && [
-                    .importFiles,
-                    .sourceScan,
-                    .ncmConversion,
-                    .enrichment,
-                    .automation,
-                    .libraryBundleExport,
-                    .embeddedTagWrite,
-                    .loudnessAnalysis
-                ].contains(task.kind)
+            !task.state.isTerminal && appSession.sidebarVisibleTaskIDs.contains(task.id)
         }
     }
 
@@ -1718,42 +1720,28 @@ private struct SidebarUpdateReleaseNotesView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Image(systemName: "doc.text.magnifyingglass")
-                    .foregroundStyle(themeStore.accentColor)
-                Text("更新日志")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                Spacer(minLength: 0)
-            }
-
-            Text("版本 \(notice.version)")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 9) {
+        AppPopupFrame(
+            title: "更新日志", subtitle: "版本 \(notice.version)", systemImage: "doc.text.magnifyingglass",
+            onClose: { dismiss() }, showsFooter: false
+        ) {
+            AppPopupScrollRegion(height: AppPopupStyle().readerHeight) {
+                VStack(alignment: .leading, spacing: AppPopupStyle().rowSpacing) {
                     ForEach(Array(notice.notes.enumerated()), id: \.offset) { _, note in
                         Text("• \(note)")
-                            .font(.body)
                             .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+            } actions: {
+                Button("关闭") { dismiss() }
+                    .buttonStyle(AppDialogGlassButtonStyle())
+                    .keyboardShortcut(.cancelAction)
             }
-
-            HStack {
-                Spacer(minLength: 0)
-                Button("关闭") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-            }
+        } footer: {
+            EmptyView()
         }
-        .padding(24)
-        .frame(width: 390, height: 330)
+        .frame(width: AppPopupStyle().width)
     }
 }
 

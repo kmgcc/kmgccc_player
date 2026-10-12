@@ -289,6 +289,9 @@ final class ImportEnrichmentService {
     private let maxAttemptsPerPart = 2
     private let flushBatchSize = 4
     private let flushDebounceNanoseconds: UInt64 = 900_000_000
+    /// Borrows network slots from the App scheduler for each lookup, so idle
+    /// network work steps aside while an import's enrichment runs.
+    private var backgroundLender: BackgroundWorkLender = .none
 
     private var queue: [ImportEnrichmentPartRequest] = []
     private var queuedRequests: Set<ImportEnrichmentPartRequest> = []
@@ -353,6 +356,10 @@ final class ImportEnrichmentService {
 
     deinit {
         Log.info("[ImportEnrichment] service deinit", category: .import)
+    }
+
+    func bindBackgroundWork(lender: BackgroundWorkLender) {
+        backgroundLender = lender
     }
 
     func cancelEnrichment(for trackIDs: Set<UUID>) async {
@@ -1058,6 +1065,16 @@ final class ImportEnrichmentService {
 
         let task = Task(priority: .utility) {
             let taskStart = ContinuousClock.now
+            guard !Task.isCancelled else {
+                self.finish(request)
+                return
+            }
+            let lease = await self.backgroundLender.lease(
+                domain: .importEnrichment,
+                priority: .userRequested,
+                resources: [.network]
+            )
+            defer { lease?.release() }
             guard !Task.isCancelled else {
                 self.finish(request)
                 return

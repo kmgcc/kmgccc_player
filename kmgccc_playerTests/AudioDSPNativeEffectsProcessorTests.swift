@@ -465,7 +465,8 @@ final class AudioDSPNativeEffectsProcessorTests: XCTestCase {
             configuration: AudioDSPConfiguration(
                 enabled: true,
                 headroom: DSPHeadroomConfiguration(mode: .off),
-                nodes: nodes
+                nodes: nodes,
+                limiter: DSPLimiterConfiguration(enabled: false)
             ),
             format: format
         )

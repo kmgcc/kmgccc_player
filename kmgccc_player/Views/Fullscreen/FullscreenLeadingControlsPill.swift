@@ -11,6 +11,7 @@ struct FullscreenLeadingControlsPill: View {
     var showsLyricsButton = true
     var alwaysShowsQuickPanel = false
     var onHoverStateChanged: ((Bool) -> Void)? = nil
+    var usesContainerWidth = false
 
     var body: some View {
         let controlColorScheme = presentation.glassStyle.colorScheme
@@ -36,10 +37,12 @@ struct FullscreenLeadingControlsPill: View {
                 .accessibilityHidden(!alwaysShowsQuickPanel && !controls.isLeftActionsExpanded)
         }
         .frame(
-            width: size * CGFloat(1 + (showsLyricsButton ? 1 : 0) + ((alwaysShowsQuickPanel || controls.isLeftActionsExpanded) ? 1 : 0)),
+            width: usesContainerWidth ? nil : size * CGFloat(1 + (showsLyricsButton ? 1 : 0) + ((alwaysShowsQuickPanel || controls.isLeftActionsExpanded) ? 1 : 0)),
             height: size,
             alignment: .leading
         )
+        .frame(maxWidth: usesContainerWidth ? .infinity : nil, alignment: .leading)
+        .clipShape(Capsule())
         .contentShape(Capsule())
         .skinControlRegion()
         .liquidGlassPill(

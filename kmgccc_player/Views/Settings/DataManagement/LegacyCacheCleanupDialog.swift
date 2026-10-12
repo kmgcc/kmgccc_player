@@ -70,12 +70,7 @@ private final class LegacyCacheCleanupDialogController: NSObject, NSWindowDelega
         }
 
         let windowSize = NSSize(width: 520, height: 330)
-        let panel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.titled, .closable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
+        let (panel, visualEffect) = AppDialogTokens.makePanel(width: windowSize.width, height: windowSize.height)
 
         panel.title = ""
         panel.titlebarAppearsTransparent = true
@@ -92,15 +87,6 @@ private final class LegacyCacheCleanupDialogController: NSObject, NSWindowDelega
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
-        let visualEffect = NSVisualEffectView()
-        visualEffect.material = .popover
-        visualEffect.blendingMode = .behindWindow
-        visualEffect.state = .active
-        visualEffect.frame = NSRect(origin: .zero, size: windowSize)
-        visualEffect.autoresizingMask = [.width, .height]
-        visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = AppDialogTokens.windowCornerRadius
-        panel.contentView = visualEffect
 
         let rootView = LegacyCacheCleanupDialogView(
             viewModel: viewModel,
@@ -187,7 +173,9 @@ private struct LegacyCacheCleanupDialogView: View {
             title: headerTitle,
             subtitle: headerSubtitle,
             systemImage: headerIconName,
-            iconColor: headerIconColor
+            iconColor: headerIconColor,
+            floatsActions: viewModel.stage == .running || viewModel.stage == .result,
+            onClose: viewModel.stage == .running ? nil : (viewModel.stage == .result ? onCloseResult : onRemindLater)
         ) {
             contentView
         } footer: {
@@ -302,9 +290,7 @@ private struct LegacyCacheCleanupDialogView: View {
     }
 
     private var footerView: some View {
-        HStack(spacing: 12) {
-            Spacer()
-
+        Group {
             switch viewModel.stage {
             case .prompt:
                 SettingsTaskDialogButton("稍后", kind: .secondary, action: onRemindLater)

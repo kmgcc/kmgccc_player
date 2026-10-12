@@ -44,6 +44,16 @@ final class AppSessionHost: ObservableObject {
     /// operation coordinator (plan §14). Views read this published snapshot
     /// instead of polling task state.
     @Published private(set) var activeLibraryTasks: [LibraryOperationTaskDescriptor] = []
+    /// Tasks the sidebar's task stack shows right now: those whose kind
+    /// registered a rule that passes, after the anti-flicker delay.
+    @Published private(set) var sidebarVisibleTaskIDs: Set<UUID> = []
+    private var sidebarRevealTracker = SidebarTaskRevealTracker()
+    private var sidebarRevealTask: Task<Void, Never>?
+    /// Source scans the listener started (Settings, a folder's page). Scans
+    /// that follow file changes, mounts or activation do not count.
+    private var userSourceScanCount = 0 {
+        didSet { refreshSidebarTaskVisibility() }
+    }
     private var didAutoPresentLibrarySetup = false
     /// Set when this launch auto-created the factory-default library because
     /// the machine had no library at all (true fresh install / full reset).
@@ -56,8 +66,10 @@ final class AppSessionHost: ObservableObject {
     lazy var audioDSPDeviceController = AudioDSPDeviceController(dsp: audioDSPController)
     let audioDSPScriptController = DSPScriptController()
     let audioProcessingGlobalsController = AudioProcessingGlobalsController()
+    /// The one observer of power, heat, memory, network and system load.
+    let systemConditions: SystemConditionMonitor
     /// App-level admission for deferrable work (loudness, artwork, indexes).
-    let backgroundWorkScheduler = BackgroundWorkScheduler()
+    let backgroundWorkScheduler: BackgroundWorkScheduler
     let listeningHabitForecast = ListeningHabitForecast()
     /// Routed-device system volume and per-device calibration for the
     /// equal-loudness node.
@@ -144,10 +156,10 @@ final class AppSessionHost: ObservableObject {
     private var playbackModeObserver: NSObjectProtocol?
     private var workspaceLibraryObservers: [NSObjectProtocol] = []
     private var appActiveLibraryObserver: NSObjectProtocol?
-    private var appResignActiveArtworkColorObserver: NSObjectProtocol?
+    private var backgroundSettingsObserver: NSObjectProtocol?
     private var activeLibraryRescanTask: Task<Void, Never>?
     private var playbackMemoryTimer: Timer?
-    private var memoryPressureSource: DispatchSourceMemoryPressure?
+    private var memoryPressureObserverToken: UUID?
     private let mainThreadStallMonitor = MainThreadStallMonitor()
     private var firstUsePrewarmTask: Task<Void, Never>?
     private var lyricsPlaybackPipeline: LyricsPlaybackPipeline?
@@ -169,6 +181,9 @@ final class AppSessionHost: ObservableObject {
     ) {
         let uiState = UIStateViewModel()
         self.uiState = uiState
+        let systemConditions = SystemConditionMonitor.shared
+        self.systemConditions = systemConditions
+        self.backgroundWorkScheduler = BackgroundWorkScheduler(conditions: systemConditions)
         sessionFactory.referencedSourceNoticePublisher = SidebarReferencedSourceNoticePublisher { [weak uiState] notice in
             guard let uiState else { return }
             AppSessionHost.presentReferencedSourceNotice(notice, in: uiState)
@@ -648,14 +663,55 @@ final class AppSessionHost: ObservableObject {
         session.bindLibraryTaskStateObserver { [weak self, weak session] in
             guard let self, let session else { return }
             self.activeLibraryTasks = session.libraryTaskDescriptorsSnapshot()
-            // Library writes start or finish: idle work re-checks its turn.
-            self.backgroundWorkScheduler.reevaluate()
+            self.updateLibraryWriteHold()
+            self.refreshSidebarTaskVisibility()
         }
+        updateLibraryWriteHold()
+        refreshSidebarTaskVisibility()
     }
 
     private func unbindLibraryTaskStatePush(of session: LibrarySession?) {
         session?.bindLibraryTaskStateObserver(nil)
         activeLibraryTasks = []
+        updateLibraryWriteHold()
+        refreshSidebarTaskVisibility()
+    }
+
+    /// Decides which running tasks the sidebar shows. A task must pass its
+    /// kind's rule for a few seconds before it appears, so short tasks never
+    /// flash.
+    private func refreshSidebarTaskVisibility() {
+        let eligible = Set(
+            activeLibraryTasks
+                .filter { task in
+                    guard !task.state.isTerminal else { return false }
+                    if task.kind == .sourceScan { return userSourceScanCount > 0 }
+                    return task.kind.sidebarVisibility.shows(itemCount: task.totalCount)
+                }
+                .map(\.id)
+        )
+        let result = sidebarRevealTracker.update(
+            eligible: eligible,
+            now: ProcessInfo.processInfo.systemUptime
+        )
+        if sidebarVisibleTaskIDs != result.revealed { sidebarVisibleTaskIDs = result.revealed }
+        sidebarRevealTask?.cancel()
+        sidebarRevealTask = nil
+        guard let delay = result.nextCheck else { return }
+        sidebarRevealTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay + 0.05))
+            guard !Task.isCancelled else { return }
+            self?.refreshSidebarTaskVisibility()
+        }
+    }
+
+    /// While the library writes (import, enrichment, edits) idle background
+    /// work steps aside. Loudness jobs and automation requests do not write.
+    private func updateLibraryWriteHold() {
+        let isWriting = activeLibraryTasks.contains { task in
+            !task.state.isTerminal && task.kind != .loudnessAnalysis && task.kind != .automation
+        }
+        backgroundWorkScheduler.setHold(.libraryWrite, active: isWriting)
     }
 
     private func applyReferencedScanStates(_ states: [UUID: ReferencedSourceScanState]) {
@@ -766,6 +822,8 @@ final class AppSessionHost: ObservableObject {
             throw LibraryOperationError.sessionQuiescing
         }
         beginManualScanOverride(sourceIDs: [id])
+        userSourceScanCount += 1
+        defer { userSourceScanCount -= 1 }
         do {
             let issues = try await session.runLibraryOperation(as: .sourceScan) {
                 try await session.refreshReferencedSource(id)
@@ -781,7 +839,9 @@ final class AppSessionHost: ObservableObject {
     /// User-initiated full scan across every referenced source of the active
     /// library (spec 12.1 / 18.1). Scan progress is published through
     /// `referencedSourceScanStatesSnapshot`.
-    func refreshAllReferencedSources(libraryID: UUID? = nil) async throws {
+    /// `automatic` marks a scan the App starts by itself (activation, mounts);
+    /// it stays off the sidebar, while a scan the listener starts shows there.
+    func refreshAllReferencedSources(libraryID: UUID? = nil, automatic: Bool = false) async throws {
         guard let session = activeLibraryBinding.activeSession,
               session.context.mode == .referenced,
               let store = session.referencedSourceStore else { return }
@@ -791,6 +851,12 @@ final class AppSessionHost: ObservableObject {
         let sourceIDs = try await store.loadAll().map(\.id)
         guard !sourceIDs.isEmpty else { return }
         beginManualScanOverride(sourceIDs: sourceIDs)
+        if !automatic {
+            userSourceScanCount += 1
+        }
+        defer {
+            if !automatic { userSourceScanCount -= 1 }
+        }
         do {
             _ = try await session.runLibraryOperation(as: .sourceScan) {
                 try await session.refreshReferencedSources()
@@ -1106,21 +1172,28 @@ final class AppSessionHost: ObservableObject {
         guard !hasSetupDependencies else { return }
         hasSetupDependencies = true
 
-        backgroundWorkScheduler.libraryBusyProvider = { [weak self] in
-            self?.activeLibraryTasks.contains { task in
-                !task.state.isTerminal && task.kind != .loudnessAnalysis && task.kind != .automation
-            } ?? false
+        systemConditions.start()
+        backgroundWorkScheduler.configurationProvider = {
+            AppSettings.shared.backgroundWorkConfiguration
         }
         backgroundWorkScheduler.start()
+        backgroundSettingsObserver = NotificationCenter.default.addObserver(
+            forName: .backgroundWorkSettingsDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.backgroundWorkScheduler.reevaluate() }
+        }
+        TelemetryService.shared.backgroundSchedulingProvider = { [weak self] in
+            self?.backgroundWorkScheduler.statisticsSummary()
+        }
         equalLoudnessController.onContextChange = { [weak self] context in
             self?.activeLibraryBinding.activeSession?.setEqualLoudnessContext(context)
         }
-        audioDSPDeviceController.onCurrentOutputDeviceChange = { [weak self] uid in
-            self?.equalLoudnessController.setRoutedDevice(uid)
+        audioDSPDeviceController.onCurrentOutputDeviceChange = { [weak self] device in
+            self?.equalLoudnessController.setRoutedDevice(device)
         }
         audioDSPDeviceController.start()
         await audioDSPDeviceController.ensureLoaded()
-        equalLoudnessController.setRoutedDevice(audioDSPDeviceController.currentOutputDeviceUID)
+        equalLoudnessController.setRoutedDevice(audioDSPDeviceController.currentDevice)
 
         Log.debug("[Lifecycle] AppSessionHost initial setup", category: .ui)
         mainThreadStallMonitor.start()
@@ -1426,6 +1499,7 @@ final class AppSessionHost: ObservableObject {
         WhatsNewWindowManager.shared.showIfNeeded()
         Log.debug("[Lifecycle] WhatsNew window check completed", category: .ui)
 
+        UpdateCoordinator.shared.bindBackgroundWork(scheduler: backgroundWorkScheduler)
         UpdateCoordinator.shared.startAutomaticUpdatesIfNeeded()
         // Deferred prompts are settled (What's New is already visible when
         // applicable); the first-run wizard can queue behind them now.
@@ -1440,7 +1514,6 @@ final class AppSessionHost: ObservableObject {
     }
 
     private func publishActiveSession(_ session: LibrarySession) async {
-        activeLibraryBinding.activeSession?.cacheServices.cancelArtworkColorPrefetch()
         uiState.clearLibraryImportFailureReports()
         audioDSPController.setSourceIsLocal(!session.playbackCoordinator.activeSource.isExternal)
         audioProcessingGlobalsController.setSourceIsLocal(!session.playbackCoordinator.activeSource.isExternal)
@@ -1452,6 +1525,14 @@ final class AppSessionHost: ObservableObject {
             habits: listeningHabitForecast
         )
         session.bindBackgroundSignals(scheduler: backgroundWorkScheduler, habits: listeningHabitForecast)
+        if let owner = session.backgroundOwner {
+            // Work of any earlier library session ends here, even if that
+            // session never revoked it.
+            backgroundWorkScheduler.activateLibrary(owner)
+            attachArtworkColorSource(to: session, owner: owner)
+            attachMissingPlaylistArtworkSource(to: session, owner: owner)
+            attachPageThumbnailSource(to: session, owner: owner)
+        }
         session.setEqualLoudnessContext(equalLoudnessController.context)
         activeLibraryBinding.publish(session)
         CacheManager.scheduleBackgroundDiskMaintenance(
@@ -1580,7 +1661,6 @@ final class AppSessionHost: ObservableObject {
             playerVM: playerVM,
             playbackCoordinator: playbackCoordinator
         )
-        scheduleIdleArtworkColorPrefetch()
 
         if let scenario = DebugLaunchScenario.current {
             Task { @MainActor in
@@ -1597,7 +1677,7 @@ final class AppSessionHost: ObservableObject {
     private func releaseActiveSessionBindings() async {
         audioDSPController.detachPlayback()
         audioProcessingGlobalsController.detachPlayback()
-        cacheServices?.cancelArtworkColorPrefetch()
+        cacheServices?.detachBackgroundSources()
         activeLibraryRescanTask?.cancel()
         activeLibraryRescanTask = nil
         playbackMemoryTimer?.invalidate()
@@ -1662,18 +1742,6 @@ final class AppSessionHost: ObservableObject {
             }
         }
 
-        if appResignActiveArtworkColorObserver == nil {
-            appResignActiveArtworkColorObserver = NotificationCenter.default.addObserver(
-                forName: NSApplication.didResignActiveNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.scheduleIdleArtworkColorPrefetch()
-                }
-            }
-        }
-
         AppDelegate.applicationWillTerminateHandler = { [weak self] in
             guard let self else { return }
             TelemetryService.shared.endSession(reason: .appTerminated)
@@ -1697,18 +1765,20 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
-    /// Artwork colours are idle batch work: the scheduler runs them when the
-    /// machine has spare capacity, whether or not the App is in front.
-    private func scheduleIdleArtworkColorPrefetch() {
-        guard AppSettings.shared.artworkTintMode == .rich,
-              let session = activeLibraryBinding.activeSession
-        else { return }
-
-        let libraryID = session.context.id
-        session.cacheServices.prefetchArtworkColors(
-            trackIDs: session.libraryViewModel.allTracks.map(\.id),
-            libraryID: libraryID,
+    /// Artwork colours are idle batch work: the scheduler pulls them from this
+    /// source when the machine has spare capacity, whether or not the App is
+    /// in front. Only the rich colour mode needs per-song colours.
+    private func attachArtworkColorSource(to session: LibrarySession, owner: BackgroundWorkOwner) {
+        session.cacheServices.attachArtworkColorSource(
             scheduler: backgroundWorkScheduler,
+            owner: owner,
+            libraryID: session.context.id,
+            trackIDs: { [weak session] in
+                session?.libraryViewModel.allTracks.map(\.id) ?? []
+            },
+            revision: { [weak session] in
+                session?.libraryViewModel.tracksRevision ?? 0
+            },
             sources: { [weak session] ids in
                 guard let session else { return [] }
                 let wanted = Set(ids)
@@ -1716,12 +1786,69 @@ final class AppSessionHost: ObservableObject {
                     .filter { wanted.contains($0.id) }
                     .compactMap { $0.trackArtworkSource() }
             },
-            shouldContinue: { [weak self] in
-                guard let self,
-                      self.activeLibraryBinding.activeSession?.context.id == libraryID
-                else { return false }
-                return AppSettings.shared.artworkTintMode == .rich
+            isEnabled: {
+                AppSettings.shared.artworkTintMode == .rich
             }
+        )
+    }
+
+    /// Playlists with songs but no saved cover get one made in idle time, so
+    /// the playlist opens with its cover in place.
+    private func attachMissingPlaylistArtworkSource(to session: LibrarySession, owner: BackgroundWorkOwner) {
+        session.cacheServices.attachMissingPlaylistArtworkSource(
+            scheduler: backgroundWorkScheduler,
+            owner: owner,
+            libraryID: session.context.id,
+            playlists: { [weak session] in
+                session?.libraryViewModel.playlists ?? []
+            },
+            lacksCover: { [weak session] playlist in
+                session?.libraryViewModel.playlistLacksPersistedCover(playlist) ?? false
+            },
+            generate: { [weak session] playlistID, priority in
+                guard let session else { return false }
+                return await session.libraryViewModel.generateMissingPlaylistCover(
+                    playlistID: playlistID,
+                    priority: priority
+                )
+            },
+            isEnabled: { true }
+        )
+    }
+
+    /// Thumbnails for the albums and artists on the Home page, at the sizes its
+    /// rails last used, made in idle time.
+    private func attachPageThumbnailSource(to session: LibrarySession, owner: BackgroundWorkOwner) {
+        session.cacheServices.attachPageThumbnailSource(
+            scheduler: backgroundWorkScheduler,
+            owner: owner,
+            libraryID: session.context.id,
+            candidates: { [weak session] in
+                guard let session else { return [] }
+                var result: [PageThumbnailCandidate] = []
+                if let side = PageThumbnailSizeHints.albumRail() {
+                    result += session.homeViewModel.albums.map {
+                        PageThumbnailCandidate(
+                            id: $0.id,
+                            artworkData: $0.artworkData,
+                            artworkFileURL: $0.artworkFileURL,
+                            pixelSide: side
+                        )
+                    }
+                }
+                if let side = PageThumbnailSizeHints.artistRail() {
+                    result += session.homeViewModel.artists.map {
+                        PageThumbnailCandidate(
+                            id: $0.id,
+                            artworkData: $0.artworkData,
+                            artworkFileURL: $0.artworkFileURL,
+                            pixelSide: side
+                        )
+                    }
+                }
+                return result
+            },
+            isEnabled: { true }
         )
     }
 
@@ -1732,7 +1859,7 @@ final class AppSessionHost: ObservableObject {
             let libraryID = session.context.id
             if session.context.mode == .referenced {
                 do {
-                    try await refreshAllReferencedSources()
+                    try await refreshAllReferencedSources(automatic: true)
                 } catch {
                     Log.warning(
                         "[LibrarySession] lifecycle source refresh failed library=\(libraryID) error=\(error)",
@@ -1754,15 +1881,17 @@ final class AppSessionHost: ObservableObject {
             if let appActiveLibraryObserver {
                 NotificationCenter.default.removeObserver(appActiveLibraryObserver)
             }
-            if let appResignActiveArtworkColorObserver {
-                NotificationCenter.default.removeObserver(appResignActiveArtworkColorObserver)
+            if let backgroundSettingsObserver {
+                NotificationCenter.default.removeObserver(backgroundSettingsObserver)
             }
             let workspaceCenter = NSWorkspace.shared.notificationCenter
             for observer in workspaceLibraryObservers {
                 workspaceCenter.removeObserver(observer)
             }
             playbackMemoryTimer?.invalidate()
-            memoryPressureSource?.cancel()
+            if let memoryPressureObserverToken {
+                systemConditions.removeObserver(memoryPressureObserverToken)
+            }
             firstUsePrewarmTask?.cancel()
             activeLibraryRescanTask?.cancel()
             AppDelegate.applicationWillTerminateHandler = nil
@@ -1772,15 +1901,13 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
+    /// Rebuildable memory caches are dropped on memory pressure events from the
+    /// shared system monitor; the App has no second pressure source.
     private func startMemoryPressureMonitoring() {
-        guard memoryPressureSource == nil else { return }
-        let source = DispatchSource.makeMemoryPressureSource(
-            eventMask: [.warning, .critical],
-            queue: .main
-        )
-        source.setEventHandler { [weak self, weak source] in
-            guard self != nil, let event = source?.data else { return }
-            let reason = event.contains(.critical) ? "critical" : "warning"
+        guard memoryPressureObserverToken == nil else { return }
+        memoryPressureObserverToken = systemConditions.addObserver { [weak self] event in
+            guard case .memoryPressure(let level) = event, level != .normal else { return }
+            let reason = level == .critical ? "critical" : "warning"
             Task { @MainActor in
                 await CacheManager.purgeRebuildableMemoryCaches(
                     reason: "system-memory-pressure-\(reason)",
@@ -1788,8 +1915,6 @@ final class AppSessionHost: ObservableObject {
                 )
             }
         }
-        source.resume()
-        memoryPressureSource = source
     }
 
     private func prepareForTermination(
@@ -1913,6 +2038,9 @@ final class AppSessionHost: ObservableObject {
                 CacheManager.trimProcessMemory()
             }
 
+            // The first library is loaded and the warm-up is over: idle
+            // background work may start judging the machine's condition.
+            self.systemConditions.markLaunchSettled()
         }
     }
 

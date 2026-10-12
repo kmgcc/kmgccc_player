@@ -458,8 +458,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             return .low
         }
 
-        let thermal = ProcessInfo.processInfo.thermalState
-        if ProcessInfo.processInfo.isLowPowerModeEnabled || thermal == .serious || thermal == .critical {
+        if SystemConditionMonitor.shared.prefersReducedVisualEffort {
             return .low
         }
         return BokehTransitionPerformancePolicy.shared.nextAutomaticDecision().tier
@@ -665,6 +664,9 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             },
             onRenderedFrame: acceptRenderedFrame
         )
+        // This overscan render is only a moving/blurred transition source;
+        // settled leading and centered surfaces supply the Retina detail.
+        .environment(\.displayScale, 1)
         .allowsHitTesting(false)
     }
 

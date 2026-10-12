@@ -9,17 +9,98 @@
 import SwiftUI
 import MotionKit
 
-// MARK: - Frame Measurement
+// MARK: - Layout Anchors
 
-private struct SegmentFrameEntry<ID: Hashable>: Equatable {
+private nonisolated struct SegmentAnchorEntry<ID: Hashable> {
     let id: ID
-    let frame: CGRect
+    let bounds: Anchor<CGRect>
 }
 
-private struct SegmentFramePreferenceKey<ID: Hashable>: PreferenceKey {
-    static var defaultValue: [SegmentFrameEntry<ID>] { [] }
-    static func reduce(value: inout [SegmentFrameEntry<ID>], nextValue: () -> [SegmentFrameEntry<ID>]) {
+private nonisolated struct SegmentAnchorPreferenceKey<ID: Hashable>: PreferenceKey {
+    static var defaultValue: [SegmentAnchorEntry<ID>] { [] }
+    static func reduce(value: inout [SegmentAnchorEntry<ID>], nextValue: () -> [SegmentAnchorEntry<ID>]) {
         value.append(contentsOf: nextValue())
+    }
+}
+
+// Animate the contribution of each segment, rather than cached pixel frames.
+// The same weights resolve against the CURRENT layout even during a spring.
+private nonisolated struct SegmentWeights: VectorArithmetic {
+    var values: [CGFloat]
+
+    static var zero: Self { Self(values: []) }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        // Empty and zero-padded vectors represent the same additive zero.
+        (0..<max(lhs.values.count, rhs.values.count)).allSatisfy { index in
+            (index < lhs.values.count ? lhs.values[index] : 0)
+                == (index < rhs.values.count ? rhs.values[index] : 0)
+        }
+    }
+
+    static func + (lhs: Self, rhs: Self) -> Self {
+        combine(lhs, rhs, +)
+    }
+
+    static func - (lhs: Self, rhs: Self) -> Self {
+        combine(lhs, rhs, -)
+    }
+
+    private static func combine(
+        _ lhs: Self, _ rhs: Self, _ operation: (CGFloat, CGFloat) -> CGFloat
+    ) -> Self {
+        Self(values: (0..<max(lhs.values.count, rhs.values.count)).map { index in
+            operation(
+                index < lhs.values.count ? lhs.values[index] : 0,
+                index < rhs.values.count ? rhs.values[index] : 0
+            )
+        })
+    }
+
+    mutating func scale(by rhs: Double) {
+        values = values.map { $0 * CGFloat(rhs) }
+    }
+
+    var magnitudeSquared: Double {
+        values.reduce(0) { $0 + Double($1 * $1) }
+    }
+}
+
+private nonisolated struct SlidingSelectorKnob<Knob: View>: View, Animatable {
+    let frames: [CGRect]
+    var weights: SegmentWeights
+    var dragOffset: CGFloat
+    let knob: Knob
+
+    var animatableData: AnimatablePair<SegmentWeights, CGFloat> {
+        get { AnimatablePair(weights, dragOffset) }
+        set {
+            weights = newValue.first
+            dragOffset = newValue.second
+        }
+    }
+
+    private var frame: CGRect {
+        var result = CGRect.zero
+        for (frame, weight) in zip(frames, weights.values) {
+            result.origin.x += frame.minX * weight
+            result.origin.y += frame.minY * weight
+            result.size.width += frame.width * weight
+            result.size.height += frame.height * weight
+        }
+        result.origin.x += dragOffset
+        return result
+    }
+
+    @MainActor var body: some View {
+        let frame = self.frame
+        knob
+            .frame(width: frame.width, height: frame.height)
+            .offset(x: frame.minX, y: frame.minY)
+            // Only the weights and drag offset above interpolate. Animating
+            // these derived pixels again would make layout changes lag behind.
+            .transaction { $0.animation = nil }
+            .allowsHitTesting(false)
     }
 }
 
@@ -39,6 +120,9 @@ private struct SegmentFramePreferenceKey<ID: Hashable>: PreferenceKey {
 ///   footprints, so selection-dependent styling cannot resize the whole track.
 ///
 /// Supports optional drag-to-switch and tap/retap callbacks.
+/// Segment IDs must be unique and stable. Content is evaluated for both visual
+/// states to reserve its footprint; keep those builders free of side effects.
+/// Layout anchors drive rendering; cached frames are only used for drag hit tests.
 struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Content: View>: View {
     let segments: [Selection]
     @Binding var selection: Selection
@@ -51,22 +135,21 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
     @ViewBuilder let knob: () -> Knob
     @ViewBuilder let content: (Selection, Bool) -> Content
 
-    @State private var frames: [Selection: CGRect] = [:]
-    @State private var knobFrame: CGRect = .zero
+    @State private var interactionFrames: [Selection: CGRect] = [:]
     @State private var dragOffset: CGFloat = 0
     @State private var isDragging: Bool = false
     @State private var instanceID = UUID()
-    @State private var pendingInitialVelocity: Double?
+    @State private var releaseInitialVelocity: Double = 0
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var configuredMotionPolicy
 
-    private var selectedFrame: CGRect? { frames[selection] }
+    private var selectedFrame: CGRect? { interactionFrames[selection] }
 
     private var orderedFrames: [(Selection, CGRect)] {
         segments.compactMap { seg in
-            frames[seg].map { (seg, $0) }
+            interactionFrames[seg].map { (seg, $0) }
         }
     }
 
@@ -110,21 +193,36 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
 
     var body: some View {
         let selector = segmentsLayer
-            .background(alignment: .topLeading) {
-                ZStack(alignment: .topLeading) {
-                    background()
-                        .allowsHitTesting(false)
+            .backgroundPreferenceValue(SegmentAnchorPreferenceKey<Selection>.self) { entries in
+                GeometryReader { geometry in
+                    let frames = resolvedFrames(entries, in: geometry)
+                    ZStack(alignment: .topLeading) {
+                        background()
+                            .allowsHitTesting(false)
 
-                    knobLayer
+                        knobLayer(frames: frames)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .onChange(of: frames, initial: true) { _, newFrames in
+                        // Geometry never starts an animation or drives rendering
+                        // through state. This snapshot is solely for gestures.
+                        var transaction = Transaction(animation: nil)
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            interactionFrames = newFrames
+                        }
+                    }
                 }
             }
             .coordinateSpace(name: coordinateSpaceName)
-            .onPreferenceChange(SegmentFramePreferenceKey<Selection>.self) { entries in
-                var newFrames: [Selection: CGRect] = [:]
-                for entry in entries {
-                    newFrames[entry.id] = entry.frame
+            .onChange(of: segments) { _, _ in
+                // A new option set has a new weight basis and no old drag.
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    isDragging = false
+                    dragOffset = 0
                 }
-                frames = newFrames
             }
 
         if enableDrag {
@@ -137,28 +235,21 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
     // MARK: - Layers
 
     @ViewBuilder
-    private var knobLayer: some View {
-        if let frame = selectedFrame {
-            let targetFrame = isDragging ? draggedFrame(base: frame) : frame
-            knob()
-                .frame(width: knobFrame.width, height: knobFrame.height)
-                .offset(x: knobFrame.minX, y: knobFrame.minY)
-                .allowsHitTesting(false)
-                .onAppear {
-                    if knobFrame == .zero {
-                        knobFrame = targetFrame
-                    }
-                }
-                .onChange(of: targetFrame) { oldValue, newValue in
-                    guard oldValue != newValue else { return }
-                    let initialVelocity = pendingInitialVelocity ?? 0
-                    pendingInitialVelocity = nil
-                    withAnimation(
-                        isDragging ? nil : resolvedAnimation(initialVelocity: initialVelocity)
-                    ) {
-                        knobFrame = newValue
-                    }
-                }
+    private func knobLayer(frames: [Selection: CGRect]) -> some View {
+        if let frame = frames[selection] {
+            SlidingSelectorKnob(
+                frames: segments.map { frames[$0] ?? .zero },
+                weights: SegmentWeights(values: segments.map { $0 == selection ? 1 : 0 }),
+                dragOffset: isDragging ? draggedFrame(base: frame, frames: frames).minX - frame.minX : 0,
+                knob: knob()
+            )
+            .animation(isDragging ? nil : resolvedAnimation(), value: selection)
+            .animation(
+                isDragging ? nil : resolvedAnimation(initialVelocity: releaseInitialVelocity),
+                value: isDragging
+            )
+            .id(segments)
+            .transition(.identity)
         }
     }
 
@@ -174,15 +265,9 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
                 }
                 .buttonStyle(.plain)
                 .contentShape(Rectangle())
-                .background(
-                    GeometryReader { geo in
-                        Color.clear
-                            .preference(
-                                key: SegmentFramePreferenceKey<Selection>.self,
-                                value: [SegmentFrameEntry(id: segment, frame: geo.frame(in: .named(coordinateSpaceName)))]
-                            )
-                    }
-                )
+                .anchorPreference(key: SegmentAnchorPreferenceKey<Selection>.self, value: .bounds) {
+                    [SegmentAnchorEntry(id: segment, bounds: $0)]
+                }
             }
         }
     }
@@ -202,11 +287,15 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
     }
 
     private var dragGesture: some Gesture {
-        DragGesture(minimumDistance: 0)
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
             .onChanged { value in
                 guard selectedFrame != nil else { return }
-                isDragging = true
-                dragOffset = value.translation.width
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    isDragging = true
+                    dragOffset = value.translation.width
+                }
             }
             .onEnded { value in
                 guard let frame = selectedFrame else {
@@ -218,7 +307,7 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
                 }
                 let finalX = frame.midX + value.translation.width
                 let target = segment(at: finalX) ?? selection
-                let destinationFrame = frames[target] ?? frame
+                let destinationFrame = interactionFrames[target] ?? frame
                 let initialVelocity = MotionSpec.clampedInitialVelocity(
                     MotionSpec.normalizedInitialVelocity(
                         from: finalX,
@@ -226,25 +315,33 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
                         velocity: Double(value.velocity.width)
                     )
                 )
-                pendingInitialVelocity = initialVelocity
+                releaseInitialVelocity = initialVelocity
                 if target != selection {
                     onDragEnd?(target)
                 }
-                withAnimation(resolvedAnimation(initialVelocity: initialVelocity)) {
-                    isDragging = false
-                    selection = target
-                    dragOffset = 0
-                }
+                isDragging = false
+                selection = target
+                dragOffset = 0
             }
     }
 
     // MARK: - Helpers
 
-    private func draggedFrame(base: CGRect) -> CGRect {
+    private func resolvedFrames(
+        _ entries: [SegmentAnchorEntry<Selection>], in geometry: GeometryProxy
+    ) -> [Selection: CGRect] {
+        var frames: [Selection: CGRect] = [:]
+        for entry in entries {
+            frames[entry.id] = geometry[entry.bounds]
+        }
+        return frames
+    }
+
+    private func draggedFrame(base: CGRect, frames: [Selection: CGRect]) -> CGRect {
         var result = base
         let rawX = base.minX + dragOffset
-        let ordered = orderedFrames
-        guard let first = ordered.first?.1, let last = ordered.last?.1 else { return base }
+        let ordered = segments.compactMap { frames[$0] }
+        guard let first = ordered.first, let last = ordered.last else { return base }
         let minX = first.minX
         let maxX = last.maxX - base.width
         result.origin.x = min(max(rawX, minX), maxX)

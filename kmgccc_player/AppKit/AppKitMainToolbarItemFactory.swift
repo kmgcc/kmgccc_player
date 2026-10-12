@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import SwiftUI
 
 @MainActor
 struct AppKitMainToolbarItemFactory {
@@ -25,6 +26,7 @@ struct AppKitMainToolbarItemFactory {
         let isMultiselectMode: Bool
         let generation: Int
         let splitView: NSSplitView?
+        let historyViewModel: PlaybackHistoryViewModel?
     }
 
     func makeItem(
@@ -35,6 +37,18 @@ struct AppKitMainToolbarItemFactory {
         searchBridge: AppKitMainToolbarSearchBridge
     ) -> NSToolbarItem? {
         switch identifier {
+        case AppKitMainToolbarController.Identifier.historySectionTitle:
+            guard let historyVM = context.historyViewModel else { return nil }
+            let item = NSToolbarItem(itemIdentifier: identifier)
+            item.label = "日期"
+            item.paletteLabel = item.label
+            let view = NSHostingView(rootView: PlaybackHistoryToolbarTitleView(historyVM: historyVM))
+            view.frame = NSRect(x: 0, y: 0, width: 144, height: 28)
+            item.view = view
+            item.isBordered = false
+            item.visibilityPriority = .low
+            return item
+
         case AppKitMainToolbarController.Identifier.sidebarToggle:
             return makeSidebarToggleItem(
                 identifier: identifier,
@@ -277,5 +291,20 @@ struct AppKitMainToolbarItemFactory {
         item.autovalidates = false
         item.isEnabled = true
         return item
+    }
+}
+
+private struct PlaybackHistoryToolbarTitleView: View {
+    let historyVM: PlaybackHistoryViewModel
+    @ObservedObject private var themeStore = ThemeStore.shared
+
+    var body: some View {
+        Text(historyVM.toolbarSectionTitle ?? "")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+            .lineLimit(1)
+            .frame(width: 144, height: 28, alignment: .leading)
+            .allowsHitTesting(false)
+            .accessibilityHidden(historyVM.toolbarSectionTitle == nil)
     }
 }

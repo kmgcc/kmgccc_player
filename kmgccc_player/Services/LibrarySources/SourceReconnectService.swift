@@ -65,6 +65,11 @@ final class SourceReconnectService {
     private let bookmarkResolver: any BookmarkResolving
     private let requiresSecurityScope: Bool
     private let matcher: SourceReconnectMatcher
+    private var backgroundLender: BackgroundWorkLender = .none
+
+    func bindBackgroundWork(lender: BackgroundWorkLender) {
+        backgroundLender = lender
+    }
 
     init(
         context: LibraryContext,
@@ -104,20 +109,27 @@ final class SourceReconnectService {
         let tracks = await repository.fetchTracks(in: nil)
         let manifest = try await manifestStore.load(sourceID: sourceID, libraryID: context.id)
         let expected = expectedFiles(sourceID: sourceID, tracks: tracks, manifest: manifest)
-        let plans = try await withThrowingTaskGroup(of: SourceReconnectPlan.self) { group in
-            for root in roots {
-                group.addTask { [matcher] in
-                    let candidates = try await Self.scanCandidates(rootURL: root)
-                    return matcher.makePlan(rootURL: root, expected: expected, candidates: candidates)
+        // The folder scans hold a disk slot, so idle disk work steps aside.
+        let plans = try await backgroundLender.withLease(
+            domain: .fileWork,
+            priority: .userRequested,
+            resources: [.disk]
+        ) {
+            try await withThrowingTaskGroup(of: SourceReconnectPlan.self) { group in
+                for root in roots {
+                    group.addTask { [matcher] in
+                        let candidates = try await Self.scanCandidates(rootURL: root)
+                        return matcher.makePlan(rootURL: root, expected: expected, candidates: candidates)
+                    }
                 }
-            }
-            var values: [SourceReconnectPlan] = []
-            for try await value in group { values.append(value) }
-            return values.sorted {
-                if $0.recoveredCount != $1.recoveredCount {
-                    return $0.recoveredCount > $1.recoveredCount
+                var values: [SourceReconnectPlan] = []
+                for try await value in group { values.append(value) }
+                return values.sorted {
+                    if $0.recoveredCount != $1.recoveredCount {
+                        return $0.recoveredCount > $1.recoveredCount
+                    }
+                    return $0.rootURL.path < $1.rootURL.path
                 }
-                return $0.rootURL.path < $1.rootURL.path
             }
         }
         return SourceReconnectPreparation(

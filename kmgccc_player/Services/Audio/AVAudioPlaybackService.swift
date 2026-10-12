@@ -382,8 +382,16 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         rendererPipeline.onDSPApplyEvent = { [weak controller] event in
             Task { @MainActor [weak controller] in controller?.receive(event) }
         }
-        controller.bindPlayback { [weak self] configuration, revision, requestID in
+        let bindingID = controller.bindPlayback(monitorLoad: { [weak self] enabled, generation in
+            self?.rendererPipeline.setDSPProcessingLoadMonitoring(enabled, generation: generation)
+        }) { [weak self] configuration, revision, requestID in
             self?.rendererPipeline.applyDSP(configuration, revision: revision, requestID: requestID)
+        }
+        rendererPipeline.onDSPProcessingLoad = { [weak self, weak controller] update, timeline, transport in
+            guard let self,
+                  self.rendererPipeline.isTimelineCurrent(timeline),
+                  self.rendererPipeline.isTransportCommandCurrent(transport) else { return }
+            controller?.receiveProcessingLoad(update, bindingID: bindingID)
         }
     }
 

@@ -68,14 +68,15 @@ nonisolated struct EqualLoudnessCalibrationPoint: Codable, Equatable, Sendable {
     var trebleDB: Double
 }
 
-/// One listener's four-step calibration for one output device. The reference
+/// One listener's four-step calibration for one output route. The reference
 /// step is 0 dB by definition; quieter steps usually boost, louder steps may cut.
 nonisolated struct EqualLoudnessCalibration: Codable, Equatable, Sendable {
     nonisolated static let currentAlgorithmVersion = 1
     nonisolated static let bassRange: ClosedRange<Double> = DSPEqualLoudnessParameters.bassGainRange
     nonisolated static let trebleRange: ClosedRange<Double> = DSPEqualLoudnessParameters.trebleGainRange
 
-    var deviceUID: String
+    /// The route it was recorded on (`DSPOutputDeviceKey.rawValue`).
+    var deviceKey: String
     var deviceName: String
     var axis: OutputDeviceVolumeReading.Axis
     /// In the order they were recorded: reference, quieter, quieter, louder.
@@ -84,14 +85,14 @@ nonisolated struct EqualLoudnessCalibration: Codable, Equatable, Sendable {
     var createdAt: Date
 
     nonisolated init(
-        deviceUID: String,
+        deviceKey: String,
         deviceName: String,
         axis: OutputDeviceVolumeReading.Axis,
         points: [EqualLoudnessCalibrationPoint],
         algorithmVersion: Int = Self.currentAlgorithmVersion,
         createdAt: Date = Date()
     ) {
-        self.deviceUID = deviceUID
+        self.deviceKey = deviceKey
         self.deviceName = deviceName
         self.axis = axis
         self.points = points
@@ -101,11 +102,26 @@ nonisolated struct EqualLoudnessCalibration: Codable, Equatable, Sendable {
 
     nonisolated var curve: EqualLoudnessCurve? { EqualLoudnessCurve(points: points) }
 
-    /// Stored inside the equal-loudness node's parameters, so every preset
-    /// keeps its own calibrations.
+    /// Presets, the working draft and automation use different date
+    /// strategies; the wire form keeps `createdAt` as Unix seconds for all.
+    nonisolated init(from decoder: Decoder) throws {
+        let json = try DSPJSONValue(from: decoder)
+        guard let calibration = Self(json: json) else {
+            throw DecodingError.dataCorrupted(DecodingError.Context(
+                codingPath: decoder.codingPath,
+                debugDescription: "Unreadable equal-loudness calibration."
+            ))
+        }
+        self = calibration
+    }
+
+    nonisolated func encode(to encoder: Encoder) throws {
+        try jsonValue.encode(to: encoder)
+    }
+
     nonisolated var jsonValue: DSPJSONValue {
         .object([
-            "deviceUID": .string(deviceUID),
+            "deviceKey": .string(deviceKey),
             "deviceName": .string(deviceName),
             "axis": .string(axis.rawValue),
             "points": .array(points.map {
@@ -122,7 +138,7 @@ nonisolated struct EqualLoudnessCalibration: Codable, Equatable, Sendable {
 
     nonisolated init?(json: DSPJSONValue) {
         guard case .object(let fields) = json,
-              case .string(let deviceUID)? = fields["deviceUID"],
+              case .string(let deviceKey)? = fields["deviceKey"],
               case .string(let rawAxis)? = fields["axis"],
               let axis = OutputDeviceVolumeReading.Axis(rawValue: rawAxis),
               case .array(let rawPoints)? = fields["points"],
@@ -135,10 +151,10 @@ nonisolated struct EqualLoudnessCalibration: Codable, Equatable, Sendable {
                   let trebleDB = point["trebleDB"]?.numberValue else { return nil }
             points.append(EqualLoudnessCalibrationPoint(coordinate: coordinate, bassDB: bassDB, trebleDB: trebleDB))
         }
-        var deviceName = deviceUID
+        var deviceName = deviceKey
         if case .string(let name)? = fields["deviceName"] { deviceName = name }
         self.init(
-            deviceUID: deviceUID,
+            deviceKey: deviceKey,
             deviceName: deviceName,
             axis: axis,
             points: points,

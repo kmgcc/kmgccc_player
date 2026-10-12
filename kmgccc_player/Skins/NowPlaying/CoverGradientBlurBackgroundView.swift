@@ -11,7 +11,7 @@ import ImageIO
 import MotionKit
 import SwiftUI
 
-private let coverGradientBlurRendererCacheVersion = "smoothStretchV16"
+private let coverGradientBlurRendererCacheVersion = "sharpCoverV17"
 
 // MARK: - Edge Fill Mode
 
@@ -92,18 +92,21 @@ struct CoverGradientBlurConfig: Sendable {
 private struct RenderKey: Equatable {
     let artworkChecksum: UInt64
     let size: CGSize
+    let displayScale: CGFloat
     let configHash: String
     let dominantColorHash: String
 
     init(
         artworkChecksum: UInt64,
         size: CGSize,
+        displayScale: CGFloat,
         config: CoverGradientBlurConfig,
         dominantColor: NSColor?,
         prefersAdaptiveArtworkSizing: Bool
     ) {
         self.artworkChecksum = artworkChecksum
         self.size = Self.quantized(size)
+        self.displayScale = min(2, max(1, displayScale))
         let alphaCoeffStr: String
         if let a = config.blurAlphaCoefficients {
             alphaCoeffStr = String(format: "%.3f-%.3f-%.3f-%.3f", a.0, a.1, a.2, a.3)
@@ -134,7 +137,7 @@ private struct RenderKey: Equatable {
     }
 
     var cacheKey: String {
-        "\(artworkChecksum)-\(Int(size.width))x\(Int(size.height))-\(configHash)-\(dominantColorHash)-rs\(Int((CoverGradientBlurRenderer.internalRenderScale() * 100).rounded()))"
+        "\(artworkChecksum)-\(Int(size.width))x\(Int(size.height))-ds\(displayScale)-\(configHash)-\(dominantColorHash)-rs\(Int((CoverGradientBlurRenderer.internalRenderScale() * 100).rounded()))"
     }
 
     var isRenderable: Bool {
@@ -185,6 +188,7 @@ struct CoverGradientBlurBackgroundView: View {
     @State private var visibleRenderedImage: Bool = false
     @State private var lastRenderKey: RenderKey?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.displayScale) private var displayScale
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var configuredMotionPolicy
 
@@ -238,6 +242,7 @@ struct CoverGradientBlurBackgroundView: View {
         RenderKey(
             artworkChecksum: resolvedArtworkChecksum,
             size: currentSize,
+            displayScale: displayScale,
             config: config,
             dominantColor: dominantColor,
             prefersAdaptiveArtworkSizing: preferAdaptiveArtworkSizing
@@ -346,7 +351,10 @@ struct CoverGradientBlurBackgroundView: View {
                 return CoverGradientBlurRenderer.preparedArtworkImage(
                     artworkData: artworkData,
                     artworkImage: artworkImage,
-                    targetSize: key.size
+                    targetSize: CGSize(
+                        width: key.size.width * key.displayScale,
+                        height: key.size.height * key.displayScale
+                    )
                 )
             }
             let preparedArtwork = await withTaskCancellationHandler {
@@ -365,7 +373,8 @@ struct CoverGradientBlurBackgroundView: View {
                             targetSize: key.size,
                             dominantColor: dominantColor,
                             config: config,
-                            preferAdaptiveArtworkSizing: preferAdaptiveArtworkSizing
+                            preferAdaptiveArtworkSizing: preferAdaptiveArtworkSizing,
+                            displayScale: key.displayScale
                         )
                     else { return nil }
                     // Build the readability map from the final render in the
@@ -491,8 +500,8 @@ enum CoverGradientBlurRenderer {
     }
 
     /// Internal resolution at which the multi-pass backdrop blur is rendered.
-    /// 0.5 → each blur pass costs 1/4 the pixels; the final render is upscaled
-    /// back to full canvas size with `CILanczosScaleTransform`.
+    /// 0.5 → each blur pass costs 1/4 the logical canvas pixels. The clear
+    /// cover is composited separately at display resolution after these passes.
     private nonisolated static let defaultInternalRenderScale: CGFloat = 0.5
 
     nonisolated static func internalRenderScale() -> CGFloat {
@@ -508,19 +517,26 @@ enum CoverGradientBlurRenderer {
         artworkImage: NSImage?,
         targetSize: CGSize
     ) -> CGImage? {
-        if let artworkImage, let image = cgImage(from: artworkImage) {
-            return image
+        // Playback snapshots carry a 1024px derivative. Decode the stored data
+        // for this surface instead of allowing that derivative to cap detail.
+        guard let artworkData else {
+            return artworkImage.flatMap { cgImage(from: $0) }
         }
-
-        guard let artworkData else { return nil }
         guard
             let source = CGImageSourceCreateWithData(
                 artworkData as CFData,
                 [kCGImageSourceShouldCache: false] as CFDictionary
             )
-        else { return nil }
+        else { return artworkImage.flatMap { cgImage(from: $0) } }
 
-        let maxPixelSize = max(1, Int(ceil(max(targetSize.width, targetSize.height))))
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let width = (properties?[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue ?? 1
+        let height = (properties?[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue ?? 1
+        let orientation = (properties?[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        let aspect = orientation >= 5 ? height / max(1, width) : width / max(1, height)
+        // Covers are fitted to canvas height; overscan width must not cause
+        // unnecessarily large decodes for the hidden transition source.
+        let maxPixelSize = max(1, Int(ceil(targetSize.height * max(1, aspect))))
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -536,7 +552,8 @@ enum CoverGradientBlurRenderer {
         targetSize: CGSize,
         dominantColor: NSColor?,
         config: CoverGradientBlurConfig,
-        preferAdaptiveArtworkSizing: Bool = false
+        preferAdaptiveArtworkSizing: Bool = false,
+        displayScale: CGFloat = 1
     ) -> CGImage? {
 
         guard targetSize.width > 0, targetSize.height > 0,
@@ -544,17 +561,15 @@ enum CoverGradientBlurRenderer {
             return nil
         }
 
-        // The backdrop is blurred at up to radius 2000, so the render output is
-        // effectively a smooth gradient. Running the multi-pass blur at full
-        // canvas resolution costs seconds of CoreImage work on every cold entry
-        // (which is what made entering the fullscreen player stutter). Render
-        // the pipeline at a reduced internal resolution and upscale the final
-        // result: for such a large radius the upscaled render is visually
-        // equivalent, while every blur pass costs internalRenderScale² fewer
-        // pixels. `KMGCCC_CGB_RENDER_SCALE` overrides the scale for A/B checks.
+        // Keep expensive blur passes at their existing logical resolution.
+        // Only the final composite and the unblurred cover use backing pixels.
         let internalRenderScale = CoverGradientBlurRenderer.internalRenderScale()
-        let outputLogicalWidth = targetSize.width
-        let outputLogicalHeight = targetSize.height
+        // A small stored cover cannot supply Retina detail; avoid retaining
+        // a larger bitmap solely to magnify those same source pixels.
+        let sourceScale = CGFloat(artworkCGImage.height) / targetSize.height
+        let outputScale = min(2, max(1, displayScale), max(1, sourceScale))
+        let outputLogicalWidth = (targetSize.width * outputScale).rounded()
+        let outputLogicalHeight = (targetSize.height * outputScale).rounded()
         let canvasLogicalWidth = targetSize.width * internalRenderScale
         let canvasLogicalHeight = targetSize.height * internalRenderScale
         let canvasPixelWidth = max(1, Int(canvasLogicalWidth.rounded()))
@@ -815,7 +830,32 @@ enum CoverGradientBlurRenderer {
             currentImage = passImage
         }
 
-        let blurredImage = currentImage
+        let outputTransform = CGAffineTransform(
+            scaleX: outputLogicalWidth / canvasLogicalWidth,
+            y: outputLogicalHeight / canvasLogicalHeight
+        )
+        var blurredImage = currentImage.transformed(by: outputTransform).cropped(to: outputRect)
+        let outputArtworkRect = artworkRect.applying(outputTransform)
+        if let sharpMask = sharpArtworkMask(
+            artworkRect: outputArtworkRect,
+            leftBlurStartX: leftBlurStartX * outputTransform.a,
+            rightBlurStartX: rightBlurStartX * outputTransform.a,
+            featherWidth: 8 * outputScale,
+            config: config
+        ), let blend = CIFilter(name: "CIBlendWithMask") {
+            let sharpArtwork = CIImage(cgImage: artworkCGImage)
+                .transformed(by: CGAffineTransform(
+                    a: outputArtworkRect.width / artworkWidth, b: 0,
+                    c: 0, d: outputArtworkRect.height / artworkHeight,
+                    tx: outputArtworkRect.minX, ty: outputArtworkRect.minY
+                ))
+                .cropped(to: outputArtworkRect.intersection(outputRect))
+            blend.setValue(sharpArtwork, forKey: kCIInputImageKey)
+            blend.setValue(blurredImage, forKey: kCIInputBackgroundImageKey)
+            blend.setValue(sharpMask, forKey: kCIInputMaskImageKey)
+            guard let composite = blend.outputImage else { return nil }
+            blurredImage = composite.cropped(to: outputRect)
+        }
 
         let overlayAlphaMax = config.colorOverlayOpacity
 
@@ -866,19 +906,10 @@ enum CoverGradientBlurRenderer {
         }
 
         compositeFilter.setValue(blurredImage, forKey: kCIInputBackgroundImageKey)
-        compositeFilter.setValue(overlayImage, forKey: kCIInputImageKey)
+        compositeFilter.setValue(overlayImage.transformed(by: outputTransform), forKey: kCIInputImageKey)
 
-        guard var finalImage = compositeFilter.outputImage?.cropped(to: canvasRect) else {
+        guard let finalImage = compositeFilter.outputImage?.cropped(to: outputRect) else {
             return nil
-        }
-        if internalRenderScale < 1,
-           let scaleFilter = CIFilter(name: "CILanczosScaleTransform") {
-            scaleFilter.setValue(finalImage, forKey: kCIInputImageKey)
-            scaleFilter.setValue(1.0 / internalRenderScale, forKey: kCIInputScaleKey)
-            scaleFilter.setValue(1.0, forKey: kCIInputAspectRatioKey)
-            if let upscaled = scaleFilter.outputImage {
-                finalImage = upscaled.cropped(to: outputRect)
-            }
         }
         let renderContext = currentCIContext()
         defer {
@@ -896,6 +927,39 @@ enum CoverGradientBlurRenderer {
         }
 
         return cgImage
+    }
+
+    /// Replace only the region before the blur begins, feathering entirely
+    /// inside that clear region so the existing progressive blur stays intact.
+    private nonisolated static func sharpArtworkMask(
+        artworkRect: CGRect,
+        leftBlurStartX: CGFloat,
+        rightBlurStartX: CGFloat,
+        featherWidth: CGFloat,
+        config: CoverGradientBlurConfig
+    ) -> CIImage? {
+        let white = CIColor(red: 1, green: 1, blue: 1)
+        let black = CIColor(red: 0, green: 0, blue: 0)
+        guard config.blurRadius > 0, config.blurMaskMode == .progressiveRamp else {
+            return CIImage(color: white).cropped(to: artworkRect)
+        }
+        func ramp(from start: CGFloat, to end: CGFloat) -> CIImage? {
+            guard let filter = CIFilter(name: "CISmoothLinearGradient") else { return nil }
+            filter.setValue(CIVector(x: start, y: 0), forKey: "inputPoint0")
+            filter.setValue(CIVector(x: end, y: 0), forKey: "inputPoint1")
+            filter.setValue(white, forKey: "inputColor0")
+            filter.setValue(black, forKey: "inputColor1")
+            return filter.outputImage?.cropped(to: artworkRect)
+        }
+        guard let right = ramp(from: rightBlurStartX - featherWidth, to: rightBlurStartX) else {
+            return nil
+        }
+        if config.artworkPlacement == .leading { return right }
+        guard let left = ramp(from: leftBlurStartX + featherWidth, to: leftBlurStartX),
+              let minimum = CIFilter(name: "CIMinimumCompositing") else { return nil }
+        minimum.setValue(right, forKey: kCIInputImageKey)
+        minimum.setValue(left, forKey: kCIInputBackgroundImageKey)
+        return minimum.outputImage?.cropped(to: artworkRect)
     }
 
     /// Base ramp mask for pass 0: linear gradient over the full blur span,

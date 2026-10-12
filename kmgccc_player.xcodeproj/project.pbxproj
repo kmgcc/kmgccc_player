@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C31000000000000000000001 /* SeamlessMarqueeTimingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C31000000000000000000002 /* SeamlessMarqueeTimingTests.swift */; };
+		D60000000000000000000001 /* PopupKit in Frameworks */ = {isa = PBXBuildFile; productRef = D60000000000000000000002 /* PopupKit */; };
 		9351198E2F33149A00766A5F /* AMLL in Resources */ = {isa = PBXBuildFile; fileRef = 9351198D2F33149A00766A5F /* AMLL */; };
 		938818D32F7925E800880C23 /* WhatsNewKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000002 /* WhatsNewKit */; };
 		938818D42F7925E800880C24 /* CrashReporter in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000004 /* CrashReporter */; };
@@ -79,6 +81,7 @@
 		C3F000000000000000000007 /* AudioDSPScriptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F000000000000000000107 /* AudioDSPScriptTests.swift */; };
 		C3F000000000000000000008 /* AudioDSPScriptControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F000000000000000000108 /* AudioDSPScriptControllerTests.swift */; };
 		C3F000000000000000000009 /* AudioDSPScriptIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F000000000000000000109 /* AudioDSPScriptIntegrationTests.swift */; };
+		C3F000000000000000000A01 /* BackgroundWorkSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F000000000000000000A11 /* BackgroundWorkSchedulerTests.swift */; };
 		D20000000000000000000001 /* MelismaKit in Frameworks */ = {isa = PBXBuildFile; productRef = D20000000000000000000003 /* MelismaKit */; };
 		D30000000000000000000001 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */; };
 		D40000000000000000000001 /* kmgccc_playerTests/DisplayHDRCapabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000011 /* kmgccc_playerTests/DisplayHDRCapabilityTests.swift */; };
@@ -100,6 +103,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		C31000000000000000000002 /* SeamlessMarqueeTimingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/SeamlessMarqueeTimingTests.swift; sourceTree = "<group>"; };
 		935118922F3231C500766A5F /* kmgccc_player.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = kmgccc_player.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9351198D2F33149A00766A5F /* AMLL */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMLL; path = kmgccc_player/Resources/AMLL; sourceTree = "<group>"; };
 		A10000000000000000000001 /* Project.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Project.xcconfig; sourceTree = "<group>"; };
@@ -203,6 +207,7 @@
 		C3F000000000000000000107 /* AudioDSPScriptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioDSPScriptTests.swift; path = kmgccc_playerTests/AudioDSPScriptTests.swift; sourceTree = "<group>"; };
 		C3F000000000000000000108 /* AudioDSPScriptControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioDSPScriptControllerTests.swift; path = kmgccc_playerTests/AudioDSPScriptControllerTests.swift; sourceTree = "<group>"; };
 		C3F000000000000000000109 /* AudioDSPScriptIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioDSPScriptIntegrationTests.swift; path = kmgccc_playerTests/AudioDSPScriptIntegrationTests.swift; sourceTree = "<group>"; };
+		C3F000000000000000000A11 /* BackgroundWorkSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BackgroundWorkSchedulerTests.swift; path = kmgccc_playerTests/BackgroundWorkSchedulerTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift; sourceTree = "<group>"; };
 		D40000000000000000000011 /* kmgccc_playerTests/DisplayHDRCapabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/DisplayHDRCapabilityTests.swift; sourceTree = "<group>"; };
 		E01000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = kmgccc_player/AppDelegate.swift; sourceTree = "<group>"; };
@@ -273,6 +278,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D60000000000000000000001 /* PopupKit in Frameworks */,
 				D50000000000000000000001 /* MotionKit in Frameworks */,
 				D20000000000000000000001 /* MelismaKit in Frameworks */,
 				93A3C95B304949AC00BFA17B /* PlayerAutomationIPC in Frameworks */,
@@ -439,6 +445,7 @@
 				C3F000000000000000000107 /* AudioDSPScriptTests.swift */,
 				C3F000000000000000000108 /* AudioDSPScriptControllerTests.swift */,
 				C3F000000000000000000109 /* AudioDSPScriptIntegrationTests.swift */,
+				C3F000000000000000000A11 /* BackgroundWorkSchedulerTests.swift */,
 				C2D000000000000000000105 /* AudioDSPControllerTests.swift */,
 				C20000000000000000000011 /* kmgccc_playerTests/RendererPipelineTests.swift */,
 				C20000000000000000000012 /* AVFilePCMProvider.swift */,
@@ -451,6 +458,7 @@
 				C21000000000000000000011 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift */,
 				D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */,
 				D40000000000000000000011 /* kmgccc_playerTests/DisplayHDRCapabilityTests.swift */,
+				C31000000000000000000002 /* SeamlessMarqueeTimingTests.swift */,
 				C22000000000000000000011 /* kmgccc_playerTests/ReferencedSourceStoreTests.swift */,
 				C23000000000000000000011 /* kmgccc_playerTests/ReferencedSourceScopeTests.swift */,
 				C24000000000000000000011 /* kmgccc_playerTests/CoverGradientBlurRenderStoreTests.swift */,
@@ -499,6 +507,7 @@
 			);
 			name = kmgccc_player;
 			packageProductDependencies = (
+				D60000000000000000000002 /* PopupKit */,
 				D50000000000000000000002 /* MotionKit */,
 				D20000000000000000000003 /* MelismaKit */,
 				AA0000000000000000000004 /* CrashReporter */,
@@ -560,6 +569,7 @@
 			mainGroup = 935118892F3231C500766A5F;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				D60000000000000000000003 /* XCLocalSwiftPackageReference "Tools/PopupLab" */,
 				D20000000000000000000002 /* XCLocalSwiftPackageReference "../NativeLyrics" */,
 				AA0000000000000000000001 /* XCRemoteSwiftPackageReference "WhatsNewKit" */,
 				AA0000000000000000000003 /* XCRemoteSwiftPackageReference "plcrashreporter" */,
@@ -802,12 +812,14 @@
 				C3F000000000000000000007 /* AudioDSPScriptTests.swift in Sources */,
 				C3F000000000000000000008 /* AudioDSPScriptControllerTests.swift in Sources */,
 				C3F000000000000000000009 /* AudioDSPScriptIntegrationTests.swift in Sources */,
+				C3F000000000000000000A01 /* BackgroundWorkSchedulerTests.swift in Sources */,
 				C2D000000000000000000005 /* AudioDSPControllerTests.swift in Sources */,
 				C20000000000000000000001 /* kmgccc_playerTests/RendererPipelineTests.swift in Sources */,
 				C2D000000000000000000004 /* AudioDSPProcessorTests.swift in Sources */,
 				C21000000000000000000001 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift in Sources */,
 				D30000000000000000000001 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift in Sources */,
 				D40000000000000000000001 /* kmgccc_playerTests/DisplayHDRCapabilityTests.swift in Sources */,
+				C31000000000000000000001 /* SeamlessMarqueeTimingTests.swift in Sources */,
 				C22000000000000000000001 /* kmgccc_playerTests/ReferencedSourceStoreTests.swift in Sources */,
 				C23000000000000000000001 /* kmgccc_playerTests/ReferencedSourceScopeTests.swift in Sources */,
 				C24000000000000000000001 /* kmgccc_playerTests/CoverGradientBlurRenderStoreTests.swift in Sources */,
@@ -1148,6 +1160,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Dependencies/MotionKit;
 		};
+		D60000000000000000000003 /* XCLocalSwiftPackageReference "Tools/PopupLab" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Tools/PopupLab;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1212,6 +1228,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D50000000000000000000003 /* XCLocalSwiftPackageReference "Dependencies/MotionKit" */;
 			productName = MotionKit;
+		};
+		D60000000000000000000002 /* PopupKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D60000000000000000000003 /* XCLocalSwiftPackageReference "Tools/PopupLab" */;
+			productName = PopupKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

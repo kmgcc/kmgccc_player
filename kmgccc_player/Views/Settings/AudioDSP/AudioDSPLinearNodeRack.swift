@@ -22,12 +22,20 @@ struct AudioDSPLinearNodeRack: View {
     @Binding var expandedNodeIDs: Set<UUID>
     @Binding var inputTrimDB: Double
     @Binding var outputTrimDB: Double
-    @Binding var headroomMode: DSPHeadroomMode
-    @Binding var headroomMarginDB: Double
+    @Binding var isHeadroomEnabled: Bool
+    @Binding var maximumAttenuationDB: Double
+    @Binding var isLimiterEnabled: Bool
+    @Binding var limiterCeilingDB: Double
+    @Binding var limiterReleaseMilliseconds: Double
+    let equalLoudness: DSPEqualLoudnessStage
+    /// False while another device's sound is shown: live volume and
+    /// calibration belong to the device now playing.
+    let isLive: Bool
 
     let onCommit: () -> Void
     let onRemoveNode: (UUID) -> Void
     let onUpdateNode: (UUID, (inout DSPNodeConfiguration) -> Void) -> Void
+    let onUpdateEqualLoudness: ((inout DSPEqualLoudnessStage) -> Void) -> Void
 
     @EnvironmentObject private var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
@@ -49,7 +57,8 @@ struct AudioDSPLinearNodeRack: View {
     @State private var dragCleanupTask: Task<Void, Never>?
     @State private var rowGeometry = DSPRackGeometryCache()
     @State private var isCalibrating = false
-    @State private var calibratingNodeID: UUID?
+    @State private var isEqualLoudnessExpanded = false
+    @State private var isLimiterExpanded = false
 
     private let rackSpace = "dspLinearNodeRackCoordinateSpace"
     private let nodeHeaderHeight: CGFloat = DSPRackMetrics.nodeHeaderHeight
@@ -60,6 +69,10 @@ struct AudioDSPLinearNodeRack: View {
 
     private var palette: DSPRackPalette {
         DSPRackPalette(themeStore: themeStore, colorScheme: colorScheme)
+    }
+
+    private var isProcessingEnabled: Bool {
+        isLive && appSession.audioDSPController.configuration.enabled
     }
 
     private var rackNodes: [DSPNodeConfiguration] {
@@ -106,6 +119,12 @@ struct AudioDSPLinearNodeRack: View {
                 color: palette.wire
             )
             .frame(height: 14)
+            equalLoudnessStageView(palette: palette)
+            BusWireSegment(anchor: .top, isConnected: true, color: palette.wire)
+                .frame(height: 14)
+            limiterStageView(palette: palette)
+            BusWireSegment(anchor: .top, isConnected: true, color: palette.wire)
+                .frame(height: 14)
             outputEndpointView(palette: palette)
         }
         .onDisappear(perform: cancelDrag)
@@ -114,17 +133,14 @@ struct AudioDSPLinearNodeRack: View {
             rowGeometry.frames = rowGeometry.frames.filter { id, _ in nodes.contains { $0.nodeID == id } }
         }
         .sheet(isPresented: $isCalibrating) {
-            if let nodeID = calibratingNodeID {
-                EqualLoudnessCalibrationDialog(
-                    controller: appSession.equalLoudnessController,
-                    nodeID: nodeID,
-                    onSave: { calibration in
-                        onUpdateNode(nodeID) { $0.setEqualLoudnessCalibration(calibration) }
-                        onCommit()
-                    }
-                ) {
-                    isCalibrating = false
+            EqualLoudnessCalibrationDialog(
+                controller: appSession.equalLoudnessController,
+                onSave: { calibration in
+                    onUpdateEqualLoudness { $0.calibration = calibration }
+                    onCommit()
                 }
+            ) {
+                isCalibrating = false
             }
         }
     }
@@ -147,9 +163,9 @@ struct AudioDSPLinearNodeRack: View {
         endpointCard(
             title: "输出",
             systemImage: "speaker.wave.2",
-            trailing: headroomDB.map {
-                "预估余量 \($0.formatted(.number.precision(.fractionLength(1)))) dB"
-            },
+            trailing: isHeadroomEnabled ? headroomDB.map {
+                "衰减 \(abs($0).formatted(.number.precision(.fractionLength(1)))) dB"
+            } : nil,
             palette: palette
         ) {
             DSPRangeSliderRow(
@@ -160,23 +176,171 @@ struct AudioDSPLinearNodeRack: View {
                 onCommit: onCommit
             )
 
-            CapsulePicker(
-                label: "余量保护",
-                options: DSPHeadroomMode.allCases,
-                selection: $headroomMode,
-                displayName: { $0 == .automatic ? "自动" : "关闭" }
-            )
+            SettingsSwitchRow(title: "余量保护", isOn: $isHeadroomEnabled)
 
-            if headroomMode == .automatic {
+            if isHeadroomEnabled {
                 DSPRangeSliderRow(
-                    title: "安全边距",
-                    value: $headroomMarginDB,
-                    range: 0...12,
+                    title: "最大衰减",
+                    value: $maximumAttenuationDB,
+                    range: DSPHeadroomConfiguration.maximumAttenuationRange,
                     step: 0.1,
                     onCommit: onCommit
                 )
             }
         }
+    }
+
+    /// Fixed between the equal-loudness stage and the output; it can be
+    /// switched and expanded but never moved or removed.
+    private func limiterStageView(palette: DSPRackPalette) -> some View {
+        let title = "安全限幅"
+        let isBypassed = !isLimiterEnabled
+        let ceilingMagnitude = abs(limiterCeilingDB).formatted(.number.precision(.fractionLength(1)))
+        let ceiling = limiterCeilingDB < -0.05 ? "−\(ceilingMagnitude)" : ceilingMagnitude
+        let release = limiterReleaseMilliseconds.formatted(.number.precision(.fractionLength(0)))
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Button {
+                    withAnimation(reorderAnimation) { isLimiterExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(isLimiterExpanded ? 90 : 0))
+                            .frame(width: 12)
+                        Image(systemName: "rectangle.compress.vertical")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(isBypassed ? AnyShapeStyle(HierarchicalShapeStyle.secondary) : AnyShapeStyle(themeStore.accentColor))
+                            .frame(width: 16)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(title)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(isBypassed ? .secondary : .primary)
+                            Text("上限 \(ceiling) dB · 释放 \(release) ms")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        .lineLimit(1)
+                        Spacer(minLength: 8)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(title)
+                .accessibilityValue(isLimiterExpanded ? "已展开" : "已收起")
+
+                Toggle("", isOn: $isLimiterEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .accessibilityLabel("启用\(title)")
+            }
+            .frame(height: nodeHeaderHeight)
+            .padding(.leading, 12)
+            .padding(.trailing, 12)
+
+            if isLimiterExpanded {
+                VStack(alignment: .leading, spacing: 10) {
+                    DSPRangeSliderRow(
+                        title: "上限",
+                        value: $limiterCeilingDB,
+                        range: DSPLimiterConfiguration.ceilingRange,
+                        step: 0.1,
+                        onCommit: onCommit
+                    )
+                    DSPRangeSliderRow(
+                        title: "释放",
+                        value: $limiterReleaseMilliseconds,
+                        range: DSPLimiterConfiguration.releaseRange,
+                        step: 10,
+                        unit: "ms",
+                        fractionDigits: 0,
+                        onCommit: onCommit
+                    )
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 2)
+                .padding(.bottom, 12)
+                .transition(.opacity)
+            }
+        }
+        .background(
+            DSPProcessingLoadSurface(presentation: appSession.audioDSPController.processingLoad,
+                nodeID: DSPLimiterConfiguration.nodeID, isEnabled: isLimiterEnabled && isProcessingEnabled,
+                isLive: isLive, baseColor: palette.endpointSurface,
+                isExpanded: isLimiterExpanded, headerHeight: nodeHeaderHeight)
+        )
+    }
+
+    /// Fixed between the nodes and the output; it can be switched and
+    /// expanded but never moved or removed.
+    private func equalLoudnessStageView(palette: DSPRackPalette) -> some View {
+        let title = "等响补偿"
+        let isBypassed = !equalLoudness.enabled
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Button {
+                    withAnimation(reorderAnimation) { isEqualLoudnessExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(isEqualLoudnessExpanded ? 90 : 0))
+                            .frame(width: 12)
+                        Image(systemName: "ear")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(isBypassed ? AnyShapeStyle(HierarchicalShapeStyle.secondary) : AnyShapeStyle(themeStore.accentColor))
+                            .frame(width: 16)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(title)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(isBypassed ? .secondary : .primary)
+                            Text("强度 \(equalLoudness.parameters.strength.formatted(.number.precision(.fractionLength(2))))")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        .lineLimit(1)
+                        Spacer(minLength: 8)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(title)
+                .accessibilityValue(isEqualLoudnessExpanded ? "已展开" : "已收起")
+
+                Toggle("", isOn: Binding(
+                    get: { equalLoudness.enabled },
+                    set: { enabled in
+                        guard enabled != equalLoudness.enabled else { return }
+                        onUpdateEqualLoudness { $0.enabled = enabled }
+                        onCommit()
+                    }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .accessibilityLabel("启用\(title)")
+            }
+            .frame(height: nodeHeaderHeight)
+            .padding(.leading, 12)
+            .padding(.trailing, 12)
+
+            if isEqualLoudnessExpanded {
+                equalLoudnessEditor
+                    .padding(.horizontal, 12)
+                    .padding(.top, 2)
+                    .padding(.bottom, 12)
+                    .transition(.opacity)
+            }
+        }
+        .background(
+            DSPProcessingLoadSurface(presentation: appSession.audioDSPController.processingLoad,
+                nodeID: DSPEqualLoudnessStage.nodeID, isEnabled: equalLoudness.enabled && isProcessingEnabled,
+                isLive: isLive, baseColor: palette.endpointSurface,
+                isExpanded: isEqualLoudnessExpanded, headerHeight: nodeHeaderHeight)
+        )
     }
 
     private func endpointCard<Content: View>(
@@ -342,8 +506,10 @@ struct AudioDSPLinearNodeRack: View {
             }
         }
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(node.enabled ? palette.nodeSurface : palette.bypassedNodeSurface)
+            DSPProcessingLoadSurface(presentation: appSession.audioDSPController.processingLoad,
+                nodeID: node.nodeID, isEnabled: node.enabled && isProcessingEnabled, isLive: isLive,
+                baseColor: node.enabled ? palette.nodeSurface : palette.bypassedNodeSurface,
+                isExpanded: isExpanded, headerHeight: nodeHeaderHeight)
         )
     }
 
@@ -482,12 +648,6 @@ struct AudioDSPLinearNodeRack: View {
             } else {
                 unreadableParameters
             }
-        case DSPNodeConfiguration.equalLoudnessTypeID:
-            if node.equalLoudnessParameters != nil {
-                equalLoudnessEditor(node: node)
-            } else {
-                unreadableParameters
-            }
         case DSPNodeConfiguration.stereoWidthTypeID,
              DSPNodeConfiguration.virtualBassTypeID,
              DSPNodeConfiguration.tubeTypeID:
@@ -511,33 +671,35 @@ struct AudioDSPLinearNodeRack: View {
             .foregroundStyle(.secondary)
     }
 
-    private func equalLoudnessEditor(node: DSPNodeConfiguration) -> some View {
+    private var equalLoudnessEditor: some View {
         let context = appSession.equalLoudnessController.context
         return VStack(alignment: .leading, spacing: 10) {
-            AudioDSPEqualLoudnessResponseCurve(
-                node: node,
-                context: context,
-                sampleRate: format?.sampleRate ?? 48_000,
-                accentColor: themeStore.accentColor
-            )
-            .equatable()
+            if isLive {
+                AudioDSPEqualLoudnessResponseCurve(
+                    stage: equalLoudness,
+                    context: context,
+                    sampleRate: format?.sampleRate ?? 48_000,
+                    accentColor: themeStore.accentColor
+                )
+                .equatable()
 
-            AudioDSPEqualLoudnessStatus(
-                node: node,
-                controller: appSession.equalLoudnessController,
-                onCalibrate: {
-                    calibratingNodeID = node.nodeID
-                    isCalibrating = true
-                },
-                onRemoveCalibration: { deviceUID in
-                    onUpdateNode(node.nodeID) { $0.setEqualLoudnessCalibration(nil, removingDeviceUID: deviceUID) }
-                    onCommit()
-                }
-            )
+                AudioDSPEqualLoudnessStatus(
+                    stage: equalLoudness,
+                    controller: appSession.equalLoudnessController,
+                    onCalibrate: { isCalibrating = true },
+                    onRemoveCalibration: {
+                        onUpdateEqualLoudness { $0.calibration = nil }
+                        onCommit()
+                    }
+                )
+            }
 
             DSPRangeSliderRow(
                 title: "强度",
-                value: equalLoudnessBinding(for: node.nodeID, keyPath: \.strength),
+                value: Binding(
+                    get: { equalLoudness.parameters.strength },
+                    set: { value in onUpdateEqualLoudness { $0.parameters.strength = value } }
+                ),
                 range: DSPEqualLoudnessParameters.strengthRange,
                 step: 0.01,
                 unit: "",
@@ -640,8 +802,10 @@ struct AudioDSPLinearNodeRack: View {
     ) -> some View {
         nodeHeader(node: node, index: index, isExpanded: expandedNodeIDs.contains(node.nodeID))
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(node.enabled ? palette.nodeSurface : palette.bypassedNodeSurface)
+                DSPProcessingLoadSurface(presentation: appSession.audioDSPController.processingLoad,
+                    nodeID: node.nodeID, isEnabled: node.enabled && isProcessingEnabled, isLive: isLive,
+                    baseColor: node.enabled ? palette.nodeSurface : palette.bypassedNodeSurface,
+                    isExpanded: false, headerHeight: nodeHeaderHeight)
             )
             .padding(.leading, DSPRackMetrics.gutterWidth)
     }
@@ -753,24 +917,6 @@ struct AudioDSPLinearNodeRack: View {
         )
     }
 
-    private func equalLoudnessBinding(
-        for nodeID: UUID,
-        keyPath: WritableKeyPath<DSPEqualLoudnessParameters, Double>
-    ) -> Binding<Double> {
-        Binding(
-            get: {
-                nodes.first(where: { $0.nodeID == nodeID })?.equalLoudnessParameters?[keyPath: keyPath] ?? 0
-            },
-            set: { value in
-                onUpdateNode(nodeID) { candidate in
-                    var parameters = candidate.equalLoudnessParameters ?? DSPEqualLoudnessParameters()
-                    parameters[keyPath: keyPath] = value
-                    candidate.equalLoudnessParameters = parameters
-                }
-            }
-        )
-    }
-
     private func stereoWidthBinding(
         for nodeID: UUID,
         keyPath: WritableKeyPath<DSPStereoWidthParameters, Double>
@@ -843,7 +989,6 @@ struct AudioDSPAddNodeMenu: View {
         Menu {
             Section("均衡") {
                 addButton(.parametricEQ())
-                addButton(.equalLoudness())
             }
             Section("空间与音色") {
                 addButton(.stereoWidth())
@@ -937,7 +1082,6 @@ enum DSPNodeDescriptor {
     static func icon(for typeID: String) -> String {
         switch typeID {
         case DSPNodeConfiguration.parametricEQTypeID: "slider.vertical.3"
-        case DSPNodeConfiguration.equalLoudnessTypeID: "ear"
         case DSPNodeConfiguration.stereoWidthTypeID: "arrow.left.and.right"
         case DSPNodeConfiguration.virtualBassTypeID: "wave.3.forward"
         case DSPNodeConfiguration.tubeTypeID: "dial.low"
@@ -949,7 +1093,6 @@ enum DSPNodeDescriptor {
     static func title(for typeID: String) -> String {
         switch typeID {
         case DSPNodeConfiguration.parametricEQTypeID: "九段均衡器"
-        case DSPNodeConfiguration.equalLoudnessTypeID: "等响补偿"
         case DSPNodeConfiguration.stereoWidthTypeID: "立体声扩展"
         case DSPNodeConfiguration.virtualBassTypeID: "虚拟低音"
         case DSPNodeConfiguration.tubeTypeID: "电子管模拟"
@@ -964,8 +1107,6 @@ enum DSPNodeDescriptor {
         case DSPNodeConfiguration.parametricEQTypeID:
             let count = node.parametricEQBands?.filter(\.enabled).count ?? 0
             return "\(count) 个频段"
-        case DSPNodeConfiguration.equalLoudnessTypeID:
-            return node.equalLoudnessParameters.map { "强度 \(format($0.strength, digits: 2))" } ?? ""
         case DSPNodeConfiguration.stereoWidthTypeID:
             return node.stereoWidthParameters.map { "宽度 \(format($0.width, digits: 2))×" } ?? ""
         case DSPNodeConfiguration.virtualBassTypeID:

@@ -1333,7 +1333,7 @@ struct FullscreenPlayerView: View {
     }
 
     private var bottomControlsAnimation: Animation? {
-        motionPolicy.animation(for: motionTokens[.layout])
+        motionPolicy.animation(for: motionTokens.miniPlayerLayout)
     }
 
     private func animateFullscreenBottomControlsGeometry(_ updates: () -> Void) {

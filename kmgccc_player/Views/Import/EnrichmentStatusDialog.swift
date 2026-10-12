@@ -71,7 +71,9 @@ private struct EnrichmentStatusDialogView: View {
             title: "正在补全导入内容",
             subtitle: progressSubtitle,
             systemImage: "arrow.down.circle",
-            iconColor: themeStore.accentColor
+            iconColor: themeStore.accentColor,
+            floatsActions: true,
+            onClose: onClose
         ) {
             VStack(alignment: .leading, spacing: 12) {
                 progressSummary
@@ -83,10 +85,7 @@ private struct EnrichmentStatusDialogView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         } footer: {
-            HStack {
-                Spacer(minLength: 0)
-                SettingsTaskDialogButton("关闭", kind: .secondary, action: onClose)
-            }
+            SettingsTaskDialogButton("关闭", kind: .secondary, action: onClose)
         }
     }
 
@@ -119,8 +118,8 @@ private struct EnrichmentStatusDialogView: View {
     }
 
     private var rowList: some View {
-        ScrollView {
-            LazyVStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
+            LazyVStack(spacing: AppPopupStyle().rowSpacing) {
                 ForEach(service.enrichmentRows) { row in
                     EnrichmentStatusRowView(row: row)
                 }

@@ -149,17 +149,25 @@ nonisolated struct LoudnessPlaybackPlan: Equatable, Sendable {
     )
 }
 
-/// Library-scoped loudness measurement and derived-cache owner. Decoding is
-/// admitted by the App-level background scheduler, never by the library's
-/// write queue; playback only reads the in-memory snapshot.
+/// Library-scoped loudness measurement and derived-cache owner, and a work
+/// source of the App-level background scheduler. The scheduler pulls the next
+/// track to measure when a compute and disk slot is free; measurement never
+/// runs on the library's write queue, and playback only reads the in-memory
+/// snapshot.
+///
+/// What is still to measure is derived from this service's own state: the
+/// tracks the listener asked for, the songs coming up in the queue, and the
+/// library in idle order. Nothing is persisted as a queue.
 @Observable
 @MainActor
-final class LibraryLoudnessService {
+final class LibraryLoudnessService: BackgroundWorkSource {
     private static let maximumInMemoryRecords = 512
     private nonisolated static let decodeChunkFrames: AVAudioFrameCount = 32_768
     /// A decode that ends before this share of the declared length is a
     /// failure rather than a short tail.
     private nonisolated static let minimumDecodedShare = 0.9
+    /// The idle order is rebuilt at most this often while songs change.
+    private static let idleOrderRefreshSeconds: TimeInterval = 60
 
     @ObservationIgnored private let cache: LoudnessDerivedCache
     @ObservationIgnored private var records: [UUID: LoudnessTrackRecord] = [:]
@@ -169,10 +177,22 @@ final class LibraryLoudnessService {
     @ObservationIgnored private var indexSaveTask: Task<Void, Never>?
     @ObservationIgnored private var isClosed = false
     @ObservationIgnored private var playbackAACGaplessTrimEnabled = false
-    @ObservationIgnored private let groupID: String
+    @ObservationIgnored nonisolated let sourceID: String
     /// Tracks whose stored result is ignored on their next measurement.
     @ObservationIgnored private var forcedTrackIDs: Set<UUID> = []
     @ObservationIgnored private var backgroundActivityTask: Task<Void, Never>?
+    @ObservationIgnored private var backgroundRevealTask: Task<Void, Never>?
+    /// The listener's requests and the songs coming up, in the order they are
+    /// measured. Idle work is derived from `idleOrder` instead.
+    @ObservationIgnored private var userQueue: [UUID] = []
+    @ObservationIgnored private var upcomingQueue: [UUID] = []
+    @ObservationIgnored private var pendingPriority: [UUID: BackgroundWorkPriority] = [:]
+    @ObservationIgnored private var idleOrder: [UUID] = []
+    @ObservationIgnored private var idleCursor = 0
+    @ObservationIgnored private var idleOrderRevision: Int?
+    @ObservationIgnored private var idleOrderBuiltAt: TimeInterval = 0
+    /// Priority each measurement in flight was started at.
+    @ObservationIgnored private var inFlightPriority: [UUID: BackgroundWorkPriority] = [:]
 
     private(set) var index: [UUID: LoudnessIndexEntry] = [:]
     private(set) var states: [UUID: LoudnessTrackMeasurementState] = [:]
@@ -184,7 +204,14 @@ final class LibraryLoudnessService {
     private(set) var isBackgroundAnalysisVisible = false
 
     @ObservationIgnored weak var scheduler: BackgroundWorkScheduler?
+    @ObservationIgnored private(set) var owner: BackgroundWorkOwner = .app
     @ObservationIgnored var trackProvider: (@MainActor (UUID) -> Track?)?
+    /// Library songs in idle measurement order: upcoming, often played, rest.
+    @ObservationIgnored var idleOrderProvider: (@MainActor () -> [UUID])?
+    /// Changes whenever the library's songs change, so the idle order is
+    /// rebuilt to include added songs.
+    @ObservationIgnored var libraryRevisionProvider: (@MainActor () -> Int)?
+    @ObservationIgnored var libraryTrackIDsProvider: (@MainActor () -> [UUID])?
     @ObservationIgnored var albumJudgementProvider: (@MainActor (Track) -> LoudnessAlbumJudgement?)?
     /// Called after a track's measurement result changes.
     @ObservationIgnored var onMeasurementFinished: (@MainActor (UUID) -> Void)?
@@ -195,7 +222,93 @@ final class LibraryLoudnessService {
         cache = LoudnessDerivedCache(
             rootURL: libraryPaths.cacheRootURL.appendingPathComponent("Loudness", isDirectory: true)
         )
-        groupID = "loudness:\(libraryID.uuidString)"
+        sourceID = "loudness:\(libraryID.uuidString)"
+    }
+
+    // MARK: - Work source
+
+    nonisolated var domain: BackgroundWorkDomain { .loudness }
+    nonisolated var resources: BackgroundWorkResources { [.compute, .disk] }
+
+    /// Connects the service to the scheduler as a source owned by a library
+    /// session.
+    func attach(scheduler: BackgroundWorkScheduler, owner: BackgroundWorkOwner) {
+        self.scheduler = scheduler
+        self.owner = owner
+        scheduler.register(self)
+    }
+
+    var progress: BackgroundWorkProgress {
+        let progress = libraryProgress(trackIDs: libraryTrackIDsProvider?() ?? [])
+        return BackgroundWorkProgress(
+            completed: progress.measured, failed: progress.failed, remaining: progress.remaining
+        )
+    }
+
+    func hasWork(priority: BackgroundWorkPriority, excluding: Set<String>) -> Bool {
+        nextCandidate(priority: priority, excluding: excluding) != nil
+    }
+
+    func nextUnit(priority: BackgroundWorkPriority, excluding: Set<String>) -> BackgroundWorkUnit? {
+        guard let trackID = nextCandidate(priority: priority, excluding: excluding) else { return nil }
+        return BackgroundWorkUnit(id: trackID.uuidString, priority: priority) { [weak self] context in
+            guard let self else { return .cancelled }
+            return await self.runMeasurement(trackID: trackID, priority: priority, context: context)
+        }
+    }
+
+    private func nextCandidate(priority: BackgroundWorkPriority, excluding: Set<String>) -> UUID? {
+        guard !isClosed else { return nil }
+        switch priority {
+        case .userRequested:
+            return userQueue.first { !excluding.contains($0.uuidString) }
+        case .upcoming:
+            return upcomingQueue.first { !excluding.contains($0.uuidString) }
+        case .idleBatch:
+            return nextIdleCandidate(excluding: excluding)
+        }
+    }
+
+    /// The first track in idle order that still needs a measurement. The
+    /// cursor only moves past tracks that are settled; tracks that are in
+    /// flight or queued at a higher priority are skipped without moving it.
+    private func nextIdleCandidate(excluding: Set<String>) -> UUID? {
+        guard isIdleScanActive, hasLoadedSnapshot, !isIdleScanPausedByListener else { return nil }
+        refreshIdleOrderIfNeeded()
+        while idleCursor < idleOrder.count, isIdleSettled(idleOrder[idleCursor]) { idleCursor += 1 }
+        var probe = idleCursor
+        while probe < idleOrder.count {
+            let id = idleOrder[probe]
+            if !isIdleSettled(id), pendingPriority[id] == nil, !excluding.contains(id.uuidString) { return id }
+            probe += 1
+        }
+        return nil
+    }
+
+    private func isIdleSettled(_ id: UUID) -> Bool {
+        if case .failed = states[id] { return true }
+        if let entry = index[id], entry.analyzerVersion == LoudnessMeasurement.currentAnalyzerVersion { return true }
+        return false
+    }
+
+    private func refreshIdleOrderIfNeeded() {
+        let revision = libraryRevisionProvider?() ?? 0
+        let now = ProcessInfo.processInfo.systemUptime
+        let exhausted = idleCursor >= idleOrder.count
+        if let built = idleOrderRevision {
+            guard built != revision,
+                  exhausted || now - idleOrderBuiltAt >= Self.idleOrderRefreshSeconds else { return }
+        }
+        idleOrder = idleOrderProvider?() ?? []
+        idleCursor = 0
+        idleOrderRevision = revision
+        idleOrderBuiltAt = now
+    }
+
+    private func dequeue(_ trackID: UUID) {
+        guard pendingPriority.removeValue(forKey: trackID) != nil else { return }
+        userQueue.removeAll { $0 == trackID }
+        upcomingQueue.removeAll { $0 == trackID }
     }
 
     func loadSnapshot() async {
@@ -226,7 +339,8 @@ final class LibraryLoudnessService {
         if let entry = index[trackID], entry.analyzerVersion == LoudnessMeasurement.currentAnalyzerVersion {
             return entry.failed || !entry.usable ? .failed("无法测量这首歌曲") : .measured
         }
-        if let priority = scheduler?.priority(of: workKey(trackID)) { return .waiting(priority) }
+        if let priority = pendingPriority[trackID] { return .waiting(priority) }
+        if isIdleScanActive { return .waiting(.idleBatch) }
         return .unmeasured
     }
 
@@ -349,47 +463,56 @@ final class LibraryLoudnessService {
     // MARK: - Measurement requests
 
     /// Queues measurement of tracks that have no current result. A request
-    /// for a track already queued only raises its priority.
+    /// for a track already queued only raises its priority. Idle priority is
+    /// not requested per track: the library scan derives it.
     func requestMeasurement(trackIDs: [UUID], priority: BackgroundWorkPriority) {
-        guard !isClosed, let scheduler else { return }
+        guard !isClosed, scheduler != nil, priority != .idleBatch else { return }
         for id in trackIDs {
             if case .measuring = states[id] { continue }
             if priority != .userRequested, case .failed = states[id] { continue }
-            if priority == .idleBatch, let entry = index[id],
-               entry.analyzerVersion == LoudnessMeasurement.currentAnalyzerVersion { continue }
-            scheduler.submit(key: workKey(id), group: groupID, priority: priority) { [weak self] context in
-                await self?.runMeasurement(trackID: id, context: context)
+            switch priority {
+            case .userRequested:
+                if pendingPriority[id] == .userRequested { continue }
+                upcomingQueue.removeAll { $0 == id }
+                userQueue.append(id)
+                pendingPriority[id] = .userRequested
+            case .upcoming:
+                if let existing = pendingPriority[id], existing <= .upcoming { continue }
+                upcomingQueue.append(id)
+                pendingPriority[id] = .upcoming
+            case .idleBatch:
+                break
             }
-            if case .measured = measurementState(for: id), priority != .userRequested { continue }
-            states[id] = .waiting(scheduler.priority(of: workKey(id)) ?? priority)
         }
+        scheduler?.noteWorkAvailable()
     }
 
-    /// Queues every library track without a current measurement as idle
-    /// work, in the given order (upcoming, often played, then the rest).
-    func startIdleLibraryScan(orderedTrackIDs: [UUID]) {
+    /// Starts the library-wide pass: every track without a current
+    /// measurement becomes idle work, in the order the library provides
+    /// (upcoming, often played, then the rest). Songs added later join when
+    /// the order is rebuilt.
+    func startIdleLibraryScan() {
         guard !isClosed, hasLoadedSnapshot, !isIdleScanPausedByListener else { return }
         isIdleScanActive = true
-        requestMeasurement(trackIDs: orderedTrackIDs, priority: .idleBatch)
+        idleOrderRevision = nil
+        scheduler?.noteWorkAvailable()
     }
 
     /// Withdraws idle work when volume normalization is switched off. A
     /// listener's explicit request keeps running.
     func stopIdleLibraryScan(clearingPause: Bool = false) {
         if clearingPause { isIdleScanPausedByListener = false }
-        guard let scheduler else { return }
         isIdleScanActive = false
-        for (id, state) in states {
-            guard case .waiting(let priority) = state, priority == .idleBatch else { continue }
-            scheduler.cancel(key: workKey(id))
-            states[id] = nil
-        }
+        idleOrder = []
+        idleCursor = 0
+        idleOrderRevision = nil
         // A running idle measurement stops at its next checkpoint.
-        for (id, state) in states {
-            guard case .measuring = state, scheduler.priority(of: workKey(id)) == .idleBatch else { continue }
-            scheduler.cancel(key: workKey(id))
-            states[id] = nil
-            resumeWaiters(id)
+        let runningIdle = inFlightPriority.filter { $0.value == .idleBatch }.map(\.key)
+        if !runningIdle.isEmpty {
+            scheduler?.cancelRunningUnits(sourceID: sourceID, unitIDs: Set(runningIdle.map(\.uuidString)))
+            for id in runningIdle where pendingPriority[id] == nil {
+                if case .measuring = states[id] { states[id] = nil }
+            }
         }
         setBackgroundAnalysisVisible(false)
     }
@@ -401,9 +524,9 @@ final class LibraryLoudnessService {
         stopIdleLibraryScan()
     }
 
-    func resumeIdleLibraryScan(orderedTrackIDs: [UUID]) {
+    func resumeIdleLibraryScan() {
         isIdleScanPausedByListener = false
-        startIdleLibraryScan(orderedTrackIDs: orderedTrackIDs)
+        startIdleLibraryScan()
     }
 
     /// Explicit Job request: measures the targets at the listener's priority
@@ -419,7 +542,9 @@ final class LibraryLoudnessService {
         let targets = trackIDs.filter { seen.insert($0).inserted }
         guard !targets.isEmpty else { return }
         for id in targets {
-            if case .failed = states[id] { states[id] = nil }
+            // A listener's request starts from scratch for these tracks.
+            if case .measuring = states[id] { continue }
+            states[id] = nil
             index[id] = nil
         }
         if force { forcedTrackIDs.formUnion(targets) }
@@ -458,7 +583,11 @@ final class LibraryLoudnessService {
     func cancel() {
         isClosed = true
         setBackgroundAnalysisVisible(false)
-        scheduler?.cancel(group: groupID)
+        scheduler?.unregister(sourceID: sourceID)
+        userQueue.removeAll()
+        upcomingQueue.removeAll()
+        pendingPriority.removeAll()
+        idleOrder = []
         onMeasurementFinished = nil
         onAlbumMeasurementsChanged = nil
         pendingCacheLoads.removeAll(keepingCapacity: false)
@@ -472,17 +601,21 @@ final class LibraryLoudnessService {
         }
     }
 
+    /// The listener cancelled a Job: its tracks leave the queues, any
+    /// measurement in flight stops, and waiters are released.
     private func cancelRequested(_ trackIDs: [UUID]) {
+        let inFlight = Set(trackIDs.filter { inFlightPriority[$0] != nil }.map(\.uuidString))
+        if !inFlight.isEmpty { scheduler?.cancelRunningUnits(sourceID: sourceID, unitIDs: inFlight) }
         for id in trackIDs {
-            scheduler?.cancel(key: workKey(id))
+            dequeue(id)
+            forcedTrackIDs.remove(id)
             if case .measuring = states[id] { states[id] = nil }
-            if case .waiting = states[id] { states[id] = nil }
             resumeWaiters(id)
         }
     }
 
     private func waitForMeasurement(trackID: UUID) async {
-        switch states[trackID] {
+        switch measurementState(for: trackID) {
         case .waiting, .measuring, .paused:
             await withCheckedContinuation { continuation in
                 waiters[trackID, default: []].append(continuation)
@@ -496,40 +629,49 @@ final class LibraryLoudnessService {
         waiters.removeValue(forKey: trackID)?.forEach { $0.resume() }
     }
 
-    private func workKey(_ trackID: UUID) -> String {
-        "\(groupID):\(trackID.uuidString):v\(LoudnessMeasurement.currentAnalyzerVersion)"
-    }
-
     // MARK: - Worker
 
-    private func runMeasurement(trackID: UUID, context: BackgroundWorkContext) async {
-        guard !isClosed else { return }
-        let isIdleWork = scheduler?.priority(of: workKey(trackID)) == .idleBatch
+    /// Measures one track. Returns when the track is settled (measured or
+    /// failed) or when the unit was stopped, in which case the track stays
+    /// outstanding and is handed out again.
+    private func runMeasurement(
+        trackID: UUID,
+        priority: BackgroundWorkPriority,
+        context: BackgroundWorkContext
+    ) async -> BackgroundWorkOutcome {
+        guard !isClosed else { return .cancelled }
+        inFlightPriority[trackID] = priority
+        let isIdleWork = priority == .idleBatch
         if isIdleWork { noteBackgroundAnalysisActivity() }
         defer {
-            resumeWaiters(trackID)
+            inFlightPriority[trackID] = nil
             if isIdleWork { noteBackgroundAnalysisActivity() }
         }
         guard let track = trackProvider?(trackID) else {
-            finishFailure(trackID, message: "这首歌曲已不在资料库中。")
-            return
+            let message = "这首歌曲已不在资料库中。"
+            finishFailure(trackID, message: message)
+            return .failed(message)
         }
         states[trackID] = .measuring(phase: .readingTags, fraction: nil)
         let resolution = track.resolveFileURL()
         defer { resolution.lease.release() }
         guard let fileURL = resolution.url,
               let identity = try? Self.fileIdentity(for: fileURL) else {
-            finishFailure(trackID, message: "无法打开这首歌曲的音频文件。")
-            return
+            let message = "无法打开这首歌曲的音频文件。"
+            finishFailure(trackID, message: message)
+            return .failed(message)
         }
         let trim = playbackAACGaplessTrimEnabled
-        let forced = forcedTrackIDs.remove(trackID) != nil
+        // The forced flag is only spent when the track settles, so a measurement
+        // that was stopped and handed out again is still forced.
+        let forced = forcedTrackIDs.contains(trackID)
         var cached = forced ? nil : records[trackID]
         if cached == nil, !forced { cached = await cache.load(id: trackID) }
+        guard !isClosed else { return .cancelled }
         if let cached, Self.isCurrent(cached, for: identity, playbackAACGaplessTrimEnabled: trim) {
             insert(cached)
             finishSuccess(cached, store: false)
-            return
+            return .completed
         }
 
         let progress: @Sendable (LoudnessAnalysisPhase, Double?) -> Void = { [weak self] phase, fraction in
@@ -539,29 +681,36 @@ final class LibraryLoudnessService {
             }
         }
         do {
-            let outcome = try await Task.detached(priority: .utility) {
+            let outcome = try await Task.detached(priority: context.taskPriority) {
                 try await Self.analyze(
                     trackID: trackID, url: fileURL, identity: identity,
                     playbackAACGaplessTrimEnabled: trim, context: context, progress: progress
                 )
             }.value
-            guard !isClosed else { return }
+            guard !isClosed else { return .cancelled }
             guard (try? Self.fileIdentity(for: fileURL)) == identity, trim == playbackAACGaplessTrimEnabled else {
-                states[trackID] = nil
-                return
+                let message = "音频文件正在变化，请稍后重试。"
+                finishFailure(trackID, message: message)
+                return .failed(message)
             }
             states[trackID] = .measuring(phase: .saving, fraction: 1)
             insert(outcome.record)
             if let failure = outcome.failure {
                 try? await cache.store(outcome.record)
                 finishFailure(trackID, message: failure, record: outcome.record)
-            } else {
-                finishSuccess(outcome.record, store: true)
+                return .failed(failure)
             }
+            finishSuccess(outcome.record, store: true)
+            return .completed
         } catch is CancellationError {
-            if !isClosed { states[trackID] = nil }
+            // Stopped by the scheduler or the listener; whoever asked for the
+            // stop settles the waiters.
+            if !isClosed, case .measuring = states[trackID] { states[trackID] = nil }
+            return .cancelled
         } catch {
-            finishFailure(trackID, message: "无法测量：\(error.localizedDescription)")
+            let message = "无法测量：\(error.localizedDescription)"
+            finishFailure(trackID, message: message)
+            return .failed(message)
         }
     }
 
@@ -578,6 +727,7 @@ final class LibraryLoudnessService {
             analyzedAt: record.analyzedAt
         )
         states[id] = record.measurement?.isUsable == true ? .measured : .failed("这首歌曲没有可测量的声音。")
+        settle(id)
         scheduleIndexSave()
         notifyChanged(id)
     }
@@ -588,31 +738,45 @@ final class LibraryLoudnessService {
             analyzerVersion: LoudnessMeasurement.currentAnalyzerVersion,
             usable: false, failed: true, analyzedAt: record?.analyzedAt ?? Date()
         )
+        settle(trackID)
         scheduleIndexSave()
         notifyChanged(trackID)
+    }
+
+    /// A track reached a final result: it leaves the queues and anyone
+    /// waiting for it is released.
+    private func settle(_ trackID: UUID) {
+        dequeue(trackID)
+        forcedTrackIDs.remove(trackID)
+        resumeWaiters(trackID)
     }
 
     /// Keeps the sidebar notice up while idle measurement keeps finding work,
     /// and through short pauses (for example while the listener reaches for
     /// the pause button); it goes once the pass ends or stays quiet.
     private func noteBackgroundAnalysisActivity() {
-        let hasPendingIdleWork = states.values.contains { state in
-            switch state {
-            case .waiting(let priority): priority == .idleBatch
-            case .measuring: true
-            default: false
-            }
-        }
+        let hasPendingIdleWork = inFlightPriority.values.contains(.idleBatch)
+            || nextIdleCandidate(excluding: []) != nil
         guard isIdleScanActive, hasPendingIdleWork else {
             setBackgroundAnalysisVisible(false)
             return
         }
-        setBackgroundAnalysisVisible(true)
+        // The notice appears once the pass has run for a few seconds, so a
+        // short pass never flashes it, and leaves after a minute without
+        // progress.
+        if !isBackgroundAnalysisVisible, backgroundRevealTask == nil {
+            backgroundRevealTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: Self.backgroundNoticeDelay)
+                guard !Task.isCancelled, let self else { return }
+                self.backgroundRevealTask = nil
+                self.isBackgroundAnalysisVisible = true
+            }
+        }
         backgroundActivityTask?.cancel()
         backgroundActivityTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(45))
+            try? await Task.sleep(for: Self.backgroundNoticeLinger)
             guard !Task.isCancelled else { return }
-            self?.isBackgroundAnalysisVisible = false
+            self?.setBackgroundAnalysisVisible(false)
         }
     }
 
@@ -620,9 +784,14 @@ final class LibraryLoudnessService {
         if !visible {
             backgroundActivityTask?.cancel()
             backgroundActivityTask = nil
+            backgroundRevealTask?.cancel()
+            backgroundRevealTask = nil
         }
         if isBackgroundAnalysisVisible != visible { isBackgroundAnalysisVisible = visible }
     }
+
+    private static let backgroundNoticeDelay: Duration = .seconds(3)
+    private static let backgroundNoticeLinger: Duration = .seconds(60)
 
     private func notifyChanged(_ trackID: UUID) {
         onMeasurementFinished?(trackID)

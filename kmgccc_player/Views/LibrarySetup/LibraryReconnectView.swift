@@ -26,14 +26,14 @@ struct LibraryReconnectView: View {
             title: title,
             subtitle: subtitle,
             systemImage: icon,
-            iconColor: themeStore.accentColor
+            iconColor: themeStore.accentColor,
+            onClose: { cancel() }
         ) {
             content
                 .frame(maxWidth: .infinity, minHeight: 220, alignment: .topLeading)
         } footer: {
-            HStack {
+            Group {
                 SettingsTaskDialogButton("取消", kind: .secondary) { cancel() }
-                Spacer()
                 primaryButton
             }
         }
@@ -86,7 +86,7 @@ struct LibraryReconnectView: View {
     @ViewBuilder
     private var sourceContent: some View {
         if let preparation, let plan = selectedPlan(in: preparation) {
-            ScrollView {
+            AppPopupScrollRegion {
                 VStack(alignment: .leading, spacing: 14) {
                     if preparation.plans.count > 1 {
                         VStack(alignment: .leading, spacing: 6) {
@@ -112,7 +112,7 @@ struct LibraryReconnectView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .appPopupContentBackground(cornerRadius: 10)
                     }
 
                     HStack(spacing: 14) {
@@ -193,7 +193,7 @@ struct LibraryReconnectView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .appPopupContentBackground(cornerRadius: 12)
     }
 
     @ViewBuilder

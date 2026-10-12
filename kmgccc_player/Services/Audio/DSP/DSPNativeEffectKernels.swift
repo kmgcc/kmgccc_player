@@ -626,3 +626,161 @@ nonisolated struct DSPTubeKernel {
         }
     }
 }
+
+/// Channel-linked lookahead peak limiter.
+///
+/// Each frame's required gain enters a sliding minimum over the lookahead
+/// window, so a peak is seen a full lookahead before it leaves the delay
+/// line. That target drives an envelope that falls at once, holds briefly
+/// so bass waveforms are not tracked cycle by cycle, then releases on the
+/// decibel scale. A moving average of the envelope over the same window
+/// spreads every reduction into a ramp as long as the lookahead. Each value
+/// in that average is at or below the delayed sample's own requirement, so
+/// the output never leaves above the ceiling.
+nonisolated struct DSPPeakLimiterKernel {
+    static let lookaheadSeconds = 0.005
+    private static let holdSeconds = 0.02
+
+    static func lookaheadFrames(sampleRate: Double) -> Int {
+        guard sampleRate.isFinite, sampleRate > 0 else { return 1 }
+        return max(1, Int((sampleRate * lookaheadSeconds).rounded()))
+    }
+
+    /// Lookahead at the highest supported rate, for budgets made without a format.
+    static let maximumLookaheadFrames = lookaheadFrames(sampleRate: 384_000)
+
+    let latencyFrames: Int
+    private let window: Int
+    private let channelCount: Int
+    private let ceiling: Double
+    private let releaseExponent: Double
+    private let holdFrames: Int
+
+    private var delay: [Double]
+    private var delayCursor = 0
+    private var neededGains: [Double]
+    private var envelopes: [Double]
+    private var envelopeSum: Double
+    private var windowCursor = 0
+    private var minimumFrames: [Int]
+    private var minimumGains: [Double]
+    private var minimumHead = 0
+    private var minimumCount = 0
+    private var frameIndex = 0
+    private var envelope = 1.0
+    private var holdRemaining = 0
+
+    /// `ceiling` is linear and measured at the point the kernel runs.
+    init?(channelCount: Int, sampleRate: Double, ceiling: Double, releaseSeconds: Double) {
+        guard channelCount > 0, sampleRate.isFinite, sampleRate > 0,
+              ceiling.isFinite, ceiling > 0,
+              releaseSeconds.isFinite, releaseSeconds > 0 else { return nil }
+        latencyFrames = Self.lookaheadFrames(sampleRate: sampleRate)
+        window = latencyFrames + 1
+        self.channelCount = channelCount
+        self.ceiling = ceiling
+        // Release is a time constant on the decibel scale: gainDB *= exponent.
+        releaseExponent = exp(-1 / (releaseSeconds * sampleRate))
+        holdFrames = Int((Self.holdSeconds * sampleRate).rounded())
+        delay = Array(repeating: 0, count: latencyFrames * channelCount)
+        neededGains = Array(repeating: 1, count: window)
+        envelopes = Array(repeating: 1, count: window)
+        envelopeSum = Double(window)
+        minimumFrames = Array(repeating: 0, count: window)
+        minimumGains = Array(repeating: 1, count: window)
+    }
+
+    func makeFreshState() -> DSPPeakLimiterKernel {
+        var fresh = self
+        fresh.reset()
+        return fresh
+    }
+
+    mutating func copyState(from source: DSPPeakLimiterKernel) {
+        guard source.channelCount == channelCount, source.window == window else { return }
+        for index in delay.indices { delay[index] = source.delay[index] }
+        for index in 0..<window {
+            neededGains[index] = source.neededGains[index]
+            envelopes[index] = source.envelopes[index]
+            minimumFrames[index] = source.minimumFrames[index]
+            minimumGains[index] = source.minimumGains[index]
+        }
+        envelopeSum = source.envelopeSum
+        delayCursor = source.delayCursor
+        windowCursor = source.windowCursor
+        minimumHead = source.minimumHead
+        minimumCount = source.minimumCount
+        frameIndex = source.frameIndex
+        envelope = source.envelope
+        holdRemaining = source.holdRemaining
+    }
+
+    mutating func reset() {
+        for index in delay.indices { delay[index] = 0 }
+        for index in 0..<window {
+            neededGains[index] = 1
+            envelopes[index] = 1
+        }
+        envelopeSum = Double(window)
+        delayCursor = 0
+        windowCursor = 0
+        minimumHead = 0
+        minimumCount = 0
+        frameIndex = 0
+        envelope = 1
+        holdRemaining = 0
+    }
+
+    mutating func processFrame(_ frame: inout [Double]) {
+        var peak = 0.0
+        for channel in 0..<channelCount { peak = max(peak, abs(frame[channel])) }
+        let needed = peak > ceiling ? ceiling / peak : 1
+
+        // Sliding minimum over the last `window` frames, amortized O(1).
+        if minimumCount > 0, minimumFrames[minimumHead] <= frameIndex - window {
+            minimumHead = (minimumHead + 1) % window
+            minimumCount -= 1
+        }
+        while minimumCount > 0 {
+            let back = (minimumHead + minimumCount - 1) % window
+            guard minimumGains[back] >= needed else { break }
+            minimumCount -= 1
+        }
+        let tail = (minimumHead + minimumCount) % window
+        minimumFrames[tail] = frameIndex
+        minimumGains[tail] = needed
+        minimumCount += 1
+        frameIndex += 1
+        let target = minimumGains[minimumHead]
+
+        if target <= envelope {
+            envelope = target
+            holdRemaining = holdFrames
+        } else if holdRemaining > 0 {
+            holdRemaining -= 1
+        } else if envelope < 1 {
+            envelope = min(target, pow(envelope, releaseExponent))
+        }
+
+        envelopeSum += envelope - envelopes[windowCursor]
+        envelopes[windowCursor] = envelope
+        neededGains[windowCursor] = needed
+        windowCursor = (windowCursor + 1) % window
+        if windowCursor == 0 {
+            // Clears rounding drift from the running sum once per window.
+            envelopeSum = 0
+            for value in envelopes { envelopeSum += value }
+        }
+        // The oldest entry is the frame now leaving the delay line.
+        let delayedNeeded = neededGains[windowCursor]
+        let gain = min(1, delayedNeeded, envelopeSum / Double(window))
+
+        let offset = delayCursor * channelCount
+        for channel in 0..<channelCount {
+            let delayed = delay[offset + channel]
+            delay[offset + channel] = frame[channel]
+            frame[channel] = delayed * gain
+        }
+        delayCursor = (delayCursor + 1) % latencyFrames
+    }
+}

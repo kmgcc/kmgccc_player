@@ -1461,58 +1461,23 @@ private func metadataEntitySheet<Content: View>(
     onSave: @escaping () -> Void,
     @ViewBuilder content: () -> Content
 ) -> some View {
-    VStack(spacing: 0) {
-        HStack {
-            Label(title, systemImage: systemImage)
-                .font(.title2.bold())
-            Spacer()
-            GlassIconButton(
-                systemImage: "xmark",
-                size: GlassStyleTokens.headerControlHeight,
-                iconSize: GlassStyleTokens.headerStandardIconSize,
-                isPrimary: false,
-                help: "关闭",
-                surfaceVariant: .defaultToolbar
-            ) {
-                onCancel()
-            }
+    AppPopupFrame(title: title, systemImage: systemImage, onClose: onCancel) {
+        AppPopupScrollRegion {
+            VStack(alignment: .leading, spacing: AppPopupStyle().sectionSpacing) { content() }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture { clearCurrentTextInputFocus() }
         }
-        .padding()
-
-        Divider()
-
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                content()
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                clearCurrentTextInputFocus()
-            }
+    } footer: {
+        AppPopupActionGroup {
+            Button("取消", action: onCancel)
+                .buttonStyle(AppDialogGlassButtonStyle())
+                .keyboardShortcut(.cancelAction)
+            Button("保存", action: onSave)
+                .buttonStyle(AppDialogGlassButtonStyle(kind: .primary))
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canSave)
         }
-
-        Divider()
-
-        HStack {
-            Button("取消") {
-                onCancel()
-            }
-            .buttonStyle(.bordered)
-            .clipShape(Capsule())
-            .keyboardShortcut(.escape)
-
-            Spacer()
-            Button("保存") {
-                onSave()
-            }
-            .buttonStyle(.borderedProminent)
-            .clipShape(Capsule())
-            .keyboardShortcut(.return)
-            .disabled(!canSave)
-        }
-        .padding()
     }
     .frame(width: 560, height: 720)
 }
@@ -1569,18 +1534,15 @@ private func artworkEditor(
 
             VStack(alignment: .leading, spacing: 8) {
                 Button("选择图片", action: chooseImage)
-                    .buttonStyle(.bordered)
-                    .clipShape(Capsule())
+                    .buttonStyle(AppDialogGlassButtonStyle())
 
                 Button("查找封面", action: searchArtwork)
-                    .buttonStyle(.bordered)
-                    .clipShape(Capsule())
+                    .buttonStyle(AppDialogGlassButtonStyle())
                     .disabled(isLoading)
 
                 if let generateArtworkTitle, let generateArtwork {
                     Button(generateArtworkTitle, action: generateArtwork)
-                        .buttonStyle(.bordered)
-                        .clipShape(Capsule())
+                        .buttonStyle(AppDialogGlassButtonStyle())
                         .disabled(isGeneratingArtwork)
                 }
 
@@ -1649,8 +1611,7 @@ private func metadataLookupButton(
         } label: {
             Label("查找元数据", systemImage: "sparkle.magnifyingglass")
         }
-        .buttonStyle(.bordered)
-        .clipShape(Capsule())
+        .buttonStyle(AppDialogGlassButtonStyle())
         .disabled(isLoading)
 
         if isLoading {
@@ -1697,12 +1658,8 @@ private func labeledEditor(_ label: String, prompt: String, text: Binding<String
                     .allowsHitTesting(false)
             }
         }
-        .background(.thinMaterial)
+        .appPopupContentBackground()
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.secondary.opacity(0.22), lineWidth: 1)
-        }
         .padding(.trailing, 18)
     }
 }

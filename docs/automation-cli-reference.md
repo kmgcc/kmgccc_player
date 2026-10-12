@@ -361,6 +361,8 @@ player-automation dsp patch --params-json '{"operations":[{"op":"setMaster","val
 player-automation dsp presets list
 player-automation dsp presets save --params-json '{"name":"我的均衡器"}'
 player-automation dsp presets select --params-json '{"presetID":"<UUID>"}'
+player-automation dsp presets select --params-json '{"presetID":"<UUID>","copyForCurrentDevice":true}'
+player-automation dsp patch --params-json '{"operations":[{"op":"setEqualLoudness","value":{"enabled":true,"parameters":{"strength":0.8}}}]}'
 player-automation dsp wait --params-json '{"requestID":"<UUID>","timeoutMs":5000}'
 player-automation dsp errors get
 player-automation dsp patch --params-json '{"operations":[{"op":"setQuality","nodeID":"<UUID>","value":"oversampling4x"},{"op":"setChannelPolicy","nodeID":"<UUID>","value":"frontPair"}]}'
@@ -391,4 +393,4 @@ player-automation audio loudness get --params-json '{"trackIDs":["TRACK_UUID"]}'
 player-automation audio loudness analyze --params-json '{"trackIDs":["TRACK_UUID"]}'
 ```
 
-扫描返回 `loudnessAnalysis` Job，使用 `jobs get|wait|cancel|retry` 观察与控制；它不占用资料库写入队列。后台结果供后续播放，当前曲目增益不随扫描更新，唯一例外是专辑增益首次就绪时在当前曲目内缓慢过渡。等响节点所有参数经 `dsp patch` 配置；标定按设备保存在节点的 `calibrations` 中，随预设各自独立；补偿量只跟随实际输出设备的系统音量，`dsp state` 的 `equalLoudness` 报告设备、音量，并为每个节点报告曲线来源（默认或标定）。
+扫描返回 `loudnessAnalysis` Job，使用 `jobs get|wait|cancel|retry` 观察与控制；它不占用资料库写入队列。后台结果供后续播放，当前曲目增益不随扫描更新，唯一例外是专辑增益首次就绪时在当前曲目内缓慢过渡。等响补偿是预设的固定阶段，经 `dsp patch` 的 `setEqualLoudness` 操作配置（`enabled`、部分 `parameters`、`calibration` 为 `null` 时清除）；标定保存在预设的 `equalLoudness.calibration` 中，只在记录它的输出路线上生效；补偿量只跟随实际输出设备的系统音量，`dsp state` 的 `equalLoudness` 报告设备、音量、曲线来源（默认或标定）与预期增益，`deviceProfiles` 列出各输出路线及其预设。

@@ -413,7 +413,8 @@ final class RendererTimelineTests: XCTestCase {
         pipeline.applyDSP(
             AudioDSPConfiguration(
                 enabled: true, inputTrimDB: -3,
-                headroom: DSPHeadroomConfiguration(mode: .off)
+                headroom: DSPHeadroomConfiguration(mode: .off),
+                limiter: DSPLimiterConfiguration(enabled: false)
             ),
             revision: "recovered-output-test", requestID: requestID
         )
@@ -465,7 +466,8 @@ final class RendererTimelineTests: XCTestCase {
             AudioDSPConfiguration(
                 enabled: true,
                 headroom: DSPHeadroomConfiguration(mode: .off),
-                nodes: [node]
+                nodes: [node],
+                limiter: DSPLimiterConfiguration(enabled: false)
             ),
             revision: "gapless-replay-test",
             requestID: requestID
