@@ -212,27 +212,23 @@ actor TrackArtworkCache {
         completedWarmupKeySet.removeAll(keepingCapacity: false)
     }
 
-    @discardableResult
-    nonisolated func preloadPlaybackArtwork(
+    /// Warms the current track plus the upcoming queue window (full image and
+    /// colour analysis). It runs as upcoming work of the App scheduler, at
+    /// utility priority: low enough to leave playback alone, high enough that
+    /// the next track is warm when playback advances. The checkpoint between
+    /// songs lets a more urgent unit take over.
+    nonisolated func warmPlaybackArtwork(
         for sources: [TrackArtworkSource],
-        reason: String = "playback"
-    ) -> Task<Void, Never>? {
+        reason: String = "playback",
+        context: BackgroundWorkContext
+    ) async {
         var seen = Set<String>()
         let uniqueSources = sources.filter { source in
             seen.insert(source.sourceKey).inserted
         }
-        guard !uniqueSources.isEmpty else { return nil }
-
-        // `.utility` rather than `.background`: this warms the current track plus
-        // the upcoming queue window (full 1400px image + colour analysis). At
-        // `.background` QoS it can be starved long enough that the next track is
-        // still cold when playback advances or the user skips, which surfaces as
-        // a late cover / colour pop on the now-playing and fullscreen surfaces.
-        return Task.detached(priority: .utility) {
-            for source in uniqueSources {
-                guard !Task.isCancelled else { return }
-                await self.preloadPlaybackArtwork(for: source, reason: reason)
-            }
+        for source in uniqueSources {
+            guard (try? await context.checkpoint()) != nil else { return }
+            await self.preloadPlaybackArtwork(for: source, reason: reason)
         }
     }
 

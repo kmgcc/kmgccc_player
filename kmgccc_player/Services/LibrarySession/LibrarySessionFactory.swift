@@ -476,7 +476,8 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             systemNowPlayingProvider: systemNowPlayingProvider,
             preferenceStatsService: preferenceStatsService,
             artworkCache: cacheServices.trackArtworkCache,
-            meterProvider: ledMeterProvider
+            meterProvider: ledMeterProvider,
+            libraryTracksProvider: { [weak libraryViewModel] in libraryViewModel?.allTracks ?? [] }
         )
         let lyricsViewModel = LyricsViewModel(settings: AppSettings.shared)
         lyricsViewModel.setPlaybackSourceProvider { [weak playbackCoordinator] in

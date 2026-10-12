@@ -154,6 +154,8 @@ extension Notification.Name {
     static let lyricSpringSettingsDidSettle = Notification.Name("kmgccc_player.lyricSpringSettingsDidSettle")
     static let lyricHighlightModeDidChange = Notification.Name("kmgccc_player.lyricHighlightModeDidChange")
     static let volumeControlTargetDidChange = Notification.Name("kmgccc_player.volumeControlTargetDidChange")
+    /// A choice that background scheduling reads has changed.
+    static let backgroundWorkSettingsDidChange = Notification.Name("kmgccc_player.backgroundWorkSettingsDidChange")
 }
 
 /// Observable app settings using AppStorage for persistence.
@@ -410,11 +412,74 @@ public final class AppSettings {
         static let cliEnabled = "automationCLIEnabled"
     }
 
+    private enum BackgroundWorkKeys {
+        static let preparationEnabled = "backgroundPreparationEnabled"
+        static let pacing = "backgroundPacingMode"
+        static let disabledDomains = "backgroundDisabledDomains"
+    }
+
     private enum PlaybackOrderKeys {
         static let mode = "playbackOrderMode"
         static let shuffleEnabled = "shuffleEnabled"
         static let repeatMode = "repeatMode"
         static let stopAfterTrack = "stopAfterTrack"
+    }
+
+    // MARK: - Background Work Settings
+
+    /// Master switch for idle preparation and preloading. Work the listener
+    /// asks for, and what volume normalization needs for the playing and
+    /// next song, is not affected.
+    var backgroundPreparationEnabled: Bool {
+        get {
+            access(keyPath: \.backgroundPreparationEnabled)
+            let defaults = UserDefaults.standard
+            if defaults.object(forKey: BackgroundWorkKeys.preparationEnabled) == nil { return true }
+            return defaults.bool(forKey: BackgroundWorkKeys.preparationEnabled)
+        }
+        set {
+            withMutation(keyPath: \.backgroundPreparationEnabled) {
+                UserDefaults.standard.set(newValue, forKey: BackgroundWorkKeys.preparationEnabled)
+            }
+            NotificationCenter.default.post(name: .backgroundWorkSettingsDidChange, object: nil)
+        }
+    }
+
+    var backgroundPacingMode: BackgroundPacingMode {
+        get {
+            access(keyPath: \.backgroundPacingMode)
+            let raw = UserDefaults.standard.string(forKey: BackgroundWorkKeys.pacing)
+            return raw.flatMap(BackgroundPacingMode.init(rawValue:)) ?? .gentle
+        }
+        set {
+            withMutation(keyPath: \.backgroundPacingMode) {
+                UserDefaults.standard.set(newValue.rawValue, forKey: BackgroundWorkKeys.pacing)
+            }
+            NotificationCenter.default.post(name: .backgroundWorkSettingsDidChange, object: nil)
+        }
+    }
+
+    /// Domains the listener switched off on the background tasks page.
+    var backgroundDisabledDomains: Set<BackgroundWorkDomain> {
+        get {
+            access(keyPath: \.backgroundDisabledDomains)
+            let raw = UserDefaults.standard.stringArray(forKey: BackgroundWorkKeys.disabledDomains) ?? []
+            return Set(raw.compactMap(BackgroundWorkDomain.init(rawValue:)))
+        }
+        set {
+            withMutation(keyPath: \.backgroundDisabledDomains) {
+                UserDefaults.standard.set(newValue.map(\.rawValue).sorted(), forKey: BackgroundWorkKeys.disabledDomains)
+            }
+            NotificationCenter.default.post(name: .backgroundWorkSettingsDidChange, object: nil)
+        }
+    }
+
+    var backgroundWorkConfiguration: BackgroundWorkConfiguration {
+        BackgroundWorkConfiguration(
+            preparationEnabled: backgroundPreparationEnabled,
+            pacing: backgroundPacingMode,
+            disabledDomains: backgroundDisabledDomains
+        )
     }
 
     // MARK: - Automation Settings
@@ -492,6 +557,8 @@ public final class AppSettings {
                 defaults.set(newValue.rawValue, forKey: AppearanceKeys.artworkTintMode)
                 defaults.removeObject(forKey: AppearanceKeys.globalArtworkTintEnabled)
             }
+            // Per-song colours are idle work in rich mode.
+            NotificationCenter.default.post(name: .backgroundWorkSettingsDidChange, object: nil)
         }
     }
 

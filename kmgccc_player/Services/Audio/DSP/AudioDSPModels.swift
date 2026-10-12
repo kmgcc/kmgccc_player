@@ -194,18 +194,95 @@ nonisolated enum DSPHeadroomMode: String, Codable, CaseIterable, Equatable, Send
     case off
 }
 
+/// Automatic headroom cuts the chain input by the boost the linear stages
+/// and input gain add, never by more than `maximumAttenuationDB`. The output
+/// gain stays the listener's own level; the safety limiter catches the rest.
 nonisolated struct DSPHeadroomConfiguration: Codable, Equatable, Sendable {
-    var mode: DSPHeadroomMode
-    var marginDB: Double
+    nonisolated static let maximumAttenuationRange: ClosedRange<Double> = 0...12
+    nonisolated static let defaultMaximumAttenuationDB = 6.0
 
-    nonisolated init(mode: DSPHeadroomMode = .automatic, marginDB: Double = 2) {
+    var mode: DSPHeadroomMode
+    var maximumAttenuationDB: Double
+
+    private enum CodingKeys: String, CodingKey {
+        case mode
+        case maximumAttenuationDB
+    }
+
+    nonisolated init(
+        mode: DSPHeadroomMode = .automatic,
+        maximumAttenuationDB: Double = Self.defaultMaximumAttenuationDB
+    ) {
         self.mode = mode
-        self.marginDB = marginDB
+        self.maximumAttenuationDB = maximumAttenuationDB
+    }
+
+    /// Presets saved with the former safety margin take the default ceiling.
+    nonisolated init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try container.decode(DSPHeadroomMode.self, forKey: .mode)
+        maximumAttenuationDB = try container.decodeIfPresent(Double.self, forKey: .maximumAttenuationDB)
+            ?? Self.defaultMaximumAttenuationDB
+    }
+
+    nonisolated func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(mode, forKey: .mode)
+        try container.encode(maximumAttenuationDB, forKey: .maximumAttenuationDB)
+    }
+}
+
+/// Lookahead peak limiter after the equal-loudness stage. Its ceiling is
+/// measured after the output gain, so the chain never leaves above it.
+nonisolated struct DSPLimiterConfiguration: Codable, Equatable, Sendable {
+    /// Identity of the limiter inside the processor chain.
+    nonisolated static let nodeID = UUID(uuidString: "00000000-0000-0000-0000-000000000004")!
+    nonisolated static let ceilingRange: ClosedRange<Double> = -6...0
+    nonisolated static let releaseRange: ClosedRange<Double> = 20...1_000
+    nonisolated static let defaultCeilingDB = -1.0
+    nonisolated static let defaultReleaseMilliseconds = 200.0
+
+    var enabled: Bool
+    /// Sample-peak ceiling of the final output, in dBFS.
+    var ceilingDB: Double
+    /// Time for the gain to recover most of a reduction once the peak has passed.
+    var releaseMilliseconds: Double
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, ceilingDB, releaseMilliseconds
+    }
+
+    nonisolated init(
+        enabled: Bool = true,
+        ceilingDB: Double = Self.defaultCeilingDB,
+        releaseMilliseconds: Double = Self.defaultReleaseMilliseconds
+    ) {
+        self.enabled = enabled
+        self.ceilingDB = ceilingDB
+        self.releaseMilliseconds = releaseMilliseconds
+    }
+
+    /// Presets saved with only the switch take the default ceiling and release.
+    nonisolated init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decode(Bool.self, forKey: .enabled)
+        ceilingDB = try container.decodeIfPresent(Double.self, forKey: .ceilingDB) ?? Self.defaultCeilingDB
+        releaseMilliseconds = try container.decodeIfPresent(Double.self, forKey: .releaseMilliseconds)
+            ?? Self.defaultReleaseMilliseconds
+    }
+
+    nonisolated func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encode(ceilingDB, forKey: .ceilingDB)
+        try container.encode(releaseMilliseconds, forKey: .releaseMilliseconds)
     }
 }
 
 nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
     nonisolated static let parametricEQTypeID = "peq9"
+    /// Runtime type of the fixed equal-loudness stage inside the processor.
+    /// It is never a member of `AudioDSPConfiguration.nodes`.
     nonisolated static let equalLoudnessTypeID = "equalLoudness"
     nonisolated static let stereoWidthTypeID = "stereoWidth"
     nonisolated static let virtualBassTypeID = "virtualBass"
@@ -277,73 +354,6 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
                 return .object(fields)
             })
         }
-    }
-
-    nonisolated var equalLoudnessParameters: DSPEqualLoudnessParameters? {
-        get {
-            guard typeID == Self.equalLoudnessTypeID,
-                  let strength = parameters["strength"]?.numberValue,
-                  let bassFrequencyHz = parameters["bassFrequencyHz"]?.numberValue,
-                  let bassQ = parameters["bassQ"]?.numberValue,
-                  let trebleFrequencyHz = parameters["trebleFrequencyHz"]?.numberValue,
-                  let trebleQ = parameters["trebleQ"]?.numberValue,
-                  case .string(let rawHeadroomMode)? = parameters["headroomMode"],
-                  let headroomMode = DSPHeadroomMode(rawValue: rawHeadroomMode)
-            else { return nil }
-            return DSPEqualLoudnessParameters(
-                strength: strength,
-                bassFrequencyHz: bassFrequencyHz,
-                bassQ: bassQ,
-                trebleFrequencyHz: trebleFrequencyHz,
-                trebleQ: trebleQ,
-                headroomMode: headroomMode
-            )
-        }
-        set {
-            guard typeID == Self.equalLoudnessTypeID, let newValue else { return }
-            parameters["strength"] = .number(newValue.strength)
-            parameters["bassFrequencyHz"] = .number(newValue.bassFrequencyHz)
-            parameters["bassQ"] = .number(newValue.bassQ)
-            parameters["trebleFrequencyHz"] = .number(newValue.trebleFrequencyHz)
-            parameters["trebleQ"] = .number(newValue.trebleQ)
-            parameters["headroomMode"] = .string(newValue.headroomMode.rawValue)
-        }
-    }
-
-    /// Per-device calibrations of an equal-loudness node. They belong to the
-    /// node, so each preset keeps its own; a new node starts uncalibrated.
-    nonisolated var equalLoudnessCalibrations: [EqualLoudnessCalibration] {
-        get {
-            guard typeID == Self.equalLoudnessTypeID,
-                  case .array(let values)? = parameters["calibrations"] else { return [] }
-            return values.compactMap(EqualLoudnessCalibration.init(json:))
-        }
-        set {
-            guard typeID == Self.equalLoudnessTypeID else { return }
-            parameters["calibrations"] = newValue.isEmpty ? nil : .array(newValue.map(\.jsonValue))
-        }
-    }
-
-    nonisolated func equalLoudnessCalibration(forDeviceUID uid: String) -> EqualLoudnessCalibration? {
-        guard typeID == Self.equalLoudnessTypeID,
-              case .array(let values)? = parameters["calibrations"] else { return nil }
-        for value in values {
-            guard case .object(let fields) = value, fields["deviceUID"] == .string(uid) else { continue }
-            return EqualLoudnessCalibration(json: value)
-        }
-        return nil
-    }
-
-    /// Replaces the calibration for the calibration's device, or removes the
-    /// one for `removingDeviceUID`.
-    nonisolated mutating func setEqualLoudnessCalibration(
-        _ calibration: EqualLoudnessCalibration?,
-        removingDeviceUID uid: String? = nil
-    ) {
-        let target = calibration?.deviceUID ?? uid
-        var calibrations = equalLoudnessCalibrations.filter { $0.deviceUID != target }
-        if let calibration { calibrations.append(calibration) }
-        equalLoudnessCalibrations = calibrations
     }
 
     nonisolated var stereoWidthParameters: DSPStereoWidthParameters? {
@@ -426,7 +436,7 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
 
     nonisolated static func supportedChannelPolicies(forTypeID typeID: String) -> Set<String> {
         switch typeID {
-        case parametricEQTypeID, equalLoudnessTypeID, scriptTypeID:
+        case parametricEQTypeID, scriptTypeID:
             ["allChannels", "fullRange"]
         case stereoWidthTypeID:
             ["frontPair"]
@@ -466,7 +476,7 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
 
     nonisolated static func supportedQualities(forTypeID typeID: String) -> Set<String> {
         switch typeID {
-        case parametricEQTypeID, equalLoudnessTypeID, stereoWidthTypeID, scriptTypeID:
+        case parametricEQTypeID, stereoWidthTypeID, scriptTypeID:
             [standardQuality]
         case virtualBassTypeID, tubeTypeID:
             [oversampling2xQuality, oversampling4xQuality]
@@ -495,20 +505,6 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
             enabled: enabled
         )
         node.parametricEQBands = bands
-        return node
-    }
-
-    nonisolated static func equalLoudness(
-        nodeID: UUID = UUID(),
-        enabled: Bool = true,
-        parameters: DSPEqualLoudnessParameters = DSPEqualLoudnessParameters()
-    ) -> DSPNodeConfiguration {
-        var node = DSPNodeConfiguration(
-            nodeID: nodeID,
-            typeID: Self.equalLoudnessTypeID,
-            enabled: enabled
-        )
-        node.equalLoudnessParameters = parameters
         return node
     }
 
@@ -677,8 +673,8 @@ nonisolated struct DSPTubeParameters: Codable, Equatable, Sendable {
     }
 }
 
-/// How much bass and treble the node adds comes from the routed device's
-/// calibration (or the fixed default curve); the node itself only scales it.
+/// How much bass and treble the stage adds comes from the preset's
+/// calibration (or the fixed default curve); the stage itself only scales it.
 nonisolated struct DSPEqualLoudnessParameters: Codable, Equatable, Sendable {
     nonisolated static let strengthRange: ClosedRange<Double> = 0...1
     nonisolated static let bassFrequencyRange: ClosedRange<Double> = 20...500
@@ -688,39 +684,59 @@ nonisolated struct DSPEqualLoudnessParameters: Codable, Equatable, Sendable {
     /// take a cut, so both directions are allowed.
     nonisolated static let bassGainRange: ClosedRange<Double> = -12...12
     nonisolated static let trebleGainRange: ClosedRange<Double> = -9...9
-    nonisolated static let supportedParameterKeys: Set<String> = [
-        "strength",
-        "bassFrequencyHz",
-        "bassQ",
-        "trebleFrequencyHz",
-        "trebleQ",
-        "headroomMode",
-        "calibrations",
-    ]
 
     var strength: Double
     var bassFrequencyHz: Double
-    /// RBJ shelf slope S (0.25...1), retained as `Q` in the node schema.
+    /// RBJ shelf slope S (0.25...1), retained as `Q` in the schema.
     var bassQ: Double
     var trebleFrequencyHz: Double
-    /// RBJ shelf slope S (0.25...1), retained as `Q` in the node schema.
+    /// RBJ shelf slope S (0.25...1), retained as `Q` in the schema.
     var trebleQ: Double
-    var headroomMode: DSPHeadroomMode
 
     nonisolated init(
         strength: Double = 1,
         bassFrequencyHz: Double = 70,
         bassQ: Double = 0.71,
         trebleFrequencyHz: Double = 3_500,
-        trebleQ: Double = 0.71,
-        headroomMode: DSPHeadroomMode = .automatic
+        trebleQ: Double = 0.71
     ) {
         self.strength = strength
         self.bassFrequencyHz = bassFrequencyHz
         self.bassQ = bassQ
         self.trebleFrequencyHz = trebleFrequencyHz
         self.trebleQ = trebleQ
-        self.headroomMode = headroomMode
+    }
+}
+
+/// The fixed equal-loudness stage after the effect nodes and before the
+/// output gain. Shelves placed here never change how hard a saturating node
+/// is driven as the system volume moves. A preset serves one device, so the
+/// stage keeps one calibration; one recorded on another device stays unused.
+nonisolated struct DSPEqualLoudnessStage: Codable, Equatable, Sendable {
+    /// Identity of the stage inside the processor chain.
+    nonisolated static let nodeID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+
+    var enabled: Bool
+    var parameters: DSPEqualLoudnessParameters
+    var calibration: EqualLoudnessCalibration?
+
+    nonisolated init(
+        enabled: Bool = false,
+        parameters: DSPEqualLoudnessParameters = DSPEqualLoudnessParameters(),
+        calibration: EqualLoudnessCalibration? = nil
+    ) {
+        self.enabled = enabled
+        self.parameters = parameters
+        self.calibration = calibration
+    }
+
+    /// The processor runs the stage as the last linear node of the chain.
+    nonisolated var runtimeNode: DSPNodeConfiguration {
+        DSPNodeConfiguration(
+            nodeID: Self.nodeID,
+            typeID: DSPNodeConfiguration.equalLoudnessTypeID,
+            enabled: enabled
+        )
     }
 }
 
@@ -733,19 +749,59 @@ nonisolated struct AudioDSPConfiguration: Codable, Equatable, Sendable {
     var outputTrimDB: Double
     var headroom: DSPHeadroomConfiguration
     var nodes: [DSPNodeConfiguration]
+    var equalLoudness: DSPEqualLoudnessStage
+    var limiter: DSPLimiterConfiguration
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, inputTrimDB, outputTrimDB, headroom, nodes, equalLoudness, limiter
+    }
 
     nonisolated init(
         enabled: Bool = false,
         inputTrimDB: Double = 0,
         outputTrimDB: Double = 0,
         headroom: DSPHeadroomConfiguration = DSPHeadroomConfiguration(),
-        nodes: [DSPNodeConfiguration] = [.parametricEQ()]
+        nodes: [DSPNodeConfiguration] = [.parametricEQ()],
+        equalLoudness: DSPEqualLoudnessStage = DSPEqualLoudnessStage(),
+        limiter: DSPLimiterConfiguration = DSPLimiterConfiguration()
     ) {
         self.enabled = enabled
         self.inputTrimDB = inputTrimDB
         self.outputTrimDB = outputTrimDB
         self.headroom = headroom
         self.nodes = nodes
+        self.equalLoudness = equalLoudness
+        self.limiter = limiter
+    }
+
+    /// Presets saved before the limiter existed start with it switched on.
+    nonisolated init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decode(Bool.self, forKey: .enabled)
+        inputTrimDB = try container.decode(Double.self, forKey: .inputTrimDB)
+        outputTrimDB = try container.decode(Double.self, forKey: .outputTrimDB)
+        headroom = try container.decode(DSPHeadroomConfiguration.self, forKey: .headroom)
+        nodes = try container.decode([DSPNodeConfiguration].self, forKey: .nodes)
+        equalLoudness = try container.decode(DSPEqualLoudnessStage.self, forKey: .equalLoudness)
+        limiter = try container.decodeIfPresent(DSPLimiterConfiguration.self, forKey: .limiter)
+            ?? DSPLimiterConfiguration()
+    }
+
+    nonisolated func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encode(inputTrimDB, forKey: .inputTrimDB)
+        try container.encode(outputTrimDB, forKey: .outputTrimDB)
+        try container.encode(headroom, forKey: .headroom)
+        try container.encode(nodes, forKey: .nodes)
+        try container.encode(equalLoudness, forKey: .equalLoudness)
+        try container.encode(limiter, forKey: .limiter)
+    }
+
+    /// Everything the processor runs, in signal order: the effect nodes,
+    /// then the equal-loudness stage.
+    nonisolated var processingNodes: [DSPNodeConfiguration] {
+        nodes + [equalLoudness.runtimeNode]
     }
 
     nonisolated static var defaultFlat: AudioDSPConfiguration {
@@ -1056,7 +1112,7 @@ nonisolated struct DSPApplyEvent: Codable, Equatable, Sendable {
 }
 
 nonisolated struct DSPPresetDocument: Codable, Equatable, Sendable, Identifiable {
-    nonisolated static let schemaVersion = 1
+    nonisolated static let schemaVersion = 2
     nonisolated static let flatPresetID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
 
     var schemaVersion: Int

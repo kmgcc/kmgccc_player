@@ -2,13 +2,13 @@
 //  AudioDSPEqualLoudnessNodeCard.swift
 //  myPlayer2
 //
-//  Response preview for the equal-loudness node shown in the effect rack.
+//  Response preview for the equal-loudness stage shown in the effect rack.
 //
 
 import SwiftUI
 
 struct AudioDSPEqualLoudnessResponseCurve: View, Equatable {
-    let node: DSPNodeConfiguration
+    let stage: DSPEqualLoudnessStage
     let context: DSPEqualLoudnessContext
     let sampleRate: Double
     let accentColor: Color
@@ -35,7 +35,7 @@ struct AudioDSPEqualLoudnessResponseCurve: View, Equatable {
     }
 
     private var curveAccessibilityValue: String {
-        let gains = DSPEqualLoudnessMath.gains(node: node, context: context)
+        let gains = DSPEqualLoudnessMath.gains(stage: stage, context: context)
         return "低音补偿 \(gains.bassDB.formatted(.number.precision(.fractionLength(1)))) dB，高音补偿 \(gains.trebleDB.formatted(.number.precision(.fractionLength(1)))) dB"
     }
 
@@ -53,7 +53,7 @@ struct AudioDSPEqualLoudnessResponseCurve: View, Equatable {
         let lowLog = log10(20.0)
         let highLog = log10(max(20.1, highFrequency))
         let pointCount = max(80, Int(plot.width))
-        let coefficients = (DSPEqualLoudnessMath.bands(node: node, context: context) ?? [])
+        let coefficients = (DSPEqualLoudnessMath.bands(stage: stage, context: context) ?? [])
             .filter(\.enabled)
             .compactMap { DSPParametricEQMath.coefficients(for: $0, sampleRate: sampleRate) }
         var path = Path()

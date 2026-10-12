@@ -16,15 +16,18 @@ struct DataManagementSettingsView: View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsHeaderLabel("数据", systemImage: "arrow.counterclockwise.circle")
             SettingsTabSelector(
-                tabs: ["音乐", "应用数据"],
+                tabs: ["音乐", "应用数据", "后台任务"],
                 selectedTab: $selectedTab,
                 fillsWidth: true
             )
 
-            if selectedTab == 0 {
+            switch selectedTab {
+            case 0:
                 MusicSettingsView()
-            } else {
+            case 1:
                 ApplicationDataSettingsView()
+            default:
+                BackgroundTasksSettingsView()
             }
         }
     }

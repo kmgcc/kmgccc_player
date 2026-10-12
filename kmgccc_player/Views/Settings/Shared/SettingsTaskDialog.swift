@@ -5,6 +5,7 @@
 //  Shared settings task dialog components.
 //
 
+import PopupKit
 import SwiftUI
 
 struct SettingsTaskDialog<Content: View, Footer: View>: View {
@@ -12,6 +13,8 @@ struct SettingsTaskDialog<Content: View, Footer: View>: View {
     let subtitle: String
     let systemImage: String
     let iconColor: Color
+    let floatsActions: Bool
+    let onClose: (() -> Void)?
     private let content: Content
     private let footer: Footer
 
@@ -20,6 +23,8 @@ struct SettingsTaskDialog<Content: View, Footer: View>: View {
         subtitle: String,
         systemImage: String,
         iconColor: Color,
+        floatsActions: Bool = false,
+        onClose: (() -> Void)? = nil,
         @ViewBuilder content: () -> Content,
         @ViewBuilder footer: () -> Footer
     ) {
@@ -27,35 +32,29 @@ struct SettingsTaskDialog<Content: View, Footer: View>: View {
         self.subtitle = subtitle
         self.systemImage = systemImage
         self.iconColor = iconColor
+        self.floatsActions = floatsActions
+        self.onClose = onClose
         self.content = content()
         self.footer = footer()
     }
 
     var body: some View {
-        AppDialogFrame(
-            header: {
-                AppDialogHeader(
-                    title: title,
-                    subtitle: subtitle,
-                    systemImage: systemImage,
-                    iconColor: iconColor
-                )
-                .padding(.horizontal, AppDialogTokens.headerHorizontalPadding)
-                .padding(.top, 12)
-                .padding(.bottom, 12)
-            },
-            content: {
-                content
-                    .padding(.horizontal, 18)
-                    .padding(.top, 14)
-                    .padding(.bottom, 18)
-            },
-            footer: {
-                AppDialogFooter {
-                    footer
+        AppPopupFrame(
+            title: title, subtitle: subtitle, systemImage: systemImage,
+            onClose: onClose, showsFooter: !floatsActions, accent: iconColor
+        ) {
+            if floatsActions {
+                AppPopupScrollRegion {
+                    content
+                } actions: {
+                    AppPopupActionGroup { footer }
                 }
+            } else {
+                content
             }
-        )
+        } footer: {
+            AppPopupActionGroup { footer }
+        }
     }
 }
 
@@ -82,12 +81,9 @@ struct SettingsTaskPanel<Content: View>: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-            .liquidGlassRect(
-                cornerRadius: cornerRadius,
-                colorScheme: colorScheme,
-                accentColor: accentColor,
-                prominence: .standard
-            )
+            .background(
+                (accentColor ?? themeStore.appForegroundPalette.secondaryColor).opacity(0.06),
+                in: RoundedRectangle(cornerRadius: cornerRadius))
     }
 }
 
@@ -144,12 +140,7 @@ struct SettingsTaskOptionToggle: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .liquidGlassRect(
-            cornerRadius: 16,
-            colorScheme: colorScheme,
-            accentColor: isOn ? themeStore.accentColor : nil,
-            prominence: isOn ? .prominent : .standard
-        )
+        .appPopupContentBackground(cornerRadius: 16, tint: isOn ? themeStore.accentColor : nil)
     }
 }
 

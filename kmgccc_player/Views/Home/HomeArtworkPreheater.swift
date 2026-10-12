@@ -88,9 +88,13 @@ final class HomeArtworkMemoryStore {
 final class HomeArtworkPreheater {
     static let shared = HomeArtworkPreheater()
 
-    private var task: Task<Void, Never>?
+    private var task: BackgroundTaskHandle?
     private var lastSignature: String?
 
+    /// Home artwork is a cache warm-up, not part of the playback critical
+    /// path. It runs as upcoming work of the App scheduler, so a playing track,
+    /// a busy machine or a user-requested task takes precedence; `HomeView`
+    /// also cancels it on each track notification.
     func schedule(
         heroTrack: Track?,
         albums: [AlbumEntry],
@@ -98,8 +102,7 @@ final class HomeArtworkPreheater {
         playlists: [Playlist],
         preferenceRanking: [HomeViewModel.PreferenceRankItem],
         libraryVM: LibraryViewModel,
-        playlistArtworkPipeline: PlaylistArtworkPipeline,
-        artworkDerivativeStore: ArtworkDerivativeCacheStore,
+        cacheServices: LibraryCacheServices,
         mode: HomeLayoutMode,
         sectionOrder: [HomeSection]
     ) {
@@ -113,52 +116,30 @@ final class HomeArtworkPreheater {
             mode: mode,
             sectionOrder: sectionOrder
         )
-        guard snapshot.signature != lastSignature else { return }
-        lastSignature = snapshot.signature
-
-        let playlistPlans = makePlaylistHeaderPlans(
-            playlists: playlists,
-            libraryVM: libraryVM
+        // The rails' cover sizes, for the idle thumbnail pass to match.
+        PageThumbnailSizeHints.record(
+            albumRail: mode.homeAlbumRailPixelSide,
+            artistRail: mode.homeArtistRailPixelSide
         )
-        let artworkResolver = libraryVM.detailHeaderArtworkResolver
+        guard snapshot.signature != lastSignature else { return }
+
+        let job = HomeArtworkPreheatJob(
+            snapshot: snapshot,
+            playlistPlans: makePlaylistHeaderPlans(
+                playlists: playlists,
+                libraryVM: libraryVM
+            ),
+            artworkResolver: libraryVM.detailHeaderArtworkResolver,
+            pipeline: cacheServices.playlistArtworkPipeline,
+            derivativeStore: cacheServices.artworkDerivativeStore
+        )
         task?.cancel()
-        task = Task(priority: .utility) {
-            // Home artwork is a cache warm-up, not part of the playback
-            // critical path. Give a just-started track switch a quiet window;
-            // `HomeView` also cancels this task on each track notification.
-            do {
-                try await Task.sleep(for: .milliseconds(60))
-            } catch {
-                return
-            }
-            guard !Task.isCancelled else { return }
-
-            let token = FirstUseHitchDiagnostics.begin(
-                "HomeArtworkPreheat",
-                detail: snapshot.diagnosticDetail
-            )
-            defer { FirstUseHitchDiagnostics.end(token) }
-            await preheatPlaylistHeaders(
-                playlistPlans,
-                artworkResolver: artworkResolver,
-                pipeline: playlistArtworkPipeline
-            )
-            guard !Task.isCancelled else { return }
-
-            let workerTask = Task.detached(priority: .utility) {
-                await HomeArtworkPreheatWorker.run(
-                    snapshot,
-                    derivativeStore: artworkDerivativeStore
-                )
-            }
-            await withTaskCancellationHandler {
-                await workerTask.value
-            } onCancel: {
-                workerTask.cancel()
-            }
-            guard !Task.isCancelled else { return }
-            CacheManager.trimProcessMemory()
+        task = cacheServices.submitArtworkPrefetch(domain: .homeArtwork, resources: [.compute]) { context in
+            await job.run(context: context)
         }
+        // Without a scheduler binding nothing was started; the covers load
+        // when their cards appear, and a later pass may try again.
+        lastSignature = task == nil ? nil : snapshot.signature
     }
 
     func cancel() {
@@ -308,57 +289,6 @@ final class HomeArtworkPreheater {
         }
     }
 
-    private func preheatPlaylistHeaders(
-        _ plans: [HomePlaylistHeaderPreheatPlan],
-        artworkResolver: DetailHeaderArtworkResolver,
-        pipeline: PlaylistArtworkPipeline
-    ) async {
-        guard !plans.isEmpty else { return }
-        try? await Task.sleep(for: .milliseconds(120))
-        guard !Task.isCancelled else { return }
-        for plan in plans {
-            guard !Task.isCancelled else { return }
-            let key = HomeArtworkMemoryStore.playlistHeaderKey(identity: plan.identity)
-            if HomeArtworkMemoryStore.shared.cachedImage(for: key) != nil { continue }
-
-            let immediate = artworkResolver.resolveImmediately(for: plan.request)
-            if let image = await loadPlaylistHeaderImage(
-                from: immediate,
-                identity: plan.identity,
-                pipeline: pipeline
-            ) {
-                HomeArtworkMemoryStore.shared.store(image, for: key)
-                continue
-            }
-
-            let resolved = await artworkResolver.resolveDeferredArtwork(for: plan.request)
-            if let image = await loadPlaylistHeaderImage(
-                from: resolved,
-                identity: plan.identity,
-                pipeline: pipeline
-            ) {
-                HomeArtworkMemoryStore.shared.store(image, for: key)
-            }
-        }
-    }
-
-    private func loadPlaylistHeaderImage(
-        from resolved: ResolvedHeaderArtwork?,
-        identity: String,
-        pipeline: PlaylistArtworkPipeline
-    ) async -> NSImage? {
-        guard let resolved else { return nil }
-        if let image = resolved.image {
-            return image
-        }
-        let request = PlaylistArtworkPipeline.headerRequest(
-            artworkIdentity: identity,
-            artworkData: nil,
-            fileURL: resolved.fileURL
-        )
-        return await pipeline.load(request)
-    }
-
     static func playlistHeaderIdentity(for playlist: Playlist, revision: String?) -> String {
         let selectionIdentity = "playlist-\(playlist.id)"
         if let revision, !revision.isEmpty {
@@ -373,6 +303,99 @@ final class HomeArtworkPreheater {
         case .wide, .medium: return 5
         case .compact, .narrow: return 4
         }
+    }
+}
+
+/// One warm-up pass as a scheduler unit. It owns the main-actor inputs (the
+/// header artwork plans and resolver) so the scheduler closure captures only
+/// this object, and it pauses at a checkpoint between covers.
+@MainActor
+private final class HomeArtworkPreheatJob {
+    private let snapshot: HomeArtworkPreheatSnapshot
+    private let playlistPlans: [HomePlaylistHeaderPreheatPlan]
+    private let artworkResolver: DetailHeaderArtworkResolver
+    private let pipeline: PlaylistArtworkPipeline
+    private let derivativeStore: ArtworkDerivativeCacheStore
+
+    init(
+        snapshot: HomeArtworkPreheatSnapshot,
+        playlistPlans: [HomePlaylistHeaderPreheatPlan],
+        artworkResolver: DetailHeaderArtworkResolver,
+        pipeline: PlaylistArtworkPipeline,
+        derivativeStore: ArtworkDerivativeCacheStore
+    ) {
+        self.snapshot = snapshot
+        self.playlistPlans = playlistPlans
+        self.artworkResolver = artworkResolver
+        self.pipeline = pipeline
+        self.derivativeStore = derivativeStore
+    }
+
+    func run(context: BackgroundWorkContext) async {
+        guard (try? await context.checkpoint()) != nil else { return }
+
+        let token = FirstUseHitchDiagnostics.begin(
+            "HomeArtworkPreheat",
+            detail: snapshot.diagnosticDetail
+        )
+        defer { FirstUseHitchDiagnostics.end(token) }
+        await preheatPlaylistHeaders(context: context)
+        guard (try? await context.checkpoint()) != nil else { return }
+
+        let snapshot = snapshot
+        let derivativeStore = derivativeStore
+        let workerTask = Task.detached(priority: context.taskPriority) {
+            await HomeArtworkPreheatWorker.run(
+                snapshot,
+                derivativeStore: derivativeStore,
+                context: context
+            )
+        }
+        await withTaskCancellationHandler {
+            await workerTask.value
+        } onCancel: {
+            workerTask.cancel()
+        }
+        guard !Task.isCancelled, !context.isCancelled else { return }
+        CacheManager.trimProcessMemory()
+    }
+
+    private func preheatPlaylistHeaders(context: BackgroundWorkContext) async {
+        guard !playlistPlans.isEmpty else { return }
+        try? await Task.sleep(for: .milliseconds(120))
+        for plan in playlistPlans {
+            guard (try? await context.checkpoint()) != nil else { return }
+            let key = HomeArtworkMemoryStore.playlistHeaderKey(identity: plan.identity)
+            if HomeArtworkMemoryStore.shared.cachedImage(for: key) != nil { continue }
+
+            let immediate = artworkResolver.resolveImmediately(for: plan.request)
+            if let image = await loadPlaylistHeaderImage(from: immediate, identity: plan.identity) {
+                HomeArtworkMemoryStore.shared.store(image, for: key)
+                continue
+            }
+
+            guard (try? await context.checkpoint()) != nil else { return }
+            let resolved = await artworkResolver.resolveDeferredArtwork(for: plan.request)
+            if let image = await loadPlaylistHeaderImage(from: resolved, identity: plan.identity) {
+                HomeArtworkMemoryStore.shared.store(image, for: key)
+            }
+        }
+    }
+
+    private func loadPlaylistHeaderImage(
+        from resolved: ResolvedHeaderArtwork?,
+        identity: String
+    ) async -> NSImage? {
+        guard let resolved else { return nil }
+        if let image = resolved.image {
+            return image
+        }
+        let request = PlaylistArtworkPipeline.headerRequest(
+            artworkIdentity: identity,
+            artworkData: nil,
+            fileURL: resolved.fileURL
+        )
+        return await pipeline.load(request)
     }
 }
 
@@ -437,28 +460,31 @@ private struct HomeArtistArtworkPreheatCandidate: Sendable {
 }
 
 private enum HomeArtworkPreheatWorker {
+    /// Warms the covers in display order. The checkpoint before each cover
+    /// lets the scheduler pause the pass or end it when it is cancelled.
     static func run(
         _ snapshot: HomeArtworkPreheatSnapshot,
-        derivativeStore: ArtworkDerivativeCacheStore
+        derivativeStore: ArtworkDerivativeCacheStore,
+        context: BackgroundWorkContext
     ) async {
-        guard !Task.isCancelled else { return }
         if let hero = snapshot.hero {
+            guard (try? await context.checkpoint()) != nil else { return }
             await preheatTrack(hero, derivativeStore: derivativeStore)
         }
         for album in snapshot.albums {
-            guard !Task.isCancelled else { return }
+            guard (try? await context.checkpoint()) != nil else { return }
             await preheatAlbum(album, derivativeStore: derivativeStore)
         }
         for artist in snapshot.artists {
-            guard !Task.isCancelled else { return }
+            guard (try? await context.checkpoint()) != nil else { return }
             await preheatArtist(artist, derivativeStore: derivativeStore)
         }
         for preview in snapshot.playlistPreviews {
-            guard !Task.isCancelled else { return }
+            guard (try? await context.checkpoint()) != nil else { return }
             await preheatTrack(preview, derivativeStore: derivativeStore)
         }
         for item in snapshot.rankItems {
-            guard !Task.isCancelled else { return }
+            guard (try? await context.checkpoint()) != nil else { return }
             await preheatTrack(item, derivativeStore: derivativeStore)
         }
     }

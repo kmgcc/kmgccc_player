@@ -1,3 +1,4 @@
+import PopupKit
 import SwiftUI
 
 /// Duplicate review for library diagnostics. Deleting a track still goes
@@ -19,27 +20,21 @@ struct LibraryDuplicateReviewView: View {
     @State private var deletingTrackIDs: Set<UUID> = []
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("重复歌曲审查")
-                    .font(.title2.weight(.semibold))
-                Spacer()
-                Button("完成") { dismiss() }
-                    .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
-            }
-            .padding(20)
-
-            Divider()
-
+        AppPopupFrame(title: "重复歌曲审查", systemImage: "square.on.square", onClose: { dismiss() }) {
             if snapshot.duplicateGroups.isEmpty {
                 ContentUnavailableView("没有重复候选", systemImage: "checkmark.circle")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(snapshot.duplicateGroups) { group in
-                    groupRow(group)
+                AppPopupScrollRegion {
+                    LazyVStack(spacing: AppPopupStyle().rowSpacing) {
+                        ForEach(snapshot.duplicateGroups) { group in groupRow(group) }
+                    }
                 }
-                .listStyle(.inset)
             }
+        } footer: {
+            Button("完成") { dismiss() }
+                .buttonStyle(AppDialogGlassButtonStyle())
+                .keyboardShortcut(.cancelAction)
         }
         .frame(width: 680, height: 660)
         .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in

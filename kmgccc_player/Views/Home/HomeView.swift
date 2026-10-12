@@ -382,8 +382,7 @@ struct HomeView: View {
                 playlists: homeVM.playlists,
                 preferenceRanking: homeVM.preferenceRanking,
                 libraryVM: libraryVM,
-                playlistArtworkPipeline: cacheServices.playlistArtworkPipeline,
-                artworkDerivativeStore: cacheServices.artworkDerivativeStore,
+                cacheServices: cacheServices,
                 mode: mode,
                 sectionOrder: settings.homeSectionOrder
             )

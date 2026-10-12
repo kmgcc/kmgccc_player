@@ -31,7 +31,8 @@ AGENTS.md、CLAUDE.md 一起构成 Agent 的产品界面契约。
 ### 统一来源
 
 颜色从 ThemeStore / SemanticPalette 获取，视图层不自行创建一套主题颜色。设置页和
-弹窗的字体、间距、区域结构、前景层级与控件尺寸，以现有 Settings 共享组件为准。
+设置页的字体、间距和控件尺寸沿用 Settings 共享组件；弹窗遵循 [弹窗标准](popup-standards.md)，
+由 PopupKit 与 App 的主题适配层集中提供。
 
 新增模式先寻找现有组件和调用链，再决定是否扩展设计系统。局部页面不复制一套相似
 modifier，也不通过临时颜色、间距或形状掩盖共享组件的问题。
@@ -47,12 +48,17 @@ modifier，也不通过临时颜色、间距或形状掩盖共享组件的问题
 
 ### 弹窗和面板
 
-App-owned 弹窗沿用 AppDialogFrame、AppDialogHeader、AppDialogFooter、
-SettingsTaskDialog 等共享结构，按钮使用 AppDialogGlassButtonStyle 等共享的胶囊样式。内容、页眉、页脚和关闭行为
-保持同一套视觉语法。
+App-owned 弹窗使用 AppPopupFrame、AppPopupScrollRegion 和共享胶囊按钮。AppDialogFrame、
+AppDialogHeader、AppDialogFooter、SettingsTaskDialog 与 AppDialogGlassButtonStyle 作为兼容适配层，
+复用同一份 PopupKit 源码。标准参数来自 PopupLab 定稿预设，App 的语义色由 ThemeStore 注入。
 
-系统必须接管的权限面板、文件选择器和系统确认界面遵循 macOS 外观。应用自己的内容
-仍使用项目组件，不为每个功能单独设计弹窗。
+外层采用一层玻璃材质，内容分组使用颜色和透明度区分。标题图标对齐首行实际字形；
+关闭按钮与操作组的外边距以弹窗边缘计算。阅读和只读任务列表允许局部悬浮按钮，
+表单与可操作列表使用固定操作区；长内容的上下边缘在到达首尾时恢复清晰。
+
+简短确认和错误可使用系统 Alert / confirmationDialog。文件、权限和更新 UI 沿用系统或
+组件宿主；popover 的背景、箭头和自动关闭由系统管理。大型编辑器保留多栏和所需尺寸，
+完整设置页保留 NavigationSplitView。保存、取消、忙碌关闭策略和全屏路由由原有业务 owner 管理。
 
 ## 可持续修改
 

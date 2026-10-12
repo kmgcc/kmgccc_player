@@ -8,6 +8,8 @@
 import Foundation
 
 nonisolated struct DSPWorkingDraftDocument: Codable, Equatable, Sendable {
+    nonisolated static let schemaVersion = 2
+
     var schemaVersion: Int
     var revisionString: String
     var selectedPresetID: UUID?
@@ -15,7 +17,7 @@ nonisolated struct DSPWorkingDraftDocument: Codable, Equatable, Sendable {
     var configuration: AudioDSPConfiguration
 
     nonisolated init(
-        schemaVersion: Int = 1,
+        schemaVersion: Int = Self.schemaVersion,
         revisionString: String,
         selectedPresetID: UUID?,
         updatedAt: Date = Date(),
@@ -112,7 +114,7 @@ actor DSPPresetStore {
                 if url.lastPathComponent == Self.workingDraftFilename {
                     do {
                         let draft = try decoder.decode(DSPWorkingDraftDocument.self, from: Data(contentsOf: url))
-                        guard draft.schemaVersion == 1 else {
+                        guard draft.schemaVersion == DSPWorkingDraftDocument.schemaVersion else {
                             throw DSPPresetStoreError.unsupportedSchema(draft.schemaVersion)
                         }
                         workingDraft = draft

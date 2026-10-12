@@ -8,6 +8,7 @@
 
 import AppKit
 import MotionKit
+import PopupKit
 import SwiftUI
 
 /// Settings view with sidebar categories.
@@ -105,12 +106,14 @@ struct SettingsView: View {
             }
         }
         .navigationSplitViewStyle(.prominentDetail)
+        .appPopupAppearance()
+        .presentationCornerRadius(AppPopupStyle().cornerRadius)
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
         .overlay(alignment: .topTrailing) {
             settingsCloseButton
-                .padding(.top, 18)
-                .padding(.trailing, 20)
+                .padding(.top, AppPopupStyle().closeMarginTop)
+                .padding(.trailing, AppPopupStyle().closeMarginTrailing)
         }
         .onExitCommand {
             if currentSubpage != nil {
@@ -209,26 +212,7 @@ struct SettingsView: View {
 
 
     private var settingsCloseButton: some View {
-        Button {
-            dismiss()
-        } label: {
-            Image(systemName: "xmark")
-                .font(.system(size: GlassStyleTokens.headerStandardIconSize, weight: .semibold))
-                .foregroundStyle(themeStore.accentColor.opacity(colorScheme == .dark ? 0.94 : 0.84))
-                .frame(
-                    width: GlassStyleTokens.headerControlHeight,
-                    height: GlassStyleTokens.headerControlHeight
-                )
-                .contentShape(Circle())
-                .liquidGlassCircle(
-                    colorScheme: colorScheme,
-                    accentColor: nil as Color?,
-                    isFloating: true
-                )
-        }
-        .buttonStyle(.plain)
-        .help("关闭")
-        .accessibilityLabel(Text("关闭"))
+        AppPopupCloseButton { dismiss() }
     }
 
     private var settingsBackButton: some View {
@@ -271,9 +255,6 @@ struct SettingsView: View {
         case .audioDSP:
             AudioDSPSettingsView()
                 .groupBoxStyle(SettingsWindowGroupBoxStyle())
-        case .audioDSPDevices:
-            AudioDSPDeviceSettingsView()
-                .groupBoxStyle(SettingsWindowGroupBoxStyle())
         }
     }
 }
@@ -282,7 +263,6 @@ struct SettingsView: View {
 
 enum SettingsSubpage: Hashable, Sendable {
     case audioDSP
-    case audioDSPDevices
 }
 
 private struct SettingsSubpageActionKey: EnvironmentKey {

@@ -67,25 +67,33 @@ public enum AutomationDSPToolCatalog {
     ], required: ["bands"])
 
     public static let equalLoudnessCalibrationSchema = object([
-        "deviceUID": string, "deviceName": string,
+        "deviceKey": .object(["type": .string("string"),
+                              "description": .string("Output route it was recorded on: device UID, plus #dataSource when the device switches sources.")]),
+        "deviceName": string,
         "axis": enumeration(["decibels", "percent"]),
         "points": .object(["type": .string("array"), "items": object([
             "coordinate": .object(["type": .string("number"), "description": .string("dB below maximum or volume percent")]),
             "bassDB": number(-12, 12), "trebleDB": number(-9, 9)
         ], required: ["coordinate", "bassDB", "trebleDB"])]),
         "algorithmVersion": integer(1, 1_000), "createdAt": .object(["type": .string("number")])
-    ], required: ["deviceUID", "axis", "points", "algorithmVersion"])
+    ], required: ["deviceKey", "axis", "points", "algorithmVersion"])
 
     public static let equalLoudnessParametersSchema = object([
         "strength": number(0, 1, unit: "Scales the calibrated or default compensation curve."),
         "bassFrequencyHz": number(20, 500), "bassQ": number(0.25, 1, unit: "Shelf slope S"),
-        "trebleFrequencyHz": number(1000, 20_000), "trebleQ": number(0.25, 1, unit: "Shelf slope S"),
-        "headroomMode": enumeration(["automatic", "off"]),
-        "calibrations": .object([
-            "type": .string("array"), "items": equalLoudnessCalibrationSchema,
-            "description": .string("Per-device calibrations owned by this node; written by the App's calibration guide.")
+        "trebleFrequencyHz": number(1000, 20_000), "trebleQ": number(0.25, 1, unit: "Shelf slope S")
+    ], required: ["strength", "bassFrequencyHz", "bassQ", "trebleFrequencyHz", "trebleQ"])
+
+    /// Fixed stage after the effect nodes and before the output gain; it is
+    /// not a node and cannot be reordered.
+    public static let equalLoudnessStageSchema = object([
+        "enabled": boolean,
+        "parameters": equalLoudnessParametersSchema,
+        "calibration": .object([
+            "oneOf": .array([equalLoudnessCalibrationSchema, .object(["type": .string("null")])]),
+            "description": .string("Written by the App's calibration guide; used only on the route it was recorded on.")
         ])
-    ], required: ["strength", "bassFrequencyHz", "bassQ", "trebleFrequencyHz", "trebleQ", "headroomMode"])
+    ], required: ["enabled", "parameters"])
 
     public static let stereoWidthParametersSchema = object([
         "width": number(0, 2, unit: "Mid/Side width; 1 with zero trim is an exact bypass."),
@@ -155,11 +163,6 @@ public enum AutomationDSPToolCatalog {
             "quality": .array([.string("standard")]), "parameters": equalizerParametersSchema
         ]),
         .object([
-            "typeID": .string("equalLoudness"), "algorithmVersion": .number(1),
-            "channelPolicies": .array([.string("fullRange"), .string("allChannels")]),
-            "quality": .array([.string("standard")]), "parameters": equalLoudnessParametersSchema
-        ]),
-        .object([
             "typeID": .string("stereoWidth"), "algorithmVersion": .number(1),
             "channelPolicies": .array([.string("frontPair")]),
             "quality": .array([.string("standard")]), "parameters": stereoWidthParametersSchema,
@@ -227,12 +230,29 @@ public enum AutomationDSPToolCatalog {
     public static let configurationSchema: AutomationJSONValue = object([
         "enabled": boolean,
         "inputTrimDB": number(-24, 24, unit: "dB"), "outputTrimDB": number(-24, 24, unit: "dB"),
-        "headroom": object(["mode": enumeration(["automatic", "off"]), "marginDB": number(0, 12, unit: "dB")], required: ["mode", "marginDB"]),
-        "nodes": .object(["type": .string("array"), "maxItems": .number(32), "items": nodeSchema])
-    ], required: ["enabled", "inputTrimDB", "outputTrimDB", "headroom", "nodes"])
+        "headroom": object([
+            "mode": enumeration(["automatic", "off"]),
+            "maximumAttenuationDB": number(0, 12, unit: "dB; automatic input cut never exceeds it")
+        ], required: ["mode", "maximumAttenuationDB"]),
+        "nodes": .object(["type": .string("array"), "maxItems": .number(32), "items": nodeSchema]),
+        "equalLoudness": equalLoudnessStageSchema,
+        "limiter": limiterSchema
+    ], required: ["enabled", "inputTrimDB", "outputTrimDB", "headroom", "nodes", "equalLoudness", "limiter"])
+
+    /// Fixed 5 ms lookahead peak limiter after the equal-loudness stage,
+    /// holding the final output's sample peak under its ceiling; it is not a node.
+    public static let limiterSchema = object([
+        "enabled": boolean,
+        "ceilingDB": number(-6, 0, unit: "dBFS sample peak of the final output"),
+        "releaseMilliseconds": number(20, 1_000, unit: "ms; decibel-scale recovery time constant after a 20 ms hold")
+    ], required: ["enabled", "ceilingDB", "releaseMilliseconds"])
+
+    private static let limiterPatchSchema = object([
+        "enabled": boolean, "ceilingDB": number(-6, 0), "releaseMilliseconds": number(20, 1_000)
+    ])
 
     public static let presetSchema: AutomationJSONValue = object([
-        "schemaVersion": .object(["type": .string("integer"), "minimum": .number(1)]),
+        "schemaVersion": .object(["type": .string("integer"), "enum": .array([.number(2)])]),
         "presetID": uuid, "name": string, "revisionString": string, "configuration": configurationSchema
     ], required: ["schemaVersion", "presetID", "name", "revisionString", "configuration"])
 
@@ -246,8 +266,17 @@ public enum AutomationDSPToolCatalog {
             "inputTrimDB": number(-24, 24), "outputTrimDB": number(-24, 24)
         ])], required: ["value"]),
         operation("setHeadroom", fields: ["value": object([
-            "mode": enumeration(["automatic", "off"]), "marginDB": number(0, 12)
-        ], required: ["mode", "marginDB"])], required: ["value"]),
+            "mode": enumeration(["automatic", "off"]), "maximumAttenuationDB": number(0, 12)
+        ], required: ["mode", "maximumAttenuationDB"])], required: ["value"]),
+        operation("setLimiter", fields: ["value": limiterPatchSchema], required: ["value"]),
+        operation("setEqualLoudness", fields: ["value": object([
+            "enabled": boolean,
+            "parameters": .object(["type": .string("object"), "additionalProperties": .boolean(false),
+                                   "properties": .object(["strength": number(0, 1), "bassFrequencyHz": number(20, 500),
+                                                          "bassQ": number(0.25, 1), "trebleFrequencyHz": number(1000, 20_000),
+                                                          "trebleQ": number(0.25, 1)])]),
+            "calibration": .object(["oneOf": .array([equalLoudnessCalibrationSchema, .object(["type": .string("null")])])])
+        ])], required: ["value"]),
         operation("setParameter", fields: ["nodeID": uuid, "path": string, "value": .object([:])],
                   required: ["nodeID", "path", "value"]),
         operation("setEnabled", fields: ["nodeID": uuid, "value": boolean], required: ["nodeID", "value"]),
@@ -309,22 +338,22 @@ public enum AutomationDSPToolCatalog {
             "configuration": configurationSchema,
             "operations": .object(["type": .string("array"), "minItems": .number(1), "maxItems": .number(128), "items": operationSchema])
         ])),
-        descriptor(AutomationMethod.dspPatch, title: "Patch DSP", description: "Atomically replace the complete configuration or apply ordered edits to master enable, trims, headroom, stable node IDs, all effect parameters, quality, channel policy and chain order. Latest valid request wins.", readOnly: false, schema: mutation([
+        descriptor(AutomationMethod.dspPatch, title: "Patch DSP", description: "Atomically replace the complete configuration or apply ordered edits to master enable, trims, headroom, the fixed equal-loudness stage, stable node IDs, all effect parameters, quality, channel policy and chain order. Edits belong to the current output device's preset. Latest valid request wins.", readOnly: false, schema: mutation([
             "configuration": configurationSchema,
             "operations": .object(["type": .string("array"), "minItems": .number(1), "maxItems": .number(128), "items": operationSchema])
         ]), dryRun: true),
         descriptor(AutomationMethod.dspWait, title: "Wait for DSP", description: "Wait for one DSP application request to become audible, ready, superseded or failed. A timeout is reported separately from success.", readOnly: true, schema: object([
             "requestID": uuid, "timeoutMs": integer(0, 30_000)
         ], required: ["requestID"])),
-        descriptor(AutomationMethod.dspPresetsList, title: "List DSP Presets", description: "List App-wide presets with stable UUIDs and revisions; the active working draft is separate.", readOnly: true, schema: object([
+        descriptor(AutomationMethod.dspPresetsList, title: "List DSP Presets", description: "List App-wide presets with stable UUIDs and revisions, and deviceProfiles: each output route with the preset it plays (flat when it has none). A preset belongs to at most one route; the active working draft is separate.", readOnly: true, schema: object([
             "offset": integer(0, 100_000), "limit": integer(1, 200)
         ])),
         descriptor(AutomationMethod.dspPresetsGet, title: "Get DSP Preset", description: "Read a complete preset including disabled node parameters, channel policies, quality and chain order.", readOnly: true, schema: object(["presetID": uuid], required: ["presetID"])),
         descriptor(AutomationMethod.dspPresetsSave, title: "Save DSP Preset", description: "Save the complete working sound or explicit configuration. Omit presetID to save as a new UUID. Built-in flat cannot be overwritten; globals are excluded.", readOnly: false, schema: mutation([
             "name": string, "presetID": uuid, "expectedPresetRevision": string, "configuration": configurationSchema
         ], required: ["name"]), dryRun: true),
-        descriptor(AutomationMethod.dspPresetsSelect, title: "Select DSP Preset", description: "Validate and apply the complete preset through the same live renderer transaction as the UI; selecting does not overwrite the previous preset.", readOnly: false, schema: mutation([
-            "presetID": uuid, "expectedPresetRevision": string
+        descriptor(AutomationMethod.dspPresetsSelect, title: "Select DSP Preset", description: "Validate and apply the complete preset for the current output route, which remembers it, through the same live renderer transaction as the UI; selecting does not overwrite the previous preset. A preset of another route is never shared: copyForCurrentDevice selects a new copy, otherwise the call fails.", readOnly: false, schema: mutation([
+            "presetID": uuid, "expectedPresetRevision": string, "copyForCurrentDevice": boolean
         ], required: ["presetID"]), dryRun: true),
         descriptor(AutomationMethod.dspPresetsRename, title: "Rename DSP Preset", description: "Rename a user preset without changing its sound. UUID is the identity; names may repeat.", readOnly: false, schema: mutation([
             "presetID": uuid, "name": string, "expectedPresetRevision": string

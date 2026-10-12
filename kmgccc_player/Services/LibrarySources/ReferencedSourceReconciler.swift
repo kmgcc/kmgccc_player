@@ -99,6 +99,11 @@ final class ReferencedSourceReconciler {
     private let noticePublisher: any ReferencedSourceNoticePublishing
     private let requiresSecurityScope: Bool
     private var isClosed = false
+    private var backgroundLender: BackgroundWorkLender = .none
+
+    func bindBackgroundWork(lender: BackgroundWorkLender) {
+        backgroundLender = lender
+    }
 
     init(
         context: LibraryContext,
@@ -539,8 +544,7 @@ final class ReferencedSourceReconciler {
                 continue
             }
             var effectiveRoot = root
-            var result = try await scanner.scan(
-                context: context,
+            var result = try await scanSource(
                 sourceID: sourceID,
                 rootURL: root,
                 excludedRelativePaths: Set(descriptor.excludedRelativePaths)
@@ -561,8 +565,7 @@ final class ReferencedSourceReconciler {
                    let refreshedRoot = sourceScope.authorizedRoots[sourceID]?.url,
                    refreshedRoot != root {
                     effectiveRoot = refreshedRoot
-                    result = try await scanner.scan(
-                        context: context,
+                    result = try await scanSource(
                         sourceID: sourceID,
                         rootURL: refreshedRoot,
                         excludedRelativePaths: Set(descriptor.excludedRelativePaths)
@@ -671,6 +674,28 @@ final class ReferencedSourceReconciler {
     }
 
     func close() { isClosed = true }
+
+    /// Walks a source folder and reads its file metadata while holding a disk
+    /// slot as upcoming work, so the library stays current and idle disk work
+    /// steps aside. The writes that follow go through the coordinator.
+    private func scanSource(
+        sourceID: UUID,
+        rootURL: URL,
+        excludedRelativePaths: Set<String>
+    ) async throws -> ReferencedSourceScanResult {
+        try await backgroundLender.withLease(
+            domain: .sourceSync,
+            priority: .upcoming,
+            resources: [.disk]
+        ) {
+            try await scanner.scan(
+                context: context,
+                sourceID: sourceID,
+                rootURL: rootURL,
+                excludedRelativePaths: excludedRelativePaths
+            )
+        }
+    }
 
     private func runShortMutation<Value: Sendable>(
         kind: LibraryMutationKind,

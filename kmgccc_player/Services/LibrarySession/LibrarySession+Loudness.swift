@@ -21,11 +21,24 @@ extension LoudnessAlbumMember {
 extension LibrarySession {
     /// Connects the library's loudness service to the App scheduler and to
     /// the library's own track and album records.
-    func configureLoudness(scheduler: BackgroundWorkScheduler, habits: ListeningHabitForecast) {
-        loudnessService.scheduler = scheduler
+    func configureLoudness(
+        scheduler: BackgroundWorkScheduler,
+        owner: BackgroundWorkOwner,
+        habits: ListeningHabitForecast
+    ) {
+        loudnessService.attach(scheduler: scheduler, owner: owner)
         loudnessService.updatePlaybackTrimPolicy(enabled: AppSettings.shared.audioAACGaplessTrimEnabled)
         loudnessService.trackProvider = { [weak self] id in
             self?.libraryViewModel.allTracks.first { $0.id == id }
+        }
+        loudnessService.idleOrderProvider = { [weak self] in
+            self?.idleLoudnessOrder() ?? []
+        }
+        loudnessService.libraryRevisionProvider = { [weak self] in
+            self?.libraryViewModel.tracksRevision ?? 0
+        }
+        loudnessService.libraryTrackIDsProvider = { [weak self] in
+            self?.libraryViewModel.allTracks.map(\.id) ?? []
         }
         loudnessService.albumJudgementProvider = { [weak self] track in
             self?.loudnessAlbumJudgement(for: track)
@@ -70,7 +83,7 @@ extension LibrarySession {
             self.loudnessService.requestMeasurement(
                 trackIDs: self.upcomingQueueTrackIDs(limit: 3), priority: .upcoming
             )
-            self.loudnessService.startIdleLibraryScan(orderedTrackIDs: self.idleLoudnessOrder())
+            self.loudnessService.startIdleLibraryScan()
         }
     }
 
@@ -136,7 +149,7 @@ extension LibrarySession {
     }
 
     func resumeIdleLoudnessScan() {
-        loudnessService.resumeIdleLibraryScan(orderedTrackIDs: idleLoudnessOrder())
+        loudnessService.resumeIdleLibraryScan()
     }
 
     func loudnessRecords(trackIDs: [UUID]) -> [UUID: LoudnessTrackRecord] {

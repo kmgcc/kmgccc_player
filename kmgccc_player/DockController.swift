@@ -82,7 +82,7 @@ final class DockController: NSObject, NSMenuItemValidation {
             keyEquivalent: ""
         )
         previousItem.target = self
-        previousItem.isEnabled = state.isControlEnabled
+        previousItem.isEnabled = state.isControlEnabled && state.trackIdentity != nil
         menu.addItem(previousItem)
 
         let nextItem = NSMenuItem(
@@ -91,7 +91,7 @@ final class DockController: NSObject, NSMenuItemValidation {
             keyEquivalent: ""
         )
         nextItem.target = self
-        nextItem.isEnabled = state.isControlEnabled
+        nextItem.isEnabled = state.isControlEnabled && state.trackIdentity != nil
         menu.addItem(nextItem)
 
         menu.addItem(.separator())
@@ -112,8 +112,11 @@ final class DockController: NSObject, NSMenuItemValidation {
         switch menuItem.action {
         case #selector(showMainWindow):
             return true
-        case #selector(togglePlayPause), #selector(previousTrack), #selector(nextTrack):
+        case #selector(togglePlayPause):
             return currentPlaybackState().isControlEnabled
+        case #selector(previousTrack), #selector(nextTrack):
+            let state = currentPlaybackState()
+            return state.isControlEnabled && state.trackIdentity != nil
         default:
             return true
         }

@@ -82,6 +82,8 @@ nonisolated private final class CoverDownloadProcessState: @unchecked Sendable {
 final class CoverDownloadService: CoverDownloadServiceProtocol {
     private let executablePath: String?
     private let fileManager: FileManager
+    /// Borrows a network slot from the App scheduler for each download.
+    private var backgroundLender: BackgroundWorkLender = .none
 
     init(
         executablePath: String? = nil,
@@ -89,6 +91,10 @@ final class CoverDownloadService: CoverDownloadServiceProtocol {
     ) {
         self.executablePath = executablePath
         self.fileManager = fileManager
+    }
+
+    func bindBackgroundWork(lender: BackgroundWorkLender) {
+        backgroundLender = lender
     }
 
     func downloadCover(artist: String, album: String, size: Int) async throws -> Data {
@@ -105,12 +111,18 @@ final class CoverDownloadService: CoverDownloadServiceProtocol {
             fileManager: fileManager
         )
 
-        return try await Self.runSacad(
-            artist: artist,
-            album: album,
-            size: size,
-            executablePath: resolvedExecutablePath
-        )
+        return try await backgroundLender.withLease(
+            domain: .importEnrichment,
+            priority: .userRequested,
+            resources: [.network]
+        ) {
+            try await Self.runSacad(
+                artist: artist,
+                album: album,
+                size: size,
+                executablePath: resolvedExecutablePath
+            )
+        }
     }
 
     nonisolated static func downloadCoverData(

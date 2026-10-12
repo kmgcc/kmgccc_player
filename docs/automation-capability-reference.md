@@ -294,7 +294,7 @@ App 已能访问的文件直接导入；缺少访问权限时使用 App 的文�
 检查并取得所需授权，已入库文件按既有 identity 规则复用。retry spec 不保存路径或书签，逐文件失败
 结果仍可能包含诊断路径。新的独立导入请求应使用新的 idempotency key。
 
-- P3–P4 音频：`audio.get/patch` 包含全局淡化与音量均衡（开关和目标响度）；`audio.loudness.get/analyze` 读取测量或创建响度测量 Job。`equalLoudness` 作为正式 DSP v1 节点参与完整预设与链排序，补偿只随实际输出设备的系统音量和该设备的标定曲线变化，节点参数只调节强度与滤波器形状。
+- P3–P4 音频：`audio.get/patch` 包含全局淡化与音量均衡（开关和目标响度）；`audio.loudness.get/analyze` 读取测量或创建响度测量 Job。`equalLoudness` 是预设中位于效果节点之后、输出增益之前的固定阶段，不参与链排序；补偿只随实际输出设备的系统音量和预设内的标定曲线变化，参数只调节强度与滤波器形状。每条输出路线（设备 UID 加 data source）记住自己的预设，未设置时播放平直；一个预设只属于一条路线，`dsp.presets.select` 选用其他路线的预设须传 `copyForCurrentDevice`，得到独立副本。
 
 - P5 音频：`stereoWidth`、`virtualBass`、`tube` 的参数、质量、声道策略及顺序均进入完整预设与 `dsp.patch`；`setQuality`、`setChannelPolicy` 支持原子编辑。`dsp.state.processing` 返回算法延迟、App 时间映射延迟与峰值保证状态。
 

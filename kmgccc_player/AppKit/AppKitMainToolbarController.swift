@@ -33,6 +33,7 @@ final class AppKitMainToolbarController: NSObject,
         static let revealNowPlaying = NSToolbarItem.Identifier("AppKitMainToolbar.revealNowPlaying")
         static let `import` = NSToolbarItem.Identifier("AppKitMainToolbar.import")
         static let homePillGroup = NSToolbarItem.Identifier("AppKitMainToolbar.homePillGroup")
+        static let historySectionTitle = NSToolbarItem.Identifier("AppKitMainToolbar.historySectionTitle")
     }
 
     private weak var splitViewController: AppKitMainSplitViewController?
@@ -261,6 +262,7 @@ final class AppKitMainToolbarController: NSObject,
             Identifier.sort,
             Identifier.pillGroup,
             Identifier.homePillGroup,
+            Identifier.historySectionTitle,
             .flexibleSpace,
             Identifier.search,
             Identifier.lyricsToggle,
@@ -292,6 +294,7 @@ final class AppKitMainToolbarController: NSObject,
             .sidebarTrackingSeparator,
             Identifier.homeNavPill,
             Identifier.pillGroup,
+            Identifier.historySectionTitle,
             .flexibleSpace,
             Identifier.search,
             Identifier.lyricsToggle,
@@ -313,7 +316,8 @@ final class AppKitMainToolbarController: NSObject,
                 ? currentHistoryVM?.isMultiselectMode
                 : currentPageController?.isMultiselectMode) == true,
             generation: attachmentGeneration,
-            splitView: splitViewController?.splitView
+            splitView: splitViewController?.splitView,
+            historyViewModel: currentHistoryVM
         )
         let actions = AppKitMainToolbarItemFactory.Actions(
             target: self,
@@ -1644,27 +1648,17 @@ private struct ShiftRangeSelectionTipView: View {
     let onClose: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text("多选排序")
-                    .font(.headline)
-                Spacer(minLength: 8)
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("关闭")
-            }
-
+        AppPopupFrame(
+            title: "多选排序", onClose: onClose, showsFooter: false,
+            rendersSurface: false, style: .appTip
+        ) {
             Text("多选歌曲后，按住歌曲条目并拖动，可以对歌曲进行排序。")
-                .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        } footer: {
+            EmptyView()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
         .frame(width: 288, alignment: .leading)
+        .environmentObject(ThemeStore.shared)
     }
 }

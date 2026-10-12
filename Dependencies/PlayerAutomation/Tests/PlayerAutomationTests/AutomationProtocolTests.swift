@@ -1417,7 +1417,11 @@ func globalLoudnessUsesExistingJobsAndAudioScopes() throws {
 
 @Test
 func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
-    #expect(AutomationDSPToolCatalog.builtInNodeSchemas.count == 6)
+    #expect(AutomationDSPToolCatalog.builtInNodeSchemas.count == 5)
+    #expect(!AutomationDSPToolCatalog.builtInNodeSchemas.contains { node in
+        guard case .object(let fields) = node else { return false }
+        return fields["typeID"] == .string("equalLoudness")
+    })
     for typeID in ["stereoWidth", "virtualBass", "tube"] {
         let raw = try #require(AutomationDSPToolCatalog.builtInNodeSchemas.first { node in
             guard case .object(let fields) = node else { return false }

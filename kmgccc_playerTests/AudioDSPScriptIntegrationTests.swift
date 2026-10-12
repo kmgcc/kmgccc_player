@@ -77,7 +77,8 @@ final class AudioDSPScriptIntegrationTests: XCTestCase {
         let script = DSPNodeConfiguration.script(parameters: DSPScriptNodeParameters(source:
             "latency 2; process { output = delay(input * 1e38, 2); }"))
         let runtime = AudioDSPProcessor(configuration: AudioDSPConfiguration(enabled: true,
-            outputTrimDB: 24, headroom: DSPHeadroomConfiguration(mode: .off), nodes: [script]), format: format)
+            outputTrimDB: 24, headroom: DSPHeadroomConfiguration(mode: .off), nodes: [script],
+            limiter: DSPLimiterConfiguration(enabled: false)), format: format)
         XCTAssertEqual(runtime.process(input).data, input.data)
         XCTAssertEqual(runtime.process(input).data, input.data)
         XCTAssertTrue(runtime.diagnostics.contains { $0.code == "dsp.nonFiniteChainOutput" })
@@ -146,7 +147,8 @@ final class AudioDSPScriptIntegrationTests: XCTestCase {
 
     private func processor(nodes: [DSPNodeConfiguration]) -> AudioDSPProcessor {
         AudioDSPProcessor(configuration: AudioDSPConfiguration(enabled: true,
-            headroom: DSPHeadroomConfiguration(mode: .off), nodes: nodes), format: format)
+            headroom: DSPHeadroomConfiguration(mode: .off), nodes: nodes,
+            limiter: DSPLimiterConfiguration(enabled: false)), format: format)
     }
     private func pcm(_ samples: [Float]) -> CanonicalPCM {
         CanonicalPCM(frames: samples.count / 2, channelCount: 2, sampleRate: format.sampleRate, data: samples)

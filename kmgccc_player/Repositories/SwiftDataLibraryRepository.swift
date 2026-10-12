@@ -86,6 +86,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     /// call-through semantics; production runs the batched detached path.
     private let usesInjectedImportSidecarWriter: Bool
     private let usesInjectedLocatorSidecarWriter: Bool
+    private weak var backgroundScheduler: BackgroundWorkScheduler?
+    private var backgroundOwner: BackgroundWorkOwner = .app
+    /// Why a leftover-folder scan is wanted but has not run yet. A reload
+    /// before the session binds to the scheduler leaves it here.
+    private var pendingResidueScanReason: String?
 
     init(
         modelContext: ModelContext? = nil,
@@ -130,6 +135,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     func setChangeHandler(_ handler: LibraryRepositoryChangeHandler?) {
         changeHandler = handler
+    }
+
+    /// Connects the repository to the App scheduler, which runs the scan for
+    /// leftover import folders as idle disk work.
+    func bindBackgroundWork(scheduler: BackgroundWorkScheduler, owner: BackgroundWorkOwner) {
+        backgroundScheduler = scheduler
+        backgroundOwner = owner
+        if let reason = pendingResidueScanReason { scheduleResidueScan(reason: reason) }
     }
 
     // MARK: - Boot/Reload
@@ -1423,9 +1436,45 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             }
         }
 
+        scheduleResidueScan(reason: reason)
+
+        if !orphanReport.deletedArtistIDs.isEmpty || !orphanReport.deletedAlbumIDs.isEmpty {
+            Log.info(
+                "[LibraryMaintenance] after reload complete reason=\(reason) deletedArtists=\(orphanReport.deletedArtistIDs.count) deletedAlbums=\(orphanReport.deletedAlbumIDs.count)",
+                category: .library
+            )
+        }
+        CacheManager.trimProcessMemory()
+    }
+
+    /// Queues the scan for track folders left behind by failed imports as idle
+    /// disk work. The library state the scan compares against is read when it
+    /// runs, not when it is queued, so songs imported in between are kept.
+    private func scheduleResidueScan(reason: String) {
+        pendingResidueScanReason = reason
+        guard let scheduler = backgroundScheduler else { return }
+        scheduler.submit(
+            key: "library-residue:\(paths.tracksRootURL.path)",
+            owner: backgroundOwner,
+            domain: .libraryMaintenance,
+            priority: .idleBatch,
+            resources: [.disk]
+        ) { [weak self] context in
+            guard let self else { return .cancelled }
+            return await self.runResidueScan(context: context)
+        }
+    }
+
+    private func runResidueScan(context: BackgroundWorkContext) async -> BackgroundWorkOutcome {
+        guard (try? await context.checkpoint()) != nil else { return .cancelled }
+        let reason = pendingResidueScanReason ?? "idleMaintenance"
+        let importActivity = await LibraryImportCoordinator.shared.snapshot()
+        // An import that began after the scan was queued owns its folders;
+        // the scan is queued again by the next reload.
+        guard !importActivity.isImporting else { return .cancelled }
         let referencedTrackIDs = Set(allTracks.map(\.id))
         let capturedPaths = paths
-        let cleanupReport = await Task.detached(priority: .utility) { @Sendable in
+        let report = await Task.detached(priority: context.taskPriority) { @Sendable in
             LibraryMaintenanceService().cleanupFailedImportTrackDirectories(
                 tracksRootURL: capturedPaths.tracksRootURL,
                 referencedTrackIDs: referencedTrackIDs,
@@ -1433,15 +1482,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 reason: reason
             )
         }.value
-
-        if cleanupReport.deletedCount > 0 || cleanupReport.failedDeleteCount > 0
-            || !orphanReport.deletedArtistIDs.isEmpty || !orphanReport.deletedAlbumIDs.isEmpty {
+        pendingResidueScanReason = nil
+        if report.deletedCount > 0 || report.failedDeleteCount > 0 {
             Log.info(
-                "[LibraryMaintenance] after reload complete reason=\(reason) deletedTrackDirs=\(cleanupReport.deletedCount) failedTrackDirDeletes=\(cleanupReport.failedDeleteCount) deletedArtists=\(orphanReport.deletedArtistIDs.count) deletedAlbums=\(orphanReport.deletedAlbumIDs.count)",
+                "[LibraryMaintenance] residue scan complete reason=\(reason) deletedTrackDirs=\(report.deletedCount) failedTrackDirDeletes=\(report.failedDeleteCount)",
                 category: .library
             )
         }
-        CacheManager.trimProcessMemory()
+        return .completed
     }
 
     private func writePlaylistToDisk(

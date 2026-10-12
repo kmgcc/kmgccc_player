@@ -41,6 +41,8 @@ struct MiniPlayerView: View {
     @State private var isProgressHovering = false
     @State private var artworkImage: NSImage?
     @State private var isPlaybackModeExpanded = false
+    @State private var isVolumeHovering = false
+    @State private var isVolumeAdjusting = false
     @State private var isShowingExternalMatchEditor = false
     @State private var showPlaybackModeRetapTip = false
 
@@ -54,12 +56,13 @@ struct MiniPlayerView: View {
         let policy = configuredMotionPolicy.resolving(
             accessibilityReduceMotion: reduceMotion
         )
-        return policy.animation(for: motionTokens[.layout])
+        return policy.animation(for: motionTokens.miniPlayerLayout)
     }
     private var trackInfoIdealWidth: CGFloat { 100 }
     private var trackInfoMinWidth: CGFloat { 32 }
     private var trackInfoMaxWidth: CGFloat { 136 }
     private var progressAreaMinWidth: CGFloat { 96 }
+    private var isVolumeExpanded: Bool { isVolumeHovering || isVolumeAdjusting }
 
     var body: some View {
         let _ = ContextMenuDiagnostics.markBodyUpdate(
@@ -146,7 +149,7 @@ struct MiniPlayerView: View {
                 .frame(minWidth: progressAreaMinWidth, maxWidth: .infinity)
                 .layoutPriority(0)
 
-            // MARK: - Right: Volume Slider
+            // MARK: - Right: Hover-expanding volume control
             MiniPlayerPresentationReader { presentation in
                 volumeView(presentation: presentation)
             }
@@ -155,6 +158,7 @@ struct MiniPlayerView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 8)
             .frame(height: GlassStyleTokens.miniPlayerHeight)
+            .clipShape(Capsule())
             .liquidGlassPill(
                 colorScheme: colorScheme,
                 accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
@@ -165,7 +169,8 @@ struct MiniPlayerView: View {
             .contentShape(Capsule())
             .onTapGesture {}
         }
-        .motionAnimation(.layout, value: isPlaybackModeExpanded)
+        .motionAnimation(motionTokens.miniPlayerLayout, value: isPlaybackModeExpanded)
+        .motionAnimation(motionTokens.miniPlayerLayout, value: isVolumeExpanded)
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
                 .environmentObject(themeStore)
@@ -180,6 +185,8 @@ struct MiniPlayerView: View {
             }
         }
         .onDisappear {
+            isVolumeHovering = false
+            isVolumeAdjusting = false
             FeatureTipPresentationCoordinator.shared.cancelPending(
                 key: FeatureTipCatalog.PlaybackModeRetap.key
             )
@@ -519,7 +526,27 @@ struct MiniPlayerView: View {
 
     private func volumeView(presentation: NowPlayingPresentation) -> some View {
         let isEnabled = presentation.isVolumeControlEnabled
-        return HStack(spacing: 6) {
+        return HStack(spacing: 0) {
+            VolumeSlider(
+                volume: Binding(
+                    get: { presentation.volume },
+                    set: { playbackCoordinator.setVolume($0) }
+                ),
+                onAdjustingChanged: { isVolumeAdjusting = $0 },
+                markerColor: themeStore.accentColor.opacity(0.85),
+                hidesMarkerAtDefault: true
+            )
+            .frame(width: 80)
+            .controlSize(.small)
+            .tint(themeStore.accentColor)
+            .disabled(!isEnabled)
+            .padding(.trailing, 6)
+            .frame(width: isVolumeExpanded ? 86 : 0, alignment: .trailing)
+            .clipped()
+            .opacity(isVolumeExpanded ? (isEnabled ? 1 : 0.45) : 0)
+            .allowsHitTesting(isVolumeExpanded)
+            .accessibilityHidden(!isVolumeExpanded)
+
             Button { toggleMute(presentation: presentation) } label: {
                 Image(systemName: volumeIcon(for: presentation))
                     .font(.caption)
@@ -530,20 +557,30 @@ struct MiniPlayerView: View {
             .buttonStyle(.plain)
             .disabled(!isEnabled)
             .help(presentation.volume == 0 ? "Unmute" : "Mute")
-
-            VolumeSlider(
-                volume: Binding(
-                    get: { presentation.volume },
-                    set: { playbackCoordinator.setVolume($0) }
-                ),
-                markerColor: themeStore.accentColor.opacity(0.85),
-                hidesMarkerAtDefault: true
-            )
-            .frame(width: 80)
-            .controlSize(.small)
-            .tint(themeStore.accentColor)
-            .disabled(!isEnabled)
-            .opacity(isEnabled ? 1 : 0.45)
+            .accessibilityLabel("Volume")
+            .accessibilityValue(Text("\(Int((presentation.volume * 100).rounded()))%"))
+            .accessibilityAdjustableAction { direction in
+                guard isEnabled else { return }
+                switch direction {
+                case .increment:
+                    playbackCoordinator.setVolume(VolumeControlBehavior.clamped(presentation.volume + 0.05))
+                case .decrement:
+                    playbackCoordinator.setVolume(VolumeControlBehavior.clamped(presentation.volume - 0.05))
+                @unknown default:
+                    break
+                }
+            }
+        }
+        .frame(height: 24)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isVolumeHovering = isEnabled && hovering
+        }
+        .onChange(of: isEnabled) { _, enabled in
+            if !enabled {
+                isVolumeHovering = false
+                isVolumeAdjusting = false
+            }
         }
     }
 
@@ -921,11 +958,8 @@ struct PlaybackModeSlider: View {
         }
     }
 
-    private var visibleModes: [PlaybackOrderMode] {
-        if isExpanded {
-            return [.shuffle, .sequence, .repeatOne, .stopAfterTrack]
-        }
-        return [mode]
+    private var allModes: [PlaybackOrderMode] {
+        [.shuffle, .sequence, .repeatOne, .stopAfterTrack]
     }
 
     private func symbol(for mode: PlaybackOrderMode) -> String {
@@ -945,7 +979,7 @@ struct PlaybackModeSlider: View {
         GeometryReader { geometry in
             let inset: CGFloat = 2 * scale
             let totalWidth = geometry.size.width - inset * 2
-            let segmentCount = max(1, visibleModes.count)
+            let segmentCount = isExpanded ? allModes.count : 1
             let segmentWidth = max(1, totalWidth / CGFloat(segmentCount))
             let baseOffset = isExpanded ? CGFloat(modeIndex) * segmentWidth : 0
             let effectiveDrag = (isDragging && isExpanded) ? dragTranslation : 0
@@ -969,19 +1003,15 @@ struct PlaybackModeSlider: View {
                     .offset(x: knobOffset + inset)
                     .allowsHitTesting(false)
                     .motionAnimation(
-                        .control,
+                        motionTokens.miniPlayerControl,
                         value: modeIndex,
                         enabled: motionPolicy != .disabled && !isDragging
                     )
-                    .motionAnimation(
-                        .control,
-                        value: isExpanded,
-                        enabled: motionPolicy != .disabled && !isDragging
-                    )
 
-                HStack(spacing: 0) {
-                    ForEach(Array(visibleModes.enumerated()), id: \.offset) { pair in
-                        let modeValue = pair.element
+                // Keep semantic identities alive while folding. Reusing array
+                // position zero for a different mode replaces the visible icon.
+                ZStack(alignment: .leading) {
+                    ForEach(allModes, id: \.self) { modeValue in
                         segmentButton(
                             systemImage: symbol(for: modeValue),
                             mode: modeValue,
@@ -989,8 +1019,13 @@ struct PlaybackModeSlider: View {
                             width: segmentWidth,
                             snap: snap
                         )
+                        .offset(x: isExpanded ? CGFloat(index(for: modeValue)) * segmentWidth : 0)
+                        .opacity(isExpanded || modeValue == mode ? 1 : 0)
+                        .allowsHitTesting(isExpanded || modeValue == mode)
+                        .accessibilityHidden(!isExpanded && modeValue != mode)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, inset)
             }
             .contentShape(Capsule())
@@ -1013,8 +1048,14 @@ struct PlaybackModeSlider: View {
                     }
             )
         }
+        .clipShape(Capsule())
         .opacity(isEnabled ? 1 : 0.4)
         .disabled(!isEnabled)
+        .onChange(of: isExpanded) { _, expanded in
+            guard !expanded else { return }
+            isDragging = false
+            dragTranslation = 0
+        }
         .onChange(of: modeIndex) { oldValue, newValue in
             guard oldValue != newValue else { return }
             animatedModeIndex = newValue
@@ -1091,6 +1132,7 @@ struct PlaybackModeSlider: View {
                 Rectangle()
                     .fill(Color.clear)
                 segmentIcon(systemImage: systemImage, index: index(for: mode), isSelected: isSelected)
+                    .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
             }
             .frame(width: width, height: 28 * scale)
             .contentShape(Rectangle())
@@ -1101,7 +1143,7 @@ struct PlaybackModeSlider: View {
     }
 
     private var snapAnimation: Animation? {
-        motionPolicy.animation(for: motionTokens[.control])
+        motionPolicy.animation(for: motionTokens.miniPlayerControl)
     }
 
     private var motionPolicy: MotionPolicy {
@@ -1220,15 +1262,13 @@ struct AppleMusicPlaybackModeSlider: View {
         index(for: mode)
     }
 
-    private var visibleModes: [AppleMusicPlaybackMode] {
-        isExpanded ? AppleMusicPlaybackMode.allCases : [mode]
-    }
+    private var allModes: [AppleMusicPlaybackMode] { AppleMusicPlaybackMode.allCases }
 
     var body: some View {
         GeometryReader { geometry in
             let inset: CGFloat = 2 * scale
             let totalWidth = geometry.size.width - inset * 2
-            let segmentCount = max(1, visibleModes.count)
+            let segmentCount = isExpanded ? allModes.count : 1
             let segmentWidth = max(1, totalWidth / CGFloat(segmentCount))
             let baseOffset = isExpanded ? CGFloat(modeIndex) * segmentWidth : 0
             let effectiveDrag = (isDragging && isExpanded) ? dragTranslation : 0
@@ -1252,19 +1292,15 @@ struct AppleMusicPlaybackModeSlider: View {
                     .offset(x: knobOffset + inset)
                     .allowsHitTesting(false)
                     .motionAnimation(
-                        .control,
+                        motionTokens.miniPlayerControl,
                         value: modeIndex,
                         enabled: motionPolicy != .disabled && !isDragging
                     )
-                    .motionAnimation(
-                        .control,
-                        value: isExpanded,
-                        enabled: motionPolicy != .disabled && !isDragging
-                    )
 
-                HStack(spacing: 0) {
-                    ForEach(Array(visibleModes.enumerated()), id: \.offset) { pair in
-                        let modeValue = pair.element
+                // Keep semantic identities alive while folding. Reusing array
+                // position zero for a different mode replaces the visible icon.
+                ZStack(alignment: .leading) {
+                    ForEach(allModes, id: \.self) { modeValue in
                         segmentButton(
                             systemImage: symbol(for: modeValue),
                             mode: modeValue,
@@ -1272,8 +1308,13 @@ struct AppleMusicPlaybackModeSlider: View {
                             width: segmentWidth,
                             snap: snap
                         )
+                        .offset(x: isExpanded ? CGFloat(index(for: modeValue)) * segmentWidth : 0)
+                        .opacity(isExpanded || modeValue == mode ? 1 : 0)
+                        .allowsHitTesting(isExpanded || modeValue == mode)
+                        .accessibilityHidden(!isExpanded && modeValue != mode)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, inset)
             }
             .contentShape(Capsule())
@@ -1299,8 +1340,14 @@ struct AppleMusicPlaybackModeSlider: View {
                     }
             )
         }
+        .clipShape(Capsule())
         .opacity(isEnabled ? 1 : 0.4)
         .disabled(!isEnabled)
+        .onChange(of: isExpanded) { _, expanded in
+            guard !expanded else { return }
+            isDragging = false
+            dragTranslation = 0
+        }
         .onChange(of: mode) { oldValue, newValue in
             guard oldValue != newValue else { return }
             animatedMode = newValue
@@ -1348,6 +1395,7 @@ struct AppleMusicPlaybackModeSlider: View {
                 Rectangle()
                     .fill(Color.clear)
                 segmentIcon(systemImage: systemImage, mode: mode, isSelected: isSelected)
+                    .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
             }
             .frame(width: width, height: 28 * scale)
             .contentShape(Rectangle())
@@ -1358,7 +1406,7 @@ struct AppleMusicPlaybackModeSlider: View {
     }
 
     private var snapAnimation: Animation? {
-        motionPolicy.animation(for: motionTokens[.control])
+        motionPolicy.animation(for: motionTokens.miniPlayerControl)
     }
 
     private var motionPolicy: MotionPolicy {

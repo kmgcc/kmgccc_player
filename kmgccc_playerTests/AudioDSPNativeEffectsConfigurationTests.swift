@@ -41,6 +41,62 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
         XCTAssertThrowsError(try handler.candidateConfiguration(malformed, current: current))
     }
 
+    func testAutomationEditsTheFixedEqualLoudnessStage() throws {
+        var current = AudioDSPConfiguration.defaultFlat
+        current.equalLoudness.calibration = EqualLoudnessCalibration(
+            deviceKey: "route", deviceName: "Route", axis: .decibels,
+            points: [EqualLoudnessCalibrationPoint(coordinate: -20, bassDB: 0, trebleDB: 0)]
+        )
+        let handler = AutomationDSPHandler(appSession: nil)
+        let parameters = try AutomationParameters(AutomationRequest(method: AutomationMethod.dspPatch,
+            params: .object(["operations": .array([
+                .object(["op": .string("setEqualLoudness"), "value": .object([
+                    "enabled": .boolean(true),
+                    "parameters": .object(["strength": .number(0.5)]),
+                    "calibration": .null,
+                ])]),
+            ])])))
+        let candidate = try handler.candidateConfiguration(parameters, current: current)
+        XCTAssertTrue(candidate.equalLoudness.enabled)
+        XCTAssertEqual(candidate.equalLoudness.parameters.strength, 0.5)
+        XCTAssertEqual(candidate.equalLoudness.parameters.bassFrequencyHz, current.equalLoudness.parameters.bassFrequencyHz)
+        XCTAssertNil(candidate.equalLoudness.calibration)
+        XCTAssertEqual(candidate.nodes, current.nodes)
+
+        let unknown = try AutomationParameters(AutomationRequest(method: AutomationMethod.dspPatch,
+            params: .object(["operations": .array([
+                .object(["op": .string("setEqualLoudness"), "value": .object([
+                    "parameters": .object(["calibrations": .array([])]),
+                ])]),
+            ])])))
+        XCTAssertThrowsError(try handler.candidateConfiguration(unknown, current: current))
+    }
+
+    func testAutomationSetsHeadroomCeilingAndLimiter() throws {
+        let current = AudioDSPConfiguration.defaultFlat
+        let handler = AutomationDSPHandler(appSession: nil)
+        let parameters = try AutomationParameters(AutomationRequest(method: AutomationMethod.dspPatch,
+            params: .object(["operations": .array([
+                .object(["op": .string("setHeadroom"), "value": .object([
+                    "mode": .string("automatic"), "maximumAttenuationDB": .number(3),
+                ])]),
+                .object(["op": .string("setLimiter"), "value": .object(["enabled": .boolean(false)])]),
+                .object(["op": .string("setLimiter"), "value": .object(["releaseMilliseconds": .number(400)])]),
+            ])])))
+        let candidate = try handler.candidateConfiguration(parameters, current: current)
+        XCTAssertEqual(candidate.headroom, DSPHeadroomConfiguration(mode: .automatic, maximumAttenuationDB: 3))
+        XCTAssertEqual(candidate.limiter, DSPLimiterConfiguration(enabled: false, releaseMilliseconds: 400))
+        XCTAssertTrue(current.limiter.enabled)
+
+        let legacy = try AutomationParameters(AutomationRequest(method: AutomationMethod.dspPatch,
+            params: .object(["operations": .array([
+                .object(["op": .string("setHeadroom"), "value": .object([
+                    "mode": .string("automatic"), "marginDB": .number(2),
+                ])]),
+            ])])))
+        XCTAssertThrowsError(try handler.candidateConfiguration(legacy, current: current))
+    }
+
     func testAutomationDefaultsMatchAppFactories() throws {
         let nodes: [DSPNodeConfiguration] = [.stereoWidth(), .virtualBass(), .tube()]
         for node in nodes {

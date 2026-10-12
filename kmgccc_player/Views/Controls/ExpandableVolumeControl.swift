@@ -25,6 +25,7 @@ struct ExpandableVolumeControl: View {
     var forceDarkForegroundProfile: Bool = false
     var usesInternalHoverExpansion: Bool = true
     var foregroundProfile: FullscreenMiniPlayerForegroundProfile? = nil
+    var usesContainerWidth = false
     
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
@@ -60,7 +61,9 @@ struct ExpandableVolumeControl: View {
 
             sliderView
         }
-        .frame(width: currentWidth, height: scaledControlHeight, alignment: .leading)
+        .frame(width: usesContainerWidth ? nil : currentWidth, height: scaledControlHeight, alignment: .leading)
+        .frame(maxWidth: usesContainerWidth ? .infinity : nil, alignment: .leading)
+        .clipShape(Capsule())
         .contentShape(Capsule())
         .liquidGlassPill(
             colorScheme: colorScheme,
@@ -117,7 +120,8 @@ struct ExpandableVolumeControl: View {
             .compositingGroup()
             .blendMode(controlBlendMode)
             .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
-            .frame(maxWidth: .infinity)
+            // Keep the AppKit slider at its final size while the capsule reveals it.
+            .frame(width: scaledExpandedWidth - scaledIconAreaWidth - sliderTrailingPadding)
             .padding(.trailing, sliderTrailingPadding)
             .opacity(isExpanded ? 1 : 0)
             .allowsHitTesting(isExpanded)
@@ -133,7 +137,7 @@ struct ExpandableVolumeControl: View {
         let policy = configuredMotionPolicy.resolving(
             accessibilityReduceMotion: reduceMotion
         )
-        return policy.animation(for: motionTokens[.layout])
+        return policy.animation(for: motionTokens.miniPlayerLayout)
     }
 
     private func setExpanded(_ expanded: Bool) {

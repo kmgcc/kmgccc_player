@@ -2,26 +2,32 @@
 //  AudioDSPEqualLoudnessCalibration.swift
 //  myPlayer2
 //
-//  Equal-loudness node status and the four-step calibration guide.
+//  Equal-loudness stage status and the four-step calibration guide.
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
-// MARK: - Node status
+// MARK: - Stage status
 
-/// Device, volume and compensation state shown inside the node. The
-/// calibration shown is this node's own, for the routed device.
+/// Device, volume and compensation state shown inside the stage. The
+/// calibration shown is the preset's own, when recorded on the routed device.
 struct AudioDSPEqualLoudnessStatus: View {
-    let node: DSPNodeConfiguration
+    let stage: DSPEqualLoudnessStage
     let controller: EqualLoudnessController
     let onCalibrate: () -> Void
-    let onRemoveCalibration: (String) -> Void
+    let onRemoveCalibration: () -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
+    @State private var isPromptingCalibration = false
 
     private var calibration: EqualLoudnessCalibration? {
-        controller.volumeState.deviceUID.flatMap { node.equalLoudnessCalibration(forDeviceUID: $0) }
+        controller.context.usableCalibration(in: stage)
+    }
+
+    private var needsCalibrationPrompt: Bool {
+        calibration == nil && controller.volumeState.reading?.isWritable == true
     }
 
     var body: some View {
@@ -31,24 +37,53 @@ struct AudioDSPEqualLoudnessStatus: View {
                 statusRow("音量", volumeText)
                 statusRow("当前补偿", compensationText)
             }
-            EqualLoudnessCurveChart(node: node, context: controller.context, marker: controller.volumeState.reading)
+            EqualLoudnessCurveChart(stage: stage, context: controller.context, marker: controller.volumeState.reading)
             HStack(alignment: .center, spacing: 8) {
                 Text(calibration == nil ? "默认曲线" : "已标定")
                     .font(.system(size: 12))
                     .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
                 Spacer(minLength: 8)
-                if let uid = controller.volumeState.deviceUID, calibration != nil {
-                    Button("恢复默认") { onRemoveCalibration(uid) }
+                if calibration != nil {
+                    Button("恢复默认", action: onRemoveCalibration)
                         .audioDSPCapsuleButtonStyle()
                 }
                 Button(calibration == nil ? "标定" : "重新标定", action: onCalibrate)
                     .audioDSPCapsuleButtonStyle()
+                    .overlay {
+                        if needsCalibrationPrompt {
+                            Capsule()
+                                .fill(themeStore.accentColor)
+                                .overlay(
+                                    Text("标定")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(.white)
+                                )
+                                .opacity(isPromptingCalibration ? 1.0 : 0.0)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .motionAnimation(.control, value: isPromptingCalibration)
                     .disabled(controller.volumeState.reading?.isWritable != true)
             }
             if let reading = controller.volumeState.reading, !reading.isWritable {
                 Text("“\(reading.deviceName)”的音量由设备自身调节，无法在此标定。")
                     .settingsDescriptionStyle()
             }
+        }
+        .task(id: needsCalibrationPrompt) {
+            guard needsCalibrationPrompt else {
+                isPromptingCalibration = false
+                return
+            }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                guard !Task.isCancelled, needsCalibrationPrompt else { break }
+                isPromptingCalibration = true
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { break }
+                isPromptingCalibration = false
+            }
+            isPromptingCalibration = false
         }
     }
 
@@ -74,7 +109,7 @@ struct AudioDSPEqualLoudnessStatus: View {
 
     private var compensationText: String {
         guard controller.volumeState.reading != nil else { return "已停用" }
-        let gains = DSPEqualLoudnessMath.gains(node: node, context: controller.context)
+        let gains = DSPEqualLoudnessMath.gains(stage: stage, context: controller.context)
         return "低音 \(EqualLoudnessFormat.signedDB(gains.bassDB)) · 高音 \(EqualLoudnessFormat.signedDB(gains.trebleDB))"
     }
 }
@@ -97,7 +132,7 @@ enum EqualLoudnessFormat {
 /// marked. The zero line runs through the middle so cuts above the reference
 /// read as clearly as boosts below it.
 struct EqualLoudnessCurveChart: View {
-    let node: DSPNodeConfiguration
+    let stage: DSPEqualLoudnessStage
     let context: DSPEqualLoudnessContext
     let marker: OutputDeviceVolumeReading?
 
@@ -125,7 +160,7 @@ struct EqualLoudnessCurveChart: View {
                 let steps = 80
                 for index in 0...steps {
                     let value = range.lowerBound + (range.upperBound - range.lowerBound) * Double(index) / Double(steps)
-                    let gains = DSPEqualLoudnessMath.gains(node: node, context: sampleContext(at: value, axis: axis))
+                    let gains = DSPEqualLoudnessMath.gains(stage: stage, context: sampleContext(at: value, axis: axis))
                     let bassPoint = CGPoint(x: x(value), y: y(gains.bassDB))
                     let treblePoint = CGPoint(x: x(value), y: y(gains.trebleDB))
                     if index == 0 { bass.move(to: bassPoint); treble.move(to: treblePoint) }
@@ -164,7 +199,7 @@ struct EqualLoudnessCurveChart: View {
         }
     }
 
-    /// The same device at another volume; the curve comes from the node.
+    /// The same device at another volume; the curve comes from the stage.
     private func sampleContext(at value: Double, axis: OutputDeviceVolumeReading.Axis) -> DSPEqualLoudnessContext {
         let reading = OutputDeviceVolumeReading(
             deviceUID: context.volume.deviceUID ?? "", deviceName: "",
@@ -172,7 +207,7 @@ struct EqualLoudnessCurveChart: View {
             decibelsBelowMaximum: axis == .decibels ? value : nil,
             isMuted: false, isWritable: false
         )
-        return DSPEqualLoudnessContext(volume: .available(reading))
+        return DSPEqualLoudnessContext(volume: .available(reading), deviceKey: context.deviceKey)
     }
 }
 
@@ -326,11 +361,10 @@ struct EqualLoudnessSegmentPicker: View {
 /// The listener moves the volume with the slider here and sets bass and
 /// treble so each step sounds as balanced as the reference. Every value set
 /// at a step is kept while moving back and forth. The result is saved into
-/// the node being calibrated; volume and play order are restored when the
-/// guide closes, and abandoning it leaves the node unchanged.
+/// the current preset's equal-loudness stage; volume and play order are
+/// restored when the guide closes, and abandoning it leaves the preset unchanged.
 struct EqualLoudnessCalibrationDialog: View {
     let controller: EqualLoudnessController
-    let nodeID: UUID
     let onSave: (EqualLoudnessCalibration) -> Void
     let onClose: () -> Void
 
@@ -365,7 +399,7 @@ struct EqualLoudnessCalibrationDialog: View {
     @State private var bass = 0.0
     @State private var treble = 0.0
     @State private var heldMark: Double?
-    @State private var startDeviceUID: String?
+    @State private var startDeviceKey: String?
     @State private var startScalar: Double?
     @State private var restoreOrderMode: PlaybackOrderMode?
     @State private var playingQueueTrackID: UUID?
@@ -384,7 +418,8 @@ struct EqualLoudnessCalibrationDialog: View {
             title: title,
             subtitle: subtitle,
             systemImage: "ear",
-            iconColor: themeStore.accentColor
+            iconColor: themeStore.accentColor,
+            onClose: onClose
         ) {
             content
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -394,8 +429,8 @@ struct EqualLoudnessCalibrationDialog: View {
         .frame(minWidth: 540, idealWidth: 560, maxWidth: 620)
         .onAppear(perform: begin)
         .onDisappear(perform: restore)
-        .onChange(of: controller.volumeState.deviceUID) { _, uid in
-            guard phase != .intro, phase != .finished, uid != startDeviceUID else { return }
+        .onChange(of: controller.routedDeviceKey) { _, key in
+            guard phase != .intro, phase != .finished, key != startDeviceKey else { return }
             controller.setPreview(nil)
             phase = .deviceChanged(controller.volumeState.deviceName ?? "新设备")
         }
@@ -529,7 +564,7 @@ struct EqualLoudnessCalibrationDialog: View {
     }
 
     private var trackList: some View {
-        ScrollView {
+        AppPopupScrollRegion {
             LazyVStack(spacing: 0) {
                 ForEach(candidates, id: \.id) { track in
                     TrackRowView(
@@ -550,7 +585,6 @@ struct EqualLoudnessCalibrationDialog: View {
             }
             .padding(.vertical, 6)
         }
-        .modifier(ScrollEdgeFadeTrackingMask(topFadeHeight: 22, bottomFadeHeight: 22))
         .frame(height: 236)
     }
 
@@ -649,35 +683,31 @@ struct EqualLoudnessCalibrationDialog: View {
 
     private var finishedContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("已为“\(controller.volumeState.deviceName ?? "当前设备")”生成补偿曲线，保存在这个音效中。调节音量时，补偿随之变化；更换设备后，可另行标定。")
+            Text("已为“\(controller.volumeState.deviceName ?? "当前设备")”生成补偿曲线，保存在此设备的音效中。调节音量时，补偿随之变化。")
                 .font(.system(size: 13))
                 .foregroundStyle(palette.primaryColor)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
-            if let node = calibratedNode {
-                EqualLoudnessCurveChart(node: node, context: controller.context, marker: controller.volumeState.reading)
-                    .padding(14)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(palette.primaryColor.opacity(0.05))
-                    )
-            }
+            EqualLoudnessCurveChart(stage: calibratedStage, context: controller.context, marker: controller.volumeState.reading)
+                .padding(14)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(palette.primaryColor.opacity(0.05))
+                )
         }
     }
 
     @ViewBuilder
     private var footer: some View {
-        HStack {
+        Group {
             switch phase {
             case .intro:
-                Spacer()
                 SettingsTaskDialogButton("取消", kind: .secondary, action: onClose)
                 SettingsTaskDialogButton("下一步", kind: .primary, disabled: selectedTrackID == nil) {
                     enterSegment()
                 }
             case .segment:
                 SettingsTaskDialogButton("放弃", kind: .secondary, action: onClose)
-                Spacer()
                 SettingsTaskDialogButton("上一步", kind: .secondary) { phase = .intro }
                 SettingsTaskDialogButton("开始标定", kind: .primary, disabled: segmentDuration <= 0) {
                     seek(to: segmentStart)
@@ -685,7 +715,6 @@ struct EqualLoudnessCalibrationDialog: View {
                 }
             case .step(let index):
                 SettingsTaskDialogButton("放弃", kind: .secondary, action: onClose)
-                Spacer()
                 SettingsTaskDialogButton("上一步", kind: .secondary) { goBack(from: index) }
                 SettingsTaskDialogButton(index == Guide.stepCount - 1 ? "完成" : "下一步", kind: .primary,
                                          disabled: stepBlocker(index) != nil) { advance(from: index) }
@@ -696,10 +725,8 @@ struct EqualLoudnessCalibrationDialog: View {
                     drafts = [:]
                     enterStep(0)
                 }
-                Spacer()
                 SettingsTaskDialogButton("完成", kind: .primary, action: onClose)
             case .deviceChanged:
-                Spacer()
                 SettingsTaskDialogButton("好", kind: .primary, action: onClose)
             }
         }
@@ -831,7 +858,7 @@ struct EqualLoudnessCalibrationDialog: View {
     // MARK: Flow
 
     private func begin() {
-        startDeviceUID = controller.volumeState.deviceUID
+        startDeviceKey = controller.routedDeviceKey
         startScalar = controller.volumeState.reading?.scalar
         selectedTrackID = activeSession?.playerViewModel.currentTrack?.id
     }
@@ -932,8 +959,9 @@ struct EqualLoudnessCalibrationDialog: View {
             enterStep(index + 1)
             return
         }
+        guard let deviceKey = controller.routedDeviceKey else { return }
         let calibration = EqualLoudnessCalibration(
-            deviceUID: reading.deviceUID,
+            deviceKey: deviceKey,
             deviceName: reading.deviceName,
             axis: reading.axis,
             points: Array(points.prefix(Guide.stepCount))
@@ -976,7 +1004,7 @@ struct EqualLoudnessCalibrationDialog: View {
 
     private func restore() {
         controller.setPreview(nil)
-        if let startScalar, controller.volumeState.deviceUID == startDeviceUID {
+        if let startScalar, controller.routedDeviceKey == startDeviceKey {
             controller.volumeObserver.setScalar(startScalar)
         }
         if let restoreOrderMode {
@@ -1051,8 +1079,8 @@ struct EqualLoudnessCalibrationDialog: View {
         return player.currentTrack?.id
     }
 
-    private var calibratedNode: DSPNodeConfiguration? {
-        appSession.audioDSPController.configuration.nodes.first { $0.nodeID == nodeID }
+    private var calibratedStage: DSPEqualLoudnessStage {
+        appSession.audioDSPController.configuration.equalLoudness
     }
 
     private func search() async {

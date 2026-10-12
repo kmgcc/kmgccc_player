@@ -2,7 +2,7 @@
 //  AudioSettingsView.swift
 //  myPlayer2
 //
-//  Audio output settings, including the optional visualization-sync delay.
+//  Audio output settings, including general playback options and DSP devices.
 //
 
 import SwiftUI
@@ -11,14 +11,45 @@ import SwiftUI
 struct AudioSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var appSession: AppSessionHost
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+
+    @State private var selectedTab = 0
+    private let tabs = ["常规", "音效与设备"]
 
     @State private var volumeControlTarget: AppSettings.VolumeControlTarget = AppSettings.shared.volumeControlTarget
     @State private var lookaheadEnabled: Bool = AppSettings.shared.audioLookaheadEnabled
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: presentationStyle.containerSpacing) {
             SettingsHeaderLabel("音频", systemImage: "waveform")
 
+            SettingsTabSelector(tabs: tabs, selectedTab: $selectedTab, fillsWidth: true)
+                .environmentObject(themeStore)
+
+            switch selectedTab {
+            case 0:
+                generalTab
+            case 1:
+                AudioDSPSettingsView(embedsInTab: true)
+            default:
+                generalTab
+            }
+        }
+        .onAppear {
+            volumeControlTarget = settings.volumeControlTarget
+            lookaheadEnabled = settings.audioLookaheadEnabled
+        }
+        .onChange(of: volumeControlTarget) { _, newValue in
+            settings.volumeControlTarget = newValue
+        }
+        .onChange(of: lookaheadEnabled) { _, newValue in
+            settings.audioLookaheadEnabled = newValue
+        }
+    }
+
+    private var generalTab: some View {
+        VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
             SettingsSection("通用") {
                 VStack(alignment: .leading, spacing: 14) {
                     CapsulePicker(
@@ -40,24 +71,6 @@ struct AudioSettingsView: View {
             AudioProcessingGlobalsSettingsView(
                 controller: appSession.audioProcessingGlobalsController
             )
-
-            SettingsSection {
-                SettingsSubpageLink(
-                    title: "音效处理",
-                    subtitle: "均衡器、效果链与预设",
-                    page: .audioDSP
-                )
-            }
-        }
-        .onAppear {
-            volumeControlTarget = settings.volumeControlTarget
-            lookaheadEnabled = settings.audioLookaheadEnabled
-        }
-        .onChange(of: volumeControlTarget) { _, newValue in
-            settings.volumeControlTarget = newValue
-        }
-        .onChange(of: lookaheadEnabled) { _, newValue in
-            settings.audioLookaheadEnabled = newValue
         }
     }
 }

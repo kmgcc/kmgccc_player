@@ -1,3 +1,4 @@
+import PopupKit
 import SwiftUI
 
 /// Small, persistent companion to the transient import-progress panel. It is
@@ -22,36 +23,30 @@ struct LibraryImportStatusDialogView: View {
     }
 
     var body: some View {
-        AppDialogFrame(
-            header: {
-                AppDialogHeader(
-                    title: "导入状态",
-                    systemImage: "arrow.down.circle",
-                    iconColor: themeStore.accentColor
-                )
-                .padding(.horizontal, AppDialogTokens.headerHorizontalPadding)
-                .padding(.top, 14)
-                .padding(.bottom, 12)
-            },
-            content: {
+        AppPopupFrame(
+            title: "导入状态", systemImage: "arrow.down.circle",
+            onClose: { dismiss() }, showsFooter: false
+        ) {
+            AppPopupScrollRegion {
                 content
-            },
-            footer: {
-                AppDialogFooter {
-                    HStack {
-                        if !failures.isEmpty {
-                            Button("清除记录", action: onClear)
-                                .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
-                        }
-                        Spacer()
-                        Button("完成", action: dismiss.callAsFunction)
-                            .keyboardShortcut(.defaultAction)
-                            .buttonStyle(AppDialogGlassButtonStyle(kind: .primary))
-                    }
-                }
+            } actions: {
+                actions
             }
-        )
+        } footer: {
+            EmptyView()
+        }
         .frame(width: 560, height: 460)
+    }
+
+    private var actions: some View {
+        AppPopupActionGroup {
+            if !failures.isEmpty {
+                Button("清除记录", action: onClear).buttonStyle(AppDialogGlassButtonStyle())
+            }
+            Button("完成", action: dismiss.callAsFunction)
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(AppDialogGlassButtonStyle(kind: .primary))
+        }
     }
 
     @ViewBuilder
@@ -64,7 +59,7 @@ struct LibraryImportStatusDialogView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if !tasks.isEmpty {
                         sectionTitle("进行中")
@@ -80,8 +75,6 @@ struct LibraryImportStatusDialogView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 16)
             }
         }
     }

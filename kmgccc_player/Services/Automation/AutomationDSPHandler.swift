@@ -27,15 +27,18 @@ struct AutomationDSPHandler {
             switch request.method {
             case AutomationMethod.dspSchema:
                 return result(.object([
-                    "schemaVersion": .number(1),
+                    "schemaVersion": .number(Double(DSPPresetDocument.schemaVersion)),
                     "configuration": AutomationDSPToolCatalog.configurationSchema,
                     "preset": AutomationDSPToolCatalog.presetSchema,
                     "nodes": .array(AutomationDSPToolCatalog.builtInNodeSchemas),
+                    "equalLoudness": AutomationDSPToolCatalog.equalLoudnessStageSchema,
                     "scriptLanguage": AutomationDSPToolCatalog.scriptLanguageCapabilities,
                     "operationPaths": .object([
                         "setParameter": .string("Relative to node parameters, e.g. bands.0.gainDB."),
                         "setTrim": .string("value is an object containing inputTrimDB and/or outputTrimDB."),
-                        "setHeadroom": .string("value contains mode and marginDB."),
+                        "setHeadroom": .string("value contains mode and maximumAttenuationDB."),
+                        "setLimiter": .string("value contains enabled, ceilingDB and/or releaseMilliseconds."),
+                        "setEqualLoudness": .string("value contains enabled, a partial parameters object and/or calibration (null clears it)."),
                         "setOrder": .string("nodeIDs must contain every existing node exactly once."),
                         "setQuality": .string("value selects a declared quality for this node type."),
                         "setChannelPolicy": .string("value selects a declared channel policy for this node type.")
@@ -85,7 +88,8 @@ struct AutomationDSPHandler {
                     "total": .number(Double(controller.presets.count)),
                     "builtInPresetIDs": .array([.string(DSPPresetDocument.flatPresetID.uuidString)]),
                     "selectedPresetID": controller.selectedPresetID.map { .string($0.uuidString) } ?? .null,
-                    "isModified": .boolean(controller.isModified)
+                    "isModified": .boolean(controller.isModified),
+                    "deviceProfiles": deviceProfiles()
                 ]), for: request)
             case AutomationMethod.dspPresetsGet, AutomationMethod.dspPresetsExport:
                 let document = try await controller.preset(id: parameters.uuid("presetID", required: true)!)
@@ -107,12 +111,27 @@ struct AutomationDSPHandler {
                 return result(try value(document), for: request)
             case AutomationMethod.dspPresetsSelect:
                 let id = try parameters.uuid("presetID", required: true)!
+                let copy = try parameters.boolean("copyForCurrentDevice", default: false)
                 let document = try await checkedPreset(id, parameters: parameters, controller: controller)
                 _ = try controller.validate(document.configuration)
-                if dryRun { return result(.object(["document": try value(document), "dryRun": .boolean(true)]), for: request) }
-                _ = try controller.selectPreset(id: id, expectedRevision: expectedRevision,
-                    expectedPresetRevision: document.revisionString)
-                controller.commitPendingApply()
+                guard let devices = appSession?.audioDSPDeviceController else {
+                    throw AutomationParameterError.invalidValue("presetID")
+                }
+                await devices.ensureLoaded()
+                let owner = devices.presetOwner(id, excluding: devices.currentDevice)
+                if owner != nil, !copy {
+                    throw DSPConfigurationValidationError(diagnostics: [DSPDiagnostic(
+                        code: "dsp.presetAlreadyBound",
+                        message: "The preset belongs to another output device; pass copyForCurrentDevice to use a copy.",
+                        fieldPath: "presetID"
+                    )])
+                }
+                if dryRun {
+                    return result(.object([
+                        "document": try value(document), "copiesPreset": .boolean(owner != nil), "dryRun": .boolean(true)
+                    ]), for: request)
+                }
+                try await devices.selectPresetForCurrentDevice(id, copyIfOwned: copy)
                 return result(try value(controller.status), for: request)
             case AutomationMethod.dspPresetsRename, AutomationMethod.dspPresetsDelete, AutomationMethod.dspPresetsDuplicate:
                 let id = try parameters.uuid("presetID", required: true)!
@@ -223,6 +242,7 @@ struct AutomationDSPHandler {
                 "peakGuarantee": controller.status.peakGuarantee.map(AutomationJSONValue.string) ?? .null
             ]),
             "equalLoudness": equalLoudnessState(controller),
+            "deviceProfiles": deviceProfiles(),
             "scriptRuntime": .array(controller.configuration.nodes.filter {
                 $0.typeID == DSPNodeConfiguration.scriptTypeID
             }.map { node in
@@ -256,19 +276,12 @@ struct AutomationDSPHandler {
 
     private func equalLoudnessState(_ controller: AudioDSPController) -> AutomationJSONValue {
         let context = appSession?.equalLoudnessController.context ?? .inactive
-        let nodes = controller.configuration.nodes.filter { $0.typeID == DSPNodeConfiguration.equalLoudnessTypeID }.map { node in
-            let gains = controller.configuration.enabled ? DSPEqualLoudnessMath.gains(node: node, context: context) : .zero
-            return AutomationJSONValue.object([
-                "nodeID": .string(node.nodeID.uuidString),
-                "expectedBassGainDB": .number(gains.bassDB), "expectedTrebleGainDB": .number(gains.trebleDB),
-                "curve": .string(context.override != nil ? "calibrationPreview"
-                    : (context.usableCalibration(in: node) != nil ? "calibrated" : "default"))
-            ])
-        }
+        let stage = controller.configuration.equalLoudness
+        let gains = DSPEqualLoudnessMath.chainGains(configuration: controller.configuration, context: context) ?? .zero
         let reading = context.volume.reading
         return .object([
             "volumeSource": .string("systemDevice"),
-            "deviceID": context.volume.deviceUID.map {
+            "deviceID": context.deviceKey.map {
                 AutomationJSONValue.string(AudioOutputLatencyMonitor.stableDeviceID(for: $0))
             } ?? .null,
             "deviceName": context.volume.deviceName.map(AutomationJSONValue.string) ?? .null,
@@ -276,8 +289,38 @@ struct AutomationDSPHandler {
             "systemVolume": reading.map { .number($0.scalar) } ?? .null,
             "systemVolumeDecibels": reading?.decibelsBelowMaximum.map(AutomationJSONValue.number) ?? .null,
             "muted": .boolean(reading?.isMuted ?? false),
-            "applicationState": .string(controller.status.state.rawValue), "nodes": .array(nodes)
+            "applicationState": .string(controller.status.state.rawValue),
+            "enabled": .boolean(stage.enabled),
+            "expectedBassGainDB": .number(gains.bassDB), "expectedTrebleGainDB": .number(gains.trebleDB),
+            "curve": .string(context.override != nil ? "calibrationPreview"
+                : (context.usableCalibration(in: stage) != nil ? "calibrated" : "default"))
         ])
+    }
+
+    /// Output routes and the presets they remember. Route identities are
+    /// hashed; the current route is marked.
+    private func deviceProfiles() -> AutomationJSONValue {
+        guard let devices = appSession?.audioDSPDeviceController else { return .array([]) }
+        let currentID = devices.currentDevice?.id
+        var rows = devices.devices.map { device in
+            AutomationJSONValue.object([
+                "deviceID": .string(AudioOutputLatencyMonitor.stableDeviceID(for: device.id)),
+                "name": .string(device.name), "connected": .boolean(true),
+                "current": .boolean(device.id == currentID),
+                "presetID": .string(devices.presetID(for: device).uuidString)
+            ])
+        }
+        let connected = Set(devices.devices.map(\.id))
+        rows += devices.profiles.values.filter { !connected.contains($0.deviceKey) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .map { profile in
+                AutomationJSONValue.object([
+                    "deviceID": .string(AudioOutputLatencyMonitor.stableDeviceID(for: profile.deviceKey)),
+                    "name": .string(profile.name), "connected": .boolean(false), "current": .boolean(false),
+                    "presetID": .string(profile.presetID.uuidString)
+                ])
+            }
+        return .array(rows)
     }
 
     private func checkedPreset(_ id: UUID, parameters: AutomationParameters, controller: AudioDSPController) async throws -> DSPPresetDocument {
@@ -312,7 +355,7 @@ struct AutomationDSPHandler {
                   case .string(let op)? = fields["op"] else { throw AutomationParameterError.invalidValue("operations") }
             let allowed: Set<String>
             switch op {
-            case "setMaster", "setTrim", "setHeadroom": allowed = ["op", "value"]
+            case "setMaster", "setTrim", "setHeadroom", "setLimiter", "setEqualLoudness": allowed = ["op", "value"]
             case "setParameter": allowed = ["op", "nodeID", "path", "value"]
             case "setEnabled", "setQuality", "setChannelPolicy": allowed = ["op", "nodeID", "value"]
             case "addNode": allowed = ["op", "node"]
@@ -341,8 +384,38 @@ struct AutomationDSPHandler {
             case "setHeadroom":
                 guard let raw else { throw AutomationParameterError.missing("value") }
                 guard case .object(let values) = raw,
-                      Set(values.keys) == Set(["mode", "marginDB"]) else { throw AutomationParameterError.invalidValue("value") }
+                      Set(values.keys) == Set(["mode", "maximumAttenuationDB"]) else { throw AutomationParameterError.invalidValue("value") }
                 candidate.headroom = try decode(raw)
+            case "setLimiter":
+                guard case .object(let values)? = raw, !values.isEmpty,
+                      Set(values.keys).isSubset(of: ["enabled", "ceilingDB", "releaseMilliseconds"]) else {
+                    throw AutomationParameterError.invalidValue("value")
+                }
+                if let value = values["enabled"] { candidate.limiter.enabled = try decode(value) }
+                if let value = values["ceilingDB"] { candidate.limiter.ceilingDB = try decode(value) }
+                if let value = values["releaseMilliseconds"] { candidate.limiter.releaseMilliseconds = try decode(value) }
+            case "setEqualLoudness":
+                guard case .object(let values)? = raw, !values.isEmpty,
+                      Set(values.keys).isSubset(of: ["enabled", "parameters", "calibration"]) else {
+                    throw AutomationParameterError.invalidValue("value")
+                }
+                guard case .object(var stage) = try value(candidate.equalLoudness) else {
+                    throw AutomationParameterError.invalidValue("value")
+                }
+                if let enabled = values["enabled"] { stage["enabled"] = enabled }
+                if let patch = values["parameters"] {
+                    guard case .object(let fields) = patch,
+                          case .object(var parameters)? = stage["parameters"],
+                          Set(fields.keys).isSubset(of: Set(parameters.keys)) else {
+                        throw AutomationParameterError.invalidValue("value.parameters")
+                    }
+                    parameters.merge(fields) { _, new in new }
+                    stage["parameters"] = .object(parameters)
+                }
+                if let calibration = values["calibration"] {
+                    stage["calibration"] = calibration == .null ? nil : calibration
+                }
+                candidate.equalLoudness = try decode(.object(stage))
             case "setEnabled":
                 let index = try nodeIndex()
                 guard case .boolean(let enabled)? = raw else { throw AutomationParameterError.invalidValue("value") }
@@ -405,12 +478,20 @@ struct AutomationDSPHandler {
 
     private func decodeConfiguration(_ raw: AutomationJSONValue) throws -> AudioDSPConfiguration {
         guard case .object(let fields) = raw,
-              Set(fields.keys) == Set(["enabled", "inputTrimDB", "outputTrimDB", "headroom", "nodes"]) else {
+              Set(fields.keys) == Set(["enabled", "inputTrimDB", "outputTrimDB", "headroom", "nodes", "equalLoudness", "limiter"]) else {
             throw AutomationParameterError.invalidValue("configuration")
         }
         guard case .object(let headroom)? = fields["headroom"],
-              Set(headroom.keys) == Set(["mode", "marginDB"]),
+              Set(headroom.keys) == Set(["mode", "maximumAttenuationDB"]),
+              case .object(let limiter)? = fields["limiter"],
+              Set(limiter.keys) == Set(["enabled", "ceilingDB", "releaseMilliseconds"]),
               case .array(let nodes)? = fields["nodes"] else { throw AutomationParameterError.invalidValue("configuration") }
+        guard case .object(let stage)? = fields["equalLoudness"],
+              stage["enabled"] != nil, case .object(let stageParameters)? = stage["parameters"],
+              Set(stage.keys).isSubset(of: ["enabled", "parameters", "calibration"]),
+              Set(stageParameters.keys) == Set([
+                  "strength", "bassFrequencyHz", "bassQ", "trebleFrequencyHz", "trebleQ",
+              ]) else { throw AutomationParameterError.invalidValue("equalLoudness") }
         for node in nodes {
             guard case .object(let values) = node,
                   Set(values.keys) == Set(["nodeID", "typeID", "algorithmVersion", "enabled", "channelPolicy", "quality", "parameters"]) else {

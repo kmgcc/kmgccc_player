@@ -82,7 +82,20 @@ final class LibrarySession: LibrarySessionLifecycle {
         habits: ListeningHabitForecast
     ) {
         playbackService.bindAudioProcessingGlobals(controller)
-        configureLoudness(scheduler: scheduler, habits: habits)
+        let owner = backgroundOwner ?? scheduler.makeLibraryOwner(libraryID: context.id)
+        backgroundOwner = owner
+        backgroundScheduler = scheduler
+        playbackCoordinator.bindBackgroundWork(scheduler: scheduler, owner: owner)
+        cacheServices.bindBackgroundWork(scheduler: scheduler, owner: owner)
+        repository.bindBackgroundWork(scheduler: scheduler, owner: owner)
+        let lender = scheduler.lender(owner: owner)
+        backgroundLender = lender
+        importEnrichmentService.bindBackgroundWork(lender: lender)
+        cacheServices.coverDownloadService.bindBackgroundWork(lender: lender)
+        sourceReconnectService?.bindBackgroundWork(lender: lender)
+        referencedSourceReconciler?.bindBackgroundWork(lender: lender)
+        fileImportService.bindBackgroundWork(scheduler: scheduler)
+        configureLoudness(scheduler: scheduler, owner: owner, habits: habits)
         playbackService.loudnessPlanProvider = { [weak self] track, url, configuration in
             guard let self else { return .disabled }
             self.loudnessService.updatePlaybackTrimPolicy(enabled: AppSettings.shared.audioAACGaplessTrimEnabled)
@@ -160,6 +173,19 @@ final class LibrarySession: LibrarySessionLifecycle {
 
     /// Listening-time forecast used to order idle preparation.
     var loudnessHabits: ListeningHabitForecast?
+
+    /// Owner of this session's background work, issued by the scheduler the
+    /// first time the session binds to it. Revoking it ends every unit the
+    /// session started.
+    private(set) var backgroundOwner: BackgroundWorkOwner?
+    private weak var backgroundScheduler: BackgroundWorkScheduler?
+    /// Lends this session's pipelines channel slots from the scheduler.
+    private(set) var backgroundLender: BackgroundWorkLender = .none
+
+    private func revokeBackgroundWork() {
+        guard let backgroundOwner else { return }
+        backgroundScheduler?.revoke(owner: backgroundOwner)
+    }
 
     private let playbackService: AVAudioPlaybackService
     private let operationCoordinator: LibraryOperationCoordinator
@@ -1122,13 +1148,21 @@ final class LibrarySession: LibrarySessionLifecycle {
                     continue
                 }
                 do {
-                    let writeTask = Task.detached(priority: .utility) {
-                        _ = try MP3EmbeddedTagService.patch(at: request.fileURL, fields: request.fields)
-                    }
-                    try await withTaskCancellationHandler {
-                        try await writeTask.value
-                    } onCancel: {
-                        writeTask.cancel()
+                    // The write holds a disk slot, so idle disk work steps
+                    // aside while the file changes.
+                    try await self.backgroundLender.withLease(
+                        domain: .fileWork,
+                        priority: .userRequested,
+                        resources: [.disk]
+                    ) {
+                        let writeTask = Task.detached(priority: .utility) {
+                            _ = try MP3EmbeddedTagService.patch(at: request.fileURL, fields: request.fields)
+                        }
+                        try await withTaskCancellationHandler {
+                            try await writeTask.value
+                        } onCancel: {
+                            writeTask.cancel()
+                        }
                     }
                     updatedTrackIDs.append(request.trackID)
                     self.operationCoordinator.recordCheckpoint("wrote embedded tags \(request.trackID.uuidString)")
@@ -1736,6 +1770,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         guard !isClosed else { return }
         operationCoordinator.stopAcceptingNewOperations()
         loudnessService.cancel()
+        revokeBackgroundWork()
         playbackService.unbindAudioProcessingGlobals()
         playbackService.unbindAudioDSPDevices()
         await libraryChangeMonitor?.stopAndWait()
@@ -1753,6 +1788,8 @@ final class LibrarySession: LibrarySessionLifecycle {
     func close() async {
         guard !isClosed else { return }
         operationCoordinator.stopAcceptingNewOperations()
+        loudnessService.cancel()
+        revokeBackgroundWork()
         await libraryChangeMonitor?.stopAndWait()
         await operationCoordinator.cancelAndWait()
         await fileImportService.quiesce()

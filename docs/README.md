@@ -9,6 +9,7 @@
 | [实现约束与坑](PITFALLS.md) | 只收仍生效的实现约束与坑；**改对应功能代码前先读** |
 | [架构概览](architecture.md) | 应用组合根、资料库 session、本地与外部播放、统一展示模型、歌词、主题和频谱的主链路 |
 | [DSP 脚本语言 v1](audio-dsp-script-language.md) | 源码语法、参数/状态原语、延迟声明、fixture 与 Agent 工作流 |
+| [DSP 处理负载](audio-dsp-processing-load.md) | 节点与整链的实测抽样、颜色含义、采集开销与验收路径 |
 | [原生皮肤开发](skin-authoring-native.md) | JSON ZIP 示例、可选组件、自适应布局、少量参数与 Swift 原生扩展入口 |
 | [皮肤包 JSON Schema v1](skin-package-v1.schema.json) | 皮肤 ZIP 清单、组件、参数与布局的公开词汇 |
 | [皮肤包示例](examples/skins/) | 三个可直接打包的原生皮肤清单示例 |

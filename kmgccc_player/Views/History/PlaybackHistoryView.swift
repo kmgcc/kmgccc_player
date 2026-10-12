@@ -105,6 +105,10 @@ struct PlaybackHistoryView: View {
         }
         .onDisappear {
             historyVM.clearMultiselectState()
+            historyVM.toolbarSectionTitle = nil
+        }
+        .onChange(of: sections.isEmpty) { _, isEmpty in
+            if isEmpty { historyVM.toolbarSectionTitle = nil }
         }
         .background(
             MultiselectExitKeyMonitor(
@@ -134,23 +138,37 @@ struct PlaybackHistoryView: View {
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(sections) { section in
-                        Section {
-                            ForEach(section.items) { item in
-                                historyRow(
-                                    item,
-                                    tracksByID: tracksByID,
-                                    queueTracks: queueTracks
-                                )
-                            }
-                        } header: {
+                        VStack(alignment: .leading, spacing: 0) {
                             sectionHeader(
                                 section,
                                 addsTopSpacing: section.id != sections.first?.id
                             )
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(section.items) { item in
+                                    historyRow(
+                                        item,
+                                        tracksByID: tracksByID,
+                                        queueTracks: queueTracks
+                                    )
+                                }
+                            }
+                        }
+                        .background {
+                            GeometryReader { geometry in
+                                Color.clear.preference(
+                                    key: HistorySectionGeometryKey.self,
+                                    value: [section.id: HistorySectionGeometry(
+                                        bounds: geometry.frame(in: .named("historyViewport"))
+                                    )]
+                                )
+                            }
                         }
                     }
 
-                    olderHistoryControl(filterDate: filterDate)
+                    olderHistoryControl(
+                        filterDate: filterDate,
+                        allowsCollapse: sections.first?.id != "earlier"
+                    )
                         .padding(.top, 24)
                 }
                 // This is intentionally a blank chrome placeholder. The
@@ -164,6 +182,19 @@ struct PlaybackHistoryView: View {
             .offset(y: -toolbarTopInset)
             .scrollIndicators(.automatic)
         }
+        .coordinateSpace(name: "historyViewport")
+        .onPreferenceChange(HistorySectionGeometryKey.self) { geometry in
+            let title = sections.first { section in
+                guard let measured = geometry[section.id],
+                      let bounds = measured.bounds,
+                      let headerBounds = measured.headerBounds else { return false }
+                // The viewport starts below the AppKit toolbar overlay.
+                return bounds.minY < 0 && bounds.maxY > 0 && headerBounds.maxY <= 0
+            }?.title
+            if historyVM.toolbarSectionTitle != title {
+                historyVM.toolbarSectionTitle = title
+            }
+        }
     }
 
     private func sectionHeader(
@@ -173,6 +204,16 @@ struct PlaybackHistoryView: View {
         Text(section.title)
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: HistorySectionGeometryKey.self,
+                        value: [section.id: HistorySectionGeometry(
+                            headerBounds: geometry.frame(in: .named("historyViewport"))
+                        )]
+                    )
+                }
+            }
             .padding(.horizontal, 4)
             .padding(.top, addsTopSpacing ? 24 : 0)
             .padding(.bottom, 8)
@@ -233,10 +274,12 @@ struct PlaybackHistoryView: View {
     }
 
     @ViewBuilder
-    private func olderHistoryControl(filterDate: Date?) -> some View {
+    private func olderHistoryControl(filterDate: Date?, allowsCollapse: Bool = true) -> some View {
         let canShow = filterDate == nil
             && !historyVM.hasActiveSearch
             && historyVM.searchRange == .all
+            && !historyVM.items.isEmpty
+            && (!historyVM.olderItemsLoaded || allowsCollapse)
             && (historyVM.olderItemsLoaded || historyVM.olderItemCount > 0)
         if canShow {
             Button {
@@ -247,7 +290,7 @@ struct PlaybackHistoryView: View {
                         .font(.system(size: 11, weight: .semibold))
                     Text(historyVM.olderItemsLoaded ? "收起更早记录" : "加载更早记录")
                     if !historyVM.olderItemsLoaded {
-                        Text("· (historyVM.olderItemCount) 条")
+                        Text("· \(historyVM.olderItemCount) 条")
                             .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
                     }
                     Spacer()
@@ -263,27 +306,17 @@ struct PlaybackHistoryView: View {
     }
 
     private func emptyState(filterDate: Date?) -> some View {
-        let hasOlderRecords = filterDate == nil
-            && !historyVM.hasActiveSearch
-            && historyVM.olderItemCount > 0
         return VStack(spacing: 10) {
             Image(systemName: filterDate == nil ? "clock.arrow.circlepath" : "calendar.badge.exclamationmark")
                 .font(.system(size: 30, weight: .medium))
                 .foregroundStyle(.tertiary)
             Text(
                 filterDate == nil
-                    ? (hasOlderRecords ? "最近没有播放记录" : "还没有播放记录")
+                    ? "还没有播放记录"
                     : "这一天没有播放记录"
             )
                 .font(.headline)
                 .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-            Text(
-                filterDate == nil
-                    ? (hasOlderRecords ? "更早的记录已折叠在下面" : "")
-                    : " "
-            )
-                .font(.callout)
-                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
         }
         .frame(maxWidth: .infinity)
     }
@@ -338,6 +371,7 @@ struct PlaybackHistoryView: View {
             to: currentWeekStart
         ) ?? currentWeekStart
 
+        let hasRecentItems = items.contains { $0.playedAt >= previousWeekStart }
         var grouped: [PlaybackHistoryBucket: [PlaybackHistoryItem]] = [:]
         for item in items {
             let day = calendar.startOfDay(for: item.playedAt)
@@ -346,10 +380,12 @@ struct PlaybackHistoryView: View {
                 bucket = .day(day)
             } else if day >= previousWeekStart {
                 bucket = .week(previousWeekStart)
-            } else {
+            } else if hasRecentItems {
                 bucket = .month(calendar.date(
                     from: calendar.dateComponents([.year, .month], from: day)
                 ) ?? day)
+            } else {
+                bucket = .earlier
             }
             grouped[bucket, default: []].append(item)
         }
@@ -457,6 +493,27 @@ private struct PlaybackHistoryTrackRow: View {
     }
 }
 
+private struct HistorySectionGeometry: Equatable {
+    var bounds: CGRect?
+    var headerBounds: CGRect?
+}
+
+private struct HistorySectionGeometryKey: PreferenceKey {
+    static let defaultValue: [String: HistorySectionGeometry] = [:]
+
+    static func reduce(
+        value: inout [String: HistorySectionGeometry],
+        nextValue: () -> [String: HistorySectionGeometry]
+    ) {
+        for (id, measurement) in nextValue() {
+            var combined = value[id] ?? HistorySectionGeometry()
+            combined.bounds = measurement.bounds ?? combined.bounds
+            combined.headerBounds = measurement.headerBounds ?? combined.headerBounds
+            value[id] = combined
+        }
+    }
+}
+
 private struct PlaybackHistorySection: Identifiable {
     let id: String
     let title: String
@@ -468,18 +525,21 @@ private enum PlaybackHistoryBucket: Hashable {
     case day(Date)
     case week(Date)
     case month(Date)
+    case earlier
 
     var id: String {
         switch self {
         case .day(let date): return "day-\(date.timeIntervalSince1970)"
         case .week(let date): return "week-\(date.timeIntervalSince1970)"
         case .month(let date): return "month-\(date.timeIntervalSince1970)"
+        case .earlier: return "earlier"
         }
     }
 
     var sortDate: Date {
         switch self {
         case .day(let date), .week(let date), .month(let date): return date
+        case .earlier: return .distantPast
         }
     }
 
@@ -496,6 +556,7 @@ private enum PlaybackHistoryBucket: Hashable {
                 return "上个月"
             }
             return HistoryDateFormatting.month.string(from: date)
+        case .earlier: return "更早"
         }
     }
 }

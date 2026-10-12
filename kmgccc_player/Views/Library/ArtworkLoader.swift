@@ -270,25 +270,6 @@ enum ArtworkLoader {
         return image
     }
 
-    @discardableResult
-    static func prefetch(
-        _ requests: [ArtworkPrefetchRequest],
-        derivativeStore: ArtworkDerivativeCacheStore
-    ) -> Task<Void, Never>? {
-        guard !requests.isEmpty else { return nil }
-        return Task.detached(priority: .background) {
-            for request in requests {
-                if Task.isCancelled { return }
-                _ = await loadImage(
-                    artworkData: request.artworkData,
-                    cacheKey: request.cacheKey,
-                    targetPixelSize: request.targetPixelSize,
-                    derivativeStore: derivativeStore
-                )
-            }
-        }
-    }
-
     nonisolated static func headerPreviewImage(
         data: Data?,
         maxPixelSize: Int = 640
@@ -457,10 +438,4 @@ enum ArtworkLoader {
             size: CGSize(width: destinationSide, height: destinationSide)
         )
     }
-}
-
-struct ArtworkPrefetchRequest: Sendable {
-    let cacheKey: String
-    let artworkData: Data?
-    let targetPixelSize: CGSize
 }

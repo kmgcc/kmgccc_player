@@ -1,163 +1,146 @@
+//
+//  AudioDSPDeviceSettingsView.swift
+//  myPlayer2
+//
+//  Output device chooser at the top of 音效与设备. It picks whose sound the
+//  page shows; only the device now playing can be edited.
+//
+
 import SwiftUI
 
-@MainActor
-struct AudioDSPDeviceSettingsView: View {
-    @EnvironmentObject private var appSession: AppSessionHost
-    @EnvironmentObject private var themeStore: ThemeStore
-    @State private var isUpdating = false
+struct AudioDSPDevicePicker: View {
+    let devices: [DSPOutputDevice]
+    let currentID: String?
+    /// The device shown; nil follows the device now playing.
+    @Binding var selectedID: String?
+    let presetName: (DSPOutputDevice) -> String
 
-    private var controller: AudioDSPDeviceController { appSession.audioDSPDeviceController }
-    private var dsp: AudioDSPController { appSession.audioDSPController }
+    @EnvironmentObject private var themeStore: ThemeStore
+    @State private var isOpen = false
+
+    private var shown: DSPOutputDevice? {
+        devices.first { $0.id == (selectedID ?? currentID) }
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: SettingsStyleTokens.sectionSpacing) {
-                SettingsHeaderLabel("设备音效", systemImage: "headphones")
-                SettingsSection {
-                    SettingsSwitchRow(title: "按设备切换音效", isOn: Binding(
-                        get: { controller.settings.enabled },
-                        set: { controller.setEnabled($0) }
-                    ))
-                }
-                defaultSection
-                devicesSection
-                if let error = dsp.lastError {
-                    SettingsSection {
-                        Label(error.message, systemImage: "exclamationmark.circle")
-                            .settingsDescriptionStyle()
-                    }
-                }
-            }
-            .padding(.horizontal, 32)
-            .padding(.top, 66)
-            .padding(.bottom, 40)
-            .frame(maxWidth: 800, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .tint(themeStore.accentColor)
-        .task {
-            await controller.ensureLoaded()
-            controller.refreshDevices()
-        }
-    }
-
-    private var defaultSection: some View {
-        SettingsSection("未指定音效的设备") {
-            HStack(spacing: 12) {
-                Text("默认音效").settingsRowLabelStyle()
-                Spacer(minLength: 16)
-                presetMenu(
-                    title: "默认音效", selectedID: controller.settings.defaultPresetID,
-                    emptyTitle: "关闭音效", deviceUID: nil, isDefault: true
-                ) { id in
-                    update { try await controller.setDefaultPreset(id) }
-                }
-            }
-        }
-    }
-
-    private var devicesSection: some View {
-        SettingsSection("输出设备") {
-            if controller.devices.isEmpty {
-                Text("暂无输出设备").settingsDescriptionStyle()
-            } else {
-                VStack(alignment: .leading, spacing: 16) {
-                    ForEach(controller.devices) { device in
-                        deviceRow(device)
-                    }
-                }
-            }
-        }
-    }
-
-    private func deviceRow(_ device: DSPOutputDevice) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: device.symbolName)
-                .font(.system(size: 24, weight: .regular))
-                .foregroundStyle(themeStore.accentColor.opacity(device.isConnected ? 0.85 : 0.45))
-                .frame(width: 44, height: 44)
-                .background(themeStore.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(device.name)
-                    .settingsRowLabelStyle()
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(device.name)
-                if device.id == controller.currentOutputDeviceUID {
-                    Text("当前输出").settingsDescriptionStyle()
-                } else if !device.isConnected {
-                    Text("已断开").settingsDescriptionStyle()
-                }
-            }
-            Spacer(minLength: 12)
-            presetMenu(
-                title: "\(device.name)的音效", selectedID: controller.settings.bindings[device.id]?.presetID,
-                emptyTitle: "未指定", deviceUID: device.id, isDefault: false
-            ) { id in
-                update { try await controller.bindPreset(id, to: device) }
-            }
-        }
-    }
-
-    private func presetMenu(
-        title: String, selectedID: UUID?, emptyTitle: String, deviceUID: String?, isDefault: Bool,
-        select: @escaping (UUID?) -> Void
-    ) -> some View {
-        let selectedName = dsp.presets.first(where: { $0.presetID == selectedID })?.name ?? emptyTitle
-        return Menu {
-            Button { select(nil) } label: {
-                menuOptionLabel(emptyTitle, isSelected: selectedID == nil)
-            }
-            ForEach(dsp.presets) { preset in
-                presetOption(preset, selectedID: selectedID, deviceUID: deviceUID, isDefault: isDefault, select: select)
-            }
+        Button {
+            isOpen.toggle()
         } label: {
-            Text(selectedName)
-                .settingsRowLabelStyle()
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 12) {
+                AudioDSPDeviceIcon(symbolName: shown?.symbolName ?? "hifispeaker", size: 40)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(shown?.name ?? "未识别输出设备")
+                        .settingsRowLabelStyle()
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let shown {
+                        Text(subtitle(for: shown))
+                            .settingsDescriptionStyle()
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 12)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
+                    .popover(isPresented: $isOpen, arrowEdge: .bottom) {
+                        AppPopupScrollRegion(height: min(320, CGFloat(devices.count) * 72 + 20)) {
+                            LazyVStack(alignment: .leading, spacing: AppPopupStyle().rowSpacing) {
+                                ForEach(devices) { device in
+                                    AudioDSPDevicePickerRow(
+                                        device: device,
+                                        subtitle: subtitle(for: device),
+                                        isSelected: device.id == shown?.id
+                                    ) {
+                                        selectedID = device.id == currentID ? nil : device.id
+                                        isOpen = false
+                                    }
+                                }
+                            }
+                        }
+                        .padding(AppPopupStyle().rowPadding)
+                        .frame(width: 340)
+                        .appPopupAppearance()
+                    }
+            }
+            .contentShape(Rectangle())
         }
-        .audioDSPCapsuleButtonStyle()
-        .frame(width: 240)
-        .disabled(!controller.isLoaded)
-        .accessibilityLabel(title)
-        .help(selectedName)
+        .buttonStyle(.plain)
+        .disabled(devices.isEmpty)
+        .accessibilityLabel("输出设备")
+        .accessibilityValue(shown?.name ?? "")
     }
 
-    @ViewBuilder
-    private func menuOptionLabel(_ title: String, isSelected: Bool) -> some View {
-        if isSelected {
-            Label(title, systemImage: "checkmark")
-        } else {
-            Text(title)
+    private func subtitle(for device: DSPOutputDevice) -> String {
+        device.id == currentID ? "正在播放 · \(presetName(device))" : presetName(device)
+    }
+}
+
+private struct AudioDSPDevicePickerRow: View {
+    let device: DSPOutputDevice
+    let subtitle: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    @EnvironmentObject private var themeStore: ThemeStore
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                AudioDSPDeviceIcon(symbolName: device.symbolName, size: 32)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(device.name)
+                        .font(.system(size: AppPopupStyle().bodySize, weight: .medium))
+                        .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(themeStore.accentColor)
+                }
+            }
+            .padding(AppPopupStyle().rowPadding)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(rowFill)
+            )
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .onHover { isHovered = $0 }
+        .help(device.name)
     }
 
-    private func presetOption(
-        _ preset: DSPPresetDocument, selectedID: UUID?, deviceUID: String?, isDefault: Bool,
-        select: @escaping (UUID?) -> Void
-    ) -> some View {
-        let isSelectedDefault = isDefault && controller.settings.defaultPresetID == preset.presetID
-        let owner = isSelectedDefault ? nil : controller.presetOwner(preset.presetID, excluding: deviceUID)
-        var candidate = preset.configuration
-        candidate.enabled = true
-        let incompatible = (try? dsp.validate(candidate)) == nil
-        let suffix = owner.map { "（\($0)）" } ?? (incompatible ? "（不兼容）" : "")
-        return Button { select(preset.presetID) } label: {
-            menuOptionLabel(preset.name + suffix, isSelected: selectedID == preset.presetID)
-        }
-        .disabled(owner != nil || incompatible)
+    private var rowFill: Color {
+        if isSelected { return themeStore.accentColor.opacity(0.12) }
+        return isHovered ? themeStore.appForegroundPalette.primaryColor.opacity(0.06) : .clear
     }
+}
 
-    private func update(_ operation: @escaping @MainActor () async throws -> Void) {
-        guard !isUpdating else { return }
-        isUpdating = true
-        Task {
-            defer { isUpdating = false }
-            do { try await operation() }
-            catch { dsp.report(error: error) }
-        }
+private struct AudioDSPDeviceIcon: View {
+    let symbolName: String
+    let size: CGFloat
+
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        Image(systemName: symbolName)
+            .font(.system(size: size * 0.5, weight: .regular))
+            .foregroundStyle(themeStore.accentColor.opacity(0.85))
+            .frame(width: size, height: size)
+            .background(
+                themeStore.accentColor.opacity(0.08),
+                in: RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+            )
+            .accessibilityHidden(true)
     }
 }

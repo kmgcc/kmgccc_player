@@ -2,30 +2,37 @@ import CoreAudio
 import Foundation
 import Observation
 
-nonisolated struct DSPDeviceBinding: Codable, Equatable, Sendable, Identifiable {
-    var deviceUID: String
-    var name: String
-    var transportType: UInt32
-    var presetID: UUID
+/// One output route as the DSP sees it: a Core Audio device, plus its data
+/// source when the device switches between sources (built-in speakers and
+/// the headphone jack on one device). Each route keeps its own preset.
+nonisolated struct DSPOutputDeviceKey: Hashable, Sendable {
+    var uid: String
+    var dataSource: UInt32?
 
-    var id: String { deviceUID }
-}
-
-nonisolated struct DSPDeviceSettings: Codable, Equatable, Sendable {
-    var enabled = false
-    var defaultPresetID: UUID?
-    var bindings: [String: DSPDeviceBinding] = [:]
-    var flatPresetCopies: [String: UUID]?
+    var rawValue: String {
+        guard let dataSource else { return uid }
+        return uid + "#" + AudioOutputDataSource.code(dataSource)
+    }
 }
 
 nonisolated struct DSPOutputDevice: Identifiable, Equatable, Sendable {
-    var id: String
+    var key: DSPOutputDeviceKey
+    var deviceID: AudioDeviceID
     var name: String
     var transportType: UInt32
-    var isConnected: Bool
+
+    var id: String { key.rawValue }
+    var uid: String { key.uid }
 
     var symbolName: String {
-        let identity = (name + " " + id).lowercased()
+        if let source = key.dataSource {
+            switch AudioOutputDataSource.code(source) {
+            case "hdpn": return "headphones"
+            case "ispk": return "speaker.wave.2"
+            default: break
+            }
+        }
+        let identity = (name + " " + uid).lowercased()
         if identity.contains("airpods max") { return "airpodsmax" }
         if identity.contains("airpods pro") { return "airpodspro" }
         if identity.contains("airpods") { return "airpods" }
@@ -40,44 +47,81 @@ nonisolated struct DSPOutputDevice: Identifiable, Equatable, Sendable {
             return "display"
         }
         if transportType == kAudioDeviceTransportTypeBuiltIn { return "speaker.wave.2" }
-        if transportType == kAudioDeviceTransportTypeBluetooth
-            || transportType == kAudioDeviceTransportTypeBluetoothLE { return "hifispeaker" }
         return "hifispeaker"
+    }
+
+    /// The route currently presented by a Core Audio device.
+    static func resolve(_ descriptor: AudioOutputDeviceDescriptor) -> DSPOutputDevice {
+        let source = AudioOutputDataSource.current(deviceID: descriptor.deviceID)
+        let switchable = source?.isSwitchable == true
+        var name = descriptor.name
+        if switchable, let sourceName = source?.name, !sourceName.isEmpty, sourceName != name {
+            name += " · " + sourceName
+        }
+        return DSPOutputDevice(
+            key: DSPOutputDeviceKey(uid: descriptor.uniqueID, dataSource: switchable ? source?.id : nil),
+            deviceID: descriptor.deviceID,
+            name: name,
+            transportType: descriptor.transportType
+        )
     }
 }
 
-/// Stores device rules separately from the editable DSP presets. Manual preset
-/// selection never changes a rule, and repeated route reports never undo it.
+/// The preset a route plays through. A route without a profile plays flat.
+nonisolated struct DSPDeviceProfile: Codable, Equatable, Sendable {
+    var deviceKey: String
+    var name: String
+    var transportType: UInt32
+    var presetID: UUID
+}
+
+/// Owner of the route-to-preset profiles. Every preset belongs to at most
+/// one route; the current route remembers whatever preset it ends up on,
+/// whether chosen by hand or created by editing the built-in flat preset.
 @Observable
 @MainActor
 final class AudioDSPDeviceController {
-    private(set) var settings: DSPDeviceSettings
-    private(set) var availableDevices: [AudioOutputDeviceDescriptor] = []
-    private(set) var currentOutputDeviceUID: String? {
+    private(set) var profiles: [String: DSPDeviceProfile]
+    /// Output routes available now.
+    private(set) var devices: [DSPOutputDevice] = []
+    /// The confirmed playback route.
+    private(set) var currentDevice: DSPOutputDevice? {
         didSet {
-            guard oldValue != currentOutputDeviceUID else { return }
-            onCurrentOutputDeviceChange?(currentOutputDeviceUID)
+            guard oldValue != currentDevice else { return }
+            onCurrentOutputDeviceChange?(currentDevice)
         }
     }
     private(set) var isLoaded = false
-    /// The confirmed playback route, shared with equal-loudness observation.
-    @ObservationIgnored var onCurrentOutputDeviceChange: (@MainActor (String?) -> Void)?
+    /// Shared with equal-loudness observation.
+    @ObservationIgnored var onCurrentOutputDeviceChange: (@MainActor (DSPOutputDevice?) -> Void)?
 
+    @ObservationIgnored private var routedDeviceUID: String?
     @ObservationIgnored private var refreshOutputRoute: (() -> Void)?
     @ObservationIgnored private var outputRouteOwnerID: ObjectIdentifier?
     @ObservationIgnored private let dsp: AudioDSPController
     @ObservationIgnored private let defaults: UserDefaults
-    private static let storageKey = "audio.dsp-device-bindings.v1"
+    @ObservationIgnored private let deviceProvider: () -> [DSPOutputDevice]
+    private static let storageKey = "audio.dsp-device-profiles.v2"
     @ObservationIgnored private var deviceObservation: AudioOutputDeviceObservation?
+    @ObservationIgnored private var dataSourceObservation: AudioOutputDataSourceObservation?
+    @ObservationIgnored private var observedDataSourceDeviceID: AudioDeviceID?
     @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
 
-    init(dsp: AudioDSPController, userDefaults: UserDefaults = .standard) {
+    init(
+        dsp: AudioDSPController,
+        userDefaults: UserDefaults = .standard,
+        deviceProvider: @escaping () -> [DSPOutputDevice] = {
+            AudioOutputLatencyMonitor.availableOutputDevices().map(DSPOutputDevice.resolve)
+        }
+    ) {
         self.dsp = dsp
         defaults = userDefaults
-        settings = userDefaults.data(forKey: Self.storageKey)
-            .flatMap { try? JSONDecoder().decode(DSPDeviceSettings.self, from: $0) }
-            ?? DSPDeviceSettings()
+        self.deviceProvider = deviceProvider
+        profiles = userDefaults.data(forKey: Self.storageKey)
+            .flatMap { try? JSONDecoder().decode([String: DSPDeviceProfile].self, from: $0) }
+            ?? [:]
         dsp.onPresetDeleted = { [weak self] id in self?.presetWasDeleted(id) }
+        dsp.onSelectedPresetChange = { [weak self] id in self?.recordSelection(id) }
         bootstrapTask = Task { [weak self] in
             guard let self else { return }
             await dsp.ensureLoaded()
@@ -97,19 +141,15 @@ final class AudioDSPDeviceController {
     }
 
     func refreshDevices() {
-        availableDevices = AudioOutputLatencyMonitor.availableOutputDevices()
-        if let uid = currentOutputDeviceUID, !availableDevices.contains(where: { $0.uniqueID == uid }) {
-            currentOutputDeviceUID = nil
-        }
+        devices = deviceProvider()
         var changed = false
-        for device in availableDevices {
-            guard var binding = settings.bindings[device.uniqueID] else { continue }
-            if binding.name != device.name || binding.transportType != device.transportType {
-                binding.name = device.name
-                binding.transportType = device.transportType
-                settings.bindings[device.uniqueID] = binding
-                changed = true
-            }
+        for device in devices {
+            guard var profile = profiles[device.id],
+                  profile.name != device.name || profile.transportType != device.transportType else { continue }
+            profile.name = device.name
+            profile.transportType = device.transportType
+            profiles[device.id] = profile
+            changed = true
         }
         if changed { persist() }
         if let refreshOutputRoute {
@@ -117,28 +157,13 @@ final class AudioDSPDeviceController {
         } else {
             // Before a library renderer is attached, use the selected available
             // route so startup rules also work in the settings-only state.
-            receiveOutputDeviceUID(AudioOutputLatencyMonitor.currentSnapshot(
+            routedDeviceUID = AudioOutputLatencyMonitor.currentSnapshot(
                 forDeviceUID: AppSettings.shared.audioOutputDeviceUID
-            ).deviceUID)
+            ).deviceUID
         }
-    }
-
-    var devices: [DSPOutputDevice] {
-        var rows = availableDevices.map {
-            DSPOutputDevice(id: $0.uniqueID, name: $0.name, transportType: $0.transportType, isConnected: true)
-        }
-        let connected = Set(rows.map(\.id))
-        rows += settings.bindings.values.filter { !connected.contains($0.deviceUID) }.map {
-            DSPOutputDevice(id: $0.deviceUID, name: $0.name, transportType: $0.transportType, isConnected: false)
-        }
-        return rows.sorted {
-            if ($0.id == currentOutputDeviceUID) != ($1.id == currentOutputDeviceUID) {
-                return $0.id == currentOutputDeviceUID
-            }
-            if $0.isConnected != $1.isConnected { return $0.isConnected }
-            let order = $0.name.localizedStandardCompare($1.name)
-            return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
-        }
+        // A data source switch keeps the device UID, so the route is resolved
+        // again even when the renderer reports no change.
+        resolveCurrentDevice()
     }
 
     func attachOutputRoute(owner: AnyObject, refresh: @escaping () -> Void) {
@@ -154,115 +179,120 @@ final class AudioDSPDeviceController {
 
     func receiveOutputDeviceUID(_ uid: String?, ownerID: ObjectIdentifier? = nil) {
         guard outputRouteOwnerID == ownerID else { return }
-        guard currentOutputDeviceUID != uid else { return }
-        currentOutputDeviceUID = uid
-        applyCurrentRule()
+        routedDeviceUID = uid
+        resolveCurrentDevice()
     }
 
-    func setEnabled(_ enabled: Bool) {
-        guard settings.enabled != enabled else { return }
-        settings.enabled = enabled
-        persist()
-        if enabled { applyCurrentRule() }
+    /// The preset a route plays: its own, or flat.
+    func presetID(for device: DSPOutputDevice) -> UUID {
+        guard let id = profiles[device.id]?.presetID,
+              dsp.presets.contains(where: { $0.presetID == id }) else { return DSPPresetDocument.flatPresetID }
+        return id
     }
 
-    /// Returns the exclusive owner, including the reserved global default.
-    func presetOwner(_ id: UUID, excluding deviceUID: String? = nil) -> String? {
-        if settings.defaultPresetID == id { return "全局默认" }
-        return settings.bindings.values.first {
-            $0.presetID == id && $0.deviceUID != deviceUID
-        }?.name
+    /// The other route a preset belongs to. The built-in preset belongs to none.
+    func presetOwner(_ id: UUID, excluding device: DSPOutputDevice?) -> DSPDeviceProfile? {
+        guard id != DSPPresetDocument.flatPresetID else { return nil }
+        return profiles.values.first { $0.presetID == id && $0.deviceKey != device?.id }
     }
 
-    func bindPreset(_ id: UUID?, to device: DSPOutputDevice) async throws {
+    /// Selects a preset for the current route. A preset that belongs to
+    /// another route is never shared: with `copyIfOwned` the route gets its
+    /// own copy, without a calibration recorded elsewhere.
+    func selectPresetForCurrentDevice(_ id: UUID, copyIfOwned: Bool = false) async throws {
         await ensureLoaded()
-        if let id, let owner = presetOwner(id, excluding: device.id) { throw occupiedPreset(owner) }
-        let presetID = try await editablePresetID(id, name: "平直 · \(device.name)", copyKey: "device:\(device.id)")
-        if let presetID, let owner = presetOwner(presetID, excluding: device.id) { throw occupiedPreset(owner) }
-        guard settings.bindings[device.id]?.presetID != presetID || (presetID != nil && !settings.enabled) else { return }
-        if let presetID {
-            settings.bindings[device.id] = DSPDeviceBinding(
-                deviceUID: device.id, name: device.name, transportType: device.transportType, presetID: presetID
-            )
-            settings.enabled = true
-        } else {
-            settings.bindings[device.id] = nil
+        guard let device = currentDevice else {
+            throw DSPConfigurationValidationError(diagnostics: [DSPDiagnostic(
+                code: "dsp.outputDeviceUnavailable", message: "未识别当前输出设备。", retryable: true
+            )])
         }
-        persist()
-        if currentOutputDeviceUID == device.id { applyCurrentRule() }
+        var target = id
+        if let owner = presetOwner(id, excluding: device) {
+            guard copyIfOwned else { throw occupiedPreset(owner.name) }
+            let source = try await dsp.preset(id: id)
+            target = try await dsp.duplicatePreset(
+                id: id, name: "\(source.name) · \(device.name)", expectedPresetRevision: source.revisionString
+            ).presetID
+        }
+        guard currentDevice?.id == device.id else { return }
+        _ = try dsp.selectPreset(id: target)
+        if target != id, dsp.configuration.equalLoudness.calibration != nil {
+            dsp.updateConfiguration(recordsUndo: false) { $0.equalLoudness.calibration = nil }
+        }
+        dsp.commitPendingApply()
     }
 
-    func setDefaultPreset(_ id: UUID?) async throws {
-        await ensureLoaded()
-        if let id, settings.defaultPresetID != id, let owner = presetOwner(id) { throw occupiedPreset(owner) }
-        let presetID = try await editablePresetID(id, name: "默认音效", copyKey: "default")
-        if let presetID, settings.defaultPresetID != presetID, let owner = presetOwner(presetID) {
-            throw occupiedPreset(owner)
+    private func resolveCurrentDevice() {
+        // The renderer can confirm a route before the device list catches up.
+        if let uid = routedDeviceUID, !devices.contains(where: { $0.uid == uid }) {
+            devices = deviceProvider()
         }
-        guard settings.defaultPresetID != presetID || !settings.enabled else { return }
-        settings.defaultPresetID = presetID
-        settings.enabled = true
-        persist()
-        if let uid = currentOutputDeviceUID, settings.bindings[uid] == nil { applyCurrentRule() }
+        let device = routedDeviceUID.flatMap { uid in devices.first { $0.uid == uid } }
+        observeDataSource(of: device)
+        guard device != currentDevice else { return }
+        let routeChanged = device?.id != currentDevice?.id
+        currentDevice = device
+        if routeChanged { applyCurrentRule() }
     }
 
-    private func editablePresetID(_ id: UUID?, name: String, copyKey: String) async throws -> UUID? {
-        guard let id else { return nil }
-        let preset = try await dsp.preset(id: id)
-        guard preset.isBuiltIn else { return id }
-        if let copyID = settings.flatPresetCopies?[copyKey], dsp.presets.contains(where: { $0.presetID == copyID }) {
-            return copyID
+    private func observeDataSource(of device: DSPOutputDevice?) {
+        guard device?.deviceID != observedDataSourceDeviceID else { return }
+        observedDataSourceDeviceID = device?.deviceID
+        dataSourceObservation = device.map { device in
+            AudioOutputDataSourceObservation(deviceID: device.deviceID) { [weak self] in self?.refreshDevices() }
         }
-        // The built-in flat preset is immutable. Give a rule its own editable
-        // copy once, including when the user clears and later restores the rule.
-        let copyID = try await dsp.duplicatePreset(id: id, name: name).presetID
-        var copies = settings.flatPresetCopies ?? [:]
-        copies[copyKey] = copyID
-        settings.flatPresetCopies = copies
-        return copyID
     }
 
     private func applyCurrentRule() {
-        guard isLoaded, settings.enabled, let uid = currentOutputDeviceUID else { return }
-        let bound = settings.bindings[uid]?.presetID
-        let id = bound.flatMap { candidate in dsp.presets.contains { $0.presetID == candidate } ? candidate : nil }
-            ?? settings.defaultPresetID
+        guard isLoaded, let device = currentDevice else { return }
+        let id = presetID(for: device)
+        guard dsp.selectedPresetID != id else { return }
         do {
-            if let id {
-                _ = try dsp.selectPreset(id: id, enableDSP: true)
-                dsp.commitPendingApply()
-            } else {
-                dsp.disableForOutputDevice()
-            }
+            _ = try dsp.selectPreset(id: id)
+            dsp.commitPendingApply()
         } catch { dsp.report(error: error) }
     }
 
+    /// Whatever the current route ends up playing is remembered for it.
+    private func recordSelection(_ id: UUID?) {
+        guard isLoaded, let device = currentDevice, let id else { return }
+        var next = profiles
+        if id == DSPPresetDocument.flatPresetID {
+            next[device.id] = nil
+        } else {
+            next = next.filter { $0.value.presetID != id || $0.key == device.id }
+            next[device.id] = DSPDeviceProfile(
+                deviceKey: device.id, name: device.name, transportType: device.transportType, presetID: id
+            )
+        }
+        guard next != profiles else { return }
+        profiles = next
+        persist()
+    }
+
     private func presetWasDeleted(_ id: UUID) {
-        let affectsCurrent = currentOutputDeviceUID.flatMap { settings.bindings[$0]?.presetID } == id
-            || (settings.defaultPresetID == id && currentOutputDeviceUID.flatMap { settings.bindings[$0] } == nil)
-        settings.bindings = settings.bindings.filter { $0.value.presetID != id }
-        settings.flatPresetCopies = settings.flatPresetCopies?.filter { $0.value != id }
-        if settings.defaultPresetID == id { settings.defaultPresetID = nil }
+        let affectsCurrent = currentDevice.flatMap { profiles[$0.id]?.presetID } == id
+        profiles = profiles.filter { $0.value.presetID != id }
         persist()
         if affectsCurrent { applyCurrentRule() }
     }
 
     private func removeMissingPresets() {
         let ids = Set(dsp.presets.map(\.presetID))
-        settings.bindings = settings.bindings.filter { ids.contains($0.value.presetID) }
-        settings.flatPresetCopies = settings.flatPresetCopies?.filter { ids.contains($0.value) }
-        if let id = settings.defaultPresetID, !ids.contains(id) { settings.defaultPresetID = nil }
+        let kept = profiles.filter { ids.contains($0.value.presetID) }
+        guard kept != profiles else { return }
+        profiles = kept
         persist()
     }
 
     private func persist() {
-        do { defaults.set(try JSONEncoder().encode(settings), forKey: Self.storageKey) }
+        do { defaults.set(try JSONEncoder().encode(profiles), forKey: Self.storageKey) }
         catch { dsp.report(error: error) }
     }
 
     private func occupiedPreset(_ owner: String) -> DSPConfigurationValidationError {
         DSPConfigurationValidationError(diagnostics: [DSPDiagnostic(
-            code: "dsp.presetAlreadyBound", message: "此预设已用于\(owner)。"
+            code: "dsp.presetAlreadyBound", message: "此音效已用于\(owner)。"
         )])
     }
 }

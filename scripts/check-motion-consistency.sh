@@ -92,8 +92,8 @@ is_allowlisted() {
 
   case "$path" in
     kmgccc_player/Views/Controls/SeamlessMarqueeText.swift)
-      if [[ "$text" == *'withAnimation(.linear'* ]]; then
-        printf 'continuous marquee loop'
+      if [[ "$text" == *'CAKeyframeAnimation'* || "$text" == *'CAMediaTimingFunction(name: .linear)'* ]]; then
+        printf 'continuous linear marquee loop and synchronized edge mask'
         return 0
       fi
       ;;
