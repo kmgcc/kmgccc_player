@@ -7,6 +7,7 @@
 
 import AppKit
 import ImageIO
+import PopupKit
 import SwiftUI
 import UniformTypeIdentifiers
 

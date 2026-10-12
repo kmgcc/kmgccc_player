@@ -7,6 +7,7 @@
 
 import AppKit
 import MotionKit
+import PopupKit
 import SwiftUI
 
 // MARK: - Stage status

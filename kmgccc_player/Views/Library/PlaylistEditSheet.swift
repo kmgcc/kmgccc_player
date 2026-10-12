@@ -6,6 +6,7 @@
 //  Create, rename, or delete playlists.
 //
 
+import PopupKit
 import SwiftUI
 
 /// Sheet for creating a new playlist.

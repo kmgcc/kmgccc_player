@@ -1,3 +1,4 @@
+import PopupKit
 import SwiftUI
 
 struct CrashReportSettingsTipView: View {

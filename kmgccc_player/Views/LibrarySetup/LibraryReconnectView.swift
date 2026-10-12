@@ -1,4 +1,5 @@
 import AppKit
+import PopupKit
 import SwiftUI
 
 struct LibraryReconnectView: View {
