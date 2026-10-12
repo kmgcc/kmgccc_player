@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import PopupKit
 import SwiftUI
 import UniformTypeIdentifiers
 

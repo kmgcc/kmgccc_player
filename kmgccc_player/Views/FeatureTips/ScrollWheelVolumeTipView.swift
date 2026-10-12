@@ -6,6 +6,7 @@
 //  The glass treatment intentionally mirrors the fullscreen volume HUD capsule.
 //
 
+import PopupKit
 import SwiftUI
 
 struct ScrollWheelVolumeTipView: View {

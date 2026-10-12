@@ -6,6 +6,7 @@
 //  Only the device now playing can be edited; others are shown read-only.
 //
 
+import PopupKit
 import SwiftUI
 import UniformTypeIdentifiers
 

@@ -6,6 +6,7 @@
 //  page shows; only the device now playing can be edited.
 //
 
+import PopupKit
 import SwiftUI
 
 struct AudioDSPDevicePicker: View {

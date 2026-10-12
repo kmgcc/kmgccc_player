@@ -5,6 +5,7 @@
 //  kmgccc_player - Fullscreen embedded settings panel.
 //
 
+import PopupKit
 import SwiftUI
 
 struct FullscreenQuickAppearancePanel: View {

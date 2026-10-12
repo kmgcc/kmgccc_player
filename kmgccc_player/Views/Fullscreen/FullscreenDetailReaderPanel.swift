@@ -8,6 +8,7 @@
 //
 
 import AppKit
+import PopupKit
 import SwiftUI
 
 struct FullscreenDetailReaderPanel: View {
