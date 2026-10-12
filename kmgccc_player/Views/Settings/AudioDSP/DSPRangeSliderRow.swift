@@ -19,7 +19,7 @@ struct DSPRangeSliderRow: View {
     var onCommit: (() -> Void)? = nil
 
     static let sliderWidth: CGFloat = 168
-    static let valueWidth: CGFloat = 78
+    static let valueWidth: CGFloat = 58
 
     var body: some View {
         HStack(spacing: 12) {

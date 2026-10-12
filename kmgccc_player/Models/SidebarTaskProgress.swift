@@ -19,6 +19,9 @@ struct SidebarTaskProgress: Equatable, Sendable {
     let detail: String
     let fractionCompleted: Double?
     let state: State
+    /// Symbol for a running task with known progress; a download arrow
+    /// when nil.
+    var systemImage: String? = nil
 
     var percentageText: String? {
         guard let fractionCompleted else { return nil }

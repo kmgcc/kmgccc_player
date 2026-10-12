@@ -585,17 +585,22 @@ nonisolated enum CacheManager {
 
     @MainActor private static var maintainedLibraryRoots: Set<URL> = []
 
-    /// Schedules a non-blocking background disk cache maintenance pass shortly after launch.
+    /// Queues one disk cache maintenance pass per library and launch as idle
+    /// batch work; the App scheduler runs it when the machine is idle.
     @MainActor
-    static func scheduleBackgroundDiskMaintenance(storage: LibraryStorageLocations) {
+    static func scheduleBackgroundDiskMaintenance(
+        storage: LibraryStorageLocations,
+        scheduler: BackgroundWorkScheduler
+    ) {
         guard !maintainedLibraryRoots.contains(storage.libraryRootURL) else { return }
         maintainedLibraryRoots.insert(storage.libraryRootURL)
-        Task {
-            do {
-                try await Task.sleep(nanoseconds: 12_000_000_000)
-            } catch {
-                return
-            }
+        scheduler.submit(
+            key: "cache-maintenance:\(storage.libraryRootURL.path)",
+            group: "cache-maintenance",
+            priority: .idleBatch,
+            resources: [.diskRead]
+        ) { context in
+            guard (try? await context.checkpoint()) != nil else { return }
             _ = await trimAllDiskCaches(storage: storage)
         }
     }

@@ -121,6 +121,8 @@ private final class TestFileEventSource: LibraryFileEventSource, @unchecked Send
     func send(_ events: [LibraryFileEvent]) { lock.withLock { handler }?(events) }
 }
 
+nonisolated private final class FSEventsHandlerLifetimeProbe: @unchecked Sendable {}
+
 private actor MonitorRecorder {
     var batches: [(Set<UUID>, Bool)] = []
     var suspended = false
@@ -158,6 +160,25 @@ private actor NoticeRecorder: kmgccc_player.ReferencedSourceNoticePublishing {
 
 @MainActor
 final class ReferencedSourceReconcilerTests: XCTestCase {
+    func testFSEventsCreationFailureReleasesHandlerWithoutDoubleRelease() {
+        let source = FSEventsLibraryFileEventSource()
+        // This nonempty path exceeds FSEvents' filesystem representation
+        // buffer, so failure occurs in Create rather than our empty-path guard.
+        let invalidPath = "/tmp/" + String(repeating: "x", count: 5_000)
+        func handler(for probe: FSEventsHandlerLifetimeProbe) -> @Sendable ([LibraryFileEvent]) -> Void {
+            { [probe] _ in withExtendedLifetime(probe) {} }
+        }
+
+        for _ in 0..<10 {
+            var probe: FSEventsHandlerLifetimeProbe? = FSEventsHandlerLifetimeProbe()
+            weak var weakProbe = probe
+            XCTAssertThrowsError(try source.start(paths: [invalidPath], handler: handler(for: probe!)))
+            probe = nil
+            XCTAssertNil(weakProbe)
+            source.stop()
+        }
+    }
+
     func testReconcileRemovesBindingWhosePlaylistWasDeletedOutOfBand() async throws {
         let fixture = try await ReconcileFixture()
         defer { fixture.cleanup() }

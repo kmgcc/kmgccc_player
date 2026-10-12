@@ -103,6 +103,9 @@ struct LibraryAutomationAlbumMetadataPatch {
     let metadataSource: String?
     let metadataFetchedAt: Date?
     let metadataConfidence: Double?
+    /// "专辑内响度统一": true or false overrides, nil follows the automatic
+    /// judgement. Applied only when `fields` names it.
+    var loudnessUnified: Bool? = nil
 }
 
 struct LibraryAutomationEntityMetadataMutationOutcome {
@@ -2136,7 +2139,8 @@ final class LibraryViewModel {
                 entry.qqMusicAlbumMid ?? "",
                 entry.metadataSource ?? "",
                 fetchedAt,
-                confidence
+                confidence,
+                entry.loudnessUnifiedOverride.map { $0 ? "unified" : "perTrack" } ?? ""
             ]
         )
     }
@@ -2560,19 +2564,28 @@ final class LibraryViewModel {
                 changed = changed || updated.metadataConfidence != patch.metadataConfidence
                 updated.metadataConfidence = patch.metadataConfidence
             }
-            guard changed else {
+            let loudnessChanged = patch.fields.contains("loudnessUnified")
+                && current.loudnessUnifiedOverride != patch.loudnessUnified
+            guard changed || loudnessChanged else {
                 skippedIDs.append(albumID)
                 return
             }
 
-            updated.updatedAt = Date()
-            try await self.repository.applyAlbumEdits(original: current, updated: updated)
-            await self.refresh()
+            let resultingKey = LibraryNormalization.retitledAlbumKey(
+                existingKey: current.canonicalKey,
+                newAlbumTitle: updated.displayTitle
+            )
+            if changed {
+                updated.updatedAt = Date()
+                try await self.repository.applyAlbumEdits(original: current, updated: updated)
+                await self.refresh()
+            }
+            if loudnessChanged {
+                self.setAlbumLoudnessOverride(albumKey: changed ? resultingKey : current.canonicalKey,
+                                              unified: patch.loudnessUnified)
+            }
             let resultingID = self.albumEntries.first {
-                $0.canonicalKey == LibraryNormalization.retitledAlbumKey(
-                    existingKey: current.canonicalKey,
-                    newAlbumTitle: updated.displayTitle
-                )
+                $0.canonicalKey == (changed ? resultingKey : current.canonicalKey)
             }?.id ?? albumID
             updatedIDs.append(resultingID)
         }
@@ -3243,6 +3256,26 @@ final class LibraryViewModel {
             )
             return nil
         }
+    }
+
+    /// Called after an album's "专辑内响度统一" switch changes, with its key.
+    @ObservationIgnored var onAlbumLoudnessOverrideChanged: (@MainActor (String) -> Void)?
+
+    /// The library's loudness measurements, read by the song information
+    /// editors. Owned by the library session.
+    @ObservationIgnored weak var loudnessService: LibraryLoudnessService?
+
+    /// Measures the given songs again, ignoring stored results.
+    @ObservationIgnored var onRemeasureLoudness: (@MainActor ([UUID]) -> Void)?
+
+    /// Stores the album's loudness switch. Nil returns it to the automatic
+    /// judgement; renames and merges carry the stored value along.
+    func setAlbumLoudnessOverride(albumKey: String, unified: Bool?) {
+        guard let index = albumEntries.firstIndex(where: { $0.canonicalKey == albumKey }) else { return }
+        guard albumEntries[index].loudnessUnifiedOverride != unified else { return }
+        guard libraryService.setAlbumLoudnessOverride(albumID: albumEntries[index].id, unified: unified) else { return }
+        albumEntries[index].loudnessUnifiedOverride = unified
+        onAlbumLoudnessOverrideChanged?(albumKey)
     }
 
     func saveAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async {

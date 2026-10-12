@@ -39,6 +39,9 @@ nonisolated enum LibraryTaskKind: String, Codable, Equatable, Sendable {
     case indexUpdate
     case libraryBundleExport
     case embeddedTagWrite
+    /// A listener- or client-requested loudness measurement. It only reads
+    /// audio and writes a derived cache, so it never holds the write queue.
+    case loudnessAnalysis
     case other
 }
 
@@ -549,6 +552,44 @@ final class LibraryOperationCoordinator {
                 await task.value
                 await completion.value
             }
+        )
+        return true
+    }
+
+    /// Starts read-only work that is tracked as a Job (progress, cancel,
+    /// history, quiesce) but does not wait behind or block the serial queue
+    /// of library mutations. Heavy computation inside it is scheduled by the
+    /// App-level background scheduler instead.
+    @discardableResult
+    func startConcurrent(
+        _ work: @escaping @MainActor () async -> Void,
+        kind: LibraryTaskKind,
+        retrySpec: LibraryOperationRetrySpec? = nil
+    ) -> Bool {
+        guard acceptingOperations else { return false }
+        let operationID = UUID()
+        let ownerID = coordinatorID
+        registerTask(kind: kind, operationID: operationID, retrySpec: retrySpec)
+        let task = Task { @MainActor [weak self] in
+            await LibraryOperationContext.$current.withValue(
+                .init(coordinatorID: ownerID, operationID: operationID)
+            ) {
+                guard !Task.isCancelled else {
+                    self?.finish(operationID: operationID, state: .cancelled)
+                    return
+                }
+                self?.markRunning(operationID: operationID)
+                await work()
+                if Task.isCancelled {
+                    self?.finish(operationID: operationID, state: .cancelled)
+                } else {
+                    self?.finishNormally(operationID: operationID)
+                }
+            }
+        }
+        operations[operationID] = Operation(
+            cancel: { task.cancel() },
+            wait: { await task.value }
         )
         return true
     }

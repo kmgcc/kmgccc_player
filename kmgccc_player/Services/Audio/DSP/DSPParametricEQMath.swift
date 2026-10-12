@@ -1,27 +1,40 @@
 import Foundation
 
+/// Control input of the equal-loudness node. Only the routed output device's
+/// system volume drives it; App volume, transport fades and normalization
+/// gain never do. The curve itself comes from the node's own calibration for
+/// that device, so each preset compensates independently.
 nonisolated struct DSPEqualLoudnessContext: Equatable, Sendable {
-    var appGain: Double
-    var deviceUID: String?
-    /// App-volume gain in dB relative to unity. Nil uses the relative 0 dB baseline.
-    var referenceDB: Double?
+    var volume: OutputDeviceVolumeState
+    /// Live bass/treble values while a calibration step is being adjusted.
+    var override: DSPEqualLoudnessGains?
 
     nonisolated init(
-        appGain: Double = 1,
-        deviceUID: String? = nil,
-        referenceDB: Double? = nil
+        volume: OutputDeviceVolumeState = .unknown,
+        override: DSPEqualLoudnessGains? = nil
     ) {
-        self.appGain = appGain
-        self.deviceUID = deviceUID
-        self.referenceDB = referenceDB
+        self.volume = volume
+        self.override = override
     }
 
-    nonisolated static var appOnly: DSPEqualLoudnessContext {
+    /// No readable device volume: automatic compensation stays at zero.
+    nonisolated static var inactive: DSPEqualLoudnessContext {
         DSPEqualLoudnessContext()
+    }
+
+    /// The node's calibration for the routed device, when it matches the
+    /// device's volume axis and the current algorithm.
+    nonisolated func usableCalibration(in node: DSPNodeConfiguration) -> EqualLoudnessCalibration? {
+        guard let reading = volume.reading,
+              let calibration = node.equalLoudnessCalibration(forDeviceUID: reading.deviceUID),
+              calibration.axis == reading.axis,
+              calibration.algorithmVersion == EqualLoudnessCalibration.currentAlgorithmVersion,
+              !calibration.points.isEmpty else { return nil }
+        return calibration
     }
 }
 
-nonisolated struct DSPEqualLoudnessGains: Equatable, Sendable {
+nonisolated struct DSPEqualLoudnessGains: Codable, Equatable, Sendable {
     var bassDB: Double
     var trebleDB: Double
 
@@ -29,33 +42,63 @@ nonisolated struct DSPEqualLoudnessGains: Equatable, Sendable {
 }
 
 nonisolated enum DSPEqualLoudnessMath {
+    /// Uncalibrated devices start compensating below this attenuation from
+    /// their maximum output and reach the default maxima `defaultWindowDB`
+    /// further down.
+    nonisolated static let defaultReferenceDecibels = -10.0
+    nonisolated static let defaultWindowDB = 20.0
+    nonisolated static let defaultMaxBassDB = 6.0
+    nonisolated static let defaultMaxTrebleDB = 3.0
+
     static func gains(
         node: DSPNodeConfiguration,
         context: DSPEqualLoudnessContext
     ) -> DSPEqualLoudnessGains {
         guard node.enabled,
               node.typeID == DSPNodeConfiguration.equalLoudnessTypeID,
-              let parameters = node.equalLoudnessParameters,
-              context.appGain.isFinite,
-              context.appGain > 0 else { return .zero }
+              let parameters = node.equalLoudnessParameters else { return .zero }
 
-        let appGain = min(1, context.appGain)
-        let listeningLevelDB = 20 * log10(appGain)
-        guard listeningLevelDB.isFinite else { return .zero }
-        let referenceDB = context.referenceDB.flatMap { $0.isFinite ? min(0, max(-100, $0)) : nil } ?? 0
-        let windowDB = max(1, parameters.compensationWindowDB)
-        let amount = min(1, max(0, (referenceDB - listeningLevelDB) / windowDB))
-            * min(1, max(0, parameters.strength))
-        let bassDB = amount * min(
-            DSPEqualLoudnessParameters.maxBassGainRange.upperBound,
-            max(0, parameters.maxBassGainDB)
+        if let override = context.override {
+            return clamped(override)
+        }
+        guard let reading = context.volume.reading else { return .zero }
+        let strength = min(1, max(0, parameters.strength.isFinite ? parameters.strength : 0))
+
+        if let calibration = context.usableCalibration(in: node), let curve = calibration.curve {
+            let calibrated = curve.gains(at: reading.coordinate)
+            return clamped(DSPEqualLoudnessGains(
+                bassDB: calibrated.bassDB * strength,
+                trebleDB: calibrated.trebleDB * strength
+            ))
+        }
+
+        let attenuationDB = max(0, defaultReferenceDecibels - reading.approximateDecibelsBelowMaximum)
+        let amount = min(1, attenuationDB / defaultWindowDB) * strength
+        return clamped(DSPEqualLoudnessGains(
+            bassDB: amount * defaultMaxBassDB,
+            trebleDB: amount * defaultMaxTrebleDB
+        ))
+    }
+
+    private static func clamped(_ gains: DSPEqualLoudnessGains) -> DSPEqualLoudnessGains {
+        let bass = DSPEqualLoudnessParameters.bassGainRange
+        let treble = DSPEqualLoudnessParameters.trebleGainRange
+        return DSPEqualLoudnessGains(
+            bassDB: gains.bassDB.isFinite ? min(max(gains.bassDB, bass.lowerBound), bass.upperBound) : 0,
+            trebleDB: gains.trebleDB.isFinite ? min(max(gains.trebleDB, treble.lowerBound), treble.upperBound) : 0
         )
-        let trebleDB = amount * min(
-            DSPEqualLoudnessParameters.maxTrebleGainRange.upperBound,
-            max(0, parameters.maxTrebleGainDB)
-        )
-        guard bassDB.isFinite, trebleDB.isFinite else { return .zero }
-        return DSPEqualLoudnessGains(bassDB: bassDB, trebleDB: trebleDB)
+    }
+
+    /// The shelf gains of every enabled equal-loudness node, used to decide
+    /// whether a control change alters what the listener hears.
+    static func chainGains(
+        configuration: AudioDSPConfiguration,
+        context: DSPEqualLoudnessContext
+    ) -> [DSPEqualLoudnessGains] {
+        guard configuration.enabled else { return [] }
+        return configuration.nodes
+            .filter { $0.enabled && $0.typeID == DSPNodeConfiguration.equalLoudnessTypeID }
+            .map { gains(node: $0, context: context) }
     }
 
     static func bands(
@@ -68,14 +111,14 @@ nonisolated enum DSPEqualLoudnessMath {
         let gains = gains(node: node, context: context)
         return [
             DSPParametricEQBand(
-                enabled: gains.bassDB > 1e-12,
+                enabled: abs(gains.bassDB) > 1e-12,
                 type: .lowShelf,
                 frequencyHz: parameters.bassFrequencyHz,
                 gainDB: gains.bassDB,
                 q: parameters.bassQ
             ),
             DSPParametricEQBand(
-                enabled: gains.trebleDB > 1e-12,
+                enabled: abs(gains.trebleDB) > 1e-12,
                 type: .highShelf,
                 frequencyHz: parameters.trebleFrequencyHz,
                 gainDB: gains.trebleDB,
@@ -275,7 +318,7 @@ nonisolated enum DSPParametricEQMath {
     ) -> Double {
         responseDB(
             configuration: configuration,
-            context: .appOnly,
+            context: .inactive,
             at: frequencyHz,
             sampleRate: sampleRate
         )
@@ -315,7 +358,7 @@ nonisolated enum DSPParametricEQMath {
     ) -> Double {
         estimatedPeakResponseDB(
             configuration: configuration,
-            context: .appOnly,
+            context: .inactive,
             sampleRate: sampleRate
         )
     }

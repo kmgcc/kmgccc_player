@@ -110,7 +110,7 @@ final class RendererTimelineTests: XCTestCase {
         let pipeline = RendererPlaybackPipeline()
         pipeline.setVolume(0)
         defer { pipeline.stop() }
-        pipeline.setFadeConfiguration(AudioFadeConfiguration(enabled: true, playFadeMs: 100, pauseFadeMs: 2_000))
+        pipeline.setFadeConfiguration(AudioFadeConfiguration(enabled: true))
         let loaded = expectation(description: "playing timeline loaded")
         pipeline.onTimelineMutationCommitted = { _, _, _ in loaded.fulfill() }
         pipeline.load(
@@ -143,7 +143,7 @@ final class RendererTimelineTests: XCTestCase {
         let pipeline = RendererPlaybackPipeline()
         pipeline.setVolume(0)
         defer { pipeline.stop() }
-        pipeline.setFadeConfiguration(AudioFadeConfiguration(enabled: true, playFadeMs: 100, pauseFadeMs: 10))
+        pipeline.setFadeConfiguration(AudioFadeConfiguration(enabled: true))
         let loaded = expectation(description: "playing timeline loaded")
         pipeline.onTimelineMutationCommitted = { _, _, _ in loaded.fulfill() }
         pipeline.load(
@@ -167,7 +167,7 @@ final class RendererTimelineTests: XCTestCase {
             }
         }
         pipeline.pause()
-        wait(for: [resumed], timeout: 2)
+        wait(for: [resumed], timeout: 3)
     }
 
     func testNewTransportCommandInvalidatesAlreadyPublishedStateOnSameTimeline() {

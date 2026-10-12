@@ -333,7 +333,7 @@ struct AutomationSettingsHandler {
                 let parameters = try AutomationParameters(request)
                 let requested = try parameters.object("values") ?? [:]
                 guard !requested.isEmpty,
-                      Set(requested.keys).isSubset(of: ["gaplessSchedulingEnabled", "aacGaplessTrimEnabled", "outputDeviceID", "fade", "loudness", "deviceReferences"]) else {
+                      Set(requested.keys).isSubset(of: ["gaplessSchedulingEnabled", "aacGaplessTrimEnabled", "outputDeviceID", "fade", "loudness"]) else {
                     throw AutomationParameterError.invalidValue("values")
                 }
                 func boolValue(_ key: String) throws -> Bool? {
@@ -541,10 +541,7 @@ struct AutomationSettingsHandler {
 
     private func processingValues(_ value: AudioProcessingGlobals) -> [String: AutomationJSONValue] {
         ["fade": (try? encodeProcessing(value.fade)) ?? .null,
-         "loudness": (try? encodeProcessing(value.loudness)) ?? .null,
-         "deviceReferences": .object(Dictionary(uniqueKeysWithValues: value.deviceReferences.map {
-             (AudioOutputLatencyMonitor.stableDeviceID(for: $0.key), .number($0.value))
-         }))]
+         "loudness": (try? encodeProcessing(value.loudness)) ?? .null]
     }
 
     private func processingCandidate(_ requested: [String: AutomationJSONValue], current: AudioProcessingGlobals) throws -> AudioProcessingGlobals {
@@ -557,18 +554,11 @@ struct AutomationSettingsHandler {
                 values[key] = .object(base)
             }
         }
-        if let references = requested["deviceReferences"] {
-            guard case .object(let map) = references else { throw AutomationParameterError.invalidType("deviceReferences", expected: "object") }
-            var known = Dictionary(uniqueKeysWithValues: current.deviceReferences.keys.map {
-                (AudioOutputLatencyMonitor.stableDeviceID(for: $0), $0)
-            })
-            for device in AudioOutputLatencyMonitor.availableOutputDevices() { known[device.id] = device.uniqueID }
-            var next: [String: AutomationJSONValue] = [:]
-            for (id, raw) in map {
-                guard let uid = known[id], case .number = raw else { throw AutomationParameterError.invalidValue("deviceReferences.\(id)") }
-                next[uid] = raw
-            }
-            values["deviceReferences"] = .object(next)
+        // Decoding clamps a stored target; an explicit request outside the
+        // range is rejected instead of being silently moved.
+        if case .object(let loudness)? = values["loudness"], case .number(let target)? = loudness["targetLUFS"],
+           !AudioLoudnessConfiguration.targetRange.contains(target) {
+            throw AutomationParameterError.invalidValue("values.loudness.targetLUFS")
         }
         return try JSONDecoder().decode(AudioProcessingGlobals.self, from: AutomationWireCoding.encoder().encode(AutomationJSONValue.object(values)))
     }

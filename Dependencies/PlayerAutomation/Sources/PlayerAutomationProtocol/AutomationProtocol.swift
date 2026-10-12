@@ -2009,6 +2009,12 @@ public struct AutomationAlbumMetadata: Codable, Equatable, Sendable, Identifiabl
     public let totalDuration: Double
     public let isOrphaned: Bool
     public let revision: String
+    /// Album-wide volume normalization override; nil follows the automatic
+    /// judgement reported in `loudnessUnifiedAutomatically`.
+    public let loudnessUnified: Bool?
+    public let loudnessUnifiedAutomatically: Bool?
+    /// Reason code when the automatic judgement excludes the album.
+    public let loudnessExclusion: String?
 
     public init(
         id: UUID,
@@ -2035,8 +2041,14 @@ public struct AutomationAlbumMetadata: Codable, Equatable, Sendable, Identifiabl
         trackCount: Int,
         totalDuration: Double,
         isOrphaned: Bool,
-        revision: String
+        revision: String,
+        loudnessUnified: Bool? = nil,
+        loudnessUnifiedAutomatically: Bool? = nil,
+        loudnessExclusion: String? = nil
     ) {
+        self.loudnessUnified = loudnessUnified
+        self.loudnessUnifiedAutomatically = loudnessUnifiedAutomatically
+        self.loudnessExclusion = loudnessExclusion
         self.id = id
         self.canonicalKey = canonicalKey
         self.displayTitle = displayTitle
@@ -5781,7 +5793,6 @@ public enum AutomationToolCatalog {
                 "properties": .object([
                     "fade": AutomationDSPToolCatalog.fadeSchema,
                     "loudness": AutomationDSPToolCatalog.loudnessSchema,
-                    "deviceReferences": AutomationDSPToolCatalog.deviceReferencesSchema,
                     "gaplessSchedulingEnabled": .object(["type": .string("boolean")]),
                     "aacGaplessTrimEnabled": .object(["type": .string("boolean")]),
                     "outputDeviceID": .object([

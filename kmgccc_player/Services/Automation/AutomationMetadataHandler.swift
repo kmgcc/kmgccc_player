@@ -1440,12 +1440,18 @@ struct AutomationMetadataHandler {
         let allowed: Set<String> = [
             "displayTitle", "description", "year", "releaseYear", "releaseDate", "albumType",
             "genreTags", "language", "labelOrCompany", "qqMusicAlbumMid", "metadataSource",
-            "metadataFetchedAt", "metadataConfidence"
+            "metadataFetchedAt", "metadataConfidence", "loudnessUnified"
         ]
         guard Set(values.keys).isSubset(of: allowed), !values.isEmpty else {
             throw AutomationParameterError.invalidValue("patch")
         }
-        return LibraryAutomationAlbumMetadataPatch(
+        let loudnessUnified: Bool?
+        switch values["loudnessUnified"] {
+        case nil, .null?: loudnessUnified = nil
+        case .boolean(let value)?: loudnessUnified = value
+        default: throw AutomationParameterError.invalidValue("patch.loudnessUnified")
+        }
+        var patch = LibraryAutomationAlbumMetadataPatch(
             fields: Set(values.keys),
             displayTitle: try patchStringValue(values, key: "displayTitle"),
             description: try patchStringValue(values, key: "description"),
@@ -1461,6 +1467,8 @@ struct AutomationMetadataHandler {
             metadataFetchedAt: try patchDateValue(values, key: "metadataFetchedAt"),
             metadataConfidence: try patchConfidenceValue(values, key: "metadataConfidence")
         )
+        patch.loudnessUnified = loudnessUnified
+        return patch
     }
 
     private func artistMetadataPatchChanges(
@@ -1506,6 +1514,7 @@ struct AutomationMetadataHandler {
         if patch.fields.contains("metadataSource"), entry.metadataSource != patch.metadataSource { return true }
         if patch.fields.contains("metadataFetchedAt"), entry.metadataFetchedAt != patch.metadataFetchedAt { return true }
         if patch.fields.contains("metadataConfidence"), entry.metadataConfidence != patch.metadataConfidence { return true }
+        if patch.fields.contains("loudnessUnified"), entry.loudnessUnifiedOverride != patch.loudnessUnified { return true }
         return false
     }
 
@@ -2007,7 +2016,12 @@ struct AutomationMetadataHandler {
             trackCount: entry.trackCount,
             totalDuration: entry.totalDuration,
             isOrphaned: entry.isOrphaned,
-            revision: session.libraryViewModel.automationAlbumRevision(for: entry)
+            revision: session.libraryViewModel.automationAlbumRevision(for: entry),
+            loudnessUnified: entry.loudnessUnifiedOverride,
+            loudnessUnifiedAutomatically: session.loudnessAlbumJudgement(forAlbumKey: entry.canonicalKey)
+                .map(\.automaticallyUnifies),
+            loudnessExclusion: session.loudnessAlbumJudgement(forAlbumKey: entry.canonicalKey)?
+                .automaticExclusion?.rawValue
         )
     }
 

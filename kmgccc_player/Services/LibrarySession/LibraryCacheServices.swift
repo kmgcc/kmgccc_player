@@ -28,9 +28,9 @@ final class LibraryCacheServices {
     let playlistArtworkPipeline: PlaylistArtworkPipeline
 
     @ObservationIgnored
-    private var artworkColorPrefetchTask: Task<Void, Never>?
+    private weak var artworkColorPrefetchScheduler: BackgroundWorkScheduler?
     @ObservationIgnored
-    private var artworkColorPrefetchGeneration: UInt64 = 0
+    private var artworkColorPrefetchKey: String?
 
     init(paths: LibraryPaths) {
         let storage = StorageLocations.scoped(to: paths)
@@ -61,58 +61,46 @@ final class LibraryCacheServices {
         await playlistArtworkPipeline.clearMemory()
     }
 
-    func prefetchArtworkColorsWhenIdle(
-        from tracks: [Track],
-        shouldContinue: @escaping @MainActor () -> Bool
+    /// Queues artwork accent-colour preparation as idle batch work. When it
+    /// runs is decided by the App scheduler (power, load, interaction), not
+    /// by whether the App is in front; it pauses at track boundaries.
+    func prefetchArtworkColors(
+        trackIDs: [UUID],
+        libraryID: UUID,
+        scheduler: BackgroundWorkScheduler,
+        sources: @escaping @MainActor @Sendable ([UUID]) -> [TrackArtworkSource],
+        shouldContinue: @escaping @MainActor @Sendable () -> Bool
     ) {
-        cancelArtworkColorPrefetch()
-        guard !tracks.isEmpty else { return }
-
-        artworkColorPrefetchGeneration &+= 1
-        let generation = artworkColorPrefetchGeneration
+        guard !trackIDs.isEmpty else { return }
+        let key = "artwork-colors:\(libraryID.uuidString)"
+        artworkColorPrefetchScheduler = scheduler
+        artworkColorPrefetchKey = key
         let artworkCache = trackArtworkCache
-        artworkColorPrefetchTask = Task(priority: .background) { @MainActor [weak self] in
-            guard let self else { return }
-            defer {
-                if self.artworkColorPrefetchGeneration == generation {
-                    self.artworkColorPrefetchTask = nil
-                }
-            }
-
-            try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled,
-                  self.artworkColorPrefetchGeneration == generation,
-                  shouldContinue()
-            else { return }
-
-            for startIndex in stride(from: 0, to: tracks.count, by: 24) {
-                guard !Task.isCancelled,
-                      self.artworkColorPrefetchGeneration == generation,
-                      shouldContinue()
-                else { return }
-                let endIndex = min(startIndex + 24, tracks.count)
-
-                for track in tracks[startIndex..<endIndex] {
-                    guard !Task.isCancelled,
-                          self.artworkColorPrefetchGeneration == generation,
-                          shouldContinue()
-                    else { return }
-                    guard let source = track.trackArtworkSource() else { continue }
+        scheduler.submit(
+            key: key,
+            group: "artwork:\(libraryID.uuidString)",
+            priority: .idleBatch,
+            resources: [.cpu, .diskRead]
+        ) { context in
+            for startIndex in stride(from: 0, to: trackIDs.count, by: 24) {
+                guard (try? await context.checkpoint()) != nil else { return }
+                let batchIDs = Array(trackIDs[startIndex..<min(startIndex + 24, trackIDs.count)])
+                let batch = await MainActor.run { shouldContinue() ? sources(batchIDs) : nil }
+                guard let batch else { return }
+                for source in batch {
+                    guard (try? await context.checkpoint()) != nil else { return }
                     _ = await artworkCache.artworkAccentColor(
                         for: source,
                         purpose: "idle-artwork-color",
                         priority: .background
                     )
-                    await Task.yield()
                 }
-
-                try? await Task.sleep(for: .milliseconds(125))
             }
         }
     }
 
     func cancelArtworkColorPrefetch() {
-        artworkColorPrefetchGeneration &+= 1
-        artworkColorPrefetchTask = nil
+        if let key = artworkColorPrefetchKey { artworkColorPrefetchScheduler?.cancel(key: key) }
+        artworkColorPrefetchKey = nil
     }
 }

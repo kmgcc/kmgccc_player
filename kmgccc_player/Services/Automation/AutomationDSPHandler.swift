@@ -255,18 +255,27 @@ struct AutomationDSPHandler {
     }
 
     private func equalLoudnessState(_ controller: AudioDSPController) -> AutomationJSONValue {
-        let context = appSession?.audioProcessingGlobalsController.equalLoudnessContext ?? .appOnly
+        let context = appSession?.equalLoudnessController.context ?? .inactive
         let nodes = controller.configuration.nodes.filter { $0.typeID == DSPNodeConfiguration.equalLoudnessTypeID }.map { node in
             let gains = controller.configuration.enabled ? DSPEqualLoudnessMath.gains(node: node, context: context) : .zero
             return AutomationJSONValue.object([
                 "nodeID": .string(node.nodeID.uuidString),
-                "expectedBassGainDB": .number(gains.bassDB), "expectedTrebleGainDB": .number(gains.trebleDB)
+                "expectedBassGainDB": .number(gains.bassDB), "expectedTrebleGainDB": .number(gains.trebleDB),
+                "curve": .string(context.override != nil ? "calibrationPreview"
+                    : (context.usableCalibration(in: node) != nil ? "calibrated" : "default"))
             ])
         }
+        let reading = context.volume.reading
         return .object([
-            "volumeSource": .string("appOnly"), "appGain": .number(context.appGain),
-            "referenceDB": context.referenceDB.map(AutomationJSONValue.number) ?? .null,
-            "referenceMode": .string(context.referenceDB == nil ? "relativeUnity" : "deviceProfile"),
+            "volumeSource": .string("systemDevice"),
+            "deviceID": context.volume.deviceUID.map {
+                AutomationJSONValue.string(AudioOutputLatencyMonitor.stableDeviceID(for: $0))
+            } ?? .null,
+            "deviceName": context.volume.deviceName.map(AutomationJSONValue.string) ?? .null,
+            "volumeReadable": .boolean(reading != nil),
+            "systemVolume": reading.map { .number($0.scalar) } ?? .null,
+            "systemVolumeDecibels": reading?.decibelsBelowMaximum.map(AutomationJSONValue.number) ?? .null,
+            "muted": .boolean(reading?.isMuted ?? false),
             "applicationState": .string(controller.status.state.rawValue), "nodes": .array(nodes)
         ])
     }

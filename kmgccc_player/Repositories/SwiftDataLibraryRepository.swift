@@ -256,7 +256,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func addTrack(_ track: Track) async {
-        allTracks.append(track)
+        appendNewTracks([track])
         _ = await persistImportedTrackResources([track], reason: "initialImport")
         scheduleSearchIndexUpsert(for: [track], reason: "initialImport")
         rebuildRuntimeDerivedState()
@@ -275,7 +275,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func addTracks(_ tracks: [Track]) async {
-        allTracks.append(contentsOf: tracks)
+        appendNewTracks(tracks)
         _ = await persistImportedTrackResources(tracks, reason: "initialImport")
         scheduleSearchIndexUpsert(for: tracks, reason: "initialImport")
         rebuildRuntimeDerivedState()
@@ -301,6 +301,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         _ tracks: [Track],
         visibilityGate: @MainActor ([UUID]) async -> Set<UUID>
     ) async -> LibraryTrackPersistenceResult {
+        var seenIDs = Set<UUID>()
+        let tracks = tracks.filter { seenIDs.insert($0.id).inserted }
         let persistence = await persistImportedTrackResources(tracks, reason: "initialImportCommit")
         let persistedIDs = Set(persistence.persistedTrackIDs)
         let visibleIDs = await visibilityGate(persistence.persistedTrackIDs).intersection(persistedIDs)
@@ -315,8 +317,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     private func attachImportedTracks(_ tracks: [Track]) async {
-        allTracks.append(contentsOf: tracks)
-        scheduleSearchIndexUpsert(for: tracks, reason: "initialImport")
+        let attachedTracks = appendNewTracks(tracks)
+        guard !attachedTracks.isEmpty else { return }
+        scheduleSearchIndexUpsert(for: attachedTracks, reason: "initialImport")
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
         let capturedPaths = paths
@@ -1060,6 +1063,16 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     // MARK: - Cache Maintenance
 
+    /// A reload can publish a committed sidecar while import awaits its
+    /// visibility gate. Keep the runtime instance already used by playlists.
+    @discardableResult
+    private func appendNewTracks(_ tracks: [Track]) -> [Track] {
+        var knownIDs = Set(allTracks.map(\.id))
+        let newTracks = tracks.filter { knownIDs.insert($0.id).inserted }
+        allTracks.append(contentsOf: newTracks)
+        return newTracks
+    }
+
     func clearIndexCacheAndRebuild() async {
         clearTrackIndexCache()
         for url in TrackIndexStorePaths.relatedStoreFiles(in: paths) where fileManager.fileExists(atPath: url.path)
@@ -1502,7 +1515,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             metadataFetchedAt: entry.metadataFetchedAt,
             metadataConfidence: entry.metadataConfidence,
             createdAt: entry.createdAt,
-            updatedAt: entry.updatedAt
+            updatedAt: entry.updatedAt,
+            loudnessUnified: entry.loudnessUnifiedOverride
         )
         let destinationArtworkURL = entry.artworkFileName.map {
             libraryService.paths.albumFolderURL(for: entry.id).appendingPathComponent($0)
@@ -1609,7 +1623,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             updatedAt: Date(),
             trackCount: max(preferred.trackCount, fallback.trackCount),
             totalDuration: max(preferred.totalDuration, fallback.totalDuration),
-            isOrphaned: false
+            isOrphaned: false,
+            loudnessUnifiedOverride: preferred.loudnessUnifiedOverride ?? fallback.loudnessUnifiedOverride
         )
     }
 
@@ -2247,7 +2262,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         _ tracks: [Track],
         reason: String
     ) async -> LibraryTrackPersistenceResult {
-        let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
+        let uniqueTracks = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { existing, _ in existing }).values.sorted {
             $0.id.uuidString < $1.id.uuidString
         }
         guard !uniqueTracks.isEmpty else {

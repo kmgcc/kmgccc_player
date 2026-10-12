@@ -56,6 +56,12 @@ final class AppSessionHost: ObservableObject {
     lazy var audioDSPDeviceController = AudioDSPDeviceController(dsp: audioDSPController)
     let audioDSPScriptController = DSPScriptController()
     let audioProcessingGlobalsController = AudioProcessingGlobalsController()
+    /// App-level admission for deferrable work (loudness, artwork, indexes).
+    let backgroundWorkScheduler = BackgroundWorkScheduler()
+    let listeningHabitForecast = ListeningHabitForecast()
+    /// Routed-device system volume and per-device calibration for the
+    /// equal-loudness node.
+    let equalLoudnessController = EqualLoudnessController()
     let librarySetupFlow = LibrarySetupViewModel()
     let activeLibraryBinding: ActiveLibraryBinding
 
@@ -642,6 +648,8 @@ final class AppSessionHost: ObservableObject {
         session.bindLibraryTaskStateObserver { [weak self, weak session] in
             guard let self, let session else { return }
             self.activeLibraryTasks = session.libraryTaskDescriptorsSnapshot()
+            // Library writes start or finish: idle work re-checks its turn.
+            self.backgroundWorkScheduler.reevaluate()
         }
     }
 
@@ -1098,8 +1106,21 @@ final class AppSessionHost: ObservableObject {
         guard !hasSetupDependencies else { return }
         hasSetupDependencies = true
 
+        backgroundWorkScheduler.libraryBusyProvider = { [weak self] in
+            self?.activeLibraryTasks.contains { task in
+                !task.state.isTerminal && task.kind != .loudnessAnalysis && task.kind != .automation
+            } ?? false
+        }
+        backgroundWorkScheduler.start()
+        equalLoudnessController.onContextChange = { [weak self] context in
+            self?.activeLibraryBinding.activeSession?.setEqualLoudnessContext(context)
+        }
+        audioDSPDeviceController.onCurrentOutputDeviceChange = { [weak self] uid in
+            self?.equalLoudnessController.setRoutedDevice(uid)
+        }
         audioDSPDeviceController.start()
         await audioDSPDeviceController.ensureLoaded()
+        equalLoudnessController.setRoutedDevice(audioDSPDeviceController.currentOutputDeviceUID)
 
         Log.debug("[Lifecycle] AppSessionHost initial setup", category: .ui)
         mainThreadStallMonitor.start()
@@ -1425,9 +1446,18 @@ final class AppSessionHost: ObservableObject {
         audioProcessingGlobalsController.setSourceIsLocal(!session.playbackCoordinator.activeSource.isExternal)
         audioDSPScriptController.bind(dspController: audioDSPController)
         session.bindAudioDSP(audioDSPController, devices: audioDSPDeviceController)
-        session.bindAudioProcessingGlobals(audioProcessingGlobalsController)
+        session.bindAudioProcessingGlobals(
+            audioProcessingGlobalsController,
+            scheduler: backgroundWorkScheduler,
+            habits: listeningHabitForecast
+        )
+        session.bindBackgroundSignals(scheduler: backgroundWorkScheduler, habits: listeningHabitForecast)
+        session.setEqualLoudnessContext(equalLoudnessController.context)
         activeLibraryBinding.publish(session)
-        CacheManager.scheduleBackgroundDiskMaintenance(storage: session.cacheServices.storageLocations)
+        CacheManager.scheduleBackgroundDiskMaintenance(
+            storage: session.cacheServices.storageLocations,
+            scheduler: backgroundWorkScheduler
+        )
         await bindReferencedScanStatePush(for: session)
         bindLibraryTaskStatePush(for: session)
         CrashReportService.shared.bindLibraryRoot(session.context.rootURL)
@@ -1550,9 +1580,7 @@ final class AppSessionHost: ObservableObject {
             playerVM: playerVM,
             playbackCoordinator: playbackCoordinator
         )
-        if !NSApp.isActive {
-            scheduleIdleArtworkColorPrefetch()
-        }
+        scheduleIdleArtworkColorPrefetch()
 
         if let scenario = DebugLaunchScenario.current {
             Task { @MainActor in
@@ -1627,7 +1655,8 @@ final class AppSessionHost: ObservableObject {
                 queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.cacheServices?.cancelArtworkColorPrefetch()
+                    // Idle artwork work keeps its place; the scheduler pauses
+                    // it while the listener is using the App.
                     self?.scheduleActiveLibraryRescan()
                 }
             }
@@ -1668,20 +1697,32 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
+    /// Artwork colours are idle batch work: the scheduler runs them when the
+    /// machine has spare capacity, whether or not the App is in front.
     private func scheduleIdleArtworkColorPrefetch() {
-        guard !NSApp.isActive,
-              AppSettings.shared.artworkTintMode == .rich,
+        guard AppSettings.shared.artworkTintMode == .rich,
               let session = activeLibraryBinding.activeSession
         else { return }
 
         let libraryID = session.context.id
-        session.cacheServices.prefetchArtworkColorsWhenIdle(from: session.libraryViewModel.allTracks) {
-            [weak self] in
-            guard let self,
-                  self.activeLibraryBinding.activeSession?.context.id == libraryID
-            else { return false }
-            return !NSApp.isActive && AppSettings.shared.artworkTintMode == .rich
-        }
+        session.cacheServices.prefetchArtworkColors(
+            trackIDs: session.libraryViewModel.allTracks.map(\.id),
+            libraryID: libraryID,
+            scheduler: backgroundWorkScheduler,
+            sources: { [weak session] ids in
+                guard let session else { return [] }
+                let wanted = Set(ids)
+                return session.libraryViewModel.allTracks
+                    .filter { wanted.contains($0.id) }
+                    .compactMap { $0.trackArtworkSource() }
+            },
+            shouldContinue: { [weak self] in
+                guard let self,
+                      self.activeLibraryBinding.activeSession?.context.id == libraryID
+                else { return false }
+                return AppSettings.shared.artworkTintMode == .rich
+            }
+        )
     }
 
     private func scheduleActiveLibraryRescan() {
@@ -1694,7 +1735,7 @@ final class AppSessionHost: ObservableObject {
                     try await refreshAllReferencedSources()
                 } catch {
                     Log.warning(
-                        "[LibrarySession] lifecycle source refresh failed library=\(libraryID)",
+                        "[LibrarySession] lifecycle source refresh failed library=\(libraryID) error=\(error)",
                         category: .library
                     )
                 }

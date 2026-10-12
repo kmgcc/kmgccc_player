@@ -17,6 +17,7 @@ enum AutomationJobProjection {
         case .enrichment: kind = "enrichment"
         case .automation: kind = "automation"
         case .indexUpdate: kind = "indexUpdate"
+        case .loudnessAnalysis: kind = "loudnessAnalysis"
         case .other: kind = "other"
         }
         let state: AutomationJobState

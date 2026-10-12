@@ -150,6 +150,7 @@ struct LibraryImportStatusDialogView: View {
         case .enrichment: return "正在补全信息"
         case .automation: return "正在处理自动化任务"
         case .indexUpdate: return "正在更新资料库"
+        case .loudnessAnalysis: return "正在测量响度"
         case .other: return "正在处理资料库"
         }
     }
