@@ -3,8 +3,8 @@
 //  myPlayer2
 //
 //  Expanded editor for a programmable script node. The effect rack owns the
-//  node header (enable switch, ordering, removal); this view edits the source,
-//  the parameters of the applied script, and fixture tests.
+//  node header (enable switch, ordering, removal); this view edits the source
+//  and the parameters of the applied script.
 //
 //  The applied script lives in the persisted DSP configuration, so its
 //  parameters are read from there and stay adjustable across launches
@@ -29,7 +29,6 @@ struct AudioDSPScriptNodeCard: View {
     @State private var hasLocalEdits = false
     @State private var isApplying = false
     @State private var isSourceExpanded = false
-    @State private var fixtureSelection = "sine"
 
     private static let collapsedLineCount = 10
     private static let expandedLineLimit = 40
@@ -96,9 +95,6 @@ struct AudioDSPScriptNodeCard: View {
             actionRow
             messages
             parameterControls
-            if editorMatchesApplied {
-                testControls
-            }
         }
         .task(id: nodeID) {
             await loadOrSeedDraft()
@@ -213,13 +209,12 @@ struct AudioDSPScriptNodeCard: View {
         }
     }
 
-    /// Compile, configuration, runtime and test diagnostics for this node,
-    /// rendered once each even when several owners report the same problem.
+    /// Compile, configuration and runtime diagnostics for this node, rendered
+    /// once each even when several owners report the same problem.
     private var visibleDiagnostics: [String] {
         var sources = activity.compileDiagnostics
             + dspController.diagnostics.filter { $0.nodeID == nodeID }
             + runtimeWarnings
-            + activity.testDiagnostics
         if let error = scriptController.lastError, error.nodeID == nodeID {
             sources.append(error)
         }
@@ -282,88 +277,6 @@ struct AudioDSPScriptNodeCard: View {
         )
     }
 
-    // MARK: - Fixture Tests
-
-    private var testControls: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                CapsulePicker(
-                    label: "测试信号",
-                    options: Self.fixtureNames,
-                    selection: $fixtureSelection,
-                    displayName: Self.fixtureTitle
-                )
-                if activity.testPhase == .running {
-                    Button("取消") {
-                        scriptController.cancelTest(nodeID: nodeID, requestID: activity.testRequestID)
-                    }
-                    .audioDSPCapsuleButtonStyle()
-                } else {
-                    Button("测试", action: runFixtureTest)
-                        .audioDSPCapsuleButtonStyle()
-                        .disabled(isApplying)
-                }
-            }
-
-            if let result = activity.testResult {
-                fixtureResult(result)
-            }
-        }
-    }
-
-    private func fixtureResult(_ result: DSPScriptFixtureResult) -> some View {
-        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
-            resultRow("输出峰值", result.outputPeak.formatted(.number.precision(.fractionLength(4))))
-            resultRow("耗时", "\(result.elapsedMilliseconds.formatted(.number.precision(.fractionLength(2)))) ms")
-            resultRow("预算", "\(result.estimatedProcessingMilliseconds.formatted(.number.precision(.fractionLength(2)))) ms")
-            if result.nonFiniteOutputSampleCount > 0 {
-                resultRow("异常采样", "\(result.nonFiniteOutputSampleCount)")
-            }
-            if let expectedLatencyFrames = result.expectedLatencyFrames {
-                resultRow("声明延迟", "\(expectedLatencyFrames) 帧")
-                resultRow("脉冲峰值", result.measuredImpulsePeakFrame.map { "第 \($0) 帧" } ?? "未检测到")
-            }
-        }
-        .settingsDescriptionStyle()
-        .textSelection(.enabled)
-    }
-
-    private func resultRow(_ title: String, _ value: String) -> some View {
-        GridRow {
-            Text(title)
-            Text(value).monospacedDigit()
-        }
-    }
-
-    private static let fixtureNames = ["silence", "impulse", "sine", "sweep", "pinkNoise"]
-
-    private static func fixtureTitle(_ name: String) -> String {
-        switch name {
-        case "silence": "静音"
-        case "impulse": "脉冲"
-        case "sine": "正弦"
-        case "sweep": "扫频"
-        case "pinkNoise": "粉红噪声"
-        case "customPCM": "自定义 PCM"
-        default: name
-        }
-    }
-
-    private var selectedFixture: DSPScriptFixture {
-        switch fixtureSelection {
-        case "silence": .silence(durationSeconds: 0.25)
-        case "impulse": .impulse(durationSeconds: 0.25, amplitude: 0.25)
-        case "sweep": .sweep(
-            durationSeconds: 0.25,
-            startFrequencyHz: 30,
-            endFrequencyHz: min(18_000, format.sampleRate * 0.45),
-            amplitude: 0.25
-        )
-        case "pinkNoise": .pinkNoise(durationSeconds: 0.25, amplitude: 0.2, seed: 0xD5)
-        default: .sine(durationSeconds: 0.25, frequencyHz: 440, amplitude: 0.25)
-        }
-    }
-
     // MARK: - Actions
 
     /// Saves the draft, compiles it and applies it in one step. Current values
@@ -409,22 +322,6 @@ struct AudioDSPScriptNodeCard: View {
             dspController.commitPendingApply()
         } catch {
             // The DSP owner retains the retry diagnostic.
-        }
-    }
-
-    private func runFixtureTest() {
-        Task {
-            do {
-                let savedDraft = try await persistDraftIfNeeded()
-                _ = try await scriptController.testDraft(
-                    nodeID: nodeID,
-                    format: format,
-                    fixture: selectedFixture,
-                    expectedDraftRevision: savedDraft.revisionString
-                )
-            } catch {
-                // The controller publishes a structured diagnostic for the node.
-            }
         }
     }
 

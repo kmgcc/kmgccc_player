@@ -509,6 +509,11 @@ struct TrackInfoEditorCore: View {
                         labeledField("厂牌 / 公司", prompt: "厂牌或公司", text: $labelOrCompany)
 
                         metadataReadonlySection
+
+                        if let trackID = lyricsSearchTrack?.id {
+                            TrackLoudnessMetadataSection(trackIDs: [trackID])
+                                .padding(.top, 4)
+                        }
                     }
                     .padding(.top, 10)
                 }

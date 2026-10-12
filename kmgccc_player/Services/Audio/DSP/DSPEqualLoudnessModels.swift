@@ -68,16 +68,17 @@ nonisolated struct EqualLoudnessCalibrationPoint: Codable, Equatable, Sendable {
     var trebleDB: Double
 }
 
-/// One listener's four-step calibration for one output device.
+/// One listener's four-step calibration for one output device. The reference
+/// step is 0 dB by definition; quieter steps usually boost, louder steps may cut.
 nonisolated struct EqualLoudnessCalibration: Codable, Equatable, Sendable {
     nonisolated static let currentAlgorithmVersion = 1
-    nonisolated static let bassRange: ClosedRange<Double> = DSPEqualLoudnessParameters.maxBassGainRange
-    nonisolated static let trebleRange: ClosedRange<Double> = DSPEqualLoudnessParameters.maxTrebleGainRange
+    nonisolated static let bassRange: ClosedRange<Double> = DSPEqualLoudnessParameters.bassGainRange
+    nonisolated static let trebleRange: ClosedRange<Double> = DSPEqualLoudnessParameters.trebleGainRange
 
     var deviceUID: String
     var deviceName: String
     var axis: OutputDeviceVolumeReading.Axis
-    /// Recorded from loud to quiet.
+    /// In the order they were recorded: reference, quieter, quieter, louder.
     var points: [EqualLoudnessCalibrationPoint]
     var algorithmVersion: Int
     var createdAt: Date
@@ -99,6 +100,52 @@ nonisolated struct EqualLoudnessCalibration: Codable, Equatable, Sendable {
     }
 
     nonisolated var curve: EqualLoudnessCurve? { EqualLoudnessCurve(points: points) }
+
+    /// Stored inside the equal-loudness node's parameters, so every preset
+    /// keeps its own calibrations.
+    nonisolated var jsonValue: DSPJSONValue {
+        .object([
+            "deviceUID": .string(deviceUID),
+            "deviceName": .string(deviceName),
+            "axis": .string(axis.rawValue),
+            "points": .array(points.map {
+                .object([
+                    "coordinate": .number($0.coordinate),
+                    "bassDB": .number($0.bassDB),
+                    "trebleDB": .number($0.trebleDB),
+                ])
+            }),
+            "algorithmVersion": .integer(Int64(algorithmVersion)),
+            "createdAt": .number(createdAt.timeIntervalSince1970),
+        ])
+    }
+
+    nonisolated init?(json: DSPJSONValue) {
+        guard case .object(let fields) = json,
+              case .string(let deviceUID)? = fields["deviceUID"],
+              case .string(let rawAxis)? = fields["axis"],
+              let axis = OutputDeviceVolumeReading.Axis(rawValue: rawAxis),
+              case .array(let rawPoints)? = fields["points"],
+              let version = fields["algorithmVersion"]?.numberValue else { return nil }
+        var points: [EqualLoudnessCalibrationPoint] = []
+        for rawPoint in rawPoints {
+            guard case .object(let point) = rawPoint,
+                  let coordinate = point["coordinate"]?.numberValue,
+                  let bassDB = point["bassDB"]?.numberValue,
+                  let trebleDB = point["trebleDB"]?.numberValue else { return nil }
+            points.append(EqualLoudnessCalibrationPoint(coordinate: coordinate, bassDB: bassDB, trebleDB: trebleDB))
+        }
+        var deviceName = deviceUID
+        if case .string(let name)? = fields["deviceName"] { deviceName = name }
+        self.init(
+            deviceUID: deviceUID,
+            deviceName: deviceName,
+            axis: axis,
+            points: points,
+            algorithmVersion: Int(version),
+            createdAt: Date(timeIntervalSince1970: fields["createdAt"]?.numberValue ?? 0)
+        )
+    }
 }
 
 /// Monotone compensation curve through a few calibration points. Pool
@@ -229,24 +276,88 @@ nonisolated struct EqualLoudnessCurve: Equatable, Sendable {
     }
 }
 
+/// The calibration starts at a moderate reference volume, then moves quieter
+/// twice and louder once. Suggested volumes sit on the sixteenths the macOS
+/// volume keys step through, so everyday key presses land on calibrated
+/// points; they shift away from the recorded volumes when the listener moved
+/// the reference.
 nonisolated enum EqualLoudnessCalibrationGuide {
-    /// macOS volume keys move in sixteenths; each suggested step is one of
-    /// those positions so everyday key presses land on calibrated volumes.
-    nonisolated static let recommendedScalars: [Double] = [11.0 / 16, 8.0 / 16, 5.0 / 16, 2.0 / 16]
-    /// Each step must be at least this much quieter than the previous one.
-    nonisolated static let minimumStepDecibels = 4.0
+    nonisolated enum Direction: Equatable, Sendable {
+        case reference
+        case quieter
+        case louder
+    }
+
+    nonisolated static let stepCount = 4
+    nonisolated static let directions: [Direction] = [.reference, .quieter, .quieter, .louder]
+    nonisolated static let suggestedScalars: [Double] = [5.0 / 16, 3.0 / 16, 2.0 / 16, 8.0 / 16]
+    nonisolated static let volumeStep = 1.0 / 16
+    nonisolated static let lowestSuggestedScalar = 1.0 / 16
+    nonisolated static let highestSuggestedScalar = 12.0 / 16
+    /// Each step must lie at least this far beyond every recorded volume.
+    nonisolated static let minimumStepDecibels = 3.0
     /// Equivalent spacing for a percentage-only device.
-    nonisolated static let minimumStepPercent = 6.0
+    nonisolated static let minimumStepPercent = 5.0
     nonisolated static let snapCapture = 0.02
     nonisolated static let snapRelease = 0.03
 
+    /// Suggested slider position for `step`, given the scalars recorded for
+    /// the steps before it.
+    nonisolated static func suggestedScalar(step: Int, recorded: [Double]) -> Double {
+        let base = suggestedScalars[min(max(step, 0), stepCount - 1)]
+        let previous = recorded.prefix(max(0, step))
+        switch directions[min(max(step, 0), stepCount - 1)] {
+        case .reference:
+            return base
+        case .quieter:
+            guard let lowest = previous.min() else { return base }
+            return max(lowestSuggestedScalar, min(base, lowest - 2 * volumeStep))
+        case .louder:
+            guard let highest = previous.max() else { return base }
+            return min(highestSuggestedScalar, max(base, highest + 3 * volumeStep))
+        }
+    }
+
+    /// The four marks drawn under the volume slider: recorded volumes for
+    /// finished steps, suggestions for the rest.
+    nonisolated static func marks(recorded: [Double]) -> [Double] {
+        (0..<stepCount).map { step in
+            recorded.indices.contains(step) ? recorded[step] : suggestedScalar(step: step, recorded: recorded)
+        }
+    }
+
+    /// Why the current volume cannot be recorded for `step`, or nil.
+    nonisolated static func blocker(
+        step: Int,
+        reading: OutputDeviceVolumeReading,
+        recordedCoordinates: [Double]
+    ) -> String? {
+        if reading.isMuted || reading.scalar <= 0 { return "当前已静音。" }
+        let previous = recordedCoordinates.prefix(max(0, step))
+        let minimum = reading.axis == .decibels ? minimumStepDecibels : minimumStepPercent
+        switch directions[min(max(step, 0), stepCount - 1)] {
+        case .reference:
+            return nil
+        case .quieter:
+            guard let lowest = previous.min(), reading.coordinate > lowest - minimum else { return nil }
+            return "与上一步的音量过于接近，请再调低一些。"
+        case .louder:
+            guard let highest = previous.max(), reading.coordinate < highest + minimum else { return nil }
+            return "与参照音量过于接近，请再调高一些。"
+        }
+    }
+
     /// Snapping with hysteresis: a value within ±2 % of a mark takes the mark,
     /// and once held it is only released beyond ±3 %.
-    nonisolated static func snapped(_ value: Double, heldMark: Double?) -> (value: Double, mark: Double?) {
+    nonisolated static func snapped(
+        _ value: Double,
+        marks: [Double],
+        heldMark: Double?
+    ) -> (value: Double, mark: Double?) {
         if let heldMark, abs(value - heldMark) <= snapRelease {
             return (heldMark, heldMark)
         }
-        if let mark = recommendedScalars.min(by: { abs($0 - value) < abs($1 - value) }),
+        if let mark = marks.min(by: { abs($0 - value) < abs($1 - value) }),
            abs(mark - value) <= snapCapture {
             return (mark, mark)
         }

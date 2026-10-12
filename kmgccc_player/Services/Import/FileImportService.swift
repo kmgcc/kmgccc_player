@@ -1388,8 +1388,9 @@ final class FileImportService: FileImportServiceProtocol {
                     )?.map(\.id)
                 }
                 guard let savedIDs else { return nil }
-                let savedByID = Dictionary(uniqueKeysWithValues:
-                    await repository.fetchTracks(ids: savedIDs).map { ($0.id, $0) }
+                let savedByID = Dictionary(
+                    await repository.fetchTracks(ids: savedIDs).map { ($0.id, $0) },
+                    uniquingKeysWith: { existing, _ in existing }
                 )
                 return savedIDs.compactMap { savedByID[$0] }
             }

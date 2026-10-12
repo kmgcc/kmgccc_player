@@ -8,16 +8,35 @@ import Foundation
 /// future frames required to return PCM at its original media time.
 nonisolated final class AudioDSPProcessor: @unchecked Sendable {
     fileprivate struct RuntimeFilter {
+        static let defaultRampFrames = 128
+
         let bandIndex: Int
         let coefficients: DSPBiquadCoefficients
+        /// Coefficient glide length used when this filter takes over from a
+        /// previous processor's state.
+        let rampLength: Int
         var delay: [Double]
         var rampStart: DSPBiquadCoefficients?
         var rampRemaining = 0
 
+        init(bandIndex: Int, coefficients: DSPBiquadCoefficients, rampLength: Int = Self.defaultRampFrames, delay: [Double]) {
+            self.bandIndex = bandIndex
+            self.coefficients = coefficients
+            self.rampLength = max(1, rampLength)
+            self.delay = delay
+        }
+
+        /// An identity filter with settled state is exactly a pass-through.
+        var isIdle: Bool {
+            rampRemaining == 0 && coefficients.isIdentity && delay.allSatisfy { $0 == 0 }
+        }
+
         mutating func processBlock(_ samples: inout [Double], frames: Int, channels: Int, mask: [Bool]) {
+            guard !isIdle else { return }
             let target = coefficients
             let start = rampStart ?? target
             let remaining = rampRemaining
+            let length = rampLength
             delay.withUnsafeMutableBufferPointer { state in
                 samples.withUnsafeMutableBufferPointer { buffer in
                     for channel in 0..<channels where mask[channel] {
@@ -25,7 +44,7 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                         var z2 = state[channel * 2 + 1]
                         let rampFrames = min(frames, remaining)
                         for frame in 0..<rampFrames {
-                            let c = Self.interpolated(start, target, remaining: remaining - frame)
+                            let c = Self.interpolated(start, target, remaining: remaining - frame, length: length)
                             let offset = frame * channels + channel
                             let input = buffer[offset]
                             let output = c.b0 * input + z1
@@ -56,9 +75,14 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             rampRemaining = 0
         }
 
-        private static func interpolated(_ start: DSPBiquadCoefficients, _ end: DSPBiquadCoefficients, remaining: Int) -> DSPBiquadCoefficients {
-            guard remaining > 0 else { return end }
-            let t = Double(129 - remaining) / 128
+        private static func interpolated(
+            _ start: DSPBiquadCoefficients,
+            _ end: DSPBiquadCoefficients,
+            remaining: Int,
+            length: Int
+        ) -> DSPBiquadCoefficients {
+            guard remaining > 0, length > 0 else { return end }
+            let t = Double(length + 1 - remaining) / Double(length)
             return DSPBiquadCoefficients(b0: start.b0 + (end.b0 - start.b0) * t,
                 b1: start.b1 + (end.b1 - start.b1) * t, b2: start.b2 + (end.b2 - start.b2) * t,
                 a1: start.a1 + (end.a1 - start.a1) * t, a2: start.a2 + (end.a2 - start.a2) * t)
@@ -71,14 +95,23 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                 rampRemaining = source.rampRemaining
             } else {
                 rampStart = Self.interpolated(source.rampStart ?? source.coefficients,
-                    source.coefficients, remaining: source.rampRemaining)
-                rampRemaining = 128
+                    source.coefficients, remaining: source.rampRemaining, length: source.rampLength)
+                rampRemaining = rampLength
             }
+        }
+
+        /// A filter that did not exist before glides in from a flat response.
+        mutating func rampFromIdentity() {
+            guard !coefficients.isIdentity else { return }
+            rampStart = .identity
+            rampRemaining = rampLength
         }
     }
 
     fileprivate struct RuntimeNode {
         let nodeID: UUID
+        var typeID: String = ""
+        var configurationParameters: [String: DSPJSONValue] = [:]
         let channelMask: [Bool]
         let contributesToHeadroom: Bool
         var staticPeakResponseDB: Double
@@ -162,8 +195,44 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         return StateSnapshot(configuration: configuration, nodes: nodes, format: format)
     }
 
+    /// Parameter-channel handover. Every node that still exists keeps its
+    /// filter, oversampler and delay state; changed coefficients glide from
+    /// the old values and newly switched-on filters glide in from a flat
+    /// response. A script whose values changed starts fresh, because its
+    /// prepare block gives no continuity guarantee; the renderer's short
+    /// output crossfade covers that node.
     func inheritState(from source: AudioDSPProcessor) {
-        _ = restoreState(StateSnapshot(configuration: source.configuration, nodes: source.nodes, format: source.format))
+        guard source.format == format else { return }
+        for index in nodes.indices {
+            guard let old = source.nodes.first(where: {
+                $0.nodeID == nodes[index].nodeID && $0.typeID == nodes[index].typeID
+            }), old.channelMask == nodes[index].channelMask else {
+                for filterIndex in nodes[index].filters.indices {
+                    nodes[index].filters[filterIndex].rampFromIdentity()
+                }
+                continue
+            }
+            for filterIndex in nodes[index].filters.indices {
+                if let filter = old.filters.first(where: { $0.bandIndex == nodes[index].filters[filterIndex].bandIndex }) {
+                    nodes[index].filters[filterIndex].restore(from: filter)
+                } else {
+                    nodes[index].filters[filterIndex].rampFromIdentity()
+                }
+            }
+            if let bass = old.virtualBassKernel { nodes[index].virtualBassKernel?.copyState(from: bass) }
+            if let tube = old.tubeKernel { nodes[index].tubeKernel?.copyState(from: tube) }
+            if let script = old.scriptRuntime,
+               old.configurationParameters == nodes[index].configurationParameters {
+                nodes[index].scriptRuntime?.copyState(from: script)
+            }
+        }
+    }
+
+    /// True when every prepared node is a settled pass-through.
+    private static func hasAudibleWork(_ nodes: [RuntimeNode]) -> Bool {
+        nodes.contains { node in
+            node.effect != nil || node.filters.contains { !$0.coefficients.isIdentity }
+        }
     }
 
     @discardableResult
@@ -191,7 +260,7 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
     init(
         configuration: AudioDSPConfiguration,
         format: DSPAudioFormat,
-        context: DSPEqualLoudnessContext = .appOnly
+        context: DSPEqualLoudnessContext = .inactive
     ) {
         self.format = format
         self.configuration = configuration
@@ -216,7 +285,9 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                 }
 
                 if node.typeID == DSPNodeConfiguration.scriptTypeID {
-                    if let preparedNode = Self.prepareScriptNode(node, format: format, warnings: &warnings) {
+                    if var preparedNode = Self.prepareScriptNode(node, format: format, warnings: &warnings) {
+                        preparedNode.typeID = node.typeID
+                        preparedNode.configurationParameters = node.parameters
                         let totalCost = scriptOperationsPerSecond + preparedNode.scriptEstimatedOperationsPerSecond
                         if scriptCount < 4, totalCost <= DSPScriptCompiler.maximumChainWeightedOperationsPerSecond {
                             preparedNodes.append(preparedNode)
@@ -232,11 +303,13 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                 }
 
                 if Self.isNativeEffect(node.typeID) {
-                    if let preparedNode = Self.prepareNativeNode(
+                    if var preparedNode = Self.prepareNativeNode(
                         node,
                         format: format,
                         warnings: &warnings
                     ) {
+                        preparedNode.typeID = node.typeID
+                        preparedNode.configurationParameters = node.parameters
                         preparedNodes.append(preparedNode)
                     }
                     continue
@@ -300,9 +373,16 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                     continue
                 }
 
+                // Equal-loudness shelves stay in the chain at 0 dB so a volume
+                // change glides their coefficients instead of adding or
+                // removing a filter. A settled flat shelf costs nothing.
+                let isEqualLoudness = node.typeID == DSPNodeConfiguration.equalLoudnessTypeID
+                let rampLength = isEqualLoudness
+                    ? max(RuntimeFilter.defaultRampFrames, Int((format.sampleRate * 0.08).rounded()))
+                    : RuntimeFilter.defaultRampFrames
                 var filters: [RuntimeFilter] = []
                 filters.reserveCapacity(bands.count)
-                for (bandIndex, band) in bands.enumerated() where band.enabled {
+                for (bandIndex, band) in bands.enumerated() where band.enabled || isEqualLoudness {
                     let parameterPath = node.typeID == DSPNodeConfiguration.parametricEQTypeID
                         ? "nodes[\(node.nodeID.uuidString)].parameters.bands[\(bandIndex)]"
                         : "nodes[\(node.nodeID.uuidString)].parameters"
@@ -340,10 +420,11 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                         ))
                         continue
                     }
-                    guard !coefficients.isIdentity else { continue }
+                    guard !coefficients.isIdentity || isEqualLoudness else { continue }
                     filters.append(RuntimeFilter(
                         bandIndex: bandIndex,
                         coefficients: coefficients,
+                        rampLength: rampLength,
                         delay: Array(repeating: 0, count: format.channelCount * 2)
                     ))
                 }
@@ -351,6 +432,8 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                 if !filters.isEmpty, channelMask.contains(true) {
                     preparedNodes.append(RuntimeNode(
                         nodeID: node.nodeID,
+                        typeID: node.typeID,
+                        configurationParameters: node.parameters,
                         channelMask: channelMask,
                         contributesToHeadroom: contributesToHeadroom,
                         staticPeakResponseDB: 0,
@@ -414,7 +497,10 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                 retryable: false
             ))
         }
-        let hasHeadroomNodeWork = preparedNodes.contains(where: \.contributesToHeadroom)
+        let hasHeadroomNodeWork = preparedNodes.contains { node in
+            node.contributesToHeadroom
+                && (node.effect != nil || node.filters.contains { !$0.coefficients.isIdentity })
+        }
         let hasTrimWork = abs(normalizedInputTrimDB) > 1e-12
             || abs(normalizedOutputTrimDB) > 1e-12
         let hasHeadroomWork = hasHeadroomNodeWork || hasTrimWork
@@ -495,7 +581,7 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         self.preparationDiagnostics = warnings
         let processorBypassed = numericPreparationFailed
             || !configuration.enabled
-            || (preparedNodes.isEmpty
+            || (!Self.hasAudibleWork(preparedNodes)
                 && abs(preparedInputGain - 1) < 1e-12
                 && abs(preparedOutputGain - 1) < 1e-12)
         self.isBypassed = processorBypassed

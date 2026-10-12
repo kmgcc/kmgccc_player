@@ -14,6 +14,7 @@ struct AudioDSPSettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var activeDialog: AudioDSPDialogPresentation?
+    @State private var presetPendingDeletion: DSPPresetDocument?
     @State private var isShowingImportPicker = false
     @State private var isShowingExportPicker = false
     @State private var presetName = ""
@@ -64,6 +65,21 @@ struct AudioDSPSettingsView: View {
         }
         .sheet(item: $activeDialog) { dialog in
             dialogView(for: dialog)
+        }
+        .alert(
+            "删除预设",
+            isPresented: Binding(
+                get: { presetPendingDeletion != nil },
+                set: { if !$0 { presetPendingDeletion = nil } }
+            ),
+            presenting: presetPendingDeletion
+        ) { preset in
+            Button("删除", role: .destructive) {
+                deletePreset(id: preset.presetID)
+            }
+            Button("取消", role: .cancel) {}
+        } message: { preset in
+            Text("“\(preset.name)”将被删除。")
         }
         .fileImporter(
             isPresented: $isShowingImportPicker,
@@ -116,7 +132,7 @@ struct AudioDSPSettingsView: View {
                         .pickerStyle(.inline)
                         .labelsHidden()
                     } label: {
-                        Label("切换", systemImage: "arrow.left.arrow.right")
+                        Text("切换")
                     }
                     .audioDSPCapsuleButtonStyle()
                     .fixedSize()
@@ -138,17 +154,26 @@ struct AudioDSPSettingsView: View {
                             exportSelectedPreset()
                         }
                         .disabled(!canEditSelectedPreset)
+                        Divider()
+                        Button("删除", systemImage: "trash", role: .destructive) {
+                            presetPendingDeletion = selectedPreset
+                        }
+                        .disabled(!canEditSelectedPreset)
                     } label: {
-                        Text("更多")
+                        // A borderless menu with its own capsule fill gives a fixed
+                        // pill; the bordered pop-up style pads an icon-only label unevenly.
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 36, height: 24)
+                            .background(Capsule().fill(Color.primary.opacity(0.08)))
+                            .contentShape(Capsule())
                     }
-                    .audioDSPCapsuleButtonStyle()
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
                     .fixedSize()
-
-                    Button("删除", systemImage: "trash") {
-                        if let selectedPresetID { deletePreset(id: selectedPresetID) }
-                    }
-                    .audioDSPCapsuleButtonStyle()
-                    .disabled(!canEditSelectedPreset)
+                    .help("预设操作")
+                    .accessibilityLabel("预设操作")
                 }
 
                 // Incompatible presets cannot be selected, so they keep their
@@ -160,7 +185,7 @@ struct AudioDSPSettingsView: View {
                         Spacer(minLength: 8)
                         Button("导出") { exportPreset(preset) }
                             .audioDSPCapsuleButtonStyle()
-                        Button("删除") { deletePreset(id: preset.presetID) }
+                        Button("删除") { presetPendingDeletion = preset }
                             .audioDSPCapsuleButtonStyle()
                     }
                 }
@@ -509,8 +534,8 @@ struct AudioDSPSettingsView: View {
         }
     }
 
-    /// Deletes without confirmation. Deleting the current preset returns the
-    /// chain to the built-in flat preset rather than keeping a draft.
+    /// Runs after the confirmation dialog. Deleting the current preset returns
+    /// the chain to the built-in flat preset rather than keeping a draft.
     private func deletePreset(id: UUID) {
         guard let document = controller.presets.first(where: { $0.presetID == id }), !document.isBuiltIn else { return }
         let wasSelected = controller.selectedPresetID == id

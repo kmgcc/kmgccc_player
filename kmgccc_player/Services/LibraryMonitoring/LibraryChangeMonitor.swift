@@ -66,8 +66,13 @@ nonisolated final class FSEventsLibraryFileEventSource: LibraryFileEventSource, 
             releaseStream()
             guard !paths.isEmpty else { return }
             let box = CallbackBox(handler: handler)
-            let info = Unmanaged.passRetained(box).toOpaque()
-            var context = FSEventStreamContext(version: 0, info: info, retain: nil, release: { pointer in
+            let info = Unmanaged.passUnretained(box).toOpaque()
+            // FSEvents can release its context even when creation returns nil.
+            // Let each system retain be balanced by its own release callback.
+            var context = FSEventStreamContext(version: 0, info: info, retain: { pointer in
+                guard let pointer else { return nil }
+                return UnsafeRawPointer(Unmanaged<CallbackBox>.fromOpaque(pointer).retain().toOpaque())
+            }, release: { pointer in
                 guard let pointer else { return }
                 Unmanaged<CallbackBox>.fromOpaque(pointer).release()
             }, copyDescription: nil)
@@ -84,8 +89,10 @@ nonisolated final class FSEventsLibraryFileEventSource: LibraryFileEventSource, 
                 }
                 box.handler(events)
             }
-            guard let created = FSEventStreamCreate(nil, callback, &context, paths as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.2, UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot | kFSEventStreamCreateFlagUseCFTypes)) else {
-                Unmanaged<CallbackBox>.fromOpaque(info).release()
+            let created = withExtendedLifetime(box) {
+                FSEventStreamCreate(nil, callback, &context, paths as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.2, UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot | kFSEventStreamCreateFlagUseCFTypes))
+            }
+            guard let created else {
                 throw CocoaError(.fileReadUnknown)
             }
             stream = created

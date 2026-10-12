@@ -734,6 +734,30 @@ struct SidebarView: View {
             || importEnrichmentService.completionSummary != nil
             || activeLibraryImportTask != nil
             || !uiState.libraryImportFailureReports.isEmpty
+            || backgroundLoudnessSidebarProgress != nil
+    }
+
+    private var activeSessionForLoudness: LibrarySession? {
+        appSession.activeLibraryBinding.activeSession
+    }
+
+    /// Library-wide loudness measurement running in idle time. A Job the
+    /// listener started has its own card above.
+    private var backgroundLoudnessSidebarProgress: SidebarTaskProgress? {
+        guard let session = activeSessionForLoudness,
+              session.loudnessService.isBackgroundAnalysisVisible,
+              activeLibraryImportTask?.kind != .loudnessAnalysis else { return nil }
+        let ids = session.libraryViewModel.allTracks.map(\.id)
+        let progress = session.loudnessService.libraryProgress(trackIDs: ids)
+        let done = progress.measured + progress.failed
+        let total = max(ids.count, 1)
+        return SidebarTaskProgress(
+            title: "正在后台分析歌曲响度",
+            detail: "以提供音量均衡 · 剩余 \(progress.remaining.formatted()) 首",
+            fractionCompleted: Double(done) / Double(total),
+            state: .running,
+            systemImage: "waveform"
+        )
     }
 
     private var sidebarTaskProgressStack: some View {
@@ -758,6 +782,14 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
                 .help("点击查看导入状态")
                 .transition(.opacity)
+            }
+
+            if let progress = backgroundLoudnessSidebarProgress {
+                SidebarTaskProgressView(
+                    progress: progress,
+                    onPause: { activeSessionForLoudness?.pauseIdleLoudnessScan() }
+                )
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
             if let progress = updateSidebarProgress {
@@ -827,7 +859,8 @@ struct SidebarView: View {
                     .enrichment,
                     .automation,
                     .libraryBundleExport,
-                    .embeddedTagWrite
+                    .embeddedTagWrite,
+                    .loudnessAnalysis
                 ].contains(task.kind)
         }
     }
@@ -842,7 +875,18 @@ struct SidebarView: View {
             case .ncmConversion: title = "正在转换歌曲"
             case .enrichment: title = "正在补全信息"
             case .automation: title = "正在处理自动化任务"
+            case .loudnessAnalysis: title = "正在测量响度"
             default: title = "正在导入歌曲"
+            }
+            if task.kind == .loudnessAnalysis, let total = task.totalCount, total > 0 {
+                let completed = min(task.completedCount ?? 0, total)
+                return SidebarTaskProgress(
+                    title: title,
+                    detail: "\(completed) / \(total)",
+                    fractionCompleted: Double(completed) / Double(total),
+                    state: .running,
+                    systemImage: "waveform"
+                )
             }
             return SidebarTaskProgress(
                 title: title,
@@ -1817,6 +1861,7 @@ private struct SidebarTaskProgressView: View {
     let onDismiss: (() -> Void)?
     let onRetry: (() -> Void)?
     let onShowReleaseNotes: (() -> Void)?
+    let onPause: (() -> Void)?
 
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -1824,12 +1869,14 @@ private struct SidebarTaskProgressView: View {
         progress: SidebarTaskProgress,
         onDismiss: (() -> Void)? = nil,
         onRetry: (() -> Void)? = nil,
-        onShowReleaseNotes: (() -> Void)? = nil
+        onShowReleaseNotes: (() -> Void)? = nil,
+        onPause: (() -> Void)? = nil
     ) {
         self.progress = progress
         self.onDismiss = onDismiss
         self.onRetry = onRetry
         self.onShowReleaseNotes = onShowReleaseNotes
+        self.onPause = onPause
     }
 
     var body: some View {
@@ -1860,6 +1907,19 @@ private struct SidebarTaskProgressView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(themeStore.accentColor)
                     .help("重新检查更新")
+                }
+
+                if let onPause {
+                    Button(action: onPause) {
+                        Image(systemName: "pause.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .frame(width: 18, height: 18)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                    .help("暂停分析")
+                    .accessibilityLabel("暂停分析")
                 }
 
                 if let onDismiss {
@@ -1922,7 +1982,7 @@ private struct SidebarTaskProgressView: View {
                     .scaleEffect(0.7)
                     .tint(themeStore.accentColor)
             } else {
-                Image(systemName: "arrow.down.circle")
+                Image(systemName: progress.systemImage ?? "arrow.down.circle")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(themeStore.accentColor)
             }

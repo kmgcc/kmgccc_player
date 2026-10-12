@@ -283,40 +283,67 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
         get {
             guard typeID == Self.equalLoudnessTypeID,
                   let strength = parameters["strength"]?.numberValue,
-                  let maxBassGainDB = parameters["maxBassGainDB"]?.numberValue,
-                  let maxTrebleGainDB = parameters["maxTrebleGainDB"]?.numberValue,
                   let bassFrequencyHz = parameters["bassFrequencyHz"]?.numberValue,
                   let bassQ = parameters["bassQ"]?.numberValue,
                   let trebleFrequencyHz = parameters["trebleFrequencyHz"]?.numberValue,
                   let trebleQ = parameters["trebleQ"]?.numberValue,
-                  let compensationWindowDB = parameters["compensationWindowDB"]?.numberValue,
                   case .string(let rawHeadroomMode)? = parameters["headroomMode"],
                   let headroomMode = DSPHeadroomMode(rawValue: rawHeadroomMode)
             else { return nil }
             return DSPEqualLoudnessParameters(
                 strength: strength,
-                maxBassGainDB: maxBassGainDB,
-                maxTrebleGainDB: maxTrebleGainDB,
                 bassFrequencyHz: bassFrequencyHz,
                 bassQ: bassQ,
                 trebleFrequencyHz: trebleFrequencyHz,
                 trebleQ: trebleQ,
-                compensationWindowDB: compensationWindowDB,
                 headroomMode: headroomMode
             )
         }
         set {
             guard typeID == Self.equalLoudnessTypeID, let newValue else { return }
             parameters["strength"] = .number(newValue.strength)
-            parameters["maxBassGainDB"] = .number(newValue.maxBassGainDB)
-            parameters["maxTrebleGainDB"] = .number(newValue.maxTrebleGainDB)
             parameters["bassFrequencyHz"] = .number(newValue.bassFrequencyHz)
             parameters["bassQ"] = .number(newValue.bassQ)
             parameters["trebleFrequencyHz"] = .number(newValue.trebleFrequencyHz)
             parameters["trebleQ"] = .number(newValue.trebleQ)
-            parameters["compensationWindowDB"] = .number(newValue.compensationWindowDB)
             parameters["headroomMode"] = .string(newValue.headroomMode.rawValue)
         }
+    }
+
+    /// Per-device calibrations of an equal-loudness node. They belong to the
+    /// node, so each preset keeps its own; a new node starts uncalibrated.
+    nonisolated var equalLoudnessCalibrations: [EqualLoudnessCalibration] {
+        get {
+            guard typeID == Self.equalLoudnessTypeID,
+                  case .array(let values)? = parameters["calibrations"] else { return [] }
+            return values.compactMap(EqualLoudnessCalibration.init(json:))
+        }
+        set {
+            guard typeID == Self.equalLoudnessTypeID else { return }
+            parameters["calibrations"] = newValue.isEmpty ? nil : .array(newValue.map(\.jsonValue))
+        }
+    }
+
+    nonisolated func equalLoudnessCalibration(forDeviceUID uid: String) -> EqualLoudnessCalibration? {
+        guard typeID == Self.equalLoudnessTypeID,
+              case .array(let values)? = parameters["calibrations"] else { return nil }
+        for value in values {
+            guard case .object(let fields) = value, fields["deviceUID"] == .string(uid) else { continue }
+            return EqualLoudnessCalibration(json: value)
+        }
+        return nil
+    }
+
+    /// Replaces the calibration for the calibration's device, or removes the
+    /// one for `removingDeviceUID`.
+    nonisolated mutating func setEqualLoudnessCalibration(
+        _ calibration: EqualLoudnessCalibration?,
+        removingDeviceUID uid: String? = nil
+    ) {
+        let target = calibration?.deviceUID ?? uid
+        var calibrations = equalLoudnessCalibrations.filter { $0.deviceUID != target }
+        if let calibration { calibrations.append(calibration) }
+        equalLoudnessCalibrations = calibrations
     }
 
     nonisolated var stereoWidthParameters: DSPStereoWidthParameters? {
@@ -650,57 +677,49 @@ nonisolated struct DSPTubeParameters: Codable, Equatable, Sendable {
     }
 }
 
+/// How much bass and treble the node adds comes from the routed device's
+/// calibration (or the fixed default curve); the node itself only scales it.
 nonisolated struct DSPEqualLoudnessParameters: Codable, Equatable, Sendable {
     nonisolated static let strengthRange: ClosedRange<Double> = 0...1
     nonisolated static let bassFrequencyRange: ClosedRange<Double> = 20...500
     nonisolated static let trebleFrequencyRange: ClosedRange<Double> = 1_000...20_000
     nonisolated static let shelfSlopeRange = DSPParametricEQBand.shelfSlopeRange
-    nonisolated static let compensationWindowRange: ClosedRange<Double> = 1...60
-    nonisolated static let maxBassGainRange: ClosedRange<Double> = 0...12
-    nonisolated static let maxTrebleGainRange: ClosedRange<Double> = 0...6
+    /// Shelf gain limits. Volumes louder than the calibration reference may
+    /// take a cut, so both directions are allowed.
+    nonisolated static let bassGainRange: ClosedRange<Double> = -12...12
+    nonisolated static let trebleGainRange: ClosedRange<Double> = -9...9
     nonisolated static let supportedParameterKeys: Set<String> = [
         "strength",
-        "maxBassGainDB",
-        "maxTrebleGainDB",
         "bassFrequencyHz",
         "bassQ",
         "trebleFrequencyHz",
         "trebleQ",
-        "compensationWindowDB",
         "headroomMode",
+        "calibrations",
     ]
 
     var strength: Double
-    var maxBassGainDB: Double
-    var maxTrebleGainDB: Double
     var bassFrequencyHz: Double
     /// RBJ shelf slope S (0.25...1), retained as `Q` in the node schema.
     var bassQ: Double
     var trebleFrequencyHz: Double
     /// RBJ shelf slope S (0.25...1), retained as `Q` in the node schema.
     var trebleQ: Double
-    var compensationWindowDB: Double
     var headroomMode: DSPHeadroomMode
 
     nonisolated init(
         strength: Double = 1,
-        maxBassGainDB: Double = 6,
-        maxTrebleGainDB: Double = 3,
         bassFrequencyHz: Double = 70,
         bassQ: Double = 0.71,
         trebleFrequencyHz: Double = 3_500,
         trebleQ: Double = 0.71,
-        compensationWindowDB: Double = 20,
         headroomMode: DSPHeadroomMode = .automatic
     ) {
         self.strength = strength
-        self.maxBassGainDB = maxBassGainDB
-        self.maxTrebleGainDB = maxTrebleGainDB
         self.bassFrequencyHz = bassFrequencyHz
         self.bassQ = bassQ
         self.trebleFrequencyHz = trebleFrequencyHz
         self.trebleQ = trebleQ
-        self.compensationWindowDB = compensationWindowDB
         self.headroomMode = headroomMode
     }
 }
@@ -733,6 +752,35 @@ nonisolated struct AudioDSPConfiguration: Codable, Equatable, Sendable {
         AudioDSPConfiguration(
             nodes: [.parametricEQ(nodeID: flatEQNodeID)]
         )
+    }
+
+    /// Everything that changes the processing topology: node set and order,
+    /// quality, channel scope, EQ band types and script source. Two
+    /// configurations with the same signature differ only in values (gains,
+    /// frequencies, mixes, trims, node and chain switches), which the renderer
+    /// applies through its parameter channel without flushing queued audio.
+    nonisolated var structureSignature: [String] {
+        nodes.map { node in
+            var parts = [
+                node.nodeID.uuidString, node.typeID, String(node.algorithmVersion),
+                node.quality, node.channelPolicy,
+            ]
+            switch node.typeID {
+            case DSPNodeConfiguration.parametricEQTypeID:
+                parts += (node.parametricEQBands ?? []).map(\.type.rawValue)
+            case DSPNodeConfiguration.scriptTypeID:
+                if let script = node.scriptParameters {
+                    parts += [String(script.languageVersion), script.source]
+                }
+            default:
+                break
+            }
+            return parts.joined(separator: "|")
+        }
+    }
+
+    nonisolated func hasSameStructure(as other: AudioDSPConfiguration) -> Bool {
+        structureSignature == other.structureSignature
     }
 }
 
@@ -784,94 +832,73 @@ nonisolated extension DSPAudioFormat {
     }
 }
 
+/// Audio transport fade. Only the switch is a user setting;
+/// play fade duration (320 ms), pause fade duration (700 ms),
+/// floor dB (−40 dB), and curve (perceptualDB) are fixed.
 nonisolated struct AudioFadeConfiguration: Codable, Equatable, Sendable {
-    var enabled: Bool
-    var playFadeMs: Double
-    var pauseFadeMs: Double
-    var curve: String
-    var floorDB: Double
+    nonisolated static let fixedPlayFadeMs = 320.0
+    nonisolated static let fixedPauseFadeMs = 700.0
+    nonisolated static let fixedFloorDB = -40.0
+    nonisolated static let fixedCurve = "perceptualDB"
 
-    nonisolated init(
-        enabled: Bool = false,
-        playFadeMs: Double = 100,
-        pauseFadeMs: Double = 120,
-        curve: String = "perceptualDB",
-        floorDB: Double = -80
-    ) {
+    var enabled: Bool
+
+    nonisolated var playFadeMs: Double { Self.fixedPlayFadeMs }
+    nonisolated var pauseFadeMs: Double { Self.fixedPauseFadeMs }
+    nonisolated var floorDB: Double { Self.fixedFloorDB }
+    nonisolated var curve: String { Self.fixedCurve }
+
+    nonisolated init(enabled: Bool = false) {
         self.enabled = enabled
-        self.playFadeMs = playFadeMs
-        self.pauseFadeMs = pauseFadeMs
-        self.curve = curve
-        self.floorDB = floorDB
     }
 }
 
+/// Volume normalization. Only the switch and the target are user settings;
+/// the boost, attenuation and true-peak limits are fixed. Album handling is
+/// decided per album (automatic judgement plus a per-album override).
 nonisolated struct AudioLoudnessConfiguration: Codable, Equatable, Sendable {
-    var enabled: Bool
-    var mode: String
-    var targetLUFS: Double
-    var maxBoostDB: Double
-    var maxAttenuationDB: Double
-    var truePeakCeilingDBTP: Double
-    var missingPolicy: String
-    var allowBackgroundScan: Bool
+    nonisolated static let targetRange: ClosedRange<Double> = -23 ... -14
+    nonisolated static let defaultTargetLUFS = -18.0
+    nonisolated static let fixedMaxBoostDB = 12.0
+    nonisolated static let fixedMaxAttenuationDB = 24.0
+    nonisolated static let fixedTruePeakCeilingDBTP = -1.0
 
-    nonisolated init(
-        enabled: Bool = false,
-        mode: String = "auto",
-        targetLUFS: Double = -18,
-        maxBoostDB: Double = 12,
-        maxAttenuationDB: Double = 24,
-        truePeakCeilingDBTP: Double = -1,
-        missingPolicy: String = "unity",
-        allowBackgroundScan: Bool = true
-    ) {
+    var enabled: Bool
+    var targetLUFS: Double
+
+    nonisolated var maxBoostDB: Double { Self.fixedMaxBoostDB }
+    nonisolated var maxAttenuationDB: Double { Self.fixedMaxAttenuationDB }
+    nonisolated var truePeakCeilingDBTP: Double { Self.fixedTruePeakCeilingDBTP }
+
+    nonisolated init(enabled: Bool = false, targetLUFS: Double = Self.defaultTargetLUFS) {
         self.enabled = enabled
-        self.mode = mode
         self.targetLUFS = targetLUFS
-        self.maxBoostDB = maxBoostDB
-        self.maxAttenuationDB = maxAttenuationDB
-        self.truePeakCeilingDBTP = truePeakCeilingDBTP
-        self.missingPolicy = missingPolicy
-        self.allowBackgroundScan = allowBackgroundScan
     }
 }
 
 nonisolated struct AudioProcessingGlobals: Codable, Equatable, Sendable {
     var fade: AudioFadeConfiguration
     var loudness: AudioLoudnessConfiguration
-    var deviceReferences: [String: Double]
 
     nonisolated init(
         fade: AudioFadeConfiguration = AudioFadeConfiguration(),
-        loudness: AudioLoudnessConfiguration = AudioLoudnessConfiguration(),
-        deviceReferences: [String: Double] = [:]
+        loudness: AudioLoudnessConfiguration = AudioLoudnessConfiguration()
     ) {
         self.fade = fade
         self.loudness = loudness
-        self.deviceReferences = deviceReferences
     }
 }
 
 nonisolated struct AudioProcessingRuntimeState: Codable, Equatable, Sendable {
     var transport: AudioTransportTransitionState?
     var outputDeviceUID: String?
-    var appGain: Double
-    var volumeSource: String
-    var referenceDB: Double?
 
     nonisolated init(
         transport: AudioTransportTransitionState? = nil,
-        outputDeviceUID: String? = nil,
-        appGain: Double = 1,
-        volumeSource: String = "appOnly",
-        referenceDB: Double? = nil
+        outputDeviceUID: String? = nil
     ) {
         self.transport = transport
         self.outputDeviceUID = outputDeviceUID
-        self.appGain = appGain
-        self.volumeSource = volumeSource
-        self.referenceDB = referenceDB
     }
 }
 

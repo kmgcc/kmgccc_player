@@ -259,6 +259,6 @@ P5 节点的全部参数、默认值、质量与声道策略见 `dsp.schema.node
 
 ### P3–P4 全局处理与等响
 
-`audio.get/patch` 开放全局 fade、固定 loudness 和设备参考。`audio.loudness.get` 使用 audio.read/library.read 读取派生缓存；`audio.loudness.analyze` 使用 audio.write/library.read 创建支持取消、重试和 MCP Tasks 的资料库 Job。测量结果不改变当前曲目的增益。
+`audio.get/patch` 开放全局 fade 与音量均衡（开关和目标响度）。`audio.loudness.get` 使用 audio.read/library.read 读取派生缓存；`audio.loudness.analyze` 使用 audio.write/library.read 创建支持取消、重试和 MCP Tasks 的 Job，不占用资料库写入队列。测量结果不改变当前曲目的增益，唯一例外是专辑增益首次就绪时的缓慢过渡。
 
-`dsp.schema` 增加可排序、可保存的 `equalLoudness` v1 节点，`dsp.state.equalLoudness` 包含 App 音量来源、设备/相对参考、预期 shelf 增益与应用阶段。`kmgccc://audio/state` 可读取和订阅全局与实际 transport 状态，沿用现有订阅 worker。
+`dsp.schema` 增加可排序、可保存的 `equalLoudness` v1 节点，节点参数只调节补偿强度与架式滤波器形状；补偿量来自实际输出设备的系统音量与该设备的标定曲线（未标定时使用默认曲线）。`dsp.state.equalLoudness` 报告设备、音量、曲线来源与预期 shelf 增益。`kmgccc://audio/state` 可读取和订阅全局与实际 transport 状态，沿用现有订阅 worker。

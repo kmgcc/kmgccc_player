@@ -17,6 +17,55 @@ private final class SidecarWriteSpy: @unchecked Sendable {
 
 @MainActor
 final class RepositoryImportCommitTests: XCTestCase {
+    func testRepeatedCommitKeepsOneRuntimeInstancePerTrackID() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.cleanup() }
+        let repository = fixture.makeRepository(importWriter: { _, _ in true })
+        let original = makeTrack(title: "Song", root: fixture.paths.rootURL)
+        _ = await repository.commitImportedTracks([original])
+        let copy = makeTrack(title: "Song", root: fixture.paths.rootURL, id: original.id)
+
+        let result = await repository.commitImportedTracks([copy])
+
+        XCTAssertEqual(result.persistedTrackIDs, [original.id])
+        let tracks = await repository.fetchTracks(ids: [original.id])
+        XCTAssertEqual(tracks.count, 1)
+        XCTAssertTrue(tracks.first === original)
+    }
+
+    func testDuplicateCommitInputWritesAndAttachesOnce() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.cleanup() }
+        let spy = SidecarWriteSpy()
+        let repository = fixture.makeRepository(importWriter: { track, _ in spy.write(track) })
+        let track = makeTrack(title: "Song", root: fixture.paths.rootURL)
+
+        let result = await repository.commitImportedTracks([track, track])
+
+        XCTAssertEqual(result.persistedTrackIDs, [track.id])
+        XCTAssertEqual(spy.count(for: track.id), 1)
+        let tracks = await repository.fetchTracks(in: nil)
+        XCTAssertEqual(tracks.map(\.id), [track.id])
+    }
+
+    func testTrackPublishedDuringVisibilityGateIsNotAttachedAgain() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.cleanup() }
+        let repository = fixture.makeRepository(importWriter: { _, _ in true })
+        let imported = makeTrack(title: "Song", root: fixture.paths.rootURL)
+        let published = makeTrack(title: "Song", root: fixture.paths.rootURL, id: imported.id)
+
+        let result = await repository.commitImportedTracks([imported]) { ids in
+            await repository.addTrack(published)
+            return Set(ids)
+        }
+
+        XCTAssertEqual(result.persistedTrackIDs, [imported.id])
+        let tracks = await repository.fetchTracks(in: nil)
+        XCTAssertEqual(tracks.count, 1)
+        XCTAssertTrue(tracks.first === published)
+    }
+
     func testCommitWritesEachSidecarOnceAndAttachesOnlySuccessfulTracks() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.cleanup() }
@@ -299,7 +348,8 @@ final class RepositoryImportCommitTests: XCTestCase {
     private func makeTrack(
         title: String,
         root: URL,
-        locator: kmgccc_player.ReferencedFileLocator? = nil
+        locator: kmgccc_player.ReferencedFileLocator? = nil,
+        id: UUID = UUID()
     ) -> Track {
         let referenced = locator ?? kmgccc_player.ReferencedFileLocator(
             fileBookmarkData: Data("bookmark".utf8),
@@ -307,6 +357,7 @@ final class RepositoryImportCommitTests: XCTestCase {
             fingerprint: .init(fileSize: 1, modifiedAt: 1)
         )
         return Track(
+            id: id,
             title: title,
             fileBookmarkData: referenced.fileBookmarkData,
             mediaLocator: .referenced(referenced),

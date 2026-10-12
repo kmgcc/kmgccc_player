@@ -581,7 +581,8 @@ final class LibraryMetadataSync {
             updatedAt: Date(),
             trackSortKey: firstNonEmpty(candidates.map(\.sidecar.trackSortKey)),
             trackSortOrder: firstNonEmpty(candidates.map(\.sidecar.trackSortOrder)),
-            customTrackOrder: firstNonEmptyUUIDArray(candidates.map(\.sidecar.customTrackOrder))
+            customTrackOrder: firstNonEmptyUUIDArray(candidates.map(\.sidecar.customTrackOrder)),
+            loudnessUnified: keeper.sidecar.loudnessUnified ?? candidates.compactMap(\.sidecar.loudnessUnified).first
         )
     }
 
@@ -795,7 +796,8 @@ final class LibraryMetadataSync {
                 updatedAt: now,
                 trackSortKey: candidateSidecar.trackSortKey,
                 trackSortOrder: candidateSidecar.trackSortOrder,
-                customTrackOrder: candidateSidecar.customTrackOrder
+                customTrackOrder: candidateSidecar.customTrackOrder,
+                loudnessUnified: sortedCandidates.compactMap(\.sidecar.loudnessUnified).first
             )
             let artworkDataToPersist = needsArtworkCopy
                 ? artworkSourceURL.flatMap { try? Data(contentsOf: $0) }
@@ -839,7 +841,8 @@ final class LibraryMetadataSync {
             updatedAt: mergedSidecar.updatedAt,
             trackCount: section.trackCount,
             totalDuration: totalDuration,
-            isOrphaned: false
+            isOrphaned: false,
+            loudnessUnifiedOverride: sortedCandidates.compactMap(\.sidecar.loudnessUnified).first
         )
         if entry.artworkFileURL != nil, entry.existingArtworkURL == nil {
             entry.artworkFileURL = nil

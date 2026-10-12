@@ -53,8 +53,15 @@ nonisolated struct DSPOutputDevice: Identifiable, Equatable, Sendable {
 final class AudioDSPDeviceController {
     private(set) var settings: DSPDeviceSettings
     private(set) var availableDevices: [AudioOutputDeviceDescriptor] = []
-    private(set) var currentOutputDeviceUID: String?
+    private(set) var currentOutputDeviceUID: String? {
+        didSet {
+            guard oldValue != currentOutputDeviceUID else { return }
+            onCurrentOutputDeviceChange?(currentOutputDeviceUID)
+        }
+    }
     private(set) var isLoaded = false
+    /// The confirmed playback route, shared with equal-loudness observation.
+    @ObservationIgnored var onCurrentOutputDeviceChange: (@MainActor (String?) -> Void)?
 
     @ObservationIgnored private var refreshOutputRoute: (() -> Void)?
     @ObservationIgnored private var outputRouteOwnerID: ObjectIdentifier?

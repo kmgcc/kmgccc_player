@@ -980,6 +980,9 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
     var trackSortKey: String?
     var trackSortOrder: String?
     var customTrackOrder: [UUID]?
+    /// Listener override for album-wide volume normalization; nil follows
+    /// the automatic judgement.
+    var loudnessUnified: Bool?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion
@@ -1006,6 +1009,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         case trackSortKey
         case trackSortOrder
         case customTrackOrder
+        case loudnessUnified
     }
 
     init(
@@ -1032,8 +1036,10 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         updatedAt: Date,
         trackSortKey: String? = nil,
         trackSortOrder: String? = nil,
-        customTrackOrder: [UUID]? = nil
+        customTrackOrder: [UUID]? = nil,
+        loudnessUnified: Bool? = nil
     ) {
+        self.loudnessUnified = loudnessUnified
         self.schemaVersion = schemaVersion
         self.id = id
         self.canonicalKey = canonicalKey
@@ -1095,6 +1101,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         trackSortKey = try c.decodeIfPresent(String.self, forKey: .trackSortKey)
         trackSortOrder = try c.decodeIfPresent(String.self, forKey: .trackSortOrder)
         customTrackOrder = try c.decodeIfPresent([UUID].self, forKey: .customTrackOrder)
+        loudnessUnified = try c.decodeIfPresent(Bool.self, forKey: .loudnessUnified)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1125,5 +1132,6 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         try c.encodeIfPresent(trackSortKey, forKey: .trackSortKey)
         try c.encodeIfPresent(trackSortOrder, forKey: .trackSortOrder)
         try c.encodeIfPresent(customTrackOrder, forKey: .customTrackOrder)
+        try c.encodeIfPresent(loudnessUnified, forKey: .loudnessUnified)
     }
 }

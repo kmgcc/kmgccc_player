@@ -9,6 +9,7 @@
 //
 
 import AVFoundation
+import Accelerate
 import Foundation
 import os
 
@@ -250,8 +251,21 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let sourceFormat: DSPAudioFormat
         let formatDescription: CMAudioFormatDescription
         var nextSourceFrame: AVAudioFramePosition
+        /// Target of the chain-head loudness stage for this source.
         var normalizationGain: Double = 1
+        /// Glide length for the next change of `normalizationGain`.
+        var pendingGainGlideSeconds: Double?
         var didReportExhaustion = false
+    }
+
+    /// Chain-head loudness gain, advanced once per produced block. Gains move
+    /// along a dB-linear glide so a switch, a retarget or a gapless boundary
+    /// never steps the level.
+    private struct LoudnessGainRamp {
+        var current: Double
+        var target: Double
+        var framesRemaining: Int
+        var segmentID: UUID
     }
 
     private struct DSPPCMBlock {
@@ -303,7 +317,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let presentationTime: Double
         let frameCount: Int
         let format: DSPAudioFormat
-        let normalizationGain: Double
+        /// Loudness gain at the first and after the last frame of this block.
+        let gainStart: Double
+        let gainEnd: Double
         var request: DSPApplyRequest?
         var headroomDB: Double
         var processingLatencyFrames: Int
@@ -451,8 +467,22 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     private var dspHorizonTransition: DSPHorizonTransition?
     private var currentVolume: Float = 1
     private var fadeConfiguration = AudioFadeConfiguration()
-    private var desiredDSPContext = DSPEqualLoudnessContext.appOnly
-    private var dspContext = DSPEqualLoudnessContext.appOnly
+    private var desiredDSPContext = DSPEqualLoudnessContext.inactive
+    private var dspContext = DSPEqualLoudnessContext.inactive
+    private var loudnessRamp: LoudnessGainRamp?
+    /// Volume normalization keeps the short queue so a switch is heard soon.
+    private var loudnessNormalizationActive = false
+    /// Set while queued output is being flushed to re-render it from an
+    /// earlier boundary; the producer stays paused until the flush returns.
+    private var producerRewindID: UUID?
+    private var lastAudibleLoudness: (segmentID: UUID, gainDB: Double)?
+    private var lastSupplyShortfallReport: TimeInterval = 0
+    private static let defaultGainGlideSeconds = 0.25
+    private static let gaplessGainGlideSeconds = 0.008
+
+    private var isProducerHeld: Bool {
+        activeDSPTransaction != nil || producerRewindID != nil
+    }
     private let outputGainController: PlaybackOutputGainController
     /// Core Audio UID currently selected for this renderer. On macOS the
     /// synchronizer uses the attached audio renderer's device clock, so keeping
@@ -489,6 +519,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     var onSegmentExhausted: ((RendererSegmentDescriptor) -> Void)?
     var onFailure: ((_ segmentID: UUID?, _ error: RendererPipelineError) -> Void)?
     var onDSPApplyEvent: (@Sendable (DSPApplyEvent) -> Void)?
+    /// Main-queue report of the loudness gain at the output clock.
+    var onAudibleLoudnessGain: ((UUID, Double) -> Void)?
+    /// Main-queue notice that the output queue ran short.
+    var onSupplyShortfall: (() -> Void)?
     var onTransportStateChange: (@Sendable (AudioTransportTransitionState, UUID, UUID) -> Void)?
 
     private static let feedInterval: TimeInterval = 0.1
@@ -610,17 +644,55 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         pipelineQueue.async { [weak self] in self?.fadeConfiguration = configuration }
     }
 
+    /// Equal-loudness control changes travel the parameter channel: only the
+    /// two shelf gains move, the chain keeps its state, and a change that
+    /// leaves every shelf where it is does no work at all.
     func setEqualLoudnessContext(_ context: DSPEqualLoudnessContext) {
         pipelineQueue.async { [weak self] in
             guard let self, self.desiredDSPContext != context else { return }
+            let previous = self.desiredDSPContext
             self.desiredDSPContext = context
             guard let request = self.latestAcceptedDSPRequest,
                   request.configuration.enabled,
-                  request.configuration.nodes.contains(where: { $0.enabled && $0.typeID == "equalLoudness" }) else {
+                  request.configuration.nodes.contains(where: {
+                      $0.enabled && $0.typeID == DSPNodeConfiguration.equalLoudnessTypeID
+                  }) else {
                 self.dspContext = context
                 return
             }
+            let before = DSPEqualLoudnessMath.chainGains(configuration: request.configuration, context: previous)
+            let after = DSPEqualLoudnessMath.chainGains(configuration: request.configuration, context: context)
+            let unchanged = before.count == after.count && zip(before, after).allSatisfy {
+                abs($0.bassDB - $1.bassDB) < 0.01 && abs($0.trebleDB - $1.trebleDB) < 0.01
+            }
+            guard !unchanged else { return }
             self.applyDSP(request.configuration, revision: request.revision, requestID: request.requestID)
+        }
+    }
+
+    /// Keeps the short queue while volume normalization is on, so switching it
+    /// or retargeting a gain is heard within one short queue depth.
+    func setLoudnessNormalizationActive(_ active: Bool) {
+        pipelineQueue.async { [weak self] in self?.loudnessNormalizationActive = active }
+    }
+
+    /// Retargets the chain-head loudness gain of a queued source. The current
+    /// source glides to the new gain over `glideSeconds`; when the queued
+    /// output is deep, it is re-rendered from a safe boundary so the change
+    /// starts within a few hundred milliseconds instead of after the queue.
+    func setNormalizationGain(_ gain: Double, forSegment segmentID: UUID, glideSeconds: Double) {
+        pipelineQueue.async { [weak self] in
+            guard let self,
+                  let index = self.segments.firstIndex(where: { $0.descriptor.id == segmentID }) else { return }
+            let bounded = gain.isFinite ? max(0, gain) : 1
+            guard abs(self.segments[index].normalizationGain - bounded) > 1e-9 else { return }
+            self.segments[index].normalizationGain = bounded
+            self.segments[index].pendingGainGlideSeconds = max(0.001, glideSeconds)
+            let clock = self.currentSynchronizerClockSeconds()
+            let audibleSegment = self.activeSegmentID(atTimelineClock: clock)
+            if audibleSegment == segmentID, self.nextPresentationTime - clock > 0.45 {
+                self.rewindProducerForGainChange(segmentID: segmentID)
+            }
         }
     }
 
@@ -708,7 +780,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 warnings: [],
                 diagnostics: []
             )
-            guard self.activeDSPTransaction == nil else { return }
+            guard !self.isProducerHeld else { return }
             self.startNextDSPApply(retryCount: 0, afterPTS: nil)
         }
     }
@@ -835,7 +907,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     }
 
     private func startNextDSPApply(retryCount: Int, afterPTS: Double?) {
-        guard activeDSPTransaction == nil, dspPreparationID == nil,
+        guard !isProducerHeld, dspPreparationID == nil,
               let request = queuedDSPApply, isLoaded,
               timelineGenerationGate.isCurrent(timelineGeneration) else { return }
         queuedDSPApply = nil
@@ -860,6 +932,16 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                       self.timelineGenerationGate.isCurrent(timeline) else { return }
                 guard self.dspRequestGate.isCurrent(request.token) else {
                     self.finishSupersededPreparation(id: nil, request: request)
+                    return
+                }
+                // Parameter channel: the same topology with new values is
+                // adopted at the next produced block. Filters, oversamplers
+                // and reverb-like tails keep their state, so no queued audio
+                // is flushed and the edit is heard after one short queue.
+                if let effective = self.effectiveDSPRequest,
+                   effective.configuration.hasSameStructure(as: request.configuration),
+                   self.dspProcessor?.format == processor.format {
+                    self.installDSPAtQueueHorizon(request, processor: processor)
                     return
                 }
                 guard let boundary = self.replacementBoundary(afterPTS: afterPTS), boundary.format == processor.format else {
@@ -1217,7 +1299,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                             sourceFrameStart: boundary.sourceFrameStart,
                             presentationTime: boundary.presentationTime,
                             format: boundary.format,
-                            pcm: Self.applyingFixedGain(pcm, gain: boundary.normalizationGain)
+                            pcm: Self.applyingGainRamp(pcm, from: boundary.gainStart, to: boundary.gainEnd)
                         )
                         result[DSPBlockKey(boundary)] = block
                     }
@@ -1393,15 +1475,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         for block in transaction.blocks {
             renderer.enqueue(block.sampleBuffer)
         }
-        analysisQueue.removeAll { $0.presentationTime >= transaction.startPTS - 0.000_001 }
-        for block in transaction.blocks {
-            appendAnalysisChunks(
-                block.output,
-                presentationTime: block.raw.presentationTime,
-                segmentID: block.raw.segmentID,
-                revision: transaction.request.revision
-            )
-        }
+        // Analysis chunks carry the decoded source, which a DSP replacement
+        // leaves unchanged.
         // Crossfaded buffers retain their actual old/new mixture even when the
         // new processor is bypassed. A following edit may select an earlier T.
         var replacementByKey = [DSPBlockKey: DSPReplacementBlock]()
@@ -1641,6 +1716,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             self.dspOutputBoundaries.removeAll(keepingCapacity: false)
             self.lastAudibleDSPFormat = nil
             self.activeDSPTransaction = nil
+            self.producerRewindID = nil
+            // A new track or a seek starts at its own gain without a glide.
+            self.loudnessRamp = nil
             self.dspPreparationID = nil
             self.preparingDSPRequest = nil
             self.dspHorizonTransition = nil
@@ -1852,7 +1930,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             requestID: base.requestID, token: base.token, context: desiredDSPContext)
         queuedDSPApply = request
         latestAcceptedDSPRequest = request
-        if activeDSPTransaction == nil { startNextDSPApply(retryCount: 0, afterPTS: nil) }
+        if !isProducerHeld { startNextDSPApply(retryCount: 0, afterPTS: nil) }
     }
 
     /// Remove an already-queued prediction after the named segment. The
@@ -2074,6 +2152,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             self.lastAudibleDSPFormat = nil
             self.pendingAudibleDSPEvent = nil
             self.activeDSPTransaction = nil
+            self.producerRewindID = nil
+            self.loudnessRamp = nil
             self.dspPreparationID = nil
             self.preparingDSPRequest = nil
             self.dspHorizonTransition = nil
@@ -2109,7 +2189,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
 
     private func startFeedTimerIfNeeded() {
         guard isLoaded, decodeIndex != nil, feedTimer == nil,
-              activeDSPTransaction == nil else { return }
+              !isProducerHeld else { return }
         let timer = DispatchSource.makeTimerSource(queue: pipelineQueue)
         // Top up on a fixed short cadence. Deriving it from the ahead target made
         // a deeper queue refill more slowly, which is the opposite of what a
@@ -2136,7 +2216,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let clock = currentSynchronizerClockSeconds()
         let aheadLimit = dspQueueAheadLimitSeconds()
         while count < max(0, maxChunks),
-              activeDSPTransaction == nil,
+              !isProducerHeld,
               nextPresentationTime - clock < aheadLimit,
               renderer.isReadyForMoreMediaData,
               enqueueOneChunk() {
@@ -2146,7 +2226,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
 
     private func provideMediaData() {
         guard isLoaded,
-              activeDSPTransaction == nil,
+              !isProducerHeld,
               timelineGenerationGate.isCurrent(timelineGeneration) else {
             stopFeedTimer()
             return
@@ -2167,7 +2247,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
 
     @discardableResult
     private func enqueueOneChunk() -> Bool {
-        guard activeDSPTransaction == nil,
+        guard !isProducerHeld,
               timelineGenerationGate.isCurrent(timelineGeneration) else { return false }
         while pendingDecodedPCM == nil {
             guard let index = decodeIndex, segments.indices.contains(index) else {
@@ -2229,10 +2309,15 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             return false
         }
 
-        let normalizationGain = segments[segmentIndex].normalizationGain
-        let rawPCM = Self.applyingFixedGain(pending.pcm.slice(
-            frameOffset: pending.frameOffset, frameCount: frameCount
-        ), gain: normalizationGain)
+        let gain = advanceLoudnessGain(
+            segmentIndex: segmentIndex,
+            frames: frameCount,
+            sampleRate: pending.format.sampleRate
+        )
+        // Visualization reads the decoded source before normalization gain
+        // and DSP, so neither changes how much the spectrum moves.
+        let sourcePCM = pending.pcm.slice(frameOffset: pending.frameOffset, frameCount: frameCount)
+        let rawPCM = Self.applyingGainRamp(sourcePCM, from: gain.start, to: gain.end)
         let sourceFrameStart = pending.sourceFrameStart + AVAudioFramePosition(pending.frameOffset)
         let ptsSeconds = pending.presentationTime + Double(pending.frameOffset) / rawPCM.sampleRate
         let pts = CMSampleBufferFactory.time(
@@ -2292,7 +2377,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             presentationTime: rawBlock.presentationTime,
             frameCount: rawBlock.pcm.frames,
             format: rawBlock.format,
-            normalizationGain: normalizationGain,
+            gainStart: gain.start,
+            gainEnd: gain.end,
             request: effectiveDSPRequest,
             headroomDB: dspProcessor?.headroomDB ?? 0,
             processingLatencyFrames: dspProcessor?.processingLatencyFrames ?? 0,
@@ -2306,19 +2392,12 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         pruneDSPHistory()
 
         onEnqueue?(outputPCM, ptsSeconds)
-        var sliceOffset = 0
-        while sliceOffset < outputPCM.frames {
-            let sliceCount = min(Self.analysisChunkFrames, outputPCM.frames - sliceOffset)
-            let slicePTS = ptsSeconds + (Double(sliceOffset) / outputPCM.sampleRate)
-            let slicePCM = outputPCM.slice(frameOffset: sliceOffset, frameCount: sliceCount)
-            analysisQueue.append(AnalysisChunk(
-                presentationTime: slicePTS,
-                pcm: slicePCM,
-                segmentID: pending.segmentID,
-                dspRevision: dspRevision
-            ))
-            sliceOffset += sliceCount
-        }
+        appendAnalysisChunks(
+            sourcePCM,
+            presentationTime: ptsSeconds,
+            segmentID: pending.segmentID,
+            revision: dspRevision
+        )
         renderer.enqueue(sampleBuffer)
         nextPresentationTime = ptsSeconds + outputPCM.seconds
 
@@ -2396,10 +2475,184 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         }
     }
 
-    private static func applyingFixedGain(_ pcm: CanonicalPCM, gain: Double) -> CanonicalPCM {
-        guard gain != 1 else { return pcm }
+    /// Applies a linear gain ramp across one interleaved block. Equal ends are
+    /// a fixed gain; unity is a pass-through that shares the source array.
+    static func applyingGainRamp(_ pcm: CanonicalPCM, from start: Double, to end: Double) -> CanonicalPCM {
+        let startGain = start.isFinite ? max(0, start) : 1
+        let endGain = end.isFinite ? max(0, end) : 1
+        if startGain == 1, endGain == 1 { return pcm }
+        let channels = max(1, pcm.channelCount)
+        var data = pcm.data
+        if abs(startGain - endGain) < 1e-12 {
+            var gain = Float(startGain)
+            data.withUnsafeMutableBufferPointer { buffer in
+                vDSP_vsmul(buffer.baseAddress!, 1, &gain, buffer.baseAddress!, 1, vDSP_Length(buffer.count))
+            }
+        } else {
+            let frames = pcm.frames
+            let step = (endGain - startGain) / Double(max(1, frames))
+            data.withUnsafeMutableBufferPointer { buffer in
+                for frame in 0..<frames {
+                    let gain = Float(startGain + step * Double(frame + 1))
+                    let base = frame * channels
+                    for channel in 0..<channels where base + channel < buffer.count {
+                        buffer[base + channel] *= gain
+                    }
+                }
+            }
+        }
         return CanonicalPCM(frames: pcm.frames, channelCount: pcm.channelCount,
-                            sampleRate: pcm.sampleRate, data: pcm.data.map { Float(Double($0) * gain) })
+                            sampleRate: pcm.sampleRate, data: data)
+    }
+
+    /// Advances the chain-head loudness glide by one block of `frames` and
+    /// returns the gain at its first and after its last frame.
+    private func advanceLoudnessGain(segmentIndex: Int, frames: Int, sampleRate: Double) -> (start: Double, end: Double) {
+        let segment = segments[segmentIndex]
+        let target = segment.normalizationGain
+        let rate = sampleRate.isFinite && sampleRate > 0 ? sampleRate : 44_100
+        var ramp: LoudnessGainRamp
+        if let current = loudnessRamp, current.segmentID == segment.descriptor.id {
+            ramp = current
+            if abs(ramp.target - target) > 1e-12 {
+                let seconds = segment.pendingGainGlideSeconds ?? Self.defaultGainGlideSeconds
+                ramp.target = target
+                ramp.framesRemaining = max(1, Int((rate * seconds).rounded()))
+            }
+        } else if let previous = loudnessRamp {
+            // Gapless boundary: the next source's gain takes effect at its
+            // first sample, softened by a few milliseconds against a click.
+            let glide = abs(previous.current - target) < 1e-9
+                ? 0
+                : max(1, Int((rate * Self.gaplessGainGlideSeconds).rounded()))
+            ramp = LoudnessGainRamp(current: previous.current, target: target,
+                                    framesRemaining: glide, segmentID: segment.descriptor.id)
+        } else {
+            ramp = LoudnessGainRamp(current: target, target: target, framesRemaining: 0,
+                                    segmentID: segment.descriptor.id)
+        }
+        segments[segmentIndex].pendingGainGlideSeconds = nil
+        let start = ramp.current
+        if ramp.framesRemaining <= frames {
+            ramp.current = ramp.target
+            ramp.framesRemaining = 0
+        } else {
+            let fraction = Double(frames) / Double(ramp.framesRemaining)
+            let startDB = 20 * log10(max(start, 1e-6))
+            let targetDB = 20 * log10(max(ramp.target, 1e-6))
+            ramp.current = pow(10, (startDB + (targetDB - startDB) * fraction) / 20)
+            ramp.framesRemaining -= frames
+        }
+        loudnessRamp = ramp
+        return (start, ramp.current)
+    }
+
+    /// Re-renders queued output from a boundary safely ahead of the clock so a
+    /// loudness change starts there instead of after a deep queue. Decoding,
+    /// DSP state and the gain glide all restart from that boundary.
+    private func rewindProducerForGainChange(segmentID: UUID) {
+        guard isLoaded, !isProducerHeld, dspPreparationID == nil,
+              timelineGenerationGate.isCurrent(timelineGeneration) else { return }
+        let clock = currentSynchronizerClockSeconds()
+        let analysisThrough = clock + analysisLeadSeconds - analysisDeliveryLeadSeconds + 0.005
+        let target = max(clock, analysisThrough) + Self.dspFlushSafetySeconds
+        guard let boundary = dspOutputBoundaries.first(where: {
+            $0.segmentID == segmentID
+                && $0.presentationTime >= target
+                && $0.presentationTime < nextPresentationTime - 0.000_001
+        }), nextPresentationTime - boundary.presentationTime > 0.2 else { return }
+        let processorIsBypassed = dspProcessor?.isBypassed ?? true
+        guard processorIsBypassed
+                || (boundary.state != nil && boundary.request?.requestID == effectiveDSPRequest?.requestID
+                    && boundary.request?.revision == effectiveDSPRequest?.revision) else { return }
+
+        let id = UUID()
+        producerRewindID = id
+        stopFeedTimer()
+        let timeline = timelineGeneration
+        let rendererGenerationID = rendererGeneration
+        let rendererID = ObjectIdentifier(renderer)
+        let time = CMSampleBufferFactory.time(
+            frames: Int64((boundary.presentationTime * boundary.format.sampleRate).rounded()),
+            sampleRate: boundary.format.sampleRate
+        )
+        renderer.flush(fromSourceTime: time) { [weak self] succeeded in
+            self?.pipelineQueue.async { [weak self] in
+                self?.completeProducerRewind(
+                    id: id, boundary: boundary, timeline: timeline,
+                    rendererGeneration: rendererGenerationID, rendererID: rendererID,
+                    succeeded: succeeded
+                )
+            }
+        }
+    }
+
+    private func completeProducerRewind(
+        id: UUID,
+        boundary: DSPOutputBoundary,
+        timeline: UUID,
+        rendererGeneration expectedRendererGeneration: UUID,
+        rendererID: ObjectIdentifier,
+        succeeded: Bool
+    ) {
+        guard producerRewindID == id else { return }
+        producerRewindID = nil
+        guard isLoaded, timelineGeneration == timeline,
+              timelineGenerationGate.isCurrent(timeline),
+              rendererGeneration == expectedRendererGeneration,
+              ObjectIdentifier(renderer) == rendererID else { return }
+        // A rejected flush leaves the queue intact: the glide simply starts
+        // where the queue ends.
+        guard succeeded, renderer.status != .failed,
+              let index = segments.firstIndex(where: { $0.descriptor.id == boundary.segmentID }) else {
+            if renderer.status == .failed { recoverFailedRenderer(atTimelineClock: currentSynchronizerClockSeconds()) }
+            startFeedTimerIfNeeded()
+            startQueuedDSPApply(afterPTS: nextPresentationTime)
+            return
+        }
+        do {
+            try segments[index].source.seek(to: boundary.sourceFrameStart)
+            segments[index].nextSourceFrame = boundary.sourceFrameStart
+            for later in segments.indices where later > index {
+                try segments[later].source.seek(to: 0)
+                segments[later].nextSourceFrame = 0
+            }
+        } catch {
+            finishWithFailure(.sourceError(underlying: error), segmentID: boundary.segmentID)
+            return
+        }
+        let pts = boundary.presentationTime
+        decodeIndex = index
+        pendingDecodedPCM = nil
+        nextPresentationTime = pts
+        dspOutputBoundaries.removeAll { $0.presentationTime >= pts - 0.000_001 }
+        dspLedger.removeAll { $0.raw.presentationTime >= pts - 0.000_001 }
+        analysisQueue.removeAll { $0.presentationTime >= pts - 0.000_001 }
+        dspHorizonTransition = nil
+        if dspProcessor != nil {
+            ensureDSPProcessor(for: boundary.format)
+            if let state = boundary.state, dspProcessor?.restoreState(state) == true {
+                // The chain resumes exactly where the kept output ended.
+            } else {
+                dspProcessor?.reset()
+            }
+        }
+        let rate = boundary.format.sampleRate
+        let glideSeconds = segments[index].pendingGainGlideSeconds ?? Self.defaultGainGlideSeconds
+        segments[index].pendingGainGlideSeconds = nil
+        loudnessRamp = LoudnessGainRamp(
+            current: boundary.gainStart,
+            target: segments[index].normalizationGain,
+            framesRemaining: max(1, Int((rate * glideSeconds).rounded())),
+            segmentID: boundary.segmentID
+        )
+        enqueueToken = UUID()
+        primeOneBatch(maxChunks: 4)
+        startFeedTimerIfNeeded()
+        startQueuedDSPApply(afterPTS: nextPresentationTime)
+        Self.pipelineLog.info(
+            "loudness: re-rendered from \(pts, format: .fixed(precision: 3))s for a gain change"
+        )
     }
 
     private func ensureDSPProcessor(for format: DSPAudioFormat) {
@@ -2431,7 +2684,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             // An enabled chain that currently does nothing is one edit away from
             // working again, so it keeps the short queue. A disabled chain has no
             // edit to answer and keeps the deeper buffer.
-            return dspConfiguration.enabled ? Self.dspTargetAheadSeconds : Self.targetAheadSeconds
+            return dspConfiguration.enabled || loudnessNormalizationActive
+                ? Self.dspTargetAheadSeconds
+                : Self.targetAheadSeconds
         }
         let candidateSegments = segments.dropFirst(max(0, decodeIndex ?? segments.count))
         let formats = candidateSegments.map(\.sourceFormat) + [processor.format]
@@ -2515,10 +2770,37 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 emitDSPEvent(event)
             }
             publishAudibleDSPFormatIfNeeded(at: clock)
+            publishAudibleLoudnessGainIfNeeded(at: clock)
+            // The queue ran nearly dry while the source still had audio:
+            // background work should yield to the producer.
+            if decodeIndex != nil, !isProducerHeld, nextPresentationTime - clock < 0.04 {
+                reportSupplyShortfall()
+            }
             detectStall(clock: clock)
         }
         prunePlayedSegments(clock: clock)
         pruneDSPHistory()
+    }
+
+    private func reportSupplyShortfall() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastSupplyShortfallReport > 5 else { return }
+        lastSupplyShortfallReport = now
+        DispatchQueue.main.async { [weak self] in self?.onSupplyShortfall?() }
+    }
+
+    /// Reports the loudness gain the listener actually hears, from the block
+    /// at the output clock, so status reflects audible rather than requested.
+    private func publishAudibleLoudnessGainIfNeeded(at clock: Double) {
+        guard let boundary = dspOutputBoundaries.first(where: {
+            $0.presentationTime <= clock && clock < $0.endPresentationTime
+        }) else { return }
+        let gainDB = 20 * log10(max(boundary.gainEnd, 1e-6))
+        if let last = lastAudibleLoudness, last.segmentID == boundary.segmentID,
+           abs(last.gainDB - gainDB) < 0.05 { return }
+        lastAudibleLoudness = (boundary.segmentID, gainDB)
+        let segmentID = boundary.segmentID
+        DispatchQueue.main.async { [weak self] in self?.onAudibleLoudnessGain?(segmentID, gainDB) }
     }
 
     /// Decoding can lead playback by seconds. Publish format-dependent routing
@@ -2578,6 +2860,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
               !stallRecoveryScheduled else { return }
 
         stallRecoveryScheduled = true
+        reportSupplyShortfall()
         let token = UUID()
         stallRecoveryToken = token
         let baselineClock = clock
@@ -2704,6 +2987,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         dspRebuffered: Bool = false
     ) -> Bool {
         stopFeedTimer()
+        producerRewindID = nil
+        // Recovery re-decodes from the clock at the current target gains.
+        loudnessRamp = nil
         guard isLoaded,
               timelineGenerationGate.isCurrent(timelineGeneration) else { return false }
         let interruptedDSPRequest = takeDSPApplyForRendererRebuild()

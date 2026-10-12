@@ -1,72 +1,29 @@
 import AppKit
+import MotionKit
 import SwiftUI
 
 @MainActor
 struct AudioProcessingGlobalsSettingsView: View {
     let controller: AudioProcessingGlobalsController
     @EnvironmentObject private var appSession: AppSessionHost
-    @State private var loudnessAnalysisMessage: String?
-    @State private var outputDeviceNames: [String: String] = [:]
+
+    @EnvironmentObject private var themeStore: ThemeStore
+    @State private var showsFailures = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             fadeSection
             loudnessSection
-            loudnessMeasurementSection
-            referenceSection
             errorSection
-        }
-        .task(id: controller.runtimeState.outputDeviceUID) {
-            outputDeviceNames = Dictionary(uniqueKeysWithValues: AudioOutputLatencyMonitor.availableOutputDevices().map { ($0.uniqueID, $0.name) })
         }
     }
 
     private var fadeSection: some View {
         SettingsSection("淡入淡出") {
-            VStack(alignment: .leading, spacing: 12) {
-                SettingsSwitchRow(
-                    title: "播放与暂停渐变",
-                    isOn: fadeBinding(\.enabled)
-                )
-
-                DSPRangeSliderRow(
-                    title: "播放淡入",
-                    value: fadeBinding(\.playFadeMs),
-                    range: 10...2_000,
-                    step: 10,
-                    unit: "ms",
-                    fractionDigits: 0
-                )
-                .disabled(!controller.configuration.fade.enabled)
-
-                DSPRangeSliderRow(
-                    title: "暂停淡出",
-                    value: fadeBinding(\.pauseFadeMs),
-                    range: 10...2_000,
-                    step: 10,
-                    unit: "ms",
-                    fractionDigits: 0
-                )
-                .disabled(!controller.configuration.fade.enabled)
-
-                CapsulePicker(
-                    label: "曲线",
-                    options: ["perceptualDB"],
-                    selection: fadeBinding(\.curve),
-                    displayName: { _ in "感知音量" }
-                )
-                .disabled(!controller.configuration.fade.enabled)
-
-                DSPRangeSliderRow(
-                    title: "淡化底值",
-                    value: fadeBinding(\.floorDB),
-                    range: -100 ... -20,
-                    step: 1,
-                    unit: "dB",
-                    fractionDigits: 0
-                )
-                .disabled(!controller.configuration.fade.enabled)
-            }
+            SettingsSwitchRow(
+                title: "播放与暂停渐变",
+                isOn: fadeBinding(\.enabled)
+            )
         }
     }
 
@@ -74,186 +31,150 @@ struct AudioProcessingGlobalsSettingsView: View {
         SettingsSection("音量均衡") {
             VStack(alignment: .leading, spacing: 12) {
                 SettingsSwitchRow(
-                    title: "启用音量均衡",
+                    title: "音量均衡",
                     isOn: loudnessBinding(\.enabled)
                 )
 
-                CapsulePicker(
-                    label: "应用范围",
-                    options: ["auto", "track", "album"],
-                    selection: loudnessBinding(\.mode),
-                    displayName: { mode in
-                        switch mode {
-                        case "auto": "自动"
-                        case "track": "曲目"
-                        case "album": "专辑"
-                        default: mode
-                        }
-                    }
-                )
-                .disabled(!controller.configuration.loudness.enabled)
-
-                DSPRangeSliderRow(
-                    title: "目标响度",
+                LoudnessTargetSliderRow(
                     value: loudnessBinding(\.targetLUFS),
-                    range: -30 ... -10,
-                    step: 0.1,
-                    unit: "LUFS"
+                    accentColor: themeStore.accentColor,
+                    tickColor: themeStore.appForegroundPalette.primaryColor
                 )
                 .disabled(!controller.configuration.loudness.enabled)
 
-                DSPRangeSliderRow(
-                    title: "最大提升",
-                    value: loudnessBinding(\.maxBoostDB),
-                    range: 0...24,
-                    step: 0.1,
-                    unit: "dB"
-                )
-                .disabled(!controller.configuration.loudness.enabled)
+                Text("依靠响度测量和整体电平调整，在不改变歌曲内部相对响度的前提下，统一不同歌曲间的响度差异。")
+                    .settingsDescriptionStyle()
+                    .fixedSize(horizontal: false, vertical: true)
 
-                DSPRangeSliderRow(
-                    title: "最大衰减",
-                    value: loudnessBinding(\.maxAttenuationDB),
-                    range: 0...60,
-                    step: 0.1,
-                    unit: "dB"
-                )
-                .disabled(!controller.configuration.loudness.enabled)
-
-                DSPRangeSliderRow(
-                    title: "真实峰值上限",
-                    value: loudnessBinding(\.truePeakCeilingDBTP),
-                    range: -12...0,
-                    step: 0.1,
-                    unit: "dBTP"
-                )
-                .disabled(!controller.configuration.loudness.enabled)
-
-                SettingsSwitchRow(
-                    title: "允许后台分析",
-                    isOn: loudnessBinding(\.allowBackgroundScan)
-                )
-                .disabled(!controller.configuration.loudness.enabled)
-            }
-        }
-    }
-
-    private var referenceSection: some View {
-        SettingsSection("等响补偿参考") {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("音量来源")
-                        .settingsRowLabelStyle()
-                    Spacer(minLength: 8)
-                    Text(volumeSourceLabel)
-                        .settingsDescriptionStyle()
-                }
-
-                if let deviceUID = controller.runtimeState.outputDeviceUID {
-                    Text("当前输出设备：\(deviceUID)")
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                        .settingsDescriptionStyle()
-
-                    if let referenceDB = controller.runtimeState.referenceDB {
-                        Text("当前设备参考 \(referenceDB.formatted(.number.precision(.fractionLength(1)))) dB")
-                            .settingsDescriptionStyle()
-                    }
-
-                    HStack(spacing: 8) {
-                        Button("以当前音量为参考") {
-                            do {
-                                _ = try controller.useCurrentVolumeAsReference()
-                            } catch {
-                                controller.report(error: error)
-                            }
-                        }
-                        .disabled(controller.runtimeState.appGain <= 0)
-                        .audioDSPCapsuleButtonStyle()
-
-                        if controller.runtimeState.referenceDB != nil {
-                            Button("清除参考") {
-                                do {
-                                    _ = try controller.setDeviceReference(nil, for: deviceUID)
-                                } catch {
-                                    controller.report(error: error)
-                                }
-                            }
-                            .audioDSPCapsuleButtonStyle()
-                        }
-                    }
-                } else {
-                    Text("当前输出设备未识别")
-                        .settingsDescriptionStyle()
-                }
-
-                if !controller.configuration.deviceReferences.isEmpty {
+                if controller.configuration.loudness.enabled {
                     Divider()
-                    ForEach(controller.configuration.deviceReferences.keys.sorted(), id: \.self) { deviceUID in
-                        HStack(spacing: 8) {
-                            Text(outputDeviceNames[deviceUID] ?? deviceUID)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .textSelection(.enabled)
-                                .settingsDescriptionStyle()
-                                .accessibilityLabel("输出设备标识，\(deviceUID)")
-                            Spacer(minLength: 4)
-                            if let value = controller.configuration.deviceReferences[deviceUID] {
-                                Text("\(value.formatted(.number.precision(.fractionLength(1)))) dB")
-                                    .font(.caption.monospacedDigit())
-                                    .settingsDescriptionStyle()
-                            }
-                            Button("清除") {
-                                do {
-                                    _ = try controller.setDeviceReference(nil, for: deviceUID)
-                                } catch {
-                                    controller.report(error: error)
-                                }
-                            }
-                            .audioDSPCapsuleButtonStyle()
-                        }
-                    }
+                    measurementContent
                 }
             }
         }
     }
 
-    private var loudnessMeasurementSection: some View {
-        SettingsSection("响度测量") {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("当前增益")
-                        .settingsRowLabelStyle()
-                    Spacer(minLength: 8)
-                    Text(loudnessSourceLabel)
-                        .settingsDescriptionStyle()
-                    Text(currentLoudnessGainText)
+    private var measurementContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("响度测量任务")
+                .settingsRowLabelStyle()
+
+            if let context = activeLocalTrack {
+                let service = context.session.loudnessService
+                let state = service.measurementState(for: context.track.id)
+                statusRow("当前歌曲", measurementText(state, record: service.record(for: context.track.id)))
+                statusRow("播放中", applicationText(session: context.session, state: state))
+            }
+
+            if let session = appSession.activeLibraryBinding.activeSession {
+                libraryContent(session)
+            }
+
+            if let context = activeLocalTrack {
+                analyzeButtons(context)
+            }
+        }
+    }
+
+    private func analyzeButtons(_ context: (session: LibrarySession, track: Track)) -> some View {
+        let state = context.session.loudnessService.measurementState(for: context.track.id)
+        return HStack(spacing: 8) {
+            Button("分析当前歌曲") {
+                context.session.startAutomationLoudnessAnalyze(trackIDs: [context.track.id])
+            }
+            .disabled(isBusy(state))
+            .audioDSPCapsuleButtonStyle()
+
+            Button("分析当前专辑") {
+                context.session.startAutomationLoudnessAnalyze(trackIDs: albumTrackIDs(context))
+            }
+            .disabled(albumTrackIDs(context).count < 2)
+            .audioDSPCapsuleButtonStyle()
+        }
+    }
+
+    @ViewBuilder
+    private func libraryContent(_ session: LibrarySession) -> some View {
+        let service = session.loudnessService
+        let tracks = session.libraryViewModel.allTracks
+        let failedIDs = service.failedTrackIDs(in: tracks.map(\.id))
+        let progress = service.libraryProgress(trackIDs: tracks.map(\.id))
+        let total = max(1, tracks.count)
+        // The scan progress is only shown while songs are still pending.
+        if progress.remaining > 0 {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("\(progress.measured.formatted()) / \(tracks.count.formatted()) 首")
                         .settingsDescriptionStyle()
                         .monospacedDigit()
+                    Spacer(minLength: 8)
+                    if service.isIdleScanPausedByListener {
+                        Button("继续分析") { session.resumeIdleLoudnessScan() }
+                            .audioDSPCapsuleButtonStyle()
+                    }
                 }
 
-                HStack(spacing: 8) {
-                    Button("分析当前曲目") {
-                        guard let context = activeLocalTrack else { return }
-                        startLoudnessAnalysis([context.track.id], in: context.session)
-                    }
-                    .disabled(activeLocalTrack == nil)
-                    .audioDSPCapsuleButtonStyle()
+                LoudnessProgressBar(
+                    measuredFraction: Double(progress.measured) / Double(total),
+                    failedFraction: Double(progress.failed) / Double(total),
+                    fillColor: themeStore.accentColor,
+                    failedColor: themeStore.appForegroundPalette.secondaryColor,
+                    trackColor: themeStore.appForegroundPalette.primaryColor.opacity(0.14)
+                )
 
-                    Button("分析当前专辑") {
-                        guard let context = activeLocalTrack else { return }
-                        startLoudnessAnalysis(currentAlbumTrackIDs, in: context.session)
-                    }
-                    .disabled(activeLocalTrack == nil || currentAlbumTrackIDs.isEmpty)
-                    .audioDSPCapsuleButtonStyle()
-                }
-
-                if let loudnessAnalysisMessage {
-                    Text(loudnessAnalysisMessage)
+                if let status = libraryStatusText(session, progress: progress) {
+                    Text(status)
                         .settingsDescriptionStyle()
                 }
             }
+        }
+
+        if !failedIDs.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    CollapsibleSectionHeader(
+                        "无法测量的歌曲 \(failedIDs.count.formatted())",
+                        systemImage: "exclamationmark.circle",
+                        isExpanded: $showsFailures
+                    )
+                    Button("全部重试") {
+                        session.startAutomationLoudnessAnalyze(trackIDs: failedIDs, force: true)
+                    }
+                    .audioDSPCapsuleButtonStyle()
+                }
+                if showsFailures {
+                    let byID = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(failedIDs, id: \.self) { id in
+                                failureRow(session: session, trackID: id, track: byID[id])
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .modifier(ScrollEdgeFadeTrackingMask(topFadeHeight: 14, bottomFadeHeight: 14))
+                    .frame(maxHeight: 220)
+                }
+            }
+        }
+    }
+
+    private func failureRow(session: LibrarySession, trackID: UUID, track: Track?) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(track?.title ?? "未知歌曲")
+                    .settingsRowLabelStyle()
+                    .lineLimit(1)
+                Text([track?.artist, session.loudnessService.failureMessage(for: trackID)]
+                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                    .settingsDescriptionStyle()
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button("重试") {
+                session.startAutomationLoudnessAnalyze(trackIDs: [trackID], force: true)
+            }
+            .audioDSPCapsuleButtonStyle()
         }
     }
 
@@ -272,6 +193,75 @@ struct AudioProcessingGlobalsSettingsView: View {
             }
         }
     }
+
+    private func statusRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).settingsRowLabelStyle()
+            Spacer(minLength: 8)
+            Text(value)
+                .settingsDescriptionStyle()
+                .monospacedDigit()
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
+    // MARK: - Status text
+
+    private func measurementText(_ state: LoudnessTrackMeasurementState, record: LoudnessTrackRecord?) -> String {
+        switch state {
+        case .unmeasured:
+            return "未测量"
+        case .waiting(let priority):
+            if priority == .idleBatch, let reason = appSession.backgroundWorkScheduler.idleWaitReason {
+                return reason.message
+            }
+            return "排队测量"
+        case .measuring(let phase, let fraction):
+            if let fraction { return "\(phase.title) \(Int((fraction * 100).rounded()))%" }
+            return phase.title
+        case .paused:
+            return "已暂停"
+        case .measured:
+            guard let measurement = record?.measurement, let lufs = measurement.integratedLUFS else { return "已测量" }
+            var text = "\(lufs.formatted(.number.precision(.fractionLength(1)))) LUFS"
+            if let peak = measurement.truePeakDBTP {
+                text += " · 峰值 \(peak.formatted(.number.precision(.fractionLength(1)))) dBTP"
+            }
+            return text
+        case .failed(let message):
+            return message
+        }
+    }
+
+    private func applicationText(session: LibrarySession, state: LoudnessTrackMeasurementState) -> String {
+        guard let plan = session.audioNormalizationPlan else { return "保持原音量" }
+        let gain = (session.audioNormalizationAudibleGainDB ?? plan.decision.gainDB)
+            .formatted(.number.precision(.fractionLength(1)).sign(strategy: .always()))
+        if plan.decision.source == LoudnessGainDecision.Source.album {
+            return "专辑增益 \(gain) dB"
+        }
+        if plan.decision.isMeasured {
+            return plan.awaitingAlbum ? "单曲增益 \(gain) dB，专辑增益准备中" : "单曲增益 \(gain) dB"
+        }
+        if case .measured = state { return "保持原音量，下次播放时生效" }
+        return "保持原音量"
+    }
+
+    /// Only states that the bar cannot show; nil when the scan is finished.
+    private func libraryStatusText(_ session: LibrarySession, progress: LoudnessLibraryProgress) -> String? {
+        guard progress.remaining > 0 else { return nil }
+        if session.loudnessService.isIdleScanPausedByListener {
+            return "已暂停"
+        }
+        return appSession.backgroundWorkScheduler.idleWaitReason?.message
+    }
+
+    private func isBusy(_ state: LoudnessTrackMeasurementState) -> Bool {
+        if case .measuring = state { return true }
+        return false
+    }
+
+    // MARK: - Bindings
 
     private func fadeBinding<Value>(
         _ keyPath: WritableKeyPath<AudioFadeConfiguration, Value>
@@ -295,35 +285,6 @@ struct AudioProcessingGlobalsSettingsView: View {
         )
     }
 
-    private var volumeSourceLabel: String {
-        controller.runtimeState.volumeSource == "appOnly" ? "应用音量" : "其他音量来源"
-    }
-
-    private var currentLoudnessGainText: String {
-        guard let gainDB = activeLocalTrack?.session.audioNormalizationGainDB else { return "—" }
-        return "\(gainDB.formatted(.number.precision(.fractionLength(1)))) dB"
-    }
-
-    private var loudnessSourceLabel: String {
-        guard activeLocalTrack != nil,
-              let source = appSession.activeLibraryBinding.activeSession?.audioNormalizationSource else {
-            return "无本地曲目"
-        }
-        switch source {
-        case "measured.bs1770": return "测量数据"
-        case "metadata.r128", "metadata.replaygain": return "音频标签"
-        case "unity.missing": return "未测量"
-        case "unity.metadataReferenceUnknown": return "参考数据缺失"
-        case "disabled": return "已关闭"
-        case "unavailable": return "暂不可用"
-        default:
-            if source.hasPrefix("measured.") { return "测量数据" }
-            if source.hasPrefix("metadata.") { return "音频标签" }
-            if source.hasPrefix("unity.") { return "等待完整测量" }
-            return "暂不可用"
-        }
-    }
-
     private var activeLocalTrack: (session: LibrarySession, track: Track)? {
         guard appSession.playbackCoordinator?.activeSource == .local,
               let session = appSession.activeLibraryBinding.activeSession,
@@ -333,27 +294,114 @@ struct AudioProcessingGlobalsSettingsView: View {
         return (session, track)
     }
 
-    private var currentAlbumTrackIDs: [UUID] {
-        guard let context = activeLocalTrack,
-              !context.track.albumGroupKey.isEmpty else { return [] }
+    private func albumTrackIDs(_ context: (session: LibrarySession, track: Track)) -> [UUID] {
+        guard !context.track.albumGroupKey.isEmpty else { return [] }
         return context.session.libraryViewModel.allTracks
             .filter { $0.albumGroupKey == context.track.albumGroupKey }
             .map(\.id)
     }
+}
 
-    private func startLoudnessAnalysis(_ trackIDs: [UUID], in session: LibrarySession) {
-        guard !trackIDs.isEmpty else { return }
-        let message = session.startAutomationLoudnessAnalyze(trackIDs: trackIDs) == nil
-            ? "当前资料库暂时无法开始分析。"
-            : "已加入后台分析。"
-        loudnessAnalysisMessage = message
-        NSAccessibility.post(
-            element: NSApp as Any,
-            notification: .announcementRequested,
-            userInfo: [
-                .announcement: message,
-                .priority: NSAccessibilityPriorityLevel.medium.rawValue
-            ]
+/// Library scan progress: measured songs in the accent color, failed songs in
+/// a muted tone, the rest on the track.
+private struct LoudnessProgressBar: View {
+    let measuredFraction: Double
+    let failedFraction: Double
+    let fillColor: Color
+    let failedColor: Color
+    let trackColor: Color
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(trackColor)
+                // Failed songs sit behind the measured ones so both start at the lead edge.
+                Capsule()
+                    .fill(failedColor)
+                    .frame(width: width * (measuredFraction + failedFraction))
+                Capsule()
+                    .fill(fillColor)
+                    .frame(width: width * measuredFraction)
+            }
+            .motionAnimation(.control, value: measuredFraction)
+            .motionAnimation(.control, value: failedFraction)
+        }
+        .frame(height: 6)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Target loudness with a detent at the recommended −18 LUFS, whose mark
+/// stays lit under the slider.
+private struct LoudnessTargetSliderRow: View {
+    @Binding var value: Double
+    let accentColor: Color
+    let tickColor: Color
+
+    private let range = AudioLoudnessConfiguration.targetRange
+    private let recommended = AudioLoudnessConfiguration.defaultTargetLUFS
+    private let sliderInset: CGFloat = 10
+    private static let valueWidth: CGFloat = 68
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("目标响度")
+                .settingsRowLabelStyle()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 2)
+
+            VStack(spacing: 3) {
+                Slider(value: binding, in: range)
+                    .accessibilityLabel("目标响度")
+                    .accessibilityValue("\(value.formatted(.number.precision(.fractionLength(1)))) LUFS")
+                GeometryReader { geometry in
+                    let width = max(1, geometry.size.width - sliderInset * 2)
+                    let span = range.upperBound - range.lowerBound
+                    ForEach(Array(stride(from: range.lowerBound, through: range.upperBound, by: 1)), id: \.self) { mark in
+                        let isRecommended = abs(mark - recommended) < 1e-9
+                        Capsule()
+                            .fill(isRecommended ? accentColor : tickColor.opacity(0.22))
+                            .frame(width: isRecommended ? 3 : 1, height: isRecommended ? 10 : 4)
+                            .position(x: sliderInset + width * (mark - range.lowerBound) / span,
+                                      y: isRecommended ? 5 : 2)
+                    }
+                }
+                .frame(height: 10)
+                .accessibilityHidden(true)
+                HStack {
+                    Text("较轻")
+                    Spacer(minLength: 0)
+                    Text("较响")
+                }
+                .settingsDescriptionStyle()
+            }
+            .frame(width: DSPRangeSliderRow.sliderWidth + 40)
+
+            Text("\(value.formatted(.number.precision(.fractionLength(1)))) LUFS")
+                .font(.caption.monospacedDigit())
+                .settingsDescriptionStyle()
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .frame(width: Self.valueWidth, alignment: .trailing)
+                .padding(.top, 2)
+        }
+    }
+
+    /// Half-LUFS steps; within 0.4 of the recommended value the slider rests
+    /// on it.
+    private var binding: Binding<Double> {
+        Binding(
+            get: { min(max(value, range.lowerBound), range.upperBound) },
+            set: { raw in
+                var next = (raw * 2).rounded() / 2
+                if abs(raw - recommended) < 0.4 { next = recommended }
+                if next == recommended, value != recommended {
+                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                }
+                if next != value { value = next }
+            }
         )
     }
 }

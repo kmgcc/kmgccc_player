@@ -397,75 +397,173 @@ final class AudioDSPProcessorTests: XCTestCase {
         XCTAssertEqual(processor.process(input).data, input.data)
     }
 
-    func testEqualLoudnessIsFlatAtAndAboveReferenceAndBoundedBelowIt() {
+    private func volumeContext(
+        decibels: Double?,
+        scalar: Double = 0.5
+    ) -> DSPEqualLoudnessContext {
+        DSPEqualLoudnessContext(
+            volume: .available(OutputDeviceVolumeReading(
+                deviceUID: "test-output", deviceName: "Test", scalar: scalar,
+                decibelsBelowMaximum: decibels, isMuted: false, isWritable: true
+            ))
+        )
+    }
+
+    private func calibratedNode(_ calibration: EqualLoudnessCalibration) -> DSPNodeConfiguration {
+        var node = DSPNodeConfiguration.equalLoudness()
+        node.setEqualLoudnessCalibration(calibration)
+        return node
+    }
+
+    func testCalibrationBelongsToItsNodeOnly() throws {
+        let calibration = EqualLoudnessCalibration(
+            deviceUID: "test-output", deviceName: "Test", axis: .decibels,
+            points: [
+                EqualLoudnessCalibrationPoint(coordinate: -20, bassDB: 0, trebleDB: 0),
+                EqualLoudnessCalibrationPoint(coordinate: -30, bassDB: 8, trebleDB: 4),
+            ]
+        )
+        let calibrated = calibratedNode(calibration)
+        XCTAssertEqual(calibrated.equalLoudnessCalibration(forDeviceUID: "test-output")?.points, calibration.points)
+        let context = volumeContext(decibels: -30)
+        XCTAssertEqual(DSPEqualLoudnessMath.gains(node: calibrated, context: context).bassDB, 8, accuracy: 1e-8)
+        // A fresh node in another preset follows the default curve.
+        let fresh = DSPNodeConfiguration.equalLoudness()
+        XCTAssertNil(context.usableCalibration(in: fresh))
+        XCTAssertEqual(DSPEqualLoudnessMath.gains(node: fresh, context: context).bassDB, 6, accuracy: 1e-8)
+
+        var removed = calibrated
+        removed.setEqualLoudnessCalibration(nil, removingDeviceUID: "test-output")
+        XCTAssertNil(removed.parameters["calibrations"])
+        let roundTrip = try JSONDecoder().decode(DSPNodeConfiguration.self, from: JSONEncoder().encode(calibrated))
+        XCTAssertEqual(roundTrip.equalLoudnessCalibrations.first?.points, calibration.points)
+    }
+
+    func testDefaultEqualLoudnessCurveFollowsSystemVolumeOnly() {
         let node = DSPNodeConfiguration.equalLoudness()
-        let reference = DSPEqualLoudnessContext(
-            appGain: pow(10, -6 / 20),
-            deviceUID: "test-output",
-            referenceDB: -6
-        )
-        let atReference = DSPEqualLoudnessMath.gains(node: node, context: reference)
-        XCTAssertEqual(atReference.bassDB, 0, accuracy: 1e-8)
-        XCTAssertEqual(atReference.trebleDB, 0, accuracy: 1e-8)
+        let atReference = DSPEqualLoudnessMath.gains(node: node, context: volumeContext(decibels: -10))
+        XCTAssertEqual(atReference, .zero)
+        XCTAssertEqual(DSPEqualLoudnessMath.gains(node: node, context: volumeContext(decibels: 0)), .zero)
 
-        let aboveReference = DSPEqualLoudnessMath.gains(
-            node: node,
-            context: DSPEqualLoudnessContext(appGain: 1, deviceUID: "test-output", referenceDB: -6)
-        )
-        XCTAssertEqual(aboveReference, .zero)
-
-        let quieter = DSPEqualLoudnessMath.gains(
-            node: node,
-            context: DSPEqualLoudnessContext(
-                appGain: pow(10, -16 / 20),
-                deviceUID: "test-output",
-                referenceDB: -6
-            )
-        )
+        let quieter = DSPEqualLoudnessMath.gains(node: node, context: volumeContext(decibels: -20))
         XCTAssertEqual(quieter.bassDB, 3, accuracy: 1e-8)
         XCTAssertEqual(quieter.trebleDB, 1.5, accuracy: 1e-8)
 
-        let muchQuieter = DSPEqualLoudnessMath.gains(
-            node: node,
-            context: DSPEqualLoudnessContext(
-                appGain: pow(10, -40 / 20),
-                deviceUID: "test-output",
-                referenceDB: -6
-            )
-        )
+        let muchQuieter = DSPEqualLoudnessMath.gains(node: node, context: volumeContext(decibels: -40))
         XCTAssertEqual(muchQuieter.bassDB, 6, accuracy: 1e-8)
         XCTAssertEqual(muchQuieter.trebleDB, 3, accuracy: 1e-8)
-        XCTAssertGreaterThanOrEqual(muchQuieter.bassDB, quieter.bassDB)
-        XCTAssertGreaterThanOrEqual(muchQuieter.trebleDB, quieter.trebleDB)
 
-        let muted = DSPEqualLoudnessMath.gains(
-            node: node,
-            context: DSPEqualLoudnessContext(appGain: 0, deviceUID: "test-output", referenceDB: 0)
-        )
-        XCTAssertEqual(muted, .zero)
+        // A device without a readable volume never falls back to App volume.
+        XCTAssertEqual(DSPEqualLoudnessMath.gains(node: node, context: .inactive), .zero)
 
-        let relativeDefault = DSPEqualLoudnessMath.gains(
-            node: node,
-            context: DSPEqualLoudnessContext(appGain: 0.1)
+        // A percentage-only device uses the 40·log10 slider estimate.
+        let percent = DSPEqualLoudnessMath.gains(node: node, context: volumeContext(decibels: nil, scalar: 0.1))
+        XCTAssertEqual(percent.bassDB, 6, accuracy: 1e-8)
+
+        var preview = volumeContext(decibels: 0)
+        preview.override = DSPEqualLoudnessGains(bassDB: 20, trebleDB: 2)
+        XCTAssertEqual(DSPEqualLoudnessMath.gains(node: node, context: preview),
+                       DSPEqualLoudnessGains(bassDB: 12, trebleDB: 2))
+    }
+
+    func testCalibratedCurveIsMonotoneHeldAtEndsAndPassesThroughPoints() throws {
+        let calibration = EqualLoudnessCalibration(
+            deviceUID: "test-output", deviceName: "Test", axis: .decibels,
+            points: [
+                EqualLoudnessCalibrationPoint(coordinate: -6, bassDB: 0, trebleDB: 0),
+                EqualLoudnessCalibrationPoint(coordinate: -14, bassDB: 4, trebleDB: 1),
+                EqualLoudnessCalibrationPoint(coordinate: -22, bassDB: 7, trebleDB: 2),
+                EqualLoudnessCalibrationPoint(coordinate: -34, bassDB: 9, trebleDB: 3),
+            ]
         )
-        XCTAssertEqual(relativeDefault.bassDB, 6, accuracy: 1e-8)
-        XCTAssertEqual(relativeDefault.trebleDB, 3, accuracy: 1e-8)
+        let node = calibratedNode(calibration)
+        func gains(_ db: Double) -> DSPEqualLoudnessGains {
+            DSPEqualLoudnessMath.gains(node: node, context: volumeContext(decibels: db))
+        }
+        XCTAssertEqual(gains(-14).bassDB, 4, accuracy: 1e-8)
+        XCTAssertEqual(gains(-2).bassDB, 0, accuracy: 1e-8)
+        XCTAssertEqual(gains(-50).bassDB, 9, accuracy: 1e-8)
+        var previous = gains(0).bassDB
+        for db in stride(from: -1.0, through: -40, by: -1) {
+            let value = gains(db).bassDB
+            XCTAssertGreaterThanOrEqual(value + 1e-9, previous)
+            previous = value
+        }
+
+        // An inconsistent answer is pooled, not followed into a dip.
+        XCTAssertEqual(EqualLoudnessCurve.nonIncreasing([3, 5, 2]), [4, 4, 2])
+        let marks = EqualLoudnessCalibrationGuide.marks(recorded: [])
+        let snapped = EqualLoudnessCalibrationGuide.snapped(0.32, marks: marks, heldMark: nil)
+        XCTAssertEqual(try XCTUnwrap(snapped.mark), 5.0 / 16, accuracy: 1e-12)
+        XCTAssertEqual(EqualLoudnessCalibrationGuide.snapped(0.34, marks: marks, heldMark: 5.0 / 16).value, 5.0 / 16)
+        XCTAssertNil(EqualLoudnessCalibrationGuide.snapped(0.35, marks: marks, heldMark: 5.0 / 16).mark)
+    }
+
+    func testCalibrationGuideStartsAtReferenceThenQuieterThenLouder() {
+        typealias Guide = EqualLoudnessCalibrationGuide
+        XCTAssertEqual(Guide.suggestedScalar(step: 0, recorded: []), 5.0 / 16, accuracy: 1e-12)
+        XCTAssertEqual(Guide.suggestedScalar(step: 1, recorded: [5.0 / 16]), 3.0 / 16, accuracy: 1e-12)
+        XCTAssertEqual(Guide.suggestedScalar(step: 3, recorded: [5.0 / 16, 3.0 / 16, 2.0 / 16]), 8.0 / 16, accuracy: 1e-12)
+
+        // A reference moved down pushes the quieter suggestions below it.
+        XCTAssertEqual(Guide.suggestedScalar(step: 1, recorded: [4.0 / 16]), 2.0 / 16, accuracy: 1e-12)
+        XCTAssertEqual(Guide.suggestedScalar(step: 2, recorded: [4.0 / 16, 2.0 / 16]), 1.0 / 16, accuracy: 1e-12)
+        // A reference moved up pushes the louder suggestion above it.
+        XCTAssertEqual(Guide.suggestedScalar(step: 3, recorded: [7.0 / 16, 5.0 / 16, 3.0 / 16]), 10.0 / 16, accuracy: 1e-12)
+
+        func reading(_ db: Double) -> OutputDeviceVolumeReading {
+            OutputDeviceVolumeReading(deviceUID: "d", deviceName: "D", scalar: 0.3,
+                                      decibelsBelowMaximum: db, isMuted: false, isWritable: true)
+        }
+        XCTAssertNil(Guide.blocker(step: 0, reading: reading(-20), recordedCoordinates: []))
+        XCTAssertNotNil(Guide.blocker(step: 1, reading: reading(-21), recordedCoordinates: [-20]))
+        XCTAssertNil(Guide.blocker(step: 1, reading: reading(-24), recordedCoordinates: [-20]))
+        XCTAssertNotNil(Guide.blocker(step: 3, reading: reading(-19), recordedCoordinates: [-20, -26, -32]))
+        XCTAssertNil(Guide.blocker(step: 3, reading: reading(-12), recordedCoordinates: [-20, -26, -32]))
+    }
+
+    func testCalibrationAllowsCutsAboveTheReference() {
+        let calibration = EqualLoudnessCalibration(
+            deviceUID: "test-output", deviceName: "Test", axis: .decibels,
+            points: [
+                EqualLoudnessCalibrationPoint(coordinate: -20, bassDB: 0, trebleDB: 0),
+                EqualLoudnessCalibrationPoint(coordinate: -28, bassDB: 4, trebleDB: 2),
+                EqualLoudnessCalibrationPoint(coordinate: -34, bassDB: 7, trebleDB: 3),
+                EqualLoudnessCalibrationPoint(coordinate: -10, bassDB: -2, trebleDB: -1),
+            ]
+        )
+        let node = calibratedNode(calibration)
+        let louder = DSPEqualLoudnessMath.gains(
+            node: node, context: volumeContext(decibels: -10)
+        )
+        XCTAssertEqual(louder.bassDB, -2, accuracy: 1e-8)
+        let bands = DSPEqualLoudnessMath.bands(
+            node: node, context: volumeContext(decibels: -10)
+        )
+        XCTAssertEqual(bands?.first?.enabled, true)
+        XCTAssertLessThan(
+            DSPEqualLoudnessMath.responseDB(
+                node: node, context: volumeContext(decibels: -10),
+                at: 20, sampleRate: 48_000
+            ),
+            -1.5
+        )
     }
 
     func testEqualLoudnessParameterEditPreservesUnknownJSONFields() throws {
         var node = DSPNodeConfiguration.equalLoudness()
         node.parameters["futureParameter"] = .object(["preserve": .bool(true)])
         var parameters = try XCTUnwrap(node.equalLoudnessParameters)
-        parameters.maxBassGainDB = 8
+        parameters.strength = 0.5
         node.equalLoudnessParameters = parameters
 
         XCTAssertEqual(node.parameters["futureParameter"], .object(["preserve": .bool(true)]))
-        XCTAssertEqual(node.equalLoudnessParameters?.maxBassGainDB, 8)
+        XCTAssertEqual(node.equalLoudnessParameters?.strength, 0.5)
     }
 
     func testEqualLoudnessResponseAndAutomaticHeadroomUseTheActiveReference() throws {
         let node = DSPNodeConfiguration.equalLoudness()
-        let context = DSPEqualLoudnessContext(appGain: 0.1, deviceUID: "test-output", referenceDB: 0)
+        let context = volumeContext(decibels: -40)
         let configuration = AudioDSPConfiguration(
             enabled: true,
             headroom: DSPHeadroomConfiguration(mode: .automatic, marginDB: 0),

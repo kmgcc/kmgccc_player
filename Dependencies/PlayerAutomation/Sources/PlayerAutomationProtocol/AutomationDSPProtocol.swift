@@ -66,12 +66,26 @@ public enum AutomationDSPToolCatalog {
         "bands": .object(["type": .string("array"), "minItems": .number(9), "maxItems": .number(9), "items": bandSchema])
     ], required: ["bands"])
 
+    public static let equalLoudnessCalibrationSchema = object([
+        "deviceUID": string, "deviceName": string,
+        "axis": enumeration(["decibels", "percent"]),
+        "points": .object(["type": .string("array"), "items": object([
+            "coordinate": .object(["type": .string("number"), "description": .string("dB below maximum or volume percent")]),
+            "bassDB": number(-12, 12), "trebleDB": number(-9, 9)
+        ], required: ["coordinate", "bassDB", "trebleDB"])]),
+        "algorithmVersion": integer(1, 1_000), "createdAt": .object(["type": .string("number")])
+    ], required: ["deviceUID", "axis", "points", "algorithmVersion"])
+
     public static let equalLoudnessParametersSchema = object([
-        "strength": number(0, 1), "maxBassGainDB": number(0, 12), "maxTrebleGainDB": number(0, 6),
+        "strength": number(0, 1, unit: "Scales the calibrated or default compensation curve."),
         "bassFrequencyHz": number(20, 500), "bassQ": number(0.25, 1, unit: "Shelf slope S"),
         "trebleFrequencyHz": number(1000, 20_000), "trebleQ": number(0.25, 1, unit: "Shelf slope S"),
-        "compensationWindowDB": number(1, 60), "headroomMode": enumeration(["automatic", "off"])
-    ], required: ["strength", "maxBassGainDB", "maxTrebleGainDB", "bassFrequencyHz", "bassQ", "trebleFrequencyHz", "trebleQ", "compensationWindowDB", "headroomMode"])
+        "headroomMode": enumeration(["automatic", "off"]),
+        "calibrations": .object([
+            "type": .string("array"), "items": equalLoudnessCalibrationSchema,
+            "description": .string("Per-device calibrations owned by this node; written by the App's calibration guide.")
+        ])
+    ], required: ["strength", "bassFrequencyHz", "bassQ", "trebleFrequencyHz", "trebleQ", "headroomMode"])
 
     public static let stereoWidthParametersSchema = object([
         "width": number(0, 2, unit: "Mid/Side width; 1 with zero trim is an exact bypass."),
@@ -192,17 +206,14 @@ public enum AutomationDSPToolCatalog {
     ]
 
     public static let fadeSchema = object([
-        "enabled": boolean, "playFadeMs": number(10, 2000), "pauseFadeMs": number(10, 2000),
-        "floorDB": number(-100, -40), "curve": enumeration(["perceptualDB"])
+        "enabled": boolean
     ])
+    /// Volume normalization: a switch and a target. Boost (12 dB),
+    /// attenuation (24 dB) and the true-peak ceiling (−1 dBTP) are fixed;
+    /// album-wide gain follows each album's automatic judgement and its
+    /// `loudnessUnified` override in album metadata.
     public static let loudnessSchema = object([
-        "enabled": boolean, "mode": enumeration(["auto", "track", "album"]),
-        "targetLUFS": number(-30, -10), "maxBoostDB": number(0, 24), "maxAttenuationDB": number(0, 60),
-        "truePeakCeilingDBTP": number(-12, 0), "missingPolicy": enumeration(["unity"]), "allowBackgroundScan": boolean
-    ])
-    public static let deviceReferencesSchema: AutomationJSONValue = .object([
-        "type": .string("object"), "additionalProperties": number(-100, 0),
-        "description": .string("Complete profile map keyed by stable audio.get device IDs. References use App gain dB, not SPL.")
+        "enabled": boolean, "targetLUFS": number(-23, -14)
     ])
 
     public static let nodeSchema: AutomationJSONValue = object([

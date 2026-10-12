@@ -335,6 +335,17 @@ nonisolated enum LibraryNormalization {
         }
     }
 
+    /// Every split artist name, including unknown placeholders, for callers
+    /// that must notice a placeholder hidden inside a joined credit.
+    static func artistDisplayNameParts(_ value: String) -> [String] {
+        splitArtistDisplayNames(value)
+    }
+
+    /// True for an empty title or any recognized unknown-album placeholder.
+    static func isPlaceholderAlbumTitle(_ value: String?) -> Bool {
+        canonicalAlbumTitle(value) == unknownAlbum
+    }
+
     private static func splitArtistDisplayNames(_ value: String) -> [String] {
         let prepared = value
             .replacingOccurrences(

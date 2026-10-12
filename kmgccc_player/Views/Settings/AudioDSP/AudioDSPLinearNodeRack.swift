@@ -9,7 +9,7 @@
 //
 //  While a node is dragged its wire collapses into its terminal, the wires of
 //  its neighbours retract into their own connection points, and everything
-//  reconnects once the node settles into its new slot.
+//  reconnects at release while the node falls into its new slot.
 //
 
 import MotionKit
@@ -48,6 +48,8 @@ struct AudioDSPLinearNodeRack: View {
     @State private var isFinishingDrag = false
     @State private var dragCleanupTask: Task<Void, Never>?
     @State private var rowGeometry = DSPRackGeometryCache()
+    @State private var isCalibrating = false
+    @State private var calibratingNodeID: UUID?
 
     private let rackSpace = "dspLinearNodeRackCoordinateSpace"
     private let nodeHeaderHeight: CGFloat = DSPRackMetrics.nodeHeaderHeight
@@ -64,6 +66,12 @@ struct AudioDSPLinearNodeRack: View {
         guard let order = dragNodeOrder else { return nodes }
         let nodesByID = Dictionary(uniqueKeysWithValues: nodes.map { ($0.nodeID, $0) })
         return order.compactMap { nodesByID[$0] }
+    }
+
+    /// The node whose wiring is detached from the chain. Release already fixes
+    /// the landing slot, so the wires reconnect while the card is still falling.
+    private var detachedNodeID: UUID? {
+        isFinishingDrag ? nil : draggingNodeID
     }
 
     private var motionPolicy: MotionPolicy {
@@ -84,7 +92,7 @@ struct AudioDSPLinearNodeRack: View {
     var body: some View {
         let palette = self.palette
         let ordered = rackNodes
-        let slotIndex = draggingNodeID.flatMap { id in ordered.firstIndex { $0.nodeID == id } }
+        let slotIndex = detachedNodeID.flatMap { id in ordered.firstIndex { $0.nodeID == id } }
 
         VStack(alignment: .leading, spacing: 0) {
             inputEndpointView(palette: palette)
@@ -104,6 +112,20 @@ struct AudioDSPLinearNodeRack: View {
         .onChange(of: nodes.map(\.nodeID)) { _, _ in
             if !isFinishingDrag { cancelDrag() }
             rowGeometry.frames = rowGeometry.frames.filter { id, _ in nodes.contains { $0.nodeID == id } }
+        }
+        .sheet(isPresented: $isCalibrating) {
+            if let nodeID = calibratingNodeID {
+                EqualLoudnessCalibrationDialog(
+                    controller: appSession.equalLoudnessController,
+                    nodeID: nodeID,
+                    onSave: { calibration in
+                        onUpdateNode(nodeID) { $0.setEqualLoudnessCalibration(calibration) }
+                        onCommit()
+                    }
+                ) {
+                    isCalibrating = false
+                }
+            }
         }
     }
 
@@ -225,7 +247,7 @@ struct AudioDSPLinearNodeRack: View {
         VStack(alignment: .leading, spacing: 2) {
             Text("尚未添加效果")
                 .font(.system(size: 13, weight: .medium))
-            Text("信号原样通过。")
+            Text("在右上角点击“添加效果”以开始")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -282,11 +304,11 @@ struct AudioDSPLinearNodeRack: View {
     /// its neighbours end at their own terminals instead of reaching across it.
     private func routing(for index: Int, in ordered: [DSPNodeConfiguration]) -> DSPWireRouting {
         let node = ordered[index]
-        let isSlot = node.nodeID == draggingNodeID
+        let isSlot = node.nodeID == detachedNodeID
         let previous = index > 0 ? ordered[index - 1] : nil
         let next = index + 1 < ordered.count ? ordered[index + 1] : nil
-        let previousIsSlot = previous.map { $0.nodeID == draggingNodeID } ?? false
-        let nextIsSlot = next.map { $0.nodeID == draggingNodeID } ?? false
+        let previousIsSlot = previous.map { $0.nodeID == detachedNodeID } ?? false
+        let nextIsSlot = next.map { $0.nodeID == detachedNodeID } ?? false
         let connectsAbove = !isSlot && !previousIsSlot
         let connectsBelow = !isSlot && !nextIsSlot
 
@@ -490,7 +512,7 @@ struct AudioDSPLinearNodeRack: View {
     }
 
     private func equalLoudnessEditor(node: DSPNodeConfiguration) -> some View {
-        let context = appSession.audioProcessingGlobalsController.equalLoudnessContext
+        let context = appSession.equalLoudnessController.context
         return VStack(alignment: .leading, spacing: 10) {
             AudioDSPEqualLoudnessResponseCurve(
                 node: node,
@@ -500,6 +522,19 @@ struct AudioDSPLinearNodeRack: View {
             )
             .equatable()
 
+            AudioDSPEqualLoudnessStatus(
+                node: node,
+                controller: appSession.equalLoudnessController,
+                onCalibrate: {
+                    calibratingNodeID = node.nodeID
+                    isCalibrating = true
+                },
+                onRemoveCalibration: { deviceUID in
+                    onUpdateNode(node.nodeID) { $0.setEqualLoudnessCalibration(nil, removingDeviceUID: deviceUID) }
+                    onCommit()
+                }
+            )
+
             DSPRangeSliderRow(
                 title: "强度",
                 value: equalLoudnessBinding(for: node.nodeID, keyPath: \.strength),
@@ -507,22 +542,6 @@ struct AudioDSPLinearNodeRack: View {
                 step: 0.01,
                 unit: "",
                 fractionDigits: 2,
-                onCommit: onCommit
-            )
-
-            DSPRangeSliderRow(
-                title: "低频补偿",
-                value: equalLoudnessBinding(for: node.nodeID, keyPath: \.maxBassGainDB),
-                range: DSPEqualLoudnessParameters.maxBassGainRange,
-                step: 0.1,
-                onCommit: onCommit
-            )
-
-            DSPRangeSliderRow(
-                title: "高频补偿",
-                value: equalLoudnessBinding(for: node.nodeID, keyPath: \.maxTrebleGainDB),
-                range: DSPEqualLoudnessParameters.maxTrebleGainRange,
-                step: 0.1,
                 onCommit: onCommit
             )
         }
@@ -703,8 +722,8 @@ struct AudioDSPLinearNodeRack: View {
                         try? await Task.sleep(for: .seconds(delay))
                     }
                     guard !Task.isCancelled, draggingNodeID == nodeID else { return }
-                    // Clearing the slot reconnects the wires through the
-                    // gutter's own routing animation.
+                    // The wires reconnected at release; this only hands the
+                    // landed card back to its row.
                     cancelDrag()
                 }
             }

@@ -1,163 +1,170 @@
 import AVFoundation
+import Accelerate
 import AudioToolbox
 import Foundation
 
-/// Streaming K-weighted loudness and per-channel peak analyzer. Storage is
-/// limited to filter state, one 400 ms energy ring, 48 recent samples per
-/// channel, and the compact 100 ms energy history needed for gating.
+/// Streaming ITU-R BS.1770 integrated loudness and true-peak analyzer.
+///
+/// Each channel runs the two K-weighting biquads in batches with `vDSP_biquad`,
+/// and `vDSP_svesq` sums 100 ms sub-block energies. A 400 ms gating block
+/// with 75 % overlap is exactly four adjacent sub-blocks, so the integrated
+/// value is gated over the actual block energies rather than a quantized
+/// distribution. True peak uses the BS.1770 Annex 2 four-phase, 12-tap
+/// interpolator through `vDSP_conv`, with history carried across chunks.
 nonisolated final class LoudnessAnalyzer: @unchecked Sendable {
     private static let maximumSupportedChannelCount = 64
+    /// About 55 hours of 100 ms sub-blocks; longer input keeps only the
+    /// histogram, whose 0.1 LU bins bound the error below 0.05 LU.
+    private static let maximumRetainedSubBlocks = 2_000_000
+    private static let truePeakTapsPerPhase = 12
 
-    private struct Biquad {
-        let b0: Double
-        let b1: Double
-        let b2: Double
-        let a1: Double
-        let a2: Double
-        var x1 = 0.0
-        var x2 = 0.0
-        var y1 = 0.0
-        var y2 = 0.0
-
-        mutating func process(_ input: Double) -> Double {
-            let output = b0 * input + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
-            x2 = x1
-            x1 = input
-            y2 = y1
-            y1 = output
-            return output
-        }
-    }
-
-    private static let truePeakTapCount = 48
-    private static let truePeakRingFrameCount = 64
-    private static let truePeakLeftReach = 23
-    private static let truePeakRightReach = 24
+    /// ITU-R BS.1770 Annex 2 interpolation filter, listed per phase.
+    nonisolated static let truePeakPhases: [[Double]] = [
+        [0.0017089843750, 0.0109863281250, -0.0196533203125, 0.0332031250000,
+         -0.0594482421875, 0.1373291015625, 0.9721679687500, -0.1022949218750,
+         0.0476074218750, -0.0266113281250, 0.0148925781250, -0.0083007812500],
+        [-0.0291748046875, 0.0292968750000, -0.0517578125000, 0.0891113281250,
+         -0.1665039062500, 0.4650878906250, 0.7797851562500, -0.2003173828125,
+         0.1015625000000, -0.0582275390625, 0.0330810546875, -0.0189208984375],
+        [-0.0189208984375, 0.0330810546875, -0.0582275390625, 0.1015625000000,
+         -0.2003173828125, 0.7797851562500, 0.4650878906250, -0.1665039062500,
+         0.0891113281250, -0.0517578125000, 0.0292968750000, -0.0291748046875],
+        [-0.0083007812500, 0.0148925781250, -0.0266113281250, 0.0476074218750,
+         -0.1022949218750, 0.9721679687500, 0.1373291015625, -0.0594482421875,
+         0.0332031250000, -0.0196533203125, 0.0109863281250, 0.0017089843750],
+    ]
 
     let format: DSPAudioFormat
     private let analysisChannelCount: Int
-
     private let channelWeights: [Double]?
-    private var firstStage: [Biquad]
-    private var secondStage: [Biquad]
-    private let blockFrames: Int
-    private let blockStepFrames: Int
-    private var blockEnergyRing: [Double]
-    private var rollingEnergy = 0.0
-    private var gatedBlockEnergyHistogram = LoudnessEnergyHistogram()
-    private var gatedBlockCount: Int64 = 0
+    private let subBlockFrames: Int
+
+    private var biquadSetup: vDSP_biquad_Setup?
+    /// Per channel: 2 sections × 2 + 2 delay elements.
+    private var biquadDelays: [[Float]]
+    private var weightedScratch: [Float] = []
+    /// Replacement samples for a chunk that contains non-finite values.
+    private var finiteBuffer: UnsafeMutablePointer<Float>?
+    private var finiteCapacity = 0
+
+    private var subBlockEnergies: [Double] = []
+    private var subBlockAccumulator = 0.0
+    private var subBlockFill = 0
+    private var retainsSubBlocks = true
+    private var histogram = LoudnessEnergyHistogram()
+    private var blockCount: Int64 = 0
     private var didExceedEnergyHistogramRange = false
 
-    private let truePeakFactor: Int
-    private let truePeakCoefficients: [[Double]]
-    private var truePeakRing: [[Double]]
-    private var truePeakNextCenter = 0
-    private var receivedFrames = 0
-    private var maximumSamplePeak = 0.0
-    private var maximumInterpolatedPeak = 0.0
+    /// Reversed per-phase taps for correlation through `vDSP_conv`.
+    private let reversedPhaseTaps: [[Float]]
+    private var peakHistory: [[Float]]
+    private var peakScratch: [Float] = []
+    private var peakOutput: [Float] = []
+
+    private(set) var receivedFrames: Int64 = 0
+    private var maximumSamplePeak: Float = 0
+    private var maximumInterpolatedPeak: Float = 0
     private var nonFiniteSampleCount = 0
     private var didFinish = false
 
     init(format: DSPAudioFormat) {
         self.format = format
-        let analysisChannelCount = (1...Self.maximumSupportedChannelCount).contains(format.channelCount)
-            ? format.channelCount
-            : 0
-        self.analysisChannelCount = analysisChannelCount
-        let count = analysisChannelCount
-        let weights = Self.channelWeights(for: format)
-        channelWeights = weights
+        let count = (1...Self.maximumSupportedChannelCount).contains(format.channelCount) ? format.channelCount : 0
+        analysisChannelCount = count
+        channelWeights = Self.channelWeights(for: format)
 
-        let validRate = format.sampleRate.isFinite
-            && format.sampleRate >= 8_000
-            && format.sampleRate <= 768_000
-        let coefficients = validRate ? Self.kWeightingCoefficients(sampleRate: format.sampleRate) : nil
-        if let coefficients {
-            firstStage = Array(repeating: coefficients.0, count: count)
-            secondStage = Array(repeating: coefficients.1, count: count)
-        } else {
-            firstStage = []
-            secondStage = []
+        let validRate = format.sampleRate.isFinite && format.sampleRate >= 8_000 && format.sampleRate <= 768_000
+        subBlockFrames = validRate ? max(1, Int((format.sampleRate * 0.1).rounded())) : 0
+        if validRate, let coefficients = Self.kWeightingCoefficients(sampleRate: format.sampleRate) {
+            biquadSetup = coefficients.withUnsafeBufferPointer {
+                vDSP_biquad_CreateSetup($0.baseAddress!, 2)
+            }
         }
-
-        blockFrames = validRate ? max(1, Int((format.sampleRate * 0.4).rounded())) : 0
-        blockStepFrames = validRate ? max(1, Int((format.sampleRate * 0.1).rounded())) : 0
-        blockEnergyRing = Array(repeating: 0, count: blockFrames)
-
-        // Fourfold or greater interpolation keeps the true-peak estimate
-        // independent of the original file's sample-grid phase.
-        truePeakFactor = 4
-        truePeakCoefficients = Self.makeTruePeakCoefficients(oversampleFactor: truePeakFactor)
-        truePeakRing = Array(
-            repeating: Array(repeating: 0, count: Self.truePeakRingFrameCount),
+        biquadDelays = Array(repeating: Array(repeating: 0, count: 2 * 2 + 2), count: count)
+        reversedPhaseTaps = Self.truePeakPhases.map { $0.reversed().map(Float.init) }
+        peakHistory = Array(
+            repeating: Array(repeating: 0, count: Self.truePeakTapsPerPhase - 1),
             count: count
         )
     }
 
+    deinit {
+        if let biquadSetup { vDSP_biquad_DestroySetup(biquadSetup) }
+        finiteBuffer?.deallocate()
+    }
+
+    /// Appends planar Float32 PCM. `channelData[c]` holds `frameCount` samples.
     func append(channelData: UnsafePointer<UnsafeMutablePointer<Float>>, frameCount: Int) {
         guard !didFinish, frameCount > 0, analysisChannelCount > 0 else { return }
         let channels = analysisChannelCount
-        for frame in 0..<frameCount {
-            var weightedFrameEnergy = 0.0
-            let ringSlot = receivedFrames % Self.truePeakRingFrameCount
-
-            for channel in 0..<channels {
-                let rawSample = Double(channelData[channel][frame])
-                let sample: Double
-                if rawSample.isFinite {
-                    sample = rawSample
-                } else {
-                    sample = 0
-                    nonFiniteSampleCount += 1
-                }
-
-                let magnitude = abs(sample)
-                if magnitude > maximumSamplePeak { maximumSamplePeak = magnitude }
-                truePeakRing[channel][ringSlot] = sample
-
-                if let channelWeights, channelWeights[channel] > 0,
-                   channel < firstStage.count {
-                    let weighted = secondStage[channel].process(firstStage[channel].process(sample))
-                    weightedFrameEnergy += channelWeights[channel] * weighted * weighted
-                }
+        if weightedScratch.count < frameCount { weightedScratch = Array(repeating: 0, count: frameCount) }
+        var frameEnergies = [Double](repeating: 0, count: 0)
+        let measuresLoudness = biquadSetup != nil && channelWeights != nil && subBlockFrames > 0
+        // Sub-block boundaries inside this chunk.
+        var boundaries: [Int] = []
+        if measuresLoudness {
+            var position = subBlockFrames - subBlockFill
+            while position <= frameCount {
+                boundaries.append(position)
+                position += subBlockFrames
             }
-
-            if blockFrames > 0 {
-                let energySlot = receivedFrames % blockFrames
-                if receivedFrames >= blockFrames {
-                    rollingEnergy -= blockEnergyRing[energySlot]
-                }
-                blockEnergyRing[energySlot] = weightedFrameEnergy
-                rollingEnergy += weightedFrameEnergy
-                let currentFrameCount = receivedFrames + 1
-                if currentFrameCount >= blockFrames,
-                   (currentFrameCount - blockFrames) % blockStepFrames == 0 {
-                    let energy = max(0, rollingEnergy / Double(blockFrames))
-                    gatedBlockCount += 1
-                    if !gatedBlockEnergyHistogram.add(linearEnergy: energy) {
-                        didExceedEnergyHistogramRange = true
-                    }
-                }
-            }
-
-            receivedFrames += 1
-            processAvailableTruePeakCenters()
+            frameEnergies = Array(repeating: 0, count: boundaries.count + 1)
         }
+
+        for channel in 0..<channels {
+            let source = channelData[channel]
+            let input = sanitizedInput(source, frameCount: frameCount)
+            var magnitude: Float = 0
+            vDSP_maxmgv(input, 1, &magnitude, vDSP_Length(frameCount))
+            maximumSamplePeak = max(maximumSamplePeak, magnitude)
+            measureTruePeak(channel: channel, input: input, frameCount: frameCount)
+
+            guard measuresLoudness, let setup = biquadSetup, let weights = channelWeights,
+                  weights[channel] > 0 else { continue }
+            weightedScratch.withUnsafeMutableBufferPointer { weighted in
+                biquadDelays[channel].withUnsafeMutableBufferPointer { delay in
+                    vDSP_biquad(setup, delay.baseAddress!, input, 1, weighted.baseAddress!, 1, vDSP_Length(frameCount))
+                }
+                var start = 0
+                for (index, end) in (boundaries + [frameCount]).enumerated() where end > start {
+                    var sum: Float = 0
+                    vDSP_svesq(weighted.baseAddress! + start, 1, &sum, vDSP_Length(end - start))
+                    frameEnergies[index] += Double(sum) * weights[channel]
+                    start = end
+                }
+            }
+        }
+
+        if measuresLoudness {
+            var start = 0
+            for (index, end) in (boundaries + [frameCount]).enumerated() {
+                subBlockAccumulator += frameEnergies[index]
+                subBlockFill += end - start
+                start = end
+                if subBlockFill == subBlockFrames {
+                    closeSubBlock(subBlockAccumulator / Double(subBlockFrames))
+                    subBlockAccumulator = 0
+                    subBlockFill = 0
+                }
+            }
+        }
+        receivedFrames += Int64(frameCount)
     }
 
     func finish(playbackAACGaplessTrimEnabled: Bool = false) -> LoudnessMeasurement {
         if !didFinish {
             didFinish = true
-            while truePeakNextCenter < receivedFrames {
-                measureTruePeak(center: truePeakNextCenter)
-                truePeakNextCenter += 1
+            // Flush the interpolator tail with zeros, as at the end of a file.
+            for channel in 0..<analysisChannelCount {
+                let tail = [Float](repeating: 0, count: Self.truePeakTapsPerPhase - 1)
+                tail.withUnsafeBufferPointer {
+                    measureTruePeak(channel: channel, input: $0.baseAddress!, frameCount: tail.count)
+                }
             }
         }
 
         var diagnostics: [DSPDiagnostic] = []
-        let rateIsValid = format.sampleRate.isFinite
-            && format.sampleRate >= 8_000
-            && format.sampleRate <= 768_000
+        let rateIsValid = format.sampleRate.isFinite && format.sampleRate >= 8_000 && format.sampleRate <= 768_000
         if !rateIsValid {
             diagnostics.append(DSPDiagnostic(
                 code: "audio.loudnessUnsupportedFormat",
@@ -179,35 +186,30 @@ nonisolated final class LoudnessAnalyzer: @unchecked Sendable {
                 fieldPath: "loudness.samples"
             ))
         }
-        diagnostics.append(DSPDiagnostic(
-            code: "audio.loudnessTruePeakFixturePending",
-            message: "True peak uses a 4x, 48-tap windowed-sinc estimate; standard-fixture agreement has not been verified.",
-            fieldPath: "loudness.truePeak"
-        ))
-        diagnostics.append(DSPDiagnostic(
-            code: "audio.loudnessEnergyHistogramQuantized",
-            message: "Album block energies use a fixed 0.1 LU histogram; the integrated and gating-boundary error requires standard-fixture validation.",
-            fieldPath: "loudness.gatedBlockEnergyHistogram"
-        ))
-        if didExceedEnergyHistogramRange {
+        if !retainsSubBlocks {
             diagnostics.append(DSPDiagnostic(
-                code: "audio.loudnessEnergyHistogramRange",
-                message: "A block exceeded the bounded energy histogram range, so integrated loudness is unavailable.",
+                code: "audio.loudnessHistogramIntegrated",
+                message: "This very long source was gated from its 0.1 LU block histogram.",
                 fieldPath: "loudness.integratedLUFS"
             ))
         }
 
-        let integrated = rateIsValid && channelWeights != nil
-            ? Self.integratedLUFS(from: gatedBlockEnergyHistogram)
-            : nil
+        let integrated: Double?
+        if rateIsValid, channelWeights != nil {
+            integrated = retainsSubBlocks
+                ? Self.integratedLUFS(from: gatingBlockEnergies())
+                : Self.integratedLUFS(from: histogram)
+        } else {
+            integrated = nil
+        }
         let status: LoudnessMeasurementStatus
         if !rateIsValid || analysisChannelCount == 0 {
             status = .unsupportedFormat
         } else if channelWeights == nil {
             status = .unsupportedLayout
-        } else if gatedBlockCount == 0 {
+        } else if blockCount == 0 {
             status = .tooShort
-        } else if didExceedEnergyHistogramRange {
+        } else if !retainsSubBlocks && didExceedEnergyHistogramRange {
             status = .resourceLimit
         } else if integrated == nil {
             status = .silence
@@ -215,33 +217,31 @@ nonisolated final class LoudnessAnalyzer: @unchecked Sendable {
             status = .available
         }
 
-        let samplePeakDBFS = maximumSamplePeak > 0
-            ? 20 * log10(maximumSamplePeak)
-            : nil
-        let truePeakDBTP = maximumInterpolatedPeak > 0
-            ? 20 * log10(maximumInterpolatedPeak)
-            : nil
+        let samplePeak = Double(maximumSamplePeak)
+        let truePeak = max(Double(maximumInterpolatedPeak), samplePeak)
         return LoudnessMeasurement(
             status: status,
             format: format,
             validStartFrame: 0,
-            validEndFrame: Int64(receivedFrames),
+            validEndFrame: receivedFrames,
             analyzerVersion: LoudnessMeasurement.currentAnalyzerVersion,
             decoderRuleVersion: LoudnessMeasurement.currentDecoderRuleVersion,
             trimPolicyVersion: LoudnessMeasurement.currentTrimPolicyVersion,
             analysisFrameRange: "provided-decoded-frames-v2",
             playbackAACGaplessTrimEnabled: playbackAACGaplessTrimEnabled,
             integratedLUFS: integrated,
-            samplePeakDBFS: samplePeakDBFS,
-            truePeakDBTP: truePeakDBTP,
-            gatedBlockEnergyHistogram: gatedBlockEnergyHistogram,
-            gatedBlockCount: gatedBlockCount,
-            blockFrames: blockFrames,
-            blockStepFrames: blockStepFrames,
-            confidence: integrated == nil ? 0 : 0.6,
+            samplePeakDBFS: samplePeak > 0 ? 20 * log10(samplePeak) : nil,
+            truePeakDBTP: truePeak > 0 ? 20 * log10(truePeak) : nil,
+            gatedBlockEnergyHistogram: histogram,
+            gatedBlockCount: blockCount,
+            blockFrames: subBlockFrames * 4,
+            blockStepFrames: subBlockFrames,
+            confidence: integrated == nil ? 0 : 0.9,
             diagnostics: diagnostics
         )
     }
+
+    // MARK: - Gating
 
     nonisolated static func integratedLUFS(from blockEnergies: [Double]) -> Double? {
         let validEnergies = blockEnergies.filter { $0.isFinite && $0 > 0 }
@@ -249,16 +249,13 @@ nonisolated final class LoudnessAnalyzer: @unchecked Sendable {
         let absoluteGateEnergies = validEnergies.filter { levelLUFS($0) > -70 }
         guard let absoluteMean = mean(absoluteGateEnergies) else { return nil }
         let relativeThreshold = levelLUFS(absoluteMean) - 10
-        let finalGateEnergies = absoluteGateEnergies.filter {
-            levelLUFS($0) > relativeThreshold
-        }
+        let finalGateEnergies = absoluteGateEnergies.filter { levelLUFS($0) > relativeThreshold }
         guard let gatedMean = mean(finalGateEnergies) else { return nil }
         let result = levelLUFS(gatedMean)
         return result.isFinite ? result : nil
     }
 
     nonisolated static func integratedLUFS(from histogram: LoudnessEnergyHistogram) -> Double? {
-        guard histogram.counts.count == LoudnessEnergyHistogram.binCount else { return nil }
         let absoluteMean = gatedMeanEnergy(histogram, minimumLevelLUFS: LoudnessEnergyHistogram.minimumLUFS)
         guard let absoluteMean else { return nil }
         let relativeThreshold = levelLUFS(absoluteMean) - 10
@@ -273,47 +270,106 @@ nonisolated final class LoudnessAnalyzer: @unchecked Sendable {
     ) -> Double? {
         var sum = 0.0
         var count = 0.0
-        for index in histogram.counts.indices where histogram.counts[index] > 0 {
+        for (index, binCount) in histogram.nonEmptyBins {
             let level = LoudnessEnergyHistogram.minimumLUFS
                 + (Double(index) + 0.5) * LoudnessEnergyHistogram.binWidthLU
             guard level > minimumLevelLUFS else { continue }
             let energy = pow(10, (level + 0.691) / 10)
-            let repetitions = Double(histogram.counts[index])
-            sum += energy * repetitions
-            count += repetitions
+            sum += energy * Double(binCount)
+            count += Double(binCount)
         }
         guard sum.isFinite, sum > 0, count > 0 else { return nil }
         return sum / count
     }
 
-    private nonisolated func processAvailableTruePeakCenters() {
-        while truePeakNextCenter + Self.truePeakRightReach < receivedFrames {
-            measureTruePeak(center: truePeakNextCenter)
-            truePeakNextCenter += 1
+    private func closeSubBlock(_ energy: Double) {
+        if retainsSubBlocks {
+            subBlockEnergies.append(energy)
+            if subBlockEnergies.count > Self.maximumRetainedSubBlocks {
+                retainsSubBlocks = false
+                subBlockEnergies.removeAll(keepingCapacity: false)
+            }
+        } else {
+            rollingSubBlocks.append(energy)
+            if rollingSubBlocks.count > 4 { rollingSubBlocks.removeFirst() }
         }
+        let recent: ArraySlice<Double> = retainsSubBlocks ? subBlockEnergies.suffix(4) : rollingSubBlocks[...]
+        guard recent.count == 4 else { return }
+        let blockEnergy = recent.reduce(0, +) / 4
+        blockCount += 1
+        if !histogram.add(linearEnergy: blockEnergy) { didExceedEnergyHistogramRange = true }
     }
 
-    private nonisolated func measureTruePeak(center: Int) {
-        for channel in 0..<analysisChannelCount {
-            for phase in 0..<truePeakFactor {
-                let coefficients = truePeakCoefficients[phase]
-                var value = 0.0
-                for tap in 0..<Self.truePeakTapCount {
-                    let inputFrame = center + tap - Self.truePeakLeftReach
-                    value += sample(channel: channel, frame: inputFrame) * coefficients[tap]
+    private var rollingSubBlocks: [Double] = []
+
+    private func gatingBlockEnergies() -> [Double] {
+        guard subBlockEnergies.count >= 4 else { return [] }
+        var blocks = [Double]()
+        blocks.reserveCapacity(subBlockEnergies.count - 3)
+        var window = subBlockEnergies[0] + subBlockEnergies[1] + subBlockEnergies[2]
+        for index in 3..<subBlockEnergies.count {
+            window += subBlockEnergies[index]
+            blocks.append(window / 4)
+            window -= subBlockEnergies[index - 3]
+        }
+        return blocks
+    }
+
+    // MARK: - Peaks
+
+    private func sanitizedInput(_ source: UnsafeMutablePointer<Float>, frameCount: Int) -> UnsafePointer<Float> {
+        var allFinite = true
+        for index in 0..<frameCount where !source[index].isFinite {
+            allFinite = false
+            break
+        }
+        guard !allFinite else { return UnsafePointer(source) }
+        if finiteCapacity < frameCount {
+            finiteBuffer?.deallocate()
+            finiteBuffer = UnsafeMutablePointer<Float>.allocate(capacity: frameCount)
+            finiteCapacity = frameCount
+        }
+        let buffer = finiteBuffer!
+        for index in 0..<frameCount {
+            let sample = source[index]
+            if sample.isFinite {
+                buffer[index] = sample
+            } else {
+                buffer[index] = 0
+                nonFiniteSampleCount += 1
+            }
+        }
+        return UnsafePointer(buffer)
+    }
+
+    private func measureTruePeak(channel: Int, input: UnsafePointer<Float>, frameCount: Int) {
+        let history = Self.truePeakTapsPerPhase - 1
+        let total = history + frameCount
+        if peakScratch.count < total { peakScratch = Array(repeating: 0, count: total) }
+        if peakOutput.count < frameCount { peakOutput = Array(repeating: 0, count: frameCount) }
+        peakScratch.withUnsafeMutableBufferPointer { scratch in
+            peakHistory[channel].withUnsafeBufferPointer { previous in
+                scratch.baseAddress!.update(from: previous.baseAddress!, count: history)
+            }
+            (scratch.baseAddress! + history).update(from: input, count: frameCount)
+            peakOutput.withUnsafeMutableBufferPointer { output in
+                for taps in reversedPhaseTaps {
+                    taps.withUnsafeBufferPointer { filter in
+                        vDSP_conv(scratch.baseAddress!, 1, filter.baseAddress!, 1,
+                                  output.baseAddress!, 1, vDSP_Length(frameCount), vDSP_Length(taps.count))
+                    }
+                    var peak: Float = 0
+                    vDSP_maxmgv(output.baseAddress!, 1, &peak, vDSP_Length(frameCount))
+                    if peak.isFinite { maximumInterpolatedPeak = max(maximumInterpolatedPeak, peak) }
                 }
-                maximumInterpolatedPeak = max(maximumInterpolatedPeak, abs(value))
+            }
+            peakHistory[channel].withUnsafeMutableBufferPointer { next in
+                next.baseAddress!.update(from: scratch.baseAddress! + total - history, count: history)
             }
         }
     }
 
-    private nonisolated func sample(channel: Int, frame: Int) -> Double {
-        guard frame >= 0, frame < receivedFrames,
-              channel >= 0, channel < truePeakRing.count else { return 0 }
-        let oldestAvailableFrame = max(0, receivedFrames - Self.truePeakRingFrameCount)
-        guard frame >= oldestAvailableFrame else { return 0 }
-        return truePeakRing[channel][frame % Self.truePeakRingFrameCount]
-    }
+    // MARK: - Coefficients
 
     private nonisolated static func mean(_ energies: [Double]) -> Double? {
         guard !energies.isEmpty else { return nil }
@@ -335,12 +391,9 @@ nonisolated final class LoudnessAnalyzer: @unchecked Sendable {
         var weights: [Double] = []
         weights.reserveCapacity(labels.count)
         for label in labels {
-            if label == UInt32(kAudioChannelLabel_LFEScreen) {
-                weights.append(0)
-                continue
-            }
-
             switch label {
+            case UInt32(kAudioChannelLabel_LFEScreen), UInt32(kAudioChannelLabel_LFE2), UInt32(kAudioChannelLabel_LFE3):
+                weights.append(0)
             case UInt32(kAudioChannelLabel_Mono),
                  UInt32(kAudioChannelLabel_Left),
                  UInt32(kAudioChannelLabel_Right),
@@ -352,7 +405,6 @@ nonisolated final class LoudnessAnalyzer: @unchecked Sendable {
                  UInt32(kAudioChannelLabel_LeftWide),
                  UInt32(kAudioChannelLabel_RightWide):
                 weights.append(1)
-
             case UInt32(kAudioChannelLabel_LeftSurround),
                  UInt32(kAudioChannelLabel_RightSurround),
                  UInt32(kAudioChannelLabel_LeftSurroundDirect),
@@ -362,7 +414,6 @@ nonisolated final class LoudnessAnalyzer: @unchecked Sendable {
                  UInt32(kAudioChannelLabel_RearSurroundLeft),
                  UInt32(kAudioChannelLabel_RearSurroundRight):
                 weights.append(1.41)
-
             default:
                 return nil
             }
@@ -370,9 +421,9 @@ nonisolated final class LoudnessAnalyzer: @unchecked Sendable {
         return weights
     }
 
-    private nonisolated static func kWeightingCoefficients(
-        sampleRate: Double
-    ) -> (Biquad, Biquad)? {
+    /// Two cascaded sections (pre-filter shelf, then RLB high-pass) in the
+    /// `vDSP_biquad` coefficient order b0, b1, b2, a1, a2.
+    private nonisolated static func kWeightingCoefficients(sampleRate: Double) -> [Double]? {
         guard sampleRate.isFinite, sampleRate > 0 else { return nil }
         let shelfFrequency = 1_681.974450955533
         let shelfGainDB = 3.999843853973347
@@ -383,13 +434,6 @@ nonisolated final class LoudnessAnalyzer: @unchecked Sendable {
         let shelfK2 = shelfK * shelfK
         let shelfA0 = 1 + shelfK / shelfQ + shelfK2
         guard shelfA0.isFinite, shelfA0 != 0 else { return nil }
-        let shelf = Biquad(
-            b0: (shelfVh + shelfVb * shelfK / shelfQ + shelfK2) / shelfA0,
-            b1: 2 * (shelfK2 - shelfVh) / shelfA0,
-            b2: (shelfVh - shelfVb * shelfK / shelfQ + shelfK2) / shelfA0,
-            a1: 2 * (shelfK2 - 1) / shelfA0,
-            a2: (1 - shelfK / shelfQ + shelfK2) / shelfA0
-        )
 
         let highPassFrequency = 38.13547087602444
         let highPassQ = 0.5003270373238773
@@ -397,43 +441,18 @@ nonisolated final class LoudnessAnalyzer: @unchecked Sendable {
         let highPassK2 = highPassK * highPassK
         let highPassA0 = 1 + highPassK / highPassQ + highPassK2
         guard highPassA0.isFinite, highPassA0 != 0 else { return nil }
-        let highPass = Biquad(
-            b0: 1 / highPassA0,
-            b1: -2 / highPassA0,
-            b2: 1 / highPassA0,
-            a1: 2 * (highPassK2 - 1) / highPassA0,
-            a2: (1 - highPassK / highPassQ + highPassK2) / highPassA0
-        )
-        return (shelf, highPass)
-    }
 
-    private nonisolated static func makeTruePeakCoefficients(
-        oversampleFactor: Int
-    ) -> [[Double]] {
-        (0..<max(1, oversampleFactor)).map { phase in
-            let fraction = Double(phase) / Double(max(1, oversampleFactor))
-            var coefficients: [Double] = []
-            coefficients.reserveCapacity(truePeakTapCount)
-            var sum = 0.0
-            for tap in 0..<truePeakTapCount {
-                let offset = Double(tap - truePeakLeftReach) - fraction
-                let sinc = abs(offset) < 1e-12
-                    ? 1
-                    : sin(Double.pi * offset) / (Double.pi * offset)
-                let normalized = offset / 24.5
-                let window = 0.42
-                    + 0.5 * cos(Double.pi * normalized)
-                    + 0.08 * cos(2 * Double.pi * normalized)
-                let coefficient = sinc * window
-                coefficients.append(coefficient)
-                sum += coefficient
-            }
-            if sum.isFinite, abs(sum) > 1e-12 {
-                for index in coefficients.indices {
-                    coefficients[index] /= sum
-                }
-            }
-            return coefficients
-        }
+        return [
+            (shelfVh + shelfVb * shelfK / shelfQ + shelfK2) / shelfA0,
+            2 * (shelfK2 - shelfVh) / shelfA0,
+            (shelfVh - shelfVb * shelfK / shelfQ + shelfK2) / shelfA0,
+            2 * (shelfK2 - 1) / shelfA0,
+            (1 - shelfK / shelfQ + shelfK2) / shelfA0,
+            1 / highPassA0,
+            -2 / highPassA0,
+            1 / highPassA0,
+            2 * (highPassK2 - 1) / highPassA0,
+            (1 - highPassK / highPassQ + highPassK2) / highPassA0,
+        ]
     }
 }

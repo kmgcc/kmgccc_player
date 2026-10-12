@@ -1207,6 +1207,7 @@ struct AlbumInfoEditSheet: View {
     @State private var metadataMessage: String?
     @State private var isArtworkGenerationInFlight = false
     @State private var coverCoordinator: CoverSearchCoordinator?
+    @State private var loudnessUnified = false
 
     var body: some View {
         metadataEntitySheet(
@@ -1256,6 +1257,13 @@ struct AlbumInfoEditSheet: View {
                 ("获取时间", metadataFetchedAt.map(formatMetadataDate) ?? ""),
                 ("置信度", metadataConfidence.map { String(format: "%.2f", $0) } ?? ""),
             ])
+
+            Divider()
+
+            SettingsSwitchRow(
+                title: "专辑内响度统一",
+                isOn: $loudnessUnified
+            )
         }
         .tint(themeStore.accentColor)
         .onAppear {
@@ -1292,9 +1300,26 @@ struct AlbumInfoEditSheet: View {
             || metadataFetchedAt != entry.metadataFetchedAt
             || metadataConfidence != entry.metadataConfidence
             || artworkData != entry.artworkData
+            || loudnessUnified != storedLoudnessUnified
+    }
+
+    /// Automatic judgement for this album, from its library members.
+    private var automaticLoudnessExclusion: LoudnessAlbumExclusion? {
+        let members = libraryVM.allTracks
+            .filter { $0.albumGroupKey == entry.canonicalKey }
+            .map(LoudnessAlbumMember.init(track:))
+        return LoudnessAlbumPolicy.automaticExclusion(
+            albumType: albumType.trimmingCharacters(in: .whitespacesAndNewlines),
+            members: members
+        )
+    }
+
+    private var storedLoudnessUnified: Bool {
+        entry.loudnessUnifiedOverride ?? (automaticLoudnessExclusion == nil)
     }
 
     private func load() {
+        loudnessUnified = entry.loudnessUnifiedOverride ?? (automaticLoudnessExclusion == nil)
         displayTitle = entry.displayTitle
         description = entry.description
         releaseYearText = entry.releaseYear.map(String.init) ?? entry.year.map(String.init) ?? ""
@@ -1397,8 +1422,20 @@ struct AlbumInfoEditSheet: View {
 
     private func save() {
         let updated = currentDraft()
+        let unified = loudnessUnified
+        let loudnessChanged = unified != storedLoudnessUnified
+        let automatic = automaticLoudnessExclusion == nil
         Task {
             await libraryVM.saveAlbumEdits(original: entry, updated: updated)
+            if loudnessChanged {
+                // Matching the automatic judgement stores no override, so a
+                // later change of the album's facts is still followed.
+                let key = LibraryNormalization.retitledAlbumKey(
+                    existingKey: entry.canonicalKey,
+                    newAlbumTitle: updated.displayTitle
+                )
+                libraryVM.setAlbumLoudnessOverride(albumKey: key, unified: unified == automatic ? nil : unified)
+            }
             await MainActor.run {
                 onSaved()
                 dismiss()

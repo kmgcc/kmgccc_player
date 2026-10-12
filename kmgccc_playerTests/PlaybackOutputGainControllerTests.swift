@@ -50,7 +50,7 @@ final class PlaybackOutputGainControllerTests: XCTestCase {
                     XCTAssertLessThan(current, 1)
                     owner.transition(
                         playing: fromPlaying,
-                        configuration: AudioFadeConfiguration(enabled: true, playFadeMs: 10, pauseFadeMs: 10)
+                        configuration: AudioFadeConfiguration(enabled: true)
                     ) { finished.fulfill() }
                     XCTAssertEqual(owner.envelope, current)
                     XCTAssertEqual(owner.desiredPlaying, fromPlaying)
@@ -58,7 +58,7 @@ final class PlaybackOutputGainControllerTests: XCTestCase {
             }
             owner.transition(
                 playing: !fromPlaying,
-                configuration: AudioFadeConfiguration(enabled: true, playFadeMs: 100, pauseFadeMs: 100)
+                configuration: AudioFadeConfiguration(enabled: true)
             ) { superseded.fulfill() }
             XCTAssertEqual(owner.desiredPlaying, !fromPlaying)
         }
@@ -83,7 +83,7 @@ final class PlaybackOutputGainControllerTests: XCTestCase {
             }
             owner.transition(
                 playing: true,
-                configuration: AudioFadeConfiguration(enabled: true, playFadeMs: 10),
+                configuration: AudioFadeConfiguration(enabled: true),
                 isCurrent: { commandGate.isCurrent(command) },
                 startWhen: { readiness.isReady }
             ) { superseded.fulfill() }
@@ -103,17 +103,17 @@ final class PlaybackOutputGainControllerTests: XCTestCase {
         let finished = expectation(description: "final pause completes")
         queue.async {
             owner.reset(playing: true, envelope: 0.25)
-            let configuration = AudioFadeConfiguration(enabled: true, playFadeMs: 100, pauseFadeMs: 100)
+            let configuration = AudioFadeConfiguration(enabled: true)
             owner.transition(playing: false, configuration: configuration) { superseded.fulfill() }
             owner.transition(playing: true, configuration: configuration) { superseded.fulfill() }
             XCTAssertEqual(owner.envelope, 0.25)
             owner.transition(
                 playing: false,
-                configuration: AudioFadeConfiguration(enabled: true, pauseFadeMs: 10)
+                configuration: AudioFadeConfiguration(enabled: true)
             ) { finished.fulfill() }
             XCTAssertFalse(owner.desiredPlaying)
         }
-        wait(for: [finished], timeout: 1)
+        wait(for: [finished], timeout: 2)
         wait(for: [superseded], timeout: 0.15)
         XCTAssertEqual(queue.sync { owner.envelope }, 0)
     }
@@ -148,13 +148,13 @@ final class PlaybackOutputGainControllerTests: XCTestCase {
                 if state.phase == "waitingForAudio" { waiting.fulfill() }
             }
             owner.transition(playing: true,
-                configuration: AudioFadeConfiguration(enabled: true, playFadeMs: 10),
+                configuration: AudioFadeConfiguration(enabled: true),
                 startWhen: { readiness.isReady }) { finished.fulfill() }
         }
         wait(for: [waiting], timeout: 1)
         XCTAssertEqual(queue.sync { owner.envelope }, 0)
         readiness.setReady()
-        wait(for: [finished], timeout: 1)
+        wait(for: [finished], timeout: 2)
         XCTAssertEqual(queue.sync { owner.envelope }, 1)
     }
 }

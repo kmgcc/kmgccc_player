@@ -1267,14 +1267,6 @@ final class AudioDSPController {
                     || !DSPEqualLoudnessParameters.strengthRange.contains(parameters.strength) {
                     add("dsp.invalidParameter", "强度范围为 0 至 1。", "\(prefix).parameters.strength", nodeID: node.nodeID)
                 }
-                if !parameters.maxBassGainDB.isFinite
-                    || !DSPEqualLoudnessParameters.maxBassGainRange.contains(parameters.maxBassGainDB) {
-                    add("dsp.invalidParameter", "低频补偿范围为 0 至 12 dB。", "\(prefix).parameters.maxBassGainDB", nodeID: node.nodeID)
-                }
-                if !parameters.maxTrebleGainDB.isFinite
-                    || !DSPEqualLoudnessParameters.maxTrebleGainRange.contains(parameters.maxTrebleGainDB) {
-                    add("dsp.invalidParameter", "高频补偿范围为 0 至 6 dB。", "\(prefix).parameters.maxTrebleGainDB", nodeID: node.nodeID)
-                }
                 if !parameters.bassFrequencyHz.isFinite
                     || !DSPEqualLoudnessParameters.bassFrequencyRange.contains(parameters.bassFrequencyHz) {
                     add("dsp.invalidParameter", "低架频率范围为 20 至 500 Hz。", "\(prefix).parameters.bassFrequencyHz", nodeID: node.nodeID)
@@ -1291,9 +1283,16 @@ final class AudioDSPController {
                     || !DSPEqualLoudnessParameters.shelfSlopeRange.contains(parameters.trebleQ) {
                     add("dsp.invalidParameter", "高架斜率 S 范围为 0.25 至 1。", "\(prefix).parameters.trebleQ", nodeID: node.nodeID)
                 }
-                if !parameters.compensationWindowDB.isFinite
-                    || !DSPEqualLoudnessParameters.compensationWindowRange.contains(parameters.compensationWindowDB) {
-                    add("dsp.invalidParameter", "补偿窗口范围为 1 至 60 dB。", "\(prefix).parameters.compensationWindowDB", nodeID: node.nodeID)
+                if let rawCalibrations = node.parameters["calibrations"] {
+                    let readable: Bool
+                    if case .array(let values) = rawCalibrations {
+                        readable = values.allSatisfy { EqualLoudnessCalibration(json: $0) != nil }
+                    } else {
+                        readable = false
+                    }
+                    if !readable {
+                        add("dsp.invalidParameter", "等响标定数据无法读取。", "\(prefix).parameters.calibrations", nodeID: node.nodeID)
+                    }
                 }
                 continue
             }

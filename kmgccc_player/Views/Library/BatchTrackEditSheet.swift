@@ -610,6 +610,9 @@ struct BatchTrackEditSheet: View {
                     .foregroundStyle(appFgSecondary)
                     .padding(.top, 2)
                 }
+
+                TrackLoudnessMetadataSection(trackIDs: tracks.map(\.id))
+                    .padding(.top, 4)
             }
         }
         .padding(14)

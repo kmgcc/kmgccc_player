@@ -76,38 +76,90 @@ final class LibrarySession: LibrarySessionLifecycle {
         playbackService.bindAudioDSPDevices(devices)
     }
 
-    func bindAudioProcessingGlobals(_ controller: AudioProcessingGlobalsController) {
+    func bindAudioProcessingGlobals(
+        _ controller: AudioProcessingGlobalsController,
+        scheduler: BackgroundWorkScheduler,
+        habits: ListeningHabitForecast
+    ) {
         playbackService.bindAudioProcessingGlobals(controller)
-        loudnessService.updatePlaybackTrimPolicy(enabled: AppSettings.shared.audioAACGaplessTrimEnabled)
-        playbackService.loudnessGainProvider = { [weak self] track, url, configuration, continuousAlbum in
-            guard let self else {
-                return LoudnessGainSelector.trackGain(configuration: configuration, measurement: nil)
-            }
+        configureLoudness(scheduler: scheduler, habits: habits)
+        playbackService.loudnessPlanProvider = { [weak self] track, url, configuration in
+            guard let self else { return .disabled }
             self.loudnessService.updatePlaybackTrimPolicy(enabled: AppSettings.shared.audioAACGaplessTrimEnabled)
-            let album = track.albumGroupKey.isEmpty ? nil : self.libraryViewModel.allTracks.filter {
-                $0.albumGroupKey == track.albumGroupKey
-            }
-            return self.loudnessService.gainDecision(track: track, fileURL: url,
-                configuration: configuration, albumTracks: album, continuousAlbum: continuousAlbum)
+            return self.loudnessService.playbackPlan(track: track, fileURL: url, configuration: configuration)
         }
-        loudnessService.onMissingMeasurement = { [weak self] id in
-            self?.scheduleMissingLoudnessMeasurement(trackID: id)
+        playbackService.onLoudnessEnabledChanged = { [weak self] enabled in
+            self?.loudnessEnabledDidChange(enabled)
         }
-        if controller.configuration.loudness.enabled {
-            Task { [weak self] in await self?.loudnessService.loadSnapshot() }
+        loudnessEnabledDidChange(controller.configuration.loudness.enabled)
+    }
+
+    func setEqualLoudnessContext(_ context: DSPEqualLoudnessContext) {
+        playbackService.setEqualLoudnessContext(context)
+    }
+
+    /// Playback signals the background scheduler and habit forecast use:
+    /// listening starts, and audio supply that ran short.
+    func bindBackgroundSignals(scheduler: BackgroundWorkScheduler, habits: ListeningHabitForecast) {
+        playbackService.onListeningStarted = { [weak self, weak habits] in
+            habits?.recordListeningStart()
+            // Volume normalization is on whenever its idle scan is active or
+            // paused by the listener.
+            guard let self,
+                  self.loudnessService.isIdleScanActive || self.loudnessService.isIdleScanPausedByListener
+            else { return }
+            self.loudnessService.requestMeasurement(trackIDs: self.upcomingQueueTrackIDs(limit: 3), priority: .upcoming)
         }
+        playbackService.onAudioSupplyShortfall = { [weak scheduler] in
+            scheduler?.noteAudioSupplyShortfall()
+        }
+    }
+
+    /// The next songs in play order after the current one.
+    func upcomingQueueTrackIDs(limit: Int) -> [UUID] {
+        let queue = playbackService.currentQueueTracks()
+        guard !queue.isEmpty else { return [] }
+        let start = (playbackService.currentQueueDisplayIndex() ?? -1) + 1
+        guard start < queue.count else { return [] }
+        return queue[start..<min(queue.count, start + max(0, limit))].map(\.id)
+    }
+
+    /// A background result for an album: only a first album-gain arrival
+    /// changes the playing song.
+    func refreshLoudnessForAlbum(_ albumKey: String) {
+        playbackService.loudnessAlbumMeasurementsChanged(albumKey)
+    }
+
+    /// A listener's setting change (switch, target or album switch) applies
+    /// to the playing and queued songs with a short glide.
+    func reapplyLoudnessToPlayback() {
+        playbackService.reapplyLoudnessPlans(glideSeconds: 0.25)
     }
 
     var audioNormalizationGainDB: Double { playbackService.currentLoudnessGainDB }
     var audioNormalizationSource: String { playbackService.currentLoudnessSource }
+    var audioNormalizationAudibleGainDB: Double? { playbackService.audibleLoudnessGainDB }
+    var audioNormalizationPlan: LoudnessPlaybackPlan? { playbackService.currentLoudnessPlan }
 
     var audioNormalizationState: [String: AutomationJSONValue] {
-        ["gainDB": .number(playbackService.currentLoudnessGainDB),
-         "source": .string(playbackService.currentLoudnessSource),
-         "peakBasis": .string(playbackService.currentLoudnessPeakBasis),
-         "diagnostics": (try? AutomationWireCoding.decoder().decode(AutomationJSONValue.self,
-             from: AutomationWireCoding.encoder().encode(playbackService.currentLoudnessDiagnostics))) ?? .array([])]
+        var state: [String: AutomationJSONValue] = [
+            "gainDB": .number(playbackService.currentLoudnessGainDB),
+            "source": .string(playbackService.currentLoudnessSource),
+            "peakBasis": .string(playbackService.currentLoudnessPeakBasis),
+            "awaitingAlbum": .boolean(playbackService.currentLoudnessPlan?.awaitingAlbum ?? false),
+            "albumKey": playbackService.currentLoudnessPlan?.albumKey.map(AutomationJSONValue.string) ?? .null,
+            "audibleGainDB": playbackService.audibleLoudnessGainDB.map(AutomationJSONValue.number) ?? .null,
+            "diagnostics": (try? AutomationWireCoding.decoder().decode(AutomationJSONValue.self,
+                from: AutomationWireCoding.encoder().encode(playbackService.currentLoudnessDiagnostics))) ?? .array([]),
+        ]
+        if let measured = playbackService.currentLoudnessPlan?.decision.measuredLUFS {
+            state["measuredLUFS"] = .number(measured)
+        }
+        return state
     }
+
+    /// Listening-time forecast used to order idle preparation.
+    var loudnessHabits: ListeningHabitForecast?
 
     private let playbackService: AVAudioPlaybackService
     private let operationCoordinator: LibraryOperationCoordinator
@@ -149,7 +201,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         ledMeterProvider: LEDMeterServiceProvider
     ) {
         self.context = context
-        self.loudnessService = LibraryLoudnessService(libraryPaths: context.paths)
+        self.loudnessService = LibraryLoudnessService(libraryPaths: context.paths, libraryID: context.id)
         self.rootAccessLease = rootAccessLease
         self.writerLease = writerLease
         self.modelContainer = modelContainer
@@ -413,6 +465,24 @@ final class LibrarySession: LibrarySessionLifecycle {
             reporter.recordProgress(completedCount: 0, totalCount: totalCount, phase: "Starting")
             await work(reporter)
         }, kind: .automation, retrySpec: retrySpec)
+        guard started else { return nil }
+        return operationCoordinator.taskDescriptors.last
+    }
+
+    /// A read-only Job that does not take a place in the write queue.
+    func startConcurrentJob(
+        kind: LibraryTaskKind,
+        totalCount: Int,
+        retrySpec: LibraryOperationRetrySpec? = nil,
+        work: @escaping @MainActor (LibraryAutomationJobReporter) async -> Void
+    ) -> LibraryOperationTaskDescriptor? {
+        guard !isClosed, totalCount > 0 else { return nil }
+        let started = operationCoordinator.startConcurrent({ [weak self] in
+            guard let self else { return }
+            let reporter = LibraryAutomationJobReporter(operationCoordinator: self.operationCoordinator)
+            reporter.recordProgress(completedCount: 0, totalCount: totalCount, phase: "Starting")
+            await work(reporter)
+        }, kind: kind, retrySpec: retrySpec)
         guard started else { return nil }
         return operationCoordinator.taskDescriptors.last
     }

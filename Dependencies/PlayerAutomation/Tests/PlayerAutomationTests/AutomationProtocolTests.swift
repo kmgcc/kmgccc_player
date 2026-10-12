@@ -1412,7 +1412,7 @@ func globalLoudnessUsesExistingJobsAndAudioScopes() throws {
     }
     #expect(parameters["fade"] == AutomationDSPToolCatalog.fadeSchema)
     #expect(parameters["loudness"] == AutomationDSPToolCatalog.loudnessSchema)
-    #expect(parameters["deviceReferences"] == AutomationDSPToolCatalog.deviceReferencesSchema)
+    #expect(parameters["deviceReferences"] == nil)
 }
 
 @Test
