@@ -281,12 +281,12 @@ struct FullscreenMiniPlayerView: View {
                     mode: playbackMode,
                     isEnabled: isEnabled,
                     isExpanded: isPlaybackModeExpanded,
+                    expansionWidths: playbackModeCollapsedWidth...playbackModeExpandedWidth,
                     iconSize: 16 * scale,
                     selectedColor: controlPrimaryColor,
                     unselectedColor: controlSecondaryColor,
                     useScreenBlend: usesScreenBlendForControls,
                     pillTintColor: fullscreenControlPillTintColor,
-                    pillTintBlendMode: .normal,
                     onInteraction: onInteraction,
                     scale: scale,
                     onModeChange: { mode in
@@ -300,12 +300,12 @@ struct FullscreenMiniPlayerView: View {
                     mode: presentation.appleMusicPlaybackMode ?? .sequence,
                     isEnabled: isEnabled,
                     isExpanded: isPlaybackModeExpanded,
+                    expansionWidths: playbackModeCollapsedWidth...layoutMetrics.externalPlaybackModeExpandedWidth,
                     iconSize: 16 * scale,
                     selectedColor: controlPrimaryColor,
                     unselectedColor: controlSecondaryColor,
                     useScreenBlend: usesScreenBlendForControls,
                     pillTintColor: fullscreenControlPillTintColor,
-                    pillTintBlendMode: .normal,
                     onInteraction: onInteraction,
                     scale: scale,
                     onModeChange: { mode in
@@ -314,6 +314,7 @@ struct FullscreenMiniPlayerView: View {
                 )
             }
         }
+        .environment(\.colorScheme, glassStyle.colorScheme)
         .frame(maxWidth: .infinity)
         .frame(height: 36 * scale)
         .anchorPreference(

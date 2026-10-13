@@ -108,7 +108,7 @@ final class PlaybackHistoryStore {
 
     func validateReadableStore(at expectedURL: URL) throws {
         guard activeStoreURL.standardizedFileURL == expectedURL.standardizedFileURL else {
-            throw LibraryUpgradeValidationError.historyStoreMismatch
+            throw LibraryStorageValidationError.historyStoreMismatch
         }
         _ = try modelContext.fetchCount(FetchDescriptor<PlaybackHistoryRecord>())
     }

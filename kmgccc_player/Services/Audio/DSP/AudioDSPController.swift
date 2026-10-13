@@ -1091,13 +1091,7 @@ final class AudioDSPController {
         var totalScriptOperationsPerSecond = 0.0
         var scriptLatencyFrames = 0
         let nativeLatencyFrames = configuration.nodes.filter { $0.enabled }.reduce(0) { total, node in
-            if node.typeID == DSPNodeConfiguration.virtualBassTypeID,
-               let parameters = node.virtualBassParameters, parameters.amount * parameters.mix > 0 {
-                return total + 64
-            }
-            if node.typeID == DSPNodeConfiguration.tubeTypeID,
-               let parameters = node.tubeParameters, parameters.mix > 0 { return total + 64 }
-            return total
+            total + Self.declaredLatencyFrames(of: node, sampleRate: format?.sampleRate ?? 48_000)
         } + (configuration.limiter.enabled
             ? format.map { DSPPeakLimiterKernel.lookaheadFrames(sampleRate: $0.sampleRate) }
                 ?? DSPPeakLimiterKernel.maximumLookaheadFrames
@@ -1114,9 +1108,7 @@ final class AudioDSPController {
             }
             guard node.enabled else { continue }
             guard node.typeID == DSPNodeConfiguration.parametricEQTypeID
-                    || node.typeID == DSPNodeConfiguration.stereoWidthTypeID
-                    || node.typeID == DSPNodeConfiguration.virtualBassTypeID
-                    || node.typeID == DSPNodeConfiguration.tubeTypeID
+                    || DSPNodeConfiguration.nativeEffectTypeIDs.contains(node.typeID)
                     || node.typeID == DSPNodeConfiguration.scriptTypeID else {
                 add(
                     "dsp.unsupportedNode",
@@ -1288,109 +1280,22 @@ final class AudioDSPController {
                 continue
             }
 
-            if node.typeID == DSPNodeConfiguration.stereoWidthTypeID {
-                for parameterKey in node.parameters.keys.sorted()
-                    where !DSPStereoWidthParameters.supportedParameterKeys.contains(parameterKey) {
+            if let supportedKeys = DSPNodeConfiguration.supportedParameterKeys(forTypeID: node.typeID) {
+                let title = DSPNodeConfiguration.displayTitle(forTypeID: node.typeID)
+                for parameterKey in node.parameters.keys.sorted() where !supportedKeys.contains(parameterKey) {
                     add(
                         "dsp.unsupportedParameter",
-                        "此立体声扩展参数暂不支持：\(parameterKey)。",
+                        "此\(title)参数暂不支持：\(parameterKey)。",
                         "\(prefix).parameters.\(parameterKey)",
                         nodeID: node.nodeID
                     )
                 }
-                guard let parameters = node.stereoWidthParameters else {
-                    add("dsp.invalidParameter", "立体声扩展参数不完整。", "\(prefix).parameters", nodeID: node.nodeID)
+                guard let issues = node.nativeParameterIssues else {
+                    add("dsp.invalidParameter", "\(title)参数不完整。", "\(prefix).parameters", nodeID: node.nodeID)
                     continue
                 }
-                if !parameters.width.isFinite || !DSPStereoWidthParameters.widthRange.contains(parameters.width) {
-                    add("dsp.invalidParameter", "宽度范围为 0 至 2。", "\(prefix).parameters.width", nodeID: node.nodeID)
-                }
-                if !parameters.outputTrimDB.isFinite
-                    || !DSPStereoWidthParameters.outputTrimRange.contains(parameters.outputTrimDB) {
-                    add("dsp.invalidParameter", "输出增益范围为 −24 至 +6 dB。", "\(prefix).parameters.outputTrimDB", nodeID: node.nodeID)
-                }
-                continue
-            }
-
-            if node.typeID == DSPNodeConfiguration.virtualBassTypeID {
-                for parameterKey in node.parameters.keys.sorted()
-                    where !DSPVirtualBassParameters.supportedParameterKeys.contains(parameterKey) {
-                    add(
-                        "dsp.unsupportedParameter",
-                        "此虚拟低音参数暂不支持：\(parameterKey)。",
-                        "\(prefix).parameters.\(parameterKey)",
-                        nodeID: node.nodeID
-                    )
-                }
-                guard let parameters = node.virtualBassParameters else {
-                    add("dsp.invalidParameter", "虚拟低音参数不完整。", "\(prefix).parameters", nodeID: node.nodeID)
-                    continue
-                }
-                if !parameters.lowFrequencyHz.isFinite
-                    || !DSPVirtualBassParameters.lowFrequencyRange.contains(parameters.lowFrequencyHz) {
-                    add("dsp.invalidParameter", "低频范围为 20 至 180 Hz。", "\(prefix).parameters.lowFrequencyHz", nodeID: node.nodeID)
-                }
-                if !parameters.highFrequencyHz.isFinite
-                    || !DSPVirtualBassParameters.highFrequencyRange.contains(parameters.highFrequencyHz) {
-                    add("dsp.invalidParameter", "高频范围为 40 至 300 Hz。", "\(prefix).parameters.highFrequencyHz", nodeID: node.nodeID)
-                }
-                if parameters.lowFrequencyHz.isFinite, parameters.highFrequencyHz.isFinite,
-                   parameters.lowFrequencyHz >= parameters.highFrequencyHz {
-                    add("dsp.invalidParameter", "频带下限必须低于上限。", "\(prefix).parameters.highFrequencyHz", nodeID: node.nodeID)
-                }
-                if !parameters.amount.isFinite || !DSPVirtualBassParameters.amountRange.contains(parameters.amount) {
-                    add("dsp.invalidParameter", "强度范围为 0 至 1。", "\(prefix).parameters.amount", nodeID: node.nodeID)
-                }
-                if !parameters.driveDB.isFinite || !DSPVirtualBassParameters.driveRange.contains(parameters.driveDB) {
-                    add("dsp.invalidParameter", "驱动范围为 0 至 18 dB。", "\(prefix).parameters.driveDB", nodeID: node.nodeID)
-                }
-                if !parameters.harmonics.isFinite || !DSPVirtualBassParameters.harmonicsRange.contains(parameters.harmonics) {
-                    add("dsp.invalidParameter", "谐波倾向范围为 0 至 1。", "\(prefix).parameters.harmonics", nodeID: node.nodeID)
-                }
-                if !parameters.mix.isFinite || !DSPVirtualBassParameters.mixRange.contains(parameters.mix) {
-                    add("dsp.invalidParameter", "混合范围为 0 至 1。", "\(prefix).parameters.mix", nodeID: node.nodeID)
-                }
-                if !parameters.outputTrimDB.isFinite
-                    || !DSPVirtualBassParameters.outputTrimRange.contains(parameters.outputTrimDB) {
-                    add("dsp.invalidParameter", "输出增益范围为 −24 至 +6 dB。", "\(prefix).parameters.outputTrimDB", nodeID: node.nodeID)
-                }
-                continue
-            }
-
-            if node.typeID == DSPNodeConfiguration.tubeTypeID {
-                for parameterKey in node.parameters.keys.sorted()
-                    where !DSPTubeParameters.supportedParameterKeys.contains(parameterKey) {
-                    add(
-                        "dsp.unsupportedParameter",
-                        "此电子管参数暂不支持：\(parameterKey)。",
-                        "\(prefix).parameters.\(parameterKey)",
-                        nodeID: node.nodeID
-                    )
-                }
-                guard let parameters = node.tubeParameters else {
-                    add("dsp.invalidParameter", "电子管参数不完整。", "\(prefix).parameters", nodeID: node.nodeID)
-                    continue
-                }
-                if !parameters.driveDB.isFinite || !DSPTubeParameters.driveRange.contains(parameters.driveDB) {
-                    add("dsp.invalidParameter", "驱动范围为 0 至 18 dB。", "\(prefix).parameters.driveDB", nodeID: node.nodeID)
-                }
-                if !parameters.bias.isFinite || !DSPTubeParameters.biasRange.contains(parameters.bias) {
-                    add("dsp.invalidParameter", "偏置范围为 −0.5 至 +0.5。", "\(prefix).parameters.bias", nodeID: node.nodeID)
-                }
-                if !parameters.mix.isFinite || !DSPTubeParameters.mixRange.contains(parameters.mix) {
-                    add("dsp.invalidParameter", "混合范围为 0 至 1。", "\(prefix).parameters.mix", nodeID: node.nodeID)
-                }
-                if !parameters.inputTrimDB.isFinite
-                    || !DSPTubeParameters.inputTrimRange.contains(parameters.inputTrimDB) {
-                    add("dsp.invalidParameter", "输入增益范围为 −24 至 +12 dB。", "\(prefix).parameters.inputTrimDB", nodeID: node.nodeID)
-                }
-                if !parameters.outputTrimDB.isFinite
-                    || !DSPTubeParameters.outputTrimRange.contains(parameters.outputTrimDB) {
-                    add("dsp.invalidParameter", "输出增益范围为 −24 至 +6 dB。", "\(prefix).parameters.outputTrimDB", nodeID: node.nodeID)
-                }
-                if !parameters.dcBlockHz.isFinite
-                    || !DSPTubeParameters.dcBlockFrequencyRange.contains(parameters.dcBlockHz) {
-                    add("dsp.invalidParameter", "直流阻隔频率范围为 5 至 40 Hz。", "\(prefix).parameters.dcBlockHz", nodeID: node.nodeID)
+                for issue in issues {
+                    add("dsp.invalidParameter", issue.message, "\(prefix).parameters.\(issue.key)", nodeID: node.nodeID)
                 }
                 continue
             }
@@ -1489,9 +1394,31 @@ final class AudioDSPController {
             baseOperationsPerSecond: totalScriptOperationsPerSecond,
             latencyFrames: scriptLatencyFrames + nativeLatencyFrames)
         if format != nil, renderCost > DSPScriptCompiler.maximumChainWeightedOperationsPerSecond {
-            add("dsp.invalidParameter", "含延迟预览的脚本总成本不能超过 48 M 次估算运算/秒。", "nodes")
+            add("dsp.invalidParameter", "脚本总成本不能超过 48 M 次估算运算/秒。", "nodes")
+        }
+        if let format,
+           scriptLatencyFrames + nativeLatencyFrames > RendererDSPLookahead.maximumFrames(sampleRate: format.sampleRate) {
+            add("dsp.invalidParameter", "效果链总延迟不能超过 300 ms。", "nodes")
         }
         return result
+    }
+
+    /// Latency an enabled native node declares, before the source format is
+    /// known in detail; the processor reports the prepared value.
+    nonisolated static func declaredLatencyFrames(of node: DSPNodeConfiguration, sampleRate: Double) -> Int {
+        switch node.typeID {
+        case DSPNodeConfiguration.tubeTypeID:
+            return node.tubeParameters.map { $0.isDry ? 0 : 64 } ?? 0
+        case DSPNodeConfiguration.hybridBassTypeID:
+            return DSPHybridBassEngine.latencyFrames(sampleRate: sampleRate)
+        case DSPNodeConfiguration.spatialAudioTypeID:
+            return DSPConvolutionSpectra.headBlockSize
+        case DSPNodeConfiguration.compressorTypeID:
+            return node.effectParameters(DSPCompressorParameters.self)
+                .map { Int(($0.lookaheadMs / 1_000 * sampleRate).rounded()) } ?? 0
+        default:
+            return 0
+        }
     }
 
     private static func disabledUnknownNodeWarnings(

@@ -50,6 +50,15 @@ nonisolated struct DSPOutputDevice: Identifiable, Equatable, Sendable {
         return "hifispeaker"
     }
 
+    /// Headphones and earbuds, by the same identification as the symbol;
+    /// everything else, displays included, plays through speakers.
+    var outputKind: DSPOutputKind {
+        switch symbolName {
+        case "headphones", "airpods", "airpodspro", "airpodsmax": .headphones
+        default: .speakers
+        }
+    }
+
     /// The route currently presented by a Core Audio device.
     static func resolve(_ descriptor: AudioOutputDeviceDescriptor) -> DSPOutputDevice {
         let source = AudioOutputDataSource.current(deviceID: descriptor.deviceID)

@@ -42,7 +42,8 @@ struct FullscreenSkinTabView: View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
             SettingsSection("选择外观") {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                    SkinPackageSettingsActions(skin: SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID))
+                    // 自定义皮肤包管理入口（导入/导出/重载/删除）暂未开放，待功能完善后恢复
+                    // SkinPackageSettingsActions(skin: SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID))
                     SkinSelectorRow(
                         skins: SkinRegistry.fullscreenOptions,
                         selectedSkinID: Binding(

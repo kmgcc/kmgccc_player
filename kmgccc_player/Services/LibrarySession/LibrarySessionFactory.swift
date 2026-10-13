@@ -6,7 +6,6 @@ nonisolated enum LibrarySessionFactoryError: Error, Equatable {
     case manifestIdentityMismatch
     case manifestModeMismatch
     case missingReferencedSourceServices
-    case referencedDomainBackupUnavailable(String)
 }
 
 @MainActor
@@ -69,11 +68,6 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             journal: mutationJournal
         )
 
-        let storageLocations = StorageLocations.scoped(to: context.paths)
-        _ = await LegacyLibraryUpgradeCoordinator.prepareStorageIfNeeded(
-            context: context,
-            storageLocations: storageLocations
-        )
         let cacheServices = LibraryCacheServices(paths: context.paths)
         let modelContainer = try makeModelContainer(paths: context.paths)
         let preferenceStatsService = PreferenceStatsService()
@@ -84,42 +78,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         )
         let sourceStore: ReferencedSourceStore?
         let sourceScope: ReferencedSourceScope?
-        let domainMigration: ReferencedLibraryDomainMigration?
-        var domainMigrationPrepared = false
         if context.mode == .referenced {
-            let migration = ReferencedLibraryDomainMigration(
-                paths: context.paths,
-                libraryID: context.id
-            )
-            domainMigration = migration
-            do {
-                _ = try await migration.prepare()
-                domainMigrationPrepared = true
-            } catch {
-                // Transient IO gets exactly one retry before the backup
-                // boundary is treated as broken.
-                do {
-                    _ = try await migration.prepare()
-                    domainMigrationPrepared = true
-                } catch {
-                    // A committed journal means a previous run already
-                    // finished the transition, so no un-migrated state is
-                    // left to protect and opening may proceed.
-                    guard await migration.hasCommittedJournal() else {
-                        Log.error(
-                            "[LibrarySession] referenced domain backup failed; refusing unsafe upgrade: \(error.localizedDescription)",
-                            category: .library
-                        )
-                        throw LibrarySessionFactoryError.referencedDomainBackupUnavailable(
-                            "资料库无法安全升级：迁移备份创建失败（\(error.localizedDescription)）"
-                        )
-                    }
-                    Log.warning(
-                        "[LibrarySession] referenced domain backup unavailable; migration already committed",
-                        category: .library
-                    )
-                }
-            }
             let store = ReferencedSourceStore(paths: context.paths)
             let scope = ReferencedSourceScope()
             let descriptors = try await store.loadAll()
@@ -162,7 +121,6 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         } else {
             sourceStore = nil
             sourceScope = nil
-            domainMigration = nil
         }
         let playlistMembershipStore: ReferencedPlaylistMembershipStore? = context.mode == .referenced
             ? ReferencedPlaylistMembershipStore(paths: context.paths)
@@ -187,18 +145,6 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             playlistArtworkPipeline: cacheServices.playlistArtworkPipeline,
             mutationCoordinator: mutationCoordinator
         )
-        var playlistMembershipMigrationSucceeded = true
-        let migrationValidationSnapshot: ReferencedDomainMigrationValidator.Snapshot?
-        if context.mode == .referenced, let sourceStore {
-            // Captured before any migration step so commit() can verify the
-            // transition changed nothing it must not change.
-            migrationValidationSnapshot = await ReferencedDomainMigrationValidator.capture(
-                repository: repository,
-                sourceStore: sourceStore
-            )
-        } else {
-            migrationValidationSnapshot = nil
-        }
         if let sourceStore, let playlistMembershipStore {
             do {
                 let descriptors = try await sourceStore.loadAll()
@@ -224,37 +170,8 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
                     }
                 }
             } catch {
-                playlistMembershipMigrationSucceeded = false
                 Log.warning(
                     "[LibrarySession] playlist membership migration deferred: \(error.localizedDescription)",
-                    category: .library
-                )
-            }
-        }
-        if domainMigrationPrepared && playlistMembershipMigrationSucceeded {
-            if let migrationValidationSnapshot, let sourceStore {
-                let failedChecks = await ReferencedDomainMigrationValidator.failedChecks(
-                    pre: migrationValidationSnapshot,
-                    repository: repository,
-                    sourceStore: sourceStore
-                )
-                if failedChecks.isEmpty {
-                    await Self.commitDomainMigration(domainMigration)
-                } else {
-                    // The migration steps are idempotent and already applied,
-                    // so the session still opens; keeping the journal pending
-                    // preserves the backup for recovery and lets the next
-                    // launch re-validate before publishing the new schema.
-                    Log.warning(
-                        "[LibrarySession] referenced domain migration validation pending, journal kept recoverable: \(failedChecks.joined(separator: "; "))",
-                        category: .library
-                    )
-                }
-            } else {
-                // No pre-migration snapshot to validate against: keep the
-                // journal pending instead of publishing an unverified schema.
-                Log.warning(
-                    "[LibrarySession] referenced domain migration not committed: validation snapshot unavailable, journal kept recoverable",
                     category: .library
                 )
             }
@@ -547,137 +464,5 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             url: try TrackIndexStorePaths.prepareStoreURL(in: paths)
         )
         return try ModelContainer(for: schema, configurations: [configuration])
-    }
-
-    /// Publishes the migrated schema. A failed commit keeps the journal pending
-    /// so the next launch re-validates; it must not be dropped silently.
-    private static func commitDomainMigration(_ migration: ReferencedLibraryDomainMigration?) async {
-        guard let migration else { return }
-        do {
-            try await migration.commit()
-        } catch {
-            Log.error(
-                "[LibrarySession] referenced domain migration commit failed; journal stays pending: \(error.localizedDescription)",
-                category: .library
-            )
-        }
-    }
-}
-
-/// Lightweight pre/post comparison guarding the referenced-domain migration
-/// commit boundary. Mirrors `LibraryUpgradeSessionValidator` but stays cheap
-/// enough to run on every open until the journal commits.
-@MainActor
-enum ReferencedDomainMigrationValidator {
-    struct Snapshot: Sendable {
-        let trackCount: Int
-        let playlistTrackIDs: [UUID: [UUID]]
-        let descriptorBindings: [UUID: [UUID]]
-        let decodableLocatorTrackIDs: Set<UUID>
-    }
-
-    static func capture(
-        repository: SwiftDataLibraryRepository,
-        sourceStore: ReferencedSourceStore
-    ) async -> Snapshot? {
-        let tracks = await repository.fetchTracks(in: nil)
-        let playlists = await repository.fetchPlaylists()
-        let descriptors: [ReferencedSourceDescriptor]
-        do {
-            descriptors = try await sourceStore.loadAll()
-        } catch {
-            // Without a pre-migration snapshot the validation gate cannot
-            // prove the transition changed nothing; do not let an unreadable
-            // store pass as "no descriptors".
-            Log.error(
-                "[LibrarySession] migration validation snapshot unavailable: \(error.localizedDescription)",
-                category: .library
-            )
-            return nil
-        }
-        return Snapshot(
-            trackCount: tracks.count,
-            playlistTrackIDs: Dictionary(
-                uniqueKeysWithValues: playlists.map { ($0.id, $0.tracks.map(\.id)) }
-            ),
-            descriptorBindings: Dictionary(
-                uniqueKeysWithValues: descriptors.map { ($0.id, $0.playlistBindings.map(\.playlistID)) }
-            ),
-            decodableLocatorTrackIDs: Set(tracks.filter(Self.hasDecodableLocator).map(\.id))
-        )
-    }
-
-    static func failedChecks(
-        pre: Snapshot,
-        repository: SwiftDataLibraryRepository,
-        sourceStore: ReferencedSourceStore
-    ) async -> [String] {
-        let tracks = await repository.fetchTracks(in: nil)
-        let playlists = await repository.fetchPlaylists()
-        let descriptors: [ReferencedSourceDescriptor]
-        do {
-            descriptors = try await sourceStore.loadAll()
-        } catch {
-            return ["descriptorStoreUnreadable(\(error.localizedDescription))"]
-        }
-        return evaluate(
-            pre: pre,
-            postTrackCount: tracks.count,
-            postPlaylistOrders: playlists.map { (id: $0.id, trackIDs: $0.tracks.map(\.id)) },
-            postDescriptors: descriptors.map {
-                (id: $0.id, bindingPlaylistIDs: $0.playlistBindings.map(\.playlistID))
-            },
-            postDecodableLocatorTrackIDs: Set(tracks.filter(Self.hasDecodableLocator).map(\.id))
-        )
-    }
-
-    static func evaluate(
-        pre: Snapshot,
-        postTrackCount: Int,
-        postPlaylistOrders: [(id: UUID, trackIDs: [UUID])],
-        postDescriptors: [(id: UUID, bindingPlaylistIDs: [UUID])],
-        postDecodableLocatorTrackIDs: Set<UUID>
-    ) -> [String] {
-        var failures: [String] = []
-        if postTrackCount != pre.trackCount {
-            failures.append("trackCount(pre=\(pre.trackCount), post=\(postTrackCount))")
-        }
-
-        let postOrders = Dictionary(
-            uniqueKeysWithValues: postPlaylistOrders.map { ($0.id, $0.trackIDs) }
-        )
-        for playlistID in pre.playlistTrackIDs.keys.sorted(by: { $0.uuidString < $1.uuidString }) {
-            guard postOrders[playlistID] == pre.playlistTrackIDs[playlistID] else {
-                failures.append("playlistOrder(\(playlistID.uuidString))")
-                continue
-            }
-        }
-
-        let postPlaylistIDs = Set(postOrders.keys)
-        let postDescriptorIDs = Set(postDescriptors.map(\.id))
-        for descriptorID in pre.descriptorBindings.keys.sorted(by: { $0.uuidString < $1.uuidString })
-        where !postDescriptorIDs.contains(descriptorID) {
-            failures.append("sourceDescriptorMissing(\(descriptorID.uuidString))")
-        }
-        for descriptor in postDescriptors.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
-            if descriptor.bindingPlaylistIDs.contains(where: { !postPlaylistIDs.contains($0) }) {
-                failures.append("sourceBindings(\(descriptor.id.uuidString))")
-            }
-        }
-
-        let regressedLocators = pre.decodableLocatorTrackIDs
-            .subtracting(postDecodableLocatorTrackIDs)
-        if !regressedLocators.isEmpty {
-            let first = regressedLocators.map(\.uuidString).min() ?? ""
-            failures.append("locatorIntegrity(count=\(regressedLocators.count), first=\(first))")
-        }
-        return failures
-    }
-
-    /// `Track.mediaLocator` silently falls back to legacy projections when its
-    /// encoded payload is corrupt, so integrity is checked by decoding the
-    /// payload directly.
-    private static func hasDecodableLocator(_ track: Track) -> Bool {
-        (try? JSONDecoder().decode(TrackMediaLocator.self, from: track.mediaLocatorData)) != nil
     }
 }

@@ -85,6 +85,10 @@ PopupLab executable、示例状态与面板 presenter 留在 demo 内，主 App 
 `PopupPalette`。独立实验室仍可单独编译与调参。定稿参数更新需同步 `PopupStyle` 默认值与 Standard.json；
 App 不读取用户下载目录中的文件。
 
+播放器仅将此处的按钮标准用于窗口右下角操作组和右上角关闭按钮。内容中的查找、导入、
+删除等工具保持各自的紧凑字号与中性底面，危险操作仅显示红字；全屏 quick panel 保留原有
+嵌入设置布局，材质与明暗状态同步 MiniPlayer。
+
 ```swift
 PopupFrame(title: "新建播放列表", systemImage: "square.and.pencil") {
     existingEditorContent

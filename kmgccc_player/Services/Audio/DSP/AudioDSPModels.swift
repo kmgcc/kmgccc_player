@@ -285,8 +285,18 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
     /// It is never a member of `AudioDSPConfiguration.nodes`.
     nonisolated static let equalLoudnessTypeID = "equalLoudness"
     nonisolated static let stereoWidthTypeID = "stereoWidth"
-    nonisolated static let virtualBassTypeID = "virtualBass"
+    nonisolated static let classicBassTypeID = DSPClassicBassParameters.typeID
+    nonisolated static let hybridBassTypeID = DSPHybridBassParameters.typeID
     nonisolated static let tubeTypeID = "tube"
+    nonisolated static let crossfeedTypeID = DSPCrossfeedParameters.typeID
+    nonisolated static let spatialAudioTypeID = DSPSpatialAudioParameters.typeID
+    nonisolated static let reverbTypeID = DSPReverbParameters.typeID
+    nonisolated static let compressorTypeID = DSPCompressorParameters.typeID
+    /// Native effects with typed parameter sets, in add-menu order.
+    nonisolated static let nativeEffectTypeIDs: [String] = [
+        classicBassTypeID, hybridBassTypeID, stereoWidthTypeID, crossfeedTypeID,
+        spatialAudioTypeID, reverbTypeID, tubeTypeID, compressorTypeID,
+    ]
     nonisolated static let defaultChannelPolicy = "fullRange"
     nonisolated static let supportedChannelPolicies: Set<String> = ["allChannels", "frontPair", "fullRange"]
     nonisolated static let standardQuality = "standard"
@@ -357,100 +367,35 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
     }
 
     nonisolated var stereoWidthParameters: DSPStereoWidthParameters? {
-        get {
-            guard typeID == Self.stereoWidthTypeID,
-                  let width = parameters["width"]?.numberValue,
-                  let outputTrimDB = parameters["outputTrimDB"]?.numberValue else { return nil }
-            return DSPStereoWidthParameters(width: width, outputTrimDB: outputTrimDB)
-        }
-        set {
-            guard typeID == Self.stereoWidthTypeID, let newValue else { return }
-            parameters["width"] = .number(newValue.width)
-            parameters["outputTrimDB"] = .number(newValue.outputTrimDB)
-        }
-    }
-
-    nonisolated var virtualBassParameters: DSPVirtualBassParameters? {
-        get {
-            guard typeID == Self.virtualBassTypeID,
-                  let lowFrequencyHz = parameters["lowFrequencyHz"]?.numberValue,
-                  let highFrequencyHz = parameters["highFrequencyHz"]?.numberValue,
-                  let amount = parameters["amount"]?.numberValue,
-                  let driveDB = parameters["driveDB"]?.numberValue,
-                  let harmonics = parameters["harmonics"]?.numberValue,
-                  let mix = parameters["mix"]?.numberValue,
-                  let outputTrimDB = parameters["outputTrimDB"]?.numberValue else { return nil }
-            return DSPVirtualBassParameters(
-                lowFrequencyHz: lowFrequencyHz,
-                highFrequencyHz: highFrequencyHz,
-                amount: amount,
-                driveDB: driveDB,
-                harmonics: harmonics,
-                mix: mix,
-                outputTrimDB: outputTrimDB
-            )
-        }
-        set {
-            guard typeID == Self.virtualBassTypeID, let newValue else { return }
-            parameters["lowFrequencyHz"] = .number(newValue.lowFrequencyHz)
-            parameters["highFrequencyHz"] = .number(newValue.highFrequencyHz)
-            parameters["amount"] = .number(newValue.amount)
-            parameters["driveDB"] = .number(newValue.driveDB)
-            parameters["harmonics"] = .number(newValue.harmonics)
-            parameters["mix"] = .number(newValue.mix)
-            parameters["outputTrimDB"] = .number(newValue.outputTrimDB)
-        }
+        get { effectParameters(DSPStereoWidthParameters.self) }
+        set { if let newValue { setEffectParameters(newValue) } }
     }
 
     nonisolated var tubeParameters: DSPTubeParameters? {
-        get {
-            guard typeID == Self.tubeTypeID,
-                  let driveDB = parameters["driveDB"]?.numberValue,
-                  let bias = parameters["bias"]?.numberValue,
-                  let mix = parameters["mix"]?.numberValue,
-                  let inputTrimDB = parameters["inputTrimDB"]?.numberValue,
-                  let outputTrimDB = parameters["outputTrimDB"]?.numberValue,
-                  case .bool(let dcRemovalEnabled)? = parameters["dcRemovalEnabled"],
-                  let dcBlockHz = parameters["dcBlockHz"]?.numberValue else { return nil }
-            return DSPTubeParameters(
-                driveDB: driveDB,
-                bias: bias,
-                mix: mix,
-                inputTrimDB: inputTrimDB,
-                outputTrimDB: outputTrimDB,
-                dcRemovalEnabled: dcRemovalEnabled,
-                dcBlockHz: dcBlockHz
-            )
-        }
-        set {
-            guard typeID == Self.tubeTypeID, let newValue else { return }
-            parameters["driveDB"] = .number(newValue.driveDB)
-            parameters["bias"] = .number(newValue.bias)
-            parameters["mix"] = .number(newValue.mix)
-            parameters["inputTrimDB"] = .number(newValue.inputTrimDB)
-            parameters["outputTrimDB"] = .number(newValue.outputTrimDB)
-            parameters["dcRemovalEnabled"] = .bool(newValue.dcRemovalEnabled)
-            parameters["dcBlockHz"] = .number(newValue.dcBlockHz)
-        }
+        get { effectParameters(DSPTubeParameters.self) }
+        set { if let newValue { setEffectParameters(newValue) } }
     }
+
+    /// Types whose processing needs an identified left and right pair.
+    nonisolated static let frontPairTypeIDs: Set<String> = [stereoWidthTypeID, crossfeedTypeID, spatialAudioTypeID]
+    /// Types that run on a front pair or on a whole mono or stereo source.
+    nonisolated static let pairOrStereoTypeIDs: Set<String> = [classicBassTypeID, hybridBassTypeID, reverbTypeID]
 
     nonisolated static func supportedChannelPolicies(forTypeID typeID: String) -> Set<String> {
         switch typeID {
-        case parametricEQTypeID, scriptTypeID:
+        case parametricEQTypeID, scriptTypeID, tubeTypeID, compressorTypeID:
             ["allChannels", "fullRange"]
-        case stereoWidthTypeID:
+        case _ where frontPairTypeIDs.contains(typeID):
             ["frontPair"]
-        case virtualBassTypeID:
+        case _ where pairOrStereoTypeIDs.contains(typeID):
             ["frontPair", "fullRange"]
-        case tubeTypeID:
-            ["allChannels", "fullRange"]
         default:
             []
         }
     }
 
     nonisolated static func defaultChannelPolicy(forTypeID typeID: String) -> String {
-        typeID == stereoWidthTypeID ? "frontPair" : defaultChannelPolicy
+        frontPairTypeIDs.contains(typeID) ? "frontPair" : defaultChannelPolicy
     }
 
     /// The channel scope of an effect follows the source rather than a
@@ -461,36 +406,92 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
         requested: String,
         format: DSPAudioFormat
     ) -> String {
-        switch typeID {
-        case stereoWidthTypeID:
-            return "frontPair"
-        case virtualBassTypeID:
+        if frontPairTypeIDs.contains(typeID) { return "frontPair" }
+        if pairOrStereoTypeIDs.contains(typeID) {
             if requested == "frontPair", format.frontStereoPair != nil { return "frontPair" }
             if requested == "fullRange", format.isMonoOrStereoLayout { return "fullRange" }
             return format.frontStereoPair != nil ? "frontPair" : "fullRange"
-        default:
-            if requested == "fullRange", format.hasIdentifiedChannelMap { return "fullRange" }
-            return "allChannels"
         }
+        if requested == "fullRange", format.hasIdentifiedChannelMap { return "fullRange" }
+        return "allChannels"
     }
 
     nonisolated static func supportedQualities(forTypeID typeID: String) -> Set<String> {
         switch typeID {
-        case parametricEQTypeID, stereoWidthTypeID, scriptTypeID:
-            [standardQuality]
-        case virtualBassTypeID, tubeTypeID:
+        case tubeTypeID:
             [oversampling2xQuality, oversampling4xQuality]
+        case parametricEQTypeID, scriptTypeID:
+            [standardQuality]
+        case _ where nativeEffectTypeIDs.contains(typeID):
+            [standardQuality]
         default:
             []
         }
     }
 
     nonisolated static func defaultQuality(forTypeID typeID: String) -> String {
+        typeID == tubeTypeID ? oversampling2xQuality : standardQuality
+    }
+
+    /// Parameter keys a node type accepts, or nil for types without a fixed set.
+    nonisolated static func supportedParameterKeys(forTypeID typeID: String) -> Set<String>? {
         switch typeID {
-        case virtualBassTypeID, tubeTypeID:
-            oversampling2xQuality
+        case classicBassTypeID: DSPClassicBassParameters.supportedParameterKeys
+        case hybridBassTypeID: DSPHybridBassParameters.supportedParameterKeys
+        case stereoWidthTypeID: DSPStereoWidthParameters.supportedParameterKeys
+        case crossfeedTypeID: DSPCrossfeedParameters.supportedParameterKeys
+        case spatialAudioTypeID: DSPSpatialAudioParameters.supportedParameterKeys
+        case reverbTypeID: DSPReverbParameters.supportedParameterKeys
+        case tubeTypeID: DSPTubeParameters.supportedParameterKeys
+        case compressorTypeID: DSPCompressorParameters.supportedParameterKeys
+        default: nil
+        }
+    }
+
+    /// Range problems of a native effect's parameters; nil when they cannot
+    /// be read at all.
+    nonisolated var nativeParameterIssues: [DSPParameterIssue]? {
+        switch typeID {
+        case Self.classicBassTypeID: effectParameters(DSPClassicBassParameters.self)?.validationIssues
+        case Self.hybridBassTypeID: effectParameters(DSPHybridBassParameters.self)?.validationIssues
+        case Self.stereoWidthTypeID: effectParameters(DSPStereoWidthParameters.self)?.validationIssues
+        case Self.crossfeedTypeID: effectParameters(DSPCrossfeedParameters.self)?.validationIssues
+        case Self.spatialAudioTypeID: effectParameters(DSPSpatialAudioParameters.self)?.validationIssues
+        case Self.reverbTypeID: effectParameters(DSPReverbParameters.self)?.validationIssues
+        case Self.tubeTypeID: effectParameters(DSPTubeParameters.self)?.validationIssues
+        case Self.compressorTypeID: effectParameters(DSPCompressorParameters.self)?.validationIssues
+        default: nil
+        }
+    }
+
+    /// Name of a node type as listeners see it, shared by the rack and
+    /// diagnostics.
+    nonisolated static func displayTitle(forTypeID typeID: String) -> String {
+        switch typeID {
+        case parametricEQTypeID: "九段均衡器"
+        case classicBassTypeID: "经典虚拟低音"
+        case hybridBassTypeID: "虚拟低音"
+        case stereoWidthTypeID: "立体声扩展"
+        case crossfeedTypeID: "交叉馈送"
+        case spatialAudioTypeID: "空间音频"
+        case reverbTypeID: "混响"
+        case tubeTypeID: "电子管模拟"
+        case compressorTypeID: "动态压缩"
+        case scriptTypeID: "可编程脚本"
+        default: typeID
+        }
+    }
+
+    /// True for an enabled node whose tuning follows the routed transducer.
+    nonisolated var followsOutputKind: Bool {
+        guard enabled else { return false }
+        switch typeID {
+        case Self.classicBassTypeID:
+            return effectParameters(DSPClassicBassParameters.self)?.target == .automatic
+        case Self.hybridBassTypeID:
+            return effectParameters(DSPHybridBassParameters.self)?.target == .automatic
         default:
-            standardQuality
+            return false
         }
     }
 
@@ -525,21 +526,14 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
         return node
     }
 
-    nonisolated static func virtualBass(
+    nonisolated static func classicBass(
         nodeID: UUID = UUID(),
         enabled: Bool = true,
-        parameters: DSPVirtualBassParameters = DSPVirtualBassParameters(),
-        channelPolicy: String = "fullRange",
-        quality: String = "oversampling2x"
+        parameters: DSPClassicBassParameters = DSPClassicBassParameters(),
+        channelPolicy: String = "fullRange"
     ) -> DSPNodeConfiguration {
-        var node = DSPNodeConfiguration(
-            nodeID: nodeID,
-            typeID: Self.virtualBassTypeID,
-            enabled: enabled,
-            channelPolicy: channelPolicy,
-            quality: quality
-        )
-        node.virtualBassParameters = parameters
+        var node = effect(parameters, nodeID: nodeID, enabled: enabled)
+        node.channelPolicy = channelPolicy
         return node
     }
 
@@ -579,98 +573,6 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
         )
     }
 
-}
-
-nonisolated struct DSPStereoWidthParameters: Codable, Equatable, Sendable {
-    nonisolated static let widthRange: ClosedRange<Double> = 0...2
-    nonisolated static let outputTrimRange: ClosedRange<Double> = -24...6
-    nonisolated static let supportedParameterKeys: Set<String> = ["width", "outputTrimDB"]
-
-    var width: Double
-    var outputTrimDB: Double
-
-    nonisolated init(width: Double = 1, outputTrimDB: Double = 0) {
-        self.width = width
-        self.outputTrimDB = outputTrimDB
-    }
-}
-
-nonisolated struct DSPVirtualBassParameters: Codable, Equatable, Sendable {
-    nonisolated static let lowFrequencyRange: ClosedRange<Double> = 20...180
-    nonisolated static let highFrequencyRange: ClosedRange<Double> = 40...300
-    nonisolated static let amountRange: ClosedRange<Double> = 0...1
-    nonisolated static let driveRange: ClosedRange<Double> = 0...18
-    nonisolated static let harmonicsRange: ClosedRange<Double> = 0...1
-    nonisolated static let mixRange: ClosedRange<Double> = 0...1
-    nonisolated static let outputTrimRange: ClosedRange<Double> = -24...6
-    nonisolated static let supportedParameterKeys: Set<String> = [
-        "lowFrequencyHz", "highFrequencyHz", "amount", "driveDB", "harmonics", "mix", "outputTrimDB",
-    ]
-
-    var lowFrequencyHz: Double
-    var highFrequencyHz: Double
-    var amount: Double
-    var driveDB: Double
-    var harmonics: Double
-    var mix: Double
-    var outputTrimDB: Double
-
-    nonisolated init(
-        lowFrequencyHz: Double = 40,
-        highFrequencyHz: Double = 120,
-        amount: Double = 0.5,
-        driveDB: Double = 6,
-        harmonics: Double = 0.5,
-        mix: Double = 0,
-        outputTrimDB: Double = 0
-    ) {
-        self.lowFrequencyHz = lowFrequencyHz
-        self.highFrequencyHz = highFrequencyHz
-        self.amount = amount
-        self.driveDB = driveDB
-        self.harmonics = harmonics
-        self.mix = mix
-        self.outputTrimDB = outputTrimDB
-    }
-}
-
-nonisolated struct DSPTubeParameters: Codable, Equatable, Sendable {
-    nonisolated static let driveRange: ClosedRange<Double> = 0...18
-    nonisolated static let biasRange: ClosedRange<Double> = -0.5...0.5
-    nonisolated static let mixRange: ClosedRange<Double> = 0...1
-    nonisolated static let inputTrimRange: ClosedRange<Double> = -24...12
-    nonisolated static let outputTrimRange: ClosedRange<Double> = -24...6
-    nonisolated static let dcBlockFrequencyRange: ClosedRange<Double> = 5...40
-    nonisolated static let supportedParameterKeys: Set<String> = [
-        "driveDB", "bias", "mix", "inputTrimDB", "outputTrimDB",
-        "dcRemovalEnabled", "dcBlockHz",
-    ]
-
-    var driveDB: Double
-    var bias: Double
-    var mix: Double
-    var inputTrimDB: Double
-    var outputTrimDB: Double
-    var dcRemovalEnabled: Bool
-    var dcBlockHz: Double
-
-    nonisolated init(
-        driveDB: Double = 6,
-        bias: Double = 0.15,
-        mix: Double = 0,
-        inputTrimDB: Double = 0,
-        outputTrimDB: Double = 0,
-        dcRemovalEnabled: Bool = true,
-        dcBlockHz: Double = 10
-    ) {
-        self.driveDB = driveDB
-        self.bias = bias
-        self.mix = mix
-        self.inputTrimDB = inputTrimDB
-        self.outputTrimDB = outputTrimDB
-        self.dcRemovalEnabled = dcRemovalEnabled
-        self.dcBlockHz = dcBlockHz
-    }
 }
 
 /// How much bass and treble the stage adds comes from the preset's
@@ -837,6 +739,17 @@ nonisolated struct AudioDSPConfiguration: Codable, Equatable, Sendable {
 
     nonisolated func hasSameStructure(as other: AudioDSPConfiguration) -> Bool {
         structureSignature == other.structureSignature
+    }
+
+    /// True when an active effect retunes itself for headphones or speakers.
+    nonisolated var followsOutputKind: Bool {
+        enabled && nodes.contains(where: \.followsOutputKind)
+    }
+
+    /// True when an active effect renders its own spatial image, which the
+    /// system's spatialization must not process again.
+    nonisolated var rendersSpatialImage: Bool {
+        enabled && nodes.contains { $0.enabled && $0.typeID == DSPNodeConfiguration.spatialAudioTypeID }
     }
 }
 

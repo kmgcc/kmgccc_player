@@ -245,11 +245,13 @@ CLI 使用 `--idempotency-key`；每次调参沿用 audio 授权，不弹额外�
 `subscriptions/listen`。沿用现有约 2 秒快照订阅循环，仅变化时发送
 `notifications/resources/updated`；订阅不会自动启动 App。读工具使用 `audio.read`，
 写工具使用 `audio.write`；`dsp.errors.get/clear` 公开报错与清除操作。
-当前源码支持节点 `peq9`、`stereoWidth`、`virtualBass`、`tube`、`script`，以及预设固定阶段 `equalLoudness`。P5 与 P6 已通过授权 Debug 编译（App、Xcode 测试目标、CLI/MCP 与自动化测试目标），尚待测试运行和实际运行验收。
+当前源码支持节点 `peq9`、`virtualBassClassic`、`virtualBassHybrid`、`stereoWidth`、`crossfeed`、`spatialAudio`、`reverb`、`tube`、`compressor`、`script`，以及预设固定阶段 `equalLoudness`。第一版的 `virtualBass` 已由前两种低音节点取代，旧文档中的该节点按未知节点规则处理。第二版效果尚未编译和实际运行验收。
 
-P5 节点的全部参数、默认值、质量与声道策略见 `dsp.schema.nodes`。使用 `setQuality(nodeID, value)` 切换 `oversampling2x/oversampling4x`，使用 `setChannelPolicy(nodeID, value)` 设置节点请求的声道范围；它们与 `setParameter`、`setOrder` 可以组成一次原子编辑，并沿用 revision 和 dry-run。设置界面不暴露声道范围；请求值只在源能支持时生效，否则处理器会放宽而不是旁路：宽度节点固定 `frontPair`；低音在明确的 mono/stereo 上保持 `fullRange`，否则退到 `frontPair`；其余节点在布局完整已知时使用 `fullRange`（排除 LFE），布局未知时处理全部声道。
+各节点的全部参数、默认值、质量与声道策略见 `dsp.schema.nodes`；设置界面只露出关键参数，其余参数仍可通过 `setParameter` 调整，schema 描述写明它们与界面控件的对应关系。使用 `setQuality(nodeID, value)` 切换电子管的 `oversampling2x/oversampling4x`，使用 `setChannelPolicy(nodeID, value)` 设置节点请求的声道范围；它们与 `setParameter`、`setOrder` 可以组成一次原子编辑，并沿用 revision 和 dry-run。设置界面不暴露声道范围；请求值只在源能支持时生效，否则处理器会放宽而不是旁路：立体声扩展、交叉馈送和空间音频固定 `frontPair`；两种低音和混响在明确的 mono/stereo 上保持 `fullRange`，否则退到 `frontPair`；其余节点在布局完整已知时使用 `fullRange`（排除 LFE），布局未知时处理全部声道。
 
-`dsp.state.processing` 及 apply status 包含 `processingLatencyFrames`、`mediaMappingLatencyFrames`、`peakGuarantee`。活跃非线性节点各固定 64 源帧算法延迟，限幅器为 5 ms 对应的源帧数（48 kHz 时 240 帧），源前瞻补偿后 App 时间映射延迟为 0；尚未准备时返回 null。限幅器生效时峰值保证为 `samplePeakLimited`；关闭限幅器后，非线性链为 `unavailable`，不能将余量估计当作真实峰值保证。参数、质量、策略与链顺序均随完整预设保存。
+非线性与动态节点（电子管、两种低音、动态压缩）以节目电平为参考：输入增益、自动余量和上游节点的静态增益不会改变饱和程度或压缩阈值。空间音频启用时，App 暂停系统对该路输出的空间化，节点关闭后恢复。`spatialAudio` 的 `impulseResponseID` 是导入文件的内容哈希；文件缺失时节点旁路并给出 `dsp.impulseResponseMissing`。
+
+`dsp.state.processing` 及 apply status 包含 `processingLatencyFrames`、`mediaMappingLatencyFrames`、`peakGuarantee`。处理器以预读方式运行，提前处理到整链的算法延迟，App 时间映射延迟为 0；整链延迟上限为 300 ms。电子管固定 64 源帧，空间音频 256 帧，混合型虚拟低音约 220 ms，压缩的前瞻按参数计算，限幅器为 5 ms 对应的源帧数（48 kHz 时 240 帧）；尚未准备时返回 null。限幅器生效时峰值保证为 `samplePeakLimited`；关闭限幅器后，非线性链为 `unavailable`，不能将余量估计当作真实峰值保证。参数、质量、策略与链顺序均随完整预设保存。
 
 ### P6 可编程 DSP
 

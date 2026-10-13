@@ -23,7 +23,6 @@ nonisolated struct LibraryPaths: Sendable, Equatable {
     var settingsRootURL: URL { directory("Settings") }
     var librarySettingsURL: URL { settingsRootURL.appendingPathComponent("library-settings.json") }
     var libraryOrderingURL: URL { settingsRootURL.appendingPathComponent("ordering.json") }
-    var upgradeJournalURL: URL { settingsRootURL.appendingPathComponent("library-upgrade.json") }
     /// Durable observation state for App-owned automation Jobs. This is not a
     /// second source of library truth; it only stores Job progress/history and
     /// the narrow retry payload needed by supported automation operations.
@@ -73,6 +72,21 @@ nonisolated struct LibraryPaths: Sendable, Equatable {
     var sourceScanCacheRootURL: URL {
         cacheRootURL.appendingPathComponent("SourceScan", isDirectory: true)
     }
+    var loudnessCacheRootURL: URL {
+        cacheRootURL.appendingPathComponent("Loudness", isDirectory: true)
+    }
+
+    /// Files earlier versions left in the library that nothing reads any
+    /// more: the referenced-library migration backup and its journal, the
+    /// pre-registry upgrade journal and the root-level scan manifest.
+    var retiredDataURLs: [URL] {
+        [
+            settingsRootURL.appendingPathComponent("DomainMigrationBackups", isDirectory: true),
+            settingsRootURL.appendingPathComponent("domain-migration.json"),
+            settingsRootURL.appendingPathComponent("library-upgrade.json"),
+            rootURL.appendingPathComponent(".kmgccc-library-manifest.json"),
+        ]
+    }
 
     var ignoredItemsURL: URL { sourcesRootURL.appendingPathComponent("ignored-items.json") }
     var ncmConversionsURL: URL { sourcesRootURL.appendingPathComponent("ncm-conversions.json") }
@@ -80,12 +94,6 @@ nonisolated struct LibraryPaths: Sendable, Equatable {
     /// continue to own order; this file owns source/manual/exclusion edges.
     var playlistMembershipsURL: URL {
         sourcesRootURL.appendingPathComponent("playlist-memberships.json")
-    }
-    var domainMigrationJournalURL: URL {
-        settingsRootURL.appendingPathComponent("domain-migration.json")
-    }
-    var domainMigrationBackupRootURL: URL {
-        settingsRootURL.appendingPathComponent("DomainMigrationBackups", isDirectory: true)
     }
 
     func trackFolderURL(for id: UUID) -> URL {

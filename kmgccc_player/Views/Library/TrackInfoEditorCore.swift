@@ -268,22 +268,24 @@ struct TrackInfoEditorCore: View {
                         Button(LocalizedStringKey("edit.track.choose_image")) {
                             showingArtworkPicker = true
                         }
-                        .buttonStyle(AppDialogGlassButtonStyle())
+                        .buttonStyle(AppPanelButtonStyle())
+                        .font(.system(size: 13, weight: .medium))
                     }
 
                     Button(LocalizedStringKey("查找封面")) {
                         fetchCover()
                     }
-                    .buttonStyle(AppDialogGlassButtonStyle())
+                    .buttonStyle(AppPanelButtonStyle())
+                    .font(.system(size: 13, weight: .medium))
                     .disabled(coverCoordinator?.isLoading == true)
 
                     if artworkData != nil {
-                        Button(LocalizedStringKey("edit.track.remove_artwork")) {
+                        Button(LocalizedStringKey("edit.track.remove_artwork"), role: .destructive) {
                             artworkData = nil
                             coverCoordinator?.clear()
                         }
-                        .buttonStyle(AppDialogGlassButtonStyle())
-                        .tint(.red)
+                        .buttonStyle(AppPanelButtonStyle())
+                        .font(.system(size: 13, weight: .medium))
                     }
 
                     if let error = coverCoordinator?.error {
@@ -438,7 +440,8 @@ struct TrackInfoEditorCore: View {
                     } label: {
                         Label("查找元数据", systemImage: "sparkle.magnifyingglass")
                     }
-                    .buttonStyle(AppDialogGlassButtonStyle())
+                    .buttonStyle(AppPanelButtonStyle())
+                    .font(.system(size: 13, weight: .medium))
                     .disabled(isMetadataLookupInFlight)
 
                     if isMetadataLookupInFlight {
@@ -602,7 +605,7 @@ struct TrackInfoEditorCore: View {
                 } label: {
                     Label("AMLL DB", systemImage: "arrow.up.right.square")
                 }
-                .buttonStyle(AppDialogGlassButtonStyle())
+                .buttonStyle(AppPanelButtonStyle())
                 .font(.caption)
 
                 Button {
@@ -610,21 +613,20 @@ struct TrackInfoEditorCore: View {
                 } label: {
                     Label("TTML Tool", systemImage: "hammer.fill")
                 }
-                .buttonStyle(AppDialogGlassButtonStyle())
+                .buttonStyle(AppPanelButtonStyle())
                 .font(.caption)
 
                 Button(LocalizedStringKey("edit.track.import_lyrics")) {
                     showingLyricsPicker = true
                 }
-                .buttonStyle(AppDialogGlassButtonStyle())
+                .buttonStyle(AppPanelButtonStyle())
                 .font(.caption)
 
                 if mode == .local || mode == .externalPlayback {
                     Button("清除歌词", role: .destructive) {
                         lyricsText = ""
                     }
-                    .buttonStyle(AppDialogGlassButtonStyle())
-                    .tint(.red)
+                    .buttonStyle(AppPanelButtonStyle())
                     .font(.caption)
                     .disabled(lyricsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
@@ -694,7 +696,7 @@ struct TrackInfoEditorCore: View {
                 Button(LocalizedStringKey("edit.track.reset")) {
                     lyricsTimeOffsetMs = 0
                 }
-                .buttonStyle(AppDialogGlassButtonStyle())
+                .buttonStyle(AppPanelButtonStyle())
                 .font(.caption)
             }
 

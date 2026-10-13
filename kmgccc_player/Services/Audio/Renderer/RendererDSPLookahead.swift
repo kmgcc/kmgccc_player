@@ -23,10 +23,25 @@ nonisolated struct RendererDSPSourceRange {
     }
 }
 
-/// Only the bounded FIR computation window is read ahead. Its samples retain
-/// each segment's fixed normalization gain and never change source PTS/counts.
+/// Only the bounded processing-latency window is read ahead. Its samples
+/// retain each segment's fixed normalization gain and never change source
+/// PTS/counts. The window stops at a real stream end, a time gap or a format
+/// boundary; the processor drains the rest of its latency through zeros.
 nonisolated enum RendererDSPLookahead {
-    static let maximumFrames = AudioDSPConfiguration.maximumNodeCount * 64 + 4 * 2048
+    /// Latency budget of a whole chain, in time so it holds at every rate.
+    static let maximumSeconds = 0.3
+    /// Frame budget scripts and oversampled nodes were sized against; low
+    /// sample rates keep at least this much.
+    static let minimumFrameBudget = AudioDSPConfiguration.maximumNodeCount * 64 + 4 * 2048
+        + DSPPeakLimiterKernel.maximumLookaheadFrames
+
+    static func maximumFrames(sampleRate: Double) -> Int {
+        guard sampleRate.isFinite, sampleRate > 0 else { return minimumFrameBudget }
+        return max(minimumFrameBudget, Int((sampleRate * maximumSeconds).rounded(.up)))
+    }
+
+    /// The largest window any supported format can request.
+    static let maximumFrames = maximumFrames(sampleRate: DSPScriptCompiler.maximumSampleRate)
 
     static func read(
         frameCount: Int,
@@ -37,7 +52,7 @@ nonisolated enum RendererDSPLookahead {
         segmentAt: (Int) -> RendererDSPSourceRange
     ) throws -> CanonicalPCM? {
         guard frameCount > 0 else { return nil }
-        guard frameCount <= maximumFrames, format.channelCount > 0,
+        guard frameCount <= maximumFrames(sampleRate: format.sampleRate), format.channelCount > 0,
               format.sampleRate.isFinite, format.sampleRate > 0,
               segmentIndex >= 0, segmentIndex < segmentCount, sourceFrame >= 0 else {
             throw RendererPipelineError.sourceError(underlying: NSError(
@@ -95,10 +110,10 @@ nonisolated enum RendererDSPLookahead {
             index += 1
             position = 0
         }
-        // Only a real stream end, a time gap, or a format boundary is drained
-        // with zeros. Decoder errors are propagated, never treated as EOF.
-        data.append(contentsOf: repeatElement(Float(0), count: (frameCount - received) * format.channelCount))
-        return CanonicalPCM(frames: frameCount, channelCount: format.channelCount,
+        // Only a real stream end, a time gap, or a format boundary shortens
+        // the window. Decoder errors are propagated, never treated as EOF.
+        guard received > 0 else { return nil }
+        return CanonicalPCM(frames: received, channelCount: format.channelCount,
                             sampleRate: format.sampleRate, data: data)
     }
 }

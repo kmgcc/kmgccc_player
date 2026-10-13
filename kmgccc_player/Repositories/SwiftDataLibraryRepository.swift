@@ -263,7 +263,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     func persistedTrackIndexIDs() throws -> Set<UUID> {
         guard let indexContext else {
-            throw LibraryUpgradeValidationError.trackIndexUnavailable
+            throw LibraryStorageValidationError.trackIndexUnavailable
         }
         return Set(try indexContext.fetch(FetchDescriptor<TrackIndexEntry>()).map(\.id))
     }

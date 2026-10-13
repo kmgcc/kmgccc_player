@@ -445,12 +445,14 @@ struct BatchTrackEditSheet: View {
                     Button("导入封面") {
                         showingArtworkPicker = true
                     }
-                    .buttonStyle(AppDialogGlassButtonStyle())
+                    .buttonStyle(AppPanelButtonStyle())
+                    .font(.system(size: 13, weight: .medium))
 
                     Button("查找封面") {
                         fetchCover()
                     }
-                    .buttonStyle(AppDialogGlassButtonStyle())
+                    .buttonStyle(AppPanelButtonStyle())
+                    .font(.system(size: 13, weight: .medium))
                     .disabled(coverCoordinator?.isLoading == true)
 
                     if artworkData != nil {
@@ -458,8 +460,8 @@ struct BatchTrackEditSheet: View {
                             artworkData = nil
                             coverCoordinator?.clear()
                         }
-                        .buttonStyle(AppDialogGlassButtonStyle())
-                        .tint(.red)
+                        .buttonStyle(AppPanelButtonStyle())
+                        .font(.system(size: 13, weight: .medium))
                     }
 
                     if let error = coverCoordinator?.error {
@@ -532,7 +534,7 @@ struct BatchTrackEditSheet: View {
                     } label: {
                         Label("查找元数据", systemImage: "sparkle.magnifyingglass")
                     }
-                    .buttonStyle(AppDialogGlassButtonStyle())
+                    .buttonStyle(AppPanelButtonStyle())
                     .disabled(isMetadataLookupInFlight)
                     .font(.caption)
 
@@ -605,7 +607,7 @@ struct BatchTrackEditSheet: View {
                 } label: {
                     Label("AMLL DB", systemImage: "arrow.up.right.square")
                 }
-                .buttonStyle(AppDialogGlassButtonStyle())
+                .buttonStyle(AppPanelButtonStyle())
                 .font(.caption)
 
                 Button {
@@ -613,13 +615,13 @@ struct BatchTrackEditSheet: View {
                 } label: {
                     Label("TTML Tool", systemImage: "hammer.fill")
                 }
-                .buttonStyle(AppDialogGlassButtonStyle())
+                .buttonStyle(AppPanelButtonStyle())
                 .font(.caption)
 
                 Button("导入歌词文件") {
                     showingLyricsPicker = true
                 }
-                .buttonStyle(AppDialogGlassButtonStyle())
+                .buttonStyle(AppPanelButtonStyle())
                 .font(.caption)
             }
 
@@ -647,7 +649,7 @@ struct BatchTrackEditSheet: View {
                     Button("重置") {
                         lyricsTimeOffsetMs = 0
                     }
-                    .buttonStyle(AppDialogGlassButtonStyle())
+                    .buttonStyle(AppPanelButtonStyle())
                     .font(.caption)
                 }
 

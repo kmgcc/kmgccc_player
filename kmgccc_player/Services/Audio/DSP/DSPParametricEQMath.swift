@@ -4,21 +4,32 @@ import Foundation
 /// system volume drives it; App volume, transport fades and normalization
 /// gain never do. The curve itself comes from the preset's calibration when
 /// it was recorded on the routed device.
+/// What kind of transducer the routed output drives. Effects with an
+/// automatic target tune themselves to it; an unknown route counts as speakers.
+nonisolated enum DSPOutputKind: String, Codable, Equatable, Sendable {
+    case headphones
+    case speakers
+}
+
 nonisolated struct DSPEqualLoudnessContext: Equatable, Sendable {
     var volume: OutputDeviceVolumeState
     /// The routed output (`DSPOutputDeviceKey.rawValue`), data source included.
     var deviceKey: String?
     /// Live bass/treble values while a calibration step is being adjusted.
     var override: DSPEqualLoudnessGains?
+    /// Transducer of the routed output, when it can be identified.
+    var outputKind: DSPOutputKind?
 
     nonisolated init(
         volume: OutputDeviceVolumeState = .unknown,
         deviceKey: String? = nil,
-        override: DSPEqualLoudnessGains? = nil
+        override: DSPEqualLoudnessGains? = nil,
+        outputKind: DSPOutputKind? = nil
     ) {
         self.volume = volume
         self.deviceKey = deviceKey
         self.override = override
+        self.outputKind = outputKind
     }
 
     /// No readable device volume: automatic compensation stays at zero.

@@ -12,7 +12,6 @@ import Foundation
 final class ExternalPlaybackMetadataStore {
     private enum Keys {
         static let overrides = "externalPlayback.matchOverrides.v1"
-        static let records = "externalPlayback.cacheRecords.v1"
     }
 
     private let storage: LibraryStorageLocations
@@ -48,66 +47,6 @@ final class ExternalPlaybackMetadataStore {
             from: storage.externalPlaybackMetadataURL.appendingPathComponent("records.json"),
             decoder: decoder
         ) ?? [:]
-    }
-
-    static func migrateLegacyPersistenceIfNeeded(
-        to storage: LibraryStorageLocations,
-        stagingRootURL: URL,
-        defaults: UserDefaults
-    ) throws {
-        let fileManager = FileManager.default
-        let destination = storage.externalPlaybackMetadataURL
-            .appendingPathComponent("records.json")
-        let stagingDirectory = stagingRootURL.appendingPathComponent(
-            "LegacyExternalPlaybackMetadata",
-            isDirectory: true
-        )
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let legacyData = defaults.data(forKey: Keys.records)
-        if let legacyData {
-            _ = try decoder.decode(
-                [String: ExternalPlaybackCacheRecord].self,
-                from: legacyData
-            )
-        }
-
-        if fileManager.fileExists(atPath: destination.path) {
-            let destinationData = try Data(contentsOf: destination)
-            _ = try decoder.decode(
-                [String: ExternalPlaybackCacheRecord].self,
-                from: destinationData
-            )
-            return
-        }
-
-        guard let legacyData else { return }
-        try fileManager.createDirectory(
-            at: stagingDirectory,
-            withIntermediateDirectories: true
-        )
-        let stagedURL = stagingDirectory.appendingPathComponent("records.json")
-        try? fileManager.removeItem(at: stagedURL)
-        try legacyData.write(to: stagedURL, options: .atomic)
-        try fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        guard !fileManager.fileExists(atPath: destination.path) else {
-            try? fileManager.removeItem(at: stagedURL)
-            let destinationData = try Data(contentsOf: destination)
-            _ = try decoder.decode(
-                [String: ExternalPlaybackCacheRecord].self,
-                from: destinationData
-            )
-            return
-        }
-        try fileManager.moveItem(at: stagedURL, to: destination)
-        try? fileManager.removeItem(at: stagingDirectory)
-    }
-
-    static func removeLegacyPersistence(defaults: UserDefaults) {
-        defaults.removeObject(forKey: Keys.records)
     }
 
     func effectiveMetadata(for raw: ExternalPlaybackRawMetadata) -> ExternalPlaybackEffectiveMetadata {

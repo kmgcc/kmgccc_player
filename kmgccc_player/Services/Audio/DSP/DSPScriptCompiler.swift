@@ -17,8 +17,11 @@ nonisolated enum DSPScriptCompiler {
     // Short EOF/split blocks and transition warmup need separate benchmarks.
     static let costEstimateBlockFrames = 2_048
 
+    /// The processor runs ahead of its output by its latency, so every source
+    /// frame passes through the chain once and latency adds no work. Only the
+    /// zero drain past a stream end runs on a copy, once per stream.
     static func estimatedRendererOperationsPerSecond(baseOperationsPerSecond: Double, latencyFrames: Int) -> Double {
-        baseOperationsPerSecond * (1 + Double(max(0, latencyFrames)) / Double(costEstimateBlockFrames))
+        baseOperationsPerSecond
     }
 
     private static let maximumTokenCount = 8_192

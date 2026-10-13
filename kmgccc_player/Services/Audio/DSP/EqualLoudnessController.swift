@@ -13,6 +13,7 @@ final class EqualLoudnessController {
     private(set) var routedDeviceUID: String?
     /// The routed output with its data source; calibrations match on it.
     private(set) var routedDeviceKey: String?
+    private(set) var routedOutputKind: DSPOutputKind?
 
     @ObservationIgnored var onContextChange: (@MainActor (DSPEqualLoudnessContext) -> Void)?
     @ObservationIgnored private var lastPublished: DSPEqualLoudnessContext?
@@ -25,7 +26,8 @@ final class EqualLoudnessController {
     var volumeState: OutputDeviceVolumeState { volumeObserver.state }
 
     var context: DSPEqualLoudnessContext {
-        DSPEqualLoudnessContext(volume: volumeObserver.state, deviceKey: routedDeviceKey, override: previewGains)
+        DSPEqualLoudnessContext(volume: volumeObserver.state, deviceKey: routedDeviceKey,
+                                override: previewGains, outputKind: routedOutputKind)
     }
 
     /// The player's confirmed route; the default device when it follows the
@@ -33,6 +35,7 @@ final class EqualLoudnessController {
     func setRoutedDevice(_ device: DSPOutputDevice?) {
         routedDeviceUID = device?.uid
         routedDeviceKey = device?.id
+        routedOutputKind = device?.outputKind
         volumeObserver.observe(deviceUID: device?.uid)
         publish()
     }

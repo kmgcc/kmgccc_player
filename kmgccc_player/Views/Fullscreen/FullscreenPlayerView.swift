@@ -1592,7 +1592,6 @@ struct FullscreenPlayerView: View {
             presentation: FullscreenBottomBarPresentation(
                 glassStyle: glassStyle,
                 miniPlayerForegroundProfile: foregroundProfile,
-                quickPanelForegroundProfile: fullscreenQuickPanelForegroundProfile,
                 primaryColor: fullscreenMiniPlayerPrimaryColor,
                 iconBlendMode: fullscreenMiniPlayerIconBlendMode,
                 playbackMode: currentPlaybackMode,

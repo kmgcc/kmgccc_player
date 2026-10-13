@@ -639,6 +639,40 @@ final class ThemeStore: ObservableObject {
         return color
     }
 
+    /// Distinguishable colours for categorical charts. The first takes the
+    /// accent hue; the rest step evenly around the hue circle at one
+    /// lightness and chroma, so no category reads as more important.
+    func categoricalColors(count: Int) -> [Color] {
+        guard count > 0 else { return [] }
+        let isDark = colorScheme == .dark
+        let startHue = OKColor.nsColorToOKLCH(accentNSColor)?.h ?? 0.2
+        return (0..<count).map { index in
+            let lch = OKColor.OKLCH(
+                l: isDark ? 0.74 : 0.64,
+                c: isDark ? 0.12 : 0.13,
+                h: startHue + CGFloat(index) / CGFloat(count)
+            )
+            return ColorRenderingAdapter.makeSwiftUIColor(OKColor.okLCHToNSColor(lch, alpha: 1))
+        }
+    }
+
+    /// Multi-colour set drawn from the current artwork, using the same swatch
+    /// engine as the art background's small shapes. Falls back to
+    /// `categoricalColors` when the artwork yields fewer than `count` swatches.
+    func artworkSwatchColors(count: Int) -> [Color] {
+        guard count > 0 else { return [] }
+        let swatches = BKColorEngine.makeShapeSwatches(
+            seed: Self.artworkSwatchSeed,
+            extracted: analysis.topPalette,
+            fallback: [accentNSColor],
+            isDark: colorScheme == .dark,
+            analysis: analysis
+        ).colors.map { Color(cgColor: $0) }
+        return swatches.count >= count ? Array(swatches.prefix(count)) : categoricalColors(count: count)
+    }
+
+    private static let artworkSwatchSeed: UInt64 = 0x5A3C_91E2_7D4B_C0F1
+
     private nonisolated func computeChecksum(_ data: Data) -> UInt64 {
         ColorMath.fnv1a(data)
     }

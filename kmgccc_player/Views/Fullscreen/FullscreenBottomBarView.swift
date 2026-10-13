@@ -15,7 +15,6 @@ struct FullscreenBottomBarMetrics {
 struct FullscreenBottomBarPresentation {
     let glassStyle: FullscreenControlsGlassStyle
     let miniPlayerForegroundProfile: FullscreenMiniPlayerForegroundProfile
-    let quickPanelForegroundProfile: FullscreenOverlayForegroundProfile
     let primaryColor: Color
     let iconBlendMode: BlendMode
     let playbackMode: PlaybackOrderMode
@@ -24,6 +23,10 @@ struct FullscreenBottomBarPresentation {
     let isVolumeControlEnabled: Bool
     let usesAdaptiveVolumeForeground: Bool
     let showsPlaybackModeRetapTip: Bool
+
+    var quickPanelForegroundProfile: FullscreenOverlayForegroundProfile {
+        miniPlayerForegroundProfile.quickPanelForegroundProfile
+    }
 }
 
 struct FullscreenBottomBarActions {
@@ -198,6 +201,7 @@ struct FullscreenBottomBarView: View {
             if controls.isQuickAppearancePanelPresented {
                 FullscreenQuickAppearancePanel(
                     scale: scale,
+                    glassStyle: presentation.glassStyle,
                     foregroundProfile: presentation.quickPanelForegroundProfile,
                     onDismiss: { actions.setQuickAppearancePanelPresented(false) }
                 )
