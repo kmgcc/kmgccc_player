@@ -239,8 +239,9 @@ nonisolated struct EqualLoudnessCurve: Equatable, Sendable {
             secants[index] = (ys[index + 1] - ys[index]) / (xs[index + 1] - xs[index])
         }
         var slopes = [Double](repeating: 0, count: count)
-        slopes[0] = secants[0]
-        slopes[count - 1] = secants[count - 2]
+        // End slopes ease into horizontal plateaus with C1 continuity, eliminating corner kinks.
+        slopes[0] = 0
+        slopes[count - 1] = 0
         if count > 2 {
             for index in 1..<(count - 1) {
                 let left = secants[index - 1]
@@ -256,15 +257,24 @@ nonisolated struct EqualLoudnessCurve: Equatable, Sendable {
                 }
             }
         }
-        // Fritsch–Carlson end and flat-segment constraints keep the curve monotone.
-        for index in 0..<(count - 1) where secants[index] == 0 {
-            slopes[index] = 0
-            slopes[index + 1] = 0
-        }
-        for index in [0, count - 1] {
-            let secant = index == 0 ? secants[0] : secants[count - 2]
-            if slopes[index] * secant <= 0 { slopes[index] = 0 }
-            if abs(slopes[index]) > 3 * abs(secant) { slopes[index] = 3 * secant }
+        // Fritsch–Carlson flat-segment and overshoot constraints keep the curve monotone.
+        for index in 0..<(count - 1) {
+            let secant = secants[index]
+            if abs(secant) < 1e-12 {
+                slopes[index] = 0
+                slopes[index + 1] = 0
+                continue
+            }
+            let alpha = slopes[index] / secant
+            let beta = slopes[index + 1] / secant
+            if alpha < 0 { slopes[index] = 0 }
+            if beta < 0 { slopes[index + 1] = 0 }
+            let magnitude = alpha * alpha + beta * beta
+            if magnitude > 9 {
+                let tau = 3.0 / sqrt(magnitude)
+                slopes[index] = tau * alpha * secant
+                slopes[index + 1] = tau * beta * secant
+            }
         }
         return Segments(ys: ys, slopes: slopes)
     }

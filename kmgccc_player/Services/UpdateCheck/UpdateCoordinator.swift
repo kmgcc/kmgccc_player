@@ -802,6 +802,11 @@ final class UpdateCoordinator: NSObject, ObservableObject {
     }
 
     private func finishUpdateCheckWithFailure(_ error: Error) {
+        guard checkKind == .manual else {
+            Log.info("[UpdateCoordinator] Automatic update check failed silently: \(error)", category: .ui)
+            resetAfterAbortedInstallation(finalState: .idle)
+            return
+        }
         let failure = UpdateFailure(
             stage: .download,
             title: "检查更新失败",
@@ -984,10 +989,17 @@ extension UpdateCoordinator: SPUUserDriver {
         case .ready, .installReplyPending, .waitingForTermination, .installing:
             failure = UpdateFailure(stage: .installation, title: "更新安装失败", message: error.localizedDescription, metadata: readyMetadata)
         default:
-            failure = UpdateFailure(stage: .download, title: "检查更新失败", message: error.localizedDescription, metadata: nil)
+            if checkKind == .automatic {
+                Log.info("[UpdateCoordinator] Automatic update check error handled silently: \(error)", category: .ui)
+                failure = nil
+            } else {
+                failure = UpdateFailure(stage: .download, title: "检查更新失败", message: error.localizedDescription, metadata: nil)
+            }
         }
         if let failure {
             resetAfterAbortedInstallation(finalState: .failed(failure))
+        } else {
+            resetAfterAbortedInstallation(finalState: .idle)
         }
         acknowledgement()
     }

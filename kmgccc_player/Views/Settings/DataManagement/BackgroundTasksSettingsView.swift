@@ -255,7 +255,7 @@ struct BackgroundTasksSettingsView: View {
         } else if let date = domains.compactMap({ scheduler.lastCompletion(of: $0) }).max() {
             status = "\(Self.relativeTime(date))已整理"
         } else {
-            status = "每次启动后整理一次"
+            status = "空闲时定期整理"
         }
         return BackgroundTaskCard(
             id: "maintenance", title: "缓存整理", systemImage: "externaldrive",

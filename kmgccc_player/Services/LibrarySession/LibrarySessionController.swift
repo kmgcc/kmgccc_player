@@ -342,12 +342,3 @@ nonisolated struct LibraryHostRebuildState: Equatable, Sendable {
         return pendingGeneration
     }
 }
-
-nonisolated struct LegacyLibraryMigrationOwnership: Equatable, Sendable {
-    let ownerLibraryID: UUID?
-
-    func canClaim(libraryID: UUID, destinationRoot: URL, upgradedLegacyRoot: URL) -> Bool {
-        (ownerLibraryID == nil || ownerLibraryID == libraryID)
-            && destinationRoot.standardizedFileURL == upgradedLegacyRoot.standardizedFileURL
-    }
-}

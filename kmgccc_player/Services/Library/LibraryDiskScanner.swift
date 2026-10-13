@@ -28,7 +28,6 @@ nonisolated struct LibraryDiskSnapshot: Sendable {
 
 nonisolated struct LibraryDiskScanner: Sendable {
     private let paths: LibraryPaths
-    private static let legacyManifestFileName = ".kmgccc-library-manifest.json"
     private static let manifestSchemaVersion = 2
 
     init(paths: LibraryPaths) {
@@ -76,9 +75,8 @@ nonisolated struct LibraryDiskScanner: Sendable {
         )
         // Never overwrite the cache with a listing that failed to read part of
         // the library; the previous manifest still describes the real folders.
-        if !enumerationFailure,
-           writeManifest(newManifest, at: paths.libraryScanManifestURL) {
-            try? FileManager.default.removeItem(at: legacyManifestURL)
+        if !enumerationFailure {
+            writeManifest(newManifest, at: paths.libraryScanManifestURL)
         }
 
         let elapsed = Date().timeIntervalSince(start)
@@ -356,17 +354,8 @@ nonisolated struct LibraryDiskScanner: Sendable {
         loadPreferredManifest().manifest
     }
 
-    private var legacyManifestURL: URL {
-        paths.rootURL.appendingPathComponent(Self.legacyManifestFileName)
-    }
-
     private func loadPreferredManifest() -> ManifestLoad {
-        let current = loadManifest(at: paths.libraryScanManifestURL)
-        guard current.status == "miss" else { return current }
-
-        let legacy = loadManifest(at: legacyManifestURL)
-        guard let manifest = legacy.manifest else { return current }
-        return ManifestLoad(manifest: manifest, status: "legacy-hit")
+        loadManifest(at: paths.libraryScanManifestURL)
     }
 
     private func loadManifest(at url: URL) -> ManifestLoad {

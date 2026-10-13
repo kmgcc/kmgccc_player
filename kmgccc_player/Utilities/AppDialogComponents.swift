@@ -407,7 +407,7 @@ struct AppDialogDivider: View {
 }
 
 // MARK: - Glass Capsule Button Style
-// Compatibility adapter into PopupKit's shared button renderer.
+// Window footer actions only. Content tools use AppPanelButtonStyle below.
 //   - `.primary`    : accent glass, contrasting label.
 //   - `.secondary`  : subtle neutral fill, primary label (cancel / close).
 //   - `.destructive`: red-filled, white label (irreversible actions).
@@ -441,6 +441,35 @@ struct AppDialogGlassButtonStyle: ButtonStyle {
         case .primary: return .primary
         case .secondary: return .secondary
         case .destructive: return .destructive
+        }
+    }
+}
+
+// MARK: - Panel Content Button Style
+// Content tools keep their local font and compact sizing, independent of PopupStyle.
+struct AppPanelButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        let label = configuration.label
+            .foregroundStyle(configuration.role == .destructive ? Color.red : Color.primary)
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .frame(minHeight: 24)
+
+        return surface(label)
+            .contentShape(Capsule())
+            .opacity(!isEnabled ? 0.4 : (configuration.isPressed ? 0.8 : 1))
+    }
+
+    @ViewBuilder private func surface<SurfaceLabel: View>(_ label: SurfaceLabel) -> some View {
+        if reduceTransparency {
+            label.background(Color.secondary.opacity(0.12), in: Capsule())
+        } else {
+            label.glassEffect(.clear.interactive(isEnabled && !reduceMotion), in: Capsule())
         }
     }
 }
@@ -520,7 +549,7 @@ struct AppDialogOptionMenu<Value: Hashable>: View {
         } label: {
             HStack(spacing: 8) {
                 Text(currentLabel)
-                    .font(.system(size: PopupStyle().bodySize))
+                    .font(.system(size: 13))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -529,7 +558,7 @@ struct AppDialogOptionMenu<Value: Hashable>: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .buttonStyle(AppDialogGlassButtonStyle())
+        .buttonStyle(AppPanelButtonStyle())
         .popover(isPresented: $isOpen, arrowEdge: .bottom) {
             AppPopupScrollRegion {
                 LazyVStack(spacing: PopupStyle().rowSpacing) {

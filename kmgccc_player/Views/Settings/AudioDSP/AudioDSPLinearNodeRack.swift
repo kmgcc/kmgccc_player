@@ -648,10 +648,14 @@ struct AudioDSPLinearNodeRack: View {
             } else {
                 unreadableParameters
             }
-        case DSPNodeConfiguration.stereoWidthTypeID,
-             DSPNodeConfiguration.virtualBassTypeID,
-             DSPNodeConfiguration.tubeTypeID:
-            nativeEffectsEditor(node: node)
+        case _ where DSPNodeConfiguration.nativeEffectTypeIDs.contains(node.typeID):
+            AudioDSPNativeEffectEditor(
+                node: node,
+                isProcessing: node.enabled && isProcessingEnabled,
+                outputKind: appSession.equalLoudnessController.routedOutputKind,
+                onUpdateNode: onUpdateNode,
+                onCommit: onCommit
+            )
         case DSPNodeConfiguration.scriptTypeID:
             AudioDSPScriptNodeCard(
                 node: node,
@@ -706,80 +710,6 @@ struct AudioDSPLinearNodeRack: View {
                 fractionDigits: 2,
                 onCommit: onCommit
             )
-        }
-    }
-
-    @ViewBuilder
-    private func nativeEffectsEditor(node: DSPNodeConfiguration) -> some View {
-        let qualities = DSPNodeConfiguration.supportedQualities(forTypeID: node.typeID)
-
-        VStack(alignment: .leading, spacing: 10) {
-            if qualities.count > 1 {
-                CapsulePicker(
-                    label: "质量",
-                    options: Array(qualities).sorted(by: DSPNodeDescriptor.qualityOrder),
-                    selection: qualityBinding(for: node.nodeID),
-                    displayName: DSPNodeDescriptor.qualityTitle
-                )
-            }
-
-            switch node.typeID {
-            case DSPNodeConfiguration.stereoWidthTypeID:
-                DSPRangeSliderRow(
-                    title: "宽度",
-                    value: stereoWidthBinding(for: node.nodeID, keyPath: \.width),
-                    range: DSPStereoWidthParameters.widthRange,
-                    step: 0.01,
-                    unit: "×",
-                    fractionDigits: 2,
-                    onCommit: onCommit
-                )
-                DSPRangeSliderRow(
-                    title: "增益",
-                    value: stereoWidthBinding(for: node.nodeID, keyPath: \.outputTrimDB),
-                    range: DSPStereoWidthParameters.outputTrimRange,
-                    step: 0.1,
-                    onCommit: onCommit
-                )
-            case DSPNodeConfiguration.virtualBassTypeID:
-                DSPRangeSliderRow(
-                    title: "强度",
-                    value: virtualBassBinding(for: node.nodeID, keyPath: \.amount),
-                    range: DSPVirtualBassParameters.amountRange,
-                    step: 0.01,
-                    unit: "",
-                    fractionDigits: 2,
-                    onCommit: onCommit
-                )
-                DSPRangeSliderRow(
-                    title: "混合",
-                    value: virtualBassBinding(for: node.nodeID, keyPath: \.mix),
-                    range: DSPVirtualBassParameters.mixRange,
-                    step: 0.01,
-                    unit: "",
-                    fractionDigits: 2,
-                    onCommit: onCommit
-                )
-            case DSPNodeConfiguration.tubeTypeID:
-                DSPRangeSliderRow(
-                    title: "驱动",
-                    value: tubeBinding(for: node.nodeID, keyPath: \.driveDB),
-                    range: DSPTubeParameters.driveRange,
-                    step: 0.1,
-                    onCommit: onCommit
-                )
-                DSPRangeSliderRow(
-                    title: "混合",
-                    value: tubeBinding(for: node.nodeID, keyPath: \.mix),
-                    range: DSPTubeParameters.mixRange,
-                    step: 0.01,
-                    unit: "",
-                    fractionDigits: 2,
-                    onCommit: onCommit
-                )
-            default:
-                EmptyView()
-            }
         }
     }
 
@@ -905,71 +835,6 @@ struct AudioDSPLinearNodeRack: View {
         dragFloatingY = 0
     }
 
-    // MARK: - Bindings
-
-    private func qualityBinding(for nodeID: UUID) -> Binding<String> {
-        Binding(
-            get: { nodes.first(where: { $0.nodeID == nodeID })?.quality ?? DSPNodeConfiguration.standardQuality },
-            set: { quality in
-                onUpdateNode(nodeID) { $0.quality = quality }
-                onCommit()
-            }
-        )
-    }
-
-    private func stereoWidthBinding(
-        for nodeID: UUID,
-        keyPath: WritableKeyPath<DSPStereoWidthParameters, Double>
-    ) -> Binding<Double> {
-        Binding(
-            get: {
-                nodes.first(where: { $0.nodeID == nodeID })?.stereoWidthParameters?[keyPath: keyPath] ?? 0
-            },
-            set: { value in
-                onUpdateNode(nodeID) { candidate in
-                    var parameters = candidate.stereoWidthParameters ?? DSPStereoWidthParameters()
-                    parameters[keyPath: keyPath] = value
-                    candidate.stereoWidthParameters = parameters
-                }
-            }
-        )
-    }
-
-    private func virtualBassBinding(
-        for nodeID: UUID,
-        keyPath: WritableKeyPath<DSPVirtualBassParameters, Double>
-    ) -> Binding<Double> {
-        Binding(
-            get: {
-                nodes.first(where: { $0.nodeID == nodeID })?.virtualBassParameters?[keyPath: keyPath] ?? 0
-            },
-            set: { value in
-                onUpdateNode(nodeID) { candidate in
-                    var parameters = candidate.virtualBassParameters ?? DSPVirtualBassParameters()
-                    parameters[keyPath: keyPath] = value
-                    candidate.virtualBassParameters = parameters
-                }
-            }
-        )
-    }
-
-    private func tubeBinding(
-        for nodeID: UUID,
-        keyPath: WritableKeyPath<DSPTubeParameters, Double>
-    ) -> Binding<Double> {
-        Binding(
-            get: {
-                nodes.first(where: { $0.nodeID == nodeID })?.tubeParameters?[keyPath: keyPath] ?? 0
-            },
-            set: { value in
-                onUpdateNode(nodeID) { candidate in
-                    var parameters = candidate.tubeParameters ?? DSPTubeParameters()
-                    parameters[keyPath: keyPath] = value
-                    candidate.tubeParameters = parameters
-                }
-            }
-        )
-    }
 }
 
 // MARK: - Add Node Menu
@@ -990,10 +855,19 @@ struct AudioDSPAddNodeMenu: View {
             Section("均衡") {
                 addButton(.parametricEQ())
             }
-            Section("空间与音色") {
+            Section("低音") {
+                addButton(.classicBass())
+                addButton(.effect(DSPHybridBassParameters()))
+            }
+            Section("空间") {
                 addButton(.stereoWidth())
-                addButton(.virtualBass())
+                addButton(.effect(DSPCrossfeedParameters()))
+                addButton(.effect(DSPSpatialAudioParameters()))
+                addButton(.effect(DSPReverbParameters()))
+            }
+            Section("音色与动态") {
                 addButton(.tube())
+                addButton(.effect(DSPCompressorParameters()))
             }
             Section("自定义") {
                 addButton(.script())
@@ -1082,23 +956,21 @@ enum DSPNodeDescriptor {
     static func icon(for typeID: String) -> String {
         switch typeID {
         case DSPNodeConfiguration.parametricEQTypeID: "slider.vertical.3"
+        case DSPNodeConfiguration.classicBassTypeID: "speaker.wave.1"
+        case DSPNodeConfiguration.hybridBassTypeID: "speaker.wave.3"
         case DSPNodeConfiguration.stereoWidthTypeID: "arrow.left.and.right"
-        case DSPNodeConfiguration.virtualBassTypeID: "wave.3.forward"
+        case DSPNodeConfiguration.crossfeedTypeID: "arrow.triangle.swap"
+        case DSPNodeConfiguration.spatialAudioTypeID: "person.wave.2"
+        case DSPNodeConfiguration.reverbTypeID: "dot.radiowaves.left.and.right"
         case DSPNodeConfiguration.tubeTypeID: "dial.low"
+        case DSPNodeConfiguration.compressorTypeID: "gauge.with.dots.needle.33percent"
         case DSPNodeConfiguration.scriptTypeID: "curlybraces"
         default: "questionmark.square.dashed"
         }
     }
 
     static func title(for typeID: String) -> String {
-        switch typeID {
-        case DSPNodeConfiguration.parametricEQTypeID: "九段均衡器"
-        case DSPNodeConfiguration.stereoWidthTypeID: "立体声扩展"
-        case DSPNodeConfiguration.virtualBassTypeID: "虚拟低音"
-        case DSPNodeConfiguration.tubeTypeID: "电子管模拟"
-        case DSPNodeConfiguration.scriptTypeID: "可编程脚本"
-        default: typeID
-        }
+        DSPNodeConfiguration.displayTitle(forTypeID: typeID)
     }
 
     /// Summaries use the same precision and units as the node's own controls.
@@ -1107,12 +979,51 @@ enum DSPNodeDescriptor {
         case DSPNodeConfiguration.parametricEQTypeID:
             let count = node.parametricEQBands?.filter(\.enabled).count ?? 0
             return "\(count) 个频段"
+        case DSPNodeConfiguration.classicBassTypeID:
+            return node.effectParameters(DSPClassicBassParameters.self).map {
+                "\(targetTitle($0.target)) · 强度 \(format($0.intensity, digits: 2))"
+            } ?? ""
+        case DSPNodeConfiguration.hybridBassTypeID:
+            return node.effectParameters(DSPHybridBassParameters.self).map {
+                "\(targetTitle($0.target)) · 强度 \(format($0.intensity, digits: 2))"
+            } ?? ""
         case DSPNodeConfiguration.stereoWidthTypeID:
             return node.stereoWidthParameters.map { "宽度 \(format($0.width, digits: 2))×" } ?? ""
-        case DSPNodeConfiguration.virtualBassTypeID:
-            return node.virtualBassParameters.map { "强度 \(format($0.amount, digits: 2))" } ?? ""
+        case DSPNodeConfiguration.crossfeedTypeID:
+            return node.effectParameters(DSPCrossfeedParameters.self).map {
+                switch $0.strength {
+                case .light: "轻"
+                case .medium: "中"
+                case .strong: "重"
+                }
+            } ?? ""
+        case DSPNodeConfiguration.spatialAudioTypeID:
+            return node.effectParameters(DSPSpatialAudioParameters.self).map { parameters in
+                switch parameters.source {
+                case .impulseResponse:
+                    parameters.impulseResponseName.isEmpty ? "脉冲响应" : parameters.impulseResponseName
+                case .room:
+                    "虚拟音箱 · \(format(parameters.distanceM, digits: 1)) m"
+                }
+            } ?? ""
+        case DSPNodeConfiguration.reverbTypeID:
+            return node.effectParameters(DSPReverbParameters.self).map {
+                "\(spaceTitle($0.space)) · 混合 \(format($0.mix, digits: 2))"
+            } ?? ""
         case DSPNodeConfiguration.tubeTypeID:
-            return node.tubeParameters.map { "驱动 \(format($0.driveDB, digits: 1)) dB" } ?? ""
+            return node.tubeParameters.map {
+                $0.mode == .hifi
+                    ? "高保真 · 强度 \(format($0.hifiAmount, digits: 2))"
+                    : "驱动 \(format($0.driveDB, digits: 1)) dB"
+            } ?? ""
+        case DSPNodeConfiguration.compressorTypeID:
+            return node.effectParameters(DSPCompressorParameters.self).map {
+                switch $0.style {
+                case .gentle: "轻柔"
+                case .night: "夜间"
+                case .custom: "自定义"
+                }
+            } ?? ""
         case DSPNodeConfiguration.scriptTypeID:
             let count = node.scriptParameters?.values.count ?? 0
             return count > 0 ? "\(count) 个参数" : ""
@@ -1143,6 +1054,23 @@ enum DSPNodeDescriptor {
 
     private static func format(_ value: Double, digits: Int) -> String {
         value.formatted(.number.precision(.fractionLength(digits)))
+    }
+
+    private static func targetTitle(_ target: DSPBassTarget) -> String {
+        switch target {
+        case .automatic: "自动"
+        case .headphones: "耳机"
+        case .speakers: "扬声器"
+        }
+    }
+
+    private static func spaceTitle(_ space: DSPReverbSpace) -> String {
+        switch space {
+        case .room: "房间"
+        case .studio: "录音棚"
+        case .plate: "板式"
+        case .hall: "大厅"
+        }
     }
 }
 

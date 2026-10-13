@@ -1535,15 +1535,18 @@ private func artworkEditor(
 
             VStack(alignment: .leading, spacing: 8) {
                 Button("选择图片", action: chooseImage)
-                    .buttonStyle(AppDialogGlassButtonStyle())
+                    .buttonStyle(AppPanelButtonStyle())
+                    .font(.system(size: 13, weight: .medium))
 
                 Button("查找封面", action: searchArtwork)
-                    .buttonStyle(AppDialogGlassButtonStyle())
+                    .buttonStyle(AppPanelButtonStyle())
+                    .font(.system(size: 13, weight: .medium))
                     .disabled(isLoading)
 
                 if let generateArtworkTitle, let generateArtwork {
                     Button(generateArtworkTitle, action: generateArtwork)
-                        .buttonStyle(AppDialogGlassButtonStyle())
+                        .buttonStyle(AppPanelButtonStyle())
+                        .font(.system(size: 13, weight: .medium))
                         .disabled(isGeneratingArtwork)
                 }
 
@@ -1612,7 +1615,8 @@ private func metadataLookupButton(
         } label: {
             Label("查找元数据", systemImage: "sparkle.magnifyingglass")
         }
-        .buttonStyle(AppDialogGlassButtonStyle())
+        .buttonStyle(AppPanelButtonStyle())
+        .font(.system(size: 13, weight: .medium))
         .disabled(isLoading)
 
         if isLoading {

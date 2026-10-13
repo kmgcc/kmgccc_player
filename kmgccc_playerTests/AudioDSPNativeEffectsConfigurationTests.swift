@@ -6,22 +6,23 @@ import XCTest
 @MainActor
 final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
     func testAutomationQualityAndRoutingEditsAreOrderedAndAtomic() throws {
-        let node = DSPNodeConfiguration.virtualBass()
+        let tube = DSPNodeConfiguration.tube()
+        let bass = DSPNodeConfiguration.classicBass()
         var current = AudioDSPConfiguration.defaultFlat
-        current.nodes.append(node)
+        current.nodes.append(contentsOf: [tube, bass])
         let handler = AutomationDSPHandler(appSession: nil)
         let operations: [AutomationJSONValue] = [
-            .object(["op": .string("setQuality"), "nodeID": .string(node.nodeID.uuidString),
+            .object(["op": .string("setQuality"), "nodeID": .string(tube.nodeID.uuidString),
                      "value": .string("oversampling4x")]),
-            .object(["op": .string("setChannelPolicy"), "nodeID": .string(node.nodeID.uuidString),
+            .object(["op": .string("setChannelPolicy"), "nodeID": .string(bass.nodeID.uuidString),
                      "value": .string("frontPair")]),
         ]
         let parameters = try AutomationParameters(AutomationRequest(method: AutomationMethod.dspPatch,
             params: .object(["operations": .array(operations)])))
         let candidate = try handler.candidateConfiguration(parameters, current: current)
-        XCTAssertEqual(candidate.nodes.last?.quality, "oversampling4x")
-        XCTAssertEqual(candidate.nodes.last?.channelPolicy, "frontPair")
-        XCTAssertEqual(current.nodes.last, node)
+        XCTAssertEqual(candidate.nodes.first { $0.nodeID == tube.nodeID }?.quality, "oversampling4x")
+        XCTAssertEqual(candidate.nodes.first { $0.nodeID == bass.nodeID }?.channelPolicy, "frontPair")
+        XCTAssertEqual(Array(current.nodes.suffix(2)), [tube, bass])
 
         let invalid = operations + [.object([
             "op": .string("setQuality"), "nodeID": .string(UUID().uuidString),
@@ -30,11 +31,11 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
         let invalidParameters = try AutomationParameters(AutomationRequest(method: AutomationMethod.dspPatch,
             params: .object(["operations": .array(invalid)])))
         XCTAssertThrowsError(try handler.candidateConfiguration(invalidParameters, current: current))
-        XCTAssertEqual(current.nodes.last, node)
+        XCTAssertEqual(Array(current.nodes.suffix(2)), [tube, bass])
 
         let malformedRequest = AutomationRequest(method: AutomationMethod.dspPatch,
             params: .object(["operations": .array([
-                .object(["op": .string("setQuality"), "nodeID": .string(node.nodeID.uuidString),
+                .object(["op": .string("setQuality"), "nodeID": .string(tube.nodeID.uuidString),
                          "value": .number(4)]),
             ])]))
         let malformed = try AutomationParameters(malformedRequest)
@@ -98,8 +99,7 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
     }
 
     func testAutomationDefaultsMatchAppFactories() throws {
-        let nodes: [DSPNodeConfiguration] = [.stereoWidth(), .virtualBass(), .tube()]
-        for node in nodes {
+        for node in Self.allNativeNodes() {
             let schema = try XCTUnwrap(AutomationDSPToolCatalog.builtInNodeSchemas.first { raw in
                 guard case .object(let fields) = raw else { return false }
                 return fields["typeID"] == .string(node.typeID)
@@ -122,32 +122,42 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
         XCTAssertEqual(width.quality, "standard")
         XCTAssertEqual(width.stereoWidthParameters, DSPStereoWidthParameters())
 
-        let bass = DSPNodeConfiguration.virtualBass()
+        let bass = DSPNodeConfiguration.classicBass()
         XCTAssertEqual(bass.channelPolicy, "fullRange")
-        XCTAssertEqual(bass.quality, "oversampling2x")
-        XCTAssertEqual(bass.virtualBassParameters, DSPVirtualBassParameters())
+        XCTAssertEqual(bass.quality, "standard")
+        XCTAssertEqual(bass.effectParameters(DSPClassicBassParameters.self), DSPClassicBassParameters())
 
         let tube = DSPNodeConfiguration.tube()
         XCTAssertEqual(tube.channelPolicy, "fullRange")
         XCTAssertEqual(tube.quality, "oversampling2x")
         XCTAssertEqual(tube.tubeParameters, DSPTubeParameters())
+
+        // Every effect is audible as added: no strength or mix defaults to 0.
+        XCTAssertGreaterThan(DSPClassicBassParameters().intensity, 0)
+        XCTAssertGreaterThan(DSPHybridBassParameters().intensity, 0)
+        XCTAssertNotEqual(DSPStereoWidthParameters().width, 1)
+        XCTAssertGreaterThan(DSPTubeParameters().mix, 0)
+        XCTAssertGreaterThan(DSPTubeParameters().hifiAmount, 0)
+        XCTAssertGreaterThan(DSPReverbParameters().mix, 0)
+        XCTAssertGreaterThan(DSPSpatialAudioParameters().mix, 0)
+        XCTAssertTrue(DSPCompressorParameters().bands.allSatisfy { $0.ratio > 1 })
     }
 
     func testParameterSettersPreserveRecursiveUnknownJSON() throws {
-        var node = DSPNodeConfiguration.virtualBass()
+        var node = DSPNodeConfiguration.classicBass()
         let unknown = DSPJSONValue.object([
             "curve": .array([.integer(3), .bool(false), .number(120.0)]),
             "metadata": .object(["name": .string("future")]),
         ])
         node.parameters["futureParameter"] = unknown
-        var parameters = try XCTUnwrap(node.virtualBassParameters)
-        parameters.amount = 0.8
-        node.virtualBassParameters = parameters
+        var parameters = try XCTUnwrap(node.effectParameters(DSPClassicBassParameters.self))
+        parameters.intensity = 0.8
+        node.setEffectParameters(parameters)
 
         XCTAssertEqual(node.parameters["futureParameter"], unknown)
         let decoded = try JSONDecoder().decode(DSPNodeConfiguration.self, from: JSONEncoder().encode(node))
         XCTAssertEqual(decoded, node)
-        XCTAssertEqual(decoded.virtualBassParameters?.amount, 0.8)
+        XCTAssertEqual(decoded.effectParameters(DSPClassicBassParameters.self)?.intensity, 0.8)
     }
 
     func testNativeDefaultsAndTypeSpecificPoliciesValidate() async throws {
@@ -155,17 +165,36 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         var configuration = AudioDSPConfiguration.defaultFlat
-        configuration.nodes.append(contentsOf: [
-            .stereoWidth(),
-            .virtualBass(),
-            .tube(),
-        ])
+        configuration.nodes.append(contentsOf: Self.allNativeNodes())
         XCTAssertEqual(try controller.validate(configuration), configuration)
 
         XCTAssertFalse(DSPNodeConfiguration.supportedChannelPolicies(forTypeID: DSPNodeConfiguration.parametricEQTypeID)
             .contains("frontPair"))
-        XCTAssertTrue(DSPNodeConfiguration.supportedChannelPolicies(forTypeID: DSPNodeConfiguration.virtualBassTypeID)
+        XCTAssertTrue(DSPNodeConfiguration.supportedChannelPolicies(forTypeID: DSPNodeConfiguration.classicBassTypeID)
             .contains("frontPair"))
+        XCTAssertEqual(DSPNodeConfiguration.supportedChannelPolicies(forTypeID: DSPNodeConfiguration.crossfeedTypeID),
+                       ["frontPair"])
+    }
+
+    func testEveryNativeParameterSetRoundTripsThroughJSON() throws {
+        func roundTrip<P: DSPEffectParameterSet>(_ value: P, file: StaticString = #filePath, line: UInt = #line) throws {
+            var json: [String: DSPJSONValue] = [:]
+            value.write(to: &json)
+            XCTAssertEqual(Set(json.keys), P.supportedParameterKeys, file: file, line: line)
+            XCTAssertEqual(P(json: json), value, file: file, line: line)
+            XCTAssertTrue(value.validationIssues.isEmpty, "\(value.validationIssues)", file: file, line: line)
+        }
+        try roundTrip(DSPClassicBassParameters())
+        try roundTrip(DSPHybridBassParameters())
+        try roundTrip(DSPStereoWidthParameters())
+        try roundTrip(DSPCrossfeedParameters())
+        try roundTrip(DSPSpatialAudioParameters())
+        try roundTrip(DSPReverbParameters())
+        try roundTrip(DSPTubeParameters())
+        try roundTrip(DSPCompressorParameters())
+        try roundTrip(DSPCompressorParameters(style: .night))
+        for space in DSPReverbSpace.allCases { try roundTrip(DSPReverbParameters(space: space)) }
+        for strength in DSPCrossfeedStrength.allCases { try roundTrip(DSPCrossfeedParameters(strength: strength)) }
     }
 
     func testEnabledNativeNodesRejectUnknownParametersAndDisabledNodesPreserveThem() async throws {
@@ -188,26 +217,37 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
         XCTAssertEqual(try controller.validate(configuration), configuration)
     }
 
-    func testNativeParameterRangesAndVirtualBassFrequencyOrderAreValidated() async throws {
+    func testNativeParameterRangesAndFrequencyOrderAreValidated() async throws {
         let (controller, root) = await makeController()
         defer { try? FileManager.default.removeItem(at: root) }
 
         var width = AudioDSPConfiguration.defaultFlat
         var widthNode = DSPNodeConfiguration.stereoWidth()
         var widthParameters = try XCTUnwrap(widthNode.stereoWidthParameters)
-        widthParameters.width = 2.01
+        widthParameters.width = 3.01
         widthNode.stereoWidthParameters = widthParameters
         width.nodes.append(widthNode)
         assertInvalid(controller, width, pathSuffix: "parameters.width")
 
         var bass = AudioDSPConfiguration.defaultFlat
-        var bassNode = DSPNodeConfiguration.virtualBass()
-        var bassParameters = try XCTUnwrap(bassNode.virtualBassParameters)
-        bassParameters.lowFrequencyHz = 100
-        bassParameters.highFrequencyHz = 100
-        bassNode.virtualBassParameters = bassParameters
-        bass.nodes.append(bassNode)
-        assertInvalid(controller, bass, pathSuffix: "parameters.highFrequencyHz")
+        var bassParameters = DSPClassicBassParameters()
+        bassParameters.cutoffHz = 60
+        bassParameters.floorHz = 50
+        bass.nodes.append(.classicBass(parameters: bassParameters))
+        assertInvalid(controller, bass, pathSuffix: "parameters.floorHz")
+
+        var compressor = AudioDSPConfiguration.defaultFlat
+        var compressorParameters = DSPCompressorParameters()
+        compressorParameters.lowCrossoverHz = 900
+        compressorParameters.highCrossoverHz = 1_500
+        compressor.nodes.append(.effect(compressorParameters))
+        assertInvalid(controller, compressor, pathSuffix: "parameters.highCrossoverHz")
+
+        var spatial = AudioDSPConfiguration.defaultFlat
+        var spatialParameters = DSPSpatialAudioParameters()
+        spatialParameters.speakerAngleDeg = 60
+        spatial.nodes.append(.effect(spatialParameters))
+        assertInvalid(controller, spatial, pathSuffix: "parameters.speakerAngleDeg")
 
         var tube = AudioDSPConfiguration.defaultFlat
         var tubeNode = DSPNodeConfiguration.tube()
@@ -229,8 +269,8 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
         assertInvalid(controller, configuration, pathSuffix: "channelPolicy")
 
         configuration = AudioDSPConfiguration.defaultFlat
-        var bass = DSPNodeConfiguration.virtualBass()
-        bass.quality = "standard"
+        var bass = DSPNodeConfiguration.classicBass()
+        bass.quality = "oversampling2x"
         configuration.nodes.append(bass)
         assertInvalid(controller, configuration, pathSuffix: "quality")
 
@@ -326,6 +366,19 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
                     && $0.fieldPath?.hasSuffix(pathSuffix) == true
             } == true, "Expected a diagnostic ending in \(pathSuffix).", file: file, line: line)
         }
+    }
+
+    private static func allNativeNodes() -> [DSPNodeConfiguration] {
+        [
+            .classicBass(),
+            .effect(DSPHybridBassParameters()),
+            .stereoWidth(),
+            .effect(DSPCrossfeedParameters()),
+            .effect(DSPSpatialAudioParameters()),
+            .effect(DSPReverbParameters()),
+            .tube(),
+            .effect(DSPCompressorParameters()),
+        ]
     }
 
     private func makeController() async -> (AudioDSPController, URL) {

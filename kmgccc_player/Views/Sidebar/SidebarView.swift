@@ -645,9 +645,10 @@ struct SidebarView: View {
     private var updateSidebarProgress: SidebarTaskProgress? {
         switch updateCoordinator.state {
         case .checking(let manual):
+            guard manual else { return nil }
             return SidebarTaskProgress(
                 title: "正在检查更新",
-                detail: manual ? "正在获取最新版本信息" : "后台检查进行中",
+                detail: "正在获取最新版本信息",
                 fractionCompleted: nil,
                 state: .running
             )

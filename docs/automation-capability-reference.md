@@ -296,6 +296,8 @@ App 已能访问的文件直接导入；缺少访问权限时使用 App 的文�
 
 - P3–P4 音频：`audio.get/patch` 包含全局淡化与音量均衡（开关和目标响度）；`audio.loudness.get/analyze` 读取测量或创建响度测量 Job。`equalLoudness` 是预设中位于效果节点之后、输出增益之前的固定阶段，不参与链排序；补偿只随实际输出设备的系统音量和预设内的标定曲线变化，参数只调节强度与滤波器形状。每条输出路线（设备 UID 加 data source）记住自己的预设，未设置时播放平直；一个预设只属于一条路线，`dsp.presets.select` 选用其他路线的预设须传 `copyForCurrentDevice`，得到独立副本。
 
-- P5 音频：`stereoWidth`、`virtualBass`、`tube` 的参数、质量、声道策略及顺序均进入完整预设与 `dsp.patch`；`setQuality`、`setChannelPolicy` 支持原子编辑。`dsp.state.processing` 返回算法延迟、App 时间映射延迟与峰值保证状态。
+- P5 音频：原生节点的参数、质量、声道策略及顺序均进入完整预设与 `dsp.patch`；`setQuality`、`setChannelPolicy` 支持原子编辑。`dsp.state.processing` 返回算法延迟、App 时间映射延迟与峰值保证状态。
+
+- 效果第二版：原生节点为 `virtualBassClassic`、`virtualBassHybrid`、`stereoWidth`、`crossfeed`、`spatialAudio`、`reverb`、`tube`（`classic`/`hifi` 模式）与 `compressor`，取代第一版 `virtualBass`。所有参数（含界面隐藏的参数）见 `dsp.schema.nodes`；非线性与动态节点以节目电平为参考；处理器预读整链延迟（上限 300 ms），App 时间映射延迟保持为 0。
 
 - P6 音频：`script` v1 提供有界 VM、参数反射、独立持久草稿、双 revision 与故障隔离。`dsp.scripts.get/update/compile/test`、`dsp.nodes.retry` 与既有预设/排序形成完整控制接口；测试使用可取消 Jobs/现代 Tasks。资源为 `kmgccc://dsp-language` 与 `kmgccc://audio/dsp/scripts/{nodeID}`。

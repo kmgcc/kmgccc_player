@@ -187,12 +187,38 @@ final class LibrarySession: LibrarySessionLifecycle {
         backgroundScheduler?.revoke(owner: backgroundOwner)
     }
 
+    private var storageMaintenance: LibraryStorageMaintenance?
+
+    /// Starts recurring idle upkeep of this library's caches, loudness
+    /// records and search index log.
+    func startStorageMaintenance(scheduler: BackgroundWorkScheduler) {
+        guard storageMaintenance == nil, !isClosed else { return }
+        let owner = backgroundOwner ?? scheduler.makeLibraryOwner(libraryID: context.id)
+        backgroundOwner = owner
+        backgroundScheduler = scheduler
+        let maintenance = LibraryStorageMaintenance(
+            storage: cacheServices.storageLocations
+        ) { [weak self] in
+            guard let self, !self.isClosed, self.libraryViewModel.state == .loaded else { return }
+            await self.loudnessService.pruneRecords(
+                keeping: Set(self.libraryViewModel.allTracks.map(\.id))
+            )
+            await self.searchIndex.compact()
+        }
+        storageMaintenance = maintenance
+        maintenance.start(scheduler: scheduler, owner: owner)
+    }
+
+    private func stopStorageMaintenance() {
+        storageMaintenance?.stop()
+        storageMaintenance = nil
+    }
+
     private let playbackService: AVAudioPlaybackService
     private let operationCoordinator: LibraryOperationCoordinator
     private let mutationCoordinator: LibraryMutationCoordinator
     private var isLoaded = false
     private var isClosed = false
-    private(set) var didCompleteLegacyUpgrade = false
     private(set) var initialReconcileOutcome: InitialReconcileOutcome?
 
     init(
@@ -270,19 +296,6 @@ final class LibrarySession: LibrarySessionLifecycle {
                 operationCoordinator: operationCoordinator
             )
         }
-        let upgrade = LegacyLibraryUpgradeCoordinator(
-            context: context,
-            storageLocations: cacheServices.storageLocations
-        ) { [context, libraryViewModel, repository, searchIndex, playbackHistoryStore] in
-            try await LibraryUpgradeSessionValidator.validate(
-                context: context,
-                libraryViewModel: libraryViewModel,
-                repository: repository,
-                searchIndex: searchIndex,
-                playbackHistoryStore: playbackHistoryStore
-            )
-        }
-        didCompleteLegacyUpgrade = await upgrade.runIfNeeded() == .completed
         if let referencedSourceReconciler, let libraryChangeMonitor {
             try await startReferencedSourceMonitor(
                 libraryChangeMonitor,
@@ -1770,6 +1783,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         guard !isClosed else { return }
         operationCoordinator.stopAcceptingNewOperations()
         loudnessService.cancel()
+        stopStorageMaintenance()
         revokeBackgroundWork()
         playbackService.unbindAudioProcessingGlobals()
         playbackService.unbindAudioDSPDevices()
@@ -1789,6 +1803,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         guard !isClosed else { return }
         operationCoordinator.stopAcceptingNewOperations()
         loudnessService.cancel()
+        stopStorageMaintenance()
         revokeBackgroundWork()
         await libraryChangeMonitor?.stopAndWait()
         await operationCoordinator.cancelAndWait()

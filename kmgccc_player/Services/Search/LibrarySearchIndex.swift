@@ -120,6 +120,7 @@ actor LibrarySearchIndex {
             }
 
             try execute("COMMIT")
+            compact()
             if let db {
                 sqlite3_db_release_memory(db)
             }
@@ -229,7 +230,7 @@ actor LibrarySearchIndex {
         defer { sqlite3_finalize(check) }
         guard sqlite3_step(check) == SQLITE_ROW,
               columnText(check, 0)?.lowercased() == "ok" else {
-            throw LibraryUpgradeValidationError.sqliteIntegrityFailed("LibrarySearch.sqlite")
+            throw LibraryStorageValidationError.sqliteIntegrityFailed("LibrarySearch.sqlite")
         }
 
         let statement = try prepare("SELECT track_id FROM documents")
@@ -237,12 +238,12 @@ actor LibrarySearchIndex {
         var indexedTrackIDs = Set<UUID>()
         while sqlite3_step(statement) == SQLITE_ROW {
             guard let raw = columnText(statement, 0), let id = UUID(uuidString: raw) else {
-                throw LibraryUpgradeValidationError.searchIndexMismatch
+                throw LibraryStorageValidationError.searchIndexMismatch
             }
             indexedTrackIDs.insert(id)
         }
         guard indexedTrackIDs == expectedTrackIDs else {
-            throw LibraryUpgradeValidationError.searchIndexMismatch
+            throw LibraryStorageValidationError.searchIndexMismatch
         }
     }
 
@@ -362,6 +363,10 @@ actor LibrarySearchIndex {
         try execute("PRAGMA synchronous=NORMAL")
         try execute("PRAGMA temp_store=MEMORY")
         try execute("PRAGMA cache_size=-512")
+        // A full rebuild writes the whole index through the log; without a
+        // limit the log file keeps that size after the checkpoint.
+        try execute("PRAGMA journal_size_limit=\(Self.walSizeLimitBytes)")
+        try discardOutdatedStoreIfNeeded()
         try execute(
             """
             CREATE TABLE IF NOT EXISTS documents (
@@ -417,13 +422,39 @@ actor LibrarySearchIndex {
                 gram TEXT NOT NULL,
                 weight REAL NOT NULL,
                 PRIMARY KEY (track_id, field, gram)
-            )
+            ) WITHOUT ROWID
             """
         )
+        // Deletes by track use the primary key's leading column.
         try execute("CREATE INDEX IF NOT EXISTS idx_search_grams_gram ON grams(gram)")
-        try execute("CREATE INDEX IF NOT EXISTS idx_search_grams_track ON grams(track_id)")
 
         schemaReady = true
+    }
+
+    /// Store layout version. Version 2 keeps n-grams in a clustered table
+    /// without a second per-track index, about half the size of version 1.
+    private static let storeVersion: Int32 = 2
+    private static let walSizeLimitBytes = 4 * 1024 * 1024
+
+    /// The index is derived data: an older layout is emptied and the next
+    /// sync rebuilds it from the library.
+    private func discardOutdatedStoreIfNeeded() throws {
+        let statement = try prepare("PRAGMA user_version")
+        let version = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : 0
+        sqlite3_finalize(statement)
+        guard version < Self.storeVersion else { return }
+        try execute("DROP TABLE IF EXISTS grams")
+        try execute("DROP TABLE IF EXISTS search_fts")
+        try execute("DROP TABLE IF EXISTS documents")
+        try execute("VACUUM")
+        try execute("PRAGMA user_version=\(Self.storeVersion)")
+        Log.info("[SearchIndex] discarded store version \(version); rebuilding", category: .library)
+    }
+
+    /// Folds the write-ahead log into the store and shrinks it to the limit.
+    func compact() {
+        guard let db else { return }
+        sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil)
     }
 
     private func migrateDocumentSchemaIfNeeded() throws {

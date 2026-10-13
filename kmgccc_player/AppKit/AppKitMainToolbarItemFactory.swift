@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import MotionKit
 import SwiftUI
 
 @MainActor
@@ -297,14 +298,31 @@ struct AppKitMainToolbarItemFactory {
 private struct PlaybackHistoryToolbarTitleView: View {
     let historyVM: PlaybackHistoryViewModel
     @ObservedObject private var themeStore = ThemeStore.shared
+    @Environment(\.motionPolicy) private var motionPolicy
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     var body: some View {
-        Text(historyVM.toolbarSectionTitle ?? "")
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-            .lineLimit(1)
-            .frame(width: 144, height: 28, alignment: .leading)
-            .allowsHitTesting(false)
-            .accessibilityHidden(historyVM.toolbarSectionTitle == nil)
+        ZStack(alignment: .leading) {
+            if let title = historyVM.toolbarSectionTitle {
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                    .lineLimit(1)
+                    .id(title)
+                    .transition(.asymmetric(
+                        insertion: .offset(y: rollDistance).combined(with: .opacity),
+                        removal: .offset(y: -rollDistance).combined(with: .opacity)
+                    ))
+            }
+        }
+        .frame(width: 144, height: 28, alignment: .leading)
+        .clipped()
+        .motionAnimation(.contentReplacement, value: historyVM.toolbarSectionTitle)
+        .allowsHitTesting(false)
+        .accessibilityHidden(historyVM.toolbarSectionTitle == nil)
+    }
+
+    private var rollDistance: CGFloat {
+        motionPolicy.resolving(accessibilityReduceMotion: accessibilityReduceMotion) == .full ? 8 : 0
     }
 }

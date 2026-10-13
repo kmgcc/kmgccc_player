@@ -4,7 +4,10 @@ import XCTest
 
 final class AudioDSPProcessorTests: XCTestCase {
     func testNativeDryEffectsHaveKnownZeroLoadAndWetEffectsRemainMeasurable() throws {
-        let bass = DSPNodeConfiguration.virtualBass(parameters: DSPVirtualBassParameters(amount: 1, mix: 0))
+        var dryBass = DSPClassicBassParameters()
+        dryBass.intensity = 0
+        dryBass.tightenDryBass = .off
+        let bass = DSPNodeConfiguration.classicBass(parameters: dryBass)
         let tube = DSPNodeConfiguration.tube(parameters: DSPTubeParameters(mix: 0))
         let format = DSPAudioFormat(sampleRate: 48_000, channelCount: 2, rawLayoutData: nil,
             channelLabels: [UInt32(kAudioChannelLabel_Left), UInt32(kAudioChannelLabel_Right)], layoutIsKnown: true)
@@ -22,7 +25,7 @@ final class AudioDSPProcessorTests: XCTestCase {
             idleNodeIDs: dry.idleProcessingNodeIDs))
         XCTAssertEqual(snapshot.nodes[bass.nodeID]?.averageRatio, 0)
         XCTAssertEqual(snapshot.nodes[tube.nodeID]?.averageRatio, 0)
-        configuration.nodes[0].virtualBassParameters = DSPVirtualBassParameters(amount: 1, mix: 0.7)
+        configuration.nodes[0].setEffectParameters(DSPClassicBassParameters())
         configuration.nodes[1].tubeParameters = DSPTubeParameters(mix: 0.6)
         let wet = AudioDSPProcessor(configuration: configuration, format: format)
         XCTAssertFalse(wet.isBypassed)
@@ -35,7 +38,7 @@ final class AudioDSPProcessorTests: XCTestCase {
         let unsupported = AudioDSPProcessor(configuration: AudioDSPConfiguration(enabled: true, nodes: [bass]),
             format: unknownLayout)
         XCTAssertTrue(unsupported.idleProcessingNodeIDs.isEmpty)
-        XCTAssertTrue(unsupported.diagnostics.contains { $0.code == "virtualBassLayoutUnsupported" })
+        XCTAssertTrue(unsupported.diagnostics.contains { $0.code == "stereoLayoutUnsupported" })
     }
 
     func testLoadMeasurementPreservesPCMAndRecursiveLookaheadState() {
@@ -291,11 +294,12 @@ final class AudioDSPProcessorTests: XCTestCase {
         XCTAssertEqual(resolved(equalizer, "fullRange", surround), "fullRange")
         XCTAssertEqual(resolved(equalizer, "fullRange", unidentified), "allChannels")
 
-        let virtualBass = DSPNodeConfiguration.virtualBassTypeID
-        XCTAssertEqual(resolved(virtualBass, "fullRange", stereo), "fullRange")
-        XCTAssertEqual(resolved(virtualBass, "fullRange", mono), "fullRange")
-        XCTAssertEqual(resolved(virtualBass, "fullRange", surround), "frontPair")
-        XCTAssertEqual(resolved(virtualBass, "frontPair", mono), "fullRange")
+        for bass in [DSPNodeConfiguration.classicBassTypeID, DSPNodeConfiguration.hybridBassTypeID] {
+            XCTAssertEqual(resolved(bass, "fullRange", stereo), "fullRange")
+            XCTAssertEqual(resolved(bass, "fullRange", mono), "fullRange")
+            XCTAssertEqual(resolved(bass, "fullRange", surround), "frontPair")
+            XCTAssertEqual(resolved(bass, "frontPair", mono), "fullRange")
+        }
 
         XCTAssertEqual(
             resolved(DSPNodeConfiguration.stereoWidthTypeID, "allChannels", surround),

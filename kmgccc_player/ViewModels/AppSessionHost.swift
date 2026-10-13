@@ -1283,7 +1283,6 @@ final class AppSessionHost: ObservableObject {
             _ = await ensureFactoryDefaultLibraryWithRetries()
         }
 
-        LegacyCacheCleanupCoordinator.shared.captureBuild7UpgradeEligibilityBeforeLaunchRecord()
         AppVersionGate.shared.recordCurrentAppLaunch()
         let crashReportInstallID = await TelemetryService.shared.prepareAnonymousInstallIDForSignedUpload()
         await CrashReportService.shared.start(
@@ -1493,9 +1492,6 @@ final class AppSessionHost: ObservableObject {
     private func scheduleDeferredLaunchPromptsIfNeeded() {
         guard !didScheduleDeferredLaunchPrompts else { return }
         didScheduleDeferredLaunchPrompts = true
-        LegacyCacheCleanupCoordinator.shared.schedulePromptIfNeeded {
-            LegacyCacheCleanupDialogPresenter.present()
-        }
         WhatsNewWindowManager.shared.showIfNeeded()
         Log.debug("[Lifecycle] WhatsNew window check completed", category: .ui)
 
@@ -1535,16 +1531,10 @@ final class AppSessionHost: ObservableObject {
         }
         session.setEqualLoudnessContext(equalLoudnessController.context)
         activeLibraryBinding.publish(session)
-        CacheManager.scheduleBackgroundDiskMaintenance(
-            storage: session.cacheServices.storageLocations,
-            scheduler: backgroundWorkScheduler
-        )
+        session.startStorageMaintenance(scheduler: backgroundWorkScheduler)
         await bindReferencedScanStatePush(for: session)
         bindLibraryTaskStatePush(for: session)
         CrashReportService.shared.bindLibraryRoot(session.context.rootURL)
-        if session.didCompleteLegacyUpgrade {
-            uiState.showSidebarNotice("资料库已更新")
-        }
 
         let libraryVM = session.libraryViewModel
         let playerVM = session.playerViewModel

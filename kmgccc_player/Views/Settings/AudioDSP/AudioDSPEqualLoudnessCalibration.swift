@@ -33,12 +33,21 @@ struct AudioDSPEqualLoudnessStatus: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 6) {
-                statusRow("输出设备", controller.volumeState.deviceName ?? "未识别")
-                statusRow("音量", volumeText)
-                statusRow("当前补偿", compensationText)
+            HStack(alignment: .center, spacing: 14) {
+                EqualLoudnessCurveChart(
+                    stage: stage,
+                    context: controller.context,
+                    marker: controller.volumeState.reading,
+                    chartHeight: 84
+                )
+
+                VStack(alignment: .leading, spacing: 8) {
+                    statusRow("当前音量", volumeText)
+                    statusRow("低频补偿", bassCompensationText)
+                    statusRow("高频补偿", trebleCompensationText)
+                }
+                .frame(width: 175)
             }
-            EqualLoudnessCurveChart(stage: stage, context: controller.context, marker: controller.volumeState.reading)
             HStack(alignment: .center, spacing: 8) {
                 Text(calibration == nil ? "默认曲线" : "已标定")
                     .font(.system(size: 12))
@@ -108,10 +117,16 @@ struct AudioDSPEqualLoudnessStatus: View {
         return reading.isMuted ? "已静音 · \(percent)" : percent + level
     }
 
-    private var compensationText: String {
+    private var bassCompensationText: String {
         guard controller.volumeState.reading != nil else { return "已停用" }
         let gains = DSPEqualLoudnessMath.gains(stage: stage, context: controller.context)
-        return "低音 \(EqualLoudnessFormat.signedDB(gains.bassDB)) · 高音 \(EqualLoudnessFormat.signedDB(gains.trebleDB))"
+        return EqualLoudnessFormat.signedDB(gains.bassDB)
+    }
+
+    private var trebleCompensationText: String {
+        guard controller.volumeState.reading != nil else { return "已停用" }
+        let gains = DSPEqualLoudnessMath.gains(stage: stage, context: controller.context)
+        return EqualLoudnessFormat.signedDB(gains.trebleDB)
     }
 }
 
@@ -136,6 +151,7 @@ struct EqualLoudnessCurveChart: View {
     let stage: DSPEqualLoudnessStage
     let context: DSPEqualLoudnessContext
     let marker: OutputDeviceVolumeReading?
+    var chartHeight: CGFloat = 84
 
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -158,7 +174,7 @@ struct EqualLoudnessCurveChart: View {
                             with: .color(faint.opacity(0.22)))
                 var bass = Path()
                 var treble = Path()
-                let steps = 80
+                let steps = max(180, Int(plot.width * 2))
                 for index in 0...steps {
                     let value = range.lowerBound + (range.upperBound - range.lowerBound) * Double(index) / Double(steps)
                     let gains = DSPEqualLoudnessMath.gains(stage: stage, context: sampleContext(at: value, axis: axis))
@@ -167,7 +183,7 @@ struct EqualLoudnessCurveChart: View {
                     if index == 0 { bass.move(to: bassPoint); treble.move(to: treblePoint) }
                     else { bass.addLine(to: bassPoint); treble.addLine(to: treblePoint) }
                 }
-                let style = StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round)
+                let style = StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round)
                 canvas.fill(bass.strokedPath(style), with: .color(themeStore.accentColor))
                 canvas.fill(treble.strokedPath(style), with: .color(themeStore.accentColor.opacity(0.45)))
                 if let marker {
@@ -176,17 +192,13 @@ struct EqualLoudnessCurveChart: View {
                                 with: .color(faint.opacity(0.45)))
                 }
             }
-            .frame(height: 64)
+            .frame(height: chartHeight)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("补偿随音量变化的曲线")
 
             HStack(spacing: 14) {
-                legend("低音", color: themeStore.accentColor)
-                legend("高音", color: themeStore.accentColor.opacity(0.45))
-                Spacer(minLength: 0)
-                Text("轻")
-                Text("→")
-                Text("响")
+                legend("低频", color: themeStore.accentColor)
+                legend("高频", color: themeStore.accentColor.opacity(0.45))
             }
             .font(.system(size: 11))
             .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
@@ -419,8 +431,7 @@ struct EqualLoudnessCalibrationDialog: View {
             title: title,
             subtitle: subtitle,
             systemImage: "ear",
-            iconColor: themeStore.accentColor,
-            onClose: onClose
+            iconColor: themeStore.accentColor
         ) {
             content
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -428,6 +439,7 @@ struct EqualLoudnessCalibrationDialog: View {
             footer
         }
         .frame(minWidth: 540, idealWidth: 560, maxWidth: 620)
+        .onExitCommand(perform: onClose)
         .onAppear(perform: begin)
         .onDisappear(perform: restore)
         .onChange(of: controller.routedDeviceKey) { _, key in
@@ -445,7 +457,7 @@ struct EqualLoudnessCalibrationDialog: View {
     private var title: String {
         switch phase {
         case .intro: "标定等响补偿"
-        case .segment: "选择片段"
+        case .segment: "选择音乐片段"
         case .step(let index): Self.stepTitles[index]
         case .finished: "标定完成"
         case .deviceChanged: "输出设备已切换"
@@ -460,19 +472,19 @@ struct EqualLoudnessCalibrationDialog: View {
         }
     }
 
-    private static let stepTitles = ["参照音量", "调轻一些", "再轻一些", "调响一些"]
+    private static let stepTitles = ["参照音量", "较小的音量", "再轻一些", "调响一些"]
 
     private static let stepLeads = [
-        "在这个音量下听一会儿，记住鼓、贝斯与人声的分量，后面几步都以它为参照。",
-        "声音变轻后，低音和高音最先隐去。先加强低音，直到鼓和贝斯的分量接近参照；再加强高音，让人声重新清晰。",
-        "再轻一些，同样补足低音和高音，让声音依旧饱满。",
-        "声音变响后，低音和高音容易显得过满。适当减弱，让它与参照一样均衡。",
+        "在这个音量下聆听片刻，记住低频与高频的分量，后面几步都以它为参照。",
+        "声音变轻后，低频和高频可能开始变得不明显。先加强低频，直到分量接近参照；再加强高频，使其重新清晰。",
+        "再轻一些，同样补足低频和高频，让声音依旧饱满。",
+        "声音变响后，低频和高频容易显得过满。适当减弱，让它与参照一样均衡。",
     ]
 
     private static let stepNotes = [
-        "若这个音量过响或过轻，可移到平时最常用的位置。",
-        "补到刚好不觉单薄即可，过多会沉闷或刺耳。拖回参照刻度，可以随时对照。",
-        "补到刚好不觉单薄即可。拖回参照刻度，可以随时对照。",
+        "若这个音量过响或过轻，可移到平时最常用的位置。接下来音量可能会自动变化，请注意。",
+        "补偿到接近之前的参照水平即可，过多会沉闷或刺耳。拖回参照刻度，可以随时对照。",
+        "补到刚好不觉单薄即可。拖回参照刻度，可以随时对照。下一步音量将变大，请注意。",
         "若听来已经合适，保持为 0 即可。",
     ]
 
@@ -496,16 +508,13 @@ struct EqualLoudnessCalibrationDialog: View {
 
     private var introContent: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("轻声播放时，人耳对低音和高音不再敏感，歌曲因此显得单薄。标定记下你在几个音量下所需的补偿，此后补偿随音量自然变化。")
+            Text("轻声播放时，人耳对低频和高频不再敏感，歌曲因此显得单薄。标定可以记下你在几个音量下所需的补偿，此后计算得到曲线，高低频补偿随音量自然变化。")
                 .font(.system(size: 13))
                 .foregroundStyle(palette.primaryColor)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack(spacing: 18) {
-                fact("headphones", "使用常用的耳机或扬声器")
-                fact("speaker.wave.2", "结束后恢复原音量")
-            }
+            fact("speaker.wave.2", "标定过程中音量可能会自动变小或变大，请注意")
 
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
@@ -513,7 +522,7 @@ struct EqualLoudnessCalibrationDialog: View {
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(palette.primaryColor)
                     Spacer(minLength: 8)
-                    Text("选一首熟悉的歌，鼓、贝斯与人声清晰为佳")
+                    Text("选一首熟悉的歌，背景与人声均清晰为佳")
                         .font(.system(size: 12))
                         .foregroundStyle(palette.tertiaryColor)
                 }
@@ -591,7 +600,7 @@ struct EqualLoudnessCalibrationDialog: View {
 
     private var segmentContent: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("选一段鼓、贝斯与人声都清晰的段落。标定时它会循环播放，便于在不同音量下对照同一段音乐。")
+            Text("选一段高低频都能明显辨别的段落。标定时它会循环播放，便于在不同音量下对照同一段音乐。")
                 .font(.system(size: 13))
                 .foregroundStyle(palette.primaryColor)
                 .lineSpacing(3)
@@ -621,10 +630,6 @@ struct EqualLoudnessCalibrationDialog: View {
                     if !editing { seek(to: segmentStart) }
                 }
             )
-
-            Text("拖动两侧调整长短，拖动中间移动位置。建议约 15 秒。")
-                .font(.system(size: 12))
-                .foregroundStyle(palette.tertiaryColor)
         }
     }
 
@@ -642,8 +647,8 @@ struct EqualLoudnessCalibrationDialog: View {
             VStack(spacing: 16) {
                 volumeRow(index)
                 if direction != .reference {
-                    toneRow("低音", value: $bass, range: EqualLoudnessCalibration.bassRange)
-                    toneRow("高音", value: $treble, range: EqualLoudnessCalibration.trebleRange)
+                    toneRow("低频", value: $bass, range: EqualLoudnessCalibration.bassRange)
+                    toneRow("高频", value: $treble, range: EqualLoudnessCalibration.trebleRange)
                 }
             }
             .padding(.horizontal, 16)
@@ -684,7 +689,7 @@ struct EqualLoudnessCalibrationDialog: View {
 
     private var finishedContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("已为“\(controller.volumeState.deviceName ?? "当前设备")”生成补偿曲线，保存在此设备的音效中。调节音量时，补偿随之变化。")
+            Text("已为“\(controller.volumeState.deviceName ?? "当前设备")”生成补偿曲线，保存在此设备的音效中。调节音量时，补偿将动态调整高低频以提供始终一致的听感。")
                 .font(.system(size: 13))
                 .foregroundStyle(palette.primaryColor)
                 .lineSpacing(3)

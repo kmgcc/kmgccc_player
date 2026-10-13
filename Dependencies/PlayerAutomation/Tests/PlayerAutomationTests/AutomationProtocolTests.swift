@@ -1417,12 +1417,14 @@ func globalLoudnessUsesExistingJobsAndAudioScopes() throws {
 
 @Test
 func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
-    #expect(AutomationDSPToolCatalog.builtInNodeSchemas.count == 5)
+    #expect(AutomationDSPToolCatalog.builtInNodeSchemas.count == 10)
     #expect(!AutomationDSPToolCatalog.builtInNodeSchemas.contains { node in
         guard case .object(let fields) = node else { return false }
-        return fields["typeID"] == .string("equalLoudness")
+        return fields["typeID"] == .string("equalLoudness") || fields["typeID"] == .string("virtualBass")
     })
-    for typeID in ["stereoWidth", "virtualBass", "tube"] {
+    let nativeTypes = ["virtualBassClassic", "virtualBassHybrid", "stereoWidth", "crossfeed",
+                       "spatialAudio", "reverb", "tube", "compressor"]
+    for typeID in nativeTypes {
         let raw = try #require(AutomationDSPToolCatalog.builtInNodeSchemas.first { node in
             guard case .object(let fields) = node else { return false }
             return fields["typeID"] == .string(typeID)
@@ -1444,14 +1446,17 @@ func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
         }
         #expect(requiredKeys.count == required.count)
         #expect(Set(requiredKeys) == Set(properties.keys))
-        if typeID == "stereoWidth" {
-            #expect(qualities == [.string("standard")])
-            #expect(node["declaredLatencyFramesWhenActive"] == .number(0))
-        } else {
+        // Every effect is audible as added: no zero strength or mix default.
+        for key in ["intensity", "mix", "width", "hifiAmount"] {
+            if let value = defaults[key] { #expect(value != .number(0)) }
+        }
+        if typeID == "tube" {
             #expect(qualities == [.string("oversampling2x"), .string("oversampling4x")])
             #expect(node["declaredLatencyFramesWhenActive"] == .number(64))
-            #expect(defaults["mix"] == .number(0))
             #expect(node["peakGuarantee"] == .string("unavailable"))
+        } else {
+            #expect(qualities == [.string("standard")])
+            #expect(node["declaredLatencyFramesWhenActive"] != nil || node["declaredLatencySeconds"] != nil)
         }
     }
 }

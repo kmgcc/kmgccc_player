@@ -19,7 +19,6 @@ kmgccc_player Library/
   library.json
   Settings/
     library-settings.json
-    library-upgrade.json
   Tracks/<trackUUID>/
     meta.json
     audio.<ext>                 # 仅托管模式
@@ -43,11 +42,10 @@ kmgccc_player Library/
     Home/
     ExternalPlayback/
     ImportStaging/
+    Loudness/
     LibraryScan/manifest.json
     SourceScan/<sourceUUID>.json
 ```
-
-旧的 `.kmgccc-library-manifest.json` 只作为扫描缓存迁移输入；成功写入 `Cache/LibraryScan/manifest.json` 后不再使用。
 
 ## 数据平面
 
@@ -101,7 +99,13 @@ App 自管缓存集中在当前资料库的 `Cache` 下，包括：
 - 主题色与首屏快照；
 - 导入会话暂存目录。
 
-新增缓存时应由统一的存储位置服务提供 URL，并在缓存管理器中登记清理语义。业务代码不自行拼接目录，也不把用户数据写进可整体删除的缓存根目录。
+`LibraryCacheArea` 是 `Cache/` 下全部目录的唯一登记表：每个区域写明路径、所属的存储类别（`StorageCategory`）、大小上限和清理方式。用量统计、空闲整理、手动清理和“数据”设置中的“存储空间”标签页都只读这张表，新增缓存只需登记一处；不属于任何区域的条目在清理“其他缓存”时一并移除。
+
+各类别的清理方式分三档：用户数据不进入清理；索引、扫描记录和响度测量可以由资料库重建，但代价明显，只提供单独的“重建”；封面、联网结果、主题色和首屏快照等随手可清。响度测量随曲库增长，不设上限，歌曲移出资料库后由维护清掉对应记录。
+
+`LibraryStorageMaintenance` 在资料库打开时以及之后每隔六小时向后台调度器提交一次空闲任务：按登记表修剪各区域、清理过期导入暂存、删除旧版本留下的文件，并修剪响度记录、收拢搜索索引的预写日志。缓存的生产者写入时也按同样的上限修剪，维护只处理会话结束后遗留的部分。
+
+新增缓存时应由统一的存储位置服务提供 URL，并在登记表中写明清理语义。业务代码不自行拼接目录，也不把用户数据写进可整体删除的缓存根目录。
 
 ## 封面缓存
 
@@ -128,6 +132,8 @@ App 自管缓存集中在当前资料库的 `Cache` 下，包括：
 ## 搜索与曲目索引
 
 SwiftData 曲目索引和 SQLite 搜索索引都可以从资料库 sidecar 重建，因此可以由独立设置项清除。普通缓存清理不删除它们，以免用户只想释放封面缓存时触发大型索引重建。
+
+搜索索引用 `user_version` 记录存储格式；版本落后时清空并在下一次同步中重建。n-gram 表以 `WITHOUT ROWID` 聚簇在 `(track_id, field, gram)` 上，只另建按 `gram` 查询的索引。预写日志设有大小上限，全量重建后立即截断。
 
 搜索索引保存规范化元数据、歌词纯文本与文件指纹。歌词文件没有变化时，增量更新复用已提取的纯文本；删除曲目时同步删除索引行。具体算法见 [曲库搜索](search.md)。
 

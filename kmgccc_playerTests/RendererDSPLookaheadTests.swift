@@ -36,7 +36,9 @@ final class RendererDSPLookaheadTests: XCTestCase {
         ]
         let future = try XCTUnwrap(RendererDSPLookahead.read(frameCount: 4, format: mono,
             segmentIndex: 0, sourceFrame: 1, segmentCount: ranges.count, segmentAt: { ranges[$0] }))
-        XCTAssertEqual(future.data, [2, 0, 0, 0])
+        // The window ends at the boundary; the processor drains the rest.
+        XCTAssertEqual(future.frames, 1)
+        XCTAssertEqual(future.data, [2])
         XCTAssertEqual(first.totalFrames, 2)
         XCTAssertEqual(first.position, 0)
     }
@@ -48,9 +50,17 @@ final class RendererDSPLookaheadTests: XCTestCase {
             RendererDSPSourceRange(source: LookaheadPCMProvider(samples: [8]), format: mono,
                 presentationStartSeconds: 1, normalizationGain: 1, decodePosition: 0)
         ]
-        let future = try XCTUnwrap(RendererDSPLookahead.read(frameCount: 2, format: mono,
-            segmentIndex: 0, sourceFrame: 1, segmentCount: ranges.count, segmentAt: { ranges[$0] }))
-        XCTAssertEqual(future.data, [0, 0])
+        let future = try RendererDSPLookahead.read(frameCount: 2, format: mono,
+            segmentIndex: 0, sourceFrame: 1, segmentCount: ranges.count, segmentAt: { ranges[$0] })
+        XCTAssertNil(future)
+    }
+
+    func testLookaheadBudgetIsTimeBasedWithAFrameFloor() {
+        XCTAssertEqual(RendererDSPLookahead.maximumFrames(sampleRate: 192_000), 57_600)
+        XCTAssertEqual(RendererDSPLookahead.maximumFrames(sampleRate: 8_000),
+                       RendererDSPLookahead.minimumFrameBudget)
+        XCTAssertGreaterThanOrEqual(RendererDSPLookahead.maximumFrames,
+                                    RendererDSPLookahead.maximumFrames(sampleRate: 384_000))
     }
 
     func testDecoderFailureIsNotReplacedBySilence() {

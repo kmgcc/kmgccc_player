@@ -275,35 +275,6 @@ final class LibrarySessionControllerTests: XCTestCase {
         XCTAssertNil(state.consumeRebuildAfterPublish())
     }
 
-    func testPlaybackHistoryLegacyOwnershipOnlyAllowsUpgradedRootAndSingleOwner() {
-        let upgradedRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let otherRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let libraryA = UUID()
-        let libraryB = UUID()
-
-        XCTAssertTrue(
-            LegacyLibraryMigrationOwnership(ownerLibraryID: nil).canClaim(
-                libraryID: libraryA,
-                destinationRoot: upgradedRoot,
-                upgradedLegacyRoot: upgradedRoot
-            )
-        )
-        XCTAssertFalse(
-            LegacyLibraryMigrationOwnership(ownerLibraryID: nil).canClaim(
-                libraryID: libraryB,
-                destinationRoot: otherRoot,
-                upgradedLegacyRoot: upgradedRoot
-            )
-        )
-        XCTAssertFalse(
-            LegacyLibraryMigrationOwnership(ownerLibraryID: libraryA).canClaim(
-                libraryID: libraryB,
-                destinationRoot: upgradedRoot,
-                upgradedLegacyRoot: upgradedRoot
-            )
-        )
-    }
-
     private func context(id: UUID) -> LibraryContext {
         LibraryContext(
             id: id,

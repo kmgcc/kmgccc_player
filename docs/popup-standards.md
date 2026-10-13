@@ -23,6 +23,13 @@ PopupLab 与播放器共用 `Tools/PopupLab/Sources/PopupKit`。Xcode 主 target
 常规 App 的强调色跟随 ThemeStore；演示预设的靛蓝只用于独立实验室。全屏按已有尺度等比缩放，
 并保留 foregroundProfile 的文字颜色与明暗模式。
 
+按钮标准仅用于窗口右下角操作组与右上角关闭按钮。面板内部的查找、导入、清除、
+位置选择与下拉触发按钮使用紧凑的 `AppPanelButtonStyle`，保留各处字号；危险工具按钮
+仅以红色文字表示，不染红底面。设置中的皮肤操作使用 12 pt 字号，全屏时沿既有尺度缩放。
+全屏 quick panel 属于嵌入设置面板，保留原有标题、分组材质、滚动和关闭控件。外层材质、
+强调色与明暗状态直接跟随 MiniPlayer；文字配色从 MiniPlayer 已解析的前景派生，
+不再按快速面板所在区域单独切换。清透 / 常规材质设置也同步作用于快速面板。
+
 外层玻璃只渲染一次。选项、说明和输入区使用语义色透明度区分；按钮使用各自的玻璃材质。
 封面上方的加载指示器保留小面积磨砂底，以隔开复杂图像。原生控件、popover 箭头和系统窗口
 轮廓由 macOS 管理。系统“减少透明度”启用时，共享表面和按钮回退为实色。
@@ -42,7 +49,7 @@ PopupLab 与播放器共用 `Tools/PopupLab/Sources/PopupKit`。Xcode 主 target
 | 听感标定 | 片段选择、四阶段调节、结果 | 原有 sheet；共享页眉和紧凑固定操作组，预览恢复与设备切换语义保留 |
 | 崩溃反馈 | 操作说明、保存报告、发送 | sheet；共享框架，保留文字限制、导出和 Command-Return 发送 |
 | 轻量选择与提示 | 共享选项菜单、输出设备、播放顺序 / 滚轮 / 上报 / Shift 提示 | 原生 popover / NSPopover 或原有内嵌提示；紧凑内容，保留锚点和自动消失 |
-| 设置 | 完整设置、全屏快捷外观 | 完整设置保留 NavigationSplitView；快捷外观共用玻璃框架，去除重复标题和内容材质 |
+| 设置 | 完整设置、全屏快捷外观 | 完整设置保留 NavigationSplitView；快捷外观保留原有嵌入设置布局与材质，不采用弹窗框架 |
 | 更新、文件和权限 | WhatsNewKit、Sparkle、Open / Save Panel、fileImporter / fileExporter、系统权限 | 保留组件或系统内容；WhatsNew 的 NSPanel 外层使用共享表面 |
 | 拖入提示 | 主窗口内释放以导入 | 原有覆盖层和动效，复用共享玻璃表面 |
 
@@ -55,7 +62,8 @@ PopupLab 与播放器共用 `Tools/PopupLab/Sources/PopupKit`。Xcode 主 target
 
 - `AppPopupFrame`：普通标题 / 内容 / footer；`onClose` 由业务 owner 提供。
 - `AppPopupScrollRegion`：长内容与列表。无 actions 时只有边缘淡出；有 actions 时提供局部悬浮操作。
-- `AppPopupActionGroup` / `AppDialogGlassButtonStyle`：紧凑玻璃动作与语义角色。
+- `AppPopupActionGroup` / `AppDialogGlassButtonStyle`：窗口右下角操作组的玻璃动作与语义角色。
+- `AppPanelButtonStyle`：面板内部工具；紧凑尺寸、局部字号、中性底面和红字危险操作。
 - `SettingsTaskDialog`：任务与向导适配。默认固定 footer，`floatsActions` 用于只读执行和结果页。
 - `AppDialogHeader` / `AppDialogFooter` / `appPopupSurface`：保留大型工作台布局时复用共享视觉。
 - `appPopupContentBackground`：内容分组 / 输入底色，避免在外层玻璃下再叠整块材质。
@@ -81,6 +89,7 @@ Return。运行中的维护任务沿用关闭锁与取消中状态；查看后�
 | 表单 | 空白 / 有效名称、Tab 焦点、验证失败重试、保存 / 取消 / 清除覆盖 |
 | 任务 | 运行 / 取消中 / 完成 / 失败，忙碌关闭锁、后台报告关闭、重复打开与父窗口焦点 |
 | 宿主 | 主窗口、MiniPlayer、皮肤；系统全屏、模拟全屏、主窗口内嵌分别验收 |
+| 全屏快捷设置 | 面板打开时切换亮 / 暗封面与清透 / 常规材质，外层与 MiniPlayer 同步；文字和分组随同一明暗状态更新 |
 | 原生边界 | popover 锚点 / 箭头 / 外部点击；文件和权限 UI；第三方更新内容 |
 
 2026-10-12 已完成源代码迁移和静态检查，共享 PopupKit 在独立 PopupLab 中编译并查看。

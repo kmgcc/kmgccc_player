@@ -36,7 +36,7 @@ struct AudioDSPEqualLoudnessResponseCurve: View, Equatable {
 
     private var curveAccessibilityValue: String {
         let gains = DSPEqualLoudnessMath.gains(stage: stage, context: context)
-        return "低音补偿 \(gains.bassDB.formatted(.number.precision(.fractionLength(1)))) dB，高音补偿 \(gains.trebleDB.formatted(.number.precision(.fractionLength(1)))) dB"
+        return "低频补偿 \(gains.bassDB.formatted(.number.precision(.fractionLength(1)))) dB，高频补偿 \(gains.trebleDB.formatted(.number.precision(.fractionLength(1)))) dB"
     }
 
     private func drawGrid(in context: inout GraphicsContext, plot: CGRect) {

@@ -422,6 +422,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let pcm: CanonicalPCM
         let segmentID: UUID
         let dspRevision: String
+        /// Effect meter readings for this chunk, published when it is heard.
+        var meters: [DSPNodeMeterReading] = []
     }
 
     private var segments: [Segment] = []
@@ -446,7 +448,15 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     private var analysisLeadSeconds: Double = 0
     private var analysisDeliveryLeadSeconds: Double = 0
     private var analysisQueue: [AnalysisChunk] = []
-    private var dspConfiguration = AudioDSPConfiguration.defaultFlat
+    private var dspConfiguration = AudioDSPConfiguration.defaultFlat {
+        didSet {
+            // Spatial audio renders its own binaural image; the system must
+            // not spatialize it a second time.
+            if oldValue.rendersSpatialImage != dspConfiguration.rendersSpatialImage {
+                configureSpatialization(renderer)
+            }
+        }
+    }
     private var dspRevision = "initial"
     private var dspProcessor: AudioDSPProcessor?
     private var dspLoadMonitoringEnabled = false
@@ -590,7 +600,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     }
 
     private func configureSpatialization(_ renderer: AVSampleBufferAudioRenderer) {
-        renderer.allowedAudioSpatializationFormats = [.monoStereoAndMultichannel]
+        renderer.allowedAudioSpatializationFormats = dspConfiguration.rendersSpatialImage
+            ? [] : [.monoStereoAndMultichannel]
     }
 
     private func installRendererObservers(
@@ -658,6 +669,14 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             guard let self, self.desiredDSPContext != context else { return }
             let previous = self.desiredDSPContext
             self.desiredDSPContext = context
+            // Effects with an automatic target retune when the route changes
+            // between headphones and speakers.
+            if let request = self.latestAcceptedDSPRequest,
+               previous.outputKind != context.outputKind,
+               request.configuration.followsOutputKind {
+                self.applyDSP(request.configuration, revision: request.revision, requestID: request.requestID)
+                return
+            }
             guard let request = self.latestAcceptedDSPRequest,
                   let before = DSPEqualLoudnessMath.chainGains(configuration: request.configuration, context: previous),
                   let after = DSPEqualLoudnessMath.chainGains(configuration: request.configuration, context: context)
@@ -1586,18 +1605,22 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         _ pcm: CanonicalPCM,
         presentationTime: Double,
         segmentID: UUID,
-        revision: String
+        revision: String,
+        meters: [[DSPNodeMeterReading]] = []
     ) {
         var offset = 0
+        var index = 0
         while offset < pcm.frames {
             let count = min(Self.analysisChunkFrames, pcm.frames - offset)
             analysisQueue.append(AnalysisChunk(
                 presentationTime: presentationTime + Double(offset) / pcm.sampleRate,
                 pcm: pcm.slice(frameOffset: offset, frameCount: count),
                 segmentID: segmentID,
-                dspRevision: revision
+                dspRevision: revision,
+                meters: index < meters.count ? meters[index] : []
             ))
             offset += count
+            index += 1
         }
     }
 
@@ -2380,6 +2403,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let state = dspProcessor?.stateSnapshot()
         let wasCrossfaded = dspHorizonTransition != nil
         var outputPCM: CanonicalPCM
+        var meterReadings: [[DSPNodeMeterReading]] = []
         let loadMeasurement = processingLoadMeasurement(for: dspProcessor, frames: rawPCM.frames)
         do {
             let future = try dspLookahead(
@@ -2388,6 +2412,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 frameCount: max(dspProcessor?.processingLatencyFrames ?? 0, dspHorizonTransition?.previous.processingLatencyFrames ?? 0)
             )
             outputPCM = dspProcessor?.process(rawPCM, lookahead: future, loadMeasurement: loadMeasurement) ?? rawPCM
+            meterReadings = dspProcessor.map { $0.isBypassed ? [] : $0.meterReadingsByChunk() } ?? []
             if var transition = dspHorizonTransition, transition.previous.format == pending.format {
                 let old = transition.previous.process(rawPCM, lookahead: future)
                 outputPCM = AudioDSPProcessor.crossfade(old: old, new: outputPCM, weights: transition.weights,
@@ -2457,7 +2482,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             sourcePCM,
             presentationTime: ptsSeconds,
             segmentID: pending.segmentID,
-            revision: dspRevision
+            revision: dspRevision,
+            meters: meterReadings
         )
         renderer.enqueue(sampleBuffer)
         nextPresentationTime = ptsSeconds + outputPCM.seconds
@@ -2476,17 +2502,19 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         following blocks: ArraySlice<DSPPCMBlock>
     ) throws -> CanonicalPCM? {
         guard frameCount > 0 else { return nil }
+        let channels = raw.format.channelCount
         var data = [Float]()
-        data.reserveCapacity(frameCount * raw.format.channelCount)
+        data.reserveCapacity(frameCount * channels)
         var expectedPTS = raw.endPresentationTime
         var lastSegmentID = raw.segmentID
         var lastSourceFrame = raw.sourceFrameStart + AVAudioFramePosition(raw.pcm.frames)
         for block in blocks {
             guard block.format == raw.format,
                   abs(block.presentationTime - expectedPTS) <= 0.5 / raw.format.sampleRate else {
-                let remaining = frameCount * raw.format.channelCount - data.count
-                data.append(contentsOf: repeatElement(Float(0), count: remaining))
-                return CanonicalPCM(frames: frameCount, channelCount: raw.format.channelCount,
+                // A gap or format boundary ends the window; the processor
+                // drains its remaining latency through zeros.
+                guard !data.isEmpty else { return nil }
+                return CanonicalPCM(frames: data.count / channels, channelCount: channels,
                                     sampleRate: raw.format.sampleRate, data: data)
             }
             let count = min(frameCount - data.count / raw.format.channelCount, block.pcm.frames)
@@ -2499,12 +2527,13 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                                     sampleRate: raw.format.sampleRate, data: data)
             }
         }
-        let remainingFrames = frameCount - data.count / raw.format.channelCount
+        let remainingFrames = frameCount - data.count / channels
         if let tail = try dspLookahead(after: lastSourceFrame, segmentID: lastSegmentID,
                                       format: raw.format, frameCount: remainingFrames) {
             data.append(contentsOf: tail.data)
         }
-        return CanonicalPCM(frames: frameCount, channelCount: raw.format.channelCount,
+        guard !data.isEmpty else { return nil }
+        return CanonicalPCM(frames: data.count / channels, channelCount: channels,
                             sampleRate: raw.format.sampleRate, data: data)
     }
 
@@ -2819,6 +2848,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             while let first = analysisQueue.first, first.presentationTime <= threshold {
                 analysisQueue.removeFirst()
                 onAnalysisPCM?(first.pcm)
+                DSPMeterBus.shared.publish(first.meters)
             }
             if var event = pendingAudibleDSPEvent,
                let scheduledPTS = event.scheduledPTS,

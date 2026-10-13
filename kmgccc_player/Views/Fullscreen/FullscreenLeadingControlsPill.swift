@@ -41,7 +41,7 @@ struct FullscreenLeadingControlsPill: View {
             height: size,
             alignment: .leading
         )
-        .frame(maxWidth: usesContainerWidth ? .infinity : nil, alignment: .leading)
+        .frame(minWidth: usesContainerWidth ? 0 : nil, maxWidth: usesContainerWidth ? .infinity : nil, alignment: .leading)
         .clipShape(Capsule())
         .contentShape(Capsule())
         .skinControlRegion()

@@ -137,7 +137,7 @@ struct FullscreenSettingsPresentationStyle: Equatable {
             isCompact: true,
             overlayForegroundProfile: foregroundProfile,
             usesGlassSectionCards: false,
-            usesMaterialSectionCards: false,
+            usesMaterialSectionCards: true,
             glassMaterialStyle: .clear,
             controlSize: adaptiveControlSize(for: scale),
             // Narrower + slightly shorter to stay out of the Mini Player's way.
@@ -411,19 +411,16 @@ struct FullscreenSettingsContainerView: View {
 
     let presentationStyle: FullscreenSettingsPresentationStyle
     let embedsScrollView: Bool
-    let showsHeader: Bool
 
     @State private var selectedTab = 0
     private let tabs = ["皮肤", "歌词", "LED"]
 
     init(
         presentationStyle: FullscreenSettingsPresentationStyle = .settingsWindow,
-        embedsScrollView: Bool = false,
-        showsHeader: Bool = true
+        embedsScrollView: Bool = false
     ) {
         self.presentationStyle = presentationStyle
         self.embedsScrollView = embedsScrollView
-        self.showsHeader = showsHeader
     }
 
     var body: some View {
@@ -442,9 +439,7 @@ struct FullscreenSettingsContainerView: View {
 
     private var containerBody: some View {
         VStack(alignment: .leading, spacing: presentationStyle.containerSpacing) {
-            if showsHeader {
-                SettingsHeaderLabel("全屏播放", systemImage: "arrow.up.left.and.arrow.down.right")
-            }
+            SettingsHeaderLabel("全屏播放", systemImage: "arrow.up.left.and.arrow.down.right")
 
             SettingsTabSelector(tabs: tabs, selectedTab: $selectedTab, fillsWidth: true)
 

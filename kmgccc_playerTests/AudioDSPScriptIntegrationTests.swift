@@ -86,18 +86,18 @@ final class AudioDSPScriptIntegrationTests: XCTestCase {
         XCTAssertFalse(runtime.diagnostics.contains { $0.code == "dsp.nonFiniteChainOutput" })
     }
 
-    func testRendererBudgetIncludesCombinedLatencyPreview() {
+    /// The chain runs ahead of its output, so declared latency adds no
+    /// renderer work and two long-latency scripts both stay in the chain.
+    func testRendererBudgetIgnoresLatencyUnderRunAhead() {
         let assignments = (0..<100).map { "let value\($0) = input;" }.joined(separator: "\n")
         let source = "latency 2048; process { \(assignments) output = delay(input, 2048); }"
         let first = DSPNodeConfiguration.script(parameters: DSPScriptNodeParameters(source: source))
         let second = DSPNodeConfiguration.script(parameters: DSPScriptNodeParameters(source: source))
         let runtime = processor(nodes: [first, second])
-        XCTAssertEqual(runtime.processingLatencyFrames, 2048)
-        XCTAssertTrue(runtime.diagnostics.contains {
-            $0.code == "dsp.scriptBudgetExceeded" && $0.nodeID == second.nodeID
-        })
+        XCTAssertEqual(runtime.processingLatencyFrames, 4096)
+        XCTAssertFalse(runtime.diagnostics.contains { $0.code == "dsp.scriptBudgetExceeded" })
         XCTAssertEqual(DSPScriptCompiler.estimatedRendererOperationsPerSecond(
-            baseOperationsPerSecond: 1_000_000, latencyFrames: 4096), 3_000_000)
+            baseOperationsPerSecond: 1_000_000, latencyFrames: 4096), 1_000_000)
     }
 
     func testJobRetryMetadataDoesNotStoreSourceAndDecodesLegacyRecords() throws {

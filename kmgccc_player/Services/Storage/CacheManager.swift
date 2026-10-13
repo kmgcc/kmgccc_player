@@ -80,44 +80,6 @@ nonisolated struct DiskCacheBudget: Sendable, Equatable {
         targetFraction: 0.80,
         maxAge: 30 * 24 * 3600
     )
-
-    /// App-wide recommended total disk cache ceiling (~444 MB).
-    static let totalCeilingBytes: Int64 =
-        trackOriginals.maxBytes +
-        trackDerivatives.maxBytes +
-        playlistDerivatives.maxBytes +
-        qqMusicImages.maxBytes +
-        qqMusicMetadata.maxBytes +
-        externalPlaybackArtwork.maxBytes +
-        headerColors.maxBytes
-}
-
-nonisolated struct DiskCacheUsageSummary: Sendable, Equatable {
-    let trackOriginalsBytes: Int64
-    let trackDerivativesBytes: Int64
-    let playlistDerivativesBytes: Int64
-    let qqMusicCoverBytes: Int64
-    let externalPlaybackArtworkBytes: Int64
-    let colorsBytes: Int64
-    let otherBytes: Int64
-    let totalBytes: Int64
-    let totalFileCount: Int
-
-    static let zero = DiskCacheUsageSummary(
-        trackOriginalsBytes: 0,
-        trackDerivativesBytes: 0,
-        playlistDerivativesBytes: 0,
-        qqMusicCoverBytes: 0,
-        externalPlaybackArtworkBytes: 0,
-        colorsBytes: 0,
-        otherBytes: 0,
-        totalBytes: 0,
-        totalFileCount: 0
-    )
-
-    var formattedTotalSize: String {
-        ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
-    }
 }
 
 /// Bounds rebuildable disk caches without making the cache format aware of the
@@ -274,34 +236,6 @@ nonisolated enum DiskCacheRetention {
     }
 }
 
-struct LegacyCacheCleanupResult: Sendable {
-    var removedDirectories: Int
-    var failedDirectories: Int
-    var removedImportStagingSessions: Int
-    var failedImportStagingSessions: Int
-
-    static let empty = LegacyCacheCleanupResult(
-        removedDirectories: 0,
-        failedDirectories: 0,
-        removedImportStagingSessions: 0,
-        failedImportStagingSessions: 0
-    )
-
-    var removedItemCount: Int {
-        removedDirectories + removedImportStagingSessions
-    }
-
-    var failedItemCount: Int {
-        failedDirectories + failedImportStagingSessions
-    }
-}
-
-nonisolated struct LegacyCacheMigrationResult: Sendable, Equatable {
-    let migratedDirectories: Int
-    let skippedDirectories: Int
-    let failedDirectories: Int
-}
-
 nonisolated enum CacheManager {
     static let staleImportStagingAge: TimeInterval = 24 * 60 * 60
 
@@ -419,355 +353,143 @@ nonisolated enum CacheManager {
         HomeAmbientShapesBackground.purgeCaches()
     }
 
-    static func clearLibraryCaches(
-        storageLocations: LibraryStorageLocations,
-        trackArtworkCache: TrackArtworkCache,
-        artworkDerivativeStore: ArtworkDerivativeCacheStore,
-        amllDBService: AMLLDBService,
-        externalPlaybackMetadataStore: ExternalPlaybackMetadataStore
-    ) async {
-        let legacyLocations = LegacyLibraryStorageLocations.system()
-        await ArtworkAssetStore.shared.clearCache()
-        await trackArtworkCache.clearMemory()
-        await artworkDerivativeStore.clearAll()
-        await ThemeStore.shared.clearArtworkColorCache()
-        await externalPlaybackMetadataStore.clearAutomaticCaches()
-        try? await amllDBService.clearIndex()
+    // MARK: - Library disk caches
 
-        // Flush system URLCache so network image responses don't stay cached in ~/Library/Caches
-        URLCache.shared.removeAllCachedResponses()
+    /// Cleans one cache category of the open library. In-memory copies go
+    /// first so no producer writes a stale entry back afterwards.
+    @MainActor
+    static func clear(_ category: StorageCategory, services: LibraryCacheServices) async {
+        guard category.clearance == .cache else { return }
+        let storage = services.storageLocations
+        switch category {
+        case .artworkCache:
+            await ArtworkAssetStore.shared.clearCache()
+            await services.trackArtworkCache.clearMemory()
+            await services.artworkDerivativeStore.clearAll()
+            await services.playlistArtworkPipeline.clearMemory()
+            await ArtworkLoader.clearMemoryCache()
+            FastArtworkMemoryCache.shared.removeAll()
+        case .onlineCache:
+            await services.externalPlaybackMetadataStore.clearAutomaticCaches()
+            try? await services.amllDBService.clearIndex()
+            URLCache.shared.removeAllCachedResponses()
+        case .otherCache:
+            ThemeStore.shared.clearArtworkColorCache()
+            services.headerColorExtractor.clearMemory()
+            await removeItems(storage.paths.retiredDataURLs)
+            await removeUnregisteredCacheItems(in: storage)
+            _ = await cleanupStaleImportStaging(
+                roots: [storage.importStagingRootURL],
+                reason: "manualClean",
+                maxAge: staleImportStagingAge
+            )
+        default:
+            break
+        }
+        await removeItems(
+            LibraryCacheArea.areas(in: category)
+                .filter(\.isRemovedWhole)
+                .map { $0.url(in: storage) }
+        )
+        Log.info("[CacheManager] Cleaned category=\(category.rawValue)", category: .perf)
+    }
 
-        await removeDirectories(libraryCacheDirectories(for: storageLocations))
-        await removeDirectories(legacyCacheDirectories(at: legacyLocations))
+    /// Cleans every cache category of a library that is not open. External
+    /// playback results stay, since only the open store knows which artwork
+    /// the listener chose.
+    static func clearInactiveLibraryCaches(rootURL: URL) async {
+        let storage = StorageLocations.scoped(to: LibraryPaths(rootURL: rootURL))
+        await removeItems(
+            LibraryCacheArea.allCases.filter(\.isRemovedWhole).map { $0.url(in: storage) }
+                + storage.paths.retiredDataURLs
+        )
+        await removeUnregisteredCacheItems(in: storage)
         _ = await cleanupStaleImportStaging(
-            roots: [
-                storageLocations.importStagingRootURL,
-                storageLocations.libraryRootURL.appendingPathComponent(
-                    "ImportStaging",
-                    isDirectory: true
-                ),
-            ],
-            reason: "manualLibraryCacheClear",
-            maxAge: 0
+            roots: [storage.importStagingRootURL],
+            reason: "inactiveLibraryClean",
+            maxAge: staleImportStagingAge
         )
     }
 
-    /// Calculates current disk cache usage for all app-managed cache directories.
-    static func calculateLibraryDiskCacheUsage(
-        storage: LibraryStorageLocations
-    ) async -> DiskCacheUsageSummary {
-        await Task.detached(priority: .utility) {
-            let fileManager = FileManager.default
-            let originals = DiskCacheRetention.directorySize(at: storage.trackArtworkOriginalsURL, fileManager: fileManager)
-            let derivatives = DiskCacheRetention.directorySize(at: storage.trackArtworkDerivativesURL, fileManager: fileManager)
-            let playlistDerivatives = DiskCacheRetention.directorySize(at: storage.playlistArtworkDerivativesURL, fileManager: fileManager)
-            let qqMusic = DiskCacheRetention.directorySize(at: storage.qqMusicCoverCacheURL, recursive: true, fileManager: fileManager)
-            let extPlayback = DiskCacheRetention.directorySize(at: storage.externalPlaybackCacheRootURL, recursive: true, fileManager: fileManager)
-            let colors = DiskCacheRetention.directorySize(at: storage.colorsCacheURL, recursive: true, fileManager: fileManager)
-
-            // Accurately capture total cache root footprint (including staging, scan caches, lyrics, and home)
-            let overall = DiskCacheRetention.directorySize(at: storage.libraryCacheRootURL, recursive: true, fileManager: fileManager)
-            let knownBytes = originals.bytes + derivatives.bytes + playlistDerivatives.bytes + qqMusic.bytes + extPlayback.bytes + colors.bytes
-            let otherBytes = max(0, overall.bytes - knownBytes)
-
-            return DiskCacheUsageSummary(
-                trackOriginalsBytes: originals.bytes,
-                trackDerivativesBytes: derivatives.bytes,
-                playlistDerivativesBytes: playlistDerivatives.bytes,
-                qqMusicCoverBytes: qqMusic.bytes,
-                externalPlaybackArtworkBytes: extPlayback.bytes,
-                colorsBytes: colors.bytes,
-                otherBytes: otherBytes,
-                totalBytes: overall.bytes > 0 ? overall.bytes : knownBytes,
-                totalFileCount: overall.fileCount > 0 ? overall.fileCount : (originals.fileCount + derivatives.fileCount + playlistDerivatives.fileCount + qqMusic.fileCount + extPlayback.fileCount + colors.fileCount)
-            )
-        }.value
+    /// Entries under `Cache/` that belong to no registered area, such as a
+    /// directory an earlier version created.
+    nonisolated static func unregisteredCacheItems(in storage: LibraryStorageLocations) -> [URL] {
+        let areaPaths = LibraryCacheArea.allCases.map { $0.url(in: storage).standardizedFileURL.path }
+        let fileManager = FileManager.default
+        var result: [URL] = []
+        var pending = [storage.libraryCacheRootURL.standardizedFileURL]
+        while let directory = pending.popLast() {
+            guard let children = try? fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil
+            ) else { continue }
+            for child in children {
+                let path = child.standardizedFileURL.path
+                if areaPaths.contains(path) { continue }
+                if areaPaths.contains(where: { $0.hasPrefix(path + "/") }) {
+                    pending.append(child)
+                } else {
+                    result.append(child)
+                }
+            }
+        }
+        return result
     }
 
-    /// Enforces disk cache budgets across all app-managed cache directories.
+    /// Enforces every registered budget, then removes stale import staging
+    /// and files earlier versions left behind.
     @discardableResult
     static func trimAllDiskCaches(
         storage: LibraryStorageLocations
     ) async -> DiskCacheTrimResult {
-        await Task.detached(priority: .utility) {
-            let fileManager = FileManager.default
+        let result = await Task.detached(priority: .utility) { () -> DiskCacheTrimResult in
             var removedFiles = 0
             var removedBytes: Int64 = 0
-
-            func applyTrim(_ result: DiskCacheTrimResult) {
-                removedFiles += result.removedFileCount
-                removedBytes += result.removedBytes
-            }
-
-            // 1. Track originals & derivatives
-            applyTrim(DiskCacheRetention.trim(
-                at: storage.trackArtworkOriginalsURL,
-                maxBytes: DiskCacheBudget.trackOriginals.maxBytes,
-                targetFraction: DiskCacheBudget.trackOriginals.targetFraction,
-                maxAge: DiskCacheBudget.trackOriginals.maxAge,
-                fileManager: fileManager
-            ))
-            applyTrim(DiskCacheRetention.trim(
-                at: storage.trackArtworkDerivativesURL,
-                maxBytes: DiskCacheBudget.trackDerivatives.maxBytes,
-                targetFraction: DiskCacheBudget.trackDerivatives.targetFraction,
-                maxAge: DiskCacheBudget.trackDerivatives.maxAge,
-                fileManager: fileManager
-            ))
-
-            // 2. Playlist derivatives
-            applyTrim(DiskCacheRetention.trim(
-                at: storage.playlistArtworkDerivativesURL,
-                maxBytes: DiskCacheBudget.playlistDerivatives.maxBytes,
-                targetFraction: DiskCacheBudget.playlistDerivatives.targetFraction,
-                maxAge: DiskCacheBudget.playlistDerivatives.maxAge,
-                fileManager: fileManager
-            ))
-
-            // 3. QQMusic covers (Images & Metadata)
-            applyTrim(DiskCacheRetention.trim(
-                at: storage.qqMusicCoverCacheURL.appendingPathComponent("Images", isDirectory: true),
-                maxBytes: DiskCacheBudget.qqMusicImages.maxBytes,
-                targetFraction: DiskCacheBudget.qqMusicImages.targetFraction,
-                maxAge: DiskCacheBudget.qqMusicImages.maxAge,
-                fileManager: fileManager
-            ))
-            applyTrim(DiskCacheRetention.trim(
-                at: storage.qqMusicCoverCacheURL.appendingPathComponent("Metadata", isDirectory: true),
-                maxBytes: DiskCacheBudget.qqMusicMetadata.maxBytes,
-                targetFraction: DiskCacheBudget.qqMusicMetadata.targetFraction,
-                maxAge: DiskCacheBudget.qqMusicMetadata.maxAge,
-                fileManager: fileManager
-            ))
-
-            // 4. External playback artwork (preserving user manual overrides)
             let manualArtwork = ExternalPlaybackMetadataStore.loadManualArtworkFileNames(
                 from: storage.externalPlaybackMetadataURL.appendingPathComponent("records.json")
             )
-            applyTrim(DiskCacheRetention.trim(
-                at: storage.externalPlaybackArtworkURL,
-                maxBytes: DiskCacheBudget.externalPlaybackArtwork.maxBytes,
-                targetFraction: DiskCacheBudget.externalPlaybackArtwork.targetFraction,
-                maxAge: DiskCacheBudget.externalPlaybackArtwork.maxAge,
-                preservedFileNames: manualArtwork,
-                fileManager: fileManager
-            ))
-
-            // 5. Header Colors
-            applyTrim(DiskCacheRetention.trim(
-                at: storage.headerColorCacheURL,
-                maxBytes: DiskCacheBudget.headerColors.maxBytes,
-                targetFraction: DiskCacheBudget.headerColors.targetFraction,
-                maxAge: DiskCacheBudget.headerColors.maxAge,
-                fileManager: fileManager
-            ))
-
-            // 6. Stale import staging
-            _ = await cleanupStaleImportStaging(
-                roots: [storage.importStagingRootURL],
-                reason: "periodicMaintenance",
-                maxAge: staleImportStagingAge
-            )
-
-            if removedFiles > 0 {
-                Log.info(
-                    "[CacheManager] Disk maintenance completed: removed \(removedFiles) files, freed \(ByteCountFormatter.string(fromByteCount: removedBytes, countStyle: .file))",
-                    category: .perf
-                )
+            for area in LibraryCacheArea.allCases {
+                let areaURL = area.url(in: storage)
+                for rule in area.trimRules {
+                    let url = rule.relativePath.map {
+                        areaURL.appendingPathComponent($0, isDirectory: true)
+                    } ?? areaURL
+                    let trimmed = DiskCacheRetention.trim(
+                        at: url,
+                        maxBytes: rule.budget.maxBytes,
+                        targetFraction: rule.budget.targetFraction,
+                        maxAge: rule.budget.maxAge,
+                        recursive: rule.recursive,
+                        preservedFileNames: area == .externalPlayback ? manualArtwork : []
+                    )
+                    removedFiles += trimmed.removedFileCount
+                    removedBytes += trimmed.removedBytes
+                }
             }
 
-            return DiskCacheTrimResult(
-                removedFileCount: removedFiles,
-                removedBytes: removedBytes
-            )
+            let fileManager = FileManager.default
+            for url in storage.paths.retiredDataURLs where fileManager.fileExists(atPath: url.path) {
+                let size = StorageUsageScanner.allocatedSize(of: url)
+                if (try? fileManager.removeItem(at: url)) != nil {
+                    removedFiles += 1
+                    removedBytes += size
+                }
+            }
+            return DiskCacheTrimResult(removedFileCount: removedFiles, removedBytes: removedBytes)
         }.value
-    }
 
-    @MainActor private static var maintainedLibraryRoots: Set<URL> = []
-
-    /// Queues one disk cache maintenance pass per library and launch as idle
-    /// batch work; the App scheduler runs it when the machine is idle.
-    @MainActor
-    static func scheduleBackgroundDiskMaintenance(
-        storage: LibraryStorageLocations,
-        scheduler: BackgroundWorkScheduler
-    ) {
-        guard !maintainedLibraryRoots.contains(storage.libraryRootURL) else { return }
-        maintainedLibraryRoots.insert(storage.libraryRootURL)
-        scheduler.submit(
-            key: "cache-maintenance:\(storage.libraryRootURL.path)",
-            owner: .app,
-            domain: .cacheMaintenance,
-            priority: .idleBatch,
-            resources: [.disk]
-        ) { context in
-            guard (try? await context.checkpoint()) != nil else { return .cancelled }
-            _ = await trimAllDiskCaches(storage: storage)
-            return .completed
+        _ = await cleanupStaleImportStaging(
+            roots: [storage.importStagingRootURL],
+            reason: "periodicMaintenance",
+            maxAge: staleImportStagingAge
+        )
+        if result.removedFileCount > 0 {
+            Log.info(
+                "[CacheManager] Disk maintenance removed \(result.removedFileCount) items, freed \(ByteCountFormatter.string(fromByteCount: result.removedBytes, countStyle: .file))",
+                category: .perf
+            )
         }
-    }
-
-    static func hasBuild7LegacyCaches() async -> Bool {
-        let legacyLocations = LegacyLibraryStorageLocations.system()
-        let paths = build7LegacyCacheDetectionDirectories(at: legacyLocations).map(\.path)
-        let hasLegacyDirectory = await Task.detached(priority: .utility) {
-            let fileManager = FileManager.default
-            return paths.contains { path in
-                guard fileManager.fileExists(atPath: path) else { return false }
-                let children = try? fileManager.contentsOfDirectory(atPath: path)
-                return children?.isEmpty == false
-            }
-        }.value
-
-        if hasLegacyDirectory { return true }
-
-        return false
-    }
-
-    static func clearBuild7LegacyCaches() async -> LegacyCacheCleanupResult {
-        let legacyLocations = LegacyLibraryStorageLocations.system()
-        await ThemeStore.shared.clearArtworkColorCache()
-
-        let directorySummary = await removeDirectoriesWithResult(
-            build7LegacyCacheDirectories(at: legacyLocations)
-        )
-        return LegacyCacheCleanupResult(
-            removedDirectories: directorySummary.removed,
-            failedDirectories: directorySummary.failed,
-            removedImportStagingSessions: 0,
-            failedImportStagingSessions: 0
-        )
-    }
-
-    static func migrateLegacyCaches(
-        to storage: LibraryStorageLocations,
-        stagingRootURL: URL,
-        legacyLocations: LegacyLibraryStorageLocations
-    ) async -> LegacyCacheMigrationResult {
-        let mappings = legacyCacheMappings(
-            storage: storage,
-            legacyLocations: legacyLocations
-        ).map { (source: $0.source.path, destination: $0.destination.path) }
-        let stagingPath = stagingRootURL
-            .appendingPathComponent("LegacyCacheMigration", isDirectory: true)
-            .path
-        return await Task.detached(priority: .utility) {
-            let fileManager = FileManager.default
-            let stagingRoot = URL(fileURLWithPath: stagingPath, isDirectory: true)
-            try? fileManager.removeItem(at: stagingRoot)
-            var migrated = 0
-            var skipped = 0
-            var failed = 0
-
-            do {
-                try fileManager.createDirectory(
-                    at: stagingRoot,
-                    withIntermediateDirectories: true
-                )
-            } catch {
-                let existingSources = mappings.reduce(into: 0) { count, mapping in
-                    if fileManager.fileExists(atPath: mapping.source) {
-                        count += 1
-                    }
-                }
-                return LegacyCacheMigrationResult(
-                    migratedDirectories: 0,
-                    skippedDirectories: 0,
-                    failedDirectories: existingSources
-                )
-            }
-            defer { try? fileManager.removeItem(at: stagingRoot) }
-
-            for (index, mapping) in mappings.enumerated() {
-                let source = URL(fileURLWithPath: mapping.source, isDirectory: true)
-                let destination = URL(fileURLWithPath: mapping.destination, isDirectory: true)
-                guard fileManager.fileExists(atPath: source.path) else { continue }
-
-                let staged = stagingRoot.appendingPathComponent(
-                    "\(index)-\(UUID().uuidString)",
-                    isDirectory: true
-                )
-                do {
-                    let destinationExisted = fileManager.fileExists(atPath: destination.path)
-                    try fileManager.copyItem(at: source, to: staged)
-                    let sourceInventory = try directoryInventory(at: source)
-                    guard sourceInventory == (try directoryInventory(at: staged)) else {
-                        throw CocoaError(.fileReadCorruptFile)
-                    }
-                    try fileManager.createDirectory(
-                        at: destination,
-                        withIntermediateDirectories: true
-                    )
-
-                    let merge = try mergeMissingFiles(
-                        from: staged,
-                        to: destination,
-                        inventory: sourceInventory,
-                        fileManager: fileManager
-                    )
-                    if destinationExisted && merge.copiedFiles == 0 {
-                        skipped += 1
-                    } else {
-                        migrated += 1
-                    }
-                } catch {
-                    failed += 1
-                }
-                try? fileManager.removeItem(at: staged)
-            }
-            return LegacyCacheMigrationResult(
-                migratedDirectories: migrated,
-                skippedDirectories: skipped,
-                failedDirectories: failed
-            )
-        }.value
-    }
-
-    static func removeLegacyIndexes(
-        at legacyLocations: LegacyLibraryStorageLocations
-    ) async -> Bool {
-        let paths = (
-            legacyLocations.legacyTrackIndexURLs
-                + legacyLocations.legacySearchIndexURLs
-        ).map(\.path)
-        let rootPath = legacyLocations.legacyIndexRootURL.path
-        return await Task.detached(priority: .utility) {
-            let fileManager = FileManager.default
-            var succeeded = true
-            for path in paths where fileManager.fileExists(atPath: path) {
-                do {
-                    try fileManager.removeItem(atPath: path)
-                } catch {
-                    succeeded = false
-                }
-            }
-            let root = URL(fileURLWithPath: rootPath, isDirectory: true)
-            if let children = try? fileManager.contentsOfDirectory(atPath: root.path),
-               children.isEmpty {
-                try? fileManager.removeItem(at: root)
-            }
-            return succeeded
-        }.value
-    }
-
-    static func removeMigratedLegacyCaches(
-        at legacyLocations: LegacyLibraryStorageLocations
-    ) async {
-        let directories = [
-            legacyLocations.legacyPlaylistArtworkURL,
-            legacyLocations.legacyQQMusicCoverURL,
-            legacyLocations.legacyExternalPlaybackArtworkURL,
-            legacyLocations.legacyColorsURL,
-            legacyLocations.legacyHomeURL,
-            legacyLocations.legacyAMLLDBURL,
-        ]
-        await removeDirectories(directories)
-    }
-
-    static func removeLegacyImportStaging(at libraryRootURL: URL) async {
-        await removeDirectories([
-            libraryRootURL.appendingPathComponent("ImportStaging", isDirectory: true)
-        ])
+        return result
     }
 
     private static func cleanupStaleImportStaging(
@@ -820,97 +542,20 @@ nonisolated enum CacheManager {
         }.value
     }
 
-    private static func libraryCacheDirectories(for locations: LibraryStorageLocations) -> [URL] {
-        [
-            locations.playlistArtworkDerivativesURL,
-            locations.trackArtworkOriginalsURL,
-            locations.trackArtworkDerivativesURL,
-            locations.qqMusicCoverCacheURL,
-            locations.lyricsCacheRootURL,
-            locations.colorsCacheURL,
-            locations.homeCacheURL,
-            locations.libraryScanCacheRootURL,
-            locations.sourceScanCacheRootURL,
-        ]
-    }
-
-    private static func legacyCacheDirectories(
-        at locations: LegacyLibraryStorageLocations
-    ) -> [URL] {
-        [
-            locations.legacyIndexRootURL,
-            locations.legacyPlaylistArtworkURL,
-            locations.legacyQQMusicCoverURL,
-            locations.legacyExternalPlaybackArtworkURL,
-            locations.legacyColorsURL,
-            locations.legacyHomeURL,
-            locations.legacyAMLLDBURL,
-        ]
-    }
-
-    private static func build7LegacyCacheDirectories(
-        at locations: LegacyLibraryStorageLocations
-    ) -> [URL] {
-        legacyCacheDirectories(at: locations)
-    }
-
-    private static func build7LegacyCacheDetectionDirectories(
-        at locations: LegacyLibraryStorageLocations
-    ) -> [URL] {
-        build7LegacyCacheDirectories(at: locations)
-    }
-
-    private static func removeDirectories(_ urls: [URL]) async {
-        _ = await removeDirectoriesWithResult(urls)
-    }
-
-    private static func removeDirectoriesWithResult(_ urls: [URL]) async -> (removed: Int, failed: Int) {
-        let paths = uniqueURLs(urls).map(\.path)
-        return await Task.detached(priority: .utility) {
-            let fileManager = FileManager.default
-            var removed = 0
-            var failed = 0
-            for path in paths where fileManager.fileExists(atPath: path) {
-                do {
-                    try fileManager.removeItem(atPath: path)
-                    removed += 1
-                } catch {
-                    failed += 1
-                }
-            }
-            return (removed, failed)
+    private static func removeUnregisteredCacheItems(in storage: LibraryStorageLocations) async {
+        let items = await Task.detached(priority: .utility) {
+            unregisteredCacheItems(in: storage)
         }.value
+        await removeItems(items)
     }
 
-    private static func hasStaleImportStaging(roots: [URL], maxAge: TimeInterval) async -> Bool {
-        let paths = uniqueURLs(roots).map(\.path)
-        return await Task.detached(priority: .utility) {
+    private static func removeItems(_ urls: [URL]) async {
+        let paths = uniqueURLs(urls).map(\.path)
+        await Task.detached(priority: .utility) {
             let fileManager = FileManager.default
-            let cutoff = Date().addingTimeInterval(-maxAge)
-            for path in paths {
-                let root = URL(fileURLWithPath: path, isDirectory: true)
-                guard let children = try? fileManager.contentsOfDirectory(
-                    at: root,
-                    includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
-                    options: [.skipsHiddenFiles]
-                ) else { continue }
-
-                for url in children {
-                    let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey])
-                    guard values?.isDirectory == true else { continue }
-                    let nested = (try? fileManager.contentsOfDirectory(
-                        at: url,
-                        includingPropertiesForKeys: nil,
-                        options: [.skipsHiddenFiles]
-                    )) ?? []
-                    let isEmpty = nested.isEmpty
-                    let modified = values?.contentModificationDate ?? .distantPast
-                    if isEmpty || modified < cutoff {
-                        return true
-                    }
-                }
+            for path in paths where fileManager.fileExists(atPath: path) {
+                try? fileManager.removeItem(atPath: path)
             }
-            return false
         }.value
     }
 
@@ -924,115 +569,5 @@ nonisolated enum CacheManager {
             }
         }
         return result
-    }
-
-    private static func legacyCacheMappings(
-        storage: LibraryStorageLocations,
-        legacyLocations: LegacyLibraryStorageLocations
-    ) -> [(source: URL, destination: URL)] {
-        [
-            (
-                legacyLocations.legacyPlaylistArtworkURL,
-                storage.playlistArtworkDerivativesURL
-            ),
-            (
-                legacyLocations.legacyQQMusicCoverURL,
-                storage.qqMusicCoverCacheURL
-            ),
-            (
-                legacyLocations.legacyExternalPlaybackArtworkURL,
-                storage.externalPlaybackArtworkURL
-            ),
-            (
-                legacyLocations.legacyColorsURL,
-                storage.colorsCacheURL
-            ),
-            (
-                legacyLocations.legacyHomeURL,
-                storage.homeCacheURL
-            ),
-            (
-                legacyLocations.legacyAMLLDBURL,
-                storage.amllDBCacheURL
-            ),
-        ]
-    }
-
-    private nonisolated static func directoryInventory(
-        at root: URL
-    ) throws -> [String: Int64] {
-        let fileManager = FileManager.default
-        guard let enumerator = fileManager.enumerator(
-            at: root,
-            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return [:]
-        }
-        var inventory: [String: Int64] = [:]
-        for case let url as URL in enumerator {
-            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-            guard values.isRegularFile == true else { continue }
-            let prefix = root.standardizedFileURL.path + "/"
-            guard url.standardizedFileURL.path.hasPrefix(prefix) else { continue }
-            let relativePath = String(url.standardizedFileURL.path.dropFirst(prefix.count))
-            inventory[relativePath] = Int64(values.fileSize ?? 0)
-        }
-        return inventory
-    }
-
-    private nonisolated static func mergeMissingFiles(
-        from stagedRoot: URL,
-        to destinationRoot: URL,
-        inventory: [String: Int64],
-        fileManager: FileManager
-    ) throws -> (copiedFiles: Int, preservedFiles: Int) {
-        var copiedFiles = 0
-        var preservedFiles = 0
-        var createdFiles: [URL] = []
-
-        do {
-            for relativePath in inventory.keys.sorted() {
-                let stagedFile = stagedRoot.appendingPathComponent(relativePath)
-                let destinationFile = destinationRoot.appendingPathComponent(relativePath)
-                if fileManager.fileExists(atPath: destinationFile.path) {
-                    preservedFiles += 1
-                    continue
-                }
-
-                try fileManager.createDirectory(
-                    at: destinationFile.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                do {
-                    try fileManager.copyItem(at: stagedFile, to: destinationFile)
-                    createdFiles.append(destinationFile)
-                } catch {
-                    // A cache owner may publish the same file while migration is
-                    // running. Its newer result wins and must never be overwritten.
-                    if fileManager.fileExists(atPath: destinationFile.path) {
-                        preservedFiles += 1
-                        continue
-                    }
-                    throw error
-                }
-
-                let values = try destinationFile.resourceValues(
-                    forKeys: [.isRegularFileKey, .fileSizeKey]
-                )
-                guard values.isRegularFile == true,
-                      Int64(values.fileSize ?? 0) == inventory[relativePath] else {
-                    throw CocoaError(.fileReadCorruptFile)
-                }
-                copiedFiles += 1
-            }
-        } catch {
-            for url in createdFiles {
-                try? fileManager.removeItem(at: url)
-            }
-            throw error
-        }
-
-        return (copiedFiles, preservedFiles)
     }
 }

@@ -173,7 +173,7 @@ struct AutomationStorageHandler {
                 var storageValidationMessage: String?
                 var storageValidationError: Error?
                 do {
-                    try await LibraryUpgradeSessionValidator.validate(
+                    try await LibraryStorageValidator.validate(
                         context: session.context,
                         libraryViewModel: session.libraryViewModel,
                         repository: session.repository,
@@ -291,7 +291,7 @@ struct AutomationStorageHandler {
                 }
                 let diskSnapshot = try? await storageDiskSnapshot(for: session)
                 do {
-                    try await LibraryUpgradeSessionValidator.validate(
+                    try await LibraryStorageValidator.validate(
                         context: session.context,
                         libraryViewModel: session.libraryViewModel,
                         repository: session.repository,
@@ -524,15 +524,15 @@ struct AutomationStorageHandler {
 
     private func storageDiskSnapshot(
         for session: LibrarySession
-    ) async throws -> LibraryUpgradeSessionValidator.DiskSnapshot {
+    ) async throws -> LibraryStorageValidator.DiskSnapshot {
         let context = session.context
         return try await Task.detached(priority: .utility) {
-            try LibraryUpgradeSessionValidator.inspectDisk(context: context)
+            try LibraryStorageValidator.inspectDisk(context: context)
         }.value
     }
 
     private func makePlaylistReferenceIssues(
-        _ issues: [LibraryUpgradeSessionValidator.LibraryStoragePlaylistReferenceIssue]
+        _ issues: [LibraryStorageValidator.LibraryStoragePlaylistReferenceIssue]
     ) -> [AutomationPlaylistReferenceIssue] {
         issues.map {
             AutomationPlaylistReferenceIssue(
@@ -799,7 +799,7 @@ struct AutomationStorageHandler {
         validationMessage: String? = nil,
         message: String = "The App-owned Library storage layout was inspected.",
         validationError: Error? = nil,
-        diskSnapshot: LibraryUpgradeSessionValidator.DiskSnapshot? = nil,
+        diskSnapshot: LibraryStorageValidator.DiskSnapshot? = nil,
         includeMediaPresenceIssues: Bool = false,
         offset: Int = 0,
         limit: Int = 100
@@ -907,13 +907,13 @@ struct AutomationStorageHandler {
     private func storageValidationIssue(
         _ error: Error,
         session: LibrarySession,
-        diskSnapshot: LibraryUpgradeSessionValidator.DiskSnapshot?
+        diskSnapshot: LibraryStorageValidator.DiskSnapshot?
     ) -> AutomationStorageIssue? {
         let paths = session.context.paths
         let reason = String(describing: error)
         let code: String
         let path: String
-        switch error as? LibraryUpgradeValidationError {
+        switch error as? LibraryStorageValidationError {
         case .manifestMismatch:
             code = "storage.manifest.identity-mismatch"
             path = paths.manifestURL.path
@@ -954,18 +954,12 @@ struct AutomationStorageHandler {
             path = [paths.trackIndexStoreURL, paths.searchIndexStoreURL, paths.playbackHistoryStoreURL]
                 .first(where: { $0.lastPathComponent == fileName })?.path
                 ?? session.context.rootURL.appendingPathComponent(fileName).path
-        case .legacyIndexCleanupFailed:
-            code = "storage.legacy-index.cleanup-failed"
-            path = session.context.rootURL.path
-        case .journalIdentityMismatch, .journalNotRegistered:
-            code = "storage.journal.invalid"
-            path = session.context.rootURL.path
         case nil:
             code = "storage.validation.failed"
             path = session.context.rootURL.path
         }
         let nextStep: String
-        switch error as? LibraryUpgradeValidationError {
+        switch error as? LibraryStorageValidationError {
         case .manifestMismatch, .storageModeMismatch:
             nextStep = "Check the Library manifest against the active Library binding before taking further action."
         case .damagedTrackSidecar, .duplicateTrackID, .trackCountMismatch:
@@ -978,8 +972,6 @@ struct AutomationStorageHandler {
             nextStep = "Allow the App-owned search index to finish rebuilding, then run storage.validate again."
         case .historyStoreMismatch, .sqliteIntegrityFailed:
             nextStep = "Preserve a backup before using an App-owned recovery or restore flow."
-        case .legacyIndexCleanupFailed, .journalIdentityMismatch, .journalNotRegistered:
-            nextStep = "Keep the Library unchanged and inspect the App-owned migration or recovery state."
         case nil:
             nextStep = "Inspect this App-owned Library location and rerun storage.validate for a focused result."
         }
@@ -1034,7 +1026,7 @@ struct AutomationStorageHandler {
         jobs: [LibraryOperationTaskDescriptor],
         playlistReferences: [AutomationPlaylistReferenceIssue],
         storageError: Error?,
-        diskSnapshot: LibraryUpgradeSessionValidator.DiskSnapshot?,
+        diskSnapshot: LibraryStorageValidator.DiskSnapshot?,
         in session: LibrarySession
     ) -> [AutomationDiagnosticIssue] {
         var issues: [AutomationDiagnosticIssue] = []

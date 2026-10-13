@@ -95,6 +95,20 @@ private actor LoudnessDerivedCache {
         try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true, attributes: nil)
         try JSONEncoder().encode(index).write(to: indexURL, options: [.atomic])
     }
+
+    /// Removes the record files of tracks outside `keeping`.
+    func removeRecords(notIn keeping: Set<UUID>) -> Int {
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: rootURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        var removed = 0
+        for url in urls where url.pathExtension == "json" && url.lastPathComponent != "index.json" {
+            guard let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent),
+                  !keeping.contains(id) else { continue }
+            if (try? fileManager.removeItem(at: url)) != nil { removed += 1 }
+        }
+        return removed
+    }
 }
 
 private nonisolated struct LoudnessWorkerOutcome: Sendable {
@@ -220,7 +234,7 @@ final class LibraryLoudnessService: BackgroundWorkSource {
 
     init(libraryPaths: LibraryPaths, libraryID: UUID = UUID()) {
         cache = LoudnessDerivedCache(
-            rootURL: libraryPaths.cacheRootURL.appendingPathComponent("Loudness", isDirectory: true)
+            rootURL: libraryPaths.loudnessCacheRootURL
         )
         sourceID = "loudness:\(libraryID.uuidString)"
     }
@@ -326,6 +340,29 @@ final class LibraryLoudnessService: BackgroundWorkSource {
         guard !isClosed else { return }
         index.merge(loadedIndex ?? [:]) { current, _ in current }
         hasLoadedSnapshot = true
+    }
+
+    /// Drops measurements of songs that left the library. Measuring a song
+    /// means decoding all of it, so records live as long as their song
+    /// instead of under a size limit.
+    func pruneRecords(keeping trackIDs: Set<UUID>) async {
+        guard hasLoadedSnapshot, !isClosed, !trackIDs.isEmpty else { return }
+        let removedFiles = await cache.removeRecords(notIn: trackIDs)
+        guard !isClosed else { return }
+        let staleIDs = index.keys.filter { !trackIDs.contains($0) }
+        for id in staleIDs {
+            index[id] = nil
+            records[id] = nil
+        }
+        if !staleIDs.isEmpty {
+            try? await cache.storeIndex(index)
+        }
+        if removedFiles > 0 || !staleIDs.isEmpty {
+            Log.info(
+                "[Loudness] pruned records=\(removedFiles) indexEntries=\(staleIDs.count)",
+                category: .perf
+            )
+        }
     }
 
     func updatePlaybackTrimPolicy(enabled: Bool) {

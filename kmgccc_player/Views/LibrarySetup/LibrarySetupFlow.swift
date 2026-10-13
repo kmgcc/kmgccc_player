@@ -224,7 +224,8 @@ struct LibrarySetupFlow: View {
                 } label: {
                     Label("添加文件或文件夹", systemImage: "plus")
                 }
-                .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
+                .buttonStyle(AppPanelButtonStyle())
+                .font(.system(size: 13, weight: .medium))
                 Spacer()
                 if !flow.selectedMusicURLs.isEmpty {
                     Text("已选择 \(flow.selectedMusicURLs.count) 项")
@@ -301,7 +302,8 @@ struct LibrarySetupFlow: View {
             Button(flow.storageParentURL == nil ? "选择位置" : "更改") {
                 chooseStorageLocation()
             }
-            .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
+            .buttonStyle(AppPanelButtonStyle())
+            .font(.system(size: 13, weight: .medium))
             .disabled(flow.operation == .working)
         }
         .padding(.horizontal, 12)
