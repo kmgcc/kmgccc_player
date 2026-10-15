@@ -80,7 +80,7 @@ final class ThemeStore: ObservableObject {
         qos: .userInitiated
     )
 
-    private var currentArtworkData: Data?
+    private var hasArtworkData: Bool = false
     private var currentArtworkChecksum: UInt64 = 0
     private var lastProcessedChecksum: UInt64 = 0
     private var lastProcessedArtworkIdentity: String?
@@ -88,6 +88,16 @@ final class ThemeStore: ObservableObject {
     private var pendingAssetTrackID: UUID?
     private var pendingArtworkChecksum: UInt64 = 0
     private var averageColorCache: NSColor?
+    /// The swatch engine is heavy and `artworkSwatchColors` runs from view
+    /// bodies, so its last result is reused until its inputs change.
+    private var artworkSwatchCache: ArtworkSwatchCache?
+
+    private struct ArtworkSwatchCache {
+        let isDark: Bool
+        let analysis: ArtworkColorAnalysis
+        let accent: NSColor
+        let colors: [Color]
+    }
 
     private init() {
         // Default theme color: soft warm amber, desaturated for calm light-mode appearance.
@@ -250,7 +260,7 @@ final class ThemeStore: ObservableObject {
             }
             Log.debug("No artwork data, resetting to default", category: .theme)
             clearPendingArtworkTheme()
-            currentArtworkData = nil
+            hasArtworkData = false
             currentArtworkChecksum = 0
             lastProcessedChecksum = 0
             lastProcessedArtworkIdentity = nil
@@ -286,7 +296,7 @@ final class ThemeStore: ObservableObject {
             return
         }
 
-        currentArtworkData = data
+        hasArtworkData = true
         currentArtworkChecksum = checksum
         averageColorCache = nil
         holdCurrentThemeForPendingArtwork(
@@ -505,7 +515,7 @@ final class ThemeStore: ObservableObject {
         // (adjusted average artwork tint) but crushes near-mono OKLCH
         // chroma so grey/black/white covers cannot leak pink/blue/yellow
         // residue into the AMLL surface.
-        if currentArtworkData != nil {
+        if hasArtworkData {
             text = ArtworkColorExtractor.cssRGBA(semantic.lyrics.windowActive, alpha: 0.95)
             active = ArtworkColorExtractor.cssRGBA(semantic.lyrics.windowActive, alpha: 1.0)
             inactive = ArtworkColorExtractor.cssRGBA(
@@ -661,13 +671,23 @@ final class ThemeStore: ObservableObject {
     /// `categoricalColors` when the artwork yields fewer than `count` swatches.
     func artworkSwatchColors(count: Int) -> [Color] {
         guard count > 0 else { return [] }
-        let swatches = BKColorEngine.makeShapeSwatches(
-            seed: Self.artworkSwatchSeed,
-            extracted: analysis.topPalette,
-            fallback: [accentNSColor],
-            isDark: colorScheme == .dark,
-            analysis: analysis
-        ).colors.map { Color(cgColor: $0) }
+        let isDark = colorScheme == .dark
+        let swatches: [Color]
+        if let cached = artworkSwatchCache,
+           cached.isDark == isDark, cached.analysis == analysis, cached.accent == accentNSColor {
+            swatches = cached.colors
+        } else {
+            swatches = BKColorEngine.makeShapeSwatches(
+                seed: Self.artworkSwatchSeed,
+                extracted: analysis.topPalette,
+                fallback: [accentNSColor],
+                isDark: isDark,
+                analysis: analysis
+            ).colors.map { Color(cgColor: $0) }
+            artworkSwatchCache = ArtworkSwatchCache(
+                isDark: isDark, analysis: analysis, accent: accentNSColor, colors: swatches
+            )
+        }
         return swatches.count >= count ? Array(swatches.prefix(count)) : categoricalColors(count: count)
     }
 

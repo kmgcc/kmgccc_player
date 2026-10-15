@@ -307,11 +307,12 @@ struct FullscreenPlayerView: View {
                 "onChange(skinID) old=\(oldValue) new=\(newValue) external=\(playbackCoordinator.presentation.source.isExternal) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
                 category: .fullscreen
             )
+            // Release only what the previous skin cached. A full presentation
+            // purge here also cancelled the artwork loads the incoming skin had
+            // just started, leaving it on an empty background, and made every
+            // shared artwork cache decode again in the middle of the switch.
             skinSession.perform {
-                await CacheManager.purgePresentationMemoryCaches(
-                    reason: "fullscreen-skin-changed-\(oldValue)-to-\(newValue)",
-                    cacheServices: cacheServices
-                )
+                await SkinRegistry.fullscreenSkin(for: oldValue).releaseCachedResources()
             }
             let oldDescriptor = SkinRegistry.fullscreenSkin(for: oldValue).descriptor
             let newDescriptor = SkinRegistry.fullscreenSkin(for: newValue).descriptor
@@ -3081,7 +3082,7 @@ struct FullscreenPlayerView: View {
             return fileText
         }
 
-        if let ttml = LyricsFormatSupport.normalizedTTMLText(track.ttmlLyricText ?? track.loadTTMLLyricsIfNeeded()) {
+        if let ttml = LyricsFormatSupport.normalizedTTMLText(track.ttmlLyricText ?? track.readTTMLLyricsText()) {
             return ttml
         }
 

@@ -2,20 +2,29 @@
 //  DSPReverbVisualView.swift
 //  myPlayer2
 //
-//  Reverb picture: a rainbow light layer showing how much reverb each band
-//  receives (decay time times wet level, computed from the parameters), and
-//  particles that rise in loose columns, one per pair of bands, as many as
-//  the band is loud, spreading wider the higher they climb.
+//  Reverb picture: a light layer showing how much reverb each band receives
+//  (decay time times wet level, computed from the parameters), and particles
+//  that rise in loose columns, one per pair of bands, as many as the band is
+//  loud. The colours are the artwork's swatches from ThemeStore, spread from
+//  low to high frequency, and glide to the next song's set. Night uses bright
+//  tones and day dark ones, whatever the artwork's own lightness. Particles
+//  read their column's colour every frame, so a change of palette or
+//  appearance recolours the ones already in the air.
+//
+//  The parameters shape the motion as well as the heights: decay sets how
+//  long particles live and how high they climb, room size their size, sway
+//  and the softness of the light's edge, mix their density and the light's
+//  strength, width how far the columns fan out, and pre-delay how late a
+//  particle appears. While music plays, the light swells a little with the
+//  live spectrum.
 //
 //  Both layers draw into one CAMetalLayer. The light layer is two triangle
-//  strips with a continuous hue; its fragment shader fades it smoothly from
-//  the floor through a feathered band above the heights, so it has no edge.
-//  The 48 heights follow parameter changes on the `layout` token and then
-//  stop. Particles are drawn instanced in one call from a fixed ring; rise,
-//  slowdown, spread and fade are computed on the GPU, so the CPU only spawns
-//  new particles. Blending is ordinary alpha: no additive glow, blur,
-//  stroke or shadow. Shaders compile at runtime from source, once per
-//  process.
+//  strips; its fragment shader fades it smoothly from the floor through a
+//  feathered band above the heights, so it has no edge. Particles are drawn
+//  instanced in one call from a fixed ring; rise, slowdown, spread, sway and
+//  fade are computed on the GPU, so the CPU only spawns new particles.
+//  Blending is ordinary alpha: no additive glow, blur, stroke or shadow.
+//  Shaders compile at runtime from source, once per process.
 //
 
 import AppKit
@@ -27,6 +36,8 @@ import SwiftUI
 struct DSPReverbVisual: NSViewRepresentable {
     let parameters: DSPReverbParameters
     let isActive: Bool
+    /// Colours from low to high frequency; empty falls back to a hue sweep.
+    let palette: [Color]
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -41,6 +52,8 @@ struct DSPReverbVisual: NSViewRepresentable {
         view.motionPolicy = configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
         view.configure(
             amounts: Self.bandAmounts(for: parameters),
+            look: Look(parameters: parameters),
+            palette: palette.map { NSColor($0) },
             layoutSpec: motionTokens[.layout],
             isDark: colorScheme == .dark,
             isActive: isActive
@@ -65,6 +78,26 @@ struct DSPReverbVisual: NSViewRepresentable {
             let shelf = 1 / (1 + pow(3_000 / frequency, 2))
             let tone = 1 + (toneGain - 1) * shelf
             return min(1, pow(decay, 0.4) * pow(wet, 0.35) * lowCut * tone)
+        }
+    }
+
+    /// The parameters that shape the motion, each 0…1.
+    struct Look: Equatable {
+        /// Mid-band decay on a log scale from 0.15 s to 4.5 s.
+        var decay: Double
+        var size: Double
+        var mix: Double
+        var width: Double
+        /// Pre-delay over 0…200 ms.
+        var preDelay: Double
+
+        init(parameters: DSPReverbParameters) {
+            func unit(_ value: Double) -> Double { min(1, max(0, value)) }
+            decay = unit(log(parameters.midDecaySeconds / 0.15) / log(4.5 / 0.15))
+            size = unit(parameters.size)
+            mix = unit(parameters.mix)
+            width = unit(parameters.width)
+            preDelay = unit(parameters.preDelayMs / 200)
         }
     }
 }
@@ -178,11 +211,11 @@ nonisolated final class DSPReverbGPU: @unchecked Sendable {
     struct Uniforms {
         float2 viewport;
         float time;
-        float life;
+        float fadeIn;
         float slowdown;
         float maxAlpha;
         float scale;
-        float unused;
+        float swayRate;
     };
 
     // Packed to match the 24-byte vertex written by the CPU.
@@ -226,9 +259,13 @@ nonisolated final class DSPReverbGPU: @unchecked Sendable {
         float speed;
         float size;
         float drift;
-        float r;
-        float g;
-        float b;
+        float life;
+        float sway;
+        float phase;
+        float lane;
+        float pad0;
+        float pad1;
+        float pad2;
     };
 
     struct ParticleOut {
@@ -241,10 +278,11 @@ nonisolated final class DSPReverbGPU: @unchecked Sendable {
     vertex ParticleOut reverbParticleVertex(uint vid [[vertex_id]],
                                             uint iid [[instance_id]],
                                             const device Particle *particles [[buffer(0)]],
-                                            constant Uniforms &u [[buffer(1)]]) {
+                                            constant Uniforms &u [[buffer(1)]],
+                                            constant float4 *emitterColors [[buffer(2)]]) {
         Particle p = particles[iid];
         float age = u.time - p.birth;
-        float t = age / u.life;
+        float t = age / max(p.life, 0.01);
         float2 corner = float2((vid & 1u) ? 1.0 : -1.0, (vid & 2u) ? 1.0 : -1.0);
         ParticleOut out;
         out.uv = corner;
@@ -254,16 +292,20 @@ nonisolated final class DSPReverbGPU: @unchecked Sendable {
             out.radius = 1.0;
             return out;
         }
-        // Launched upward, slowing exponentially toward its peak; the
-        // sideways spread grows faster than the height, so a column leaves
-        // its band narrow and loosens as it climbs.
+        // Launched upward, slowing exponentially; the strongest are still
+        // moving when they leave through the top. The sideways drift and a
+        // slow sway grow with the height, held in check above the top so a
+        // column loosens without dissolving.
         float rise = p.speed * (1.0 - exp(-u.slowdown * age)) / u.slowdown;
-        float2 center = float2(p.x + p.drift * rise * (0.25 + 1.6 * rise), 1.0 - rise);
-        float size = p.size * (1.0 - 0.35 * t);
+        float spread = rise * (0.4 + 0.8 * min(rise, 1.2));
+        float sway = p.sway * sin(p.phase + age * u.swayRate) * min(rise, 1.2);
+        float2 center = float2(p.x + p.drift * spread + sway, 1.0 - rise);
+        float size = p.size * (1.0 - 0.3 * t);
         float2 position = center + corner * size / u.viewport;
         out.position = float4(position.x * 2.0 - 1.0, 1.0 - position.y * 2.0, 0.0, 1.0);
-        float fade = pow(1.0 - t, 1.5) * smoothstep(0.0, 0.08, t);
-        out.color = float4(p.r, p.g, p.b, fade * u.maxAlpha);
+        // Full strength for most of the life, then a quick, smooth fade.
+        float fade = (1.0 - smoothstep(0.5, 1.0, t)) * smoothstep(0.0, u.fadeIn, t);
+        out.color = float4(emitterColors[uint(p.lane)].rgb, fade * u.maxAlpha);
         out.radius = size * u.scale;
         return out;
     }
@@ -280,6 +322,8 @@ nonisolated final class DSPReverbGPU: @unchecked Sendable {
 // MARK: - View
 
 final class DSPReverbVisualView: DSPCardAnimatedView {
+    private typealias RGB = (red: Float, green: Float, blue: Float)
+
     private struct MeshVertex {
         var x: Float
         var y: Float
@@ -295,19 +339,24 @@ final class DSPReverbVisualView: DSPCardAnimatedView {
         var speed: Float = 0
         var size: Float = 0
         var drift: Float = 0
-        var red: Float = 0
-        var green: Float = 0
-        var blue: Float = 0
+        var life: Float = 1
+        var sway: Float = 0
+        var phase: Float = 0
+        /// Emitter index into the colour table, read on the GPU each frame.
+        var lane: Float = 0
+        var pad0: Float = 0
+        var pad1: Float = 0
+        var pad2: Float = 0
     }
 
     private struct Uniforms {
         var viewport: SIMD2<Float>
         var time: Float
-        var life: Float
+        var fadeIn: Float
         var slowdown: Float
         var maxAlpha: Float
         var scale: Float
-        var unused: Float = 0
+        var swayRate: Float
     }
 
     private struct MeshUniforms {
@@ -318,16 +367,18 @@ final class DSPReverbVisualView: DSPCardAnimatedView {
     private static let bandCount = DSPCardSpectrumFeed.bandCount
     /// Light-layer columns: the bands interpolated four times as finely.
     private static let columnCount = bandCount * 4
-    /// Feather above the band heights, as a share of the view's height.
-    private static let featherHeight = 0.24
     /// Particle columns: one per pair of bands, wide enough to read apart.
     private static let emitterCount = bandCount / 2
-    private static let particleCapacity = 2_048
-    private static let particleLife: Float = 1.4
-    private static let slowdown: Float = 2.2
-    /// Particles per second from one column at full level.
+    private static let particleCapacity = 4_096
+    private static let slowdown: Float = 1.8
+    /// Particles per second from one column at full level and mix 0.5.
     private static let maximumRate = 32.0
+    /// How far the light rises with the live spectrum, in layer heights.
+    private static let swell = 0.12
     private static let framesInFlight = 3
+    /// Look follower slots.
+    private static let featherSlot = 0
+    private static let glowSlot = 1
 
     private let gpu = DSPReverbGPU.shared
     private var meshBuffers: [MTLBuffer] = []
@@ -337,30 +388,47 @@ final class DSPReverbVisualView: DSPCardAnimatedView {
 
     private var heights: DSPFollowerBank
     private var emission: DSPFollowerBank
+    /// Feather height and light strength, gliding with the parameters.
+    private var lightLook: DSPFollowerBank
+    /// 0…1 from the previous palette to the current one.
+    private var colorBlend: DSPFollowerBank
+    private var look: DSPReverbVisual.Look?
     private var layoutSpec = MotionTokens.standard[.layout]
     private var hasPlacedHeights = false
     private var isDark = false
     private var isActive = false
-    private var emitterColors: [(red: Float, green: Float, blue: Float)] = []
-    private var columnColors: [(red: Float, green: Float, blue: Float)] = []
+    private var paletteKey: [SIMD3<Float>]?
+    private var emitterColors: [RGB] = []
+    private var previousEmitterColors: [RGB] = []
+    private var columnColors: [RGB] = []
+    private var previousColumnColors: [RGB] = []
 
     private var particles: [Particle]
     private var nextParticle = 0
+    /// Slots written since the last clear. Spawns fill from slot 0, so these
+    /// are the only ones uploaded to the GPU and drawn.
+    private var particleSlotsInUse = 0
+    /// Emitter colours for the particle pass, rewritten in place each frame.
+    private var tintScratch = [SIMD4<Float>](repeating: SIMD4<Float>(0, 0, 0, 1),
+                                             count: DSPReverbVisualView.emitterCount)
     private var emissionCredit: [Double]
     private var inputBands = [Float](repeating: 0, count: DSPCardSpectrumFeed.bandCount)
     private var meshScratch: [MeshVertex]
     private var epoch: CFTimeInterval?
     private var lastFrameTime: CFTimeInterval?
-    private var lastSpawnTime: CFTimeInterval = -.infinity
+    private var lastParticleDeath: CFTimeInterval = -.infinity
     private var random: UInt64 = 0x2545_F491_4F6C_DD1D
     private var holdsFeedLease = false
 
     private var metalLayer: CAMetalLayer? { layer as? CAMetalLayer }
 
     override init(frame frameRect: NSRect) {
-        heights = DSPFollowerBank(count: Self.bandCount, spec: MotionTokens.standard[.layout], policy: .full)
+        let layout = MotionTokens.standard[.layout]
+        heights = DSPFollowerBank(count: Self.bandCount, spec: layout, policy: .full)
         emission = DSPFollowerBank(count: Self.emitterCount, spec: CapsuleSpectrumDynamics.standard.motionSpec,
                                    policy: .full)
+        lightLook = DSPFollowerBank(count: 2, spec: layout, policy: .full)
+        colorBlend = DSPFollowerBank(count: 1, spec: layout, policy: .full, initialValue: 1)
         particles = Array(repeating: Particle(), count: Self.particleCapacity)
         emissionCredit = Array(repeating: 0, count: Self.emitterCount)
         meshScratch = Array(repeating: MeshVertex(x: 0, y: 0, red: 0, green: 0, blue: 0, alpha: 0),
@@ -402,28 +470,33 @@ final class DSPReverbVisualView: DSPCardAnimatedView {
         CAMetalLayer()
     }
 
-    func configure(amounts: [Double], layoutSpec: MotionSpec, isDark: Bool, isActive: Bool) {
+    func configure(
+        amounts: [Double],
+        look: DSPReverbVisual.Look,
+        palette: [NSColor],
+        layoutSpec: MotionSpec,
+        isDark: Bool,
+        isActive: Bool
+    ) {
         self.layoutSpec = layoutSpec
         heights.update(spec: layoutSpec, policy: motionPolicy)
+        lightLook.update(spec: layoutSpec, policy: motionPolicy)
+        colorBlend.update(spec: layoutSpec, policy: motionPolicy)
         let time = CACurrentMediaTime()
         for (band, amount) in amounts.prefix(Self.bandCount).enumerated() {
             heights.setTarget(amount, at: band, time: time)
         }
+        // A bigger, longer room diffuses further above the bands; a wetter
+        // one glows more strongly.
+        lightLook.setTarget(0.14 + 0.3 * (0.5 * look.size + 0.5 * look.decay), at: Self.featherSlot, time: time)
+        lightLook.setTarget(0.6 + 0.4 * look.mix.squareRoot(), at: Self.glowSlot, time: time)
+        self.look = look
         if !hasPlacedHeights {
             heights.snapAll()
+            lightLook.snapAll()
             hasPlacedHeights = true
         }
-        if isDark != self.isDark || columnColors.isEmpty {
-            self.isDark = isDark
-            let colors = DSPCardVisualColors(accent: .white, isDark: isDark)
-            emitterColors = (0..<Self.emitterCount).map { emitter in
-                colors.frequencyColor(position: (Double(emitter) + 0.5) / Double(Self.emitterCount))
-            }
-            // A continuous hue across the light layer, no steps between bands.
-            columnColors = (0..<Self.columnCount).map { column in
-                colors.frequencyColor(position: Double(column) / Double(Self.columnCount - 1))
-            }
-        }
+        updateColors(palette: palette, isDark: isDark, time: time)
         self.isActive = isActive
         wake()
     }
@@ -435,6 +508,8 @@ final class DSPReverbVisualView: DSPCardAnimatedView {
 
     override func motionPolicyDidChange() {
         heights.update(spec: layoutSpec, policy: motionPolicy)
+        lightLook.update(spec: layoutSpec, policy: motionPolicy)
+        colorBlend.update(spec: layoutSpec, policy: motionPolicy)
         emission.update(spec: CapsuleSpectrumDynamics.standard.motionSpec, policy: motionPolicy)
     }
 
@@ -472,6 +547,100 @@ final class DSPReverbVisualView: DSPCardAnimatedView {
         DSPCardSpectrumFeed.shared.release()
     }
 
+    // MARK: Colours
+
+    /// Spreads the palette across the frequency axis. A new palette, or a
+    /// change of appearance, fades in over the light layer and particles alike.
+    private func updateColors(palette: [NSColor], isDark: Bool, time: CFTimeInterval) {
+        let srgb = palette.compactMap { $0.usingColorSpace(.sRGB) }
+        let key = srgb.map { SIMD3(Float($0.redComponent), Float($0.greenComponent), Float($0.blueComponent)) }
+        guard key != paletteKey || isDark != self.isDark || columnColors.isEmpty else { return }
+        let hadColors = !columnColors.isEmpty
+        let shownColumns = displayedColumnColors()
+        let shownEmitters = displayedEmitterColors()
+        paletteKey = key
+        self.isDark = isDark
+
+        let stops = Self.gradientStops(srgb).map { Self.tuned($0, isDark: isDark) }
+        func color(at position: Double) -> RGB {
+            guard !stops.isEmpty else {
+                return DSPCardVisualColors(accent: .white, isDark: isDark).frequencyColor(position: position)
+            }
+            return Self.sample(stops, at: position)
+        }
+        emitterColors = (0..<Self.emitterCount).map { color(at: (Double($0) + 0.5) / Double(Self.emitterCount)) }
+        // A continuous blend across the light layer, no steps between bands.
+        columnColors = (0..<Self.columnCount).map { color(at: Double($0) / Double(Self.columnCount - 1)) }
+
+        if hadColors {
+            previousColumnColors = shownColumns
+            previousEmitterColors = shownEmitters
+            colorBlend.setTarget(0, at: 0, time: time)
+            colorBlend.snapAll()
+            colorBlend.setTarget(1, at: 0, time: time)
+        }
+    }
+
+    /// Light-layer colours as currently drawn, mid-fade included.
+    private func displayedColumnColors() -> [RGB] {
+        displayedColors(current: columnColors, previous: previousColumnColors)
+    }
+
+    /// Particle colours per emitter as currently drawn, mid-fade included.
+    private func displayedEmitterColors() -> [RGB] {
+        displayedColors(current: emitterColors, previous: previousEmitterColors)
+    }
+
+    private func displayedColors(current: [RGB], previous: [RGB]) -> [RGB] {
+        let blend = Float(min(1, max(0, colorBlend.value(0))))
+        guard blend < 1, previous.count == current.count else { return current }
+        return zip(previous, current).map { from, to in
+            (from.red + (to.red - from.red) * blend,
+             from.green + (to.green - from.green) * blend,
+             from.blue + (to.blue - from.blue) * blend)
+        }
+    }
+
+    /// Orders the swatches into a hue sweep that starts after the widest
+    /// gap in hue, so neighbours blend without crossing the whole wheel.
+    /// Near-neutral sets are ordered by lightness instead.
+    private static func gradientStops(_ colors: [NSColor]) -> [OKColor.OKLCH] {
+        let lch = colors.compactMap(OKColor.nsColorToOKLCH)
+        guard lch.count > 1 else { return lch }
+        guard lch.contains(where: { $0.c > 0.03 }) else { return lch.sorted { $0.l < $1.l } }
+        let sorted = lch.sorted { $0.h < $1.h }
+        var widest = 0
+        var widestGap: CGFloat = -1
+        for index in sorted.indices {
+            let next = sorted[(index + 1) % sorted.count].h
+            let gap = OKColor.normalizedHue(next - sorted[index].h)
+            if gap > widestGap {
+                widestGap = gap
+                widest = index
+            }
+        }
+        let start = (widest + 1) % sorted.count
+        return (0..<sorted.count).map { sorted[(start + $0) % sorted.count] }
+    }
+
+    /// Night colours stay bright and day colours dark, whatever the artwork's
+    /// own lightness. Hue and chroma still come from the artwork; the gamut
+    /// mapping in `okLCHToNSColor` trims chroma that a tone cannot hold.
+    private static func tuned(_ color: OKColor.OKLCH, isDark: Bool) -> OKColor.OKLCH {
+        var result = color
+        result.l = isDark ? min(max(color.l, 0.8), 0.95) : min(max(color.l, 0.28), 0.45)
+        return result
+    }
+
+    private static func sample(_ stops: [OKColor.OKLCH], at position: Double) -> RGB {
+        let scaled = min(max(position, 0), 1) * Double(stops.count - 1)
+        let lower = min(stops.count - 1, Int(scaled.rounded(.down)))
+        let upper = min(stops.count - 1, lower + 1)
+        let mixed = OKColor.oklabLerp(stops[lower], stops[upper], t: CGFloat(scaled - Double(lower)))
+        let color = OKColor.okLCHToNSColor(mixed, alpha: 1).usingColorSpace(.sRGB) ?? .white
+        return (Float(color.redComponent), Float(color.greenComponent), Float(color.blueComponent))
+    }
+
     // MARK: Frame
 
     override func renderFrame(at time: CFTimeInterval) -> Bool {
@@ -499,13 +668,23 @@ final class DSPReverbVisualView: DSPCardAnimatedView {
         }
         let heightsMoving = heights.advance(to: time)
         let emissionMoving = emission.advance(to: time, epsilon: 0.002)
+        let lookMoving = lightLook.advance(to: time)
+        let colorsMoving = colorBlend.advance(to: time)
         if sprays, dt > 0 { spawnParticles(at: time, dt: dt) }
 
-        let particlesAlive = time - lastSpawnTime < Double(Self.particleLife)
-        if !particlesAlive { epoch = nil }
+        let particlesAlive = time < lastParticleDeath
+        if !particlesAlive, epoch != nil {
+            epoch = nil
+            // Entries left from the last epoch would replay on the new clock
+            // at their old birth times and colours. All are dead; clear the
+            // slots in use so none survive.
+            for index in 0..<particleSlotsInUse { particles[index] = Particle() }
+            particleSlotsInUse = 0
+            nextParticle = 0
+        }
         draw(at: time)
 
-        let keepRunning = heightsMoving || emissionMoving || particlesAlive || hasSignal
+        let keepRunning = heightsMoving || emissionMoving || lookMoving || colorsMoving || particlesAlive || hasSignal
         if !keepRunning {
             lastFrameTime = nil
             if sprays, isVisibleOnScreen {
@@ -516,10 +695,19 @@ final class DSPReverbVisualView: DSPCardAnimatedView {
     }
 
     private func spawnParticles(at time: CFTimeInterval, dt: CFTimeInterval) {
+        guard let look, !emitterColors.isEmpty else { return }
         let start = epoch ?? time
         epoch = start
         let birth = Float(time - start)
         let columnWidth = 1 / Float(Self.emitterCount)
+        // Wetter is denser; longer lives longer and climbs higher; bigger
+        // is larger and sways more; wider fans further out.
+        let rate = Self.maximumRate * (0.5 + look.mix)
+        let baseLife = 0.9 + 2.0 * look.decay
+        let climb = Float(0.55 + 0.45 * look.decay)
+        let spread = Float(0.35 + 1.3 * look.width * (0.45 + 0.55 * look.size)) * columnWidth
+        let sway = Float(0.2 + 0.45 * look.size) * columnWidth
+        let baseSize = Float(1.0 + 1.4 * look.size)
         for emitter in 0..<Self.emitterCount {
             let strength = min(1, max(0, emission.value(emitter)))
             guard strength > 0.03 else {
@@ -527,23 +715,27 @@ final class DSPReverbVisualView: DSPCardAnimatedView {
                 continue
             }
             // Rate grows faster than level, so loud bands clearly outspray quiet ones.
-            emissionCredit[emitter] += pow(strength, 1.6) * Self.maximumRate * dt
+            emissionCredit[emitter] += pow(strength, 1.6) * rate * dt
             while emissionCredit[emitter] >= 1 {
                 emissionCredit[emitter] -= 1
-                let color = emitterColors[emitter]
-                let reach = Float(0.25 + 0.7 * strength) * (0.6 + 0.4 * nextRandom())
-                // Born near the column's centre; the spread comes with height.
-                let jitter = (nextRandom() - 0.5) * 0.3 * columnWidth
+                let life = Float(baseLife) * (0.75 + 0.5 * nextRandom())
+                // A long upper tail: a loud band sends a few past the top.
+                let lift = nextRandom()
+                let reach = Float(0.35 + 0.85 * strength) * climb * (0.6 + 0.9 * lift * lift)
                 particles[nextParticle] = Particle(
-                    x: (Float(emitter) + 0.5) * columnWidth + jitter,
+                    x: (Float(emitter) + 0.5 + 0.6 * (nextRandom() - 0.5)) * columnWidth,
                     birth: birth - Float(dt) * nextRandom(),
                     speed: reach * Self.slowdown,
-                    size: 1.4 + 2 * Float(strength) * nextRandom(),
-                    drift: (nextRandom() - 0.5) * 1.3 * columnWidth,
-                    red: color.red, green: color.green, blue: color.blue
+                    size: baseSize + 2 * Float(strength) * nextRandom(),
+                    drift: (nextRandom() - 0.5) * 2 * spread,
+                    life: life,
+                    sway: (nextRandom() - 0.5) * 2 * sway,
+                    phase: nextRandom() * 2 * Float.pi,
+                    lane: Float(emitter)
                 )
                 nextParticle = (nextParticle + 1) % Self.particleCapacity
-                lastSpawnTime = time
+                particleSlotsInUse = min(Self.particleCapacity, particleSlotsInUse + 1)
+                lastParticleDeath = max(lastParticleDeath, time + Double(life))
             }
         }
     }
@@ -571,17 +763,26 @@ final class DSPReverbVisualView: DSPCardAnimatedView {
         let particleBuffer = particleBuffers[bufferIndex]
         bufferIndex = (bufferIndex + 1) % Self.framesInFlight
         fillMesh(into: meshBuffer)
-        particles.withUnsafeBytes { source in
-            particleBuffer.contents().copyMemory(from: source.baseAddress!, byteCount: source.count)
+        // Only the slots in use are uploaded; the rest are empty.
+        let particleCount = particleSlotsInUse
+        if particleCount > 0 {
+            particles.withUnsafeBytes { source in
+                particleBuffer.contents().copyMemory(
+                    from: source.baseAddress!, byteCount: particleCount * MemoryLayout<Particle>.stride)
+            }
         }
 
+        let look = look
         var uniforms = Uniforms(
             viewport: SIMD2(Float(bounds.width), Float(bounds.height)),
             time: Float(time - (epoch ?? time)),
-            life: Self.particleLife,
+            // A longer pre-delay holds each particle back before it shows.
+            fadeIn: Float(0.06 + 0.3 * (look?.preDelay ?? 0)),
             slowdown: Self.slowdown,
             maxAlpha: isDark ? 0.85 : 0.75,
-            scale: Float(metalLayer.contentsScale)
+            scale: Float(metalLayer.contentsScale),
+            // Large rooms sway slowly, small ones quickly.
+            swayRate: Float(3.2 - 1.6 * (look?.size ?? 0.5))
         )
 
         let pass = MTLRenderPassDescriptor()
@@ -593,7 +794,8 @@ final class DSPReverbVisualView: DSPCardAnimatedView {
             inFlight.signal()
             return
         }
-        var meshUniforms = MeshUniforms(floorAlpha: (isDark ? 0.34 : 0.3) * (isActive ? 1 : 0.5))
+        let glow = Float(lightLook.value(Self.glowSlot))
+        var meshUniforms = MeshUniforms(floorAlpha: (isDark ? 0.34 : 0.3) * glow * (isActive ? 1 : 0.5))
         encoder.setRenderPipelineState(pipelines.mesh)
         encoder.setVertexBuffer(meshBuffer, offset: 0, index: 0)
         encoder.setFragmentBytes(&meshUniforms, length: MemoryLayout<MeshUniforms>.stride, index: 0)
@@ -602,12 +804,16 @@ final class DSPReverbVisualView: DSPCardAnimatedView {
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: Self.columnCount * 2,
                                vertexCount: Self.columnCount * 2)
 
-        if epoch != nil {
+        if particleCount > 0 {
+            for (index, color) in displayedEmitterColors().enumerated() {
+                tintScratch[index] = SIMD4<Float>(color.red, color.green, color.blue, 1)
+            }
             encoder.setRenderPipelineState(pipelines.particles)
             encoder.setVertexBuffer(particleBuffer, offset: 0, index: 0)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+            tintScratch.withUnsafeBytes { encoder.setVertexBytes($0.baseAddress!, length: $0.count, index: 2) }
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
-                                   instanceCount: Self.particleCapacity)
+                                   instanceCount: particleCount)
         }
         encoder.endEncoding()
 
@@ -617,24 +823,52 @@ final class DSPReverbVisualView: DSPCardAnimatedView {
         commandBuffer.commit()
     }
 
+    /// Two neighbours and a cosine blend weight for one light-layer column.
+    /// A curve through evenly spaced slots then has no corners between them.
+    /// The table is fixed, so the mesh fill reads it instead of recomputing.
+    private struct Tap {
+        let lower: Int
+        let upper: Int
+        let blend: Double
+    }
+
+    private static func taps(count: Int) -> [Tap] {
+        (0..<columnCount).map { column in
+            let x = Double(column) / Double(columnCount - 1)
+            let position = x * Double(count) - 0.5
+            let lower = min(count - 1, max(0, Int(position.rounded(.down))))
+            let upper = min(count - 1, lower + 1)
+            let fraction = min(1, max(0, position - Double(lower)))
+            return Tap(lower: lower, upper: upper, blend: (1 - cos(fraction * Double.pi)) / 2)
+        }
+    }
+
+    private static let bandTaps = taps(count: bandCount)
+    private static let emitterTaps = taps(count: emitterCount)
+
+    private static func mix(_ a: Double, _ b: Double, _ blend: Double) -> Double {
+        a * (1 - blend) + b * blend
+    }
+
     /// Writes the light layer: a body strip from the floor to the band
     /// heights and a feather strip above it. The alpha slot carries the
     /// height in layer units (0, 1, 2); the fragment shader turns it into
     /// one smooth fade.
     private func fillMesh(into buffer: MTLBuffer) {
         let columns = Self.columnCount
-        let feather = Float(Self.featherHeight)
+        let feather = Float(lightLook.value(Self.featherSlot))
+        let colors = displayedColumnColors()
         for column in 0..<columns {
             let x = Double(column) / Double(columns - 1)
-            // Cosine interpolation between band centres keeps the edge smooth.
-            let position = x * Double(Self.bandCount) - 0.5
-            let lower = min(Self.bandCount - 1, max(0, Int(position.rounded(.down))))
-            let upper = min(Self.bandCount - 1, lower + 1)
-            let fraction = min(1, max(0, position - Double(lower)))
-            let blend = (1 - cos(fraction * Double.pi)) / 2
-            let amount = heights.value(lower) * (1 - blend) + heights.value(upper) * blend
+            let band = Self.bandTaps[column]
+            let emitter = Self.emitterTaps[column]
+            let reverb = Self.mix(heights.value(band.lower), heights.value(band.upper), band.blend)
+            // The light swells with what is playing, more where the band
+            // receives more reverb.
+            let live = Self.mix(emission.value(emitter.lower), emission.value(emitter.upper), emitter.blend)
+            let amount = reverb + Self.swell * min(1, live) * (0.4 + 0.6 * reverb)
             let top = Float(1 - (0.06 + 0.7 * min(1, max(0, amount))))
-            let color = columnColors.isEmpty ? (red: Float(1), green: Float(1), blue: Float(1)) : columnColors[column]
+            let color = colors.isEmpty ? (red: Float(1), green: Float(1), blue: Float(1)) : colors[column]
             func vertex(_ y: Float, _ height: Float) -> MeshVertex {
                 MeshVertex(x: Float(x), y: y, red: color.red, green: color.green, blue: color.blue, alpha: height)
             }

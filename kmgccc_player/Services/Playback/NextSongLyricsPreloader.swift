@@ -64,6 +64,10 @@ final class NextSongLyricsPreloader {
         }
         guard currentTrack.id != lastCurrentTrackID else { return }
         lastCurrentTrackID = currentTrack.id
+        if let oldPreloadedID = preloadedTrackID, oldPreloadedID != currentTrack.id {
+            trackLookup(oldPreloadedID)?.releaseFileBackedLyricsText()
+        }
+        preloadedTrackID = nil
         handle?.cancel()
         handle = nil
 
@@ -104,6 +108,9 @@ final class NextSongLyricsPreloader {
         handle?.cancel()
         handle = nil
         lastCurrentTrackID = nil
+        if let preloadedID = preloadedTrackID {
+            trackLookup(preloadedID)?.releaseFileBackedLyricsText()
+        }
         preloadedTrackID = nil
     }
 }

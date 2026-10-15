@@ -120,14 +120,22 @@ nonisolated enum DSPSwitchSetting: String, Codable, CaseIterable, Equatable, Sen
 nonisolated enum DSPBassCharacter: String, Codable, CaseIterable, Equatable, Sendable {
     /// Strong second harmonic, gentle upper series.
     case round
-    /// More third and fourth harmonic.
+    /// More third harmonic.
     case tight
 }
 
-/// Harmonic synthesis tuning per transducer. Headphones still reproduce
-/// much of the fundamental, so harmonics supplement it; speakers cannot,
-/// so harmonics replace it and the dry low end is tightened.
+/// Bass reinforcement and harmonic supplementation per transducer.
+/// The original low end is retained unless tightening is explicitly enabled.
 nonisolated struct DSPBassProfile: Equatable, Sendable {
+    static let minimumHarmonicFundamentalHz = 20.0
+    static let maximumHarmonicFundamentalHz = 250.0
+    static let maximumHarmonicHz = 800.0
+
+    /// Leave room for consecutive harmonics above a small transducer's
+    /// bass turnover, including when a low cutoff is selected.
+    static func harmonicTop(cutoffHz: Double) -> Double {
+        min(maximumHarmonicHz, max(300, 5 * cutoffHz))
+    }
     let cutoffHz: Double
     let floorHz: Double
     let roundWeights: [Double]
@@ -138,13 +146,13 @@ nonisolated struct DSPBassProfile: Equatable, Sendable {
 
     static let headphones = DSPBassProfile(
         cutoffHz: 80, floorHz: 20,
-        roundWeights: [1, 0.6, 0.25, 0.1], tightWeights: [0.8, 0.8, 0.45, 0.25],
+        roundWeights: [0.7, 0.5, 0.32, 0.22, 0.16], tightWeights: [0.45, 0.65, 0.4, 0.3, 0.22],
         tightensDryBass: false, intensityScale: 1
     )
     static let speakers = DSPBassProfile(
         cutoffHz: 140, floorHz: 35,
-        roundWeights: [1, 0.8, 0.5, 0.3], tightWeights: [0.8, 1, 0.7, 0.5],
-        tightensDryBass: true, intensityScale: 1.2
+        roundWeights: [0.6, 0.55, 0.38, 0.28, 0.2], tightWeights: [0.4, 0.65, 0.45, 0.34, 0.26],
+        tightensDryBass: false, intensityScale: 1.2
     )
 
     static func profile(for kind: DSPOutputKind) -> DSPBassProfile {
@@ -154,16 +162,76 @@ nonisolated struct DSPBassProfile: Equatable, Sendable {
 
 nonisolated struct DSPClassicBassParameters: DSPEffectParameterSet {
     static let typeID = "virtualBassClassic"
-    static let intensityRange: ClosedRange<Double> = 0...1
+    static let intensityRange: ClosedRange<Double> = 0...2
+    static let bassGainRange: ClosedRange<Double> = 0...9
     static let cutoffRange: ClosedRange<Double> = 30...250
     static let floorRange: ClosedRange<Double> = 15...80
     static let outputTrimRange: ClosedRange<Double> = -24...6
     static let supportedParameterKeys: Set<String> = [
-        "target", "intensity", "cutoffHz", "character", "floorHz", "tightenDryBass", "outputTrimDB",
+        "target", "intensity", "bassGainDB", "cutoffHz", "character", "floorHz", "tightenDryBass", "outputTrimDB",
+        "targetSettings",
     ]
+
+    struct TargetSettings: Codable, Equatable, Sendable {
+        var intensity: Double = 0.5
+        var bassGainDB: Double = 3
+        var cutoffHz: Double = 0.0
+        var character: DSPBassCharacter = .round
+        var floorHz: Double = 0.0
+        var tightenDryBass: DSPSwitchSetting = .automatic
+        var outputTrimDB: Double = 0.0
+
+        init(
+            intensity: Double = 0.5,
+            bassGainDB: Double = 3,
+            cutoffHz: Double = 0.0,
+            character: DSPBassCharacter = .round,
+            floorHz: Double = 0.0,
+            tightenDryBass: DSPSwitchSetting = .automatic,
+            outputTrimDB: Double = 0.0
+        ) {
+            self.intensity = intensity
+            self.bassGainDB = bassGainDB
+            self.cutoffHz = cutoffHz
+            self.character = character
+            self.floorHz = floorHz
+            self.tightenDryBass = tightenDryBass
+            self.outputTrimDB = outputTrimDB
+        }
+
+        init?(json: [String: DSPJSONValue]) {
+            let reader = DSPParameterReader(json: json)
+            guard let intensity = reader.number("intensity"),
+                  let bassGainDB = reader.number("bassGainDB"),
+                  let cutoffHz = reader.number("cutoffHz"),
+                  let character: DSPBassCharacter = reader.choice("character"),
+                  let floorHz = reader.number("floorHz"),
+                  let tightenDryBass: DSPSwitchSetting = reader.choice("tightenDryBass"),
+                  let outputTrimDB = reader.number("outputTrimDB") else { return nil }
+            self.intensity = intensity
+            self.bassGainDB = bassGainDB
+            self.cutoffHz = cutoffHz
+            self.character = character
+            self.floorHz = floorHz
+            self.tightenDryBass = tightenDryBass
+            self.outputTrimDB = outputTrimDB
+        }
+
+        func write(to json: inout [String: DSPJSONValue]) {
+            json["intensity"] = .number(intensity)
+            json["bassGainDB"] = .number(bassGainDB)
+            json["cutoffHz"] = .number(cutoffHz)
+            json["character"] = .string(character.rawValue)
+            json["floorHz"] = .number(floorHz)
+            json["tightenDryBass"] = .string(tightenDryBass.rawValue)
+            json["outputTrimDB"] = .number(outputTrimDB)
+        }
+    }
 
     var target: DSPBassTarget = .automatic
     var intensity = 0.5
+    /// Original low-end gain, independent of the virtual harmonic amount.
+    var bassGainDB = 3.0
     /// 0 follows the target.
     var cutoffHz = 0.0
     var character: DSPBassCharacter = .round
@@ -171,13 +239,21 @@ nonisolated struct DSPClassicBassParameters: DSPEffectParameterSet {
     var floorHz = 0.0
     var tightenDryBass: DSPSwitchSetting = .automatic
     var outputTrimDB = 0.0
+    var targetSettings: [String: TargetSettings] = [:]
 
-    init() {}
+    init() {
+        var settings: [String: TargetSettings] = [:]
+        for t in DSPBassTarget.allCases {
+            settings[t.rawValue] = TargetSettings()
+        }
+        self.targetSettings = settings
+    }
 
     init?(json: [String: DSPJSONValue]) {
         let reader = DSPParameterReader(json: json)
         guard let target: DSPBassTarget = reader.choice("target"),
               let intensity = reader.number("intensity"),
+              let bassGainDB = reader.number("bassGainDB"),
               let cutoffHz = reader.number("cutoffHz"),
               let character: DSPBassCharacter = reader.choice("character"),
               let floorHz = reader.number("floorHz"),
@@ -185,26 +261,114 @@ nonisolated struct DSPClassicBassParameters: DSPEffectParameterSet {
               let outputTrimDB = reader.number("outputTrimDB") else { return nil }
         self.target = target
         self.intensity = intensity
+        self.bassGainDB = bassGainDB
         self.cutoffHz = cutoffHz
         self.character = character
         self.floorHz = floorHz
         self.tightenDryBass = tightenDryBass
         self.outputTrimDB = outputTrimDB
+
+        var settings: [String: TargetSettings] = [:]
+        for t in DSPBassTarget.allCases {
+            settings[t.rawValue] = TargetSettings()
+        }
+        if let settingsObject = reader.object("targetSettings") {
+            for (key, val) in settingsObject {
+                if case .object(let dict) = val, let item = TargetSettings(json: dict) {
+                    settings[key] = item
+                }
+            }
+        }
+        settings[target.rawValue] = TargetSettings(
+            intensity: intensity,
+            bassGainDB: bassGainDB,
+            cutoffHz: cutoffHz,
+            character: character,
+            floorHz: floorHz,
+            tightenDryBass: tightenDryBass,
+            outputTrimDB: outputTrimDB
+        )
+        self.targetSettings = settings
+    }
+
+    var currentSettings: TargetSettings {
+        TargetSettings(
+            intensity: intensity,
+            bassGainDB: bassGainDB,
+            cutoffHz: cutoffHz,
+            character: character,
+            floorHz: floorHz,
+            tightenDryBass: tightenDryBass,
+            outputTrimDB: outputTrimDB
+        )
+    }
+
+    mutating func switchTarget(to newTarget: DSPBassTarget) {
+        guard newTarget != target else { return }
+        targetSettings[target.rawValue] = currentSettings
+        target = newTarget
+        if let saved = targetSettings[newTarget.rawValue] {
+            intensity = saved.intensity
+            bassGainDB = saved.bassGainDB
+            cutoffHz = saved.cutoffHz
+            character = saved.character
+            floorHz = saved.floorHz
+            tightenDryBass = saved.tightenDryBass
+            outputTrimDB = saved.outputTrimDB
+        } else {
+            let initial = TargetSettings()
+            targetSettings[newTarget.rawValue] = initial
+            intensity = initial.intensity
+            bassGainDB = initial.bassGainDB
+            cutoffHz = initial.cutoffHz
+            character = initial.character
+            floorHz = initial.floorHz
+            tightenDryBass = initial.tightenDryBass
+            outputTrimDB = initial.outputTrimDB
+        }
     }
 
     func write(to json: inout [String: DSPJSONValue]) {
         json["target"] = .string(target.rawValue)
         json["intensity"] = .number(intensity)
+        json["bassGainDB"] = .number(bassGainDB)
         json["cutoffHz"] = .number(cutoffHz)
         json["character"] = .string(character.rawValue)
         json["floorHz"] = .number(floorHz)
         json["tightenDryBass"] = .string(tightenDryBass.rawValue)
         json["outputTrimDB"] = .number(outputTrimDB)
+
+        var settings = targetSettings
+        settings[target.rawValue] = currentSettings
+        var settingsDict: [String: DSPJSONValue] = [:]
+        for (key, item) in settings {
+            var itemDict: [String: DSPJSONValue] = [:]
+            item.write(to: &itemDict)
+            settingsDict[key] = .object(itemDict)
+        }
+        json["targetSettings"] = .object(settingsDict)
+    }
+
+    static func == (lhs: DSPClassicBassParameters, rhs: DSPClassicBassParameters) -> Bool {
+        guard lhs.target == rhs.target,
+              lhs.intensity == rhs.intensity,
+              lhs.bassGainDB == rhs.bassGainDB,
+              lhs.cutoffHz == rhs.cutoffHz,
+              lhs.character == rhs.character,
+              lhs.floorHz == rhs.floorHz,
+              lhs.tightenDryBass == rhs.tightenDryBass,
+              lhs.outputTrimDB == rhs.outputTrimDB else { return false }
+        var lhsSettings = lhs.targetSettings
+        lhsSettings[lhs.target.rawValue] = lhs.currentSettings
+        var rhsSettings = rhs.targetSettings
+        rhsSettings[rhs.target.rawValue] = rhs.currentSettings
+        return lhsSettings == rhsSettings
     }
 
     var validationIssues: [DSPParameterIssue] {
         var checker = DSPParameterChecker()
-        checker.check(intensity, in: Self.intensityRange, key: "intensity", message: "强度范围为 0 至 1。")
+        checker.check(intensity, in: Self.intensityRange, key: "intensity", message: "虚拟低音范围为 0 至 200%。")
+        checker.check(bassGainDB, in: Self.bassGainRange, key: "bassGainDB", message: "低音增益范围为 0 至 9 dB。")
         checker.checkAutomatic(cutoffHz, in: Self.cutoffRange, key: "cutoffHz", message: "截止频率为 0（跟随目标）或 30 至 250 Hz。")
         checker.checkAutomatic(floorHz, in: Self.floorRange, key: "floorHz", message: "下限频率为 0（跟随目标）或 15 至 80 Hz。")
         checker.check(outputTrimDB, in: Self.outputTrimRange, key: "outputTrimDB", message: "输出增益范围为 −24 至 +6 dB。")
@@ -228,7 +392,8 @@ nonisolated struct DSPClassicBassParameters: DSPEffectParameterSet {
 
 nonisolated struct DSPHybridBassParameters: DSPEffectParameterSet {
     static let typeID = "virtualBassHybrid"
-    static let intensityRange: ClosedRange<Double> = 0...1
+    static let intensityRange: ClosedRange<Double> = 0...2
+    static let bassGainRange: ClosedRange<Double> = 0...9
     static let cutoffRange: ClosedRange<Double> = 40...200
     static let transientRange: ClosedRange<Double> = 0...1
     static let harmonicCountRange: ClosedRange<Double> = 2...8
@@ -236,15 +401,92 @@ nonisolated struct DSPHybridBassParameters: DSPEffectParameterSet {
     static let timbreSlopeRange: ClosedRange<Double> = 0...24
     static let outputTrimRange: ClosedRange<Double> = -24...6
     static let supportedParameterKeys: Set<String> = [
-        "target", "intensity", "cutoffHz", "transient", "harmonicCount", "harmonicTolerance",
+        "target", "intensity", "bassGainDB", "cutoffHz", "transient", "harmonicCount", "harmonicTolerance",
         "timbreLowDBPerOctave", "timbreHighDBPerOctave", "tightenDryBass", "outputTrimDB",
+        "targetSettings",
     ]
+
+    struct TargetSettings: Codable, Equatable, Sendable {
+        var intensity: Double = 0.5
+        var bassGainDB: Double = 3
+        var cutoffHz: Double = 0.0
+        var transient: Double = 0.5
+        var harmonicCount: Double = 5.0
+        var harmonicTolerance: Double = 0.05
+        var timbreLowDBPerOctave: Double = 10.0
+        var timbreHighDBPerOctave: Double = 3.0
+        var tightenDryBass: DSPSwitchSetting = .automatic
+        var outputTrimDB: Double = 0.0
+
+        init(
+            intensity: Double = 0.5,
+            bassGainDB: Double = 3,
+            cutoffHz: Double = 0.0,
+            transient: Double = 0.5,
+            harmonicCount: Double = 5.0,
+            harmonicTolerance: Double = 0.05,
+            timbreLowDBPerOctave: Double = 10.0,
+            timbreHighDBPerOctave: Double = 3.0,
+            tightenDryBass: DSPSwitchSetting = .automatic,
+            outputTrimDB: Double = 0.0
+        ) {
+            self.intensity = intensity
+            self.bassGainDB = bassGainDB
+            self.cutoffHz = cutoffHz
+            self.transient = transient
+            self.harmonicCount = harmonicCount
+            self.harmonicTolerance = harmonicTolerance
+            self.timbreLowDBPerOctave = timbreLowDBPerOctave
+            self.timbreHighDBPerOctave = timbreHighDBPerOctave
+            self.tightenDryBass = tightenDryBass
+            self.outputTrimDB = outputTrimDB
+        }
+
+        init?(json: [String: DSPJSONValue]) {
+            let reader = DSPParameterReader(json: json)
+            guard let intensity = reader.number("intensity"),
+                  let bassGainDB = reader.number("bassGainDB"),
+                  let cutoffHz = reader.number("cutoffHz"),
+                  let transient = reader.number("transient"),
+                  let harmonicCount = reader.number("harmonicCount"),
+                  let harmonicTolerance = reader.number("harmonicTolerance"),
+                  let timbreLow = reader.number("timbreLowDBPerOctave"),
+                  let timbreHigh = reader.number("timbreHighDBPerOctave"),
+                  let tightenDryBass: DSPSwitchSetting = reader.choice("tightenDryBass"),
+                  let outputTrimDB = reader.number("outputTrimDB") else { return nil }
+            self.intensity = intensity
+            self.bassGainDB = bassGainDB
+            self.cutoffHz = cutoffHz
+            self.transient = transient
+            self.harmonicCount = harmonicCount
+            self.harmonicTolerance = harmonicTolerance
+            self.timbreLowDBPerOctave = timbreLow
+            self.timbreHighDBPerOctave = timbreHigh
+            self.tightenDryBass = tightenDryBass
+            self.outputTrimDB = outputTrimDB
+        }
+
+        func write(to json: inout [String: DSPJSONValue]) {
+            json["intensity"] = .number(intensity)
+            json["bassGainDB"] = .number(bassGainDB)
+            json["cutoffHz"] = .number(cutoffHz)
+            json["transient"] = .number(transient)
+            json["harmonicCount"] = .number(harmonicCount)
+            json["harmonicTolerance"] = .number(harmonicTolerance)
+            json["timbreLowDBPerOctave"] = .number(timbreLowDBPerOctave)
+            json["timbreHighDBPerOctave"] = .number(timbreHighDBPerOctave)
+            json["tightenDryBass"] = .string(tightenDryBass.rawValue)
+            json["outputTrimDB"] = .number(outputTrimDB)
+        }
+    }
 
     var target: DSPBassTarget = .automatic
     var intensity = 0.5
+    /// Original low-end gain, independent of the virtual harmonic amount.
+    var bassGainDB = 3.0
     /// 0 follows the target.
     var cutoffHz = 0.0
-    /// Gain of the transient branch relative to its nominal 10 dB.
+    /// Amount of soft harmonic supplementation on the transient branch.
     var transient = 0.5
     var harmonicCount = 5.0
     var harmonicTolerance = 0.05
@@ -252,13 +494,21 @@ nonisolated struct DSPHybridBassParameters: DSPEffectParameterSet {
     var timbreHighDBPerOctave = 3.0
     var tightenDryBass: DSPSwitchSetting = .automatic
     var outputTrimDB = 0.0
+    var targetSettings: [String: TargetSettings] = [:]
 
-    init() {}
+    init() {
+        var settings: [String: TargetSettings] = [:]
+        for t in DSPBassTarget.allCases {
+            settings[t.rawValue] = TargetSettings()
+        }
+        self.targetSettings = settings
+    }
 
     init?(json: [String: DSPJSONValue]) {
         let reader = DSPParameterReader(json: json)
         guard let target: DSPBassTarget = reader.choice("target"),
               let intensity = reader.number("intensity"),
+              let bassGainDB = reader.number("bassGainDB"),
               let cutoffHz = reader.number("cutoffHz"),
               let transient = reader.number("transient"),
               let harmonicCount = reader.number("harmonicCount"),
@@ -269,6 +519,7 @@ nonisolated struct DSPHybridBassParameters: DSPEffectParameterSet {
               let outputTrimDB = reader.number("outputTrimDB") else { return nil }
         self.target = target
         self.intensity = intensity
+        self.bassGainDB = bassGainDB
         self.cutoffHz = cutoffHz
         self.transient = transient
         self.harmonicCount = harmonicCount
@@ -277,11 +528,83 @@ nonisolated struct DSPHybridBassParameters: DSPEffectParameterSet {
         timbreHighDBPerOctave = timbreHigh
         self.tightenDryBass = tightenDryBass
         self.outputTrimDB = outputTrimDB
+
+        var settings: [String: TargetSettings] = [:]
+        for t in DSPBassTarget.allCases {
+            settings[t.rawValue] = TargetSettings()
+        }
+        if let settingsObject = reader.object("targetSettings") {
+            for (key, val) in settingsObject {
+                if case .object(let dict) = val, let item = TargetSettings(json: dict) {
+                    settings[key] = item
+                }
+            }
+        }
+        settings[target.rawValue] = TargetSettings(
+            intensity: intensity,
+            bassGainDB: bassGainDB,
+            cutoffHz: cutoffHz,
+            transient: transient,
+            harmonicCount: harmonicCount,
+            harmonicTolerance: harmonicTolerance,
+            timbreLowDBPerOctave: timbreLowDBPerOctave,
+            timbreHighDBPerOctave: timbreHighDBPerOctave,
+            tightenDryBass: tightenDryBass,
+            outputTrimDB: outputTrimDB
+        )
+        self.targetSettings = settings
+    }
+
+    var currentSettings: TargetSettings {
+        TargetSettings(
+            intensity: intensity,
+            bassGainDB: bassGainDB,
+            cutoffHz: cutoffHz,
+            transient: transient,
+            harmonicCount: harmonicCount,
+            harmonicTolerance: harmonicTolerance,
+            timbreLowDBPerOctave: timbreLowDBPerOctave,
+            timbreHighDBPerOctave: timbreHighDBPerOctave,
+            tightenDryBass: tightenDryBass,
+            outputTrimDB: outputTrimDB
+        )
+    }
+
+    mutating func switchTarget(to newTarget: DSPBassTarget) {
+        guard newTarget != target else { return }
+        targetSettings[target.rawValue] = currentSettings
+        target = newTarget
+        if let saved = targetSettings[newTarget.rawValue] {
+            intensity = saved.intensity
+            bassGainDB = saved.bassGainDB
+            cutoffHz = saved.cutoffHz
+            transient = saved.transient
+            harmonicCount = saved.harmonicCount
+            harmonicTolerance = saved.harmonicTolerance
+            timbreLowDBPerOctave = saved.timbreLowDBPerOctave
+            timbreHighDBPerOctave = saved.timbreHighDBPerOctave
+            tightenDryBass = saved.tightenDryBass
+            outputTrimDB = saved.outputTrimDB
+        } else {
+            let initial = TargetSettings()
+            targetSettings[newTarget.rawValue] = initial
+            intensity = initial.intensity
+            bassGainDB = initial.bassGainDB
+            cutoffHz = initial.cutoffHz
+            transient = initial.transient
+            harmonicCount = initial.harmonicCount
+            harmonicTolerance = initial.harmonicTolerance
+            timbreLowDBPerOctave = initial.timbreLowDBPerOctave
+            timbreHighDBPerOctave = initial.timbreHighDBPerOctave
+            tightenDryBass = initial.tightenDryBass
+            outputTrimDB = initial.outputTrimDB
+        }
     }
 
     func write(to json: inout [String: DSPJSONValue]) {
         json["target"] = .string(target.rawValue)
         json["intensity"] = .number(intensity)
+        json["bassGainDB"] = .number(bassGainDB)
         json["cutoffHz"] = .number(cutoffHz)
         json["transient"] = .number(transient)
         json["harmonicCount"] = .number(harmonicCount)
@@ -290,11 +613,41 @@ nonisolated struct DSPHybridBassParameters: DSPEffectParameterSet {
         json["timbreHighDBPerOctave"] = .number(timbreHighDBPerOctave)
         json["tightenDryBass"] = .string(tightenDryBass.rawValue)
         json["outputTrimDB"] = .number(outputTrimDB)
+
+        var settings = targetSettings
+        settings[target.rawValue] = currentSettings
+        var settingsDict: [String: DSPJSONValue] = [:]
+        for (key, item) in settings {
+            var itemDict: [String: DSPJSONValue] = [:]
+            item.write(to: &itemDict)
+            settingsDict[key] = .object(itemDict)
+        }
+        json["targetSettings"] = .object(settingsDict)
+    }
+
+    static func == (lhs: DSPHybridBassParameters, rhs: DSPHybridBassParameters) -> Bool {
+        guard lhs.target == rhs.target,
+              lhs.intensity == rhs.intensity,
+              lhs.bassGainDB == rhs.bassGainDB,
+              lhs.cutoffHz == rhs.cutoffHz,
+              lhs.transient == rhs.transient,
+              lhs.harmonicCount == rhs.harmonicCount,
+              lhs.harmonicTolerance == rhs.harmonicTolerance,
+              lhs.timbreLowDBPerOctave == rhs.timbreLowDBPerOctave,
+              lhs.timbreHighDBPerOctave == rhs.timbreHighDBPerOctave,
+              lhs.tightenDryBass == rhs.tightenDryBass,
+              lhs.outputTrimDB == rhs.outputTrimDB else { return false }
+        var lhsSettings = lhs.targetSettings
+        lhsSettings[lhs.target.rawValue] = lhs.currentSettings
+        var rhsSettings = rhs.targetSettings
+        rhsSettings[rhs.target.rawValue] = rhs.currentSettings
+        return lhsSettings == rhsSettings
     }
 
     var validationIssues: [DSPParameterIssue] {
         var checker = DSPParameterChecker()
-        checker.check(intensity, in: Self.intensityRange, key: "intensity", message: "强度范围为 0 至 1。")
+        checker.check(intensity, in: Self.intensityRange, key: "intensity", message: "虚拟低音范围为 0 至 200%。")
+        checker.check(bassGainDB, in: Self.bassGainRange, key: "bassGainDB", message: "低音增益范围为 0 至 9 dB。")
         checker.checkAutomatic(cutoffHz, in: Self.cutoffRange, key: "cutoffHz", message: "截止频率为 0（跟随目标）或 40 至 200 Hz。")
         checker.check(transient, in: Self.transientRange, key: "transient", message: "瞬态范围为 0 至 1。")
         checker.check(harmonicCount, in: Self.harmonicCountRange, key: "harmonicCount", message: "谐波数范围为 2 至 8。")
@@ -310,8 +663,8 @@ nonisolated struct DSPHybridBassParameters: DSPEffectParameterSet {
 
     func resolvedCutoff(for outputKind: DSPOutputKind?) -> (kind: DSPOutputKind, cutoffHz: Double) {
         let kind = target.resolved(for: outputKind)
-        // The paper's frequency range: harmonics are generated for
-        // fundamentals below the cutoff, which tracks the transducer.
+        // Turnover of the bass reinforcement. Harmonic synthesis uses only
+        // its deepest part so raising this does not colour upper bass notes.
         let automatic = kind == .headphones ? 80.0 : 140.0
         return (kind, cutoffHz == 0 ? automatic : cutoffHz)
     }
@@ -579,7 +932,7 @@ nonisolated struct DSPSpatialAudioParameters: DSPEffectParameterSet {
     ]
 
     var source: DSPSpatialSource = .room
-    var room: DSPRoomPreset = .studio
+    var room: DSPRoomPreset = .none
     var distanceM = 2.0
     var speakerAngleDeg = 30.0
     /// Content hash of an imported impulse response; empty when none.
@@ -779,9 +1132,9 @@ nonisolated enum DSPCompressorSpeed: String, Codable, CaseIterable, Equatable, S
     /// Attack and release time constants, in milliseconds.
     var times: (attackMs: Double, releaseMs: Double) {
         switch self {
-        case .fast: (3, 60)
+        case .fast: (0.5, 25)
         case .medium: (10, 150)
-        case .slow: (30, 400)
+        case .slow: (50, 800)
         }
     }
 }
@@ -790,27 +1143,57 @@ nonisolated struct DSPCompressorBand: Equatable, Sendable {
     static let thresholdRange: ClosedRange<Double> = -60...0
     static let ratioRange: ClosedRange<Double> = 1...20
     static let gainRange: ClosedRange<Double> = -12...12
+    static let attackRange: ClosedRange<Double> = 0.1...100
+    static let releaseRange: ClosedRange<Double> = 1...2_000
 
     var thresholdDB: Double
     var ratio: Double
     var gainDB: Double
+    var attackMs: Double
+    var releaseMs: Double
 
-    init(thresholdDB: Double, ratio: Double, gainDB: Double = 0) {
+    init(thresholdDB: Double, ratio: Double, gainDB: Double = 0, attackMs: Double = 10, releaseMs: Double = 150) {
         self.thresholdDB = thresholdDB
         self.ratio = ratio
         self.gainDB = gainDB
+        self.attackMs = attackMs
+        self.releaseMs = releaseMs
     }
 
-    init?(json: [String: DSPJSONValue]) {
+    init?(json: [String: DSPJSONValue], legacySpeed: DSPCompressorSpeed = .medium) {
         let reader = DSPParameterReader(json: json)
         guard let thresholdDB = reader.number("thresholdDB"),
               let ratio = reader.number("ratio"),
               let gainDB = reader.number("gainDB") else { return nil }
-        self.init(thresholdDB: thresholdDB, ratio: ratio, gainDB: gainDB)
+        let legacyTimes = legacySpeed.times
+        let attackMs: Double
+        if json["attackMs"] == nil {
+            attackMs = legacyTimes.attackMs
+        } else if let stored = reader.number("attackMs") {
+            attackMs = stored
+        } else {
+            return nil
+        }
+        let releaseMs: Double
+        if json["releaseMs"] == nil {
+            releaseMs = legacyTimes.releaseMs
+        } else if let stored = reader.number("releaseMs") {
+            releaseMs = stored
+        } else {
+            return nil
+        }
+        self.init(thresholdDB: thresholdDB, ratio: ratio, gainDB: gainDB,
+                  attackMs: attackMs, releaseMs: releaseMs)
     }
 
     var json: DSPJSONValue {
-        .object(["thresholdDB": .number(thresholdDB), "ratio": .number(ratio), "gainDB": .number(gainDB)])
+        .object([
+            "thresholdDB": .number(thresholdDB),
+            "ratio": .number(ratio),
+            "gainDB": .number(gainDB),
+            "attackMs": .number(attackMs),
+            "releaseMs": .number(releaseMs),
+        ])
     }
 }
 
@@ -830,12 +1213,12 @@ nonisolated struct DSPCompressorParameters: DSPEffectParameterSet {
     static let lookaheadRange: ClosedRange<Double> = 0...10
     static let outputTrimRange: ClosedRange<Double> = -24...6
     static let supportedParameterKeys: Set<String> = [
+        // `speed` is read only to migrate presets saved before per-band timing.
         "style", "speed", "lowCrossoverHz", "highCrossoverHz", "bands", "kneeDB", "lookaheadMs",
-        "loudnessMatchEnabled", "outputTrimDB",
+        "loudnessMatchEnabled", "outputTrimDB", "customBands",
     ]
 
     var style: DSPCompressorStyle = .gentle
-    var speed: DSPCompressorSpeed = .medium
     var lowCrossoverHz = 200.0
     var highCrossoverHz = 2_500.0
     var bands: [DSPCompressorBand] = DSPCompressorStyle.gentle.bands
@@ -843,19 +1226,28 @@ nonisolated struct DSPCompressorParameters: DSPEffectParameterSet {
     var lookaheadMs = 0.0
     var loudnessMatchEnabled = true
     var outputTrimDB = 0.0
+    var customBands: [DSPCompressorBand] = DSPCompressorStyle.gentle.bands
 
     init() {}
 
     init(style: DSPCompressorStyle) {
         self.style = style
         bands = style.bands
+        customBands = style.bands
     }
 
     init?(json: [String: DSPJSONValue]) {
         let reader = DSPParameterReader(json: json)
-        guard let style: DSPCompressorStyle = reader.choice("style"),
-              let speed: DSPCompressorSpeed = reader.choice("speed"),
-              let lowCrossoverHz = reader.number("lowCrossoverHz"),
+        guard let style: DSPCompressorStyle = reader.choice("style") else { return nil }
+        let legacySpeed: DSPCompressorSpeed
+        if let stored: DSPCompressorSpeed = reader.choice("speed") {
+            legacySpeed = stored
+        } else if reader.json["speed"] == nil {
+            legacySpeed = .medium
+        } else {
+            return nil
+        }
+        guard let lowCrossoverHz = reader.number("lowCrossoverHz"),
               let highCrossoverHz = reader.number("highCrossoverHz"),
               let bandObject = reader.object("bands"),
               let kneeDB = reader.number("kneeDB"),
@@ -865,11 +1257,10 @@ nonisolated struct DSPCompressorParameters: DSPEffectParameterSet {
         var bands: [DSPCompressorBand] = []
         for key in DSPCompressorBandKey.allCases {
             guard case .object(let fields)? = bandObject[key.rawValue],
-                  let band = DSPCompressorBand(json: fields) else { return nil }
+                  let band = DSPCompressorBand(json: fields, legacySpeed: legacySpeed) else { return nil }
             bands.append(band)
         }
         self.style = style
-        self.speed = speed
         self.lowCrossoverHz = lowCrossoverHz
         self.highCrossoverHz = highCrossoverHz
         self.bands = bands
@@ -877,11 +1268,24 @@ nonisolated struct DSPCompressorParameters: DSPEffectParameterSet {
         self.lookaheadMs = lookaheadMs
         self.loudnessMatchEnabled = loudnessMatchEnabled
         self.outputTrimDB = outputTrimDB
+
+        if let customBandObject = reader.object("customBands") {
+            var cBands: [DSPCompressorBand] = []
+            for key in DSPCompressorBandKey.allCases {
+                if case .object(let fields)? = customBandObject[key.rawValue],
+                   let band = DSPCompressorBand(json: fields, legacySpeed: legacySpeed) {
+                    cBands.append(band)
+                }
+            }
+            self.customBands = cBands.count == DSPCompressorBandKey.allCases.count ? cBands : bands
+        } else {
+            self.customBands = bands
+        }
     }
 
     func write(to json: inout [String: DSPJSONValue]) {
         json["style"] = .string(style.rawValue)
-        json["speed"] = .string(speed.rawValue)
+        json.removeValue(forKey: "speed")
         json["lowCrossoverHz"] = .number(lowCrossoverHz)
         json["highCrossoverHz"] = .number(highCrossoverHz)
         var bandObject: [String: DSPJSONValue] = [:]
@@ -893,6 +1297,12 @@ nonisolated struct DSPCompressorParameters: DSPEffectParameterSet {
         json["lookaheadMs"] = .number(lookaheadMs)
         json["loudnessMatchEnabled"] = .bool(loudnessMatchEnabled)
         json["outputTrimDB"] = .number(outputTrimDB)
+
+        var customBandObject: [String: DSPJSONValue] = [:]
+        for (key, band) in zip(DSPCompressorBandKey.allCases, customBands) {
+            customBandObject[key.rawValue] = band.json
+        }
+        json["customBands"] = .object(customBandObject)
     }
 
     var validationIssues: [DSPParameterIssue] {
@@ -910,6 +1320,8 @@ nonisolated struct DSPCompressorParameters: DSPEffectParameterSet {
             checker.check(band.thresholdDB, in: DSPCompressorBand.thresholdRange, key: "\(path).thresholdDB", message: "阈值范围为 −60 至 0 dB。")
             checker.check(band.ratio, in: DSPCompressorBand.ratioRange, key: "\(path).ratio", message: "比率范围为 1 至 20。")
             checker.check(band.gainDB, in: DSPCompressorBand.gainRange, key: "\(path).gainDB", message: "增益范围为 −12 至 +12 dB。")
+            checker.check(band.attackMs, in: DSPCompressorBand.attackRange, key: "\(path).attackMs", message: "攻击范围为 0.1 至 100 ms。")
+            checker.check(band.releaseMs, in: DSPCompressorBand.releaseRange, key: "\(path).releaseMs", message: "释放范围为 1 至 2000 ms。")
         }
         checker.check(kneeDB, in: Self.kneeRange, key: "kneeDB", message: "拐点宽度范围为 0 至 24 dB。")
         checker.check(lookaheadMs, in: Self.lookaheadRange, key: "lookaheadMs", message: "前瞻范围为 0 至 10 ms。")

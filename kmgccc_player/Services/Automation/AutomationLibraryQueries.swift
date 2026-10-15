@@ -641,7 +641,7 @@ struct AutomationLibraryQueries {
         if let text = track.ttmlLyricText, !text.isEmpty {
             return text
         }
-        if let text = track.loadTTMLLyricsIfNeeded(), !text.isEmpty {
+        if let text = track.readTTMLLyricsText(), !text.isEmpty {
             return text
         }
         if let fileName = track.ttmlLyricsFileName,
@@ -649,7 +649,6 @@ struct AutomationLibraryQueries {
            let url = paths.trackAssetURL(for: track.id, fileName: fileName),
            let text = try? String(contentsOf: url, encoding: .utf8),
            !text.isEmpty {
-            track.ttmlLyricText = text
             return text
         }
         return nil
@@ -659,7 +658,7 @@ struct AutomationLibraryQueries {
         if let text = track.lyricsText, !text.isEmpty {
             return text
         }
-        if let text = track.loadLyricsIfNeeded(), !text.isEmpty {
+        if let text = track.readLyricsText(), !text.isEmpty {
             return text
         }
         if let fileName = track.lyricsFileName,
@@ -667,7 +666,6 @@ struct AutomationLibraryQueries {
            let url = paths.trackAssetURL(for: track.id, fileName: fileName),
            let text = try? String(contentsOf: url, encoding: .utf8),
            !text.isEmpty {
-            track.lyricsText = text
             return text
         }
         return nil

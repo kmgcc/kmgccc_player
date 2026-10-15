@@ -6,6 +6,7 @@ final class AudioDSPProcessorTests: XCTestCase {
     func testNativeDryEffectsHaveKnownZeroLoadAndWetEffectsRemainMeasurable() throws {
         var dryBass = DSPClassicBassParameters()
         dryBass.intensity = 0
+        dryBass.bassGainDB = 0
         dryBass.tightenDryBass = .off
         let bass = DSPNodeConfiguration.classicBass(parameters: dryBass)
         let tube = DSPNodeConfiguration.tube(parameters: DSPTubeParameters(mix: 0))

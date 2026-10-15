@@ -161,7 +161,7 @@ struct EqualLoudnessCurveChart: View {
         VStack(alignment: .leading, spacing: 6) {
             Canvas { canvas, size in
                 let plot = CGRect(x: 2, y: 4, width: max(1, size.width - 4), height: max(1, size.height - 8))
-                let axis = context.volume.reading?.axis ?? .percent
+                let axis = stage.calibration?.axis ?? context.volume.reading?.axis ?? .percent
                 let range: ClosedRange<Double> = axis == .decibels ? -60...0 : 0...100
                 func x(_ value: Double) -> CGFloat {
                     plot.minX + plot.width * CGFloat((value - range.lowerBound) / (range.upperBound - range.lowerBound))
@@ -187,7 +187,7 @@ struct EqualLoudnessCurveChart: View {
                 canvas.fill(bass.strokedPath(style), with: .color(themeStore.accentColor))
                 canvas.fill(treble.strokedPath(style), with: .color(themeStore.accentColor.opacity(0.45)))
                 if let marker {
-                    let markX = x(min(max(marker.coordinate, range.lowerBound), range.upperBound))
+                    let markX = x(min(max(marker.coordinate(on: axis), range.lowerBound), range.upperBound))
                     canvas.fill(Path(CGRect(x: markX - 0.5, y: plot.minY, width: 1, height: plot.height)),
                                 with: .color(faint.opacity(0.45)))
                 }
@@ -237,6 +237,7 @@ struct EqualLoudnessSegmentPicker: View {
     let onEditingChanged: (Bool) -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
+    @State private var dragPart: Part?
     @State private var dragOrigin: ClosedRange<Double>?
 
     static let minimumLength = 5.0
@@ -260,7 +261,6 @@ struct EqualLoudnessSegmentPicker: View {
                         .offset(x: startX)
                         .contentShape(Rectangle())
                         .pointerStyle(.grabIdle)
-                        .gesture(drag(.move, width: width))
 
                     if let playhead, playhead >= 0, playhead <= duration {
                         Capsule()
@@ -270,9 +270,11 @@ struct EqualLoudnessSegmentPicker: View {
                             .allowsHitTesting(false)
                     }
 
-                    handle(at: startX, part: .start, width: width)
-                    handle(at: endX, part: .end, width: width)
+                    handle(at: startX)
+                    handle(at: endX)
                 }
+                .contentShape(Rectangle())
+                .gesture(drag(width: width, startX: startX, endX: endX))
             }
             .frame(height: height)
             .accessibilityElement(children: .ignore)
@@ -325,7 +327,7 @@ struct EqualLoudnessSegmentPicker: View {
         .allowsHitTesting(false)
     }
 
-    private func handle(at handleX: CGFloat, part: Part, width: CGFloat) -> some View {
+    private func handle(at handleX: CGFloat) -> some View {
         Capsule()
             .fill(themeStore.accentColor)
             .frame(width: 5, height: height - 22)
@@ -333,17 +335,22 @@ struct EqualLoudnessSegmentPicker: View {
             .contentShape(Rectangle())
             .offset(x: handleX - handleHitWidth / 2)
             .pointerStyle(.columnResize)
-            .gesture(drag(part, width: width))
     }
 
-    private func drag(_ part: Part, width: CGFloat) -> some Gesture {
+    private func drag(width: CGFloat, startX: CGFloat, endX: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                if dragOrigin == nil {
+                if dragPart == nil {
+                    guard let part = part(
+                        at: value.startLocation.x,
+                        startX: startX,
+                        endX: endX
+                    ) else { return }
+                    dragPart = part
                     dragOrigin = start...end
                     onEditingChanged(true)
                 }
-                guard let origin = dragOrigin, duration > 0 else { return }
+                guard let part = dragPart, let origin = dragOrigin, duration > 0 else { return }
                 let delta = Double(value.translation.width / width) * duration
                 let minimum = min(Self.minimumLength, duration)
                 switch part {
@@ -359,9 +366,23 @@ struct EqualLoudnessSegmentPicker: View {
                 }
             }
             .onEnded { _ in
+                if dragPart != nil { onEditingChanged(false) }
+                dragPart = nil
                 dragOrigin = nil
-                onEditingChanged(false)
             }
+    }
+
+    private func part(at locationX: CGFloat, startX: CGFloat, endX: CGFloat) -> Part? {
+        let span = max(0, endX - startX)
+        let edgeReach = min(handleHitWidth / 2, span / 4)
+        if locationX >= startX, locationX <= endX {
+            if locationX - startX <= edgeReach { return .start }
+            if endX - locationX <= edgeReach { return .end }
+            return .move
+        }
+        if abs(locationX - startX) <= handleHitWidth / 2 { return .start }
+        if abs(locationX - endX) <= handleHitWidth / 2 { return .end }
+        return nil
     }
 
     private static func rounded(_ seconds: Double) -> Double { (seconds * 10).rounded() / 10 }
@@ -414,6 +435,7 @@ struct EqualLoudnessCalibrationDialog: View {
     @State private var heldMark: Double?
     @State private var startDeviceKey: String?
     @State private var startScalar: Double?
+    @State private var calibrationAxis: OutputDeviceVolumeReading.Axis?
     @State private var restoreOrderMode: PlaybackOrderMode?
     @State private var playingQueueTrackID: UUID?
     @State private var segmentTrackID: UUID?
@@ -748,7 +770,7 @@ struct EqualLoudnessCalibrationDialog: View {
     private static let sliderInset: CGFloat = 10
 
     private func volumeRow(_ index: Int) -> some View {
-        let marks = Guide.marks(recorded: recordedScalars)
+        let marks = Guide.marks(recorded: recordedScalars, drafted: drafts.mapValues(\.scalar))
         return controlRow("音量", value: "\(Int(((controller.volumeState.reading?.scalar ?? 0) * 100).rounded()))%") {
             VStack(spacing: 3) {
                 Slider(value: volumeBinding(marks: marks), in: 0...1)
@@ -864,8 +886,10 @@ struct EqualLoudnessCalibrationDialog: View {
     // MARK: Flow
 
     private func begin() {
+        let reading = controller.volumeState.reading
         startDeviceKey = controller.routedDeviceKey
-        startScalar = controller.volumeState.reading?.scalar
+        startScalar = reading?.scalar
+        calibrationAxis = reading?.axis
         selectedTrackID = activeSession?.playerViewModel.currentTrack?.id
     }
 
@@ -911,7 +935,8 @@ struct EqualLoudnessCalibrationDialog: View {
 
     private func enterStep(_ index: Int) {
         let direction = Guide.directions[index]
-        let target: Double
+        let isNewDraft = drafts[index] == nil
+        var target: Double
         if let draft = drafts[index] {
             bass = draft.bass
             treble = draft.treble
@@ -925,10 +950,33 @@ struct EqualLoudnessCalibrationDialog: View {
                 treble = 0
             }
             target = Guide.suggestedScalar(step: index, recorded: recordedScalars)
-            drafts[index] = StepDraft(bass: bass, treble: treble, scalar: target)
         }
-        controller.volumeObserver.setScalar(target)
-        heldMark = Guide.marks(recorded: recordedScalars).contains { abs($0 - target) < 1e-6 } ? target : nil
+        let axis = calibrationAxis ?? controller.volumeState.reading?.axis
+        if calibrationAxis == nil { calibrationAxis = axis }
+        let wroteTarget = controller.volumeObserver.setScalar(target)
+        if isNewDraft, wroteTarget, direction != .reference, let axis {
+            let previous = points.prefix(index).map(\.coordinate)
+            while let reading = controller.volumeState.reading,
+                  Guide.blocker(step: index, reading: reading,
+                                recordedCoordinates: previous,
+                                recordedScalars: recordedScalars,
+                                axis: axis) != nil {
+                let next: Double?
+                switch direction {
+                case .quieter:
+                    next = max(Guide.lowestSuggestedScalar, target - Guide.volumeStep)
+                case .louder:
+                    next = min(Guide.highestSuggestedScalar, target + Guide.volumeStep)
+                case .reference:
+                    next = nil
+                }
+                guard let next, next != target, controller.volumeObserver.setScalar(next) else { break }
+                target = next
+            }
+        }
+        drafts[index] = StepDraft(bass: bass, treble: treble, scalar: target)
+        heldMark = Guide.marks(recorded: recordedScalars, drafted: drafts.mapValues(\.scalar))
+            .contains { abs($0 - target) < 1e-6 } ? target : nil
         phase = .step(index)
         updatePreview()
     }
@@ -947,8 +995,28 @@ struct EqualLoudnessCalibrationDialog: View {
         guard let reading = controller.volumeState.reading else { return }
         saveCurrentDraft()
         let isReference = Guide.directions[index] == .reference
+        let currentAxis = calibrationAxis ?? reading.axis
+        if Guide.needsPercentageAxisFallback(
+            step: index,
+            reading: reading,
+            recordedCoordinates: points.prefix(index).map(\.coordinate),
+            recordedScalars: recordedScalars,
+            axis: currentAxis
+        ) {
+            calibrationAxis = .percent
+            for pointIndex in points.indices where recordedScalars.indices.contains(pointIndex) {
+                let point = points[pointIndex]
+                points[pointIndex] = EqualLoudnessCalibrationPoint(
+                    coordinate: recordedScalars[pointIndex] * 100,
+                    bassDB: point.bassDB,
+                    trebleDB: point.trebleDB
+                )
+            }
+        }
+        let axis = calibrationAxis ?? reading.axis
+        calibrationAxis = axis
         let point = EqualLoudnessCalibrationPoint(
-            coordinate: reading.coordinate,
+            coordinate: reading.coordinate(on: axis),
             bassDB: isReference ? 0 : bass,
             trebleDB: isReference ? 0 : treble
         )
@@ -969,7 +1037,7 @@ struct EqualLoudnessCalibrationDialog: View {
         let calibration = EqualLoudnessCalibration(
             deviceKey: deviceKey,
             deviceName: reading.deviceName,
-            axis: reading.axis,
+            axis: calibrationAxis ?? reading.axis,
             points: Array(points.prefix(Guide.stepCount))
         )
         controller.setPreview(nil)
@@ -983,7 +1051,9 @@ struct EqualLoudnessCalibrationDialog: View {
         return Guide.blocker(
             step: index,
             reading: reading,
-            recordedCoordinates: points.prefix(index).map(\.coordinate)
+            recordedCoordinates: points.prefix(index).map(\.coordinate),
+            recordedScalars: recordedScalars,
+            axis: calibrationAxis ?? reading.axis
         )
     }
 

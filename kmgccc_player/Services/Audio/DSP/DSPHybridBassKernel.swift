@@ -10,36 +10,42 @@ import Foundation
 /// R_n = 1 − √|R_s − R_t|, which split each frame into tonal, transient and
 /// noise parts that sum exactly to the input (paper eqs. 7–13).
 ///
-/// - Transients: low-passed at f_c, half-wave rectified fuzz exponential
-///   (HWR-FEXP1), band-passed from f_c to 4f_c and raised by g.
-/// - Tones: a phase vocoder finds f0 below f_c (rejecting a second harmonic
-///   of a lower peak) and its harmonics within τ·k·f0. Detected harmonics are
-///   rescaled inside a Tukey region of interest with their phase kept;
-///   missing ones are pitch-shifted copies of the fundamental's region with
-///   Lagrange fractional-bin interpolation and per-frame phase propagation
-///   (Laroche–Dolson). Target levels follow a Bark-band spectral envelope
-///   held between two slopes, α_low and α_high dB per octave above f_c.
+/// - Transients: the isolated bass uses the classic level-normalized
+///   analytic series, adding only its harmonics. Its level follows the
+///   attack instead of collapsing quadratically on quiet kicks.
+/// - Tones: the STFT finds f0 below f_c (rejecting a second harmonic of a
+///   lower peak). Target levels for k·f0 follow a Bark-band spectral
+///   envelope held between two slopes, α_low and α_high dB per octave.
+///   Existing harmonics are raised in their own phase (paper eq. 23).
+///   Missing harmonics use one Hann main lobe at k·f0, locked to the
+///   fundamental's phase. A separate 1024-point analysis resolves nearby
+///   bass notes; phase advance refines its frequency between frames.
+///   It uses history and lookahead already available to the separator,
+///   without adding latency. Unlike the paper's shifted spectral regions,
+///   one partial does not copy nearby notes to inharmonic frequencies.
 /// - Noise: untouched.
 ///
-/// Only the added content is synthesized: the transient harmonics and the
-/// change the vocoder makes to the tonal spectrum. It is resampled back and
-/// added to the dry signal delayed by the same latency, so the dry path is
-/// never altered except by the optional speaker high-pass.
+/// Only the harmonic addition is synthesized and resampled back. The
+/// delayed original and addition share an independently controlled shelf.
+/// The selected cutoff controls the source band, with a 10% transition
+/// above it. Consecutive partials start in the target's audible bass band
+/// and roll off at a cutoff-dependent upper limit, at most 800 Hz.
 ///
 /// Our choices where the paper gives no number: median lengths of 13 frames
 /// and 9 bins; IIR instead of order-500 FIR band filters, which saves about
-/// 60 ms, with an eighth-order high-pass after the rectifier so the IIR
-/// band-pass still rejects the fundamental and DC the rectifier makes; an
-/// analysis threshold 60 dB below programme full scale; detected harmonics
-/// are only raised, never cut; the timbre limits are anchored at the
-/// strongest bass partial; a fundamental holds across frames while it stays
-/// within 6 dB of the strongest candidate, and a lower-octave candidate
-/// must be within 12 dB of it; synthesized harmonics stay within 12 dB of
-/// the fundamental's own region; frames without a transient or without a
-/// fundamental skip their branch, so cost follows the content.
+/// 60 ms; analytic rather than half-wave transient shaping; an
+/// analysis threshold 60 dB below programme full scale; harmonics are only
+/// added, never cut or replaced; the timbre limits are anchored at the
+/// first audible generated partial, at the observed bass level; a fundamental
+/// holds across frames while it stays within 6 dB of the strongest candidate,
+/// and a lower-octave candidate
+/// must be within 12 dB of it. Timbre slopes and a gentle order ceiling bound
+/// the added series. The phase history uses the common window centre, so
+/// a nearest-bin change does not silence a stable tone.
 nonisolated final class DSPHybridBassEngine {
     static let lowRate = 4_096.0
     static let frameSize = 512
+    static let tonalFrameSize = 1_024
     static let hop = 64
     static let binCount = frameSize / 2 + 1
     static let timeMedianLength = 13
@@ -52,6 +58,8 @@ nonisolated final class DSPHybridBassEngine {
     let latencyFrames: Int
     private let ratio: Double
     private let cutoff: Double
+    private let harmonicTop: Double
+    private let harmonicFloor: Double
     private let harmonicCount: Int
     private let tolerance: Double
     private let alphaLow: Double
@@ -74,9 +82,11 @@ nonisolated final class DSPHybridBassEngine {
     private var nextLowSample = 0
 
     // Low-rate analysis.
-    private var lowRing = [Double](repeating: 0, count: 1_024)
+    private var lowRing = [Double](repeating: 0, count: 2_048)
     private var lowCount = 0
     private let window: [Double]
+    private let tonalWindow: [Double]
+    private var fundamentalMagnitudes = [Double](repeating: 0, count: DSPHybridBassEngine.tonalFrameSize / 2 + 1)
     private var spectraReal: [Double]
     private var spectraImaginary: [Double]
     private var magnitudes: [Double]
@@ -85,16 +95,15 @@ nonisolated final class DSPHybridBassEngine {
     private var tonalOverlap = [Double](repeating: 0, count: 2_048)
     private var generated = [Double](repeating: 0, count: 256)
     private var synthesizedCount = 0
-    private var lowPass: [DSPBiquad]
-    private var bandHighPass: [DSPBiquad]
-    private var bandLowPass: [DSPBiquad]
-    private var phaseReal = [Double](repeating: 1, count: 16)
-    private var phaseImaginary = [Double](repeating: 0, count: 16)
+    private var transientHarmonics: DSPClassicBassKernel
     /// Fundamental of the last tonal frame, 0 when there was none.
     private var previousFundamentalBin = 0.0
+    private var previousTonalFrame = -1
+    private var previousTonalPhase = 0.0
 
     // FFT.
     private let setup: FFTSetupD
+    private let tonalSetup: FFTSetupD
     private let roundTrip: Double
     private let fftReal: UnsafeMutablePointer<Double>
     private let fftImaginary: UnsafeMutablePointer<Double>
@@ -110,26 +119,30 @@ nonisolated final class DSPHybridBassEngine {
     private let barkCenters: [Double]
 
     var stateBytes: Int {
-        (midRing.count + lowRing.count + spectraReal.count * 3 + transientOverlap.count * 2) * 8
+        (midRing.count + lowRing.count + spectraReal.count * 3 + transientOverlap.count * 2
+            + fundamentalMagnitudes.count + Self.tonalFrameSize * 2) * 8 + transientHarmonics.stateBytes
     }
 
     init?(sampleRate: Double, parameters: DSPHybridBassParameters, outputKind: DSPOutputKind?) {
         guard sampleRate.isFinite, sampleRate >= 8_192,
               let setup = DSPFFTSetups.setup(log2n: 9),
+              let tonalSetup = DSPFFTSetups.setup(log2n: 10),
               let productScale = DSPConvolutionLevel.productScale(setup: setup, log2n: 9) else { return nil }
         self.setup = setup
+        self.tonalSetup = tonalSetup
         roundTrip = 1 / (2 * productScale)
         let tuning = parameters.resolvedCutoff(for: outputKind)
-        cutoff = tuning.cutoffHz
+        let sourceCutoff = min(tuning.cutoffHz, DSPBassProfile.maximumHarmonicFundamentalHz)
+        self.cutoff = sourceCutoff
+        harmonicTop = DSPBassProfile.harmonicTop(cutoffHz: sourceCutoff)
+        harmonicFloor = max(80, min(sourceCutoff, DSPBassProfile.profile(for: tuning.kind).cutoffHz))
         harmonicCount = Int(parameters.harmonicCount.rounded())
         tolerance = parameters.harmonicTolerance
         alphaLow = parameters.timbreLowDBPerOctave
         alphaHigh = parameters.timbreHighDBPerOctave
-        // Intensity 0.5 places the harmonics on the timbre envelope.
-        harmonicGain = 2 * parameters.intensity
-        // g = 10 dB at transient 0.5, scaled with intensity like the tones.
-        transientGain = parameters.transient > 0
-            ? pow(10, (10 + 20 * log10(2 * parameters.transient)) / 20) * harmonicGain : 0
+        // Virtual harmonics must be audible with the independent shelf off.
+        harmonicGain = 0.7 * parameters.intensity
+        transientGain = parameters.transient * min(parameters.intensity, 1)
 
         ratio = sampleRate / Self.lowRate
         // Anti-alias at 1.7 kHz, half-width in full-rate samples.
@@ -148,6 +161,9 @@ nonisolated final class DSPHybridBassEngine {
         midMask = size - 1
 
         window = (0..<Self.frameSize).map { 0.5 - 0.5 * cos(2 * Double.pi * Double($0) / Double(Self.frameSize)) }
+        tonalWindow = (0..<Self.tonalFrameSize).map {
+            0.5 - 0.5 * cos(2 * Double.pi * Double($0) / Double(Self.tonalFrameSize))
+        }
         let ringCount = Self.timeMedianLength * Self.binCount
         spectraReal = Array(repeating: 0, count: ringCount)
         spectraImaginary = Array(repeating: 0, count: ringCount)
@@ -161,27 +177,22 @@ nonisolated final class DSPHybridBassEngine {
         dReal = Array(repeating: 0, count: Self.binCount)
         dImaginary = Array(repeating: 0, count: Self.binCount)
 
-        // The rectifier turns the transient into DC, the fundamental and its
-        // harmonics; an eighth-order high-pass keeps the first two (about
-        // 30 dB down an octave below f_c) out of the added bass.
-        let cutoff = tuning.cutoffHz
-        let lowPassSections = DSPFilterDesign.fourthOrderQs.compactMap {
-            DSPFilterDesign.section(.lowPass, frequencyHz: cutoff, sampleRate: Self.lowRate, q: $0)
-        }
-        let highPassSections = DSPFilterDesign.eighthOrderQs.compactMap {
-            DSPFilterDesign.section(.highPass, frequencyHz: cutoff, sampleRate: Self.lowRate, q: $0)
-        }
-        let upperSections = DSPFilterDesign.fourthOrderQs.compactMap {
-            DSPFilterDesign.section(.lowPass, frequencyHz: min(4 * cutoff, 1_800), sampleRate: Self.lowRate, q: $0)
-        }
-        guard lowPassSections.count == 2, highPassSections.count == 4, upperSections.count == 2 else { return nil }
-        lowPass = lowPassSections.map(DSPBiquad.init)
-        bandHighPass = highPassSections.map(DSPBiquad.init)
-        bandLowPass = upperSections.map(DSPBiquad.init)
+        var transientParameters = DSPClassicBassParameters()
+        transientParameters.target = parameters.target
+        transientParameters.bassGainDB = 0
+        transientParameters.intensity = 1
+        transientParameters.cutoffHz = sourceCutoff
+        transientParameters.floorHz = DSPBassProfile.minimumHarmonicFundamentalHz
+        transientParameters.tightenDryBass = .off
+        let lowFormat = DSPAudioFormat(sampleRate: Self.lowRate, channelCount: 1, rawLayoutData: nil,
+                                      channelLabels: nil, layoutIsKnown: false)
+        guard let generator = DSPClassicBassKernel(format: lowFormat, selectedChannels: [true],
+                                                   parameters: transientParameters, outputKind: outputKind) else { return nil }
+        transientHarmonics = generator
 
-        fftReal = .allocate(capacity: Self.frameSize / 2)
-        fftImaginary = .allocate(capacity: Self.frameSize / 2)
-        fftTime = .allocate(capacity: Self.frameSize)
+        fftReal = .allocate(capacity: Self.tonalFrameSize / 2)
+        fftImaginary = .allocate(capacity: Self.tonalFrameSize / 2)
+        fftTime = .allocate(capacity: Self.tonalFrameSize)
         // Zwicker critical-band centres below the 2048 Hz Nyquist frequency.
         barkCenters = [50, 150, 250, 350, 450, 570, 700, 840, 1_000, 1_170, 1_370, 1_600, 1_850]
     }
@@ -203,12 +214,13 @@ nonisolated final class DSPHybridBassEngine {
     func makeFresh(sampleRate: Double, parameters: DSPHybridBassParameters,
                    outputKind: DSPOutputKind?) -> DSPHybridBassEngine? {
         let fresh = DSPHybridBassEngine(sampleRate: sampleRate, parameters: parameters, outputKind: outputKind)
-        fresh?.reference = reference
+        fresh?.setProgramLevel(reference: reference)
         return fresh
     }
 
     func setProgramLevel(reference: Double) {
         self.reference = reference
+        transientHarmonics.setProgramLevelOffset(dB: -20 * log10(max(reference, 1e-9)))
     }
 
     func copyState(from source: DSPHybridBassEngine) {
@@ -226,12 +238,10 @@ nonisolated final class DSPHybridBassEngine {
         DSPStateCopy.assign(&tonalOverlap, from: source.tonalOverlap)
         DSPStateCopy.assign(&generated, from: source.generated)
         synthesizedCount = source.synthesizedCount
-        for index in lowPass.indices { lowPass[index].copyState(from: source.lowPass[index]) }
-        for index in bandHighPass.indices { bandHighPass[index].copyState(from: source.bandHighPass[index]) }
-        for index in bandLowPass.indices { bandLowPass[index].copyState(from: source.bandLowPass[index]) }
+        transientHarmonics.copyState(from: source.transientHarmonics)
         previousFundamentalBin = source.previousFundamentalBin
-        DSPStateCopy.assign(&phaseReal, from: source.phaseReal)
-        DSPStateCopy.assign(&phaseImaginary, from: source.phaseImaginary)
+        previousTonalFrame = source.previousTonalFrame
+        previousTonalPhase = source.previousTonalPhase
     }
 
     func reset() {
@@ -248,14 +258,10 @@ nonisolated final class DSPHybridBassEngine {
         DSPStateCopy.clear(&tonalOverlap)
         DSPStateCopy.clear(&generated)
         synthesizedCount = 0
-        for index in lowPass.indices { lowPass[index].reset() }
-        for index in bandHighPass.indices { bandHighPass[index].reset() }
-        for index in bandLowPass.indices { bandLowPass[index].reset() }
+        transientHarmonics.reset()
         previousFundamentalBin = 0
-        for index in phaseReal.indices {
-            phaseReal[index] = 1
-            phaseImaginary[index] = 0
-        }
+        previousTonalFrame = -1
+        previousTonalPhase = 0
     }
 
     /// Feeds one full-rate mid sample and returns the generated bass for the
@@ -325,7 +331,7 @@ nonisolated final class DSPHybridBassEngine {
     // MARK: Low-rate analysis and synthesis
 
     private func pushLowSample(_ value: Double) {
-        lowRing[lowCount & 1_023] = value
+        lowRing[lowCount & (lowRing.count - 1)] = value
         lowCount += 1
         if lowCount % Self.hop == 0 {
             analyseFrame()
@@ -343,17 +349,18 @@ nonisolated final class DSPHybridBassEngine {
         let tonal = tonalOverlap[slot]
         transientOverlap[slot] = 0
         tonalOverlap[slot] = 0
-        // Transient branch: LPF at f_c, HWR-FEXP1, band-pass f_c…4f_c, gain g.
-        var low = transient
-        for section in lowPass.indices { low = lowPass[section].process(low) }
-        // Drive so that a −10 dBFS programme transient reaches the knee.
-        let drive = 3 * reference
-        let x = low * drive
-        let shaped = x > 0 ? (1 - exp(-x)) / (1 - exp(-1)) : 0
-        var banded = shaped / drive
-        for section in bandHighPass.indices { banded = bandHighPass[section].process(banded) }
-        for section in bandLowPass.indices { banded = bandLowPass[section].process(banded) }
-        generated[index & (generated.count - 1)] = banded * transientGain + tonal
+        // A normalized harmonic series follows quiet kicks as well as loud
+        // ones. Subtract the unprocessed transient: this branch adds only
+        // harmonics, with no negative fundamental from a tanh tangent.
+        var addedTransient = 0.0
+        if transientGain > 0 {
+            var enhanced = transient
+            withUnsafeMutablePointer(to: &enhanced) {
+                transientHarmonics.process($0, frames: 1, channels: 1)
+            }
+            addedTransient = (enhanced - transient) * transientGain
+        }
+        generated[index & (generated.count - 1)] = addedTransient + tonal
         synthesizedCount = index + 1
     }
 
@@ -362,9 +369,9 @@ nonisolated final class DSPHybridBassEngine {
         let bins = Self.binCount
         // Newest frame: the last 512 low-rate samples, windowed.
         for index in 0..<size {
-            fftTime[index] = lowRing[(lowCount - size + index) & 1_023] * window[index]
+            fftTime[index] = lowRing[(lowCount - size + index) & (lowRing.count - 1)] * window[index]
         }
-        forwardTransform()
+        forwardTransform(size: size, setup: setup, log2n: 9)
         let slot = frameCount % Self.timeMedianLength
         let base = slot * bins
         for bin in 0..<bins {
@@ -391,12 +398,12 @@ nonisolated final class DSPHybridBassEngine {
         bin == 0 || bin == Self.binCount - 1 ? 0 : fftImaginary[bin]
     }
 
-    private func forwardTransform() {
+    private func forwardTransform(size: Int, setup: FFTSetupD, log2n: vDSP_Length) {
         var split = DSPDoubleSplitComplex(realp: fftReal, imagp: fftImaginary)
-        fftTime.withMemoryRebound(to: DSPDoubleComplex.self, capacity: Self.frameSize / 2) { complex in
-            vDSP_ctozD(complex, 2, &split, 1, vDSP_Length(Self.frameSize / 2))
+        fftTime.withMemoryRebound(to: DSPDoubleComplex.self, capacity: size / 2) { complex in
+            vDSP_ctozD(complex, 2, &split, 1, vDSP_Length(size / 2))
         }
-        vDSP_fft_zripD(setup, &split, 1, 9, FFTDirection(kFFTDirection_Forward))
+        vDSP_fft_zripD(setup, &split, 1, log2n, FFTDirection(kFFTDirection_Forward))
     }
 
     /// Inverse transforms a full spectrum and overlap-adds it, synthesis
@@ -494,6 +501,105 @@ nonisolated final class DSPHybridBassEngine {
         let magnitude: Double
     }
 
+    /// The separator already waits six hops past a frame. That is enough
+    /// future PCM for a longer, centred pitch analysis, while the 2048-sample
+    /// ring retains its earlier half. Synthesis still uses 512 samples.
+    private func analyseFundamental(frame: Int, threshold: Double, tonalMagnitude: [Double])
+        -> (peak: Peak, centrePhase: Double, coherent: Bool)? {
+        let size = Self.tonalFrameSize
+        let start = (frame + 1) * Self.hop - Self.frameSize / 2 - size / 2
+        for index in 0..<size {
+            fftTime[index] = lowRing[(start + index) & (lowRing.count - 1)] * tonalWindow[index]
+        }
+        forwardTransform(size: size, setup: tonalSetup, log2n: 10)
+        // Express long-window peaks in the short STFT's bin and level units.
+        let binScale = Double(Self.frameSize) / Double(size)
+        for bin in fundamentalMagnitudes.indices {
+            let re = bin == fundamentalMagnitudes.count - 1 ? fftImaginary[0] : fftReal[bin]
+            let im = bin == 0 || bin == fundamentalMagnitudes.count - 1 ? 0 : fftImaginary[bin]
+            fundamentalMagnitudes[bin] = (re * re + im * im).squareRoot() * binScale
+        }
+        let binHz = Self.lowRate / Double(size)
+        let floorBin = DSPBassProfile.minimumHarmonicFundamentalHz / (Self.lowRate / Double(Self.frameSize))
+        let cutoffBin = cutoff * 1.1 / (Self.lowRate / Double(Self.frameSize))
+        let first = max(1, Int((DSPBassProfile.minimumHarmonicFundamentalHz / binHz).rounded(.down)))
+        let last = min(fundamentalMagnitudes.count - 2, Int((cutoff * 1.1 / binHz).rounded(.up)))
+        let base = (frame % Self.timeMedianLength) * Self.binCount
+        var candidates: [Peak] = []
+        for peak in Self.peaks(fundamentalMagnitudes, first: first, last: last, threshold: threshold,
+                               binScale: binScale) where peak.bin >= floorBin && peak.bin < cutoffBin {
+            let bin = min(Self.binCount - 1, max(0, Int(peak.bin.rounded())))
+            let tonalFraction = tonalMagnitude[bin] / max(magnitudes[base + bin], 1e-12)
+            // A percussive or noisy peak must not become a pitched oscillator.
+            guard tonalFraction >= 0.5 else { continue }
+            candidates.append(Peak(bin: peak.bin, magnitude: peak.magnitude * min(1, tonalFraction)))
+        }
+        guard let strongest = candidates.max(by: { $0.magnitude < $1.magnitude }) else {
+            previousFundamentalBin = 0
+            previousTonalFrame = -1
+            return nil
+        }
+        var fundamental = strongest
+        if previousFundamentalBin > 0,
+           let held = Self.nearest(candidates, to: previousFundamentalBin),
+           abs(held.bin - previousFundamentalBin) < max(0.5, tolerance * previousFundamentalBin),
+           held.magnitude >= strongest.magnitude * 0.5 {
+            fundamental = held
+        }
+        for order in [3.0, 2.0] {
+            if let lower = candidates.first(where: {
+                abs($0.bin * order - fundamental.bin) < tolerance * fundamental.bin
+                    && $0.magnitude >= fundamental.magnitude * 0.25
+            }) {
+                fundamental = lower
+                break
+            }
+        }
+        let peakBin = Int((fundamental.bin / binScale).rounded())
+        let phase = atan2(fftImaginary[peakBin], fftReal[peakBin])
+        let centrePhase = phase + (peakBin.isMultiple(of: 2) ? 0 : Double.pi)
+        let continues = previousTonalFrame + 1 == frame && previousFundamentalBin > 0
+            && abs(fundamental.bin - previousFundamentalBin) < max(0.5, tolerance * fundamental.bin)
+        var coherent = false
+        if continues {
+            // Instantaneous frequency from the phase advance. Parabolic
+            // magnitudes alone are biased between bins and wobble when
+            // another bass note enters the same short-window main lobe.
+            // Compare phases at the common window centre. The nearest FFT
+            // bin can alternate for a perfectly stable half-bin tone; raw
+            // bin phases differ by pi and must not reset its coherence.
+            let expected = 2 * Double.pi * Double(Self.hop) * previousFundamentalBin / Double(Self.frameSize)
+            let difference = centrePhase - previousTonalPhase - expected
+            let residual = atan2(sin(difference), cos(difference))
+            let refined = previousFundamentalBin + residual * Double(Self.frameSize) / (2 * Double.pi * Double(Self.hop))
+            if abs(refined - fundamental.bin) < 0.5 * binScale,
+               refined >= floorBin, refined < cutoffBin {
+                fundamental = Peak(bin: refined, magnitude: fundamental.magnitude)
+                coherent = true
+            }
+        }
+        previousFundamentalBin = fundamental.bin
+        previousTonalFrame = frame
+        previousTonalPhase = centrePhase
+        return (fundamental, centrePhase, coherent)
+    }
+
+    private static func peaks(_ magnitude: [Double], first: Int, last: Int, threshold: Double,
+                              binScale: Double = 1) -> [Peak] {
+        var peaks: [Peak] = []
+        for bin in first...last where magnitude[bin] > threshold
+            && magnitude[bin] > magnitude[bin - 1] && magnitude[bin] >= magnitude[bin + 1] {
+            let a = 20 * log10(max(magnitude[bin - 1], 1e-12))
+            let b = 20 * log10(magnitude[bin])
+            let c = 20 * log10(max(magnitude[bin + 1], 1e-12))
+            let denominator = a - 2 * b + c
+            let offset = denominator != 0 ? 0.5 * (a - c) / denominator : 0
+            let peakDB = b - 0.25 * (a - c) * offset
+            peaks.append(Peak(bin: (Double(bin) + offset) * binScale, magnitude: pow(10, peakDB / 20)))
+        }
+        return peaks
+    }
+
     /// Builds the spectral change D(f) = S′(f) − S(f); false when nothing changes.
     private func processTones(frame: Int) -> Bool {
         let bins = Self.binCount
@@ -509,51 +615,28 @@ nonisolated final class DSPHybridBassEngine {
         }
         guard peakMaximum > threshold, harmonicGain > 0 else { return false }
 
-        // Relaxed peak picking with parabolic interpolation (on dB values).
-        var peaks: [Peak] = []
-        let firstBin = max(1, Int((cutoff / 4 / binHz).rounded(.down)))
+        // Short-window peaks retain the phase of existing upper harmonics.
+        let firstBin = max(1, Int((DSPBassProfile.minimumHarmonicFundamentalHz / binHz).rounded(.down)))
         let lastBin = min(bins - 2, Int(1_800 / binHz))
-        for bin in firstBin...lastBin where magnitude[bin] > threshold
-            && magnitude[bin] > magnitude[bin - 1] && magnitude[bin] >= magnitude[bin + 1] {
-            let a = 20 * log10(max(magnitude[bin - 1], 1e-12))
-            let b = 20 * log10(magnitude[bin])
-            let c = 20 * log10(max(magnitude[bin + 1], 1e-12))
-            let denominator = a - 2 * b + c
-            let offset = denominator != 0 ? 0.5 * (a - c) / denominator : 0
-            let peakDB = b - 0.25 * (a - c) * offset
-            peaks.append(Peak(bin: Double(bin) + offset, magnitude: pow(10, peakDB / 20)))
-        }
+        let peaks = Self.peaks(magnitude, first: firstBin, last: lastBin, threshold: threshold)
         let cutoffBin = cutoff / binHz
-        let candidates = peaks.filter { $0.bin >= cutoffBin / 4 && $0.bin < cutoffBin }
-        guard let strongest = candidates.max(by: { $0.magnitude < $1.magnitude }) else {
-            previousFundamentalBin = 0
+        guard let analysis = analyseFundamental(frame: frame, threshold: threshold, tonalMagnitude: magnitude) else {
             return false
         }
-        var fundamental = strongest
-        // The previous fundamental holds while it stays comparably strong,
-        // so the synthesis does not flip between two candidates (our choice).
-        if previousFundamentalBin > 0,
-           let held = Self.nearest(candidates, to: previousFundamentalBin),
-           abs(held.bin - previousFundamentalBin) < max(1, tolerance * previousFundamentalBin),
-           held.magnitude >= strongest.magnitude * 0.5 {
-            fundamental = held
-        }
-        // A candidate that is the second harmonic of a lower peak yields to
-        // it, unless that peak is too faint to carry the harmonics: copying
-        // a weak region up to the target level raises its noise with it.
-        if let lower = candidates.first(where: {
-            abs($0.bin * 2 - fundamental.bin) < tolerance * fundamental.bin
-                && $0.magnitude >= fundamental.magnitude * 0.25
-        }) {
-            fundamental = lower
-        }
+        let fundamental = analysis.peak
         let f0 = fundamental.bin
-        previousFundamentalBin = f0
+        // Keep the complete requested band active. Fade in a short shoulder
+        // above it, rather than muting notes at the selected cutoff itself.
+        let edge = min(1, max(0, (f0 / cutoffBin - 1) / 0.1))
+        let bandGain = harmonicGain * 0.5 * (1 + cos(Double.pi * edge))
+        guard bandGain > 0 else { return false }
 
-        // Harmonic orders so that every processed partial lies above f_c (eq. 15).
-        let firstOrder: Int
-        if f0 >= cutoffBin / 2 { firstOrder = 2 } else if f0 >= cutoffBin / 3 { firstOrder = 3 } else { firstOrder = 4 }
+        // Consecutive partials above the transducer turnover convey the
+        // missing pitch. Always starting at order 2 wasted most of the series
+        // below that turnover on deep bass notes.
+        let firstOrder = max(2, Int((harmonicFloor / (f0 * binHz)).rounded(.up)))
         let orders = firstOrder..<(firstOrder + harmonicCount)
+        let firstHarmonicBin = Double(firstOrder) * f0
 
         // Spectral envelope from a Bark-band triangular filter bank (eq. 18).
         var bandValues: [Double] = []
@@ -588,96 +671,96 @@ nonisolated final class DSPHybridBassEngine {
         }
         let anchorDB = 20 * log10(referenceMagnitude)
         let envelopeOffset = anchorDB - envelopeDB(referenceBin)
-        let intensityDB = 20 * log10(harmonicGain)
+        let intensityDB = 20 * log10(max(bandGain, 1e-12))
 
         for bin in 0..<bins {
             dReal[bin] = 0
             dImaginary[bin] = 0
         }
         var changed = false
-        let roiHalf = 3.0
-        let hopPhase = 2 * Double.pi * Double(Self.hop) / Double(Self.frameSize)
         for order in orders {
             let targetBin = Double(order) * f0
-            guard targetBin < Double(bins - 4) else { break }
-            // Limited timbre matching (eqs. 20–22). The slopes run per octave
-            // from the strongest bass partial, not from the envelope at f_c:
-            // the coarse Bark bands put that point 10–20 dB under the bass,
-            // which left the harmonics barely audible (our choice).
-            let octaves = log2(max(targetBin / referenceBin, 1))
+            guard targetBin < min(Double(bins - 4), harmonicTop / binHz) else { break }
+            // Anchor the audible series to the observed bass level. Starting
+            // both slopes at f0 and then applying another order-squared cap
+            // penalized the first useful harmonic twice on deep notes.
+            let octaves = log2(max(targetBin / max(referenceBin, firstHarmonicBin), 1))
             let lowLimit = anchorDB - alphaLow * octaves
             let highLimit = anchorDB - alphaHigh * octaves
             let envelope = envelopeDB(targetBin) + envelopeOffset
             let weightDB = min(highLimit, max(lowLimit, envelope)) + intensityDB
-            let weight = pow(10, weightDB / 20)
+            // Bound the series to the observed bass and the selected amount,
+            // even when the envelope includes unrelated instruments or voices.
+            let orderScale = Double(order) / Double(firstOrder)
+            let maximum = fundamental.magnitude * bandGain / orderScale.squareRoot()
+            let weight = min(pow(10, weightDB / 20), maximum)
 
-            if let peak = Self.nearest(peaks, to: targetBin), abs(peak.bin - targetBin) < tolerance * targetBin {
-                // Detected: rescale its region, phase untouched (eq. 23).
-                // Only ever raised: an enhancer that thins existing
-                // harmonics takes away the bass it is meant to add.
-                let factor = max(1, weight / peak.magnitude) - 1
+            let nearbyPeak = Self.nearest(peaks, to: targetBin)
+            if let peak = nearbyPeak, abs(peak.bin - targetBin) < min(0.75, tolerance * targetBin) {
+                // Adding a new sinusoid in k·phi0 can cancel an existing
+                // harmonic. Raise its own complex spectrum instead (eq. 23),
+                // with at most 12 dB boost and a narrow region of influence.
+                let factor = min(3, max(0, weight / peak.magnitude - 1))
                 guard factor > 0 else { continue }
-                let low = Int((peak.bin - roiHalf).rounded(.up)), high = Int((peak.bin + roiHalf).rounded(.down))
-                for bin in max(0, low)...min(bins - 1, high) {
-                    let w = Self.roi(Double(bin) - peak.bin) * factor
-                    dReal[bin] += sReal[bin] * w
-                    dImaginary[bin] += sImaginary[bin] * w
-                }
-                changed = true
-            } else {
-                // Missing: shift the fundamental's region up to k·f0 (eq. 25)
-                // with its phase advanced by the shift per hop (eq. 24).
-                let shift = targetBin - f0
-                let rotation = hopPhase * shift
-                let zr = phaseReal[order] * cos(rotation) - phaseImaginary[order] * sin(rotation)
-                let zi = phaseReal[order] * sin(rotation) + phaseImaginary[order] * cos(rotation)
-                let norm = (zr * zr + zi * zi).squareRoot()
-                phaseReal[order] = zr / max(norm, 1e-12)
-                phaseImaginary[order] = zi / max(norm, 1e-12)
-                // At most 12 dB above the fundamental's own region.
-                let gain = min(4, weight / max(fundamental.magnitude, 1e-12))
-                let low = Int((targetBin - roiHalf).rounded(.up)), high = Int((targetBin + roiHalf).rounded(.down))
+                let low = Int((peak.bin - 1.5).rounded(.up))
+                let high = Int((peak.bin + 1.5).rounded(.down))
                 for bin in max(1, low)...min(bins - 2, high) {
-                    let source = Double(bin) - shift
-                    let window = Self.roi(source - f0)
-                    guard window > 0 else { continue }
-                    let value = lagrange(at: source)
-                    let shiftedReal = (value.re * phaseReal[order] - value.im * phaseImaginary[order]) * gain * window
-                    let shiftedImaginary = (value.re * phaseImaginary[order] + value.im * phaseReal[order]) * gain * window
-                    // Replace whatever was at the harmonic's place (eq. 26).
-                    let existing = Self.roi(Double(bin) - targetBin)
-                    dReal[bin] += shiftedReal - sReal[bin] * existing
-                    dImaginary[bin] += shiftedImaginary - sImaginary[bin] * existing
+                    let gain = factor * Self.roi(Double(bin) - peak.bin)
+                    dReal[bin] += sReal[bin] * gain
+                    dImaginary[bin] += sImaginary[bin] * gain
                 }
                 changed = true
+                continue
             }
+            // One coherent bass observation precedes a new pitched partial.
+            // Leave a neighbouring independent tone alone rather than laying
+            // a second, slightly detuned oscillator over it.
+            guard analysis.coherent else { continue }
+            if let peak = nearbyPeak, abs(peak.bin - targetBin) < 2, peak.magnitude > weight * 0.25 {
+                continue
+            }
+
+            // Only the shortfall is added: a harmonic already present at
+            // the target level is left as it is, and nothing is removed.
+            let nearestBin = min(bins - 1, Int(targetBin.rounded()))
+            let present = magnitude[nearestBin] / max(Self.hannLobe(Double(nearestBin) - targetBin), 0.5)
+            let added = weight - present
+            guard added > 0 else { continue }
+
+            // One clean partial at k·f0 with phase k·φ0: the Hann main lobe
+            // written straight into the spectrum, phase-locked to the
+            // fundamental frame by frame like a waveshaper's harmonic. A
+            // copied region would carry every other component near f0 up
+            // with it, shifted by a fixed number of hertz into inharmonic
+            // places, which is heard as mud (our choice over eqs. 23–26).
+            let phase = Double(order) * analysis.centrePhase
+            let cosine = cos(phase), sine = sin(phase)
+            let low = Int((targetBin - 2).rounded(.up)), high = Int((targetBin + 2).rounded(.down))
+            for bin in max(1, low)...min(bins - 2, high) {
+                let lobe = added * Self.hannLobe(Double(bin) - targetBin) * (bin % 2 == 0 ? 1 : -1)
+                dReal[bin] += lobe * cosine
+                dImaginary[bin] += lobe * sine
+            }
+            changed = true
         }
         return changed
     }
 
-    /// Third-order Lagrange interpolation of the tonal spectrum between bins.
-    private func lagrange(at position: Double) -> (re: Double, im: Double) {
-        let bins = Self.binCount
-        let base = Int(position.rounded(.down)) - 1
-        let t = position - Double(base)
-        var re = 0.0, im = 0.0
-        for j in 0..<4 {
-            var weight = 1.0
-            for m in 0..<4 where m != j { weight *= (t - Double(m)) / Double(j - m) }
-            let bin = min(bins - 1, max(0, base + j))
-            re += sReal[bin] * weight
-            im += sImaginary[bin] * weight
-        }
-        return (re, im)
-    }
-
-    /// Tukey region of interest: flat over ±1.5 bins, tapering to ±3, a
-    /// little wider than the Hann main lobe.
     private static func roi(_ distance: Double) -> Double {
         let d = abs(distance)
-        if d <= 1.5 { return 1 }
-        if d >= 3 { return 0 }
-        return 0.5 * (1 + cos(Double.pi * (d - 1.5) / 1.5))
+        if d <= 0.5 { return 1 }
+        if d >= 1.5 { return 0 }
+        return 0.5 * (1 + cos(Double.pi * (d - 0.5)))
+    }
+
+    /// Transform of the periodic Hann window, offset `d` bins from the tone,
+    /// normalized to 1 at the tone: sinc(d)/(1 − d²), zero at ±2.
+    private static func hannLobe(_ d: Double) -> Double {
+        let x = abs(d)
+        if x < 1e-9 { return 1 }
+        if abs(x - 1) < 1e-9 { return 0.5 }
+        if x >= 2 { return 0 }
+        return sin(Double.pi * x) / (Double.pi * x * (1 - x * x))
     }
 
     private static func nearest(_ peaks: [Peak], to bin: Double) -> Peak? {
@@ -709,36 +792,50 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
     private var dryDelay: [Double]
     private var dryCursor = 0
     private var dryHighPass: [DSPBiquad]
+    private var bassShelf: [DSPBiquad]
     private let tightensDryBass: Bool
     private let outputGain: Double
+    private let peakCeiling: Double?
     private var reference = 1.0
     let latencyFrames: Int
 
     var stateBytes: Int { dryDelay.count * 8 + (engine?.stateBytes ?? 0) }
+    var keepsReferenceState: Bool { engine != nil }
 
     init?(format: DSPAudioFormat, selectedChannels mask: [Bool], parameters: DSPHybridBassParameters,
-          outputKind: DSPOutputKind?) {
-        guard mask.count == format.channelCount,
-              let engine = DSPHybridBassEngine(sampleRate: format.sampleRate, parameters: parameters,
-                                               outputKind: outputKind) else { return nil }
+          outputKind: DSPOutputKind?, outputCeiling: Double? = nil) {
+        guard mask.count == format.channelCount else { return nil }
+        let engine: DSPHybridBassEngine?
+        if parameters.intensity > 0 {
+            guard let prepared = DSPHybridBassEngine(sampleRate: format.sampleRate, parameters: parameters,
+                                                      outputKind: outputKind) else { return nil }
+            engine = prepared
+        } else {
+            engine = nil
+        }
         selectedChannels = mask.indices.filter { mask[$0] }
         guard !selectedChannels.isEmpty else { return nil }
         let tuning = parameters.resolvedCutoff(for: outputKind)
         guard let highPass = DSPFilterDesign.section(.highPass, frequencyHz: tuning.cutoffHz * 0.7,
-                                                     sampleRate: format.sampleRate) else { return nil }
+                                                     sampleRate: format.sampleRate),
+              let shelf = DSPFilterDesign.section(.lowShelf, frequencyHz: tuning.cutoffHz, sampleRate: format.sampleRate,
+                                                 q: 1, gainDB: parameters.bassGainDB) else { return nil }
         self.engine = engine
         self.parameters = parameters
         self.outputKind = outputKind
         sampleRate = format.sampleRate
-        latencyFrames = engine.latencyFrames
-        dryDelay = Array(repeating: 0, count: max(1, engine.latencyFrames) * selectedChannels.count)
+        latencyFrames = engine?.latencyFrames ?? 0
+        dryDelay = Array(repeating: 0, count: max(1, latencyFrames) * selectedChannels.count)
         dryHighPass = Array(repeating: DSPBiquad(highPass), count: selectedChannels.count)
+        bassShelf = Array(repeating: DSPBiquad(shelf), count: selectedChannels.count)
         switch parameters.tightenDryBass {
-        case .automatic: tightensDryBass = tuning.kind == .speakers
+        case .automatic: tightensDryBass = false
         case .on: tightensDryBass = true
         case .off: tightensDryBass = false
         }
-        outputGain = pow(10, parameters.outputTrimDB / 20)
+        let gain = pow(10, parameters.outputTrimDB / 20)
+        outputGain = gain
+        peakCeiling = outputCeiling.map { $0 / gain }
     }
 
     func makeFreshState() -> DSPHybridBassKernel {
@@ -747,6 +844,7 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
         fresh.dryDelay = Array(repeating: 0, count: dryDelay.count)
         fresh.dryCursor = 0
         for index in fresh.dryHighPass.indices { fresh.dryHighPass[index].reset() }
+        for index in fresh.bassShelf.indices { fresh.bassShelf[index].reset() }
         return fresh
     }
 
@@ -759,6 +857,9 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
         if dryHighPass.count == source.dryHighPass.count {
             for index in dryHighPass.indices { dryHighPass[index].copyState(from: source.dryHighPass[index]) }
         }
+        if bassShelf.count == source.bassShelf.count {
+            for index in bassShelf.indices { bassShelf[index].copyState(from: source.bassShelf[index]) }
+        }
     }
 
     mutating func reset() {
@@ -766,6 +867,7 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
         DSPStateCopy.clear(&dryDelay)
         dryCursor = 0
         for index in dryHighPass.indices { dryHighPass[index].reset() }
+        for index in bassShelf.indices { bassShelf[index].reset() }
     }
 
     mutating func setProgramLevelOffset(dB offsetDB: Double) {
@@ -775,7 +877,6 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
     }
 
     mutating func process(_ samples: UnsafeMutablePointer<Double>, frames: Int, channels: Int) {
-        guard let engine else { return }
         let count = selectedChannels.count
         let delayFrames = dryDelay.count / count
         for frame in 0..<frames {
@@ -783,21 +884,28 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
             var mid = 0.0
             for index in 0..<count { mid += samples[base + selectedChannels[index]] }
             mid /= Double(count)
-            let generated = engine.process(mid: mid)
+            let generated = engine?.process(mid: mid) ?? 0
             let slot = dryCursor * count
             for index in 0..<count {
                 let channel = base + selectedChannels[index]
                 var dry = samples[channel]
                 if tightensDryBass { dry = dryHighPass[index].process(dry) }
-                let delayed = dryDelay[slot + index]
-                dryDelay[slot + index] = dry
-                samples[channel] = (delayed + generated) * outputGain
+                let delayed: Double
+                if latencyFrames > 0 {
+                    delayed = dryDelay[slot + index]
+                    dryDelay[slot + index] = dry
+                } else {
+                    delayed = dry
+                }
+                let enhanced = bassShelf[index].process(delayed + generated)
+                samples[channel] = DSPBassPeakControl.mix(original: delayed, enhanced: enhanced, ceiling: peakCeiling) * outputGain
             }
             dryCursor = dryCursor + 1 == delayFrames ? 0 : dryCursor + 1
         }
     }
 
     static func staticPeakResponseDB(parameters: DSPHybridBassParameters) -> Double {
-        20 * log10(1 + parameters.intensity) + parameters.outputTrimDB
+        // An additive bass effect must not pre-attenuate vocals and treble.
+        parameters.outputTrimDB
     }
 }

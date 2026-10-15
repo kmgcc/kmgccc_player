@@ -661,6 +661,10 @@ private final class AppKitMainRootViewController: NSViewController {
         // PagePresentation owns entry. Remove the outgoing Home surface at
         // the route boundary so it cannot show behind another live page.
         homeFullWindowHost.isHidden = !isHome
+        if !isHome {
+            CacheManager.purgeHomePresentationMemoryCaches()
+            CacheManager.trimProcessMemory()
+        }
     }
 
     private func setFileDropOverlayVisible(_ isVisible: Bool) {

@@ -1439,13 +1439,31 @@ func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
             continue
         }
         #expect(Set(defaults.keys) == Set(properties.keys))
-        #expect(required.count == properties.count)
+        let isBass = typeID == "virtualBassClassic" || typeID == "virtualBassHybrid"
+        let optionalKeys: Set<String> = isBass ? ["targetSettings"] : []
+        #expect(required.count == properties.count - optionalKeys.count)
         let requiredKeys = required.compactMap { value -> String? in
             guard case .string(let key) = value else { return nil }
             return key
         }
         #expect(requiredKeys.count == required.count)
-        #expect(Set(requiredKeys) == Set(properties.keys))
+        #expect(Set(requiredKeys) == Set(properties.keys).subtracting(optionalKeys))
+        if isBass {
+            #expect(defaults["bassGainDB"] == .number(3))
+            guard case .object(let gain) = properties["bassGainDB"],
+                  case .object(let amount) = properties["intensity"],
+                  case .object(let saved) = properties["targetSettings"],
+                  case .object(let targets) = saved["properties"],
+                  case .object(let targetDefaults) = defaults["targetSettings"] else {
+                Issue.record("Incomplete bass controls or per-target settings")
+                continue
+            }
+            #expect(gain["minimum"] == .number(0))
+            #expect(gain["maximum"] == .number(9))
+            #expect(amount["maximum"] == .number(2))
+            #expect(Set(targets.keys) == Set(["auto", "headphones", "speakers"]))
+            #expect(Set(targetDefaults.keys) == Set(targets.keys))
+        }
         // Every effect is audible as added: no zero strength or mix default.
         for key in ["intensity", "mix", "width", "hifiAmount"] {
             if let value = defaults[key] { #expect(value != .number(0)) }

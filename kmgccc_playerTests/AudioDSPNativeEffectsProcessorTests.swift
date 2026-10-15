@@ -67,14 +67,23 @@ final class AudioDSPNativeEffectsProcessorTests: XCTestCase {
     func testZeroWetNativeEffectsAreExactBypassWithoutLatency() {
         var dryBass = DSPClassicBassParameters()
         dryBass.intensity = 0
+        dryBass.bassGainDB = 0
         dryBass.tightenDryBass = .off
         let bassOff = DSPNodeConfiguration.classicBass(parameters: dryBass)
+        var dryHybrid = DSPHybridBassParameters()
+        dryHybrid.intensity = 0
+        dryHybrid.bassGainDB = 0
+        dryHybrid.tightenDryBass = .off
+        let hybridOff = DSPNodeConfiguration.effect(dryHybrid)
         let tubeMixOff = DSPNodeConfiguration.tube(parameters: DSPTubeParameters(mix: 0, inputTrimDB: 12))
         let hifiOff = DSPNodeConfiguration.tube(parameters: DSPTubeParameters(mode: .hifi, hifiAmount: 0))
         let identityWidth = DSPNodeConfiguration.stereoWidth(parameters: DSPStereoWidthParameters(width: 1))
         var dryReverb = DSPReverbParameters()
         dryReverb.mix = 0
         let reverbOff = DSPNodeConfiguration.effect(dryReverb)
+        var drySpatial = DSPSpatialAudioParameters()
+        drySpatial.mix = 0
+        let spatialOff = DSPNodeConfiguration.effect(drySpatial)
         let input = CanonicalPCM(
             frames: 5,
             channelCount: 2,
@@ -82,7 +91,7 @@ final class AudioDSPNativeEffectsProcessorTests: XCTestCase {
             data: [0.25, -0.25, 0.5, -0.5, 0.75, -0.75, 1, -1, -0.125, 0.125]
         )
 
-        for node in [bassOff, tubeMixOff, hifiOff, identityWidth, reverbOff] {
+        for node in [bassOff, hybridOff, tubeMixOff, hifiOff, identityWidth, reverbOff, spatialOff] {
             let runtime = processor(nodes: [node], format: stereoFormat(sampleRate: 48_000))
             XCTAssertTrue(runtime.isBypassed, node.typeID)
             XCTAssertEqual(runtime.processingLatencyFrames, 0)
@@ -96,6 +105,13 @@ final class AudioDSPNativeEffectsProcessorTests: XCTestCase {
         XCTAssertEqual(trimmed.processingLatencyFrames, 0)
         let gain = Float(pow(10, -6.0 / 20))
         for (output, sample) in zip(trimmed.process(input).data, input.data) {
+            XCTAssertEqual(output, sample * gain, accuracy: 1e-6)
+        }
+
+        drySpatial.outputTrimDB = -6
+        let spatialTrimmed = processor(nodes: [.effect(drySpatial)], format: stereoFormat(sampleRate: 48_000))
+        XCTAssertEqual(spatialTrimmed.processingLatencyFrames, 0)
+        for (output, sample) in zip(spatialTrimmed.process(input).data, input.data) {
             XCTAssertEqual(output, sample * gain, accuracy: 1e-6)
         }
     }
@@ -601,6 +617,7 @@ final class AudioDSPNativeEffectsProcessorTests: XCTestCase {
     ) -> DSPClassicBassParameters {
         var parameters = DSPClassicBassParameters()
         parameters.target = .speakers
+        parameters.bassGainDB = 0
         parameters.intensity = intensity
         parameters.character = character
         parameters.tightenDryBass = tighten
@@ -695,6 +712,55 @@ final class AudioDSPEffectsV2KernelTests: XCTestCase {
         }
     }
 
+    /// Widening keeps the centre at unity, so the chain is not turned down
+    /// to make room for it.
+    func testWideningReservesNoAutomaticHeadroom() {
+        let runtime = AudioDSPProcessor(
+            configuration: AudioDSPConfiguration(
+                enabled: true,
+                headroom: DSPHeadroomConfiguration(mode: .automatic),
+                nodes: [.stereoWidth(parameters: DSPStereoWidthParameters(width: 3))]
+            ),
+            format: DSPAudioFormat(sampleRate: sampleRate, channelCount: 2, rawLayoutData: nil,
+                                   channelLabels: [UInt32(kAudioChannelLabel_Left), UInt32(kAudioChannelLabel_Right)],
+                                   layoutIsKnown: true)
+        )
+        XCTAssertFalse(runtime.isBypassed)
+        XCTAssertEqual(runtime.headroomDB, 0, accuracy: 1e-9)
+    }
+
+    /// The harmonic supplement must not turn the beat between bass notes
+    /// into a loud pitch of its own.
+    func testClassicBassSuppressesDifferenceTones() {
+        var parameters = DSPClassicBassParameters()
+        parameters.target = .headphones
+        parameters.bassGainDB = 0
+        parameters.intensity = 1
+        parameters.tightenDryBass = .off
+        let format = DSPAudioFormat(sampleRate: sampleRate, channelCount: 1, rawLayoutData: nil,
+                                    channelLabels: [UInt32(kAudioChannelLabel_Mono)], layoutIsKnown: true)
+        let runtime = AudioDSPProcessor(
+            configuration: AudioDSPConfiguration(enabled: true, headroom: DSPHeadroomConfiguration(mode: .off),
+                                                 nodes: [.effect(parameters)],
+                                                 limiter: DSPLimiterConfiguration(enabled: false)),
+            format: format)
+        let frames = Int(sampleRate * 1.5)
+        let input = CanonicalPCM(frames: frames, channelCount: 1, sampleRate: sampleRate, data: (0..<frames).map {
+            let t = Double($0) / sampleRate
+            return Float(0.2 * sin(2 * Double.pi * 40 * t) + 0.1 * sin(2 * Double.pi * 55 * t))
+        })
+        let output = runtime.process(input).data.map(Double.init)
+        let analysis = Int(sampleRate / 2)..<frames
+        func level(_ frequency: Double) -> Double {
+            20 * log10(max(Self.magnitude(output, channels: 1, frequency: frequency, sampleRate: sampleRate,
+                                          frames: analysis), 1e-12))
+        }
+        let third = level(120)
+        XCTAssertGreaterThan(third, -50, "the low-order harmonic supplement remains present")
+        XCTAssertLessThan(level(105) - third, -12)
+        XCTAssertLessThan(level(180) - third, -12)
+    }
+
     func testStereoWidthPassesAMonoSourceUnchanged() throws {
         var kernel = try XCTUnwrap(DSPStereoWidthKernel(leftChannel: 0, rightChannel: 1, sampleRate: sampleRate,
                                                         parameters: DSPStereoWidthParameters()))
@@ -725,11 +791,136 @@ final class AudioDSPEffectsV2KernelTests: XCTestCase {
         }
     }
 
+    func testHRTFWindowRetainsLateEnergyAndInterauralTiming() {
+        for rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            let count = Int(rate * 0.04)
+            let start = Int(rate * 0.001)
+            let leftArrival = Int(rate * 0.012)
+            let rightArrival = Int(rate * 0.0125)
+            var left = [Double](repeating: 0, count: count)
+            var right = left
+            left[leftArrival] = 1
+            right[rightArrival] = 0.6
+            // Negligible captured noise should not keep the whole 40 ms buffer.
+            left[count - 1] = 1e-10
+            let response = DSPSystemHRTF.Response(left: left, right: right)
+                .windowed(from: start, minimumLength: Int(rate * 0.006), sampleRate: rate)
+            XCTAssertEqual(response.left.count, response.right.count)
+            XCTAssertLessThan(response.left.count, count - start)
+            XCTAssertEqual(response.left[leftArrival - start], 1)
+            XCTAssertEqual(response.right[rightArrival - start], 0.6)
+            XCTAssertEqual(response.left.indices.max { abs(response.left[$0]) < abs(response.left[$1]) },
+                           leftArrival - start)
+            XCTAssertEqual(response.right.indices.max { abs(response.right[$0]) < abs(response.right[$1]) },
+                           rightArrival - start)
+        }
+    }
+
+    func testSpatialBlendAlignsDirectSoundWithoutBoostingTheCentre() throws {
+        let delay = 96
+        var response = [Double](repeating: 0, count: 128)
+        response[delay] = 1
+        let spectra = try XCTUnwrap(DSPConvolutionSpectra(responses: [response, [0], [0], response]))
+        let engine = try XCTUnwrap(DSPConvolutionEngine(spectra: spectra, routes: [
+            .init(input: 0, output: 0, path: 0), .init(input: 0, output: 1, path: 1),
+            .init(input: 1, output: 0, path: 2), .init(input: 1, output: 1, path: 3),
+        ], inputCount: 2, outputCount: 2))
+        var parameters = DSPSpatialAudioParameters()
+        parameters.mix = 0.5
+        parameters.loudnessMatchEnabled = false
+        var kernel = DSPSpatialAudioKernel(format: stereoFormat(sampleRate: sampleRate), leftChannel: 0,
+            rightChannel: 1, engine: engine, parameters: parameters, distance: 2, directDelayFrames: delay)
+        XCTAssertEqual(kernel.latencyFrames, engine.latencyFrames + delay)
+        let frames = 1_024
+        let impulse = 128
+        var samples = [Double](repeating: 0, count: frames * 2)
+        samples[impulse * 2] = 0.25
+        samples[impulse * 2 + 1] = 0.25
+        samples.withUnsafeMutableBufferPointer { kernel.process($0.baseAddress!, frames: frames, channels: 2) }
+        for frame in 0..<frames {
+            let expected = frame == impulse + kernel.latencyFrames ? 0.25 : 0
+            XCTAssertEqual(samples[frame * 2], expected, accuracy: 1e-10)
+            XCTAssertEqual(samples[frame * 2 + 1], expected, accuracy: 1e-10)
+        }
+    }
+
+    func testSpatialBlendPreservesTheOppositeEarsDelay() throws {
+        let nearDelay = 80
+        let farDelay = 104
+        var near = [Double](repeating: 0, count: 128)
+        var far = near
+        near[nearDelay] = 1
+        far[farDelay] = 0.5
+        let spectra = try XCTUnwrap(DSPConvolutionSpectra(responses: [near, far, far, near]))
+        let engine = try XCTUnwrap(DSPConvolutionEngine(spectra: spectra, routes: [
+            .init(input: 0, output: 0, path: 0), .init(input: 0, output: 1, path: 1),
+            .init(input: 1, output: 0, path: 2), .init(input: 1, output: 1, path: 3),
+        ], inputCount: 2, outputCount: 2))
+        var parameters = DSPSpatialAudioParameters()
+        parameters.mix = 0.5
+        parameters.loudnessMatchEnabled = false
+        var kernel = DSPSpatialAudioKernel(format: stereoFormat(sampleRate: sampleRate), leftChannel: 0,
+            rightChannel: 1, engine: engine, parameters: parameters, distance: 2, directDelayFrames: nearDelay)
+        let frames = 1_024
+        let impulse = 128
+        var samples = [Double](repeating: 0, count: frames * 2)
+        samples[impulse * 2] = 0.4
+        samples.withUnsafeMutableBufferPointer { kernel.process($0.baseAddress!, frames: frames, channels: 2) }
+        let leftPeak = (0..<frames).max { abs(samples[$0 * 2]) < abs(samples[$1 * 2]) }
+        let rightPeak = (0..<frames).max { abs(samples[$0 * 2 + 1]) < abs(samples[$1 * 2 + 1]) }
+        XCTAssertEqual(leftPeak, impulse + engine.latencyFrames + nearDelay)
+        XCTAssertEqual(rightPeak, impulse + engine.latencyFrames + farDelay)
+        XCTAssertEqual(samples[(impulse + engine.latencyFrames + farDelay) * 2 + 1], 0.1, accuracy: 1e-10)
+    }
+
+    func testDefaultSpatialSoundHasNoRoomTail() throws {
+        let clean = try XCTUnwrap(DSPRoomSynthesis.responses(parameters: DSPSpatialAudioParameters(),
+                                                            sampleRate: sampleRate))
+        var parameters = DSPSpatialAudioParameters()
+        parameters.room = .studio
+        let room = try XCTUnwrap(DSPRoomSynthesis.responses(parameters: parameters, sampleRate: sampleRate))
+        let start = Int(sampleRate * 0.08)
+        func lateEnergy(_ paths: [[Double]]) -> Double {
+            paths.reduce(0) { total, path in
+                total + path.dropFirst(start).reduce(0) { $0 + $1 * $1 }
+            }
+        }
+        XCTAssertTrue(clean.paths.allSatisfy { $0.allSatisfy(\.isFinite) })
+        XCTAssertEqual(lateEnergy(clean.paths), 0, accuracy: 1e-12)
+        XCTAssertGreaterThan(lateEnergy(room.paths), 1e-8)
+        XCTAssertGreaterThan(clean.directDelayFrames, 0)
+    }
+
+    func testSpatialCentreStaysOnTheProcessorsSourceTimeline() throws {
+        var parameters = DSPSpatialAudioParameters()
+        parameters.loudnessMatchEnabled = false
+        let responses = try XCTUnwrap(DSPRoomSynthesis.responses(parameters: parameters, sampleRate: sampleRate))
+        let runtime = processor(nodes: [.effect(parameters)], format: stereoFormat(sampleRate: sampleRate))
+        XCTAssertEqual(runtime.processingLatencyFrames,
+                       DSPConvolutionSpectra.headBlockSize + responses.directDelayFrames)
+        let frames = 2_048
+        let impulse = 512
+        var samples = [Float](repeating: 0, count: frames * 2)
+        samples[impulse * 2] = 0.25
+        samples[impulse * 2 + 1] = 0.25
+        let output = runtime.process(CanonicalPCM(frames: frames, channelCount: 2,
+                                                 sampleRate: sampleRate, data: samples))
+        let peak = (0..<frames).max { left, right in
+            func power(_ frame: Int) -> Float {
+                let l = output.data[frame * 2], r = output.data[frame * 2 + 1]
+                return l * l + r * r
+            }
+            return power(left) < power(right)
+        }
+        XCTAssertEqual(peak, impulse)
+    }
+
     /// The virtual speakers sit in a quiet room: a centred source reaches
     /// both ears alike and the late tail stays well under the early sound.
     func testSpatialRoomIsBalancedAndLight() throws {
-        let responses = try XCTUnwrap(DSPRoomSynthesis.responses(parameters: DSPSpatialAudioParameters(),
-                                                                 sampleRate: sampleRate))
+        var parameters = DSPSpatialAudioParameters()
+        parameters.room = .studio
+        let responses = try XCTUnwrap(DSPRoomSynthesis.responses(parameters: parameters, sampleRate: sampleRate))
         let paths = responses.paths
         XCTAssertEqual(paths.count, 4)
         XCTAssertTrue(paths.allSatisfy { $0.allSatisfy(\.isFinite) })
@@ -862,6 +1053,370 @@ final class AudioDSPEffectsV2KernelTests: XCTestCase {
             return 20 * log10(max(third, 1e-12) / fundamental)
         }
         XCTAssertGreaterThan(harmonicDB(intensity: 1) - harmonicDB(intensity: 0.05), 15)
+    }
+
+    func testBassEffectsPreserveMidrangeLevelWithAutomaticHeadroom() {
+        let frames = Int(sampleRate * 2)
+        let analysis = Int(sampleRate)..<frames
+        let input = bassTestSignal(frames: frames) { time in
+            0.02 * sin(2 * Double.pi * 40 * time) + 0.08 * sin(2 * Double.pi * 1_000 * time)
+        }
+        for cutoff in [50.0, 140.0] {
+            for intensity in [0.5, 1.0, 2.0] {
+                for node in bassTestNodes(intensity: intensity, cutoff: cutoff, bassGainDB: 9) {
+                    let runtime = bassTestProcessor(node, automaticHeadroom: true, limiterEnabled: true)
+                    XCTAssertEqual(runtime.headroomDB, 0, accuracy: 1e-9)
+                    let output = runtime.process(input).data.map(Double.init)
+                    let mid = Self.magnitude(output, channels: 1, frequency: 1_000,
+                                             sampleRate: sampleRate, frames: analysis)
+                    let bass = Self.magnitude(output, channels: 1, frequency: 40,
+                                              sampleRate: sampleRate, frames: analysis)
+                    XCTAssertEqual(20 * log10(mid / 0.08), 0, accuracy: 0.05,
+                                   "enabling bass must preserve the rest of the music")
+                    XCTAssertGreaterThan(20 * log10(bass / 0.02), 1,
+                                         "automatic speaker tuning must keep and reinforce the original bass")
+                }
+            }
+        }
+    }
+
+    func testBassGainWorksIndependentlyOfVirtualAmountWithoutLatency() throws {
+        let frames = Int(sampleRate * 2)
+        let analysis = Int(sampleRate)..<frames
+        let input = bassTestSignal(frames: frames) { 0.05 * sin(2 * Double.pi * 50 * $0) }
+        var gains = [[Double](), [Double]()]
+        for bassGainDB in [0.0, 3.0, 6.0, 9.0] {
+            for (index, node) in bassTestNodes(intensity: 0, cutoff: 50, bassGainDB: bassGainDB).enumerated() {
+                let runtime = bassTestProcessor(node)
+                XCTAssertEqual(runtime.processingLatencyFrames, 0)
+                let output = runtime.process(input).data.map(Double.init)
+                XCTAssertNotNil(runtime.stateSnapshot(), "gain-only mode carries value state")
+                let fundamental = Self.magnitude(output, channels: 1, frequency: 50,
+                                                sampleRate: sampleRate, frames: analysis)
+                let gain = 20 * log10(fundamental / 0.05)
+                gains[index].append(gain)
+                XCTAssertEqual(gain, bassGainDB / 2, accuracy: 0.02, "shelf turnover has half the selected gain")
+                let harmonic = Self.magnitude(output, channels: 1, frequency: 100,
+                                             sampleRate: sampleRate, frames: analysis)
+                XCTAssertLessThan(harmonic, fundamental * 1e-4, "gain alone must not synthesize harmonics")
+
+                let restored = bassTestProcessor(node)
+                XCTAssertTrue(restored.restoreState(try XCTUnwrap(runtime.stateSnapshot())))
+                let next = input.slice(frameOffset: 0, frameCount: 1_024)
+                XCTAssertEqual(restored.process(next).data, runtime.process(next).data)
+            }
+        }
+        for levels in gains {
+            XCTAssertEqual(levels[0], 0, accuracy: 0.01)
+            XCTAssertGreaterThan(levels[3], 4.4)
+            XCTAssertGreaterThan(levels[3] - levels[2], 1.2)
+            for index in 1..<levels.count {
+                XCTAssertGreaterThan(levels[index], levels[index - 1])
+            }
+        }
+    }
+
+    func testExpandedVirtualAmountRaisesHarmonicsWithoutIncreasingTheFundamental() {
+        let frames = Int(sampleRate * 3)
+        let analysis = Int(sampleRate)..<frames
+        let input = bassTestSignal(frames: frames) { 0.05 * sin(2 * Double.pi * 40 * $0) }
+        var harmonics = [[Double](), [Double]()]
+        for intensity in [0.5, 1.0, 2.0] {
+            for (index, node) in bassTestNodes(intensity: intensity, cutoff: 80, bassGainDB: 0).enumerated() {
+                let output = bassTestProcessor(node).process(input).data.map(Double.init)
+                let fundamental = Self.magnitude(output, channels: 1, frequency: 40,
+                                                sampleRate: sampleRate, frames: analysis)
+                let harmonic = Self.magnitude(output, channels: 1, frequency: 80,
+                                             sampleRate: sampleRate, frames: analysis)
+                XCTAssertEqual(20 * log10(fundamental / 0.05), 0, accuracy: 0.05)
+                harmonics[index].append(harmonic)
+            }
+        }
+        for levels in harmonics {
+            XCTAssertGreaterThan(levels[0], 1e-4)
+            XCTAssertGreaterThan(levels[1], levels[0] * 1.7)
+            XCTAssertGreaterThan(levels[2], levels[1] * 1.7)
+        }
+    }
+
+    func testAddedBassPeakControlReducesBroadbandLimiterAttenuation() {
+        let frames = Int(sampleRate * 2)
+        let analysis = Int(sampleRate)..<frames
+        let input = bassTestSignal(frames: frames) { time in
+            0.58 * sin(2 * Double.pi * 1_000 * time) + 0.28 * sin(2 * Double.pi * 40 * time)
+        }
+        for node in bassTestNodes(intensity: 0, cutoff: 80, bassGainDB: 9) {
+            let runtime = bassTestProcessor(node, automaticHeadroom: true, limiterEnabled: true)
+            let output = runtime.process(input).data.map(Double.init)
+            XCTAssertTrue(output.allSatisfy(\.isFinite))
+            XCTAssertLessThanOrEqual(output.map { abs($0) }.max() ?? 0, pow(10, -1.0 / 20) + 1e-6)
+            let mid = Self.magnitude(output, channels: 1, frequency: 1_000,
+                                     sampleRate: sampleRate, frames: analysis)
+            let bass = Self.magnitude(output, channels: 1, frequency: 40,
+                                      sampleRate: sampleRate, frames: analysis)
+            // At overload, added bass is compressed. Some spectral interaction
+            // remains, but the whole song should not take the full bass boost down.
+            XCTAssertGreaterThan(20 * log10(mid / 0.58), -1.5)
+            XCTAssertGreaterThan(20 * log10(bass / 0.28), 6.5)
+        }
+    }
+
+    func testVirtualBassProducesConsecutiveAudibleHarmonicsWithTheShelfOff() {
+        let frames = Int(sampleRate * 3)
+        let analysis = Int(sampleRate)..<frames
+        let cases: [(frequency: Double, cutoff: Double)] = [
+            (40, 50), (50, 50), (60, 80), (80, 140), (100, 140), (120, 200), (40, 200),
+        ]
+        for test in cases {
+            let input = bassTestSignal(frames: frames) { 0.1 * sin(2 * Double.pi * test.frequency * $0) }
+            for node in bassTestNodes(intensity: 2, cutoff: test.cutoff, bassGainDB: 0) {
+                let output = bassTestProcessor(node).process(input).data.map(Double.init)
+                let fundamental = windowedBassMagnitude(output, frequency: test.frequency, frames: analysis)
+                XCTAssertEqual(20 * log10(fundamental / 0.1), 0, accuracy: 0.12)
+                var consecutive = 0, longest = 0
+                for order in 2...20 where Double(order) * test.frequency <= 800 {
+                    let frequency = Double(order) * test.frequency
+                    let amplitude = windowedBassMagnitude(output, frequency: frequency, frames: analysis)
+                    consecutive = frequency >= 80 && amplitude > 0.01 ? consecutive + 1 : 0
+                    longest = max(longest, consecutive)
+                }
+                XCTAssertGreaterThanOrEqual(longest, 3,
+                    "\(node.typeID) at \(test.frequency) Hz needs consecutive pitch cues with bassGainDB=0")
+            }
+        }
+    }
+
+    func testZeroBassStrengthPreservesAutomaticSpeakerTuningExactly() {
+        let input = bassTestSignal(frames: 8_192) { time in
+            0.1 * sin(2 * Double.pi * 40 * time) + 0.1 * sin(2 * Double.pi * 400 * time)
+        }
+        for node in bassTestNodes(intensity: 0, cutoff: 140, bassGainDB: 0) {
+            let runtime = bassTestProcessor(node, automaticHeadroom: true, limiterEnabled: false)
+            XCTAssertEqual(runtime.headroomDB, 0, accuracy: 1e-9)
+            XCTAssertEqual(runtime.processingLatencyFrames, 0)
+            XCTAssertEqual(runtime.process(input).data, input.data)
+        }
+    }
+
+    func testHybridBassKeepsHalfBinTonesAndTheSelectedCutoffActive() {
+        let frames = Int(sampleRate * 3)
+        var ratios: [Double] = []
+        for frequency in [49.9, 50.0, 50.1] {
+            let input = bassTestSignal(frames: frames) { 0.1 * sin(2 * Double.pi * frequency * $0) }
+            let output = hybridBassProcessor(intensity: 1, cutoff: 50).process(input).data.map(Double.init)
+            for segment in 4..<10 {
+                let analysis = Int(Double(segment) * sampleRate * 0.25)..<Int(Double(segment + 1) * sampleRate * 0.25)
+                let fundamental = windowedBassMagnitude(output, frequency: frequency, frames: analysis)
+                let harmonic = windowedBassMagnitude(output, frequency: 2 * frequency, frames: analysis)
+                ratios.append(harmonic / fundamental)
+                XCTAssertGreaterThan(harmonic / fundamental, 0.3,
+                    "a stable tone must not repeatedly lose its harmonics when the nearest FFT bin changes")
+            }
+        }
+        XCTAssertLessThan((ratios.max() ?? 0) / (ratios.min() ?? 1), 1.2)
+        let outside = bassTestSignal(frames: frames) { 0.1 * sin(2 * Double.pi * 58 * $0) }
+        let outsideOutput = hybridBassProcessor(intensity: 2, cutoff: 50).process(outside).data.map(Double.init)
+        XCTAssertLessThan(windowedBassMagnitude(outsideOutput, frequency: 116, frames: Int(sampleRate)..<frames), 1e-4,
+                          "the fade belongs above the requested source band")
+    }
+
+    func testHybridTransientHarmonicsFollowQuietKicksWithoutExtraBoostAbove100Percent() {
+        let frames = Int(sampleRate)
+        var powers: [Double] = []
+        for amplitude in [0.03, 0.3] {
+            let input = bassTestSignal(frames: frames) { time in
+                guard time >= 0.1, time < 0.175 else { return 0 }
+                let window = pow(sin(Double.pi * (time - 0.1) / 0.075), 2)
+                return amplitude * window * sin(2 * Double.pi * 43.7 * time)
+            }
+            func addedTransient(intensity: Double) -> [Double] {
+                let without = hybridBassProcessor(transient: 0, intensity: intensity, cutoff: 80).process(input).data
+                let with = hybridBassProcessor(transient: 1, intensity: intensity, cutoff: 80).process(input).data
+                return zip(with, without).map { Double($0.0) - Double($0.1) }
+            }
+            let wet = addedTransient(intensity: 1)
+            let doubled = addedTransient(intensity: 2)
+            for index in wet.indices { XCTAssertEqual(wet[index], doubled[index], accuracy: 1e-6) }
+            let power = wet.reduce(0.0) { $0 + $1 * $1 }
+            XCTAssertGreaterThan(power, 1e-4, "the transient branch must actually add harmonics")
+            powers.append(power)
+        }
+        XCTAssertEqual(10 * log10(powers[1] / powers[0]), 20, accuracy: 1,
+                       "a quieter kick should retain the same virtual-bass proportion")
+    }
+
+    func testHybridBassEnhancesExistingHarmonicsInEveryPhase() {
+        let fundamental = 43.7
+        let frames = Int(sampleRate * 3)
+        let analysis = Int(sampleRate)..<frames
+        for phase in [0.0, Double.pi / 2, Double.pi, 3 * Double.pi / 2] {
+            let input = bassTestSignal(frames: frames) { time in
+                0.1 * sin(2 * Double.pi * fundamental * time)
+                    + 0.002 * sin(4 * Double.pi * fundamental * time + phase)
+            }
+            let output = hybridBassProcessor().process(input)
+            let before = Self.magnitude(input.data.map(Double.init), channels: 1, frequency: 2 * fundamental,
+                                        sampleRate: sampleRate, frames: analysis)
+            let after = Self.magnitude(output.data.map(Double.init), channels: 1, frequency: 2 * fundamental,
+                                       sampleRate: sampleRate, frames: analysis)
+            XCTAssertGreaterThan(after, before * 1.5, "phase \(phase): enhancement must not cancel the existing harmonic")
+        }
+    }
+
+    func testHybridBassKeepsAdjacentBassNotesFromDetuningItsHarmonics() {
+        let fundamental = 43.7
+        let neighbour = 57.3
+        let frames = Int(sampleRate * 3)
+        let input = bassTestSignal(frames: frames) { time in
+            0.1 * sin(2 * Double.pi * fundamental * time) + 0.055 * sin(2 * Double.pi * neighbour * time)
+        }
+        let output = hybridBassProcessor().process(input)
+        let wet = zip(output.data, input.data).map { Double($0.0) - Double($0.1) }
+        let analysis = Int(sampleRate)..<frames
+        let harmonic = windowedBassMagnitude(wet, frequency: 2 * fundamental, frames: analysis)
+        XCTAssertGreaterThan(harmonic, 0.003, "the harmonic supplement remains present")
+        let beat = neighbour - fundamental
+        for frequency in [2 * fundamental - beat, 2 * fundamental + beat] {
+            let sideband = windowedBassMagnitude(wet, frequency: frequency, frames: analysis)
+            XCTAssertLessThan(sideband, harmonic * 0.06, "a nearby note must not wobble the synthesized pitch")
+        }
+    }
+
+    func testHybridBassPreservesChunkingResetAndRawWarmupWithPitchHistory() {
+        let input = bassTestSignal(frames: Int(sampleRate * 2)) { time in
+            let frequency = time < 1 ? 43.7 : 57.3
+            return 0.1 * sin(2 * Double.pi * frequency * time)
+        }
+        let wholeRuntime = hybridBassProcessor()
+        let expected = wholeRuntime.process(input).data
+        let runtime = hybridBassProcessor()
+        let sizes = [37, 12_001, 997, 4_096]
+        var chunked: [Float] = []
+        var offset = 0
+        var index = 0
+        while offset < input.frames {
+            let count = min(sizes[index % sizes.count], input.frames - offset)
+            let end = offset + count
+            chunked.append(contentsOf: runtime.process(input.slice(frameOffset: offset, frameCount: count),
+                lookahead: input.slice(frameOffset: end, frameCount: runtime.processingLatencyFrames)).data)
+            offset = end
+            index += 1
+        }
+        XCTAssertEqual(chunked, expected)
+        runtime.reset()
+        XCTAssertEqual(runtime.process(input).data, expected)
+
+        let original = hybridBassProcessor()
+        let prefixFrames = Int(sampleRate * 0.8)
+        _ = original.process(input.slice(frameOffset: 0, frameCount: prefixFrames),
+                             lookahead: input.slice(frameOffset: prefixFrames, frameCount: original.processingLatencyFrames))
+        XCTAssertNil(original.stateSnapshot(), "reference-state kernels recover through raw warmup")
+        let suffix = input.slice(frameOffset: prefixFrames, frameCount: input.frames - prefixFrames)
+        let continued = original.process(suffix)
+        let warmed = hybridBassProcessor()
+        warmed.warm(with: [input.slice(frameOffset: 0, frameCount: prefixFrames)])
+        XCTAssertEqual(warmed.process(suffix).data, continued.data)
+    }
+
+    func testBassEffectsDecayAfterAShortBassBurst() {
+        let frames = Int(sampleRate * 2)
+        let input = bassTestSignal(frames: frames) { time in
+            guard time >= 0.1, time < 0.3 else { return 0 }
+            let window = pow(sin(Double.pi * (time - 0.1) / 0.2), 2)
+            return 0.3 * window * sin(2 * Double.pi * 43.7 * time)
+        }
+        var classic = DSPClassicBassParameters()
+        classic.target = .headphones
+        classic.bassGainDB = 0
+        classic.intensity = 1
+        classic.tightenDryBass = .off
+        var expandedClassic = classic
+        expandedClassic.bassGainDB = 9
+        expandedClassic.intensity = 2
+        let expandedHybrid: [AudioDSPProcessor] = [50.0, 200.0].map { cutoff in
+            var parameters = DSPHybridBassParameters()
+            parameters.target = .headphones
+            parameters.bassGainDB = 9
+            parameters.intensity = 2
+            parameters.transient = 1
+            parameters.cutoffHz = cutoff
+            return bassTestProcessor(.effect(parameters), limiterEnabled: true)
+        }
+        for runtime in [bassTestProcessor(.effect(classic)),
+                        hybridBassProcessor(intensity: 1, cutoff: 50),
+                        hybridBassProcessor(transient: 1, intensity: 1, cutoff: 50),
+                        hybridBassProcessor(intensity: 1, cutoff: 200),
+                        hybridBassProcessor(transient: 1, intensity: 1, cutoff: 200),
+                        bassTestProcessor(.effect(expandedClassic), limiterEnabled: true)] + expandedHybrid {
+            let output = runtime.process(input).data.map(Double.init)
+            XCTAssertTrue(output.allSatisfy(\.isFinite))
+            XCTAssertLessThan(output.map { abs($0) }.max() ?? 0, 0.9)
+            let active = Int(sampleRate * 0.1)..<Int(sampleRate * 0.6)
+            let tail = Int(sampleRate * 0.65)..<Int(sampleRate * 1.15)
+            let activePower = active.reduce(0.0) { $0 + output[$1] * output[$1] } / Double(active.count)
+            let tailPower = tail.reduce(0.0) { $0 + output[$1] * output[$1] } / Double(tail.count)
+            XCTAssertGreaterThan(activePower, 1e-4)
+            XCTAssertLessThan(tailPower, activePower * 1e-4, "the burst must not leave bass noise in silence")
+        }
+    }
+
+    private func bassTestSignal(frames: Int, sample: (Double) -> Double) -> CanonicalPCM {
+        CanonicalPCM(frames: frames, channelCount: 1, sampleRate: sampleRate,
+                     data: (0..<frames).map { Float(sample(Double($0) / sampleRate)) })
+    }
+
+    private func hybridBassProcessor(transient: Double = 0, intensity: Double = 0.5,
+                                     cutoff: Double = 93, bassGainDB: Double = 0) -> AudioDSPProcessor {
+        var parameters = DSPHybridBassParameters()
+        parameters.target = .headphones
+        parameters.cutoffHz = cutoff
+        parameters.intensity = intensity
+        parameters.bassGainDB = bassGainDB
+        parameters.transient = transient
+        parameters.tightenDryBass = .off
+        return bassTestProcessor(.effect(parameters))
+    }
+
+    private func bassTestNodes(intensity: Double, cutoff: Double, bassGainDB: Double = 3) -> [DSPNodeConfiguration] {
+        var classic = DSPClassicBassParameters()
+        classic.target = .speakers
+        classic.intensity = intensity
+        classic.bassGainDB = bassGainDB
+        classic.cutoffHz = cutoff
+        classic.tightenDryBass = .automatic
+        var hybrid = DSPHybridBassParameters()
+        hybrid.target = .speakers
+        hybrid.intensity = intensity
+        hybrid.bassGainDB = bassGainDB
+        hybrid.cutoffHz = cutoff
+        hybrid.transient = 0
+        hybrid.tightenDryBass = .automatic
+        return [.effect(classic), .effect(hybrid)]
+    }
+
+    private func bassTestProcessor(_ node: DSPNodeConfiguration, automaticHeadroom: Bool = false,
+                                   limiterEnabled: Bool = false) -> AudioDSPProcessor {
+        AudioDSPProcessor(
+            configuration: AudioDSPConfiguration(enabled: true,
+                                                 headroom: DSPHeadroomConfiguration(mode: automaticHeadroom ? .automatic : .off),
+                                                 nodes: [node], limiter: DSPLimiterConfiguration(enabled: limiterEnabled)),
+            format: DSPAudioFormat(sampleRate: sampleRate, channelCount: 1, rawLayoutData: nil,
+                                   channelLabels: [UInt32(kAudioChannelLabel_Mono)], layoutIsKnown: true)
+        )
+    }
+
+    /// Hann analysis separates a generated partial from leakage of the much
+    /// louder, non-integer-cycle dry bass notes beside it.
+    private func windowedBassMagnitude(_ values: [Double], frequency: Double, frames: Range<Int>) -> Double {
+        var real = 0.0, imaginary = 0.0, weight = 0.0
+        for (index, frame) in frames.enumerated() {
+            let window = 0.5 - 0.5 * cos(2 * Double.pi * Double(index) / Double(frames.count))
+            let angle = 2 * Double.pi * frequency * Double(frame) / sampleRate
+            real += values[frame] * window * cos(angle)
+            imaginary -= values[frame] * window * sin(angle)
+            weight += window
+        }
+        return 2 * hypot(real, imaginary) / weight
     }
 
     // MARK: Helpers

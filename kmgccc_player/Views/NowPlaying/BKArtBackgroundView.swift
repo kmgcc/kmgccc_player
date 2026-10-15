@@ -2019,15 +2019,12 @@ private final class BKArtBackgroundLayerView: NSView {
         )
 
         let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
-        let renderContext = currentBackgroundRenderContext()
-        let rendered = renderContext.createCGImage(
+        return SharedCoreImageContext.context.createCGImage(
             tinted,
             from: input.extent,
             format: .RGBA8,
             colorSpace: outputSpace
         )
-        renderContext.clearCaches()
-        return rendered
     }
 
     private func startTimersIfNeeded() {
@@ -3072,36 +3069,12 @@ private final class BKArtBackgroundLayerView: NSView {
         }
         let finalImage = toneMap(image: composed, isDark: isDark)
         let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
-        let ctx = currentBackgroundRenderContext()
-        let rendered = ctx.createCGImage(
+        return SharedCoreImageContext.context.createCGImage(
             finalImage,
             from: input.extent,
             format: .RGBA8,
             colorSpace: outputSpace
         )
-        ctx.clearCaches()
-        return rendered
-    }
-
-    private nonisolated(unsafe) static var backgroundRenderContext: CIContext?
-    private nonisolated static let backgroundRenderContextLock = NSLock()
-
-    private nonisolated static func currentBackgroundRenderContext() -> CIContext {
-        backgroundRenderContextLock.lock()
-        defer { backgroundRenderContextLock.unlock() }
-        if let existing = backgroundRenderContext {
-            return existing
-        }
-        let created = CIContext(options: [.cacheIntermediates: false])
-        backgroundRenderContext = created
-        return created
-    }
-
-    private nonisolated static func clearBackgroundRenderContext() {
-        backgroundRenderContextLock.lock()
-        defer { backgroundRenderContextLock.unlock() }
-        backgroundRenderContext?.clearCaches()
-        backgroundRenderContext = nil
     }
 
     private nonisolated static func toneMap(image: CIImage, isDark: Bool) -> CIImage {
@@ -3615,7 +3588,6 @@ private final class BKArtBackgroundLayerView: NSView {
         backgroundAssetMode = .currentPhaseLowRes
         tintedBackgroundCache.removeAllObjects()
         assets.purgeTransientCaches()
-        Self.clearBackgroundRenderContext()
         layer?.removeAllAnimations()
         layer?.mask = nil
         layer?.contents = nil

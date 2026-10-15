@@ -200,6 +200,14 @@ nonisolated final class LEDMeterProcessor: @unchecked Sendable {
         rebuildFFT()
     }
 
+    // The provider releases its service when Now Playing closes and builds a
+    // new one on the next visit, so each processor must free its FFT setup.
+    deinit {
+        if let fftSetup {
+            vDSP_destroy_fftsetup(fftSetup)
+        }
+    }
+
     func prepare(sampleRate: Float) {
         self.sampleRate = sampleRate
     }

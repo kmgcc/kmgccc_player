@@ -327,20 +327,44 @@ nonisolated enum CacheManager {
         )
     }
 
+    @MainActor
+    static func trimRoutinePlaybackMemory() {
+        NativeLyricsSurfaceManager.shared.purgeInactiveRenderingResources()
+        NativeLyricsSurfaceManager.shared.trimRoutineMemory()
+        FastArtworkMemoryCache.shared.removeAll()
+        DSPMeterBus.shared.clear()
+        ArtistArtworkGenerator.clearMemory()
+        if !HomeWindowLayoutState.shared.isHomeMode {
+            clearHomeHeroArtworkMemoryCaches()
+        }
+        BKThemeAssets.shared.purgeTransientCaches()
+        HomeAmbientShapesBackground.purgeCaches()
+        Task {
+            await ArtworkLoader.clearMemoryCache()
+            if !HomeWindowLayoutState.shared.isHomeMode {
+                await CoverGradientBlurMemory.clear()
+            }
+            await ArtworkAssetStore.shared.trimCachedImages()
+            trimProcessMemory()
+        }
+        CATransaction.begin()
+        CATransaction.flush()
+        CATransaction.commit()
+        trimProcessMemory()
+    }
+
     nonisolated static func trimProcessMemory() {
         sqlite3_release_memory(Int32.max)
-        let pressureGoal = 1024 * 1024 * 1024
         var count: UInt32 = 0
         var zonesPtr: UnsafeMutablePointer<vm_address_t>?
         if malloc_get_all_zones(mach_task_self_, nil, &zonesPtr, &count) == KERN_SUCCESS, let zonesPtr {
             for i in 0..<Int(count) {
                 if let zone = UnsafeMutablePointer<malloc_zone_t>(bitPattern: UInt(zonesPtr[i])) {
-                    malloc_zone_pressure_relief(zone, pressureGoal)
+                    malloc_zone_pressure_relief(zone, 0)
                 }
             }
-        } else {
-            malloc_zone_pressure_relief(nil, pressureGoal)
         }
+        malloc_zone_pressure_relief(nil, 0)
     }
 
     @MainActor
@@ -351,6 +375,9 @@ nonisolated enum CacheManager {
         HomePlaylistCardCoverStore.shared.clearMemory()
         HomePlaylistPreviewArtworkStore.shared.clearMemory()
         HomeAmbientShapesBackground.purgeCaches()
+        Task {
+            await CoverGradientBlurMemory.clear()
+        }
     }
 
     // MARK: - Library disk caches

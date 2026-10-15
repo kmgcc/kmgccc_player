@@ -21,6 +21,15 @@ nonisolated enum ColorMath {
         return hash
     }
 
+    static func fnv1a(_ string: String) -> UInt64 {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in string.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return hash
+    }
+
     static func clamp(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
         Swift.min(hi, Swift.max(lo, v))
     }

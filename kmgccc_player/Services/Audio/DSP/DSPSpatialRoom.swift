@@ -15,6 +15,39 @@ nonisolated enum DSPSystemHRTF {
     struct Response: Sendable {
         let left: [Double]
         let right: [Double]
+
+        /// One window for both ears. Keep the captured energy and fade only
+        /// the negligible tail, rather than cutting every response at 6 ms.
+        func windowed(from start: Int, minimumLength: Int, sampleRate: Double) -> Response {
+            let count = min(self.left.count, self.right.count)
+            var left = Array(self.left[start..<count])
+            var right = Array(self.right[start..<count])
+            let energy = zip(left, right).reduce(0.0) { $0 + $1.0 * $1.0 + $1.1 * $1.1 }
+            let tailBudget = energy * 1e-6
+            var tailEnergy = 0.0
+            var lastActive = 0
+            for index in left.indices.reversed() {
+                tailEnergy += left[index] * left[index] + right[index] * right[index]
+                if tailEnergy > tailBudget {
+                    lastActive = index
+                    break
+                }
+            }
+            let fade = max(2, Int((sampleRate * 0.001).rounded()))
+            let length = min(left.count, max(minimumLength, lastActive + 1 + fade))
+            left = Array(left.prefix(length))
+            right = Array(right.prefix(length))
+            let fadeStart = max(0, length - fade)
+            if fadeStart > lastActive, length - fadeStart > 1 {
+                for index in fadeStart..<length {
+                    let position = Double(index - fadeStart) / Double(length - fadeStart - 1)
+                    let weight = 0.5 + 0.5 * cos(Double.pi * position)
+                    left[index] *= weight
+                    right[index] *= weight
+                }
+            }
+            return Response(left: left, right: right)
+        }
     }
 
     private struct Key: Hashable {
@@ -30,14 +63,14 @@ nonisolated enum DSPSystemHRTF {
 
     private static let azimuthStep = 2.0
     private static let elevationStep = 5.0
-    /// Frames kept ahead of the frontal onset for the filter's pre-ringing.
-    private static let onsetLead = 24
+    /// Time kept ahead of the frontal onset for pre-ringing and ear delays.
+    private static let onsetLeadSeconds = 0.001
 
-    /// One response per direction, `length` frames each, or nil when the
+    /// One response per direction, at least `minimumLength` frames, or nil when the
     /// system renderer is unavailable at this rate.
     /// - Parameter directions: radians; azimuth positive to the left.
     static func responses(for directions: [(azimuth: Double, elevation: Double)], sampleRate: Double,
-                          length: Int) -> [Response]? {
+                          minimumLength: Int) -> [Response]? {
         lock.lock()
         defer { lock.unlock() }
         guard !unavailableRates.contains(sampleRate) else { return nil }
@@ -57,13 +90,12 @@ nonisolated enum DSPSystemHRTF {
         if let known = trims[sampleRate] {
             trim = known
         } else {
-            trim = onset(of: reference)
+            trim = onset(of: reference, sampleRate: sampleRate)
             trims[sampleRate] = trim
         }
         return keys.map { key in
             let response = raw[key] ?? reference
-            return Response(left: slice(response.left, from: trim, length: length),
-                            right: slice(response.right, from: trim, length: length))
+            return response.windowed(from: trim, minimumLength: minimumLength, sampleRate: sampleRate)
         }
     }
 
@@ -78,16 +110,12 @@ nonisolated enum DSPSystemHRTF {
                    elevation: Int((elevation / elevationStep).rounded()) * Int(elevationStep))
     }
 
-    private static func slice(_ values: [Double], from start: Int, length: Int) -> [Double] {
-        (0..<length).map { start + $0 < values.count ? values[start + $0] : 0 }
-    }
-
-    private static func onset(of response: Response) -> Int {
+    private static func onset(of response: Response, sampleRate: Double) -> Int {
         let envelope = zip(response.left, response.right).map { max(abs($0), abs($1)) }
         let peak = envelope.max() ?? 0
         guard peak > 0 else { return 0 }
-        let first = envelope.firstIndex { $0 > peak * 0.05 } ?? 0
-        return max(0, first - onsetLead)
+        let first = envelope.firstIndex { $0 > peak * 0.001 } ?? 0
+        return max(0, first - Int((sampleRate * onsetLeadSeconds).rounded()))
     }
 
     /// Renders every direction in one offline session. A position change
@@ -96,18 +124,20 @@ nonisolated enum DSPSystemHRTF {
         guard let mono = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
               let stereo = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else { return nil }
         let engine = AVAudioEngine()
+        let maximumFrames: AVAudioFrameCount = 4_096
+        // Manual rendering goes first: touching mainMixerNode on a device-mode
+        // engine opens the default devices, Bluetooth headset microphone included.
+        do {
+            try engine.enableManualRenderingMode(.offline, format: stereo, maximumFrameCount: maximumFrames)
+        } catch {
+            return nil
+        }
         let environment = AVAudioEnvironmentNode()
         let player = AVAudioPlayerNode()
         engine.attach(environment)
         engine.attach(player)
         engine.connect(player, to: environment, format: mono)
         engine.connect(environment, to: engine.mainMixerNode, format: stereo)
-        let maximumFrames: AVAudioFrameCount = 4_096
-        do {
-            try engine.enableManualRenderingMode(.offline, format: stereo, maximumFrameCount: maximumFrames)
-        } catch {
-            return nil
-        }
         environment.outputType = .headphones
         environment.reverbParameters.enable = false
         environment.distanceAttenuationParameters.distanceAttenuationModel = .inverse
@@ -303,6 +333,8 @@ nonisolated enum DSPRoomSynthesis {
         let paths: [[Double]]
         /// Speaker distance after fitting the speakers inside the room.
         let distance: Double
+        /// Common centre arrival, preserving the ears' relative delays.
+        let directDelayFrames: Int
     }
 
     private static let reflectionScale = 0.5
@@ -347,91 +379,114 @@ nonisolated enum DSPRoomSynthesis {
         }
 
         let tailSeconds = room.map { min(1.5, $0.decaySeconds * max(1, $0.lowDecayRatio) * 1.3) } ?? 0
-        let length = Int((0.08 + tailSeconds) * sampleRate) + 1_024
         let directDelay = distance / c
         let leadSeconds = 0.002
-        let hrirLength = Int(sampleRate * 0.006)
+        let minimumHRIRLength = Int(sampleRate * 0.006)
 
-        // Images of the left speaker; the right speaker mirrors it.
-        let speaker = (x: listener.x + distance * cos(angle), y: listener.y + distance * sin(angle), z: earHeight)
-        let images = imageSources(of: speaker, room: room)
+        let speakers = [
+            (x: listener.x + distance * cos(angle), y: listener.y + distance * sin(angle), z: earHeight),
+            (x: listener.x + distance * cos(angle), y: listener.y - distance * sin(angle), z: earHeight),
+        ]
+        let imageSets = speakers.map { imageSources(of: $0, room: room) }
+        let images = imageSets.flatMap { $0 }
         let directions = images.map { image -> (azimuth: Double, elevation: Double) in
             let dx = image.x - listener.x, dy = image.y - listener.y, dz = image.z - listener.z
             return (atan2(dy, dx), atan2(dz, (dx * dx + dy * dy).squareRoot()))
         }
-        let heads = headResponses(directions, sampleRate: sampleRate, length: hrirLength)
+        let heads = headResponses(directions, sampleRate: sampleRate, minimumLength: minimumHRIRLength)
+        let hrirLength = heads.map { max($0.left.count, $0.right.count) }.max() ?? minimumHRIRLength
+        let directLength = Int(leadSeconds * sampleRate) + hrirLength + Int(sampleRate * equalizerDuration) + 1
+        let length = room == nil ? directLength : max(directLength, Int((0.08 + tailSeconds) * sampleRate) + 1_024)
 
-        var left = (ear: [Double](repeating: 0, count: length), opposite: [Double](repeating: 0, count: length))
-        var directEnergy = 0.0
+        var paths = Array(repeating: [Double](repeating: 0, count: length), count: 4)
+        var directPaths = Array(repeating: [Double](repeating: 0, count: directLength), count: 4)
         let beta = room.map { (1 - $0.absorption).squareRoot() } ?? 1
         let highShelfGain = room.map { (1 - min(0.98, $0.absorption * 1.6)).squareRoot() / beta } ?? 1
-        for (index, image) in images.enumerated() {
-            let dx = image.x - listener.x, dy = image.y - listener.y, dz = image.z - listener.z
-            let range = max(0.3, (dx * dx + dy * dy + dz * dz).squareRoot())
-            let scale = image.order == 0 ? 1 : reflectionScale
-            let gain = scale * pow(beta, Double(image.order)) / range
-            let start = Int(((range / c) - directDelay + leadSeconds) * sampleRate)
-            guard start >= 0, start + hrirLength < length else { continue }
-            for (earIndex, var hrir) in [heads[index].left, heads[index].right].enumerated() {
-                // Each bounce darkens the reflection a little more.
-                for _ in 0..<image.order {
-                    var shelf = DSPFirstOrderSection.highShelf(gain: highShelfGain, frequency: 2_000,
-                                                              sampleRate: sampleRate)
-                    for tap in hrir.indices { hrir[tap] = shelf.process(hrir[tap]) }
-                }
-                for tap in 0..<hrirLength {
-                    let value = hrir[tap] * gain
-                    if earIndex == 0 { left.ear[start + tap] += value } else { left.opposite[start + tap] += value }
-                    if image.order == 0 { directEnergy += value * value * 0.5 }
+        var headIndex = 0
+        for (speakerIndex, speakerImages) in imageSets.enumerated() {
+            for image in speakerImages {
+                let head = heads[headIndex]
+                headIndex += 1
+                let dx = image.x - listener.x, dy = image.y - listener.y, dz = image.z - listener.z
+                let range = max(0.3, (dx * dx + dy * dy + dz * dz).squareRoot())
+                let scale = image.order == 0 ? 1 : reflectionScale
+                let gain = scale * pow(beta, Double(image.order)) / range
+                let start = Int(((range / c) - directDelay + leadSeconds) * sampleRate)
+                for (earIndex, var hrir) in [head.left, head.right].enumerated() {
+                    guard start >= 0, start + hrir.count <= length else { continue }
+                    // Each bounce darkens the reflection a little more.
+                    for _ in 0..<image.order {
+                        var shelf = DSPFirstOrderSection.highShelf(gain: highShelfGain, frequency: 2_000,
+                                                                  sampleRate: sampleRate)
+                        for tap in hrir.indices { hrir[tap] = shelf.process(hrir[tap]) }
+                    }
+                    let path = speakerIndex * 2 + earIndex
+                    for tap in hrir.indices {
+                        let value = hrir[tap] * gain
+                        paths[path][start + tap] += value
+                        if image.order == 0 { directPaths[path][start + tap] += value }
+                    }
                 }
             }
         }
 
-        // The right speaker's early part mirrors the left's: its own-side
-        // ear is the listener's right ear.
-        var right = left
-        var paths = [left.ear, left.opposite, right.opposite, right.ear]
-        if let equalizer = centreEqualizer(paths, sampleRate: sampleRate) {
-            func earEnergy() -> Double {
-                var energy = 0.0
-                for index in 0..<length { energy += paths[0][index] * paths[0][index] + paths[1][index] * paths[1][index] }
-                return energy
+        // Calibrate the direct speakers before the room is added to the
+        // measurement. A shared filter preserves the interaural differences.
+        if let equalizer = centreEqualizer(directPaths, sampleRate: sampleRate) {
+            for index in paths.indices {
+                directPaths[index] = convolve(directPaths[index], with: equalizer)
+                if room != nil { paths[index] = convolve(paths[index], with: equalizer) }
             }
-            let before = earEnergy()
-            for index in paths.indices { paths[index] = convolve(paths[index], with: equalizer) }
-            // The tail level follows the direct sound as now equalized.
-            if before > 0 { directEnergy *= earEnergy() / before }
         }
-        left = (paths[0], paths[1])
-        right = (paths[3], paths[2])
+        if room == nil { paths = directPaths }
+        let directDelayFrames = centreDelayFrames(directPaths)
+        var left = (ear: paths[0], opposite: paths[1])
+        var right = (ear: paths[3], opposite: paths[2])
 
         // Each speaker gets its own tail seed, so the two reverberations
         // stay uncorrelated.
         if let room {
             let startOffset = Int(leadSeconds * sampleRate)
-            addTail(to: &left.ear, opposite: &left.opposite, room: room, directEnergy: directEnergy,
+            let leftEnergy = (directPaths[0] + directPaths[1]).reduce(0) { $0 + $1 * $1 } * 0.5
+            let rightEnergy = (directPaths[2] + directPaths[3]).reduce(0) { $0 + $1 * $1 } * 0.5
+            addTail(to: &left.ear, opposite: &left.opposite, room: room, directEnergy: leftEnergy,
                     startOffset: startOffset, sampleRate: sampleRate, seed: 0x5EED_0001)
-            addTail(to: &right.ear, opposite: &right.opposite, room: room, directEnergy: directEnergy,
+            addTail(to: &right.ear, opposite: &right.opposite, room: room, directEnergy: rightEnergy,
                     startOffset: startOffset, sampleRate: sampleRate, seed: 0x5EED_0002)
         }
 
         paths = [left.ear, left.opposite, right.opposite, right.ear]
         normalize(&paths, sampleRate: sampleRate)
-        return Responses(paths: paths, distance: distance)
+        return Responses(paths: paths, distance: distance, directDelayFrames: directDelayFrames)
+    }
+
+    private static func centreDelayFrames(_ paths: [[Double]]) -> Int {
+        var peak = 0.0
+        var delay = 0
+        for index in paths[0].indices {
+            let left = paths[0][index] + paths[2][index]
+            let right = paths[1][index] + paths[3][index]
+            let power = left * left + right * right
+            if power > peak {
+                peak = power
+                delay = index
+            }
+        }
+        return delay
     }
 
     /// The system HRTF when available, the spherical head otherwise.
     private static func headResponses(_ directions: [(azimuth: Double, elevation: Double)], sampleRate: Double,
-                                      length: Int) -> [DSPSystemHRTF.Response] {
-        if let system = DSPSystemHRTF.responses(for: directions, sampleRate: sampleRate, length: length) {
+                                      minimumLength: Int) -> [DSPSystemHRTF.Response] {
+        if let system = DSPSystemHRTF.responses(for: directions, sampleRate: sampleRate, minimumLength: minimumLength) {
             return system
         }
         return directions.map { direction in
             DSPSystemHRTF.Response(
                 left: DSPStructuralHRTF.impulseResponse(azimuth: direction.azimuth, elevation: direction.elevation,
-                                                        ear: .left, sampleRate: sampleRate, length: length),
+                                                        ear: .left, sampleRate: sampleRate, length: minimumLength),
                 right: DSPStructuralHRTF.impulseResponse(azimuth: direction.azimuth, elevation: direction.elevation,
-                                                         ear: .right, sampleRate: sampleRate, length: length)
+                                                         ear: .right, sampleRate: sampleRate, length: minimumLength)
             )
         }
     }
@@ -539,22 +594,26 @@ nonisolated enum DSPRoomSynthesis {
 
     private static let equalizerSize = 8_192
     private static let equalizerLimitDB = 6.0
+    private static let equalizerDuration = 1_024.0 / 48_000
 
     /// Minimum-phase inverse of a centred source's octave-smoothed response
-    /// at the left ear (the room is symmetric), level-neutral at 500–2000 Hz.
+    /// across both ears, level-neutral at 500–2000 Hz. Only direct paths enter.
     private static func centreEqualizer(_ paths: [[Double]], sampleRate: Double) -> [Double]? {
-        let size = equalizerSize
-        guard paths.count == 4, let transform = DSPComplexTransform(size: size) else { return nil }
-        // Direct sound and early reflections: the first 30 ms.
-        let span = min(paths[0].count, Int(sampleRate * 0.03), size / 2)
-        var real = [Double](repeating: 0, count: size)
-        var imaginary = [Double](repeating: 0, count: size)
-        for index in 0..<span { real[index] = paths[0][index] + paths[2][index] }
-        transform.forward(&real, &imaginary)
-
+        guard paths.count == 4 else { return nil }
+        let span = paths[0].count
+        var size = equalizerSize
+        while size < span * 2 { size *= 2 }
+        guard let transform = DSPComplexTransform(size: size) else { return nil }
         let half = size / 2
+        var power = [Double](repeating: 0, count: half + 1)
+        for ear in 0..<2 {
+            var real = [Double](repeating: 0, count: size)
+            var imaginary = [Double](repeating: 0, count: size)
+            for index in 0..<span { real[index] = paths[ear][index] + paths[ear + 2][index] }
+            transform.forward(&real, &imaginary)
+            for bin in 0...half { power[bin] += (real[bin] * real[bin] + imaginary[bin] * imaginary[bin]) * 0.5 }
+        }
         let binHz = sampleRate / Double(size)
-        var power = (0...half).map { real[$0] * real[$0] + imaginary[$0] * imaginary[$0] }
         // Octave smoothing by prefix sums over [f/√2, f·√2].
         var prefix = [Double](repeating: 0, count: half + 2)
         for bin in 0...half { prefix[bin + 1] = prefix[bin] + power[bin] }
@@ -602,8 +661,8 @@ nonisolated enum DSPRoomSynthesis {
             spectrumImaginary[bin] = magnitude * sin(cepstrumImaginary[bin])
         }
         transform.inverse(&spectrumReal, &spectrumImaginary)
-        // Minimum phase gathers the energy early; keep 1024 taps with a fade.
-        let taps = 1_024
+        // Keep the same physical duration at every sample rate.
+        let taps = max(32, Int((sampleRate * equalizerDuration).rounded()))
         let fade = taps / 8
         let filter = (0..<taps).map { index -> Double in
             let window = index < taps - fade

@@ -25,7 +25,7 @@ nonisolated struct DSPSpatialAudioKernel: DSPBlockKernel {
 
     let latencyFrames: Int
 
-    var stateBytes: Int { (engine?.stateBytes ?? 0) + (engine?.spectra.byteCount ?? 0) }
+    var stateBytes: Int { (engine?.stateBytes ?? 0) + (engine?.spectra.byteCount ?? 0) + dryDelay.count * 8 }
 
     static func prepare(format: DSPAudioFormat, leftChannel: Int, rightChannel: Int,
                         parameters: DSPSpatialAudioParameters) -> Result<DSPSpatialAudioKernel, PreparationError> {
@@ -33,6 +33,7 @@ nonisolated struct DSPSpatialAudioKernel: DSPBlockKernel {
         let paths: [[Double]]
         let routes: [DSPConvolutionEngine.Route]
         var distance: Double?
+        var directDelayFrames = 0
         switch parameters.source {
         case .room:
             guard let synthesized = DSPRoomSynthesis.responses(parameters: parameters, sampleRate: sampleRate) else {
@@ -40,6 +41,7 @@ nonisolated struct DSPSpatialAudioKernel: DSPBlockKernel {
             }
             paths = synthesized.paths
             distance = synthesized.distance
+            directDelayFrames = synthesized.directDelayFrames
             routes = trueStereoRoutes
         case .impulseResponse:
             guard !parameters.impulseResponseID.isEmpty,
@@ -66,7 +68,8 @@ nonisolated struct DSPSpatialAudioKernel: DSPBlockKernel {
               let engine = DSPConvolutionEngine(spectra: spectra, routes: routes, inputCount: 2, outputCount: 2)
         else { return .failure(.unusableResponse) }
         return .success(DSPSpatialAudioKernel(format: format, leftChannel: leftChannel, rightChannel: rightChannel,
-                                              engine: engine, parameters: parameters, distance: distance))
+                                              engine: engine, parameters: parameters, distance: distance,
+                                              directDelayFrames: directDelayFrames))
     }
 
     private static let trueStereoRoutes: [DSPConvolutionEngine.Route] = [
@@ -86,17 +89,24 @@ nonisolated struct DSPSpatialAudioKernel: DSPBlockKernel {
         return paths.map { $0.map { $0 * gain } }
     }
 
-    private init(format: DSPAudioFormat, leftChannel: Int, rightChannel: Int, engine: DSPConvolutionEngine,
-                 parameters: DSPSpatialAudioParameters, distance: Double?) {
+    init(format: DSPAudioFormat, leftChannel: Int, rightChannel: Int, engine: DSPConvolutionEngine,
+         parameters: DSPSpatialAudioParameters, distance: Double?, directDelayFrames: Int) {
         self.leftChannel = leftChannel
         self.rightChannel = rightChannel
         self.engine = engine
-        latencyFrames = engine.latencyFrames
+        latencyFrames = engine.latencyFrames + directDelayFrames
         let mix = min(max(parameters.mix, 0), 1)
-        dryGain = cos(Double.pi / 2 * mix)
-        wetGain = sin(Double.pi / 2 * mix)
+        if parameters.source == .room {
+            // The two paths are correlated. A linear blend keeps an identical
+            // centre signal at unity instead of adding 3 dB at the midpoint.
+            dryGain = 1 - mix
+            wetGain = mix
+        } else {
+            dryGain = cos(Double.pi / 2 * mix)
+            wetGain = sin(Double.pi / 2 * mix)
+        }
         outputGain = pow(10, parameters.outputTrimDB / 20)
-        dryDelay = Array(repeating: 0, count: engine.latencyFrames * 2)
+        dryDelay = Array(repeating: 0, count: latencyFrames * 2)
         var mask = Array(repeating: false, count: format.channelCount)
         mask[leftChannel] = true
         mask[rightChannel] = true
@@ -141,7 +151,8 @@ nonisolated struct DSPSpatialAudioKernel: DSPBlockKernel {
             let left = samples[base + leftChannel]
             let right = samples[base + rightChannel]
             let wet = engine.processStereo(left, right)
-            // The dry path waits out the same block as the wet path.
+            // Align the common direct arrival as well as the convolution block;
+            // the HRTF keeps its relative timing between the ears.
             let slot = dryCursor * 2
             let dryLeft = dryDelay[slot]
             let dryRight = dryDelay[slot + 1]

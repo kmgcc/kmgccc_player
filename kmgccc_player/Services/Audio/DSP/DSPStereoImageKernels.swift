@@ -14,7 +14,8 @@ import Foundation
 /// The loudness gain only lifts a narrowed image back to the input's L²+R²
 /// energy, by at most 3 dB. A widened image keeps the mid at unity: scaling
 /// the whole signal down to offset the added side energy would also lower
-/// the centre, which is heard as the effect making music quieter.
+/// the centre, which is heard as the effect making music quieter. For the
+/// same reason widening reserves no automatic headroom.
 nonisolated struct DSPStereoWidthKernel: DSPBlockKernel {
     private static let smoothingSeconds = 1.0
     private static let maximumLoudnessGain = pow(10, 3.0 / 20)

@@ -356,24 +356,26 @@ struct AppKitMainContentPaneRoot: View {
                     FullscreenPlayerView(hostContext: .embeddedWindow) {
                         fullscreenWindowManager.closeFullscreenPlayerInWindow()
                     }
+                    .environment(AppSettings.shared)
+                    .environment(appSession.uiState)
+                    .environment(libraryVM)
+                    .environment(playerVM)
+                    .environment(playbackCoordinator)
+                    .environment(lyricsVM)
+                    .environment(ledMeterProvider)
+                    .environment(importEnrichmentService)
+                    .environment(cacheServices)
+                    .environment(skinManager)
+                    .environment(cacheServices.coverDownloadService)
+                    .environment(cacheServices.netEaseCoverService)
+                    .environmentObject(themeStore)
+                    .environment(\.libraryPresentedAccentColor, themeStore.accentColor)
+                    .modelContainer(appSession.sharedModelContainer)
+                    .tint(themeStore.accentColor)
+                    .accentColor(themeStore.accentColor)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .zIndex(1)
-                .environment(AppSettings.shared)
-                .environment(appSession.uiState)
-                .environment(libraryVM)
-                .environment(playerVM)
-                .environment(playbackCoordinator)
-                .environment(lyricsVM)
-                .environment(ledMeterProvider)
-                .environment(importEnrichmentService)
-
-                .environment(cacheServices)
-                .environment(skinManager)
-                .environment(cacheServices.coverDownloadService)
-                .environment(cacheServices.netEaseCoverService)
-                .environmentObject(themeStore)
-                .modelContainer(appSession.sharedModelContainer)
             }
         }
 

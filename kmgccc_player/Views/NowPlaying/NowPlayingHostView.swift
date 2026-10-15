@@ -80,11 +80,11 @@ struct NowPlayingHostView: View {
             if !isLedEnabledForCurrentSkin() {
                 ledMeterProvider.releaseNowPlayingResources()
             }
+            // Release only what the previous skin cached; a full presentation
+            // purge cancelled the incoming skin's artwork loads and decoded every
+            // shared artwork cache again during the switch.
             skinSession.perform {
-                await CacheManager.purgePresentationMemoryCaches(
-                    reason: "now-playing-skin-changed-\(oldValue)-to-\(newValue)",
-                    cacheServices: cacheServices
-                )
+                await skinManager.skin(for: oldValue).releaseCachedResources()
             }
         }
         .onChange(of: skinManager.catalog.revision(for: selectedSkinID)) { _, revision in

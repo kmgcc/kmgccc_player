@@ -11,7 +11,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct AudioDSPNativeEffectEditor: View {
+struct AudioDSPNativeEffectEditor: View, Equatable {
     let node: DSPNodeConfiguration
     /// The node is enabled and the chain is processing live audio.
     let isProcessing: Bool
@@ -21,9 +21,17 @@ struct AudioDSPNativeEffectEditor: View {
 
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.settingsAppForegroundColors) private var appColors
     @State private var isImportingImpulseResponse = false
     @State private var isReadingImpulseResponse = false
     @State private var importError: String?
+
+    /// Closures are left out, as in `AudioDSPEQEditor`: they route by node ID
+    /// and always reach the same controller. Unrelated rack updates then skip
+    /// this body, and the palette engine it calls.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.node == rhs.node && lhs.isProcessing == rhs.isProcessing && lhs.outputKind == rhs.outputKind
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -80,11 +88,10 @@ struct AudioDSPNativeEffectEditor: View {
     private func classicBassEditor(_ parameters: DSPClassicBassParameters) -> some View {
         let resolved = parameters.resolved(for: outputKind)
         return Group {
-            targetPicker(DSPClassicBassParameters.self, current: parameters.target) {
-                $0.cutoffHz = 0
-                $0.floorHz = 0
-            }
-            amountSlider("强度", DSPClassicBassParameters.self, \.intensity, range: DSPClassicBassParameters.intensityRange)
+            targetPicker(DSPClassicBassParameters.self, current: parameters.target)
+            bassLevelControls(DSPClassicBassParameters.self, bassGain: \.bassGainDB,
+                              gainRange: DSPClassicBassParameters.bassGainRange, intensity: \.intensity,
+                              intensityRange: DSPClassicBassParameters.intensityRange)
             DSPRangeSliderRow(
                 title: "截止频率",
                 value: automaticBinding(DSPClassicBassParameters.self, \.cutoffHz, resolved: resolved.cutoffHz),
@@ -105,8 +112,10 @@ struct AudioDSPNativeEffectEditor: View {
 
     private func hybridBassEditor(_ parameters: DSPHybridBassParameters) -> some View {
         Group {
-            targetPicker(DSPHybridBassParameters.self, current: parameters.target) { $0.cutoffHz = 0 }
-            amountSlider("强度", DSPHybridBassParameters.self, \.intensity, range: DSPHybridBassParameters.intensityRange)
+            targetPicker(DSPHybridBassParameters.self, current: parameters.target)
+            bassLevelControls(DSPHybridBassParameters.self, bassGain: \.bassGainDB,
+                              gainRange: DSPHybridBassParameters.bassGainRange, intensity: \.intensity,
+                              intensityRange: DSPHybridBassParameters.intensityRange)
             DSPRangeSliderRow(
                 title: "截止频率",
                 value: automaticBinding(DSPHybridBassParameters.self, \.cutoffHz,
@@ -121,12 +130,10 @@ struct AudioDSPNativeEffectEditor: View {
         }
     }
 
-    /// Target picker for both bass nodes. A new target clears the frequencies
-    /// that follow it, so they take the new target's values.
+    /// Target picker for both bass nodes. Preserves and restores each target's settings.
     private func targetPicker<P: DSPEffectParameterSet>(
         _ type: P.Type,
-        current: DSPBassTarget,
-        resetting reset: @escaping (inout P) -> Void
+        current: DSPBassTarget
     ) -> some View where P: DSPBassTargeted {
         CapsulePicker(
             label: "目标",
@@ -136,8 +143,7 @@ struct AudioDSPNativeEffectEditor: View {
                 set: { target in
                     guard target != current else { return }
                     update(type, commit: true) { parameters in
-                        parameters.target = target
-                        reset(&parameters)
+                        parameters.switchTarget(to: target)
                     }
                 }
             ),
@@ -187,7 +193,6 @@ struct AudioDSPNativeEffectEditor: View {
                     }
                 }
             )
-            caption("耳机若已开启“空间化立体声”，两者会叠加。")
         }
     }
 
@@ -212,14 +217,22 @@ struct AudioDSPNativeEffectEditor: View {
 
             switch parameters.source {
             case .room:
-                DSPRangeSliderRow(
-                    title: "距离",
-                    value: binding(DSPSpatialAudioParameters.self, \.distanceM),
-                    range: DSPSpatialAudioParameters.distanceRange,
-                    step: 0.1,
-                    unit: "m",
-                    onCommit: onCommit
+                CapsulePicker(
+                    label: "房间",
+                    options: DSPRoomPreset.allCases,
+                    selection: choice(DSPSpatialAudioParameters.self, \.room),
+                    displayName: { $0 == .none ? "无" : "录音室" }
                 )
+                if parameters.room != .none {
+                    DSPRangeSliderRow(
+                        title: "距离",
+                        value: binding(DSPSpatialAudioParameters.self, \.distanceM),
+                        range: DSPSpatialAudioParameters.distanceRange,
+                        step: 0.1,
+                        unit: "m",
+                        onCommit: onCommit
+                    )
+                }
                 DSPRangeSliderRow(
                     title: "音箱角度",
                     value: binding(DSPSpatialAudioParameters.self, \.speakerAngleDeg),
@@ -237,20 +250,18 @@ struct AudioDSPNativeEffectEditor: View {
                 if let importError {
                     caption(importError)
                 }
-                DSPRangeSliderRow(
-                    title: "混合",
-                    value: binding(DSPSpatialAudioParameters.self, \.mix),
-                    range: DSPSpatialAudioParameters.mixRange,
-                    step: 0.01,
-                    unit: "",
-                    fractionDigits: 2,
-                    onCommit: onCommit
-                )
             }
 
-            if isProcessing {
-                caption("系统空间音频已暂停")
-            }
+            DSPRangeSliderRow(
+                title: "混合",
+                value: binding(DSPSpatialAudioParameters.self, \.mix),
+                range: DSPSpatialAudioParameters.mixRange,
+                step: 0.01,
+                unit: "",
+                fractionDigits: 2,
+                onCommit: onCommit
+            )
+
         }
         .fileImporter(
             isPresented: $isImportingImpulseResponse,
@@ -308,7 +319,8 @@ struct AudioDSPNativeEffectEditor: View {
 
     private func reverbEditor(_ parameters: DSPReverbParameters) -> some View {
         Group {
-            DSPReverbVisual(parameters: parameters, isActive: isProcessing)
+            DSPReverbVisual(parameters: parameters, isActive: isProcessing,
+                            palette: themeStore.artworkSwatchColors(count: 5))
                 .frame(height: 112)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
@@ -417,8 +429,20 @@ struct AudioDSPNativeEffectEditor: View {
                     set: { style in
                         guard style != parameters.style else { return }
                         update(DSPCompressorParameters.self, commit: true) { current in
+                            if current.style == .custom {
+                                current.customBands = current.bands
+                            }
                             current.style = style
-                            if style != .custom { current.bands = style.bands }
+                            if style != .custom {
+                                current.bands = zip(style.bands, current.bands).map { styled, existing in
+                                    var band = styled
+                                    band.attackMs = existing.attackMs
+                                    band.releaseMs = existing.releaseMs
+                                    return band
+                                }
+                            } else {
+                                current.bands = current.customBands
+                            }
                         }
                     }
                 ),
@@ -427,18 +451,6 @@ struct AudioDSPNativeEffectEditor: View {
                     case .gentle: "轻柔"
                     case .night: "夜间"
                     case .custom: "自定义"
-                    }
-                }
-            )
-            CapsulePicker(
-                label: "速度",
-                options: DSPCompressorSpeed.allCases,
-                selection: choice(DSPCompressorParameters.self, \.speed),
-                displayName: { speed in
-                    switch speed {
-                    case .fast: "快"
-                    case .medium: "中"
-                    case .slow: "慢"
                     }
                 }
             )
@@ -472,6 +484,13 @@ struct AudioDSPNativeEffectEditor: View {
                             range: DSPCompressorBand.ratioRange, step: 0.1, unit: "", digits: 1)
             compressorField("增益", title: title, index: index, keyPath: \.gainDB,
                             range: DSPCompressorBand.gainRange, step: 0.1, unit: "dB", digits: 1)
+            compressorSpeedPicker(index: index, band: band)
+            HStack(spacing: 4) {
+                compressorField("攻击", title: title, index: index, keyPath: \.attackMs,
+                                range: DSPCompressorBand.attackRange, step: 0.1, unit: "ms", digits: 1)
+                compressorField("释放", title: title, index: index, keyPath: \.releaseMs,
+                                range: DSPCompressorBand.releaseRange, step: 1, unit: "ms", digits: 0)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 5)
@@ -480,6 +499,83 @@ struct AudioDSPNativeEffectEditor: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(palette.bandSurface)
         )
+    }
+
+    private func compressorSpeedPicker(index: Int, band: DSPCompressorBand) -> some View {
+        VStack(spacing: 2) {
+            Text("速度")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+            GeometryReader { proxy in
+                HStack(spacing: 0) {
+                    ForEach(DSPCompressorSpeed.allCases, id: \.rawValue) { speed in
+                        let isSelected = matchingSpeed(for: band) == speed
+                        Button {
+                            setCompressorSpeed(speed, index: index)
+                        } label: {
+                            Text(compressorSpeedTitle(speed))
+                                .font(.system(size: 11, weight: isSelected ? .medium : .regular))
+                                .foregroundStyle(isSelected ? themeStore.accentColor : (appColors?.secondary ?? .secondary))
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .contentShape(Rectangle())
+                                .background {
+                                    if isSelected {
+                                        Capsule().fill(themeStore.accentColor.opacity(0.18))
+                                    }
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(compressorSpeedTitle(speed))速")
+                    }
+                }
+                .padding(3)
+                .background(Capsule().fill((appColors?.secondary ?? .secondary).opacity(0.08)))
+                .contentShape(Capsule())
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 4)
+                        .onEnded { value in
+                            let segmentWidth = max(1, (proxy.size.width - 6) / 3)
+                            let selectedIndex = min(2, max(0, Int((value.location.x - 3) / segmentWidth)))
+                            setCompressorSpeed(DSPCompressorSpeed.allCases[selectedIndex], index: index)
+                        }
+                )
+            }
+            .frame(height: 27)
+        }
+        .frame(maxWidth: .infinity)
+        // Custom timings dim the selector without disabling taps or dragging.
+        .opacity(matchingSpeed(for: band) == nil ? 0.55 : 1)
+    }
+
+    private func setCompressorSpeed(_ speed: DSPCompressorSpeed, index: Int) {
+        let parameters = current(DSPCompressorParameters.self)
+        guard parameters.bands.indices.contains(index),
+              matchingSpeed(for: parameters.bands[index]) != speed else { return }
+        let times = speed.times
+        update(DSPCompressorParameters.self, commit: true) { current in
+            guard current.bands.indices.contains(index) else { return }
+            current.bands[index].attackMs = times.attackMs
+            current.bands[index].releaseMs = times.releaseMs
+            current.style = .custom
+            current.customBands = current.bands
+        }
+    }
+
+    private func compressorSpeedTitle(_ speed: DSPCompressorSpeed) -> String {
+        switch speed {
+        case .fast: "快"
+        case .medium: "中"
+        case .slow: "慢"
+        }
+    }
+
+    private func matchingSpeed(for band: DSPCompressorBand) -> DSPCompressorSpeed? {
+        DSPCompressorSpeed.allCases.first { speed in
+            let times = speed.times
+            return abs(band.attackMs - times.attackMs) < 1e-9
+                && abs(band.releaseMs - times.releaseMs) < 1e-9
+        }
     }
 
     private func compressorField(
@@ -508,6 +604,7 @@ struct AudioDSPNativeEffectEditor: View {
                             current.bands[index][keyPath: keyPath] = value
                             // Any hand edit makes the settings the listener's own.
                             current.style = .custom
+                            current.customBands = current.bands
                         }
                     }
                 ),
@@ -581,6 +678,36 @@ struct AudioDSPNativeEffectEditor: View {
         )
     }
 
+    private func bassLevelControls<P: DSPEffectParameterSet>(
+        _ type: P.Type,
+        bassGain: WritableKeyPath<P, Double>,
+        gainRange: ClosedRange<Double>,
+        intensity: WritableKeyPath<P, Double>,
+        intensityRange: ClosedRange<Double>
+    ) -> some View {
+        let amount = binding(type, intensity)
+        return Group {
+            DSPRangeSliderRow(
+                title: "低音增益",
+                value: binding(type, bassGain),
+                range: gainRange,
+                step: 0.5,
+                unit: "dB",
+                fractionDigits: 1,
+                onCommit: onCommit
+            )
+            DSPRangeSliderRow(
+                title: "虚拟低音",
+                value: Binding(get: { amount.wrappedValue * 100 }, set: { amount.wrappedValue = $0 / 100 }),
+                range: (intensityRange.lowerBound * 100)...(intensityRange.upperBound * 100),
+                step: 1,
+                unit: "%",
+                fractionDigits: 0,
+                onCommit: onCommit
+            )
+        }
+    }
+
     private func amountSlider<P: DSPEffectParameterSet>(
         _ title: String,
         _ type: P.Type,
@@ -602,6 +729,7 @@ struct AudioDSPNativeEffectEditor: View {
 /// Parameter sets tuned for a target transducer.
 nonisolated protocol DSPBassTargeted {
     var target: DSPBassTarget { get set }
+    mutating func switchTarget(to newTarget: DSPBassTarget)
 }
 
 nonisolated extension DSPClassicBassParameters: DSPBassTargeted {}

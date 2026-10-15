@@ -13,8 +13,8 @@ final class HomeArtworkMemoryStore {
     static let shared = HomeArtworkMemoryStore()
 
     private var cache = CostBoundedCache<String, NSImage>(
-        countLimit: 24,
-        totalCostLimit: 3 * 1024 * 1024
+        countLimit: 40,
+        totalCostLimit: 6 * 1024 * 1024
     )
 
     func cachedImage(for key: String) -> NSImage? {
@@ -215,15 +215,16 @@ final class HomeArtworkPreheater {
             )
         }
 
-        let playlistPreviewTracks = playlists
-            .prefix(playlistLimit)
-            .flatMap { playlist in
-                HomePlaylistPreviewCache.shared.previewTracks(
-                    for: playlist,
-                    limit: Self.playlistPreviewLimit(for: mode),
-                    preferenceStats: { libraryVM.preferenceStats(for: $0) }
-                )
-            }
+        let playlistPreviewTracks: [Track]
+        if let featured = playlists.first {
+            playlistPreviewTracks = HomePlaylistPreviewCache.shared.previewTracks(
+                for: featured,
+                limit: Self.playlistPreviewLimit(for: mode),
+                preferenceStats: { libraryVM.preferenceStats(for: $0) }
+            )
+        } else {
+            playlistPreviewTracks = []
+        }
         var seenPreviewTrackIDs = Set<UUID>()
         let playlistPreviewCandidates = playlistPreviewTracks.compactMap { track -> HomeTrackArtworkPreheatCandidate? in
             guard seenPreviewTrackIDs.insert(track.id).inserted else { return nil }

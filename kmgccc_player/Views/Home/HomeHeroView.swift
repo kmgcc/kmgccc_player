@@ -23,7 +23,6 @@ struct HomeHeroView: View {
     @Environment(AppSettings.self) private var appSettings
 
     @State private var coverImage: NSImage?
-    @State private var artworkData: Data?
     @State private var heroBackdropImage: CGImage?
     @State private var heroBackdropLayoutSize: CGSize = .zero
     @State private var heroArtworkChecksum: UInt64 = 0
@@ -515,12 +514,15 @@ struct HomeHeroView: View {
         heroBackdropLayoutSize = size
     }
 
-    /// Changes when either the artwork or the rendered card aspect ratio
-    /// changes. The matching task debounces live resize and replaces the
-    /// existing composite only after a correctly sized render is ready.
+    /// Changes when the artwork, its decoded cover or the rendered card aspect
+    /// ratio changes. The checksum is known before the cover decodes, so cover
+    /// readiness is part of the identity; otherwise the render that found no
+    /// cover would never run again. The matching task debounces live resize and
+    /// replaces the existing composite only after a correctly sized render is ready.
     private var heroBackdropRequestID: String {
         let targetSize = heroBackdropTargetSize
-        return "\(track.id)-\(heroArtworkChecksum)-\(Int(targetSize.width))x\(Int(targetSize.height))"
+        let coverState = coverImage == nil ? "pending" : "ready"
+        return "\(track.id)-\(heroArtworkChecksum)-\(coverState)-\(Int(targetSize.width))x\(Int(targetSize.height))"
     }
 
     @ViewBuilder
@@ -819,7 +821,6 @@ struct HomeHeroView: View {
     private func loadCoverImage() async {
         let artworkCacheKey = HomeArtworkMemoryStore.heroCoverKey(for: track)
         coverImage = HomeArtworkMemoryStore.shared.cachedImage(for: artworkCacheKey)
-        artworkData = nil
         heroBackdropImage = nil
         heroArtworkChecksum = 0
         heroAnalysis = nil
@@ -830,56 +831,96 @@ struct HomeHeroView: View {
         heroNormalReadabilityMap = nil
 
         // Home uses a LazyVStack, so scrolling away and back can rematerialize
-        // this card without changing the track. Keep the raw artwork and its
-        // derived metadata together; otherwise every rematerialization repeats
-        // checksuming, image decoding and detached colour analysis before the
-        // already-cached backdrop can be reused.
+        // this card without changing the track. Keep the raw artwork metadata together;
+        // otherwise every rematerialization repeats checksuming, image decoding
+        // and detached colour analysis before the already-cached backdrop can be reused.
         if let cached = HomeHeroArtworkCache.shared.snapshot(for: artworkCacheKey) {
-            artworkData = cached.data
             heroArtworkChecksum = cached.checksum
             coverImage = cached.image ?? coverImage
             heroAnalysis = cached.analysis
             return
         }
 
-        let data = await track.loadArtworkDataOffMainIfNeeded()
-        guard let data, !data.isEmpty else { return }
-        let checksum = ArtworkLoader.checksum(for: data)
-        artworkData = data
-        heroArtworkChecksum = checksum
-        let key = ArtworkLoader.cacheKey(
-            trackID: track.id,
-            checksum: checksum,
-            targetPixelSize: CGSize(width: 480, height: 480)
-        )
-        async let imageTask = ArtworkLoader.loadImage(
-            artworkData: data,
-            cacheKey: key,
-            targetPixelSize: CGSize(width: 480, height: 480),
-            derivativeStore: cacheServices.artworkDerivativeStore
-        )
-        // Analyze locally so the hero's text/dominant colours track this card's
-        // artwork, not the currently-playing track's ThemeStore palette.
-        async let analysisTask: ArtworkColorAnalysis? = Task.detached(priority: .userInitiated) {
-            ArtworkColorExtractor.analyze(from: data)
-        }.value
-        let image = await imageTask
-        let analysis = await analysisTask
-        // Guard against a stale completion from a previous track — only apply
-        // the result if this hero card's artwork hasn't changed underneath us.
-        guard heroArtworkChecksum == checksum else { return }
-        coverImage = image
-        if let image {
-            HomeArtworkMemoryStore.shared.store(
-                image,
-                for: artworkCacheKey
+        let artworkURL = track.existingArtworkURL()
+        let checksum: UInt64
+        let key: String
+
+        if let artworkURL {
+            checksum = ColorMath.fnv1a(artworkURL.standardizedFileURL.path)
+            heroArtworkChecksum = checksum
+            key = ArtworkLoader.fileCacheKey(
+                fileURL: artworkURL,
+                targetPixelSize: CGSize(width: 480, height: 480)
             )
+            async let imageTask = ArtworkLoader.loadImage(
+                fileURL: artworkURL,
+                cacheKey: key,
+                targetPixelSize: CGSize(width: 480, height: 480),
+                derivativeStore: cacheServices.artworkDerivativeStore
+            )
+            async let analysisTask: ArtworkColorAnalysis? = Task.detached(priority: .userInitiated) {
+                ArtworkColorExtractor.analyze(from: artworkURL)
+            }.value
+
+            let image = await imageTask
+            guard heroArtworkChecksum == checksum else { return }
+            presentLoadedCover(image, for: artworkCacheKey)
+            let analysis = await analysisTask
+            guard heroArtworkChecksum == checksum else { return }
+            heroAnalysis = analysis
+            cacheLoadedArtwork(checksum: checksum, analysis: analysis, for: artworkCacheKey)
+        } else {
+            let data = await track.loadArtworkDataOffMainIfNeeded()
+            guard let data, !data.isEmpty else { return }
+            checksum = ArtworkLoader.checksum(for: data)
+            heroArtworkChecksum = checksum
+            key = ArtworkLoader.cacheKey(
+                trackID: track.id,
+                checksum: checksum,
+                targetPixelSize: CGSize(width: 480, height: 480)
+            )
+            async let imageTask = ArtworkLoader.loadImage(
+                artworkData: data,
+                cacheKey: key,
+                targetPixelSize: CGSize(width: 480, height: 480),
+                derivativeStore: cacheServices.artworkDerivativeStore
+            )
+            // Analyze locally so the hero's text/dominant colours track this card's
+            // artwork, not the currently-playing track's ThemeStore palette.
+            async let analysisTask: ArtworkColorAnalysis? = Task.detached(priority: .userInitiated) {
+                ArtworkColorExtractor.analyze(from: data)
+            }.value
+            let image = await imageTask
+            // Guard against a stale completion from a previous track — only apply
+            // the result if this hero card's artwork hasn't changed underneath us.
+            guard heroArtworkChecksum == checksum else { return }
+            presentLoadedCover(image, for: artworkCacheKey)
+            let analysis = await analysisTask
+            guard heroArtworkChecksum == checksum else { return }
+            heroAnalysis = analysis
+            cacheLoadedArtwork(checksum: checksum, analysis: analysis, for: artworkCacheKey)
         }
-        heroAnalysis = analysis
+    }
+
+    /// The backdrop render needs only the cover, so it is presented as soon as
+    /// it decodes instead of waiting for colour analysis.
+    private func presentLoadedCover(_ image: NSImage?, for artworkCacheKey: String) {
+        guard let image else { return }
+        coverImage = image
+        HomeArtworkMemoryStore.shared.store(image, for: artworkCacheKey)
+    }
+
+    /// A cached snapshot ends later visits before the cover is loaded again, so
+    /// a failed load is not cached.
+    private func cacheLoadedArtwork(
+        checksum: UInt64,
+        analysis: ArtworkColorAnalysis?,
+        for artworkCacheKey: String
+    ) {
+        guard let coverImage else { return }
         HomeHeroArtworkCache.shared.store(
-            data: data,
             checksum: checksum,
-            image: image,
+            image: coverImage,
             analysis: analysis,
             for: artworkCacheKey
         )
@@ -892,8 +933,7 @@ struct HomeHeroView: View {
     private func refreshHeroBackdropsForCurrentLayout() async {
         guard
             heroArtworkChecksum != 0,
-            let artworkData,
-            !artworkData.isEmpty
+            let coverImage
         else { return }
 
         let initialChecksum = heroArtworkChecksum
@@ -925,7 +965,7 @@ struct HomeHeroView: View {
         let requestID = heroBackdropRequestID
         let targetSize = heroBackdropTargetSize
         let backdrop = await renderHeroBackdrop(
-            artworkData: artworkData,
+            coverImage: coverImage,
             checksum: checksum,
             targetSize: targetSize
         )
@@ -942,7 +982,7 @@ struct HomeHeroView: View {
     }
 
     private func renderHeroBackdrop(
-        artworkData: Data,
+        coverImage: NSImage,
         checksum: UInt64,
         targetSize: CGSize
     ) async -> HomeHeroBackdropArtifact? {
@@ -960,8 +1000,8 @@ struct HomeHeroView: View {
             autoreleasepool {
                 guard
                     let prepared = CoverGradientBlurRenderer.preparedArtworkImage(
-                        artworkData: artworkData,
-                        artworkImage: nil,
+                        artworkData: nil,
+                        artworkImage: coverImage,
                         targetSize: targetSize
                     )
                 else { return nil }
@@ -970,7 +1010,8 @@ struct HomeHeroView: View {
                     artworkCGImage: prepared,
                     targetSize: targetSize,
                     dominantColor: nil,
-                    config: config
+                    config: config,
+                    displayScale: 1.0
                 ) else { return nil }
 
                 // Build the readability map from the final rendered image in
@@ -1009,7 +1050,6 @@ private func homeHeroBackdropCacheKey(
 }
 
 private struct HomeHeroArtworkSnapshot {
-    let data: Data
     let checksum: UInt64
     let image: NSImage?
     let analysis: ArtworkColorAnalysis?
@@ -1039,14 +1079,12 @@ private final class HomeHeroArtworkCache {
     }
 
     func store(
-        data: Data,
         checksum: UInt64,
         image: NSImage?,
         analysis: ArtworkColorAnalysis?,
         for key: String
     ) {
         let snapshot = HomeHeroArtworkSnapshot(
-            data: data,
             checksum: checksum,
             image: image,
             analysis: analysis
@@ -1060,7 +1098,7 @@ private final class HomeHeroArtworkCache {
         cache.setObject(
             SnapshotBox(snapshot),
             forKey: key as NSString,
-            cost: max(1, data.count + imageCost)
+            cost: imageCost
         )
     }
 

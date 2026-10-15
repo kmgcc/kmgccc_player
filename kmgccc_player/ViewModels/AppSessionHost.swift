@@ -1300,6 +1300,7 @@ final class AppSessionHost: ObservableObject {
             scheduleDeferredLaunchPromptsIfNeeded()
         }
         hasCompletedInitialSetup = true
+        DebugUIHooks.installIfEnabled(appSession: self)
         if AppSettings.shared.automationEndpointEnabled {
             do {
                 try await automationIPCServer?.start()
@@ -1325,6 +1326,8 @@ final class AppSessionHost: ObservableObject {
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(1))
             CacheManager.trimProcessMemory()
+            try? await Task.sleep(for: .seconds(7))
+            CacheManager.trimRoutinePlaybackMemory()
         }
     }
 

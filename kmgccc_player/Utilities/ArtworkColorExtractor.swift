@@ -61,6 +61,16 @@ public nonisolated enum ArtworkColorExtractor {
         return averageColor(from: sample)
     }
 
+    public nonisolated static func averageColor(from url: URL) -> NSColor? {
+        guard let sample = sampledBitmap(from: url, side: 48) else { return nil }
+        return averageColor(from: sample)
+    }
+
+    public nonisolated static func averageColor(from cgImage: CGImage) -> NSColor? {
+        guard let sample = sampledBitmap(from: cgImage, side: 48) else { return nil }
+        return averageColor(from: sample)
+    }
+
     public nonisolated static func adjustedAccent(from color: NSColor, isDarkMode: Bool) -> NSColor
     {
         guard let rgb = color.usingColorSpace(.deviceRGB) else { return color }
@@ -95,6 +105,20 @@ public nonisolated enum ArtworkColorExtractor {
     {
         let targetCount = min(max(2, maxColors), 4)
         guard let sample = sampledBitmap(from: data, side: 56) else { return [] }
+        return uiThemePalette(from: sample, targetCount: targetCount)
+    }
+
+    public nonisolated static func uiThemePalette(from url: URL, maxColors: Int = 3) -> [NSColor]
+    {
+        let targetCount = min(max(2, maxColors), 4)
+        guard let sample = sampledBitmap(from: url, side: 56) else { return [] }
+        return uiThemePalette(from: sample, targetCount: targetCount)
+    }
+
+    public nonisolated static func uiThemePalette(from cgImage: CGImage, maxColors: Int = 3) -> [NSColor]
+    {
+        let targetCount = min(max(2, maxColors), 4)
+        guard let sample = sampledBitmap(from: cgImage, side: 56) else { return [] }
         return uiThemePalette(from: sample, targetCount: targetCount)
     }
 
@@ -137,6 +161,16 @@ public nonisolated enum ArtworkColorExtractor {
 extension ArtworkColorExtractor {
     nonisolated static func sampledBitmap(from data: Data, side: Int) -> ArtworkBitmapSample? {
         guard let pixels = resizedPixels(from: data, side: side) else { return nil }
+        return ArtworkBitmapSample(pixels: pixels, side: side)
+    }
+
+    nonisolated static func sampledBitmap(from url: URL, side: Int) -> ArtworkBitmapSample? {
+        guard let pixels = resizedPixels(from: url, side: side) else { return nil }
+        return ArtworkBitmapSample(pixels: pixels, side: side)
+    }
+
+    nonisolated static func sampledBitmap(from cgImage: CGImage, side: Int) -> ArtworkBitmapSample? {
+        guard let pixels = resizedPixels(from: cgImage, side: side) else { return nil }
         return ArtworkBitmapSample(pixels: pixels, side: side)
     }
 
@@ -480,36 +514,7 @@ extension ArtworkColorExtractor {
         let vividness: CGFloat
     }
 
-    fileprivate nonisolated static func resizedPixels(from data: Data, side: Int) -> [UInt8]? {
-        let checksum = computeChecksum(data)
-        let key = cacheKey(for: checksum, side: side)
-
-        if let cached = pixelCache.cache.object(forKey: key) {
-            return cached.pixels
-        }
-
-        guard
-            let source = CGImageSourceCreateWithData(
-                data as CFData,
-                [kCGImageSourceShouldCache: false] as CFDictionary
-            )
-        else { return nil }
-
-        let thumbnailOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: max(1, side),
-        ]
-
-        guard
-            let cgImage = CGImageSourceCreateThumbnailAtIndex(
-                source,
-                0,
-                thumbnailOptions as CFDictionary
-            )
-        else { return nil }
-
+    fileprivate nonisolated static func drawPixels(from cgImage: CGImage, side: Int) -> [UInt8]? {
         let width = side
         let height = side
         let bytesPerPixel = 4
@@ -530,11 +535,76 @@ extension ArtworkColorExtractor {
 
         context.interpolationQuality = .high
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return pixels
+    }
+
+    fileprivate nonisolated static func resizedPixels(from source: CGImageSource, side: Int) -> [UInt8]? {
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, side),
+        ]
+
+        guard
+            let cgImage = CGImageSourceCreateThumbnailAtIndex(
+                source,
+                0,
+                thumbnailOptions as CFDictionary
+            )
+        else { return nil }
+
+        return drawPixels(from: cgImage, side: side)
+    }
+
+    fileprivate nonisolated static func resizedPixels(from data: Data, side: Int) -> [UInt8]? {
+        let checksum = computeChecksum(data)
+        let key = cacheKey(for: checksum, side: side)
+
+        if let cached = pixelCache.cache.object(forKey: key) {
+            return cached.pixels
+        }
+
+        guard
+            let source = CGImageSourceCreateWithData(
+                data as CFData,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
+        else { return nil }
+
+        guard let pixels = resizedPixels(from: source, side: side) else { return nil }
 
         let entry = PixelDataCacheEntry(pixels: pixels, side: side, checksum: checksum)
         pixelCache.cache.setObject(entry, forKey: key, cost: pixels.count)
 
         return pixels
+    }
+
+    fileprivate nonisolated static func resizedPixels(from url: URL, side: Int) -> [UInt8]? {
+        let checksum = ColorMath.fnv1a(url.path)
+        let key = cacheKey(for: checksum, side: side)
+
+        if let cached = pixelCache.cache.object(forKey: key) {
+            return cached.pixels
+        }
+
+        guard
+            let source = CGImageSourceCreateWithURL(
+                url as CFURL,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
+        else { return nil }
+
+        guard let pixels = resizedPixels(from: source, side: side) else { return nil }
+
+        let entry = PixelDataCacheEntry(pixels: pixels, side: side, checksum: checksum)
+        pixelCache.cache.setObject(entry, forKey: key, cost: pixels.count)
+
+        return pixels
+    }
+
+    fileprivate nonisolated static func resizedPixels(from cgImage: CGImage, side: Int) -> [UInt8]? {
+        drawPixels(from: cgImage, side: side)
     }
 
     fileprivate nonisolated static func tuneUI(_ color: NSColor, profile: ArtworkProfile) -> NSColor

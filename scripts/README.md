@@ -30,7 +30,7 @@ CONFIGURATION=Release ./scripts/build_and_run.sh
 
 ### `build_app.sh`
 
-在新的 DerivedData 中构建可由 clean clone 复现的 App，并执行 bundle 完整性检查。该入口显式禁用本机构建扩展。
+构建 App 并执行 bundle 完整性检查，默认保留 DerivedData 缓存。该入口显式禁用本机构建扩展；需要全新构建时使用 `CLEAN_BUILD=1`，也可通过 `DERIVED_DATA_PATH` 指定独立目录。
 构建前后都会检查 MelismaKit 的依赖来源；本机默认要求本地 NativeLyrics，干净 checkout 的远程构建需显式设置
 `MELISMAKIT_EXPECTED_SOURCE=remote`。
 
@@ -39,6 +39,7 @@ CONFIGURATION=Release ./scripts/build_and_run.sh
 ```sh
 ./scripts/build_app.sh Debug
 ./scripts/build_app.sh Release
+CLEAN_BUILD=1 ./scripts/build_app.sh Release
 ```
 
 要生成 Developer ID 发行签名 App，显式提供本机签名身份；脚本会把这些参数传给

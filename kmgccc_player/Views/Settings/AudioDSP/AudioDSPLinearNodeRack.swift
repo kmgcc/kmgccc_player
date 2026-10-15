@@ -60,12 +60,24 @@ struct AudioDSPLinearNodeRack: View {
     @State private var isEqualLoudnessExpanded = false
     @State private var isLimiterExpanded = false
 
+    @State private var enclosingScrollView: NSScrollView?
+    @State private var rackCoordinateView: NSView?
+    @State private var autoScrollTask: Task<Void, Never>?
+    @State private var autoScrollVelocity: CGFloat = 0
+    @State private var dragPointerYOffset: CGFloat = 0
+
     private let rackSpace = "dspLinearNodeRackCoordinateSpace"
     private let nodeHeaderHeight: CGFloat = DSPRackMetrics.nodeHeaderHeight
     private let nodeSpacing: CGFloat = 10
     private let dragHorizontalDamping: CGFloat = 0.4
     private let dragHorizontalLimit: CGFloat = 24
     private let liftedScale: CGFloat = 1.015
+    private let autoScrollEdgeThreshold: CGFloat = 100
+    private let autoScrollBottomEdgeThreshold: CGFloat = 130
+    private let autoScrollMinVelocity: CGFloat = 30
+    private let autoScrollMaxVelocity: CGFloat = 2000
+    private let autoScrollOverdriveMaxVelocity: CGFloat = 2800
+    private let autoScrollFrameInterval: UInt64 = 16_000_000
 
     private var palette: DSPRackPalette {
         DSPRackPalette(themeStore: themeStore, colorScheme: colorScheme)
@@ -113,6 +125,12 @@ struct AudioDSPLinearNodeRack: View {
                 .frame(height: 14)
             nodesRackList(ordered: ordered, palette: palette)
                 .coordinateSpace(name: rackSpace)
+                .background(
+                    DSPRackScrollViewResolver { scrollView, coordinateView in
+                        enclosingScrollView = scrollView
+                        rackCoordinateView = coordinateView
+                    }
+                )
             BusWireSegment(
                 anchor: .bottom,
                 isConnected: slotIndex == nil || slotIndex != ordered.count - 1,
@@ -198,6 +216,7 @@ struct AudioDSPLinearNodeRack: View {
         let ceilingMagnitude = abs(limiterCeilingDB).formatted(.number.precision(.fractionLength(1)))
         let ceiling = limiterCeilingDB < -0.05 ? "−\(ceilingMagnitude)" : ceilingMagnitude
         let release = limiterReleaseMilliseconds.formatted(.number.precision(.fractionLength(0)))
+        let isWarningActive = isLimiterEnabled && isProcessingEnabled && appSession.audioDSPController.limiterWarning.isWarningActive
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Button {
@@ -230,11 +249,26 @@ struct AudioDSPLinearNodeRack: View {
                 .accessibilityLabel(title)
                 .accessibilityValue(isLimiterExpanded ? "已展开" : "已收起")
 
+                if isWarningActive {
+                    Text("正在安全限幅，建议降低前置增益以避免压缩失真")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Color.red)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                        .transition(.opacity)
+                }
+
                 Toggle("", isOn: $isLimiterEnabled)
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.mini)
                     .accessibilityLabel("启用\(title)")
+            }
+            .animation(reorderAnimation, value: isWarningActive)
+            .onChange(of: isLimiterEnabled) { _, enabled in
+                if !enabled {
+                    appSession.audioDSPController.limiterWarning.reset()
+                }
             }
             .frame(height: nodeHeaderHeight)
             .padding(.leading, 12)
@@ -656,6 +690,7 @@ struct AudioDSPLinearNodeRack: View {
                 onUpdateNode: onUpdateNode,
                 onCommit: onCommit
             )
+            .equatable()
         case DSPNodeConfiguration.scriptTypeID:
             AudioDSPScriptNodeCard(
                 node: node,
@@ -758,34 +793,37 @@ struct AudioDSPLinearNodeRack: View {
                     dragFloatingY = origin.y
                     dragNodeOrder = nodes.map(\.nodeID)
                     draggingNodeID = nodeID
+
+                    let initialPointerY = currentMouseYInRackSpace() ?? (origin.y + nodeHeaderHeight / 2)
+                    dragPointerYOffset = initialPointerY - origin.y
+
                     // The floating card first appears at rest, then lifts on
                     // the next turn so the change is animated.
                     Task { @MainActor in
                         if draggingNodeID == nodeID, !isFinishingDrag { isLifted = true }
                     }
                 }
-                guard draggingNodeID == nodeID, var order = dragNodeOrder else { return }
+                guard draggingNodeID == nodeID else { return }
 
                 // The launch position is captured once, before any rows move.
                 // Snapshot thresholds also prevent animated layout feedback.
-                dragFloatingY = dragOrigin.y + gesture.translation.height
+                if let mouseY = currentMouseYInRackSpace() {
+                    dragFloatingY = mouseY - dragPointerYOffset
+                } else {
+                    dragFloatingY = dragOrigin.y + gesture.translation.height
+                }
                 dragFloatingX = max(
                     -dragHorizontalLimit,
                     min(dragHorizontalLimit, gesture.translation.width * dragHorizontalDamping)
                 )
                 let centerY = dragFloatingY + nodeHeaderHeight / 2
-                let target = nodes.filter { node in
-                    node.nodeID != nodeID
-                        && centerY > (dragRowFrames[node.nodeID]?.minY ?? .infinity) + nodeHeaderHeight / 2
-                }.count
-                guard let current = order.firstIndex(of: nodeID), current != target else { return }
-                order.remove(at: current)
-                order.insert(nodeID, at: min(target, order.count))
-                withAnimation(reorderAnimation) { dragNodeOrder = order }
+                updateDragTarget(forCenterY: centerY)
+                updateAutoScroll(forCenterY: centerY)
             }
             .onEnded { gesture in
                 guard draggingNodeID == nodeID, let order = dragNodeOrder else { return }
                 isFinishingDrag = true
+                stopAutoScroll()
                 // Submit once on release. The binding commits through the
                 // existing AudioDSPController; no second apply is needed here.
                 let reordered = order.compactMap { id in nodes.first { $0.nodeID == id } }
@@ -824,6 +862,7 @@ struct AudioDSPLinearNodeRack: View {
     }
 
     private func cancelDrag() {
+        stopAutoScroll()
         dragCleanupTask?.cancel()
         dragCleanupTask = nil
         draggingNodeID = nil
@@ -833,6 +872,175 @@ struct AudioDSPLinearNodeRack: View {
         isLifted = false
         dragFloatingX = 0
         dragFloatingY = 0
+        dragPointerYOffset = 0
+    }
+
+    private func updateDragTarget(forCenterY centerY: CGFloat) {
+        guard let nodeID = draggingNodeID, var order = dragNodeOrder else { return }
+        let target = nodes.filter { node in
+            node.nodeID != nodeID
+                && centerY > (dragRowFrames[node.nodeID]?.minY ?? .infinity) + nodeHeaderHeight / 2
+        }.count
+        guard let current = order.firstIndex(of: nodeID), current != target else { return }
+        order.remove(at: current)
+        order.insert(nodeID, at: min(target, order.count))
+        withAnimation(reorderAnimation) { dragNodeOrder = order }
+    }
+
+    private func updateAutoScroll(forCenterY centerY: CGFloat) {
+        let velocity = autoScrollVelocity(forCenterY: centerY)
+        autoScrollVelocity = velocity
+        if abs(velocity) > 0.5 {
+            startAutoScrollIfNeeded()
+        } else {
+            stopAutoScroll()
+        }
+    }
+
+    private func autoScrollVelocity(forCenterY centerY: CGFloat) -> CGFloat {
+        guard
+            let viewport = visibleViewportInRackSpace(),
+            let scrollBounds = autoScrollOriginBounds()
+        else { return 0 }
+
+        let canScrollUp = scrollBounds.originY > scrollBounds.minY + 0.5
+        let canScrollDown = scrollBounds.originY < scrollBounds.maxY - 0.5
+
+        let pointerY = currentMouseYInRackSpace() ?? centerY
+        let topReferenceY = min(pointerY, dragFloatingY)
+        let bottomReferenceY = max(pointerY, dragFloatingY + nodeHeaderHeight)
+
+        let topDistance = topReferenceY - viewport.minY
+        let topRatio: CGFloat
+        if topDistance < autoScrollEdgeThreshold {
+            topRatio = max(0, (autoScrollEdgeThreshold - topDistance) / autoScrollEdgeThreshold)
+        } else {
+            topRatio = 0
+        }
+
+        let bottomDistance = viewport.maxY - bottomReferenceY
+        let bottomRatio: CGFloat
+        if bottomDistance < autoScrollBottomEdgeThreshold {
+            bottomRatio = max(0, (autoScrollBottomEdgeThreshold - bottomDistance) / autoScrollBottomEdgeThreshold)
+        } else {
+            bottomRatio = 0
+        }
+
+        if canScrollUp, topRatio > bottomRatio, topRatio > 0 {
+            return -scaledAutoScrollVelocity(for: topRatio)
+        }
+        if canScrollDown, bottomRatio > 0 {
+            return scaledAutoScrollVelocity(for: bottomRatio)
+        }
+        return 0
+    }
+
+    private func scaledAutoScrollVelocity(for ratio: CGFloat) -> CGFloat {
+        guard ratio > 0 else { return 0 }
+        if ratio <= 1.0 {
+            let eased = pow(Double(ratio), 1.7)
+            return autoScrollMinVelocity
+                + (autoScrollMaxVelocity - autoScrollMinVelocity) * CGFloat(eased)
+        } else {
+            let extra = min(1.0, (ratio - 1.0) / 0.6)
+            let extraEased = pow(Double(extra), 1.3)
+            return autoScrollMaxVelocity
+                + (autoScrollOverdriveMaxVelocity - autoScrollMaxVelocity) * CGFloat(extraEased)
+        }
+    }
+
+    private func startAutoScrollIfNeeded() {
+        guard autoScrollTask == nil else { return }
+        autoScrollTask = Task { @MainActor in
+            while !Task.isCancelled {
+                performAutoScrollStep()
+                try? await Task.sleep(nanoseconds: autoScrollFrameInterval)
+            }
+        }
+    }
+
+    private func stopAutoScroll() {
+        autoScrollTask?.cancel()
+        autoScrollTask = nil
+        autoScrollVelocity = 0
+    }
+
+    private func performAutoScrollStep() {
+        guard draggingNodeID != nil, abs(autoScrollVelocity) > 0.5 else {
+            stopAutoScroll()
+            return
+        }
+
+        let delta = scrollEnclosingScrollView(by: autoScrollVelocity / 60)
+        guard abs(delta) > 0.05 else {
+            stopAutoScroll()
+            return
+        }
+
+        if let mouseY = currentMouseYInRackSpace() {
+            dragFloatingY = mouseY - dragPointerYOffset
+        }
+        let centerY = dragFloatingY + nodeHeaderHeight / 2
+        updateDragTarget(forCenterY: centerY)
+        updateAutoScroll(forCenterY: centerY)
+    }
+
+    @discardableResult
+    private func scrollEnclosingScrollView(by delta: CGFloat) -> CGFloat {
+        guard
+            let scrollView = enclosingScrollView,
+            let documentView = scrollView.documentView
+        else { return 0 }
+
+        let clipView = scrollView.contentView
+        let oldOrigin = clipView.bounds.origin
+        let maxY = max(0, documentView.bounds.height - clipView.bounds.height)
+        let minY: CGFloat = 0
+        guard delta >= 0 || oldOrigin.y > minY + 0.05 else { return 0 }
+        guard delta <= 0 || oldOrigin.y < maxY - 0.05 else { return 0 }
+        let newY = max(minY, min(maxY, oldOrigin.y + delta))
+        guard abs(newY - oldOrigin.y) > 0.05 else { return 0 }
+
+        clipView.scroll(to: NSPoint(x: oldOrigin.x, y: newY))
+        scrollView.reflectScrolledClipView(clipView)
+        return newY - oldOrigin.y
+    }
+
+    private func visibleViewportInRackSpace() -> CGRect? {
+        guard
+            let scrollView = enclosingScrollView,
+            let documentView = scrollView.documentView,
+            let coordinateView = rackCoordinateView,
+            coordinateView.window != nil
+        else { return nil }
+
+        let viewport = coordinateView
+            .convert(scrollView.contentView.documentVisibleRect, from: documentView)
+            .standardized
+        guard !viewport.isNull, viewport.height > 0 else { return nil }
+        return viewport
+    }
+
+    private func autoScrollOriginBounds() -> (originY: CGFloat, minY: CGFloat, maxY: CGFloat)? {
+        guard
+            let scrollView = enclosingScrollView,
+            let documentView = scrollView.documentView
+        else { return nil }
+
+        let clipView = scrollView.contentView
+        let maxY = max(0, documentView.bounds.height - clipView.bounds.height)
+        let minY: CGFloat = 0
+        return (clipView.bounds.origin.y, minY, maxY)
+    }
+
+    private func currentMouseYInRackSpace() -> CGFloat? {
+        guard
+            let coordinateView = rackCoordinateView,
+            let window = coordinateView.window
+        else { return nil }
+
+        let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        return coordinateView.convert(windowPoint, from: nil).y
     }
 
 }
@@ -981,11 +1189,11 @@ enum DSPNodeDescriptor {
             return "\(count) 个频段"
         case DSPNodeConfiguration.classicBassTypeID:
             return node.effectParameters(DSPClassicBassParameters.self).map {
-                "\(targetTitle($0.target)) · 强度 \(format($0.intensity, digits: 2))"
+                "\(targetTitle($0.target))，低音 \(format($0.bassGainDB, digits: 1)) dB，虚拟 \(format($0.intensity * 100, digits: 0))%"
             } ?? ""
         case DSPNodeConfiguration.hybridBassTypeID:
             return node.effectParameters(DSPHybridBassParameters.self).map {
-                "\(targetTitle($0.target)) · 强度 \(format($0.intensity, digits: 2))"
+                "\(targetTitle($0.target))，低音 \(format($0.bassGainDB, digits: 1)) dB，虚拟 \(format($0.intensity * 100, digits: 0))%"
             } ?? ""
         case DSPNodeConfiguration.stereoWidthTypeID:
             return node.stereoWidthParameters.map { "宽度 \(format($0.width, digits: 2))×" } ?? ""
@@ -1320,6 +1528,41 @@ private struct AnimatedBusWire: View, Animatable {
                 path.strokedPath(style),
                 with: .color(color.opacity(AnimatedWireGutter.fadeNearEnd(amount)))
             )
+        }
+    }
+}
+
+// MARK: - Rack Scroll View Resolver
+
+private struct DSPRackScrollViewResolver: NSViewRepresentable {
+    let onResolve: (NSScrollView?, NSView?) -> Void
+
+    func makeNSView(context: Context) -> ResolverView {
+        let view = ResolverView()
+        view.onResolve = onResolve
+        return view
+    }
+
+    func updateNSView(_ nsView: ResolverView, context: Context) {
+        nsView.onResolve = onResolve
+        nsView.resolveSoon()
+    }
+
+    final class ResolverView: NSView {
+        var onResolve: ((NSScrollView?, NSView?) -> Void)?
+
+        override var isFlipped: Bool { true }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            resolveSoon()
+        }
+
+        func resolveSoon() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                onResolve?(enclosingScrollView, self)
+            }
         }
     }
 }
