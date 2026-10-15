@@ -477,26 +477,8 @@ struct CoverGradientBlurBackgroundView: View {
 
 enum CoverGradientBlurRenderer {
 
-    private nonisolated(unsafe) static var ciContext: CIContext?
-    private nonisolated static let ciContextLock = NSLock()
-
     private nonisolated static func currentCIContext() -> CIContext {
-        ciContextLock.lock()
-        defer { ciContextLock.unlock() }
-        if let ciContext { return ciContext }
-        let created = CIContext(options: [
-            .cacheIntermediates: false,
-            .useSoftwareRenderer: false
-        ])
-        ciContext = created
-        return created
-    }
-
-    nonisolated static func clearCaches() {
-        ciContextLock.lock()
-        defer { ciContextLock.unlock() }
-        ciContext?.clearCaches()
-        ciContext = nil
+        SharedCoreImageContext.context
     }
 
     /// Internal resolution at which the multi-pass backdrop blur is rendered.
@@ -912,11 +894,9 @@ enum CoverGradientBlurRenderer {
             return nil
         }
         let renderContext = currentCIContext()
-        defer {
-            renderContext.clearCaches()
-        }
 
         let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
+        let renderStart = ContinuousClock.now
         guard let cgImage = renderContext.createCGImage(
             finalImage,
             from: outputRect,
@@ -925,6 +905,13 @@ enum CoverGradientBlurRenderer {
         ) else {
             return nil
         }
+        let renderTime = renderStart.duration(to: .now)
+        DebugUIHooks.record(String(
+            format: "render cover-blur %ldx%ld ms=%.1f",
+            cgImage.width,
+            cgImage.height,
+            Double(renderTime.components.attoseconds) / 1e15 + Double(renderTime.components.seconds) * 1000
+        ))
 
         return cgImage
     }
@@ -1665,7 +1652,6 @@ actor CoverGradientBlurRenderStore {
     private var inFlightKeys: Set<RenderRequestKey> = []
     private var waitingContinuations:
         [RenderRequestKey: [CheckedContinuation<CoverGradientBlurRenderedImageBox?, Never>]] = [:]
-    private var renderTasks: [RenderRequestKey: Task<CoverGradientBlurRenderedImageBox?, Never>] = [:]
     private var renderQueueTail: Task<Void, Never>?
     private var renderQueueTailID: UUID?
     private var memoryGeneration: UInt64 = 0
@@ -1687,41 +1673,34 @@ actor CoverGradientBlurRenderStore {
         }
 
         inFlightKeys.insert(requestKey)
-        let result = await produceSerially(producer, requestKey: requestKey)
-        let currentResult = memoryGeneration == requestGeneration ? result : nil
+        let result = await produceSerially(producer)
 
-        if let currentResult {
-            cache.setObject(currentResult, forKey: key as NSString, cost: currentResult.cost)
+        if let result, memoryGeneration == requestGeneration {
+            cache.setObject(result, forKey: key as NSString, cost: result.cost)
         }
 
         inFlightKeys.remove(requestKey)
         if let waiters = waitingContinuations.removeValue(forKey: requestKey) {
             for continuation in waiters {
-                continuation.resume(returning: currentResult)
+                continuation.resume(returning: result)
             }
         }
 
-        return currentResult
+        return result
     }
 
+    /// Drops the cached render. A render already running still reaches the
+    /// views waiting for it: routine trims run half a second after every
+    /// track change, and a cancelled render left the new track's background
+    /// on the solid fallback, since its key had not changed and nothing
+    /// asked again. The generation keeps that result out of the cache.
     func clearMemory() {
         memoryGeneration &+= 1
         cache.removeAllObjects()
-        for task in renderTasks.values {
-            task.cancel()
-        }
-        renderTasks.removeAll(keepingCapacity: false)
-        inFlightKeys.removeAll(keepingCapacity: false)
-        let continuations = waitingContinuations.values.flatMap { $0 }
-        waitingContinuations.removeAll(keepingCapacity: false)
-        for continuation in continuations {
-            continuation.resume(returning: nil)
-        }
     }
 
     private func produceSerially(
-        _ producer: @Sendable @escaping () async -> CoverGradientBlurRenderedImageBox?,
-        requestKey: RenderRequestKey
+        _ producer: @Sendable @escaping () async -> CoverGradientBlurRenderedImageBox?
     ) async -> CoverGradientBlurRenderedImageBox? {
         guard !Task.isCancelled else { return nil }
 
@@ -1736,14 +1715,12 @@ actor CoverGradientBlurRenderStore {
         renderQueueTail = Task {
             _ = await task.value
         }
-        renderTasks[requestKey] = task
 
         let result = await withTaskCancellationHandler {
             await task.value
         } onCancel: {
             task.cancel()
         }
-        renderTasks.removeValue(forKey: requestKey)
 
         if renderQueueTailID == queueID {
             renderQueueTail = nil
@@ -1756,7 +1733,6 @@ actor CoverGradientBlurRenderStore {
 enum CoverGradientBlurMemory {
     static func clear() async {
         await CoverGradientBlurRenderStore.shared.clearMemory()
-        CoverGradientBlurRenderer.clearCaches()
     }
 }
 

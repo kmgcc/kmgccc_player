@@ -310,6 +310,17 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         var preparedNodes: [RuntimeNode] = []
         var idleNodeIDs: [UUID] = []
         var warnings: [DSPDiagnostic] = []
+        let normalizedOutputTrimDB = Self.normalizedTrim(
+            configuration.outputTrimDB,
+            fieldPath: "outputTrimDB",
+            warnings: &warnings
+        )
+        let limiter = configuration.limiter
+        let ceilingDB = limiter.ceilingDB.isFinite
+            ? min(max(limiter.ceilingDB, DSPLimiterConfiguration.ceilingRange.lowerBound),
+                  DSPLimiterConfiguration.ceilingRange.upperBound)
+            : DSPLimiterConfiguration.defaultCeilingDB
+        let bassOutputCeiling: Double? = limiter.enabled ? pow(10, (ceilingDB - normalizedOutputTrimDB) / 20) : nil
         preparedNodes.reserveCapacity(configuration.nodes.count + 1)
         var scriptCount = 0
         var scriptOperationsPerSecond = 0.0
@@ -351,6 +362,7 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                         node,
                         format: format,
                         context: context,
+                        bassOutputCeiling: bassOutputCeiling,
                         warnings: &warnings
                     ) {
                         preparedNode.typeID = node.typeID
@@ -523,11 +535,6 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             fieldPath: "inputTrimDB",
             warnings: &warnings
         )
-        let normalizedOutputTrimDB = Self.normalizedTrim(
-            configuration.outputTrimDB,
-            fieldPath: "outputTrimDB",
-            warnings: &warnings
-        )
         let attenuationRange = DSPHeadroomConfiguration.maximumAttenuationRange
         let requestedMaximumDB = configuration.headroom.maximumAttenuationDB
         let maximumAttenuationDB: Double
@@ -628,11 +635,6 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         let hasProcessingWork = Self.hasAudibleWork(preparedNodes)
             || abs(preparedInputGain - 1) >= 1e-12
             || abs(preparedOutputGain - 1) >= 1e-12
-        let limiter = configuration.limiter
-        let ceilingDB = limiter.ceilingDB.isFinite
-            ? min(max(limiter.ceilingDB, DSPLimiterConfiguration.ceilingRange.lowerBound),
-                  DSPLimiterConfiguration.ceilingRange.upperBound)
-            : DSPLimiterConfiguration.defaultCeilingDB
         let releaseMilliseconds = limiter.releaseMilliseconds.isFinite
             ? min(max(limiter.releaseMilliseconds, DSPLimiterConfiguration.releaseRange.lowerBound),
                   DSPLimiterConfiguration.releaseRange.upperBound)
@@ -820,12 +822,20 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
     func meterReadingsByChunk() -> [[DSPNodeMeterReading]] {
         var result: [[DSPNodeMeterReading]] = []
         for node in nodes {
-            guard let blocks = node.blockKernel?.meterBlocks, blocks.count >= 4 else { continue }
-            let chunks = blocks.count / 4
-            if result.count < chunks { result += Array(repeating: [], count: chunks - result.count) }
-            for chunk in 0..<chunks {
-                result[chunk].append(DSPNodeMeterReading(nodeID: node.nodeID,
-                                                         values: Array(blocks[(chunk * 4)..<(chunk * 4 + 4)])))
+            if let blocks = node.blockKernel?.meterBlocks, blocks.count >= 4 {
+                let chunks = blocks.count / 4
+                if result.count < chunks { result += Array(repeating: [], count: chunks - result.count) }
+                for chunk in 0..<chunks {
+                    result[chunk].append(DSPNodeMeterReading(nodeID: node.nodeID,
+                                                             values: Array(blocks[(chunk * 4)..<(chunk * 4 + 4)])))
+                }
+            } else if let blocks = node.limiterKernel?.meterBlocks, !blocks.isEmpty {
+                let chunks = blocks.count
+                if result.count < chunks { result += Array(repeating: [], count: chunks - result.count) }
+                for chunk in 0..<chunks {
+                    result[chunk].append(DSPNodeMeterReading(nodeID: node.nodeID,
+                                                             values: [blocks[chunk]]))
+                }
             }
         }
         return result
@@ -899,6 +909,9 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                     nodes[index].blockKernel?.process(buffer.baseAddress!, frames: frames, channels: channels)
                 }
             case .some(.tube), .some(.limiter), .some(.script):
+                if nodes[index].effect == .some(.limiter) {
+                    nodes[index].limiterKernel?.beginBlock()
+                }
                 for frame in 0..<frames {
                     let offset = frame * channels
                     for channel in 0..<channels { frameValues[channel] = samples[offset + channel] }
@@ -909,6 +922,9 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                     default: break
                     }
                     for channel in 0..<channels { samples[offset + channel] = frameValues[channel] }
+                }
+                if nodes[index].effect == .some(.limiter) {
+                    nodes[index].limiterKernel?.flushRemainingMeterChunk()
                 }
             }
             if let loadMeasurement {
@@ -1049,6 +1065,7 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         _ node: DSPNodeConfiguration,
         format: DSPAudioFormat,
         context: DSPEqualLoudnessContext,
+        bassOutputCeiling: Double?,
         warnings: inout [DSPDiagnostic]
     ) -> RuntimeNode? {
         let basePath = "nodes[\(node.nodeID.uuidString)].parameters"
@@ -1207,17 +1224,19 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             let kind = context.outputKind
             let tightens = parameters.tightenDryBass == .on
                 || (parameters.tightenDryBass == .automatic && parameters.resolved(for: kind).profile.tightensDryBass)
-            if parameters.intensity == 0, !tightens { return trimOnly(parameters.outputTrimDB) }
+            if parameters.intensity == 0, parameters.bassGainDB == 0, !tightens { return trimOnly(parameters.outputTrimDB) }
             let kernel = DSPClassicBassKernel(format: format, selectedChannels: channelMask,
-                                              parameters: parameters, outputKind: kind)
+                                              parameters: parameters, outputKind: kind, outputCeiling: bassOutputCeiling)
             return blockNode(kernel.map(DSPEffectKernel.classicBass),
                              peakDB: DSPClassicBassKernel.staticPeakResponseDB(parameters: parameters, outputKind: kind),
                              trimDB: parameters.outputTrimDB, nonlinear: true)
 
         case DSPNodeConfiguration.hybridBassTypeID:
             guard let parameters = node.effectParameters(DSPHybridBassParameters.self) else { return nil }
+            let tightens = parameters.tightenDryBass == .on
+            if parameters.intensity == 0, parameters.bassGainDB == 0, !tightens { return trimOnly(parameters.outputTrimDB) }
             let kernel = DSPHybridBassKernel(format: format, selectedChannels: channelMask,
-                                             parameters: parameters, outputKind: context.outputKind)
+                                             parameters: parameters, outputKind: context.outputKind, outputCeiling: bassOutputCeiling)
             return blockNode(kernel.map(DSPEffectKernel.hybridBass),
                              peakDB: DSPHybridBassKernel.staticPeakResponseDB(parameters: parameters),
                              trimDB: parameters.outputTrimDB, nonlinear: true)
@@ -1228,8 +1247,13 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             let kernel = DSPStereoWidthKernel(leftChannel: pair.left, rightChannel: pair.right,
                                               sampleRate: format.sampleRate, parameters: parameters)
             // The loudness gain may add up to 3 dB on a narrowed image.
+            // Widening leaves the mid at unity and the guard holds the side
+            // under it, so it reserves nothing: reserving the worst case,
+            // 20·log10(width), turned the whole chain down by up to 9.5 dB
+            // and was heard as the effect making music quieter. The rare
+            // in-phase side peak is left to the limiter (our choice).
             let peakDB = (parameters.loudnessMatchEnabled && parameters.width < 1 ? 3 : 0)
-                + 20 * log10(max(1, parameters.width)) + parameters.outputTrimDB
+                + parameters.outputTrimDB
             return blockNode(kernel.map(DSPEffectKernel.stereoWidth), peakDB: peakDB,
                              trimDB: parameters.outputTrimDB, nonlinear: false)
 
@@ -1241,6 +1265,7 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
 
         case DSPNodeConfiguration.spatialAudioTypeID:
             guard let parameters = node.effectParameters(DSPSpatialAudioParameters.self) else { return nil }
+            guard parameters.mix > 0 else { return trimOnly(parameters.outputTrimDB) }
             switch DSPSpatialAudioKernel.prepare(format: format, leftChannel: pair.left, rightChannel: pair.right,
                                                  parameters: parameters) {
             case .success(let kernel):

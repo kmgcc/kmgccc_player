@@ -42,7 +42,6 @@ struct ClassicLEDSkin: NowPlayingSkin {
 
     func releaseCachedResources() async {
         await ClassicArtworkFrameExtendedArtworkCache.shared.removeAll()
-        ClassicArtworkFrameExtendedArtworkRenderer.clearCaches()
     }
 }
 
@@ -468,7 +467,6 @@ private struct ArtworkFrameMaskedImageView: View {
             displayedFinalScale = 1.0
             Task {
                 await ClassicArtworkFrameExtendedArtworkCache.shared.removeAll()
-                ClassicArtworkFrameExtendedArtworkRenderer.clearCaches()
                 await MainActor.run {
                     CATransaction.flush()
                     CacheManager.trimProcessMemory()
@@ -652,28 +650,8 @@ private actor ClassicArtworkFrameExtendedArtworkRenderQueue {
 }
 
 enum ClassicArtworkFrameExtendedArtworkRenderer {
-    private nonisolated(unsafe) static var ciContext: CIContext?
-    private nonisolated static let ciContextLock = NSLock()
-
     private nonisolated static func currentCIContext() -> CIContext {
-        ciContextLock.lock()
-        defer { ciContextLock.unlock() }
-        if let existing = ciContext {
-            return existing
-        }
-        let created = CIContext(options: [
-            .cacheIntermediates: false,
-            .useSoftwareRenderer: false,
-        ])
-        ciContext = created
-        return created
-    }
-
-    nonisolated static func clearCaches() {
-        ciContextLock.lock()
-        defer { ciContextLock.unlock() }
-        ciContext?.clearCaches()
-        ciContext = nil
+        SharedCoreImageContext.context
     }
 
     nonisolated static func render(
@@ -882,9 +860,7 @@ enum ClassicArtworkFrameExtendedArtworkRenderer {
             blurFilter.setValue(fullCanvasMask, forKey: "inputMask")
 
             guard let output = blurFilter.outputImage?.cropped(to: canvasRect) else { return base }
-            let ctx = currentCIContext()
-            defer { ctx.clearCaches() }
-            return ctx.createCGImage(output, from: canvasRect) ?? base
+            return currentCIContext().createCGImage(output, from: canvasRect) ?? base
         }
     }
 

@@ -58,8 +58,9 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
     private let dragHorizontalLimit: CGFloat = 28
     private let autoScrollEdgeThreshold: CGFloat = 118
     private let autoScrollBottomEdgeThreshold: CGFloat = 176
-    private let autoScrollMaxVelocity: CGFloat = 500
-    private let autoScrollMinVelocity: CGFloat = 22
+    private let autoScrollMaxVelocity: CGFloat = 2000
+    private let autoScrollOverdriveMaxVelocity: CGFloat = 2800
+    private let autoScrollMinVelocity: CGFloat = 30
     private let autoScrollFrameInterval: UInt64 = 16_000_000
     private let maxVisibleDraggedCards = 5
     private let pileCardOverlap: CGFloat = 12
@@ -722,8 +723,25 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
         let canScrollUp = scrollBounds.originY > scrollBounds.minY + 0.5
         let canScrollDown = scrollBounds.originY < scrollBounds.maxY - 0.5
 
-        let topRatio = max(0, min(1, (autoScrollEdgeThreshold - (centerY - viewport.minY)) / autoScrollEdgeThreshold))
-        let bottomRatio = max(0, min(1, (autoScrollBottomEdgeThreshold - (viewport.maxY - centerY)) / autoScrollBottomEdgeThreshold))
+        let pointerY = currentMouseYInReorderSpace() ?? centerY
+        let topReferenceY = min(pointerY, dragFloatingY)
+        let bottomReferenceY = max(pointerY, dragFloatingY + dragGroupHeight)
+
+        let topDistance = topReferenceY - viewport.minY
+        let topRatio: CGFloat
+        if topDistance < autoScrollEdgeThreshold {
+            topRatio = max(0, (autoScrollEdgeThreshold - topDistance) / autoScrollEdgeThreshold)
+        } else {
+            topRatio = 0
+        }
+
+        let bottomDistance = viewport.maxY - bottomReferenceY
+        let bottomRatio: CGFloat
+        if bottomDistance < autoScrollBottomEdgeThreshold {
+            bottomRatio = max(0, (autoScrollBottomEdgeThreshold - bottomDistance) / autoScrollBottomEdgeThreshold)
+        } else {
+            bottomRatio = 0
+        }
 
         if canScrollUp, topRatio > bottomRatio, topRatio > 0 {
             return -scaledAutoScrollVelocity(for: topRatio)
@@ -735,9 +753,17 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
     }
 
     private func scaledAutoScrollVelocity(for ratio: CGFloat) -> CGFloat {
-        let eased = pow(Double(ratio), 1.7)
-        return autoScrollMinVelocity
-            + (autoScrollMaxVelocity - autoScrollMinVelocity) * CGFloat(eased)
+        guard ratio > 0 else { return 0 }
+        if ratio <= 1.0 {
+            let eased = pow(Double(ratio), 1.7)
+            return autoScrollMinVelocity
+                + (autoScrollMaxVelocity - autoScrollMinVelocity) * CGFloat(eased)
+        } else {
+            let extra = min(1.0, (ratio - 1.0) / 0.6)
+            let extraEased = pow(Double(extra), 1.3)
+            return autoScrollMaxVelocity
+                + (autoScrollOverdriveMaxVelocity - autoScrollMaxVelocity) * CGFloat(extraEased)
+        }
     }
 
     private func startAutoScrollIfNeeded() {

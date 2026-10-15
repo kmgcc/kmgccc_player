@@ -140,7 +140,33 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
         XCTAssertGreaterThan(DSPTubeParameters().hifiAmount, 0)
         XCTAssertGreaterThan(DSPReverbParameters().mix, 0)
         XCTAssertGreaterThan(DSPSpatialAudioParameters().mix, 0)
+        XCTAssertEqual(DSPSpatialAudioParameters().room, .none)
         XCTAssertTrue(DSPCompressorParameters().bands.allSatisfy { $0.ratio > 1 })
+    }
+
+    func testSavedSpatialRoomChoiceSurvivesTheNewDefault() throws {
+        var parameters = DSPSpatialAudioParameters()
+        parameters.room = .studio
+        parameters.distanceM = 3.5
+        parameters.mix = 0.6
+        let node = DSPNodeConfiguration.effect(parameters)
+        let decoded = try JSONDecoder().decode(DSPNodeConfiguration.self, from: JSONEncoder().encode(node))
+        XCTAssertEqual(decoded.effectParameters(DSPSpatialAudioParameters.self), parameters)
+    }
+
+    func testSpatialAutomationDefaultsMatchTheNativeFactory() throws {
+        let descriptor = try XCTUnwrap(AutomationDSPToolCatalog.builtInNodeSchemas.first { value in
+            guard case .object(let fields) = value else { return false }
+            return fields["typeID"] == .string("spatialAudio")
+        })
+        guard case .object(let fields) = descriptor, let defaults = fields["parameterDefaults"] else {
+            XCTFail("Missing spatial audio defaults")
+            return
+        }
+        let json = try JSONDecoder().decode([String: DSPJSONValue].self, from: JSONEncoder().encode(defaults))
+        XCTAssertEqual(DSPSpatialAudioParameters(json: json), DSPSpatialAudioParameters())
+        XCTAssertEqual(fields["declaredLatencyFramesWhenActive"], .null)
+        XCTAssertEqual(fields["convolutionBlockLatencyFrames"], .number(256))
     }
 
     func testParameterSettersPreserveRecursiveUnknownJSON() throws {
@@ -195,6 +221,71 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
         try roundTrip(DSPCompressorParameters(style: .night))
         for space in DSPReverbSpace.allCases { try roundTrip(DSPReverbParameters(space: space)) }
         for strength in DSPCrossfeedStrength.allCases { try roundTrip(DSPCrossfeedParameters(strength: strength)) }
+    }
+
+    func testBassControlsSaveIndependentlyForEachTargetAndRoundTrip() throws {
+        var classic = DSPClassicBassParameters()
+        classic.bassGainDB = 9
+        classic.intensity = 2
+        classic.switchTarget(to: .speakers)
+        XCTAssertEqual(classic.bassGainDB, 3)
+        XCTAssertEqual(classic.intensity, 0.5)
+        classic.bassGainDB = 0
+        classic.intensity = 1.5
+        classic.switchTarget(to: .automatic)
+        XCTAssertEqual(classic.bassGainDB, 9)
+        XCTAssertEqual(classic.intensity, 2)
+        XCTAssertTrue(classic.validationIssues.isEmpty)
+
+        var hybrid = DSPHybridBassParameters()
+        hybrid.bassGainDB = 9
+        hybrid.intensity = 2
+        hybrid.switchTarget(to: .headphones)
+        XCTAssertEqual(hybrid.bassGainDB, 3)
+        XCTAssertEqual(hybrid.intensity, 0.5)
+        hybrid.bassGainDB = 0
+        hybrid.intensity = 1.5
+        hybrid.switchTarget(to: .automatic)
+        XCTAssertEqual(hybrid.bassGainDB, 9)
+        XCTAssertEqual(hybrid.intensity, 2)
+        XCTAssertTrue(hybrid.validationIssues.isEmpty)
+
+        var classicJSON: [String: DSPJSONValue] = [:]
+        classic.write(to: &classicJSON)
+        XCTAssertEqual(DSPClassicBassParameters(json: classicJSON), classic)
+        var hybridJSON: [String: DSPJSONValue] = [:]
+        hybrid.write(to: &hybridJSON)
+        XCTAssertEqual(DSPHybridBassParameters(json: hybridJSON), hybrid)
+        let classicSaved = try XCTUnwrap(classic.targetSettings["speakers"])
+        let hybridSaved = try XCTUnwrap(hybrid.targetSettings["headphones"])
+        XCTAssertEqual(try JSONDecoder().decode(DSPClassicBassParameters.TargetSettings.self,
+            from: JSONEncoder().encode(classicSaved)), classicSaved)
+        XCTAssertEqual(try JSONDecoder().decode(DSPHybridBassParameters.TargetSettings.self,
+            from: JSONEncoder().encode(hybridSaved)), hybridSaved)
+    }
+
+    func testBassGainIsRequiredAndExpandedRangesHaveExplicitLimits() {
+        var classic = DSPClassicBassParameters()
+        var hybrid = DSPHybridBassParameters()
+        var classicJSON: [String: DSPJSONValue] = [:]
+        classic.write(to: &classicJSON)
+        classicJSON.removeValue(forKey: "bassGainDB")
+        XCTAssertNil(DSPClassicBassParameters(json: classicJSON))
+        var hybridJSON: [String: DSPJSONValue] = [:]
+        hybrid.write(to: &hybridJSON)
+        hybridJSON.removeValue(forKey: "bassGainDB")
+        XCTAssertNil(DSPHybridBassParameters(json: hybridJSON))
+
+        classic.bassGainDB = 9.1
+        hybrid.bassGainDB = 9.1
+        XCTAssertEqual(classic.validationIssues.map(\.key), ["bassGainDB"])
+        XCTAssertEqual(hybrid.validationIssues.map(\.key), ["bassGainDB"])
+        classic.bassGainDB = 9
+        hybrid.bassGainDB = 9
+        classic.intensity = 2.01
+        hybrid.intensity = 2.01
+        XCTAssertEqual(classic.validationIssues.map(\.key), ["intensity"])
+        XCTAssertEqual(hybrid.validationIssues.map(\.key), ["intensity"])
     }
 
     func testEnabledNativeNodesRejectUnknownParametersAndDisabledNodesPreserveThem() async throws {

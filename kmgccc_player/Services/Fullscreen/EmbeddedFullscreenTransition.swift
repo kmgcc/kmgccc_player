@@ -200,11 +200,25 @@ final class EmbeddedFullscreenTransition {
 
 /// Owns a native full-window host without changing the split-pane geometry.
 struct EmbeddedFullscreenSurface<Content: View>: View {
-    @Environment(\.self) private var environment
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.locale) private var locale
+    @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var motionPolicy
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        NativeEmbeddedFullscreenSurface(content: AnyView(content().environment(\.self, environment)))
+        // A separate hosting view must not retain the parent environment's
+        // dependency tracker. Inject services in the content closure and copy
+        // only the presentation values that cross this native boundary.
+        NativeEmbeddedFullscreenSurface(content: AnyView(
+            content()
+                .environment(\.colorScheme, colorScheme)
+                .environment(\.locale, locale)
+                .environment(\.layoutDirection, layoutDirection)
+                .environment(\.motionTokens, motionTokens)
+                .environment(\.motionPolicy, motionPolicy)
+        ))
     }
 }
 

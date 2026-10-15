@@ -512,6 +512,28 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
         artworkData = nil
     }
 
+    func releaseFileBackedLyricsText() {
+        guard ttmlLyricText != nil || lyricsText != nil else { return }
+        if ttmlLyricText != nil {
+            let hasTTMLOnDisk = resolvedTTMLURL().map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            let hasLyricsOnDisk = resolvedLyricsURL().map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            if hasTTMLOnDisk || (hasLyricsOnDisk && resolvedLyricsURL()?.lastPathComponent.lowercased().hasSuffix(".ttml") == true) {
+                ttmlLyricText = nil
+            }
+        }
+        if lyricsText != nil {
+            let hasLyricsOnDisk = resolvedLyricsURL().map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            if hasLyricsOnDisk {
+                lyricsText = nil
+            }
+        }
+    }
+
+    func releaseFileBackedResources() {
+        releaseFileBackedArtworkData()
+        releaseFileBackedLyricsText()
+    }
+
     // MARK: - Persistence URL Resolution (root-snapshot aware)
 
     /// Resolve the track folder URL using the root captured by its session.
@@ -604,11 +626,16 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
 
     /// Load plain lyrics from disk if not already in memory.
     func loadLyricsIfNeeded() -> String? {
-        if let text = lyricsText, !text.isEmpty { return text }
-        guard let url = resolvedLyricsURL() else { return nil }
-        let text = try? String(contentsOf: url, encoding: .utf8)
+        let text = readLyricsText()
         lyricsText = text
         return text
+    }
+
+    /// Reads for inspection without retaining file-backed text on the library Track.
+    func readLyricsText() -> String? {
+        if let text = lyricsText, !text.isEmpty { return text }
+        guard let url = resolvedLyricsURL() else { return nil }
+        return try? String(contentsOf: url, encoding: .utf8)
     }
 
     /// Read plain lyrics without performing file I/O on the caller's actor.
@@ -636,18 +663,23 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
 
     /// Load TTML lyrics from disk if not already in memory.
     func loadTTMLLyricsIfNeeded() -> String? {
+        guard let text = readTTMLLyricsText() else { return nil }
+        ttmlLyricText = text
+        return text
+    }
+
+    /// Preserves inline edits while keeping inspection reads out of the Track cache.
+    func readTTMLLyricsText() -> String? {
         if let text = ttmlLyricText, !text.isEmpty { return text }
         // Try dedicated TTML file first
         if let ttmlURL = resolvedTTMLURL(),
            let text = try? String(contentsOf: ttmlURL, encoding: .utf8), !text.isEmpty {
-            ttmlLyricText = text
             return text
         }
         // Fallback: lyrics file might be TTML
         if let lyricsURL = resolvedLyricsURL(),
            let text = try? String(contentsOf: lyricsURL, encoding: .utf8), !text.isEmpty,
            lyricsURL.lastPathComponent.lowercased().hasSuffix(".ttml") {
-            ttmlLyricText = text
             return text
         }
         return nil
@@ -702,7 +734,7 @@ enum TrackLyricsDraft {
 
     static func differs(from track: Track, editorText: String) -> Bool {
         let draft = storage(from: editorText)
-        let currentTTML = LyricsFormatSupport.normalizedTTMLText(track.loadTTMLLyricsIfNeeded())
+        let currentTTML = LyricsFormatSupport.normalizedTTMLText(track.readTTMLLyricsText())
         return draft.ttmlText != currentTTML
     }
 

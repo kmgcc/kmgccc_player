@@ -126,15 +126,11 @@ nonisolated struct DSPCompressorKernel: DSPBlockKernel {
                                                   midHighPass: midHighPass, lowAllpass: DSPBiquad(allpass)),
                         count: selectedChannels.count)
 
-        let times = parameters.speed.times
         func coefficient(_ milliseconds: Double) -> Double { exp(-1 / (milliseconds / 1_000 * sampleRate)) }
-        detectors = DSPCompressorBandKey.allCases.enumerated().map { index, key in
-            let band = parameters.bands[index]
-            // The full-band stage glues rather than polices: twice as slow.
-            let scale = key == .master ? 2.0 : 1.0
+        detectors = parameters.bands.map { band in
             return Detector(thresholdDB: band.thresholdDB, ratio: max(1, band.ratio), makeupDB: band.gainDB,
-                            attack: coefficient(times.attackMs * scale),
-                            release: coefficient(times.releaseMs * scale))
+                            attack: coefficient(band.attackMs),
+                            release: coefficient(band.releaseMs))
         }
         kneeDB = parameters.kneeDB
         lookaheadFrames = Int((parameters.lookaheadMs / 1_000 * sampleRate).rounded())

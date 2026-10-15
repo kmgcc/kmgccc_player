@@ -832,7 +832,7 @@ struct BatchTrackEditSheet: View {
         metadataSource = track.metadataSource ?? ""
         metadataFetchedAt = track.metadataFetchedAt
         metadataConfidence = track.metadataConfidence
-        lyricsText = LyricsFormatSupport.normalizedTTMLText(track.loadTTMLLyricsIfNeeded()) ?? ""
+        lyricsText = LyricsFormatSupport.normalizedTTMLText(track.readTTMLLyricsText()) ?? ""
         artworkData = track.loadArtworkDataIfNeeded()
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
         statusMessage = nil

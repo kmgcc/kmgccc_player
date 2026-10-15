@@ -190,10 +190,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     private static let feedTopUpInterval: TimeInterval = 1.0 / 30.0
     static let chunkFrames: AVAudioFrameCount = 8192
     static let enqueueBlockFrames: Int = 2048
-    private static let dspLedgerByteLimit = 32 * 1_024 * 1_024
-    private static let dspFutureByteBudget = 24 * 1_024 * 1_024
-    private static let dspWarmupByteLimit = 16 * 1_024 * 1_024
-    private static let dspReplacementByteLimit = 64 * 1_024 * 1_024
+    private static let dspLedgerByteLimit = 8 * 1_024 * 1_024
+    private static let dspFutureByteBudget = 8 * 1_024 * 1_024
+    private static let dspWarmupByteLimit = 8 * 1_024 * 1_024
+    private static let dspReplacementByteLimit = 24 * 1_024 * 1_024
     /// Bounded chase of blocks produced while a replacement was preparing.
     private static let dspPreparationMaximumExtensions = 3
     /// Headroom the swap point must keep ahead of the play clock before the

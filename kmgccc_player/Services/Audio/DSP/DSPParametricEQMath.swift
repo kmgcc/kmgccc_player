@@ -44,7 +44,6 @@ nonisolated struct DSPEqualLoudnessContext: Equatable, Sendable {
               let deviceKey,
               let calibration = stage.calibration,
               calibration.deviceKey == deviceKey,
-              calibration.axis == volume.reading?.axis,
               calibration.algorithmVersion == EqualLoudnessCalibration.currentAlgorithmVersion,
               !calibration.points.isEmpty else { return nil }
         return calibration
@@ -81,7 +80,7 @@ nonisolated enum DSPEqualLoudnessMath {
         let strength = min(1, max(0, parameters.strength.isFinite ? parameters.strength : 0))
 
         if let calibration = context.usableCalibration(in: stage), let curve = calibration.curve {
-            let calibrated = curve.gains(at: reading.coordinate)
+            let calibrated = curve.gains(at: reading.coordinate(on: calibration.axis))
             return clamped(DSPEqualLoudnessGains(
                 bassDB: calibrated.bassDB * strength,
                 trebleDB: calibrated.trebleDB * strength

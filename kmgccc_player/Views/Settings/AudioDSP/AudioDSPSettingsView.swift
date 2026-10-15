@@ -85,6 +85,9 @@ struct AudioDSPSettingsView: View {
             controller.attachUndoManager(undoManager)
             controller.setProcessingLoadVisible(!isReadOnly, observerID: loadObserverID)
             refreshPresetCompatibility()
+            // Compile the reverb shaders in the background, so the first card
+            // does not wait for them.
+            DSPReverbGPU.shared.prepare {}
             Task { await controller.ensureLoaded() }
         }
         .task {

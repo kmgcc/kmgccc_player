@@ -740,6 +740,28 @@ private struct HomeRankArtworkView: View {
     }
 
     private func loadImage() async {
+        let pixelSide = Self.pixelSide(for: side)
+        let targetSize = CGSize(width: pixelSide, height: pixelSide)
+        let rankKey = HomeArtworkMemoryStore.rankKey(trackID: item.id, pixelSide: pixelSide)
+
+        if let artworkURL = item.track.existingArtworkURL() {
+            let key = ArtworkLoader.fileCacheKey(
+                fileURL: artworkURL,
+                targetPixelSize: targetSize
+            )
+            let loaded = await ArtworkLoader.loadImage(
+                fileURL: artworkURL,
+                cacheKey: key,
+                targetPixelSize: targetSize,
+                derivativeStore: cacheServices.artworkDerivativeStore
+            )
+            if let loaded {
+                HomeArtworkMemoryStore.shared.store(loaded, for: rankKey)
+                image = loaded
+            }
+            return
+        }
+
         var data = item.track.artworkData
         if data == nil || data!.isEmpty {
             data = await item.track.loadArtworkDataOffMainIfNeeded()
@@ -749,8 +771,6 @@ private struct HomeRankArtworkView: View {
             return
         }
 
-        let pixelSide = Self.pixelSide(for: side)
-        let targetSize = CGSize(width: pixelSide, height: pixelSide)
         let checksum = ArtworkLoader.checksum(for: data)
         let key = ArtworkLoader.cacheKey(
             trackID: item.id,
@@ -764,12 +784,9 @@ private struct HomeRankArtworkView: View {
             derivativeStore: cacheServices.artworkDerivativeStore
         )
         if let loaded {
-            HomeArtworkMemoryStore.shared.store(
-                loaded,
-                for: HomeArtworkMemoryStore.rankKey(trackID: item.id, pixelSide: pixelSide)
-            )
+            HomeArtworkMemoryStore.shared.store(loaded, for: rankKey)
+            image = loaded
         }
-        image = loaded
     }
 
     private static func pixelSide(for logicalSide: CGFloat) -> Int {

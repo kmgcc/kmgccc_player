@@ -523,6 +523,11 @@ nonisolated struct DSPPeakLimiterKernel {
     private let releaseExponent: Double
     private let holdFrames: Int
 
+    static let meterFrames = 1_024
+    private(set) var meterBlocks: [Float] = []
+    private var minimumGainInChunk = 1.0
+    private var meterFrameCount = 0
+
     private var delay: [Double]
     private var delayCursor = 0
     private var neededGains: [Double]
@@ -570,6 +575,9 @@ nonisolated struct DSPPeakLimiterKernel {
         DSPStateCopy.assign(&envelopes, from: source.envelopes)
         DSPStateCopy.assign(&minimumFrames, from: source.minimumFrames)
         DSPStateCopy.assign(&minimumGains, from: source.minimumGains)
+        DSPStateCopy.assign(&meterBlocks, from: source.meterBlocks)
+        minimumGainInChunk = source.minimumGainInChunk
+        meterFrameCount = source.meterFrameCount
         envelopeSum = source.envelopeSum
         delayCursor = source.delayCursor
         windowCursor = source.windowCursor
@@ -594,6 +602,24 @@ nonisolated struct DSPPeakLimiterKernel {
         frameIndex = 0
         envelope = 1
         holdRemaining = 0
+        meterBlocks.removeAll()
+        minimumGainInChunk = 1.0
+        meterFrameCount = 0
+    }
+
+    mutating func beginBlock() {
+        meterBlocks.removeAll(keepingCapacity: true)
+        minimumGainInChunk = 1.0
+        meterFrameCount = 0
+    }
+
+    mutating func flushRemainingMeterChunk() {
+        if meterFrameCount > 0 {
+            let reductionDB = minimumGainInChunk < 0.999 ? Float(max(0, -20.0 * log10(max(1e-6, minimumGainInChunk)))) : 0.0
+            meterBlocks.append(reductionDB)
+            minimumGainInChunk = 1.0
+            meterFrameCount = 0
+        }
     }
 
     mutating func processFrame(_ frame: inout [Double]) {
@@ -639,6 +665,17 @@ nonisolated struct DSPPeakLimiterKernel {
         // The oldest entry is the frame now leaving the delay line.
         let delayedNeeded = neededGains[windowCursor]
         let gain = min(1, delayedNeeded, envelopeSum / Double(window))
+
+        if gain < minimumGainInChunk {
+            minimumGainInChunk = gain
+        }
+        meterFrameCount += 1
+        if meterFrameCount >= Self.meterFrames {
+            let reductionDB = minimumGainInChunk < 0.999 ? Float(max(0, -20.0 * log10(max(1e-6, minimumGainInChunk)))) : 0.0
+            meterBlocks.append(reductionDB)
+            minimumGainInChunk = 1.0
+            meterFrameCount = 0
+        }
 
         let offset = delayCursor * channelCount
         for channel in 0..<channelCount {

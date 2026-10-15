@@ -899,14 +899,14 @@ final class LibrarySession: LibrarySessionLifecycle {
 
     private func automationLyricsQuality(_ track: Track) -> Int {
         let ttml = track.ttmlLyricText
-            ?? track.loadTTMLLyricsIfNeeded()
+            ?? track.readTTMLLyricsText()
             ?? (track.ttmlLyricsFileName.flatMap { context.paths.trackAssetURL(for: track.id, fileName: $0) }).flatMap({ try? String(contentsOf: $0, encoding: .utf8) })
         if let ttml, !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return lyricsQuality(ttml)
         }
         if track.ttmlLyricsFileName != nil { return 1 }
         let plain = track.lyricsText
-            ?? track.loadLyricsIfNeeded()
+            ?? track.readLyricsText()
             ?? (track.lyricsFileName.flatMap { context.paths.trackAssetURL(for: track.id, fileName: $0) }).flatMap({ try? String(contentsOf: $0, encoding: .utf8) })
         if let plain, !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return LyricsFormatSupport.looksLikeLRC(plain) ? 1 : 0

@@ -197,10 +197,13 @@ actor TrackArtworkCache {
         return metadata?.replacing(fullImage: fullImage)
     }
 
+    /// Drops cached images and source data. Loads already running finish and
+    /// deliver to their waiters: cancelling them returned nil to views that do
+    /// not request again (the library after Now Playing closes, a newly mounted
+    /// skin). The generation keeps their results out of the memory cache and the
+    /// derivative files.
     func clearMemory() {
         memoryGeneration &+= 1
-        sourceDataTasks.values.forEach { $0.cancel() }
-        imageTasks.values.forEach { $0.cancel() }
         imageCache.removeAllObjects()
         sourceDataCache.removeAllObjects()
         sourceDataTasks.removeAll(keepingCapacity: false)

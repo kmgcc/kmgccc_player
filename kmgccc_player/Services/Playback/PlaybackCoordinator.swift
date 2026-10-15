@@ -80,6 +80,7 @@ final class PlaybackCoordinator {
     private let artworkWarmer: PlaybackArtworkWarmer
     private let nextSongLyricsPreloader: NextSongLyricsPreloader
     private let lyricSnippetSeekLeadInSeconds: Double = 0.8
+    private var lastRoutineTrimUptime: TimeInterval = 0
 
     private(set) var activeSource: PlaybackSource
     private(set) var presentation: NowPlayingPresentation = .emptyLocal
@@ -649,6 +650,17 @@ final class PlaybackCoordinator {
             queue: localPlayback?.currentQueueTracks ?? []
         )
 
+        let nowUptime = ProcessInfo.processInfo.systemUptime
+        if isPlaying && nowUptime - lastRoutineTrimUptime > 60 {
+            lastRoutineTrimUptime = nowUptime
+            if let currentID = newPresentation.localTrack?.id {
+                for queueTrack in (localPlayback?.currentQueueTracks ?? []) where queueTrack.id != currentID {
+                    queueTrack.releaseFileBackedResources()
+                }
+            }
+            CacheManager.trimRoutinePlaybackMemory()
+        }
+
         let previousPresentation = presentation
         if !newPresentation.isEffectivelyEqualIgnoringCurrentTime(to: stablePresentation) {
             stablePresentation = newPresentation
@@ -724,7 +736,7 @@ final class PlaybackCoordinator {
         currentPresentationInterval = interval
         let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) {
             [weak self] _ in
-            Task { @MainActor [weak self] in
+            MainActor.assumeIsolated {
                 self?.refreshPresentation()
             }
         }
@@ -744,11 +756,13 @@ final class PlaybackCoordinator {
 
     private func makeLocalPresentation() -> NowPlayingPresentation {
         guard let playback = localPlayback else {
-            presentation.localTrack?.releaseFileBackedArtworkData()
+            presentation.localTrack?.releaseFileBackedResources()
+            CacheManager.trimRoutinePlaybackMemory()
             return .emptyLocal
         }
         guard let track = playback.currentTrack else {
-            presentation.localTrack?.releaseFileBackedArtworkData()
+            presentation.localTrack?.releaseFileBackedResources()
+            CacheManager.trimRoutinePlaybackMemory()
             var empty = NowPlayingPresentation.emptyLocal
             empty.isControlEnabled = libraryTracksProvider().contains { $0.availability != .missing }
             empty.volume = settings.volumeControlTarget == .system
@@ -759,10 +773,10 @@ final class PlaybackCoordinator {
 
         if let previousTrack = presentation.localTrack,
            previousTrack.id != track.id {
-            previousTrack.releaseFileBackedArtworkData()
+            previousTrack.releaseFileBackedResources()
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(500))
-                CacheManager.trimProcessMemory()
+                CacheManager.trimRoutinePlaybackMemory()
             }
         }
 

@@ -46,10 +46,11 @@ nonisolated enum DSPEffectKernel {
     }
 
     /// Kernels whose state lives in a reference: a copied runtime node would
-    /// share it, so the processor never snapshots them.
+    /// share it, so the processor never snapshots those active engines.
     var keepsReferenceState: Bool {
         switch self {
-        case .spatial, .hybridBass: true
+        case .spatial: true
+        case .hybridBass(let kernel): kernel.keepsReferenceState
         default: false
         }
     }
@@ -242,5 +243,25 @@ nonisolated struct DSPBiquad {
     mutating func reset() {
         z1 = 0
         z2 = 0
+    }
+}
+
+/// Compress only the added bass as it approaches the output's available
+/// peak space. The original signal is not multiplied by a gain envelope.
+/// Below the knee the result is exactly the unprotected enhancement; the
+/// knee has continuous slope and adds no lookahead or release pumping.
+nonisolated enum DSPBassPeakControl {
+    @inline(__always)
+    static func mix(original: Double, enhanced: Double, ceiling: Double?) -> Double {
+        guard let ceiling else { return enhanced }
+        let added = enhanced - original
+        let direction = added < 0 ? -1.0 : 1.0
+        let available = max(0, ceiling - direction * original)
+        let knee = available * 0.75
+        let amount = abs(added)
+        guard amount > knee else { return enhanced }
+        let span = available - knee
+        guard span > 0 else { return original }
+        return original + direction * (knee + span * tanh((amount - knee) / span))
     }
 }

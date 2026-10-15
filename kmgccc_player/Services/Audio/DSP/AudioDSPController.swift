@@ -21,6 +21,7 @@ nonisolated struct DSPConfigurationValidationError: Error, LocalizedError, Senda
 @MainActor
 final class AudioDSPController {
     let processingLoad = DSPProcessingLoadPresentation()
+    let limiterWarning = DSPLimiterWarningPresentation()
     @ObservationIgnored private var processingLoadObservers: Set<UUID> = []
     @ObservationIgnored private var processingLoadGeneration = UUID()
     @ObservationIgnored private var processingLoadBindingID = UUID()
@@ -129,6 +130,9 @@ final class AudioDSPController {
         let nextRevision = UUID().uuidString
         let requestID = UUID()
         configuration = validated
+        if !validated.enabled || !validated.limiter.enabled {
+            limiterWarning.reset()
+        }
         if createEditablePreset { ensureEditablePreset() }
         revisionString = nextRevision
         latestRequestID = requestID
@@ -1410,6 +1414,7 @@ final class AudioDSPController {
         case DSPNodeConfiguration.tubeTypeID:
             return node.tubeParameters.map { $0.isDry ? 0 : 64 } ?? 0
         case DSPNodeConfiguration.hybridBassTypeID:
+            if node.effectParameters(DSPHybridBassParameters.self)?.intensity == 0 { return 0 }
             return DSPHybridBassEngine.latencyFrames(sampleRate: sampleRate)
         case DSPNodeConfiguration.spatialAudioTypeID:
             return DSPConvolutionSpectra.headBlockSize

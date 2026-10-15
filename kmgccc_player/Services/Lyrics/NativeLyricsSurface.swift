@@ -221,6 +221,10 @@ final class NativeLyricsSurface: NSObject {
         view.releaseRenderingResources()
     }
 
+    func trimTransientResources() {
+        view.pruneTransientCaches()
+    }
+
     /// Rebuild the rendered layer tree and re-arm frame delivery in place.
     /// `releaseRenderingResources()` drops every layer and invalidates the
     /// display link; while playback is idle nothing ticks afterwards, so a
@@ -373,6 +377,14 @@ final class NativeLyricsSurfaceManager {
             guard surface.view.window == nil || surface.view.isHiddenOrHasHiddenAncestor else { continue }
             renderingResourceReleaseTasks.removeValue(forKey: role)?.cancel()
             surface.releaseRenderingResources()
+        }
+    }
+
+    func trimRoutineMemory() {
+        consumerDocument = nil
+        consumerDocumentTTML = nil
+        for surface in surfaces.values {
+            surface.trimTransientResources()
         }
     }
 

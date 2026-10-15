@@ -22,8 +22,20 @@ nonisolated struct OutputDeviceVolumeReading: Codable, Equatable, Sendable {
 
     nonisolated var axis: Axis { decibelsBelowMaximum == nil ? .percent : .decibels }
 
-    /// Position on the axis a calibration is recorded on.
-    nonisolated var coordinate: Double { decibelsBelowMaximum ?? scalar * 100 }
+    /// Position on the reading's native axis.
+    nonisolated var coordinate: Double { coordinate(on: axis) }
+
+    /// Position on a fixed calibration axis. Device dB readings can be
+    /// temporarily unavailable; keep the calibration comparable by using the
+    /// documented slider-law estimate rather than switching units mid-guide.
+    nonisolated func coordinate(on axis: Axis) -> Double {
+        switch axis {
+        case .decibels:
+            decibelsBelowMaximum ?? approximateDecibelsBelowMaximum
+        case .percent:
+            scalar * 100
+        }
+    }
 
     /// Attenuation used by the default curve. A percentage-only device uses
     /// the common 40·log10 slider law as an approximation; calibration records
@@ -346,9 +358,10 @@ nonisolated enum EqualLoudnessCalibrationGuide {
 
     /// The four marks drawn under the volume slider: recorded volumes for
     /// finished steps, suggestions for the rest.
-    nonisolated static func marks(recorded: [Double]) -> [Double] {
+    nonisolated static func marks(recorded: [Double], drafted: [Int: Double] = [:]) -> [Double] {
         (0..<stepCount).map { step in
-            recorded.indices.contains(step) ? recorded[step] : suggestedScalar(step: step, recorded: recorded)
+            if recorded.indices.contains(step) { return recorded[step] }
+            return drafted[step] ?? suggestedScalar(step: step, recorded: recorded)
         }
     }
 
@@ -356,21 +369,62 @@ nonisolated enum EqualLoudnessCalibrationGuide {
     nonisolated static func blocker(
         step: Int,
         reading: OutputDeviceVolumeReading,
-        recordedCoordinates: [Double]
+        recordedCoordinates: [Double],
+        recordedScalars: [Double] = [],
+        axis: OutputDeviceVolumeReading.Axis? = nil
     ) -> String? {
         if reading.isMuted || reading.scalar <= 0 { return "当前已静音。" }
         let previous = recordedCoordinates.prefix(max(0, step))
-        let minimum = reading.axis == .decibels ? minimumStepDecibels : minimumStepPercent
+        let previousScalars = recordedScalars.prefix(max(0, step))
+        let calibrationAxis = axis ?? reading.axis
+        let coordinate = reading.coordinate(on: calibrationAxis)
+        let minimum = calibrationAxis == .decibels ? minimumStepDecibels : minimumStepPercent
+        let minimumScalarStep = minimumStepPercent / 100
         switch directions[min(max(step, 0), stepCount - 1)] {
         case .reference:
             return nil
         case .quieter:
-            guard let lowest = previous.min(), reading.coordinate > lowest - minimum else { return nil }
-            return "与上一步的音量过于接近，请再调低一些。"
+            let separatedByCoordinate = previous.min().map { coordinate <= $0 - minimum } ?? true
+            let separatedBySlider = previousScalars.min().map { reading.scalar <= $0 - minimumScalarStep } ?? false
+            guard separatedByCoordinate || separatedBySlider else {
+                return "与上一步的音量过于接近，请再调低一些。"
+            }
+            return nil
         case .louder:
-            guard let highest = previous.max(), reading.coordinate < highest + minimum else { return nil }
-            return "与参照音量过于接近，请再调高一些。"
+            let separatedByCoordinate = previous.max().map { coordinate >= $0 + minimum } ?? true
+            let separatedBySlider = previousScalars.max().map { reading.scalar >= $0 + minimumScalarStep } ?? false
+            guard separatedByCoordinate || separatedBySlider else {
+                return "与参照音量过于接近，请再调高一些。"
+            }
+            return nil
         }
+    }
+
+    /// Switches the whole calibration to slider coordinates when device dB
+    /// telemetry cannot distinguish steps that are clearly separated by the
+    /// writable system-volume slider.
+    nonisolated static func needsPercentageAxisFallback(
+        step: Int,
+        reading: OutputDeviceVolumeReading,
+        recordedCoordinates: [Double],
+        recordedScalars: [Double],
+        axis: OutputDeviceVolumeReading.Axis
+    ) -> Bool {
+        guard axis == .decibels else { return false }
+        let dBBlocker = blocker(
+            step: step,
+            reading: reading,
+            recordedCoordinates: recordedCoordinates,
+            axis: axis
+        )
+        let combinedBlocker = blocker(
+            step: step,
+            reading: reading,
+            recordedCoordinates: recordedCoordinates,
+            recordedScalars: recordedScalars,
+            axis: axis
+        )
+        return dBBlocker != nil && combinedBlocker == nil
     }
 
     /// Snapping with hysteresis: a value within ±2 % of a mark takes the mark,
