@@ -82,11 +82,11 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
                     "mode": .string("automatic"), "maximumAttenuationDB": .number(3),
                 ])]),
                 .object(["op": .string("setLimiter"), "value": .object(["enabled": .boolean(false)])]),
-                .object(["op": .string("setLimiter"), "value": .object(["releaseMilliseconds": .number(400)])]),
+                .object(["op": .string("setLimiter"), "value": .object(["ceilingDB": .number(-2.5)])]),
             ])])))
         let candidate = try handler.candidateConfiguration(parameters, current: current)
         XCTAssertEqual(candidate.headroom, DSPHeadroomConfiguration(mode: .automatic, maximumAttenuationDB: 3))
-        XCTAssertEqual(candidate.limiter, DSPLimiterConfiguration(enabled: false, releaseMilliseconds: 400))
+        XCTAssertEqual(candidate.limiter, DSPLimiterConfiguration(enabled: false, ceilingDB: -2.5))
         XCTAssertTrue(current.limiter.enabled)
 
         let legacy = try AutomationParameters(AutomationRequest(method: AutomationMethod.dspPatch,

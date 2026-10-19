@@ -226,9 +226,9 @@ P1–P2 的 `dsp.*` 工具通过 App 唯一 `AudioDSPController` 操作 renderer
 
 自动余量只按 EQ、等响补偿和效果节点自身增加的峰值压低链路输入，不超过 `headroom.maximumAttenuationDB`（0–12 dB，默认 6）；
 调低的输入增益计入已留出的余量，调高的输入增益与输出增益保持原样。`limiter` 是等响补偿之后的固定限幅器：
-5 ms 前瞻把每次压缩展开成同样长的渐变，压缩后保持 20 ms，再按 dB 刻度释放。`ceilingDB`（−6–0 dBFS，默认 −1）是最终输出的样本峰值上限，
-`releaseMilliseconds`（20–1000 ms，默认 200）是释放时间常数；`setLimiter` 可只改其中几项。链路无处理时限幅器不启用。
-旧预设缺少这些字段时按默认值读取。
+5 ms 前瞻把每次压缩展开成同样长的渐变，压缩后保持 20 ms，再按 dB 刻度释放；释放时间固定为 250 ms。`ceilingDB`（−6–0 dBFS，默认 0）是最终输出的样本峰值上限；
+`setLimiter` 可修改启用状态和上限。链路无处理时限幅器不启用。
+缺少限幅配置的预设按默认限幅配置读取。
 
 `dsp.patch`／预设选择返回 `status.requestID`。`dsp.wait` 最多等待 30 秒；
 `scheduled` 表示已排入队列，`audible` 才表示输出时钟已到达切换点，`timedOut` 独立返回。App 只保留最近 64 个请求的状态；未知或已淘汰的 ID 返回参数错误，不会伪装为 superseded。`applicationPresentationLeadSeconds` 单独报告 App 的可视化 lead。

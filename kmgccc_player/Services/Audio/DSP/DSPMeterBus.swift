@@ -93,12 +93,12 @@ nonisolated final class DSPMeterBus: @unchecked Sendable {
 }
 
 /// Tracks whether the safety limiter has recently triggered compression.
-/// When gain reduction occurs, the warning is held active for 20 seconds.
-/// Any subsequent gain reduction within that window refreshes the 20-second timer.
+/// When gain reduction occurs, the warning is held active for two seconds.
+/// Any subsequent gain reduction within that window refreshes the timer.
 @Observable
 @MainActor
 final class DSPLimiterWarningPresentation {
-    /// Whether safe limiter compression has been active within the last 20 seconds.
+    /// Whether safety limiter compression has occurred within the last two seconds.
     private(set) var isWarningActive: Bool = false
 
     /// The latest gain reduction reading in decibels.
@@ -107,7 +107,7 @@ final class DSPLimiterWarningPresentation {
     @ObservationIgnored private var holdTask: Task<Void, Never>?
     @ObservationIgnored private var observerID: UUID?
 
-    static let holdDuration: TimeInterval = 20.0
+    static let holdDuration: TimeInterval = 2.0
     static let reductionThresholdDB: Float = 0.05
 
     init() {
@@ -137,6 +137,7 @@ final class DSPLimiterWarningPresentation {
             try? await Task.sleep(for: .seconds(Self.holdDuration))
             guard !Task.isCancelled, let self else { return }
             self.isWarningActive = false
+            self.lastReductionDB = 0
         }
     }
 

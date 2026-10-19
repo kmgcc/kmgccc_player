@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import kmgccc_player
 
 @MainActor
@@ -759,6 +760,114 @@ final class MusicSettingsStateTests: XCTestCase {
         await index.close()
     }
 
+    func testSearchIndexIgnoresSnapshotTimeButDetectsInlineLyricsChanges() async throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = kmgccc_player.LibraryPaths(rootURL: root)
+        try paths.createRequiredDirectories()
+        let index = LibrarySearchIndex(paths: paths)
+        let trackID = UUID()
+
+        await index.synchronizeDocuments(
+            [searchSyncSource(trackID, timestamp: 500)], reason: "test-without-lyrics"
+        )
+        await index.synchronizeDocuments(
+            [searchSyncSource(trackID, timestamp: 750)], reason: "test-without-lyrics-new-time"
+        )
+        XCTAssertEqual(try indexedTimestamp(paths: paths, trackID: trackID), 500)
+
+        let original = searchSyncSource(trackID, inlinePlain: "silverwater", timestamp: 1000)
+        await index.synchronizeDocuments([original], reason: "test-initial")
+        let identical = searchSyncSource(trackID, inlinePlain: "  silverwater\n", timestamp: 2000)
+        await index.synchronizeDocuments([identical], reason: "test-new-snapshot-time")
+        XCTAssertEqual(try indexedTimestamp(paths: paths, trackID: trackID), 1000)
+
+        let changedTitle = searchSyncSource(trackID, title: "Changed", inlinePlain: "silverwater", timestamp: 3000)
+        await index.synchronizeDocuments([changedTitle], reason: "test-title-change")
+        XCTAssertEqual(try indexedTimestamp(paths: paths, trackID: trackID), 3000)
+        var hits = await index.search(query: "Changed", fields: [.title])
+        XCTAssertEqual(hits.map(\.trackID), [trackID])
+
+        let changedLyrics = searchSyncSource(trackID, title: "Changed", inlinePlain: "amberlight", timestamp: 4000)
+        await index.synchronizeDocuments([changedLyrics], reason: "test-inline-change")
+        hits = await index.search(query: "silverwater", fields: [.lyrics])
+        XCTAssertTrue(hits.isEmpty)
+        hits = await index.search(query: "amberlight", fields: [.lyrics])
+        XCTAssertEqual(hits.map(\.trackID), [trackID])
+
+        let removedLyrics = searchSyncSource(trackID, title: "Changed", timestamp: 5000)
+        await index.synchronizeDocuments([removedLyrics], reason: "test-inline-removal")
+        hits = await index.search(query: "amberlight", fields: [.lyrics])
+        XCTAssertTrue(hits.isEmpty)
+        await index.close()
+    }
+
+    func testSearchIndexSkipsIdenticalInlineTTMLAndDetectsTimingChanges() async throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = kmgccc_player.LibraryPaths(rootURL: root)
+        try paths.createRequiredDirectories()
+        let index = LibrarySearchIndex(paths: paths)
+        let trackID = UUID()
+        let ttml = """
+        <tt xmlns="http://www.w3.org/ns/ttml"><body><div>
+          <p begin="2s" end="20s">silverwater</p>
+        </div></body></tt>
+        """
+        await index.synchronizeDocuments(
+            [searchSyncSource(trackID, inlineTTML: ttml, timestamp: 1000)], reason: "test-ttml-initial"
+        )
+        await index.synchronizeDocuments(
+            [searchSyncSource(trackID, inlineTTML: ttml, timestamp: 2000)], reason: "test-ttml-identical"
+        )
+        XCTAssertEqual(try indexedTimestamp(paths: paths, trackID: trackID), 1000)
+
+        let retimed = ttml.replacingOccurrences(of: "begin=\"2s\"", with: "begin=\"9s\"")
+        await index.synchronizeDocuments(
+            [searchSyncSource(trackID, inlineTTML: retimed, timestamp: 3000)], reason: "test-ttml-retimed"
+        )
+        let hits = await index.search(query: "silverwater", fields: [.lyrics])
+        let hit = try XCTUnwrap(hits.first)
+        XCTAssertEqual(try XCTUnwrap(hit.lyricSnippetStartTime), 9, accuracy: 0.0001)
+        await index.close()
+    }
+
+    func testSearchIndexDetectsLyricsPathChangesWithMatchingFileAttributes() async throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = kmgccc_player.LibraryPaths(rootURL: root)
+        try paths.createRequiredDirectories()
+        let index = LibrarySearchIndex(paths: paths)
+        let trackID = UUID()
+        let first = root.appendingPathComponent("first.txt")
+        let second = root.appendingPathComponent("second.txt")
+        for (url, text) in [(first, "silverwater"), (second, "goldenlight")] {
+            try Data(text.utf8).write(to: url)
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: 100)], ofItemAtPath: url.path
+            )
+        }
+
+        await index.synchronizeDocuments(
+            [searchSyncSource(trackID, plainURL: first, timestamp: 1000)], reason: "test-first-path"
+        )
+        await index.synchronizeDocuments(
+            [searchSyncSource(trackID, plainURL: second, timestamp: 2000)], reason: "test-replaced-path"
+        )
+        var hits = await index.search(query: "silverwater", fields: [.lyrics])
+        XCTAssertTrue(hits.isEmpty)
+        hits = await index.search(query: "goldenlight", fields: [.lyrics])
+        XCTAssertEqual(hits.map(\.trackID), [trackID])
+
+        try FileManager.default.removeItem(at: second)
+        await index.synchronizeDocuments(
+            [searchSyncSource(trackID, plainURL: second, timestamp: 3000)], reason: "test-disk-removal"
+        )
+        hits = await index.search(query: "goldenlight", fields: [.lyrics])
+        XCTAssertTrue(hits.isEmpty)
+        await index.close()
+    }
+
     func testDeletePolicyIsStoredInsideEachLibrary() async throws {
         let first = temporaryLibraryRoot()
         let second = temporaryLibraryRoot()
@@ -985,6 +1094,38 @@ final class MusicSettingsStateTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: files[0].path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: files[1].path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: files[2].path))
+    }
+
+    private func searchSyncSource(
+        _ trackID: UUID,
+        title: String = "Track",
+        inlineTTML: String? = nil,
+        inlinePlain: String? = nil,
+        plainURL: URL? = nil,
+        timestamp: TimeInterval
+    ) -> SearchDocumentSource {
+        SearchDocumentSource(
+            trackID: trackID, titleRaw: title, artistRaw: "Artist", albumRaw: "Album",
+            albumArtistRaw: nil, ttmlLyricsFileURL: nil, plainLyricsFileURL: plainURL,
+            inlineTTMLText: inlineTTML, inlinePlainLyricsText: inlinePlain, playCount: 0,
+            preferenceScore: 0, lastPlayedAt: nil, updatedAt: Date(timeIntervalSince1970: timestamp),
+            artistCreditsRaw: nil, filePathRaw: "/Music/track.mp3", formatRaw: "mp3"
+        )
+    }
+
+    private func indexedTimestamp(paths: kmgccc_player.LibraryPaths, trackID: UUID) throws -> Double {
+        var database: OpaquePointer?
+        let result = sqlite3_open_v2(paths.searchIndexStoreURL.path, &database, SQLITE_OPEN_READONLY, nil)
+        let opened = try XCTUnwrap(database)
+        defer { sqlite3_close(opened) }
+        XCTAssertEqual(result, SQLITE_OK)
+        var statement: OpaquePointer?
+        let sql = "SELECT updated_at FROM documents WHERE track_id = '\(trackID.uuidString)'"
+        XCTAssertEqual(sqlite3_prepare_v2(opened, sql, -1, &statement, nil), SQLITE_OK)
+        let prepared = try XCTUnwrap(statement)
+        defer { sqlite3_finalize(prepared) }
+        XCTAssertEqual(sqlite3_step(prepared), SQLITE_ROW)
+        return sqlite3_column_double(prepared, 0)
     }
 
     private func bookmark(mode: kmgccc_player.MusicLibraryMode, path: String) -> kmgccc_player.MusicLibraryBookmark {

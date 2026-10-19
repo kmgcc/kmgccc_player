@@ -276,7 +276,10 @@ enum ArtworkLoader {
     ) -> NSImage? {
         guard let data, !data.isEmpty else { return nil }
         let startUptime = ProcessInfo.processInfo.systemUptime
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        guard let source = CGImageSourceCreateWithData(
+            data as CFData,
+            [kCGImageSourceShouldCache: false] as CFDictionary
+        ) else { return nil }
         let image = downsampledImage(source: source, maxPixelSize: max(1, maxPixelSize))
         LyricsRuntimeProfile.increment("header.headerPreviewImage.data.count")
         LyricsRuntimeProfile.addDuration(
@@ -292,7 +295,10 @@ enum ArtworkLoader {
     ) -> NSImage? {
         guard let data, !data.isEmpty else { return nil }
         let startUptime = ProcessInfo.processInfo.systemUptime
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        guard let source = CGImageSourceCreateWithData(
+            data as CFData,
+            [kCGImageSourceShouldCache: false] as CFDictionary
+        ) else { return nil }
         let image = squareDownsampledImage(source: source, maxPixelSize: max(1, maxPixelSize))
         LyricsRuntimeProfile.increment("header.squareHeaderPreviewImage.data.count")
         LyricsRuntimeProfile.addDuration(
@@ -346,7 +352,10 @@ enum ArtworkLoader {
         -> NSImage?
     {
         guard
-            let source = CGImageSourceCreateWithData(data as CFData, nil)
+            let source = CGImageSourceCreateWithData(
+                data as CFData,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
         else { return nil }
 
         let maxPixel = max(1, Int(max(targetPixelSize.width, targetPixelSize.height)))

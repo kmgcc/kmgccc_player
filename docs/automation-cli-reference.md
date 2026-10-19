@@ -383,7 +383,7 @@ player-automation dsp nodes retry --params-json '{"nodeID":"<UUID>"}'
 
 ### 全局音频处理与响度扫描
 
-`audio get` 包含 `fade`、`loudness`、`processingRuntime` 和当前播放的均衡状态 `normalization`（增益、来源、实际听到的增益、是否等待专辑增益）。`fade` 只有 `enabled` 开关（播放淡入 320 ms、暂停淡出 700 ms、底值 −40 dB 固定）；`loudness` 只有 `enabled` 与 `targetLUFS`（−23 至 −14）；最大提升 12 dB、最大衰减 24 dB、真实峰值上限 −1 dBTP 固定。`audio patch` 的 fade/loudness 子对象支持局部参数更新，与设备/无缝设置共同验证；`--dry-run` 不写设置。它们独立于 DSP 预设。
+`audio get` 包含 `fade`、`loudness`、`processingRuntime` 和当前播放的均衡状态 `normalization`（增益、来源、实际听到的增益、是否等待专辑增益）。`fade` 只有 `enabled` 开关（播放淡入 320 ms、暂停淡出 700 ms、底值 −40 dB 固定）；`loudness` 只有 `enabled` 与 `targetLUFS`（−20 至 −8）；最大提升 12 dB、最大衰减 24 dB、真实峰值上限 −1 dBTP 固定。`audio patch` 的 fade/loudness 子对象支持局部参数更新，与设备/无缝设置共同验证；`--dry-run` 不写设置。它们独立于 DSP 预设。
 
 专辑是否共用一个增益由自动判定决定（排除未知专辑、未知或含未知的专辑艺人、合辑、格式或采样率不一致、无专辑艺人且主艺人三位以上），可用专辑元数据的 `loudnessUnified`（`true`、`false`，或 `null` 回到自动）覆盖；专辑读回同时给出 `loudnessUnifiedAutomatically` 与 `loudnessExclusion`。
 

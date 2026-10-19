@@ -629,7 +629,10 @@ final class LocalLibraryService {
         case let .managed(path):
             return TrackMediaLocator.isSafeRelativePath(path)
         case let .referenced(locator):
-            return !locator.fileBookmarkData.isEmpty || !locator.sourceMemberships.isEmpty
+            return !locator.fileBookmarkData.isEmpty
+                || !locator.sourceMemberships.isEmpty
+                || !locator.lastKnownPath.isEmpty
+                || !locator.alternateLocations.isEmpty
         }
     }
 

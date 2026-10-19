@@ -475,7 +475,7 @@ final class AudioDSPProcessorTests: XCTestCase {
                 inputTrimDB: 6,
                 headroom: DSPHeadroomConfiguration(mode: .off),
                 nodes: [],
-                limiter: DSPLimiterConfiguration(ceilingDB: ceiling, releaseMilliseconds: 500)
+                limiter: DSPLimiterConfiguration(ceilingDB: ceiling)
             ),
             format: monoFormat
         )
@@ -484,7 +484,7 @@ final class AudioDSPProcessorTests: XCTestCase {
         let peak = processor.process(input).data.map { Double(abs($0)) }.max() ?? 0
         XCTAssertLessThanOrEqual(peak, pow(10, ceiling / 20) + 1e-6)
 
-        let limiter = DSPLimiterConfiguration(enabled: false, ceilingDB: -2.5, releaseMilliseconds: 350)
+        let limiter = DSPLimiterConfiguration(enabled: false, ceilingDB: -2.5)
         XCTAssertEqual(try JSONDecoder().decode(DSPLimiterConfiguration.self, from: JSONEncoder().encode(limiter)), limiter)
         let switchOnly = try JSONDecoder().decode(DSPLimiterConfiguration.self, from: Data(#"{"enabled":true}"#.utf8))
         XCTAssertEqual(switchOnly, DSPLimiterConfiguration())

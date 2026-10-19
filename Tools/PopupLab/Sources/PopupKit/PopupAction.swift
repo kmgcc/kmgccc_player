@@ -63,6 +63,12 @@ public struct PopupButtonAppearance<Label: View>: View {
                 .frame(
                     minWidth: isCloseButton ? style.closeButtonSize : style.buttonMinWidth,
                     minHeight: isCloseButton ? style.closeButtonSize : style.buttonHeight)
+                // The interactive glass maps pointer hits through the content
+                // shape of the view it wraps. Without a shape here the hit
+                // region collapses to the drawn label and the rest of the
+                // capsule swallows clicks, so the shape has to sit on the
+                // content rather than only outside the effect.
+                .contentShape(Capsule())
         )
         .contentShape(Capsule())
         .opacity(!isEnabled ? 0.4 : (isPressed ? 0.86 : 1))

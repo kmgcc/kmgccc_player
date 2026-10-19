@@ -370,7 +370,6 @@ struct AudioDSPSettingsView: View {
                 maximumAttenuationDB: maximumAttenuationBinding,
                 isLimiterEnabled: limiterEnabledBinding,
                 limiterCeilingDB: configurationBinding(\.limiter.ceilingDB, commit: false),
-                limiterReleaseMilliseconds: configurationBinding(\.limiter.releaseMilliseconds, commit: false),
                 equalLoudness: shown.equalLoudness,
                 isLive: !isReadOnly,
                 onCommit: controller.commitPendingApply,

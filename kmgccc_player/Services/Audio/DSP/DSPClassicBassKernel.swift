@@ -114,8 +114,8 @@ nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
         guard mask.count == format.channelCount, sampleRate.isFinite, sampleRate > 0 else { return nil }
         let tuning = parameters.resolved(for: outputKind)
         let sourceCutoff = min(tuning.cutoffHz, DSPBassProfile.maximumHarmonicFundamentalHz)
-        let wetCorner = max(70, sourceCutoff * 0.75)
-        let wetTop = DSPBassProfile.harmonicTop(cutoffHz: sourceCutoff)
+        let wetCorner = max(30, sourceCutoff * 0.8)
+        let wetTop = min(DSPBassProfile.maximumHarmonicHz, max(280, 4 * sourceCutoff))
         guard let floorHighPass = DSPFilterDesign.section(.highPass, frequencyHz: tuning.floorHz, sampleRate: sampleRate),
               let lowPass1 = DSPFilterDesign.section(.lowPass, frequencyHz: sourceCutoff, sampleRate: sampleRate,
                                                       q: DSPFilterDesign.fourthOrderQs[0]),
@@ -129,7 +129,7 @@ nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
                                                          q: DSPFilterDesign.fourthOrderQs[0]),
               let wetLowPass2 = DSPFilterDesign.section(.lowPass, frequencyHz: wetTop, sampleRate: sampleRate,
                                                          q: DSPFilterDesign.fourthOrderQs[1]),
-              let dryHighPass = DSPFilterDesign.section(.highPass, frequencyHz: tuning.cutoffHz * 0.7,
+              let dryHighPass = DSPFilterDesign.section(.highPass, frequencyHz: tuning.cutoffHz * 0.8,
                                                         sampleRate: sampleRate),
               let bassShelf = DSPFilterDesign.section(.lowShelf, frequencyHz: tuning.cutoffHz, sampleRate: sampleRate,
                                                       q: 1, gainDB: parameters.bassGainDB) else { return nil }
@@ -201,6 +201,29 @@ nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
         epsilon = Self.programEpsilon * pow(10, offsetDB / 20)
     }
 
+    mutating func processTransientHarmonic(sample: Double) -> Double {
+        guard !states.isEmpty else { return 0 }
+        let band = states[0].lowPass2.process(
+            states[0].lowPass1.process(states[0].floorHighPass.process(sample)))
+
+        let epsilonVal = 0.005
+        let evenHarmonics = sqrt(band * band + epsilonVal * epsilonVal) - epsilonVal
+        let oddHarmonics = tanh(1.6 * band)
+        let rawHarmonics = weights.w2 * evenHarmonics + weights.w3 * oddHarmonics
+
+        let dcBlocked = rawHarmonics - states[0].dcInput + dcAlpha * states[0].dcOutput
+        states[0].dcInput = rawHarmonics
+        states[0].dcOutput = dcBlocked
+
+        let highPassed = states[0].wetHighPass2.process(
+            states[0].wetHighPass1.process(dcBlocked))
+        let wet = states[0].wetLowPass2.process(states[0].wetLowPass1.process(highPassed))
+
+        let wetCeiling = 0.32
+        let uncompressedWet = wet * wetGain
+        return wetCeiling * tanh(uncompressedWet / wetCeiling)
+    }
+
     mutating func process(_ samples: UnsafeMutablePointer<Double>, frames: Int, channels: Int) {
         // An ordinary bass shelf needs neither quadrature nor synthesis.
         if wetGain == 0 {
@@ -214,18 +237,15 @@ nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
             }
             return
         }
-        let (w2, w3, w4, w5, w6) = weights
+        let (w2, w3, _, _, _) = weights
         let count = selectedChannels.count
-        let sections = Self.sectionCount
-        let epsilonSquared = epsilon * epsilon
         let dcAlpha = dcAlpha
-        let attack = attack
-        let release = release
         let wetGain = wetGain
         let outputGain = outputGain
         let tightensDryBass = tightensDryBass
-        // Taking the arrays out keeps them uniquely owned while the loop
-        // writes through their buffers.
+        let wetCeiling = 0.32
+        let dryDucking = tightensDryBass ? 0.68 : (1.0 / (1.0 + 0.45 * min(wetGain, 2.0)))
+
         var channelStates = states
         states = []
         var quadrature = allpassState
@@ -235,71 +255,40 @@ nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
             allpassState = quadrature
         }
         selectedChannels.withUnsafeBufferPointer { selected in
-            laggingCoefficients.withUnsafeBufferPointer { lagging in
-                leadingCoefficients.withUnsafeBufferPointer { leading in
-                    channelStates.withUnsafeMutableBufferPointer { states in
-                        quadrature.withUnsafeMutableBufferPointer { allpass in
-                            for frame in 0..<frames {
-                                let base = frame * channels
-                                for index in 0..<count {
-                                    let offset = base + selected[index]
-                                    let band = states[index].lowPass2.process(
-                                        states[index].lowPass1.process(states[index].floorHighPass.process(samples[offset])))
-                                    // Analytic pair: q lags i by 90° across the bass band.
-                                    var q = band
-                                    var i = band
-                                    let stateBase = index * sections * 4
-                                    for section in 0..<sections {
-                                        let slot = stateBase + section * 4
-                                        let a = lagging[section]
-                                        let qOut = a * q + allpass[slot] - a * allpass[slot + 1]
-                                        allpass[slot] = q
-                                        allpass[slot + 1] = qOut
-                                        q = qOut
-                                        let b = leading[section]
-                                        let iOut = b * i + allpass[slot + 2] - b * allpass[slot + 3]
-                                        allpass[slot + 2] = i
-                                        allpass[slot + 3] = iOut
-                                        i = iOut
-                                    }
-                                    let amplitude = (i * i + q * q).squareRoot()
-                                    var envelope = states[index].envelope
-                                    envelope += (amplitude > envelope ? attack : release) * (amplitude - envelope)
-                                    states[index].envelope = envelope
-                                    var harmonics = 0.0
-                                    if envelope > 1e-15 {
-                                        // Bound the normalised powers while the
-                                        // level follower catches up at an onset.
-                                        let divisor = max(envelope, amplitude)
-                                        let ur = i / divisor
-                                        let ui = q / divisor
-                                        // Complex powers avoid the direct difference
-                                        // products of real Chebyshev polynomials.
-                                        let u2r = ur * ur - ui * ui, u2i = 2 * ur * ui
-                                        let u3r = u2r * ur - u2i * ui, u3i = u2r * ui + u2i * ur
-                                        let u4r = u3r * ur - u3i * ui, u4i = u3r * ui + u3i * ur
-                                        let u5r = u4r * ur - u4i * ui, u5i = u4r * ui + u4i * ur
-                                        let u6r = u5r * ur - u5i * ui
-                                        // Bass near the program floor fades out smoothly.
-                                        let envelopeSquared = envelope * envelope
-                                        let gate = envelopeSquared / (envelopeSquared + epsilonSquared)
-                                        let series = w2 * u2r + w3 * u3r + w4 * u4r + w5 * u5r + w6 * u6r
-                                        harmonics = envelope * gate * series
-                                    }
-                                    let dcBlocked = harmonics - states[index].dcInput + dcAlpha * states[index].dcOutput
-                                    states[index].dcInput = harmonics
-                                    states[index].dcOutput = dcBlocked
-                                    let highPassed = states[index].wetHighPass2.process(
-                                        states[index].wetHighPass1.process(dcBlocked))
-                                    let wet = states[index].wetLowPass2.process(states[index].wetLowPass1.process(highPassed))
-                                    let dry = tightensDryBass
-                                        ? states[index].dryHighPass.process(samples[offset])
-                                        : samples[offset]
-                                    let enhanced = states[index].bassShelf.process(dry + wetGain * wet)
-                                    samples[offset] = DSPBassPeakControl.mix(original: dry, enhanced: enhanced, ceiling: peakCeiling) * outputGain
-                                }
-                            }
-                        }
+            channelStates.withUnsafeMutableBufferPointer { states in
+                for frame in 0..<frames {
+                    let base = frame * channels
+                    for index in 0..<count {
+                        let offset = base + selected[index]
+                        let sample = samples[offset]
+                        let band = states[index].lowPass2.process(
+                            states[index].lowPass1.process(states[index].floorHighPass.process(sample)))
+
+                        let epsilonVal = 0.005
+                        let evenHarmonics = sqrt(band * band + epsilonVal * epsilonVal) - epsilonVal
+                        let oddHarmonics = tanh(1.6 * band)
+                        let rawHarmonics = w2 * evenHarmonics + w3 * oddHarmonics
+
+                        let dcBlocked = rawHarmonics - states[index].dcInput + dcAlpha * states[index].dcOutput
+                        states[index].dcInput = rawHarmonics
+                        states[index].dcOutput = dcBlocked
+
+                        let highPassed = states[index].wetHighPass2.process(
+                            states[index].wetHighPass1.process(dcBlocked))
+                        let wet = states[index].wetLowPass2.process(states[index].wetLowPass1.process(highPassed))
+
+                        let uncompressedWet = wet * wetGain
+                        let scaledWet = wetCeiling * tanh(uncompressedWet / wetCeiling)
+
+                        let dry = tightensDryBass
+                            ? states[index].dryHighPass.process(sample)
+                            : sample
+                        let dryWithShelf = states[index].bassShelf.coefficients != .identity
+                            ? states[index].bassShelf.process(dry)
+                            : dry
+
+                        let enhanced = dryWithShelf * dryDucking + scaledWet
+                        samples[offset] = DSPBassPeakControl.mix(original: dry, enhanced: enhanced, ceiling: peakCeiling) * outputGain
                     }
                 }
             }

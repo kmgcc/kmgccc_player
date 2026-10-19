@@ -37,8 +37,8 @@ nonisolated struct DSPEqualLoudnessContext: Equatable, Sendable {
         DSPEqualLoudnessContext()
     }
 
-    /// The stage's calibration, when it belongs to the routed output and
-    /// matches its volume axis and the current algorithm.
+    /// The stage's calibration, when it belongs to the routed output and the
+    /// current algorithm. Its saved axis is converted from the live reading.
     nonisolated func usableCalibration(in stage: DSPEqualLoudnessStage) -> EqualLoudnessCalibration? {
         guard volume.reading != nil,
               let deviceKey,

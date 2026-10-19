@@ -29,6 +29,7 @@ struct MiniPlayerProgressSpectrumRow: View {
     let ledToneVariant: PerceptualToneLadder.LEDToneVariant
     let adaptsWideVisualizationSegments: Bool
     let usesVisualizationAsCompactProgress: Bool
+    let isolatesGeometryAnimation: Bool
     
     // Progress bar state
     let progress: Double
@@ -86,6 +87,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         ledToneVariant: PerceptualToneLadder.LEDToneVariant = .retuned,
         adaptsWideVisualizationSegments: Bool = false,
         usesVisualizationAsCompactProgress: Bool = false,
+        isolatesGeometryAnimation: Bool = true,
         progress: Double,
         duration: Double,
         isSeekEnabled: Bool = true,
@@ -108,6 +110,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         self.ledToneVariant = ledToneVariant
         self.adaptsWideVisualizationSegments = adaptsWideVisualizationSegments
         self.usesVisualizationAsCompactProgress = usesVisualizationAsCompactProgress
+        self.isolatesGeometryAnimation = isolatesGeometryAnimation
         self.progress = progress
         self.duration = duration
         self.isSeekEnabled = isSeekEnabled
@@ -119,7 +122,10 @@ struct MiniPlayerProgressSpectrumRow: View {
     }
     
     var body: some View {
-        MiniPlayerInterpolatedContent(isRowHovered ? 1 : 0) { revealProgress in
+        MiniPlayerInterpolatedContent(
+            isRowHovered ? 1 : 0,
+            isolatesGeometryAnimation: isolatesGeometryAnimation
+        ) { revealProgress in
             GeometryReader { geometry in
                 if usesVisualizationAsCompactProgress,
                    visualization != .off,

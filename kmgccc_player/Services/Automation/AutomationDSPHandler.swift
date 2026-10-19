@@ -37,7 +37,7 @@ struct AutomationDSPHandler {
                         "setParameter": .string("Relative to node parameters, e.g. bands.0.gainDB."),
                         "setTrim": .string("value is an object containing inputTrimDB and/or outputTrimDB."),
                         "setHeadroom": .string("value contains mode and maximumAttenuationDB."),
-                        "setLimiter": .string("value contains enabled, ceilingDB and/or releaseMilliseconds."),
+                        "setLimiter": .string("value contains enabled and/or ceilingDB."),
                         "setEqualLoudness": .string("value contains enabled, a partial parameters object and/or calibration (null clears it)."),
                         "setOrder": .string("nodeIDs must contain every existing node exactly once."),
                         "setQuality": .string("value selects a declared quality for this node type."),
@@ -388,12 +388,11 @@ struct AutomationDSPHandler {
                 candidate.headroom = try decode(raw)
             case "setLimiter":
                 guard case .object(let values)? = raw, !values.isEmpty,
-                      Set(values.keys).isSubset(of: ["enabled", "ceilingDB", "releaseMilliseconds"]) else {
+                      Set(values.keys).isSubset(of: ["enabled", "ceilingDB"]) else {
                     throw AutomationParameterError.invalidValue("value")
                 }
                 if let value = values["enabled"] { candidate.limiter.enabled = try decode(value) }
                 if let value = values["ceilingDB"] { candidate.limiter.ceilingDB = try decode(value) }
-                if let value = values["releaseMilliseconds"] { candidate.limiter.releaseMilliseconds = try decode(value) }
             case "setEqualLoudness":
                 guard case .object(let values)? = raw, !values.isEmpty,
                       Set(values.keys).isSubset(of: ["enabled", "parameters", "calibration"]) else {
@@ -484,7 +483,7 @@ struct AutomationDSPHandler {
         guard case .object(let headroom)? = fields["headroom"],
               Set(headroom.keys) == Set(["mode", "maximumAttenuationDB"]),
               case .object(let limiter)? = fields["limiter"],
-              Set(limiter.keys) == Set(["enabled", "ceilingDB", "releaseMilliseconds"]),
+              Set(limiter.keys) == Set(["enabled", "ceilingDB"]),
               case .array(let nodes)? = fields["nodes"] else { throw AutomationParameterError.invalidValue("configuration") }
         guard case .object(let stage)? = fields["equalLoudness"],
               stage["enabled"] != nil, case .object(let stageParameters)? = stage["parameters"],

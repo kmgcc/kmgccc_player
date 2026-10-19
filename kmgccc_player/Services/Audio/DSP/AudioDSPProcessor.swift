@@ -635,10 +635,6 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         let hasProcessingWork = Self.hasAudibleWork(preparedNodes)
             || abs(preparedInputGain - 1) >= 1e-12
             || abs(preparedOutputGain - 1) >= 1e-12
-        let releaseMilliseconds = limiter.releaseMilliseconds.isFinite
-            ? min(max(limiter.releaseMilliseconds, DSPLimiterConfiguration.releaseRange.lowerBound),
-                  DSPLimiterConfiguration.releaseRange.upperBound)
-            : DSPLimiterConfiguration.defaultReleaseMilliseconds
         if configuration.enabled,
            limiter.enabled,
            hasProcessingWork,
@@ -647,7 +643,7 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                channelCount: format.channelCount,
                sampleRate: format.sampleRate,
                ceiling: pow(10, ceilingDB / 20) / preparedOutputGain,
-               releaseSeconds: releaseMilliseconds / 1_000
+               releaseSeconds: DSPLimiterConfiguration.fixedReleaseMilliseconds / 1_000
            ) {
             preparedNodes.append(RuntimeNode(
                 nodeID: DSPLimiterConfiguration.nodeID,

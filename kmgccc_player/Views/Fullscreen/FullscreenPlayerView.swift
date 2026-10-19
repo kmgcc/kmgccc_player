@@ -368,6 +368,13 @@ struct FullscreenPlayerView: View {
         .onChange(of: colorScheme) { _, _ in
             forceRefreshFullscreenLyricsColors(reason: "colorScheme-change")
         }
+        .onReceive(NotificationCenter.default.publisher(for: DebugUIHooks.fullscreenLyricsToggleNotification)) { _ in
+            let mode = FullscreenWindowManager.shared.presentationMode
+            guard (hostContext == .embeddedWindow && mode == .embeddedInWindow)
+                || (hostContext == .systemFullscreenSpace && mode == .systemFullscreenSpace) else { return }
+            handleLyricsButtonTap()
+            DebugUIHooks.record("fullscreen-lyrics host=\(hostContext.rawValue) visible=\(isShowingLyricsPanel)")
+        }
         .onReceive(NotificationCenter.default.publisher(for: .toggleQueuePanel)) { _ in
             // Cycle through right panel states: lyrics -> queue -> hidden -> lyrics
             let nextState: RightPanelDisplayState

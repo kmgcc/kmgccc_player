@@ -244,6 +244,10 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         super.init(window: window)
 
         window.title = "kmgccc_player"
+        if !AppSettings.shared.followSystemAppearance {
+            let appearanceName: NSAppearance.Name = AppSettings.shared.manualAppearance == .dark ? .darkAqua : .aqua
+            window.appearance = NSAppearance(named: appearanceName)
+        }
         ColorRenderingAdapter.configureNativeWindowForDisplayP3(window)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true

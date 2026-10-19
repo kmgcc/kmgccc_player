@@ -1069,7 +1069,7 @@ struct SidebarView: View {
     private var appearanceSwitchButton: some View {
         let effectiveManualMode: AppSettings.ManualAppearance = {
             if settings.followSystemAppearance {
-                return currentColorScheme == .dark ? .dark : .light
+                return settings.resolvedColorScheme == .dark ? .dark : .light
             }
             return settings.manualAppearance
         }()
@@ -1122,12 +1122,13 @@ struct SidebarView: View {
             }
             settings.manualAppearance = target
         }
+        settings.applyAppearanceToAppAndWindows()
     }
 
     private func nextAppearanceTarget() -> AppSettings.ManualAppearance {
         let currentManual: AppSettings.ManualAppearance = {
             if settings.followSystemAppearance {
-                return currentColorScheme == .dark ? .dark : .light
+                return settings.resolvedColorScheme == .dark ? .dark : .light
             }
             return settings.manualAppearance
         }()
@@ -1578,16 +1579,22 @@ private struct SidebarPlaylistThumbnail: View {
             return nil
         }
 
-        let fileName: String?
-        switch sidecar.headerArtworkSource {
-        case .some(.generated):
-            fileName = sidecar.generatedHeaderArtworkFileName ?? sidecar.customHeaderArtworkFileName
-        case .some(.custom), .some(.none), nil:
-            fileName = sidecar.customHeaderArtworkFileName ?? sidecar.generatedHeaderArtworkFileName
-        }
-        guard let fileName, !fileName.isEmpty else { return nil }
+        let candidateFileNames: [String] = {
+            switch sidecar.headerArtworkSource {
+            case .some(.generated):
+                return [sidecar.generatedHeaderArtworkFileName, sidecar.customHeaderArtworkFileName].compactMap { $0 }
+            case .some(.custom), .some(.none), nil:
+                return [sidecar.customHeaderArtworkFileName, sidecar.generatedHeaderArtworkFileName].compactMap { $0 }
+            }
+        }()
 
-        guard let fileURL = paths.playlistAssetURL(fileName: fileName) else { return nil }
+        let resolvedFileURL = candidateFileNames.lazy.compactMap { name -> URL? in
+            guard !name.isEmpty, let url = paths.playlistAssetURL(fileName: name) else { return nil }
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }.first ?? candidateFileNames.first.flatMap { paths.playlistAssetURL(fileName: $0) }
+
+        guard let fileURL = resolvedFileURL else { return nil }
+        let fileName = fileURL.lastPathComponent
         let revision = sidecar.artworkRevision ?? fileName
         return PlaylistArtworkRequest(
             sourceIdentity: "sidebar-playlist-\(playlistID.uuidString)-\(revision)",

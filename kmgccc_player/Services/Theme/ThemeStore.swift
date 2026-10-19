@@ -36,7 +36,7 @@ final class ThemeStore: ObservableObject {
 
     static let shared = ThemeStore()
 
-    @Published var colorScheme: ColorScheme = .dark
+    @Published var colorScheme: ColorScheme = AppSettings.shared.resolvedColorScheme
     @Published var palette: ThemePalette?
     @Published private(set) var baseColor: Color
     @Published private(set) var accentColor: Color
@@ -116,9 +116,11 @@ final class ThemeStore: ObservableObject {
         self.accentNSColor = ColorRenderingAdapter.makeNSColor(fallback)
         self.artworkBaseNSColor = ColorRenderingAdapter.makeNSColor(fallback)
         self.selectionFill = ColorRenderingAdapter.makeSwiftUIColor(fallback).opacity(0.14)
+        let initialScheme = AppSettings.shared.resolvedColorScheme
+        self.colorScheme = initialScheme
         self.semanticPalette = SemanticPaletteFactory.make(
             from: .neutralFallback,
-            scheme: .dark,
+            scheme: initialScheme,
             userFallbackAccent: fallback,
             useArtworkTint: AppSettings.shared.globalArtworkTintEnabled
         )
@@ -129,6 +131,14 @@ final class ThemeStore: ObservableObject {
         // Initial palette generation
         Task {
             await refreshPalette(reason: "init")
+        }
+    }
+
+    func updateColorScheme(_ newScheme: ColorScheme, reason: String = "manual") {
+        guard colorScheme != newScheme else { return }
+        colorScheme = newScheme
+        Task {
+            await refreshPalette(reason: reason)
         }
     }
 

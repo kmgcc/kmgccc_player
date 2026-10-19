@@ -145,13 +145,13 @@ nonisolated struct DSPBassProfile: Equatable, Sendable {
     let intensityScale: Double
 
     static let headphones = DSPBassProfile(
-        cutoffHz: 80, floorHz: 20,
-        roundWeights: [0.7, 0.5, 0.32, 0.22, 0.16], tightWeights: [0.45, 0.65, 0.4, 0.3, 0.22],
+        cutoffHz: 40, floorHz: 15,
+        roundWeights: [0.75, 0.40, 0.20, 0.08, 0.03], tightWeights: [0.45, 0.65, 0.4, 0.3, 0.22],
         tightensDryBass: false, intensityScale: 1
     )
     static let speakers = DSPBassProfile(
-        cutoffHz: 140, floorHz: 35,
-        roundWeights: [0.6, 0.55, 0.38, 0.28, 0.2], tightWeights: [0.4, 0.65, 0.45, 0.34, 0.26],
+        cutoffHz: 60, floorHz: 25,
+        roundWeights: [0.65, 0.45, 0.25, 0.12, 0.05], tightWeights: [0.4, 0.65, 0.45, 0.34, 0.26],
         tightensDryBass: false, intensityScale: 1.2
     )
 
@@ -665,7 +665,7 @@ nonisolated struct DSPHybridBassParameters: DSPEffectParameterSet {
         let kind = target.resolved(for: outputKind)
         // Turnover of the bass reinforcement. Harmonic synthesis uses only
         // its deepest part so raising this does not colour upper bass notes.
-        let automatic = kind == .headphones ? 80.0 : 140.0
+        let automatic = kind == .headphones ? 40.0 : 60.0
         return (kind, cutoffHz == 0 ? automatic : cutoffHz)
     }
 }

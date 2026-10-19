@@ -3048,6 +3048,9 @@ final class LibraryViewModel {
         _ entry: ArtistEntry,
         minimumConfidence: Double = 0.70
     ) async -> ArtistEntry? {
+        guard !LibraryNormalization.isUnknownArtist(entry.displayName) else {
+            return nil
+        }
         do {
             let detail = try await metadataDetailCoordinator.fetchArtistDetail(
                 name: entry.displayName,
@@ -3091,6 +3094,9 @@ final class LibraryViewModel {
     }
 
     func searchArtistArtworkCandidates(_ entry: ArtistEntry) async -> [CoverCandidate] {
+        guard !LibraryNormalization.isUnknownArtist(entry.displayName) else {
+            return []
+        }
         do {
             return try await artistArtworkProviderCoordinator.searchCandidates(
                 artist: entry.displayName,
@@ -3111,6 +3117,9 @@ final class LibraryViewModel {
         allowReplacingExistingArtwork: Bool,
         reason: String
     ) async -> Bool {
+        guard !LibraryNormalization.isUnknownArtist(entry.displayName) else {
+            return false
+        }
         guard allowReplacingExistingArtwork || !hasPersistedArtistArtwork(entry) else {
             return false
         }
@@ -3272,6 +3281,9 @@ final class LibraryViewModel {
         _ entry: AlbumEntry,
         minimumConfidence: Double = 0.70
     ) async -> AlbumEntry? {
+        guard !LibraryNormalization.isUnknownAlbum(entry.displayTitle) else {
+            return nil
+        }
         do {
             let detail = try await metadataDetailCoordinator.fetchAlbumDetail(
                 album: entry.displayTitle,

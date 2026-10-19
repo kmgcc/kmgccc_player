@@ -137,11 +137,9 @@ struct PlaylistTrackRowsSection: View {
                 presentation: presentation,
                 rowHeight: rowHeight(for:),
                 rowContent: { row in
-                    AnyView(
-                        trackRow(row, isSelected: false, selectionContinuity: .isolated)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .frame(height: rowHeight(for: row), alignment: .leading)
-                    )
+                    trackRow(row, isSelected: false, selectionContinuity: .isolated)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(height: rowHeight(for: row), alignment: .leading)
                 }
             )
             .frame(maxWidth: .infinity)
@@ -280,12 +278,12 @@ private struct AppKitPlaylistRowsPresentation: Equatable {
     let artworkTintMode: AppSettings.ArtworkTintMode
 }
 
-private struct AppKitPlaylistTrackRowsTable: NSViewRepresentable {
+private struct AppKitPlaylistTrackRowsTable<RowContent: View>: NSViewRepresentable {
     let rows: [PlaylistPageRowModel]
     let dataRevision: AppKitPlaylistRowsDataRevision
     let presentation: AppKitPlaylistRowsPresentation
     let rowHeight: (PlaylistPageRowModel) -> CGFloat
-    let rowContent: (PlaylistPageRowModel) -> AnyView
+    let rowContent: (PlaylistPageRowModel) -> RowContent
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -310,19 +308,38 @@ private struct AppKitPlaylistTrackRowsTable: NSViewRepresentable {
         )
     }
 
+    static func dismantleNSView(_ nsView: AppKitPlaylistRowsContainerView, coordinator: Coordinator) {
+        nsView.tableView.delegate = nil
+        nsView.tableView.dataSource = nil
+        coordinator.detach()
+    }
+
     @MainActor
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         private weak var tableView: NSTableView?
         private var rows: [PlaylistPageRowModel] = []
         private var rowHeight: ((PlaylistPageRowModel) -> CGFloat)?
-        private var rowContent: ((PlaylistPageRowModel) -> AnyView)?
+        private var rowContent: ((PlaylistPageRowModel) -> RowContent)?
         private var dataRevision: AppKitPlaylistRowsDataRevision?
         private var presentation: AppKitPlaylistRowsPresentation?
 
         private let cellIdentifier = NSUserInterfaceItemIdentifier("PlaylistTrackHostingCell")
+        private let cells = NSHashTable<AppKitPlaylistTrackCellView<RowContent>>.weakObjects()
 
         func attach(tableView: NSTableView) {
             self.tableView = tableView
+        }
+
+        func detach() {
+            // Include cells already held by AppKit's reuse queue.
+            for cell in cells.allObjects { cell.releaseHostedContent() }
+            cells.removeAllObjects()
+            tableView = nil
+            rows = []
+            rowHeight = nil
+            rowContent = nil
+            dataRevision = nil
+            presentation = nil
         }
 
         func update(
@@ -330,7 +347,7 @@ private struct AppKitPlaylistTrackRowsTable: NSViewRepresentable {
             dataRevision: AppKitPlaylistRowsDataRevision,
             presentation: AppKitPlaylistRowsPresentation,
             rowHeight: @escaping (PlaylistPageRowModel) -> CGFloat,
-            rowContent: @escaping (PlaylistPageRowModel) -> AnyView
+            rowContent: @escaping (PlaylistPageRowModel) -> RowContent
         ) {
             let dataChanged = self.dataRevision != dataRevision
             let presentationChanged = self.presentation != presentation
@@ -360,10 +377,17 @@ private struct AppKitPlaylistTrackRowsTable: NSViewRepresentable {
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             guard rows.indices.contains(row), let rowContent else { return nil }
-            let cell = (tableView.makeView(withIdentifier: cellIdentifier, owner: self) as? AppKitPlaylistTrackCellView)
-                ?? AppKitPlaylistTrackCellView(identifier: cellIdentifier)
-            cell.setRootView(AnyView(rowContent(rows[row]).id(rows[row].id)))
+            let cell = (tableView.makeView(withIdentifier: cellIdentifier, owner: self) as? AppKitPlaylistTrackCellView<RowContent>)
+                ?? AppKitPlaylistTrackCellView<RowContent>(identifier: cellIdentifier)
+            cells.add(cell)
+            cell.setRootView(PlaylistTrackCellContent(trackID: rows[row].id, content: rowContent(rows[row])))
             return cell
+        }
+
+        func tableView(_ tableView: NSTableView, didRemove rowView: NSTableRowView, forRow row: Int) {
+            // NSTableView may retain the cell in its reuse queue. Keep the shell,
+            // but release its SwiftUI graph and captured page state offscreen.
+            (rowView.view(atColumn: 0) as? AppKitPlaylistTrackCellView<RowContent>)?.releaseHostedContent()
         }
 
         func selectionShouldChange(in tableView: NSTableView) -> Bool {
@@ -422,9 +446,17 @@ private final class AppKitPlaylistRowsContainerView: NSView {
     }
 }
 
+private struct PlaylistTrackCellContent<Content: View>: View {
+    let trackID: UUID
+    let content: Content
+
+    var body: some View { content.id(trackID) }
+}
+
 @MainActor
-private final class AppKitPlaylistTrackCellView: NSTableCellView {
-    private var hostingView: NSHostingView<AnyView>?
+private final class AppKitPlaylistTrackCellView<Content: View>: NSTableCellView {
+    private var hostingView: NSHostingView<PlaylistTrackCellContent<Content>>?
+    private var hostingConstraints: [NSLayoutConstraint] = []
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -437,7 +469,7 @@ private final class AppKitPlaylistTrackCellView: NSTableCellView {
         nil
     }
 
-    func setRootView(_ rootView: AnyView) {
+    func setRootView(_ rootView: PlaylistTrackCellContent<Content>) {
         if let hostingView {
             hostingView.rootView = rootView
             return
@@ -448,12 +480,25 @@ private final class AppKitPlaylistTrackCellView: NSTableCellView {
         hostingView.sizingOptions = []
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(hostingView)
-        NSLayoutConstraint.activate([
+        hostingConstraints = [
             hostingView.leadingAnchor.constraint(equalTo: leadingAnchor),
             hostingView.trailingAnchor.constraint(equalTo: trailingAnchor),
             hostingView.topAnchor.constraint(equalTo: topAnchor),
             hostingView.bottomAnchor.constraint(equalTo: bottomAnchor)
-        ])
+        ]
+        NSLayoutConstraint.activate(hostingConstraints)
         self.hostingView = hostingView
+    }
+
+    func releaseHostedContent() {
+        guard let hostingView else { return }
+        if let responder = window?.firstResponder as? NSView,
+           responder === hostingView || responder.isDescendant(of: hostingView) {
+            window?.makeFirstResponder(nil)
+        }
+        NSLayoutConstraint.deactivate(hostingConstraints)
+        hostingConstraints.removeAll()
+        hostingView.removeFromSuperview()
+        self.hostingView = nil
     }
 }

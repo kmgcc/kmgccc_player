@@ -1304,7 +1304,7 @@ final class PlaylistPageController {
         headerColorExtractor.cancelPending()
         inFlightHeaderColorRequestKey = requestKey
 
-        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let isDark = AppSettings.shared.resolvedColorScheme == .dark
         if let cached = headerColorExtractor.cachedResult(artworkIdentity: artworkIdentity, isDark: isDark) {
             commitHeaderColor(
                 accent: cached.accent,
@@ -1349,7 +1349,7 @@ final class PlaylistPageController {
             }
 
             let checksum = resolvedData.map { ColorMath.fnv1a($0) } ?? 0
-            let currentScheme = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? ColorScheme.dark : ColorScheme.light
+            let currentScheme = AppSettings.shared.resolvedColorScheme
             if artworkIdentity == self.lastHeaderColorIdentity,
                checksum == self.lastHeaderColorChecksum,
                currentScheme == self.lastHeaderColorScheme
@@ -1414,7 +1414,7 @@ final class PlaylistPageController {
         checksum: UInt64,
         scheme: ColorScheme? = nil
     ) {
-        let currentScheme = scheme ?? (NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light)
+        let currentScheme = scheme ?? AppSettings.shared.resolvedColorScheme
         guard artworkIdentity != lastHeaderColorIdentity || checksum != lastHeaderColorChecksum || currentScheme != lastHeaderColorScheme else {
             return
         }
@@ -1579,7 +1579,7 @@ final class PlaylistPageController {
             isHeaderColorReady = headerForegroundPalette != nil || headerSemanticPalette != nil
             lastHeaderColorIdentity = identity
             lastHeaderColorChecksum = cached.checksum
-            lastHeaderColorScheme = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light
+            lastHeaderColorScheme = AppSettings.shared.resolvedColorScheme
         } else {
             headerAccentColor = ThemeStore.shared.accentColor
             headerSemanticPalette = nil

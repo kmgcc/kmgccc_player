@@ -23,6 +23,7 @@ enum DebugUIHooks {
         "route.home", "route.allsongs", "route.playlist.1", "route.playlist.2", "route.playlist.3",
         "fullscreen.embedded.enter", "fullscreen.embedded.exit",
         "fullscreen.system.enter", "fullscreen.system.exit",
+        "fullscreen.lyrics.toggle",
         "nowplaying.enter", "nowplaying.exit",
         "lyrics.toggle",
         "skin.fullscreen.next", "skin.window.next",
@@ -32,6 +33,7 @@ enum DebugUIHooks {
     private nonisolated static let isEnabled = ProcessInfo.processInfo.environment["KMGCCC_DEBUG_UI_HOOKS"] == "1"
     private static weak var appSession: AppSessionHost?
     private static var isInstalled = false
+    static let fullscreenLyricsToggleNotification = Notification.Name("kmgccc.player.debug.fullscreen.lyrics.toggle")
     // The `ui` log category with public text: the measurement script reads
     // these lines from `log stream`, where `Log` interpolations are redacted.
     private nonisolated static let logger = Logger(subsystem: "kmg.myplayer2", category: LogCategory.ui.rawValue)
@@ -86,6 +88,8 @@ enum DebugUIHooks {
             FullscreenWindowManager.shared.showFullscreenWindow()
         case "fullscreen.system.exit":
             FullscreenWindowManager.shared.closeFullscreenWindow()
+        case "fullscreen.lyrics.toggle":
+            NotificationCenter.default.post(name: fullscreenLyricsToggleNotification, object: nil)
         case "nowplaying.enter":
             PlaybackCommandActions.openWindowNowPlaying(appSession: appSession)
         case "nowplaying.exit":

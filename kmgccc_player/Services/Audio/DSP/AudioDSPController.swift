@@ -1081,11 +1081,6 @@ final class AudioDSPController {
             || !DSPLimiterConfiguration.ceilingRange.contains(configuration.limiter.ceilingDB) {
             add("dsp.invalidParameter", "限幅上限范围为 −6 至 0 dB。", "limiter.ceilingDB")
         }
-        if !configuration.limiter.releaseMilliseconds.isFinite
-            || !DSPLimiterConfiguration.releaseRange.contains(configuration.limiter.releaseMilliseconds) {
-            add("dsp.invalidParameter", "释放时间范围为 20 至 1000 ms。", "limiter.releaseMilliseconds")
-        }
-
         let scriptNodeCount = configuration.nodes.filter {
             $0.typeID == DSPNodeConfiguration.scriptTypeID
         }.count
