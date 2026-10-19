@@ -154,8 +154,8 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     @State private var bokehSourceSets: [BokehTransitionPreparedSourceSet?] = [nil, nil]
     @State private var activeTransitionMode: BokehTransitionMode = .unmaskedFallback(reason: "idle")
     @State private var isTransitionActive = false
-    /// Full-size Core Image source renders are useful only when the next
-    /// Bokeh transition can consume them. Keep them out of the track-switch
+    /// Bokeh source renders are useful only when the next transition can
+    /// consume them. Keep them out of the track-switch
     /// critical path and build them during an idle window instead.
     @State private var bokehPrewarmEnabled = false
     @State private var bokehPrewarmTask: Task<Void, Never>?
@@ -235,8 +235,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                 || isTransitionActive
                 || centeredLayerOpacity > 0.001
                 || settledCenteredLayerOpacity > 0.001
-                || bokehPrewarmEnabled
-            let shouldMountTransitionBackground = isTransitionActive || bokehPrewarmEnabled
+            let shouldMountTransitionBackground = isTransitionActive
 
             ZStack {
                 staticBackground(size: geometry.size, placement: .leading)
@@ -256,7 +255,22 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                 }
 
                 if shouldMountTransitionBackground {
-                    transitionBackground(size: geometry.size)
+                    let bokehRenderSize = activeTransitionMode.usesBokeh
+                        ? BokehTransitionRenderSize.make(
+                            backingPixelSize: CGSize(
+                                width: geometry.size.width * displayScale,
+                                height: geometry.size.height * displayScale
+                            ),
+                            tier: activeBokehSourceSet?.identity.tier ?? preferredBokehTier()
+                        )
+                        : nil
+                    transitionBackground(
+                        size: geometry.size,
+                        outputPixelSize: bokehRenderSize.map {
+                            transitionSourcePixelSize(for: geometry.size, renderSize: $0)
+                        },
+                        displaysRenderedImage: !activeTransitionMode.usesBokeh
+                    )
                         .frame(
                             width: transitionCanvasWidth(for: geometry.size),
                             height: geometry.size.height
@@ -267,6 +281,33 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                         // when an opacity fade is interrupted.
                         .opacity(activeTransitionMode.usesBokeh ? 0 : Double(transitionLayerOpacity))
                         .zIndex(2)
+                }
+
+                if bokehPrewarmEnabled,
+                   let renderSize = BokehTransitionRenderSize.make(
+                       backingPixelSize: CGSize(
+                           width: geometry.size.width * displayScale,
+                           height: geometry.size.height * displayScale
+                       ),
+                       tier: preferredBokehTier()
+                   ) {
+                    if !shouldMountCenteredBackground {
+                        staticBackground(
+                            size: geometry.size,
+                            placement: .centeredSymmetric,
+                            outputPixelSize: renderSize.cgSize,
+                            displaysRenderedImage: false
+                        )
+                    }
+                    transitionBackground(
+                        size: geometry.size,
+                        outputPixelSize: transitionSourcePixelSize(for: geometry.size, renderSize: renderSize),
+                        displaysRenderedImage: false
+                    )
+                    .frame(
+                        width: transitionCanvasWidth(for: geometry.size),
+                        height: geometry.size.height
+                    )
                 }
 
                 // Two persistent Bokeh surfaces. They are never removed from
@@ -631,7 +672,9 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     @ViewBuilder
     private func staticBackground(
         size: CGSize,
-        placement: CoverGradientBlurArtworkPlacement
+        placement: CoverGradientBlurArtworkPlacement,
+        outputPixelSize: CGSize? = nil,
+        displaysRenderedImage: Bool = true
     ) -> some View {
         let readabilityPlacement: CoverGradientBlurReadabilityPlacement = placement == .leading ? .leading : .centeredSymmetric
         CoverGradientBlurBackgroundView(
@@ -643,14 +686,20 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             extendsIntoSafeArea: false,
             readabilityPlacement: readabilityPlacement,
             onReadabilitySnapshot: acceptReadability,
-            onRenderedFrame: acceptRenderedFrame
+            onRenderedFrame: acceptRenderedFrame,
+            outputPixelSize: outputPixelSize,
+            displaysRenderedImage: displaysRenderedImage
         )
         .frame(width: size.width, height: size.height)
         .allowsHitTesting(false)
     }
 
     @ViewBuilder
-    private func transitionBackground(size: CGSize) -> some View {
+    private func transitionBackground(
+        size: CGSize,
+        outputPixelSize: CGSize? = nil,
+        displaysRenderedImage: Bool = true
+    ) -> some View {
         CoverGradientBlurBackgroundView(
             artworkData: context.track?.artworkData,
             artworkImage: context.track?.artworkImage,
@@ -662,12 +711,28 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             onReadabilitySnapshot: { snapshot in
                 acceptTransitionReadability(snapshot, viewportSize: size)
             },
-            onRenderedFrame: acceptRenderedFrame
+            onRenderedFrame: acceptRenderedFrame,
+            outputPixelSize: outputPixelSize,
+            displaysRenderedImage: displaysRenderedImage
         )
         // This overscan render is only a moving/blurred transition source;
         // settled leading and centered surfaces supply the Retina detail.
         .environment(\.displayScale, 1)
         .allowsHitTesting(false)
+    }
+
+    private func transitionSourcePixelSize(
+        for size: CGSize,
+        renderSize: BokehTransitionRenderSize
+    ) -> CGSize {
+        // Preserve the viewport's source density across the overscan canvas.
+        // Both idle prewarm and the invisible Bokeh transition use this frame;
+        // Gaussian and unmasked transitions keep their visible full-size image.
+        let sourceScale = CGFloat(renderSize.width) / max(1, size.width)
+        return CGSize(
+            width: ceil(transitionCanvasWidth(for: size) * sourceScale / 16) * 16,
+            height: ceil(size.height * sourceScale / 16) * 16
+        )
     }
 
     private func runLayoutTransition(to targetCentered: Bool) {
@@ -700,6 +765,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                     )
                 }
                 Log.info("CoverBlur transition starting: mode=\(transitionModeLabel(activeTransitionMode)) target=\(targetPosition)", category: .fullscreen)
+                DebugUIHooks.record("cover-blur-transition mode=\(transitionModeLabel(activeTransitionMode)) target=\(targetPosition)")
             }
 
             guard !Task.isCancelled, transitionGeneration == generation else { return }

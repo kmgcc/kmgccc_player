@@ -230,6 +230,7 @@ struct MiniPlayerView: View {
                     isEnabled: isEnabled,
                     isExpanded: isPlaybackModeExpanded,
                     expansionWidths: playbackModeCollapsedWidth...playbackModeExpandedWidth,
+                    isolatesGeometryAnimation: false,
                     selectedColor: controlPrimaryColor,
                     unselectedColor: controlPrimaryColor.opacity(0.62),
                     pillTintColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
@@ -248,6 +249,7 @@ struct MiniPlayerView: View {
                     isEnabled: isEnabled,
                     isExpanded: isPlaybackModeExpanded,
                     expansionWidths: playbackModeCollapsedWidth...150,
+                    isolatesGeometryAnimation: false,
                     selectedColor: controlPrimaryColor,
                     unselectedColor: controlPrimaryColor.opacity(0.62),
                     pillTintColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
@@ -410,6 +412,7 @@ struct MiniPlayerView: View {
                 : .miniPlayer,
             adaptsWideVisualizationSegments: true,
             usesVisualizationAsCompactProgress: true,
+            isolatesGeometryAnimation: false,
             progress: progressDisplayTime(for: presentation),
             duration: presentation.duration,
             isSeekEnabled: presentation.isSeekEnabled,
@@ -526,7 +529,11 @@ struct MiniPlayerView: View {
 
     private func volumeView(presentation: NowPlayingPresentation) -> some View {
         let isEnabled = presentation.isVolumeControlEnabled
-        return MiniPlayerInterpolatedContent(isVolumeExpanded ? 1 : 0, clampsFraction: false) { phase in
+        return MiniPlayerInterpolatedContent(
+            isVolumeExpanded ? 1 : 0,
+            clampsFraction: false,
+            isolatesGeometryAnimation: false
+        ) { phase in
             let sliderWidth = max(0, 86 * phase)
             let sliderOpacity = min(1, max(0, phase))
             HStack(spacing: 0) {
@@ -894,6 +901,7 @@ struct PlaybackModeSlider: View {
     let isEnabled: Bool
     let isExpanded: Bool
     let expansionWidths: ClosedRange<CGFloat>?
+    let isolatesGeometryAnimation: Bool
     let iconSize: CGFloat
     let selectedColor: Color
     let unselectedColor: Color
@@ -910,6 +918,7 @@ struct PlaybackModeSlider: View {
         isEnabled: Bool,
         isExpanded: Bool = true,
         expansionWidths: ClosedRange<CGFloat>? = nil,
+        isolatesGeometryAnimation: Bool = true,
         iconSize: CGFloat = 12,
         selectedColor: Color = .primary,
         unselectedColor: Color = .secondary,
@@ -925,6 +934,7 @@ struct PlaybackModeSlider: View {
         self.isEnabled = isEnabled
         self.isExpanded = isExpanded
         self.expansionWidths = expansionWidths
+        self.isolatesGeometryAnimation = isolatesGeometryAnimation
         self.iconSize = iconSize
         self.selectedColor = selectedColor
         self.unselectedColor = unselectedColor
@@ -991,7 +1001,11 @@ struct PlaybackModeSlider: View {
     }
 
     var body: some View {
-        MiniPlayerInterpolatedContent(isExpanded ? 1 : 0, clampsFraction: false) { phase in
+        MiniPlayerInterpolatedContent(
+            isExpanded ? 1 : 0,
+            clampsFraction: false,
+            isolatesGeometryAnimation: isolatesGeometryAnimation
+        ) { phase in
             GeometryReader { geometry in
                 let inset: CGFloat = 2 * scale
                 let collapsedWidth = expansionWidths?.lowerBound ?? geometry.size.width
@@ -1243,6 +1257,7 @@ struct AppleMusicPlaybackModeSlider: View {
     let isEnabled: Bool
     let isExpanded: Bool
     let expansionWidths: ClosedRange<CGFloat>?
+    let isolatesGeometryAnimation: Bool
     let iconSize: CGFloat
     let selectedColor: Color
     let unselectedColor: Color
@@ -1259,6 +1274,7 @@ struct AppleMusicPlaybackModeSlider: View {
         isEnabled: Bool,
         isExpanded: Bool = true,
         expansionWidths: ClosedRange<CGFloat>? = nil,
+        isolatesGeometryAnimation: Bool = true,
         iconSize: CGFloat = 12,
         selectedColor: Color = .primary,
         unselectedColor: Color = .secondary,
@@ -1274,6 +1290,7 @@ struct AppleMusicPlaybackModeSlider: View {
         self.isEnabled = isEnabled
         self.isExpanded = isExpanded
         self.expansionWidths = expansionWidths
+        self.isolatesGeometryAnimation = isolatesGeometryAnimation
         self.iconSize = iconSize
         self.selectedColor = selectedColor
         self.unselectedColor = unselectedColor
@@ -1302,7 +1319,11 @@ struct AppleMusicPlaybackModeSlider: View {
     private var allModes: [AppleMusicPlaybackMode] { AppleMusicPlaybackMode.allCases }
 
     var body: some View {
-        MiniPlayerInterpolatedContent(isExpanded ? 1 : 0, clampsFraction: false) { phase in
+        MiniPlayerInterpolatedContent(
+            isExpanded ? 1 : 0,
+            clampsFraction: false,
+            isolatesGeometryAnimation: isolatesGeometryAnimation
+        ) { phase in
             GeometryReader { geometry in
                 let inset: CGFloat = 2 * scale
                 let collapsedWidth = expansionWidths?.lowerBound ?? geometry.size.width

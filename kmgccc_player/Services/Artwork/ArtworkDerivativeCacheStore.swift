@@ -303,13 +303,19 @@ actor ArtworkDerivativeCacheStore {
 }
 
 private nonisolated func downsampledImage(data: Data, targetPixelSize: CGSize) -> NSImage? {
-    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+    guard let source = CGImageSourceCreateWithData(
+        data as CFData,
+        [kCGImageSourceShouldCache: false] as CFDictionary
+    ) else { return nil }
     let maxPixel = max(1, Int(max(targetPixelSize.width, targetPixelSize.height)))
     return downsampledImage(source: source, maxPixelSize: maxPixel)
 }
 
 private nonisolated func downsampledImage(data: Data, maxPixelSize: Int) -> NSImage? {
-    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+    guard let source = CGImageSourceCreateWithData(
+        data as CFData,
+        [kCGImageSourceShouldCache: false] as CFDictionary
+    ) else { return nil }
     return downsampledImage(source: source, maxPixelSize: maxPixelSize)
 }
 

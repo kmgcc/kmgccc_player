@@ -63,7 +63,7 @@ actor LibrarySearchIndex {
                 let id = source.trackID.uuidString
                 let needsUpdate: Bool
                 if let meta = existingMetadata[id] {
-                    needsUpdate = isSourceChanged(source, against: meta)
+                    needsUpdate = autoreleasepool { isSourceChanged(source, against: meta) }
                 } else {
                     needsUpdate = true
                 }
@@ -713,7 +713,7 @@ actor LibrarySearchIndex {
                 path: nil,
                 modifiedAt: nil,
                 fileSize: Int64(data.count),
-                hash: Self.sha256Hex(data)
+                hash: Self.inlineLyricsHash(data, isTTML: true)
             )
         }
 
@@ -727,7 +727,7 @@ actor LibrarySearchIndex {
                 path: nil,
                 modifiedAt: nil,
                 fileSize: Int64(data.count),
-                hash: Self.sha256Hex(data)
+                hash: Self.inlineLyricsHash(data, isTTML: false)
             )
         }
 
@@ -1401,19 +1401,31 @@ actor LibrarySearchIndex {
         if meta.formatRaw != (source.formatRaw ?? "") { return true }
         if meta.playCount != source.playCount { return true }
         if abs(meta.preferenceScore - source.preferenceScore) > 0.0001 { return true }
-        if abs(meta.updatedAt - source.updatedAt.timeIntervalSince1970) > 0.001 { return true }
+        // Repository snapshots use Date() for updatedAt, even when nothing
+        // changed. Compare the indexed inputs instead of rebuilding every row.
         let sourceLastPlayed = source.lastPlayedAt?.timeIntervalSince1970
         if (meta.lastPlayedAt == nil) != (sourceLastPlayed == nil) { return true }
         if let metaLastPlayed = meta.lastPlayedAt, let sourceLastPlayed, abs(metaLastPlayed - sourceLastPlayed) > 0.001 {
             return true
         }
 
-        if source.inlineTTMLText != nil || source.inlinePlainLyricsText != nil {
-            return true
+        if let text = source.inlineTTMLText?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !text.isEmpty {
+            return meta.lyricsPath != nil || meta.lyricsHash != Self.inlineLyricsHash(Data(text.utf8), isTTML: true)
+        }
+        if let text = source.inlinePlainLyricsText?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !text.isEmpty {
+            return meta.lyricsPath != nil || meta.lyricsHash != Self.inlineLyricsHash(Data(text.utf8), isTTML: false)
         }
 
-        if let indexedPath = meta.lyricsPath {
-            guard let attrs = try? FileManager.default.attributesOfItem(atPath: indexedPath) else {
+        // Match resolveLyrics' precedence, including a newly available TTML
+        // file, a replacement path, or removal of previously inline lyrics.
+        let lyricsURL = [source.ttmlLyricsFileURL, source.plainLyricsFileURL]
+            .compactMap { $0 }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
+        if let lyricsURL {
+            guard meta.lyricsPath == lyricsURL.path,
+                  let attrs = try? FileManager.default.attributesOfItem(atPath: lyricsURL.path) else {
                 return true
             }
             let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970
@@ -1421,13 +1433,8 @@ actor LibrarySearchIndex {
             if meta.lyricsMtime != mtime || meta.lyricsSize != size {
                 return true
             }
-        } else {
-            if let ttml = source.ttmlLyricsFileURL, FileManager.default.fileExists(atPath: ttml.path) {
-                return true
-            }
-            if let plain = source.plainLyricsFileURL, FileManager.default.fileExists(atPath: plain.path) {
-                return true
-            }
+        } else if meta.lyricsPath != nil || meta.lyricsHash != nil {
+            return true
         }
 
         return false
@@ -1701,6 +1708,12 @@ actor LibrarySearchIndex {
 
     private func suffix(_ value: String, count: Int) -> String {
         String(value.suffix(count))
+    }
+
+    private static func inlineLyricsHash(_ data: Data, isTTML: Bool) -> String {
+        // Identical bytes use different parsers in the two inline fields.
+        // Older untagged inline hashes are refreshed once on the next sync.
+        (isTTML ? "inline-ttml:" : "inline-plain:") + sha256Hex(data)
     }
 
     private static func sha256Hex(_ data: Data) -> String {

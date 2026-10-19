@@ -60,7 +60,13 @@ actor QQMusicCoverService {
             duration: duration,
             limit: limit
         )
-        guard query.title?.isEmpty == false || query.album.isEmpty == false else {
+        let hasValidTitle = query.title?.isEmpty == false
+        let hasValidAlbum = !query.album.isEmpty && !LibraryNormalization.isUnknownAlbum(query.album)
+        let hasValidArtist = !query.artist.isEmpty && !LibraryNormalization.isUnknownArtist(query.artist)
+        guard hasValidTitle || hasValidAlbum || hasValidArtist else {
+            throw QQMusicCoverError.noResults
+        }
+        if !hasValidTitle && !hasValidAlbum {
             throw QQMusicCoverError.noResults
         }
 
@@ -153,7 +159,7 @@ actor QQMusicCoverService {
         limit: Int = CoverLookupConfiguration.qqMusicCandidateLimit
     ) async throws -> [CoverCandidate] {
         let artist = trimmed(artist) ?? ""
-        guard !artist.isEmpty else {
+        guard !artist.isEmpty, !LibraryNormalization.isUnknownArtist(artist) else {
             throw QQMusicCoverError.noResults
         }
 
@@ -201,6 +207,10 @@ actor QQMusicCoverService {
 
             do {
                 let imageData = try await imageData(for: imageURL)
+                guard !Self.isPlaceholderArtistArtwork(imageData) else {
+                    Log.info("[QQMusicCover] filtered default placeholder artist avatar: \(imageURL)", category: .import)
+                    continue
+                }
                 let sourceItemId = item.candidate.singerMid
                     ?? item.candidate.artistName
                     ?? Self.cacheKey("artist-image:\(imageURL)")
@@ -710,6 +720,19 @@ actor QQMusicCoverService {
         return URLSession(configuration: configuration)
     }
 
+    private static let knownPlaceholderArtworkHashes: Set<String> = [
+        "4fa3ec08fa3142fa91524562f3b360177a065c5d3fda7dfd9f513c685edfde38", // Green shirt, yellow hair, microphone avatar
+        "0aee3a915640c34547ad623ab684e6e60dce2bda6ca69ddcb21a12321e9f21dc", // Grey silhouette avatar
+        "6d601b3a4ede3c23d4bfd6baaa237d72e4c283804f8d7be96a5e05b5f88b1814", // Grey silhouette monochrome
+        "00920fe3b773565d76463440ebe9ccac91fea8088f46407378d79cc4d7e0332b", // 150x150 blank placeholder
+    ]
+
+    nonisolated static func isPlaceholderArtistArtwork(_ data: Data) -> Bool {
+        let digest = SHA256.hash(data: data)
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return knownPlaceholderArtworkHashes.contains(hex)
+    }
+
     private nonisolated func trimmed(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -735,6 +758,7 @@ nonisolated enum CoverCandidateSorter {
     static func bestAutomaticCandidate(from candidates: [CoverCandidate]) -> CoverCandidate? {
         sorted(candidates).first {
             $0.confidence >= CoverLookupConfiguration.automaticCoverConfidenceThreshold
+                && !QQMusicCoverService.isPlaceholderArtistArtwork($0.imageData)
         }
     }
 }

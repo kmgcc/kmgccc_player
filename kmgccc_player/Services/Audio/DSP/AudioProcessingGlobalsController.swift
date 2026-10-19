@@ -184,7 +184,7 @@ final class AudioProcessingGlobalsController {
 
         if !AudioLoudnessConfiguration.targetRange.contains(configuration.loudness.targetLUFS)
             || !configuration.loudness.targetLUFS.isFinite {
-            add("目标响度范围为 −23 至 −14 LUFS。", "loudness.targetLUFS")
+            add("目标响度范围为 −20 至 −8 LUFS。", "loudness.targetLUFS")
         }
         return diagnostics
     }

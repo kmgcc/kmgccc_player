@@ -459,6 +459,9 @@ struct AppPanelButtonStyle: ButtonStyle {
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
             .frame(minHeight: 24)
+            // Same reason as PopupButtonAppearance: the interactive glass reads
+            // the content shape, so the capsule belongs on the content itself.
+            .contentShape(Capsule())
 
         return surface(label)
             .contentShape(Capsule())

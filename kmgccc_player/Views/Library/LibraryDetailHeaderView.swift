@@ -789,7 +789,8 @@ struct LibraryDetailHeaderView: View {
 
     private var canSearchArtistArtwork: Bool {
         if case .artist = config {
-            return true
+            let artistName = editTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !artistName.isEmpty && !LibraryNormalization.isUnknownArtist(artistName)
         }
         return false
     }
@@ -1391,6 +1392,10 @@ struct AlbumInfoEditSheet: View {
     }
 
     private func searchArtwork() {
+        guard !LibraryNormalization.isUnknownAlbum(entry.displayTitle) else {
+            metadataMessage = "未知专辑不支持在线查找封面"
+            return
+        }
         Task {
             await coverCoordinator?.search(
                 artist: entry.primaryArtistDisplayName,

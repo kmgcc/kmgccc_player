@@ -24,6 +24,10 @@
 - 主题颜色只经 `ThemeStore` / `SemanticPalette`；绕过它们直接取色会在深浅色切换与 P3 输出上出问题。
 - 频谱视图共享 `LEDMeterServiceProvider` / `AudioAnalysisHub` 分析服务；**禁止**为单个视图另装 AVAudioEngine tap。
 
+## 弹窗与按钮
+
+- Liquid Glass 的点击命中由**被包裹内容**的 content shape 决定，不是由 `glassEffect(_:in:)` 的形状决定。交互式玻璃（`.interactive()`）必须裹在已经声明 `contentShape` 的内容上：`PopupButtonAppearance`（PopupKit）与 `AppPanelButtonStyle` 都先在 label 上声明 `Capsule`，再应用 `glassEffect`。只在 `glassEffect` 之后补 `contentShape` 时，胶囊里除文字外的区域会表现为按下有玻璃高亮、动作不触发；2026-10-15 歌曲信息编辑弹窗的取消 / 保存更改点不动就是这个原因。新增玻璃按钮时保持「label → contentShape → glassEffect」的顺序。
+
 ## 外部组件
 
 - 外部组件一律从 `Bundle.main.resourceURL` 解析；不要添加系统 Python、venv 或环境变量 fallback。

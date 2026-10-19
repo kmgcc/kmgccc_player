@@ -1266,6 +1266,14 @@ final class ReferencedSourceReconciler {
                     relativePath: generatedRelativePath
                 )
                 didRepairGeneratedOutputMembership = true
+                if locator.allSourceMemberships.isEmpty,
+                   let sourcePath = track.ncmConversionAssociation?.sourcePath {
+                    let sourceURL = URL(fileURLWithPath: sourcePath)
+                    if let rel = relativePath(sourceURL, root: rootURL),
+                       FileManager.default.fileExists(atPath: sourceURL.path) {
+                        setMembership(sourceID: diff.sourceID, relativePath: rel, locator: &locator)
+                    }
+                }
             }
             guard didRepairGeneratedOutputMembership || track.availability != .available else { continue }
             guard locator.containsSource(diff.sourceID) || didRepairGeneratedOutputMembership else { continue }

@@ -864,9 +864,6 @@ private final class BKArtBackgroundLayerView: NSView {
         backgroundController = nil
         trackID = nil
         tearDownRootLayer()
-        CATransaction.begin()
-        CATransaction.flush()
-        CATransaction.commit()
         CacheManager.trimProcessMemory()
         FSDiagnostics.emit("BKArtBackground.prepareForDismissal END t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
     }
@@ -3598,9 +3595,7 @@ private final class BKArtBackgroundLayerView: NSView {
             sublayer.removeFromSuperlayer()
         }
         layer?.sublayers = nil
-        CATransaction.begin()
-        CATransaction.flush()
-        CATransaction.commit()
+        // Let the display cycle commit layer removal after teardown finishes.
         CacheManager.trimProcessMemory()
     }
 

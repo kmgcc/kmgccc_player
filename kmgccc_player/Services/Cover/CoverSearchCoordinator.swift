@@ -63,6 +63,16 @@ final class CoverSearchCoordinator {
         candidates = []
         selectedForPreview = nil
 
+        let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasValidTitle = cleanTitle?.isEmpty == false
+        let hasValidArtist = !artist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !LibraryNormalization.isUnknownArtist(artist)
+        let hasValidAlbum = !album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !LibraryNormalization.isUnknownAlbum(album)
+
+        guard hasValidTitle || hasValidAlbum else {
+            isLoading = false
+            return
+        }
+
         let normalizedQuery = normalizeQuery(artist: artist, album: album)
 
         let task = Task {
@@ -75,79 +85,85 @@ final class CoverSearchCoordinator {
 
             var backgroundCandidates: [CoverCandidate] = []
             await withTaskGroup(of: [CoverCandidate].self) { group in
-                group.addTask {
-                    do {
-                        let preferredCandidate = try await withCoverLookupTimeout(
-                            CoverLookupConfiguration.netEasePreferredTimeout
-                        ) {
-                            try await self.netEaseCoverService.searchTopCoverCandidate(
-                                artist: artist,
-                                album: album
-                            )
+                if hasValidAlbum || hasValidArtist {
+                    group.addTask {
+                        do {
+                            let preferredCandidate = try await withCoverLookupTimeout(
+                                CoverLookupConfiguration.netEasePreferredTimeout
+                            ) {
+                                try await self.netEaseCoverService.searchTopCoverCandidate(
+                                    artist: artist,
+                                    album: album
+                                )
+                            }
+                            return [preferredCandidate]
+                        } catch {
+                            print("[CoverSearchCoordinator] NetEase preferred candidate failed: \(error)")
+                            return []
                         }
-                        return [preferredCandidate]
-                    } catch {
-                        print("[CoverSearchCoordinator] NetEase preferred candidate failed: \(error)")
-                        return []
+                    }
+
+                    group.addTask {
+                        do {
+                            return try await withCoverLookupTimeout(
+                                CoverLookupConfiguration.netEaseCandidatesTimeout
+                            ) {
+                                try await self.netEaseCoverService.searchCoverCandidates(
+                                    artist: artist,
+                                    album: album,
+                                    limit: CoverLookupConfiguration.netEaseCandidateLimit
+                                )
+                            }
+                        } catch {
+                            print("[CoverSearchCoordinator] NetEase candidates failed: \(error)")
+                            return []
+                        }
                     }
                 }
 
-                group.addTask {
-                    do {
-                        return try await withCoverLookupTimeout(
-                            CoverLookupConfiguration.netEaseCandidatesTimeout
-                        ) {
-                            try await self.netEaseCoverService.searchCoverCandidates(
-                                artist: artist,
-                                album: album,
-                                limit: CoverLookupConfiguration.netEaseCandidateLimit
+                if hasValidArtist && hasValidAlbum {
+                    group.addTask {
+                        do {
+                            let data = try await withCoverLookupTimeout(
+                                CoverLookupConfiguration.sacadTimeout
+                            ) {
+                                try await self.coverDownloadService.downloadCover(
+                                    artist: artist,
+                                    album: album,
+                                    size: 1200
+                                )
+                            }
+                            let candidate = CoverCandidate(
+                                imageData: data,
+                                source: .sacad,
+                                sourceItemId: normalizedQuery
                             )
+                            return [candidate]
+                        } catch {
+                            print("[CoverSearchCoordinator] Sacad failed: \(error)")
+                            return []
                         }
-                    } catch {
-                        print("[CoverSearchCoordinator] NetEase candidates failed: \(error)")
-                        return []
                     }
                 }
 
-                group.addTask {
-                    do {
-                        let data = try await withCoverLookupTimeout(
-                            CoverLookupConfiguration.sacadTimeout
-                        ) {
-                            try await self.coverDownloadService.downloadCover(
-                                artist: artist,
-                                album: album,
-                                size: 1200
-                            )
+                if hasValidTitle || hasValidAlbum {
+                    group.addTask {
+                        do {
+                            return try await withCoverLookupTimeout(
+                                CoverLookupConfiguration.qqMusicCandidatesTimeout
+                            ) {
+                                try await self.qqMusicCoverService.searchCoverCandidates(
+                                    title: title,
+                                    artist: artist,
+                                    album: album,
+                                    duration: duration,
+                                    limit: CoverLookupConfiguration.qqMusicCandidateLimit
+                                )
+                            }
+                        } catch {
+                            print("[CoverSearchCoordinator] QQMusic candidates failed: \(error)")
+                            return []
                         }
-                        let candidate = CoverCandidate(
-                            imageData: data,
-                            source: .sacad,
-                            sourceItemId: normalizedQuery
-                        )
-                        return [candidate]
-                    } catch {
-                        print("[CoverSearchCoordinator] Sacad failed: \(error)")
-                        return []
-                    }
-                }
-
-                group.addTask {
-                    do {
-                        return try await withCoverLookupTimeout(
-                            CoverLookupConfiguration.qqMusicCandidatesTimeout
-                        ) {
-                            try await self.qqMusicCoverService.searchCoverCandidates(
-                                title: title,
-                                artist: artist,
-                                album: album,
-                                duration: duration,
-                                limit: CoverLookupConfiguration.qqMusicCandidateLimit
-                            )
-                        }
-                    } catch {
-                        print("[CoverSearchCoordinator] QQMusic candidates failed: \(error)")
-                        return []
                     }
                 }
 

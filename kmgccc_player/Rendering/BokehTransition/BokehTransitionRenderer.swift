@@ -522,6 +522,7 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
         }
         let intermediate = IntermediateTextures(size: size, composed: composed, bokeh: bokeh)
         intermediateTextures = intermediate
+        DebugUIHooks.record("bokeh-intermediates \(size.width)x\(size.height) bytes=\(composed.allocatedSize + bokeh.allocatedSize)")
         return intermediate
     }
 

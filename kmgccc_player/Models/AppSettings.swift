@@ -8,6 +8,7 @@
 
 import Foundation
 import SwiftUI
+import AppKit
 
 enum PlaybackOrderMode: String, CaseIterable, Identifiable {
     case sequence
@@ -624,6 +625,9 @@ public final class AppSettings {
                     forKey: AppearanceKeys.followSystemAppearance
                 )
             }
+            Task { @MainActor in
+                self.applyAppearanceToAppAndWindows()
+            }
         }
     }
 
@@ -640,6 +644,9 @@ public final class AppSettings {
             withMutation(keyPath: \.manualAppearance) {
                 UserDefaults.standard.set(
                     newValue.rawValue, forKey: AppearanceKeys.manualAppearance)
+            }
+            Task { @MainActor in
+                self.applyAppearanceToAppAndWindows()
             }
         }
     }
@@ -1917,6 +1924,41 @@ public final class AppSettings {
 
     var colorScheme: ColorScheme? {
         followSystemAppearance ? nil : (manualAppearance == .dark ? .dark : .light)
+    }
+
+    var resolvedColorScheme: ColorScheme {
+        if followSystemAppearance {
+            let isDark: Bool
+            if let window = NSApp.windows.first(where: { $0.isVisible }),
+               let match = window.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) {
+                isDark = match == .darkAqua
+            } else {
+                isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            }
+            return isDark ? .dark : .light
+        } else {
+            return manualAppearance == .dark ? .dark : .light
+        }
+    }
+
+    @MainActor
+    func applyAppearanceToAppAndWindows() {
+        if followSystemAppearance {
+            NSApp.appearance = nil
+            for window in NSApp.windows {
+                window.appearance = nil
+            }
+        } else {
+            let appearanceName: NSAppearance.Name = manualAppearance == .dark ? .darkAqua : .aqua
+            let appearance = NSAppearance(named: appearanceName)
+            NSApp.appearance = appearance
+            for window in NSApp.windows {
+                window.appearance = appearance
+            }
+        }
+
+        let targetScheme = resolvedColorScheme
+        ThemeStore.shared.updateColorScheme(targetScheme, reason: "applyAppearanceToAppAndWindows")
     }
 
     var accentColor: Color {

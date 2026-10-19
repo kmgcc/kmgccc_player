@@ -238,44 +238,36 @@ nonisolated struct DSPLimiterConfiguration: Codable, Equatable, Sendable {
     /// Identity of the limiter inside the processor chain.
     nonisolated static let nodeID = UUID(uuidString: "00000000-0000-0000-0000-000000000004")!
     nonisolated static let ceilingRange: ClosedRange<Double> = -6...0
-    nonisolated static let releaseRange: ClosedRange<Double> = 20...1_000
-    nonisolated static let defaultCeilingDB = -1.0
-    nonisolated static let defaultReleaseMilliseconds = 200.0
+    nonisolated static let defaultCeilingDB = 0.0
+    nonisolated static let fixedReleaseMilliseconds = 250.0
 
     var enabled: Bool
     /// Sample-peak ceiling of the final output, in dBFS.
     var ceilingDB: Double
-    /// Time for the gain to recover most of a reduction once the peak has passed.
-    var releaseMilliseconds: Double
 
     private enum CodingKeys: String, CodingKey {
-        case enabled, ceilingDB, releaseMilliseconds
+        case enabled, ceilingDB
     }
 
     nonisolated init(
         enabled: Bool = true,
-        ceilingDB: Double = Self.defaultCeilingDB,
-        releaseMilliseconds: Double = Self.defaultReleaseMilliseconds
+        ceilingDB: Double = Self.defaultCeilingDB
     ) {
         self.enabled = enabled
         self.ceilingDB = ceilingDB
-        self.releaseMilliseconds = releaseMilliseconds
     }
 
-    /// Presets saved with only the switch take the default ceiling and release.
+    /// Presets saved with only the switch take the default ceiling.
     nonisolated init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try container.decode(Bool.self, forKey: .enabled)
         ceilingDB = try container.decodeIfPresent(Double.self, forKey: .ceilingDB) ?? Self.defaultCeilingDB
-        releaseMilliseconds = try container.decodeIfPresent(Double.self, forKey: .releaseMilliseconds)
-            ?? Self.defaultReleaseMilliseconds
     }
 
     nonisolated func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(enabled, forKey: .enabled)
         try container.encode(ceilingDB, forKey: .ceilingDB)
-        try container.encode(releaseMilliseconds, forKey: .releaseMilliseconds)
     }
 }
 
@@ -826,8 +818,8 @@ nonisolated struct AudioFadeConfiguration: Codable, Equatable, Sendable {
 /// the boost, attenuation and true-peak limits are fixed. Album handling is
 /// decided per album (automatic judgement plus a per-album override).
 nonisolated struct AudioLoudnessConfiguration: Codable, Equatable, Sendable {
-    nonisolated static let targetRange: ClosedRange<Double> = -23 ... -14
-    nonisolated static let defaultTargetLUFS = -18.0
+    nonisolated static let targetRange: ClosedRange<Double> = -20 ... -8
+    nonisolated static let defaultTargetLUFS = -14.0
     nonisolated static let fixedMaxBoostDB = 12.0
     nonisolated static let fixedMaxAttenuationDB = 24.0
     nonisolated static let fixedTruePeakCeilingDBTP = -1.0

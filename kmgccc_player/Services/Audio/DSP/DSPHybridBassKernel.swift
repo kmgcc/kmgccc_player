@@ -135,7 +135,7 @@ nonisolated final class DSPHybridBassEngine {
         let sourceCutoff = min(tuning.cutoffHz, DSPBassProfile.maximumHarmonicFundamentalHz)
         self.cutoff = sourceCutoff
         harmonicTop = DSPBassProfile.harmonicTop(cutoffHz: sourceCutoff)
-        harmonicFloor = max(80, min(sourceCutoff, DSPBassProfile.profile(for: tuning.kind).cutoffHz))
+        harmonicFloor = max(30, min(sourceCutoff, DSPBassProfile.profile(for: tuning.kind).cutoffHz))
         harmonicCount = Int(parameters.harmonicCount.rounded())
         tolerance = parameters.harmonicTolerance
         alphaLow = parameters.timbreLowDBPerOctave
@@ -354,11 +354,7 @@ nonisolated final class DSPHybridBassEngine {
         // harmonics, with no negative fundamental from a tanh tangent.
         var addedTransient = 0.0
         if transientGain > 0 {
-            var enhanced = transient
-            withUnsafeMutablePointer(to: &enhanced) {
-                transientHarmonics.process($0, frames: 1, channels: 1)
-            }
-            addedTransient = (enhanced - transient) * transientGain
+            addedTransient = transientHarmonics.processTransientHarmonic(sample: transient) * transientGain
         }
         generated[index & (generated.count - 1)] = addedTransient + tonal
         synthesizedCount = index + 1
@@ -816,7 +812,7 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
         selectedChannels = mask.indices.filter { mask[$0] }
         guard !selectedChannels.isEmpty else { return nil }
         let tuning = parameters.resolvedCutoff(for: outputKind)
-        guard let highPass = DSPFilterDesign.section(.highPass, frequencyHz: tuning.cutoffHz * 0.7,
+        guard let highPass = DSPFilterDesign.section(.highPass, frequencyHz: tuning.cutoffHz * 0.8,
                                                      sampleRate: format.sampleRate),
               let shelf = DSPFilterDesign.section(.lowShelf, frequencyHz: tuning.cutoffHz, sampleRate: format.sampleRate,
                                                  q: 1, gainDB: parameters.bassGainDB) else { return nil }
@@ -879,12 +875,18 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
     mutating func process(_ samples: UnsafeMutablePointer<Double>, frames: Int, channels: Int) {
         let count = selectedChannels.count
         let delayFrames = dryDelay.count / count
+        let intensity = parameters.intensity
+        let dryDucking = tightensDryBass ? 0.68 : (1.0 / (1.0 + 0.45 * min(intensity, 2.0)))
+        let wetCeiling = 0.32
+
         for frame in 0..<frames {
             let base = frame * channels
             var mid = 0.0
             for index in 0..<count { mid += samples[base + selectedChannels[index]] }
             mid /= Double(count)
-            let generated = engine?.process(mid: mid) ?? 0
+            let rawGenerated = engine?.process(mid: mid) ?? 0
+            let scaledGenerated = wetCeiling * tanh(rawGenerated / wetCeiling)
+
             let slot = dryCursor * count
             for index in 0..<count {
                 let channel = base + selectedChannels[index]
@@ -897,7 +899,8 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
                 } else {
                     delayed = dry
                 }
-                let enhanced = bassShelf[index].process(delayed + generated)
+                let dryWithShelf = bassShelf[index].coefficients != .identity ? bassShelf[index].process(delayed) : delayed
+                let enhanced = dryWithShelf * dryDucking + scaledGenerated
                 samples[channel] = DSPBassPeakControl.mix(original: delayed, enhanced: enhanced, ceiling: peakCeiling) * outputGain
             }
             dryCursor = dryCursor + 1 == delayFrames ? 0 : dryCursor + 1

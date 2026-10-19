@@ -24,20 +24,22 @@ extension MotionTokens {
 }
 
 /// A presentation fraction, rather than a Boolean, owns all intermediate
-/// geometry. Its descendants render that sample directly; another implicit
-/// spring inside them would lag behind or briefly use the target layout.
+/// geometry for the mini-player controls and progress row.
 struct MiniPlayerInterpolatedContent<Content: View>: View, Animatable {
     var fraction: CGFloat
     let clampsFraction: Bool
+    let isolatesGeometryAnimation: Bool
     let content: (CGFloat) -> Content
 
     init(
         _ fraction: CGFloat,
         clampsFraction: Bool = true,
+        isolatesGeometryAnimation: Bool = true,
         @ViewBuilder content: @escaping (CGFloat) -> Content
     ) {
         self.fraction = fraction
         self.clampsFraction = clampsFraction
+        self.isolatesGeometryAnimation = isolatesGeometryAnimation
         self.content = content
     }
 
@@ -46,11 +48,18 @@ struct MiniPlayerInterpolatedContent<Content: View>: View, Animatable {
         set { fraction = newValue }
     }
 
+    @ViewBuilder
     var body: some View {
         // Layout keeps the spring's overshoot; opacity and masks still need a
         // bounded sample. Clamping layout here flattens the entire rebound.
-        content(clampsFraction ? min(1, max(0, fraction)) : fraction)
-            .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
+        let sample = content(clampsFraction ? min(1, max(0, fraction)) : fraction)
+        if isolatesGeometryAnimation {
+            sample.isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
+        } else {
+            // Window Mini Player uses a regular HStack, so its interpolated
+            // contents must receive the same transaction as the outer row.
+            sample
+        }
     }
 }
 

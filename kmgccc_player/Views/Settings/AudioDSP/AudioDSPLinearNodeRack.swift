@@ -26,7 +26,6 @@ struct AudioDSPLinearNodeRack: View {
     @Binding var maximumAttenuationDB: Double
     @Binding var isLimiterEnabled: Bool
     @Binding var limiterCeilingDB: Double
-    @Binding var limiterReleaseMilliseconds: Double
     let equalLoudness: DSPEqualLoudnessStage
     /// False while another device's sound is shown: live volume and
     /// calibration belong to the device now playing.
@@ -215,8 +214,8 @@ struct AudioDSPLinearNodeRack: View {
         let isBypassed = !isLimiterEnabled
         let ceilingMagnitude = abs(limiterCeilingDB).formatted(.number.precision(.fractionLength(1)))
         let ceiling = limiterCeilingDB < -0.05 ? "−\(ceilingMagnitude)" : ceilingMagnitude
-        let release = limiterReleaseMilliseconds.formatted(.number.precision(.fractionLength(0)))
-        let isWarningActive = isLimiterEnabled && isProcessingEnabled && appSession.audioDSPController.limiterWarning.isWarningActive
+        let warning = appSession.audioDSPController.limiterWarning
+        let isWarningActive = isLimiterEnabled && isProcessingEnabled && warning.isWarningActive
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Button {
@@ -236,7 +235,7 @@ struct AudioDSPLinearNodeRack: View {
                             Text(title)
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(isBypassed ? .secondary : .primary)
-                            Text("上限 \(ceiling) dB · 释放 \(release) ms")
+                            Text("上限 \(ceiling) dB")
                                 .font(.caption2.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
@@ -250,11 +249,7 @@ struct AudioDSPLinearNodeRack: View {
                 .accessibilityValue(isLimiterExpanded ? "已展开" : "已收起")
 
                 if isWarningActive {
-                    Text("正在安全限幅，建议降低前置增益以避免压缩失真")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(Color.red)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
+                    DSPLimiterWarningIndicator(reductionDB: warning.lastReductionDB)
                         .transition(.opacity)
                 }
 
@@ -281,15 +276,6 @@ struct AudioDSPLinearNodeRack: View {
                         value: $limiterCeilingDB,
                         range: DSPLimiterConfiguration.ceilingRange,
                         step: 0.1,
-                        onCommit: onCommit
-                    )
-                    DSPRangeSliderRow(
-                        title: "释放",
-                        value: $limiterReleaseMilliseconds,
-                        range: DSPLimiterConfiguration.releaseRange,
-                        step: 10,
-                        unit: "ms",
-                        fractionDigits: 0,
                         onCommit: onCommit
                     )
                 }
@@ -1562,6 +1548,84 @@ private struct DSPRackScrollViewResolver: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 onResolve?(enclosingScrollView, self)
+            }
+        }
+    }
+}
+
+private struct DSPLimiterWarningIndicator: View {
+    let reductionDB: Float
+
+    @State private var isPopoverPresented = false
+    @State private var isAnchorHovered = false
+    @State private var isPopoverHovered = false
+    @State private var dismissTask: Task<Void, Never>?
+
+    private var measuredReduction: String {
+        max(0, reductionDB).formatted(.number.precision(.fractionLength(1)))
+    }
+
+    private var recommendedReduction: String {
+        let roundedUp = (max(0.05, Double(reductionDB)) * 2).rounded(.up) / 2
+        return max(0.5, roundedUp).formatted(.number.precision(.fractionLength(1)))
+    }
+
+    var body: some View {
+        Button {
+            isPopoverPresented.toggle()
+        } label: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.red)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("安全限幅提示")
+        .accessibilityValue("建议将输入增益降低约 \(recommendedReduction) dB")
+        .onHover(perform: anchorHoverChanged)
+        .popover(isPresented: $isPopoverPresented, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("安全限幅")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("最近限幅约 \(measuredReduction) dB")
+                    .font(.system(size: 13))
+                Text("建议将输入增益降低约 \(recommendedReduction) dB")
+                    .font(.system(size: 13, weight: .medium))
+            }
+            .padding(14)
+            .frame(width: 288, alignment: .leading)
+            .appPopupAppearance(style: .appTip)
+            .onHover(perform: popoverHoverChanged)
+        }
+    }
+
+    private func anchorHoverChanged(_ hovering: Bool) {
+        isAnchorHovered = hovering
+        if hovering {
+            dismissTask?.cancel()
+            isPopoverPresented = true
+        } else {
+            scheduleDismiss()
+        }
+    }
+
+    private func popoverHoverChanged(_ hovering: Bool) {
+        isPopoverHovered = hovering
+        if hovering {
+            dismissTask?.cancel()
+        } else {
+            scheduleDismiss()
+        }
+    }
+
+    private func scheduleDismiss() {
+        dismissTask?.cancel()
+        dismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            if !isAnchorHovered && !isPopoverHovered {
+                isPopoverPresented = false
             }
         }
     }

@@ -55,23 +55,21 @@ struct AudioProcessingGlobalsSettingsView: View {
     }
 
     private var measurementContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("响度测量任务")
-                .settingsRowLabelStyle()
+        VStack(alignment: .leading, spacing: 12) {
+            let info = currentAdjustmentInfo
+            LoudnessAdjustmentMeter(
+                gainDB: info.gainDB,
+                statusText: info.text,
+                accentColor: themeStore.accentColor,
+                primaryColor: themeStore.appForegroundPalette.primaryColor
+            )
 
             if let context = activeLocalTrack {
-                let service = context.session.loudnessService
-                let state = service.measurementState(for: context.track.id)
-                statusRow("当前歌曲", measurementText(state, record: service.record(for: context.track.id)))
-                statusRow("播放中", applicationText(session: context.session, state: state))
+                analyzeButtons(context)
             }
 
             if let session = appSession.activeLibraryBinding.activeSession {
                 libraryContent(session)
-            }
-
-            if let context = activeLocalTrack {
-                analyzeButtons(context)
             }
         }
     }
@@ -194,57 +192,61 @@ struct AudioProcessingGlobalsSettingsView: View {
         }
     }
 
-    private func statusRow(_ title: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(title).settingsRowLabelStyle()
-            Spacer(minLength: 8)
-            Text(value)
-                .settingsDescriptionStyle()
-                .monospacedDigit()
-                .multilineTextAlignment(.trailing)
+    // MARK: - Current Track Loudness Adjustment
+
+    private var currentAdjustmentInfo: (gainDB: Double?, text: String) {
+        guard let context = activeLocalTrack else {
+            return (nil, "未在播放")
         }
-    }
+        let service = context.session.loudnessService
+        let state = service.measurementState(for: context.track.id)
 
-    // MARK: - Status text
-
-    private func measurementText(_ state: LoudnessTrackMeasurementState, record: LoudnessTrackRecord?) -> String {
         switch state {
         case .unmeasured:
-            return "未测量"
+            return (nil, "未测量")
         case .waiting(let priority):
             if priority == .idleBatch, let reason = appSession.backgroundWorkScheduler.idleWaitReason {
-                return reason.message
+                return (nil, reason.message)
             }
-            return "排队测量"
+            return (nil, "排队测量")
         case .measuring(let phase, let fraction):
-            if let fraction { return "\(phase.title) \(Int((fraction * 100).rounded()))%" }
-            return phase.title
-        case .paused:
-            return "已暂停"
-        case .measured:
-            guard let measurement = record?.measurement, let lufs = measurement.integratedLUFS else { return "已测量" }
-            var text = "\(lufs.formatted(.number.precision(.fractionLength(1)))) LUFS"
-            if let peak = measurement.truePeakDBTP {
-                text += " · 峰值 \(peak.formatted(.number.precision(.fractionLength(1)))) dBTP"
+            if let fraction {
+                return (nil, "\(phase.title) \(Int((fraction * 100).rounded()))%")
             }
-            return text
+            return (nil, phase.title)
+        case .paused:
+            return (nil, "已暂停")
         case .failed(let message):
-            return message
-        }
-    }
+            return (nil, message)
+        case .measured:
+            let plan = context.session.audioNormalizationPlan
+            let gain: Double
+            if let audible = context.session.audioNormalizationAudibleGainDB {
+                gain = audible
+            } else if let planGain = plan?.decision.gainDB {
+                gain = planGain
+            } else if let record = service.record(for: context.track.id),
+                      let measurement = record.measurement,
+                      measurement.isUsable {
+                let decision = LoudnessGainSelector.trackGain(
+                    configuration: controller.configuration.loudness,
+                    measurement: measurement
+                )
+                gain = decision.gainDB
+            } else {
+                return (0, "0.0 dB")
+            }
 
-    private func applicationText(session: LibrarySession, state: LoudnessTrackMeasurementState) -> String {
-        guard let plan = session.audioNormalizationPlan else { return "保持原音量" }
-        let gain = (session.audioNormalizationAudibleGainDB ?? plan.decision.gainDB)
-            .formatted(.number.precision(.fractionLength(1)).sign(strategy: .always()))
-        if plan.decision.source == LoudnessGainDecision.Source.album {
-            return "专辑增益 \(gain) dB"
+            if gain < -0.05 {
+                let formatted = abs(gain).formatted(.number.precision(.fractionLength(1)))
+                return (gain, "衰减 \(formatted) dB")
+            } else if gain > 0.05 {
+                let formatted = gain.formatted(.number.precision(.fractionLength(1)))
+                return (gain, "增加 \(formatted) dB")
+            } else {
+                return (0, "0.0 dB")
+            }
         }
-        if plan.decision.isMeasured {
-            return plan.awaitingAlbum ? "单曲增益 \(gain) dB，专辑增益准备中" : "单曲增益 \(gain) dB"
-        }
-        if case .measured = state { return "保持原音量，下次播放时生效" }
-        return "保持原音量"
     }
 
     /// Only states that the bar cannot show; nil when the scan is finished.
@@ -333,7 +335,7 @@ private struct LoudnessProgressBar: View {
     }
 }
 
-/// Target loudness with a detent at the recommended −18 LUFS, whose mark
+/// Target loudness with a detent at the recommended −14 LUFS, whose mark
 /// stays lit under the slider.
 private struct LoudnessTargetSliderRow: View {
     @Binding var value: Double
@@ -403,5 +405,79 @@ private struct LoudnessTargetSliderRow: View {
                 if next != value { value = next }
             }
         )
+    }
+}
+
+/// Visual bipolar meter showing the current track's loudness attenuation or boost.
+private struct LoudnessAdjustmentMeter: View {
+    let gainDB: Double?
+    let statusText: String
+    let accentColor: Color
+    let primaryColor: Color
+
+    private let meterSpan: Double = 16.0
+    private let barHeight: CGFloat = 8
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("当前调整")
+                    .settingsRowLabelStyle()
+                Spacer(minLength: 8)
+                Text(statusText)
+                    .settingsDescriptionStyle()
+                    .monospacedDigit()
+            }
+
+            VStack(spacing: 4) {
+                GeometryReader { geometry in
+                    let width = max(1, geometry.size.width)
+                    let midX = width * 0.5
+                    let clamped = gainDB.map { min(max($0, -meterSpan), meterSpan) }
+
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(primaryColor.opacity(0.12))
+
+                        if let gain = clamped, abs(gain) > 0.05 {
+                            let fraction = abs(gain) / meterSpan
+                            let fillWidth = max(2, (width * 0.5) * fraction)
+                            if gain < 0 {
+                                Capsule()
+                                    .fill(accentColor.opacity(0.85))
+                                    .frame(width: fillWidth)
+                                    .offset(x: midX - fillWidth)
+                            } else {
+                                Capsule()
+                                    .fill(accentColor)
+                                    .frame(width: fillWidth)
+                                    .offset(x: midX)
+                            }
+                        }
+
+                        Capsule()
+                            .fill(primaryColor.opacity(0.35))
+                            .frame(width: 2, height: barHeight + 4)
+                            .position(x: midX, y: barHeight * 0.5)
+                    }
+                    .frame(height: barHeight)
+                    .motionAnimation(.control, value: gainDB)
+                }
+                .frame(height: barHeight + 4)
+
+                HStack {
+                    Text("衰减")
+                    Spacer(minLength: 0)
+                    Text("0 dB")
+                    Spacer(minLength: 0)
+                    Text("增加")
+                }
+                .font(.caption2)
+                .settingsDescriptionStyle()
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("当前响度调整")
+        .accessibilityValue(statusText)
     }
 }
