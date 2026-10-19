@@ -1,4 +1,5 @@
 import AVFoundation
+import Accelerate
 import Foundation
 
 /// Pipeline-confined runtime for the currently supported DSP node set.
@@ -6,56 +7,156 @@ import Foundation
 /// `process(_:lookahead:)` advances source state once and previews only the
 /// future frames required to return PCM at its original media time.
 nonisolated final class AudioDSPProcessor: @unchecked Sendable {
-    private struct RuntimeFilter {
-        let coefficients: DSPBiquadCoefficients
-        var state1: [Double]
-        var state2: [Double]
+    fileprivate struct RuntimeFilter {
+        static let defaultRampFrames = 128
 
-        mutating func process(_ input: Double, channel: Int) -> Double {
-            let output = coefficients.b0 * input + state1[channel]
-            state1[channel] = coefficients.b1 * input
-                - coefficients.a1 * output
-                + state2[channel]
-            state2[channel] = coefficients.b2 * input - coefficients.a2 * output
-            return output
+        let bandIndex: Int
+        let coefficients: DSPBiquadCoefficients
+        /// Coefficient glide length used when this filter takes over from a
+        /// previous processor's state.
+        let rampLength: Int
+        var delay: [Double]
+        var rampStart: DSPBiquadCoefficients?
+        var rampRemaining = 0
+
+        init(bandIndex: Int, coefficients: DSPBiquadCoefficients, rampLength: Int = Self.defaultRampFrames, delay: [Double]) {
+            self.bandIndex = bandIndex
+            self.coefficients = coefficients
+            self.rampLength = max(1, rampLength)
+            self.delay = delay
+        }
+
+        /// An identity filter with settled state is exactly a pass-through.
+        var isIdle: Bool {
+            rampRemaining == 0 && coefficients.isIdentity && delay.allSatisfy { $0 == 0 }
+        }
+
+        mutating func processBlock(_ samples: inout [Double], frames: Int, channels: Int, mask: [Bool]) {
+            guard !isIdle else { return }
+            let target = coefficients
+            let start = rampStart ?? target
+            let remaining = rampRemaining
+            let length = rampLength
+            delay.withUnsafeMutableBufferPointer { state in
+                samples.withUnsafeMutableBufferPointer { buffer in
+                    for channel in 0..<channels where mask[channel] {
+                        var z1 = state[channel * 2]
+                        var z2 = state[channel * 2 + 1]
+                        let rampFrames = min(frames, remaining)
+                        for frame in 0..<rampFrames {
+                            let c = Self.interpolated(start, target, remaining: remaining - frame, length: length)
+                            let offset = frame * channels + channel
+                            let input = buffer[offset]
+                            let output = c.b0 * input + z1
+                            z1 = c.b1 * input - c.a1 * output + z2
+                            z2 = c.b2 * input - c.a2 * output
+                            buffer[offset] = output
+                        }
+                        for frame in rampFrames..<frames {
+                            let offset = frame * channels + channel
+                            let input = buffer[offset]
+                            let output = target.b0 * input + z1
+                            z1 = target.b1 * input - target.a1 * output + z2
+                            z2 = target.b2 * input - target.a2 * output
+                            buffer[offset] = output
+                        }
+                        state[channel * 2] = z1
+                        state[channel * 2 + 1] = z2
+                    }
+                }
+            }
+            rampRemaining = max(0, remaining - frames)
+            if rampRemaining == 0 { rampStart = nil }
         }
 
         mutating func reset() {
-            for index in state1.indices { state1[index] = 0 }
-            for index in state2.indices { state2[index] = 0 }
+            for index in delay.indices { delay[index] = 0 }
+            rampStart = nil
+            rampRemaining = 0
+        }
+
+        private static func interpolated(
+            _ start: DSPBiquadCoefficients,
+            _ end: DSPBiquadCoefficients,
+            remaining: Int,
+            length: Int
+        ) -> DSPBiquadCoefficients {
+            guard remaining > 0, length > 0 else { return end }
+            let t = Double(length + 1 - remaining) / Double(length)
+            return DSPBiquadCoefficients(b0: start.b0 + (end.b0 - start.b0) * t,
+                b1: start.b1 + (end.b1 - start.b1) * t, b2: start.b2 + (end.b2 - start.b2) * t,
+                a1: start.a1 + (end.a1 - start.a1) * t, a2: start.a2 + (end.a2 - start.a2) * t)
+        }
+
+        mutating func restore(from source: RuntimeFilter) {
+            delay = source.delay
+            if coefficients == source.coefficients {
+                rampStart = source.rampStart
+                rampRemaining = source.rampRemaining
+            } else {
+                rampStart = Self.interpolated(source.rampStart ?? source.coefficients,
+                    source.coefficients, remaining: source.rampRemaining, length: source.rampLength)
+                rampRemaining = rampLength
+            }
+        }
+
+        /// A filter that did not exist before glides in from a flat response.
+        mutating func rampFromIdentity() {
+            guard !coefficients.isIdentity else { return }
+            rampStart = .identity
+            rampRemaining = rampLength
         }
     }
 
-    private struct RuntimeNode {
+    fileprivate struct RuntimeNode {
         let nodeID: UUID
+        var typeID: String = ""
+        var configurationParameters: [String: DSPJSONValue] = [:]
         let channelMask: [Bool]
         let contributesToHeadroom: Bool
         var staticPeakResponseDB: Double
+        /// Broadband gain the node adds to its selected channels (its output
+        /// trim). Level-referenced nodes downstream cancel it.
+        var levelOffsetDB: Double = 0
         var filters: [RuntimeFilter]
         var effect: RuntimeEffect?
         var flatGain: Double?
-        var stereoWidthKernel: DSPStereoWidthKernel?
-        var virtualBassKernel: DSPVirtualBassKernel?
         var tubeKernel: DSPTubeKernel?
+        var blockKernel: DSPEffectKernel?
+        var limiterKernel: DSPPeakLimiterKernel?
         var scriptRuntime: DSPScriptRuntime?
         var scriptLatencyFrames: Int = 0
         var scriptEstimatedOperationsPerSecond: Double = 0
+
+        /// Algorithmic delay this node adds: the fixed 64 frames of the
+        /// oversampled tube, a block kernel's own, the limiter's lookahead,
+        /// or a script's.
+        var latencyFrames: Int {
+            if let limiterKernel { return limiterKernel.latencyFrames }
+            if let blockKernel { return blockKernel.latencyFrames }
+            return (effect == .tube ? 64 : 0) + scriptLatencyFrames
+        }
     }
 
-    private enum RuntimeEffect {
+    fileprivate enum RuntimeEffect: Equatable {
         case flatGain
-        case stereoWidth
-        case virtualBass
         case tube
+        case block
+        case limiter
         case script
 
-        var requiresLookahead: Bool {
+        /// Effects whose output peak the static headroom cannot bound.
+        var isNonlinearOrDelayed: Bool {
             switch self {
-            case .virtualBass, .tube: true
-            case .flatGain, .stereoWidth, .script: false
+            case .tube, .block, .limiter, .script: true
+            case .flatGain: false
             }
         }
     }
+
+    /// Runtime type of the safety limiter; like the equal-loudness stage it
+    /// is never a member of `AudioDSPConfiguration.nodes`.
+    static let limiterTypeID = "limiter"
 
     let format: DSPAudioFormat
     private let preparationDiagnostics: [DSPDiagnostic]
@@ -72,26 +173,160 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
 
     private let inputGain: Double
     private let outputGain: Double
+    private let configuration: AudioDSPConfiguration
     private var nodes: [RuntimeNode]
-    private var previewNodes: [RuntimeNode]
+    /// Throwaway copy of the chain used only to drain zero padding past a
+    /// stream end, a time gap or a format boundary. Created on first need.
+    private var previewNodes: [RuntimeNode]?
+    /// Source frames past the start of the next expected block that the live
+    /// chain has already consumed. The live state runs ahead by the real
+    /// lookahead it was given, so each source frame passes through the chain
+    /// exactly once; only zero padding is ever processed on a copy.
+    private var aheadFrames = 0
     private var frameScratch: [Double] = []
-    private var futureInputScratch: [Float] = []
+    private var sampleScratch: [Double] = []
+    private var paddingScratch: [Float] = []
+    private var paddingOutputScratch: [Float] = []
+    private var warmupScratch: [Float] = []
+
+    var processingNodeIDs: [UUID] { nodes.map(\.nodeID) }
+    let idleProcessingNodeIDs: [UUID]
+    var hasProcessingFault: Bool { outputFault != nil }
+    var faultedProcessingNodeIDs: Set<UUID> { Set(scriptFaults.keys) }
+
+    /// Immutable state at a block start, including how far the chain had run
+    /// ahead. Large script delay lines use history replay instead of imposing
+    /// a multi-megabyte copy on every playback block.
+    struct StateSnapshot: @unchecked Sendable {
+        fileprivate let configuration: AudioDSPConfiguration
+        fileprivate let nodes: [RuntimeNode]
+        fileprivate let format: DSPAudioFormat
+        fileprivate let aheadFrames: Int
+
+        func matches(_ candidate: AudioDSPConfiguration) -> Bool {
+            let old = configuration.enabled ? configuration.processingNodes.filter(\.enabled) : []
+            let new = candidate.enabled ? candidate.processingNodes.filter(\.enabled) : []
+            return old.count == new.count && zip(old, new).allSatisfy {
+                $0.nodeID == $1.nodeID && $0.typeID == $1.typeID
+                    && $0.algorithmVersion == $1.algorithmVersion
+                    && $0.quality == $1.quality && $0.channelPolicy == $1.channelPolicy
+                    && ($0.typeID != DSPNodeConfiguration.scriptTypeID || $0.parameters == $1.parameters)
+            }
+        }
+    }
+
+    /// Snapshots are taken every playback block. A copy-on-write snapshot
+    /// makes the next block copy every state it touches, so chains with
+    /// large or reference-held state replay raw history instead.
+    func stateSnapshot() -> StateSnapshot? {
+        let scriptBytes = nodes.reduce(0) { $0 + ($1.scriptRuntime?.program.stateBytes ?? 0) }
+        guard scriptBytes <= 64 * 1_024 else { return nil }
+        let kernelBytes = nodes.reduce(0) { $0 + ($1.blockKernel?.stateBytes ?? 0) }
+        guard kernelBytes <= 512 * 1_024,
+              !nodes.contains(where: { $0.blockKernel?.keepsReferenceState == true }) else { return nil }
+        return StateSnapshot(configuration: configuration, nodes: nodes, format: format, aheadFrames: aheadFrames)
+    }
+
+    /// Parameter-channel handover. Every node that still exists keeps its
+    /// filter, oversampler and delay state; changed coefficients glide from
+    /// the old values and newly switched-on filters glide in from a flat
+    /// response. A script whose values changed starts fresh, because its
+    /// prepare block gives no continuity guarantee; the renderer's short
+    /// output crossfade covers that node.
+    func inheritState(from source: AudioDSPProcessor) {
+        guard source.format == format else { return }
+        // The inherited state already holds the source's run-ahead frames.
+        // A chain with less latency re-reads the excess; the renderer's
+        // output crossfade covers that short overlap.
+        aheadFrames = min(source.aheadFrames, processingLatencyFrames)
+        for index in nodes.indices {
+            guard let old = source.nodes.first(where: {
+                $0.nodeID == nodes[index].nodeID && $0.typeID == nodes[index].typeID
+            }), old.channelMask == nodes[index].channelMask else {
+                for filterIndex in nodes[index].filters.indices {
+                    nodes[index].filters[filterIndex].rampFromIdentity()
+                }
+                continue
+            }
+            for filterIndex in nodes[index].filters.indices {
+                if let filter = old.filters.first(where: { $0.bandIndex == nodes[index].filters[filterIndex].bandIndex }) {
+                    nodes[index].filters[filterIndex].restore(from: filter)
+                } else {
+                    nodes[index].filters[filterIndex].rampFromIdentity()
+                }
+            }
+            if let kernel = old.blockKernel { nodes[index].blockKernel?.copyState(from: kernel) }
+            if let tube = old.tubeKernel { nodes[index].tubeKernel?.copyState(from: tube) }
+            if let limiter = old.limiterKernel { nodes[index].limiterKernel?.copyState(from: limiter) }
+            if let script = old.scriptRuntime,
+               old.configurationParameters == nodes[index].configurationParameters {
+                nodes[index].scriptRuntime?.copyState(from: script)
+            }
+        }
+    }
+
+    /// True when every prepared node is a settled pass-through.
+    private static func hasAudibleWork(_ nodes: [RuntimeNode]) -> Bool {
+        nodes.contains { node in
+            node.effect != nil || node.filters.contains { !$0.coefficients.isIdentity }
+        }
+    }
+
+    @discardableResult
+    func restoreState(_ snapshot: StateSnapshot) -> Bool {
+        guard snapshot.format == format, snapshot.matches(configuration) else { return false }
+        aheadFrames = min(snapshot.aheadFrames, processingLatencyFrames)
+        for index in nodes.indices {
+            guard let old = snapshot.nodes.first(where: { $0.nodeID == nodes[index].nodeID }),
+                  old.channelMask == nodes[index].channelMask else { continue }
+            for filterIndex in nodes[index].filters.indices {
+                if let filter = old.filters.first(where: { $0.bandIndex == nodes[index].filters[filterIndex].bandIndex }) {
+                    nodes[index].filters[filterIndex].restore(from: filter)
+                }
+            }
+            if let kernel = old.blockKernel { nodes[index].blockKernel?.copyState(from: kernel) }
+            if let tube = old.tubeKernel { nodes[index].tubeKernel?.copyState(from: tube) }
+            if let limiter = old.limiterKernel { nodes[index].limiterKernel?.copyState(from: limiter) }
+            if let script = old.scriptRuntime { nodes[index].scriptRuntime?.copyState(from: script) }
+        }
+        return true
+    }
+
+    var needsWarmup: Bool {
+        nodes.contains {
+            !$0.filters.isEmpty || $0.blockKernel != nil || $0.tubeKernel != nil
+                || $0.limiterKernel != nil || $0.scriptRuntime != nil
+        }
+    }
 
     init(
         configuration: AudioDSPConfiguration,
         format: DSPAudioFormat,
-        context: DSPEqualLoudnessContext = .appOnly
+        context: DSPEqualLoudnessContext = .inactive
     ) {
         self.format = format
+        self.configuration = configuration
 
         var preparedNodes: [RuntimeNode] = []
+        var idleNodeIDs: [UUID] = []
         var warnings: [DSPDiagnostic] = []
-        preparedNodes.reserveCapacity(configuration.nodes.count)
+        let normalizedOutputTrimDB = Self.normalizedTrim(
+            configuration.outputTrimDB,
+            fieldPath: "outputTrimDB",
+            warnings: &warnings
+        )
+        let limiter = configuration.limiter
+        let ceilingDB = limiter.ceilingDB.isFinite
+            ? min(max(limiter.ceilingDB, DSPLimiterConfiguration.ceilingRange.lowerBound),
+                  DSPLimiterConfiguration.ceilingRange.upperBound)
+            : DSPLimiterConfiguration.defaultCeilingDB
+        let bassOutputCeiling: Double? = limiter.enabled ? pow(10, (ceilingDB - normalizedOutputTrimDB) / 20) : nil
+        preparedNodes.reserveCapacity(configuration.nodes.count + 1)
         var scriptCount = 0
         var scriptOperationsPerSecond = 0.0
 
         if configuration.enabled {
-            for node in configuration.nodes where node.enabled {
+            for node in configuration.processingNodes where node.enabled {
                 guard node.algorithmVersion == 1 else {
                     warnings.append(DSPDiagnostic(
                         code: "unsupportedNodeVersion",
@@ -102,9 +337,12 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                     ))
                     continue
                 }
+                let nodeWarningCount = warnings.count
 
                 if node.typeID == DSPNodeConfiguration.scriptTypeID {
-                    if let preparedNode = Self.prepareScriptNode(node, format: format, warnings: &warnings) {
+                    if var preparedNode = Self.prepareScriptNode(node, format: format, warnings: &warnings) {
+                        preparedNode.typeID = node.typeID
+                        preparedNode.configurationParameters = node.parameters
                         let totalCost = scriptOperationsPerSecond + preparedNode.scriptEstimatedOperationsPerSecond
                         if scriptCount < 4, totalCost <= DSPScriptCompiler.maximumChainWeightedOperationsPerSecond {
                             preparedNodes.append(preparedNode)
@@ -119,48 +357,37 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                     continue
                 }
 
-                if Self.isNativeEffect(node.typeID) {
-                    if let preparedNode = Self.prepareNativeNode(
+                if DSPNodeConfiguration.nativeEffectTypeIDs.contains(node.typeID) {
+                    if var preparedNode = Self.prepareNativeNode(
                         node,
                         format: format,
+                        context: context,
+                        bassOutputCeiling: bassOutputCeiling,
                         warnings: &warnings
                     ) {
+                        preparedNode.typeID = node.typeID
+                        preparedNode.configurationParameters = node.parameters
                         preparedNodes.append(preparedNode)
+                    } else if warnings.count == nodeWarningCount {
+                        // prepareNativeNode has validated the format, layout
+                        // and parameters and returned an exact pass-through.
+                        idleNodeIDs.append(node.nodeID)
                     }
                     continue
                 }
 
+                // The channel scope follows the source: a scope it cannot
+                // honour widens to every channel instead of dropping the node.
+                let policy = DSPNodeConfiguration.effectiveChannelPolicy(
+                    forTypeID: node.typeID,
+                    requested: node.channelPolicy,
+                    format: format
+                )
                 let channelMask: [Bool]
-                switch node.channelPolicy {
-                case "allChannels":
+                if policy == "fullRange", let fullRange = format.fullRangeChannelMask {
+                    channelMask = fullRange
+                } else {
                     channelMask = Array(repeating: true, count: format.channelCount)
-                case "fullRange":
-                    guard format.layoutIsKnown,
-                          let labels = format.channelLabels,
-                          labels.count == format.channelCount else {
-                        warnings.append(DSPDiagnostic(
-                            code: "unknownChannelLayout",
-                            message: "The effect was bypassed because this source has no complete channel map.",
-                            fieldPath: "nodes[\(node.nodeID.uuidString)].channelPolicy",
-                            nodeID: node.nodeID,
-                            retryable: false
-                        ))
-                        continue
-                    }
-                    channelMask = labels.map {
-                        $0 != UInt32(kAudioChannelLabel_LFEScreen)
-                            && $0 != UInt32(kAudioChannelLabel_LFE2)
-                            && $0 != UInt32(kAudioChannelLabel_LFE3)
-                    }
-                default:
-                    warnings.append(DSPDiagnostic(
-                        code: "unsupportedChannelPolicy",
-                        message: "The effect was bypassed because its channel policy is not supported.",
-                        fieldPath: "nodes[\(node.nodeID.uuidString)].channelPolicy",
-                        nodeID: node.nodeID,
-                        retryable: false
-                    ))
-                    continue
                 }
 
                 let bands: [DSPParametricEQBand]
@@ -182,19 +409,10 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                     contributesToHeadroom = true
 
                 case DSPNodeConfiguration.equalLoudnessTypeID:
-                    guard let parameters = node.equalLoudnessParameters,
-                          let shelfBands = DSPEqualLoudnessMath.bands(node: node, context: context) else {
-                        warnings.append(DSPDiagnostic(
-                            code: "invalidEqualLoudnessParameter",
-                            message: "The equal-loudness node has unsupported or incomplete parameters.",
-                            fieldPath: "nodes[\(node.nodeID.uuidString)].parameters",
-                            nodeID: node.nodeID,
-                            retryable: false
-                        ))
-                        continue
-                    }
+                    let stage = configuration.equalLoudness
+                    guard let shelfBands = DSPEqualLoudnessMath.bands(stage: stage, context: context) else { continue }
                     bands = shelfBands
-                    contributesToHeadroom = parameters.headroomMode == .automatic
+                    contributesToHeadroom = true
 
                 default:
                     warnings.append(DSPDiagnostic(
@@ -207,12 +425,19 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                     continue
                 }
 
+                // Equal-loudness shelves stay in the chain at 0 dB so a volume
+                // change glides their coefficients instead of adding or
+                // removing a filter. A settled flat shelf costs nothing.
+                let isEqualLoudness = node.typeID == DSPNodeConfiguration.equalLoudnessTypeID
+                let rampLength = isEqualLoudness
+                    ? max(RuntimeFilter.defaultRampFrames, Int((format.sampleRate * 0.08).rounded()))
+                    : RuntimeFilter.defaultRampFrames
                 var filters: [RuntimeFilter] = []
                 filters.reserveCapacity(bands.count)
-                for (bandIndex, band) in bands.enumerated() where band.enabled {
-                    let parameterPath = node.typeID == DSPNodeConfiguration.parametricEQTypeID
-                        ? "nodes[\(node.nodeID.uuidString)].parameters.bands[\(bandIndex)]"
-                        : "nodes[\(node.nodeID.uuidString)].parameters"
+                for (bandIndex, band) in bands.enumerated() where band.enabled || isEqualLoudness {
+                    let parameterPath = isEqualLoudness
+                        ? "equalLoudness.parameters"
+                        : "nodes[\(node.nodeID.uuidString)].parameters.bands[\(bandIndex)]"
                     guard Self.isFinite(band) else {
                         warnings.append(DSPDiagnostic(
                             code: "invalidEQParameter",
@@ -247,48 +472,62 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                         ))
                         continue
                     }
-                    guard !coefficients.isIdentity else { continue }
+                    guard !coefficients.isIdentity || isEqualLoudness else { continue }
                     filters.append(RuntimeFilter(
+                        bandIndex: bandIndex,
                         coefficients: coefficients,
-                        state1: Array(repeating: 0, count: format.channelCount),
-                        state2: Array(repeating: 0, count: format.channelCount)
+                        rampLength: rampLength,
+                        delay: Array(repeating: 0, count: format.channelCount * 2)
                     ))
                 }
 
                 if !filters.isEmpty, channelMask.contains(true) {
                     preparedNodes.append(RuntimeNode(
                         nodeID: node.nodeID,
+                        typeID: node.typeID,
+                        configurationParameters: node.parameters,
                         channelMask: channelMask,
                         contributesToHeadroom: contributesToHeadroom,
                         staticPeakResponseDB: 0,
                         filters: filters,
                         effect: nil,
                         flatGain: nil,
-                        stereoWidthKernel: nil,
-                        virtualBassKernel: nil,
                         tubeKernel: nil
                     ))
+                } else if filters.isEmpty, channelMask.contains(true), warnings.count == nodeWarningCount {
+                    idleNodeIDs.append(node.nodeID)
                 }
             }
         }
 
-        // Preview executes the entire prepared chain for its combined latency.
-        // Account for that work as well as the source-frame VM cost. A format
-        // change can invalidate a previously valid chain; isolate scripts from
-        // the end until the remaining prepared chain fits the nominal budget.
+        // The chain runs ahead of its output, so each source frame is
+        // processed once and latency adds no renderer work. A format change
+        // can still invalidate a previously valid chain: isolate scripts from
+        // the end until the remaining chain fits the cost and lookahead budgets.
+        let latencyBudget = RendererDSPLookahead.maximumFrames(sampleRate: format.sampleRate)
         while true {
             let latency = preparedNodes.reduce(0) { total, node in
-                total + (node.effect?.requiresLookahead == true ? 64 : 0) + node.scriptLatencyFrames
-            }
+                total + node.latencyFrames
+            } + (configuration.limiter.enabled ? DSPPeakLimiterKernel.lookaheadFrames(sampleRate: format.sampleRate) : 0)
             let baseCost = preparedNodes.reduce(0.0) { $0 + $1.scriptEstimatedOperationsPerSecond }
             let cost = DSPScriptCompiler.estimatedRendererOperationsPerSecond(
                 baseOperationsPerSecond: baseCost, latencyFrames: latency)
-            guard cost > DSPScriptCompiler.maximumChainWeightedOperationsPerSecond,
-                  let index = preparedNodes.lastIndex(where: { $0.scriptRuntime != nil }) else { break }
+            let overCost = cost > DSPScriptCompiler.maximumChainWeightedOperationsPerSecond
+            let overLatency = latency > latencyBudget
+            guard overCost || overLatency,
+                  let index = preparedNodes.lastIndex(where: { node in
+                      node.scriptRuntime != nil || (overLatency && node.latencyFrames > 0)
+                  }) else { break }
             let node = preparedNodes.remove(at: index)
-            warnings.append(DSPDiagnostic(code: "dsp.scriptBudgetExceeded",
-                message: "The script was bypassed because combined latency preview exceeds the renderer processing budget.",
-                fieldPath: "nodes[\(node.nodeID.uuidString)].parameters.source", nodeID: node.nodeID))
+            if node.scriptRuntime != nil {
+                warnings.append(DSPDiagnostic(code: "dsp.scriptBudgetExceeded",
+                    message: "The script was bypassed because the chain exceeds the renderer processing or lookahead budget.",
+                    fieldPath: "nodes[\(node.nodeID.uuidString)].parameters.source", nodeID: node.nodeID))
+            } else {
+                warnings.append(DSPDiagnostic(code: "dsp.latencyBudgetExceeded",
+                    message: "The effect was bypassed because the chain exceeds the renderer lookahead budget.",
+                    fieldPath: "nodes[\(node.nodeID.uuidString)]", nodeID: node.nodeID))
+            }
         }
 
         let normalizedInputTrimDB = Self.normalizedTrim(
@@ -296,41 +535,37 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             fieldPath: "inputTrimDB",
             warnings: &warnings
         )
-        let normalizedOutputTrimDB = Self.normalizedTrim(
-            configuration.outputTrimDB,
-            fieldPath: "outputTrimDB",
-            warnings: &warnings
-        )
-        let marginDB: Double
-        if configuration.headroom.marginDB.isFinite {
-            marginDB = min(max(0, configuration.headroom.marginDB), 12)
-            if abs(marginDB - configuration.headroom.marginDB) > 1e-9 {
+        let attenuationRange = DSPHeadroomConfiguration.maximumAttenuationRange
+        let requestedMaximumDB = configuration.headroom.maximumAttenuationDB
+        let maximumAttenuationDB: Double
+        if requestedMaximumDB.isFinite {
+            maximumAttenuationDB = min(max(attenuationRange.lowerBound, requestedMaximumDB), attenuationRange.upperBound)
+            if abs(maximumAttenuationDB - requestedMaximumDB) > 1e-9 {
                 warnings.append(DSPDiagnostic(
-                    code: "headroomMarginNormalized",
-                    message: "The headroom margin was bounded to its supported range.",
-                    fieldPath: "headroom.marginDB",
+                    code: "headroomMaximumNormalized",
+                    message: "The maximum headroom attenuation was bounded to its supported range.",
+                    fieldPath: "headroom.maximumAttenuationDB",
                     retryable: false
                 ))
             }
         } else {
-            marginDB = 0
+            maximumAttenuationDB = DSPHeadroomConfiguration.defaultMaximumAttenuationDB
             warnings.append(DSPDiagnostic(
-                code: "invalidHeadroomMargin",
-                message: "The non-finite headroom margin was ignored.",
-                fieldPath: "headroom.marginDB",
+                code: "invalidHeadroomMaximum",
+                message: "The non-finite maximum headroom attenuation was replaced by the default.",
+                fieldPath: "headroom.maximumAttenuationDB",
                 retryable: false
             ))
         }
-        let hasHeadroomNodeWork = preparedNodes.contains(where: \.contributesToHeadroom)
-        let hasTrimWork = abs(normalizedInputTrimDB) > 1e-12
-            || abs(normalizedOutputTrimDB) > 1e-12
-        let hasHeadroomWork = hasHeadroomNodeWork || hasTrimWork
+        let hasHeadroomWork = preparedNodes.contains { node in
+            node.contributesToHeadroom
+                && (node.effect != nil || node.filters.contains { !$0.coefficients.isIdentity })
+        }
         var numericPreparationFailed = false
         let automaticHeadroomDB: Double
         if configuration.enabled,
            hasHeadroomWork,
-           configuration.headroom.mode == .automatic,
-            marginDB.isFinite {
+           configuration.headroom.mode == .automatic {
             let pathPeakDB = Self.maximumPathPeakResponseDB(
                 configuration: configuration,
                 preparedNodes: preparedNodes,
@@ -338,9 +573,12 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                 sampleRate: format.sampleRate,
                 context: context
             )
-            let estimatedPeakDB = pathPeakDB + normalizedInputTrimDB + normalizedOutputTrimDB
+            // Headroom answers only the boost the stages add. A lowered input
+            // already leaves room; raised input and output gains are the
+            // listener's chosen level and are never cancelled here.
+            let estimatedPeakDB = pathPeakDB + min(0, normalizedInputTrimDB)
             if estimatedPeakDB.isFinite {
-                automaticHeadroomDB = -max(0, estimatedPeakDB) - marginDB
+                automaticHeadroomDB = -min(max(0, estimatedPeakDB), maximumAttenuationDB)
             } else {
                 automaticHeadroomDB = 0
                 numericPreparationFailed = true
@@ -382,28 +620,64 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         } else {
             preparedOutputGain = 1
         }
+        if configuration.enabled, !numericPreparationFailed {
+            Self.applyProgramLevelReference(
+                to: &preparedNodes,
+                chainGainDB: normalizedInputTrimDB + automaticHeadroomDB,
+                channelCount: format.channelCount
+            )
+        }
+        // The limiter guards a chain that does something; a pass-through
+        // chain keeps the source untouched. It runs before the output gain
+        // with its ceiling divided by that gain, which equals limiting the
+        // final output and keeps the rack order: nodes, equal loudness,
+        // limiter, output.
+        let hasProcessingWork = Self.hasAudibleWork(preparedNodes)
+            || abs(preparedInputGain - 1) >= 1e-12
+            || abs(preparedOutputGain - 1) >= 1e-12
+        if configuration.enabled,
+           limiter.enabled,
+           hasProcessingWork,
+           !numericPreparationFailed,
+           let kernel = DSPPeakLimiterKernel(
+               channelCount: format.channelCount,
+               sampleRate: format.sampleRate,
+               ceiling: pow(10, ceilingDB / 20) / preparedOutputGain,
+               releaseSeconds: DSPLimiterConfiguration.fixedReleaseMilliseconds / 1_000
+           ) {
+            preparedNodes.append(RuntimeNode(
+                nodeID: DSPLimiterConfiguration.nodeID,
+                typeID: Self.limiterTypeID,
+                channelMask: Array(repeating: true, count: format.channelCount),
+                contributesToHeadroom: false,
+                staticPeakResponseDB: 0,
+                filters: [],
+                effect: .limiter,
+                limiterKernel: kernel
+            ))
+            warnings.removeAll { $0.code == "nonlinearPeakGuaranteeUnavailable" }
+        }
         self.headroomDB = numericPreparationFailed ? 0 : automaticHeadroomDB
         self.inputGain = numericPreparationFailed ? 1 : preparedInputGain
         self.outputGain = numericPreparationFailed ? 1 : preparedOutputGain
         let finalNodes = numericPreparationFailed ? [] : preparedNodes
+        self.idleProcessingNodeIDs = numericPreparationFailed ? [] : idleNodeIDs
         self.nodes = finalNodes
-        previewNodes = finalNodes.map(Self.makeFreshRuntimeState)
         self.preparationDiagnostics = warnings
         let processorBypassed = numericPreparationFailed
             || !configuration.enabled
-            || (preparedNodes.isEmpty
+            || (!Self.hasAudibleWork(preparedNodes)
                 && abs(preparedInputGain - 1) < 1e-12
                 && abs(preparedOutputGain - 1) < 1e-12)
         self.isBypassed = processorBypassed
         processingLatencyFrames = numericPreparationFailed
             ? 0
-            : preparedNodes.reduce(into: 0) { total, node in
-                if node.effect?.requiresLookahead == true { total += 64 }
-                total += node.scriptLatencyFrames
-            }
+            : preparedNodes.reduce(0) { $0 + $1.latencyFrames }
         if processorBypassed {
             self.peakGuarantee = "bypassed"
-        } else if preparedNodes.contains(where: { $0.effect?.requiresLookahead == true || $0.scriptRuntime != nil }) {
+        } else if preparedNodes.contains(where: { $0.limiterKernel != nil }) {
+            self.peakGuarantee = "samplePeakLimited"
+        } else if preparedNodes.contains(where: { $0.effect?.isNonlinearOrDelayed == true }) {
             self.peakGuarantee = "unavailable"
         } else {
             self.peakGuarantee = "estimatedLinearResponse"
@@ -412,95 +686,155 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
 
     func reset() {
         Self.resetRuntimeStates(&nodes)
-        Self.resetRuntimeStates(&previewNodes)
+        if previewNodes != nil { Self.resetRuntimeStates(&previewNodes!) }
+        aheadFrames = 0
         scriptFaults.removeAll(keepingCapacity: true)
         outputFault = nil
     }
 
     /// Advance recursive state while discarding output. Call with source-time
-    /// ordered raw history ending at the selected replacement boundary.
+    /// ordered raw history ending at the selected replacement boundary; the
+    /// next processed block starts exactly there.
     func warm(with rawHistory: [CanonicalPCM]) {
+        aheadFrames = 0
         for pcm in rawHistory {
             guard isCompatible(pcm), !isBypassed else { continue }
-            var warmupOutput: [Float] = []
-            processCore(pcm, nodes: &nodes, output: &warmupOutput, frameValues: &frameScratch)
+            pcm.data.withUnsafeBufferPointer { source in
+                processCore(UnsafeBufferPointer(rebasing: source[0..<(pcm.frames * pcm.channelCount)]),
+                    nil, channels: pcm.channelCount, nodes: &nodes, output: &warmupScratch,
+                    frameValues: &frameScratch, samples: &sampleScratch, discardOutput: true)
+            }
         }
     }
 
     /// Process input-time PCM and use up to one processing-latency of future PCM
     /// to return an output block mapped to the input's original presentation time.
     /// A missing or short lookahead is zero-filled, which is the EOF behavior.
-    func process(_ input: CanonicalPCM, lookahead: CanonicalPCM? = nil) -> CanonicalPCM {
+    func process(
+        _ input: CanonicalPCM,
+        lookahead: CanonicalPCM? = nil,
+        loadMeasurement: DSPProcessingLoadAccumulator? = nil
+    ) -> CanonicalPCM {
         guard isCompatible(input), input.frames > 0 else { return input }
-        guard !isBypassed, outputFault == nil else { return input }
+        guard outputFault == nil,
+              !isBypassed || (loadMeasurement != nil && configuration.enabled && !idleProcessingNodeIDs.isEmpty) else { return input }
 
-        var currentOutput: [Float] = []
-        processCore(input, nodes: &nodes, output: &currentOutput, frameValues: &frameScratch)
-        guard outputFault == nil else { return input }
-        guard processingLatencyFrames > 0 else {
-            return CanonicalPCM(
-                frames: input.frames,
-                channelCount: input.channelCount,
-                sampleRate: input.sampleRate,
-                data: currentOutput
-            )
+        let sampled = loadMeasurement?.beginBlock(frames: input.frames, sampleRate: input.sampleRate) ?? false
+        let measurement = sampled ? loadMeasurement : nil
+        let started = sampled ? DispatchTime.now().uptimeNanoseconds : 0
+        defer {
+            if let measurement {
+                let ended = DispatchTime.now().uptimeNanoseconds
+                measurement.finishBlock(nanoseconds: ended - started, at: ended, succeeded: outputFault == nil)
+            }
         }
+        guard !isBypassed else { return input }
 
+        // Coordinates below count frames from the start of this block: the
+        // input occupies 0..<frames and the lookahead follows it. The output
+        // for frame f leaves the chain while frame f + latency goes in.
+        let channels = input.channelCount
+        let frames = input.frames
         let latency = processingLatencyFrames
-        Self.copyRuntimeStates(from: nodes, to: &previewNodes, previewFrames: latency)
-        let channelCount = format.channelCount
-        let futureSampleCount = latency * channelCount
-        if futureInputScratch.count != futureSampleCount {
-            futureInputScratch = Array(repeating: 0, count: futureSampleCount)
-        } else {
-            for index in futureInputScratch.indices {
-                futureInputScratch[index] = 0
-            }
+        var realFuture = 0
+        if latency > 0, let lookahead, isCompatible(lookahead) {
+            realFuture = min(latency, lookahead.frames)
         }
-        if let lookahead, isCompatible(lookahead), lookahead.frames > 0 {
-            let copiedFrames = min(latency, lookahead.frames)
-            let copiedSamples = copiedFrames * channelCount
-            for index in 0..<copiedSamples {
-                futureInputScratch[index] = lookahead.data[index]
-            }
-        }
-        let futureInput = CanonicalPCM(
-            frames: latency,
-            channelCount: channelCount,
-            sampleRate: format.sampleRate,
-            data: futureInputScratch
-        )
-        var futureOutput: [Float] = []
-        processCore(
-            futureInput,
-            nodes: &previewNodes,
-            output: &futureOutput,
-            frameValues: &frameScratch
-        )
-        guard outputFault == nil else { return input }
+        let liveEnd = frames + realFuture
+        let liveStart = min(aheadFrames, latency, liveEnd)
 
-        for frame in 0..<input.frames {
-            let sourceFrame = frame + latency
-            let destinationOffset = frame * channelCount
-            if sourceFrame < input.frames {
-                let sourceOffset = sourceFrame * channelCount
-                for channel in 0..<channelCount {
-                    currentOutput[destinationOffset + channel] = currentOutput[sourceOffset + channel]
+        // The live chain consumes only real audio it has not seen yet.
+        var liveOutput: [Float] = []
+        if liveEnd > liveStart {
+            input.data.withUnsafeBufferPointer { inputBuffer in
+                let fromInput: UnsafeBufferPointer<Float>? = liveStart < frames
+                    ? UnsafeBufferPointer(rebasing: inputBuffer[(liveStart * channels)..<(frames * channels)])
+                    : nil
+                guard realFuture > 0, let lookahead else {
+                    processCore(fromInput, nil, channels: channels, nodes: &nodes, output: &liveOutput,
+                        frameValues: &frameScratch, samples: &sampleScratch, loadMeasurement: measurement)
+                    return
                 }
-            } else {
-                let sourceOffset = (sourceFrame - input.frames) * channelCount
-                for channel in 0..<channelCount {
-                    currentOutput[destinationOffset + channel] = futureOutput[sourceOffset + channel]
+                lookahead.data.withUnsafeBufferPointer { futureBuffer in
+                    let futureStart = max(0, liveStart - frames)
+                    let fromFuture = UnsafeBufferPointer(
+                        rebasing: futureBuffer[(futureStart * channels)..<(realFuture * channels)])
+                    processCore(fromInput, fromFuture, channels: channels, nodes: &nodes, output: &liveOutput,
+                        frameValues: &frameScratch, samples: &sampleScratch, loadMeasurement: measurement)
                 }
             }
+            guard outputFault == nil else { return input }
+        }
+        aheadFrames = realFuture
+
+        // Steady state: the chain is a full latency ahead and the lookahead
+        // was real, so the live output is exactly this block.
+        if liveStart == latency, liveEnd - liveStart == frames {
+            return CanonicalPCM(frames: frames, channelCount: channels, sampleRate: input.sampleRate, data: liveOutput)
         }
 
-        return CanonicalPCM(
-            frames: input.frames,
-            channelCount: input.channelCount,
-            sampleRate: input.sampleRate,
-            data: currentOutput
-        )
+        // Past a stream end, a gap or a format boundary the remaining latency
+        // drains through zeros on a throwaway copy, never on the live chain.
+        let paddedFrames = latency - realFuture
+        if paddedFrames > 0 {
+            if previewNodes == nil { previewNodes = nodes.map(Self.makeFreshRuntimeState) }
+            Self.copyRuntimeStates(from: nodes, to: &previewNodes!, previewFrames: paddedFrames)
+            let paddedSamples = paddedFrames * channels
+            if paddingScratch.count != paddedSamples {
+                paddingScratch = Array(repeating: 0, count: paddedSamples)
+            }
+            paddingScratch.withUnsafeBufferPointer { zeros in
+                processCore(zeros, nil, channels: channels, nodes: &previewNodes!, output: &paddingOutputScratch,
+                    frameValues: &frameScratch, samples: &sampleScratch, loadMeasurement: measurement)
+            }
+            guard outputFault == nil else { return input }
+        }
+
+        var output = [Float](repeating: 0, count: frames * channels)
+        let liveFrames = max(0, min(frames, liveEnd - latency))
+        output.withUnsafeMutableBufferPointer { destination in
+            if liveFrames > 0 {
+                liveOutput.withUnsafeBufferPointer { live in
+                    let offset = (latency - liveStart) * channels
+                    destination.baseAddress!.update(from: live.baseAddress!.advanced(by: offset),
+                                                    count: liveFrames * channels)
+                }
+            }
+            if liveFrames < frames {
+                paddingOutputScratch.withUnsafeBufferPointer { padded in
+                    let offset = (liveFrames + latency - liveEnd) * channels
+                    destination.baseAddress!.advanced(by: liveFrames * channels)
+                        .update(from: padded.baseAddress!.advanced(by: offset),
+                                count: (frames - liveFrames) * channels)
+                }
+            }
+        }
+        return CanonicalPCM(frames: frames, channelCount: channels, sampleRate: input.sampleRate, data: output)
+    }
+
+    /// Meter readings of the last live block, split into the renderer's
+    /// analysis chunks: element `i` holds every metering node's values for
+    /// chunk `i`. Empty when no node meters.
+    func meterReadingsByChunk() -> [[DSPNodeMeterReading]] {
+        var result: [[DSPNodeMeterReading]] = []
+        for node in nodes {
+            if let blocks = node.blockKernel?.meterBlocks, blocks.count >= 4 {
+                let chunks = blocks.count / 4
+                if result.count < chunks { result += Array(repeating: [], count: chunks - result.count) }
+                for chunk in 0..<chunks {
+                    result[chunk].append(DSPNodeMeterReading(nodeID: node.nodeID,
+                                                             values: Array(blocks[(chunk * 4)..<(chunk * 4 + 4)])))
+                }
+            } else if let blocks = node.limiterKernel?.meterBlocks, !blocks.isEmpty {
+                let chunks = blocks.count
+                if result.count < chunks { result += Array(repeating: [], count: chunks - result.count) }
+                for chunk in 0..<chunks {
+                    result[chunk].append(DSPNodeMeterReading(nodeID: node.nodeID,
+                                                             values: [blocks[chunk]]))
+                }
+            }
+        }
+        return result
     }
 
     private func isCompatible(_ pcm: CanonicalPCM) -> Bool {
@@ -512,67 +846,106 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         return abs(pcm.sampleRate - format.sampleRate) < 0.5
     }
 
+    /// Runs interleaved source frames through `nodes`. The frames arrive as
+    /// up to two consecutive spans, so a block and its lookahead are read in
+    /// place without being joined first.
     private func processCore(
-        _ input: CanonicalPCM,
+        _ first: UnsafeBufferPointer<Float>?,
+        _ second: UnsafeBufferPointer<Float>?,
+        channels: Int,
         nodes: inout [RuntimeNode],
         output: inout [Float],
-        frameValues: inout [Double]
+        frameValues: inout [Double],
+        samples: inout [Double],
+        discardOutput: Bool = false,
+        loadMeasurement: DSPProcessingLoadAccumulator? = nil
     ) {
-        let requiredSamples = input.frames * input.channelCount
-        if output.count != requiredSamples {
-            output = Array(repeating: 0, count: requiredSamples)
+        let firstCount = first?.count ?? 0
+        let secondCount = second?.count ?? 0
+        let count = firstCount + secondCount
+        guard count > 0, channels > 0, outputFault == nil else { return }
+        let frames = count / channels
+        if samples.count != count { samples = Array(repeating: 0, count: count) }
+        if frameValues.count != channels {
+            frameValues = Array(repeating: 0, count: channels)
         }
-        if frameValues.count != input.channelCount {
-            frameValues = Array(repeating: 0, count: input.channelCount)
+        samples.withUnsafeMutableBufferPointer { buffer in
+            if let first, firstCount > 0 {
+                vDSP_vspdp(first.baseAddress!, 1, buffer.baseAddress!, 1, vDSP_Length(firstCount))
+            }
+            if let second, secondCount > 0 {
+                vDSP_vspdp(second.baseAddress!, 1, buffer.baseAddress!.advanced(by: firstCount), 1,
+                           vDSP_Length(secondCount))
+            }
+            if inputGain != 1 {
+                var gain = inputGain
+                vDSP_vsmulD(buffer.baseAddress!, 1, &gain, buffer.baseAddress!, 1, vDSP_Length(count))
+            }
         }
-        guard outputFault == nil else {
-            output = Array(repeating: 0, count: requiredSamples)
+        // Node/filter dispatch and recursive state access happen once per block.
+        // Each biquad holds its two delays in scalars through the sample loop.
+        for index in nodes.indices {
+            let started = loadMeasurement != nil ? DispatchTime.now().uptimeNanoseconds : 0
+            switch nodes[index].effect {
+            case nil:
+                let mask = nodes[index].channelMask
+                for filter in nodes[index].filters.indices {
+                    nodes[index].filters[filter].processBlock(&samples, frames: frames, channels: channels, mask: mask)
+                }
+            case .some(.flatGain):
+                let gain = nodes[index].flatGain ?? 1
+                let mask = nodes[index].channelMask
+                samples.withUnsafeMutableBufferPointer { buffer in
+                    for channel in 0..<channels where mask[channel] {
+                        for frame in 0..<frames { buffer[frame * channels + channel] *= gain }
+                    }
+                }
+            case .some(.block):
+                samples.withUnsafeMutableBufferPointer { buffer in
+                    nodes[index].blockKernel?.process(buffer.baseAddress!, frames: frames, channels: channels)
+                }
+            case .some(.tube), .some(.limiter), .some(.script):
+                if nodes[index].effect == .some(.limiter) {
+                    nodes[index].limiterKernel?.beginBlock()
+                }
+                for frame in 0..<frames {
+                    let offset = frame * channels
+                    for channel in 0..<channels { frameValues[channel] = samples[offset + channel] }
+                    switch nodes[index].effect {
+                    case .some(.tube): nodes[index].tubeKernel?.processFrame(&frameValues)
+                    case .some(.limiter): nodes[index].limiterKernel?.processFrame(&frameValues)
+                    case .some(.script): nodes[index].scriptRuntime?.processFrame(&frameValues)
+                    default: break
+                    }
+                    for channel in 0..<channels { samples[offset + channel] = frameValues[channel] }
+                }
+                if nodes[index].effect == .some(.limiter) {
+                    nodes[index].limiterKernel?.flushRemainingMeterChunk()
+                }
+            }
+            if let loadMeasurement {
+                loadMeasurement.recordNode(at: index, nanoseconds: DispatchTime.now().uptimeNanoseconds - started)
+            }
+        }
+        samples.withUnsafeMutableBufferPointer { buffer in
+            if outputGain != 1 {
+                var gain = outputGain
+                vDSP_vsmulD(buffer.baseAddress!, 1, &gain, buffer.baseAddress!, 1, vDSP_Length(count))
+            }
+        }
+        guard samples.allSatisfy({ $0.isFinite && abs($0) <= Double(Float.greatestFiniteMagnitude) }) else {
+            outputFault = DSPDiagnostic(code: "dsp.nonFiniteChainOutput",
+                message: "The DSP chain output exceeds finite Float32 audio and was bypassed.",
+                fieldPath: "processing.output", retryable: true)
+            collectScriptFaults(from: nodes)
             return
         }
-        let channelCount = input.channelCount
-
-        for frameIndex in 0..<input.frames {
-            let base = frameIndex * channelCount
-            for channel in 0..<channelCount {
-                frameValues[channel] = Double(input.data[base + channel]) * inputGain
-            }
-
-            for nodeIndex in nodes.indices {
-                switch nodes[nodeIndex].effect {
-                case .some(.flatGain):
-                    let gain = nodes[nodeIndex].flatGain ?? 1
-                    for channel in 0..<channelCount where nodes[nodeIndex].channelMask[channel] {
-                        frameValues[channel] *= gain
-                    }
-                case .some(.stereoWidth):
-                    nodes[nodeIndex].stereoWidthKernel?.processFrame(&frameValues)
-                case .some(.virtualBass):
-                    nodes[nodeIndex].virtualBassKernel?.processFrame(&frameValues)
-                case .some(.tube):
-                    nodes[nodeIndex].tubeKernel?.processFrame(&frameValues)
-                case .some(.script):
-                    nodes[nodeIndex].scriptRuntime?.processFrame(&frameValues)
-                case nil:
-                    for channel in 0..<channelCount where nodes[nodeIndex].channelMask[channel] {
-                        var sample = frameValues[channel]
-                        for filterIndex in nodes[nodeIndex].filters.indices {
-                            sample = nodes[nodeIndex].filters[filterIndex].process(sample, channel: channel)
-                        }
-                        frameValues[channel] = sample
-                    }
+        if !discardOutput {
+            if output.count != count { output = Array(repeating: 0, count: count) }
+            samples.withUnsafeBufferPointer { buffer in
+                output.withUnsafeMutableBufferPointer { destination in
+                    vDSP_vdpsp(buffer.baseAddress!, 1, destination.baseAddress!, 1, vDSP_Length(count))
                 }
-            }
-
-            for channel in 0..<channelCount {
-                let sample = frameValues[channel] * outputGain
-                guard sample.isFinite, abs(sample) <= Double(Float.greatestFiniteMagnitude) else {
-                    outputFault = DSPDiagnostic(code: "dsp.nonFiniteChainOutput",
-                        message: "The DSP chain output exceeds finite Float32 audio and was bypassed.",
-                        fieldPath: "processing.output", retryable: true)
-                    collectScriptFaults(from: nodes)
-                    return
-                }
-                output[base + channel] = Float(sample)
             }
         }
         collectScriptFaults(from: nodes)
@@ -583,8 +956,9 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             for filterIndex in nodes[nodeIndex].filters.indices {
                 nodes[nodeIndex].filters[filterIndex].reset()
             }
-            nodes[nodeIndex].virtualBassKernel?.reset()
+            nodes[nodeIndex].blockKernel?.reset()
             nodes[nodeIndex].tubeKernel?.reset()
+            nodes[nodeIndex].limiterKernel?.reset()
             nodes[nodeIndex].scriptRuntime?.reset()
         }
     }
@@ -596,20 +970,19 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             for filterIndex in source[nodeIndex].filters.indices {
                 guard source[nodeIndex].filters.indices.contains(filterIndex),
                       destination[nodeIndex].filters.indices.contains(filterIndex) else { continue }
-                for index in source[nodeIndex].filters[filterIndex].state1.indices {
-                    destination[nodeIndex].filters[filterIndex].state1[index]
-                        = source[nodeIndex].filters[filterIndex].state1[index]
-                }
-                for index in source[nodeIndex].filters[filterIndex].state2.indices {
-                    destination[nodeIndex].filters[filterIndex].state2[index]
-                        = source[nodeIndex].filters[filterIndex].state2[index]
-                }
+                let sourceFilter = source[nodeIndex].filters[filterIndex]
+                DSPStateCopy.assign(&destination[nodeIndex].filters[filterIndex].delay, from: sourceFilter.delay)
+                destination[nodeIndex].filters[filterIndex].rampStart = sourceFilter.rampStart
+                destination[nodeIndex].filters[filterIndex].rampRemaining = sourceFilter.rampRemaining
             }
-            if let sourceBass = source[nodeIndex].virtualBassKernel {
-                destination[nodeIndex].virtualBassKernel?.copyState(from: sourceBass)
+            if let sourceKernel = source[nodeIndex].blockKernel {
+                destination[nodeIndex].blockKernel?.copyState(from: sourceKernel)
             }
             if let sourceTube = source[nodeIndex].tubeKernel {
                 destination[nodeIndex].tubeKernel?.copyState(from: sourceTube)
+            }
+            if let sourceLimiter = source[nodeIndex].limiterKernel {
+                destination[nodeIndex].limiterKernel?.copyState(from: sourceLimiter)
             }
             if let sourceScript = source[nodeIndex].scriptRuntime {
                 destination[nodeIndex].scriptRuntime?.copyState(from: sourceScript, previewFrames: previewFrames)
@@ -622,8 +995,9 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         for index in fresh.filters.indices {
             fresh.filters[index].reset()
         }
-        fresh.virtualBassKernel = source.virtualBassKernel?.makeFreshState()
+        fresh.blockKernel = source.blockKernel?.makeFreshState()
         fresh.tubeKernel = source.tubeKernel?.makeFreshState()
+        fresh.limiterKernel = source.limiterKernel?.makeFreshState()
         fresh.scriptRuntime = source.scriptRuntime?.makeFreshState()
         return fresh
     }
@@ -642,24 +1016,20 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         _ node: DSPNodeConfiguration, format: DSPAudioFormat, warnings: inout [DSPDiagnostic]
     ) -> RuntimeNode? {
         do {
-            guard node.quality == "standard", let parameters = node.scriptParameters,
-                  DSPNodeConfiguration.supportedChannelPolicies(forTypeID: node.typeID).contains(node.channelPolicy) else {
+            guard node.quality == "standard", let parameters = node.scriptParameters else {
                 throw DSPScriptCompilationError(diagnostics: [DSPDiagnostic(code: "dsp.scriptConfiguration",
                     message: "The script configuration is incomplete or unsupported.")])
             }
+            let policy = DSPNodeConfiguration.effectiveChannelPolicy(
+                forTypeID: node.typeID,
+                requested: node.channelPolicy,
+                format: format
+            )
             let mask: [Bool]
-            if node.channelPolicy == "allChannels" {
-                mask = Array(repeating: true, count: format.channelCount)
+            if policy == "fullRange", let fullRange = format.fullRangeChannelMask {
+                mask = fullRange
             } else {
-                guard format.layoutIsKnown, let labels = format.channelLabels,
-                      labels.count == format.channelCount else {
-                    warnings.append(DSPDiagnostic(code: "dsp.scriptLayoutUnsupported",
-                        message: "The script requires a complete channel map or explicit allChannels policy.",
-                        fieldPath: "nodes[\(node.nodeID.uuidString)].channelPolicy", nodeID: node.nodeID))
-                    return nil
-                }
-                let lfe: Set<UInt32> = [UInt32(kAudioChannelLabel_LFEScreen), UInt32(kAudioChannelLabel_LFE2), UInt32(kAudioChannelLabel_LFE3)]
-                mask = labels.map { !lfe.contains($0) }
+                mask = Array(repeating: true, count: format.channelCount)
             }
             guard mask.contains(true) else { return nil }
             let program = try DSPScriptCompiler.compile(source: parameters.source,
@@ -683,15 +1053,15 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         }
     }
 
-    private static func isNativeEffect(_ typeID: String) -> Bool {
-        typeID == DSPNodeConfiguration.stereoWidthTypeID
-            || typeID == DSPNodeConfiguration.virtualBassTypeID
-            || typeID == DSPNodeConfiguration.tubeTypeID
-    }
-
+    /// Prepares a native effect. A parameter set that cannot be read or holds
+    /// an out-of-range value bypasses the node with a diagnostic; settings
+    /// that leave the signal untouched return nil without one, an exact
+    /// pass-through.
     private static func prepareNativeNode(
         _ node: DSPNodeConfiguration,
         format: DSPAudioFormat,
+        context: DSPEqualLoudnessContext,
+        bassOutputCeiling: Double?,
         warnings: inout [DSPDiagnostic]
     ) -> RuntimeNode? {
         let basePath = "nodes[\(node.nodeID.uuidString)].parameters"
@@ -703,32 +1073,6 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                 nodeID: node.nodeID,
                 retryable: false
             ))
-        }
-        func bounded(_ value: Double, range: ClosedRange<Double>, key: String) -> Double? {
-            guard value.isFinite else {
-                warn(
-                    "invalidNativeParameter",
-                    "The native effect was bypassed because a parameter is not finite.",
-                    field: "\(basePath).\(key)"
-                )
-                return nil
-            }
-            let result = min(max(range.lowerBound, value), range.upperBound)
-            if abs(result - value) > 1e-9 {
-                warn(
-                    "nativeParameterNormalized",
-                    "The native effect parameter was bounded to its supported range.",
-                    field: "\(basePath).\(key)"
-                )
-            }
-            return result
-        }
-        func rejectPolicy() {
-            warn(
-                "unsupportedChannelPolicy",
-                "The effect was bypassed because its channel policy is not supported.",
-                field: "nodes[\(node.nodeID.uuidString)].channelPolicy"
-            )
         }
         func rejectQuality() {
             warn(
@@ -755,96 +1099,65 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             return nil
         }
 
-        let labels = format.channelLabels
-        let hasCompleteLayout = format.layoutIsKnown && labels?.count == format.channelCount
-        let channelLabels = hasCompleteLayout ? labels : nil
-        let leftLabel = UInt32(kAudioChannelLabel_Left)
-        let rightLabel = UInt32(kAudioChannelLabel_Right)
-        let lfeLabels: Set<UInt32> = [
-            UInt32(kAudioChannelLabel_LFEScreen),
-            UInt32(kAudioChannelLabel_LFE2),
-            UInt32(kAudioChannelLabel_LFE3),
-        ]
         func frontPairMask() -> [Bool]? {
-            guard let channelLabels else { return nil }
-            let left = channelLabels.indices.filter { channelLabels[$0] == leftLabel }
-            let right = channelLabels.indices.filter { channelLabels[$0] == rightLabel }
-            guard left.count == 1, right.count == 1 else { return nil }
+            guard let pair = format.frontStereoPair else { return nil }
             var mask = Array(repeating: false, count: format.channelCount)
-            mask[left[0]] = true
-            mask[right[0]] = true
+            mask[pair.left] = true
+            mask[pair.right] = true
             return mask
         }
 
-        let channelMask: [Bool]
-        switch node.typeID {
-        case DSPNodeConfiguration.stereoWidthTypeID:
-            guard node.channelPolicy == "frontPair" else {
-                rejectPolicy()
-                return nil
+        guard DSPNodeConfiguration.supportedQualities(forTypeID: node.typeID).contains(node.quality) else {
+            rejectQuality()
+            return nil
+        }
+        guard let issues = node.nativeParameterIssues else {
+            invalidParameters()
+            return nil
+        }
+        guard issues.isEmpty else {
+            for issue in issues {
+                warn("invalidNativeParameter",
+                     "The native effect was bypassed because a parameter is out of range.",
+                     field: "\(basePath).\(issue.key)")
             }
+            return nil
+        }
+
+        let policy = DSPNodeConfiguration.effectiveChannelPolicy(
+            forTypeID: node.typeID,
+            requested: node.channelPolicy,
+            format: format
+        )
+        let channelMask: [Bool]
+        if DSPNodeConfiguration.frontPairTypeIDs.contains(node.typeID) {
             guard let mask = frontPairMask() else {
                 warn(
                     "frontStereoPairUnavailable",
-                    "Stereo width was bypassed because the source has no explicit left and right channels.",
+                    "The effect was bypassed because the source has no explicit left and right channels.",
                     field: "nodes[\(node.nodeID.uuidString)].channelPolicy"
                 )
                 return nil
             }
             channelMask = mask
-
-        case DSPNodeConfiguration.virtualBassTypeID:
-            switch node.channelPolicy {
-            case "frontPair":
-                guard let mask = frontPairMask() else {
-                    warn(
-                        "frontStereoPairUnavailable",
-                        "Virtual bass was bypassed because the source has no explicit left and right channels.",
-                        field: "nodes[\(node.nodeID.uuidString)].channelPolicy"
-                    )
-                    return nil
-                }
+        } else if DSPNodeConfiguration.pairOrStereoTypeIDs.contains(node.typeID) {
+            if policy == "frontPair", let mask = frontPairMask() {
                 channelMask = mask
-            case "fullRange":
-                guard hasCompleteLayout, format.channelCount <= 2,
-                      let channelLabels,
-                      (format.channelCount == 1
-                        ? channelLabels[0] == UInt32(kAudioChannelLabel_Mono)
-                        : Set(channelLabels) == Set([leftLabel, rightLabel])) else {
+            } else {
+                guard format.isMonoOrStereoLayout else {
                     warn(
-                        "virtualBassLayoutUnsupported",
-                        "Virtual bass full-range processing requires a known mono or stereo source.",
+                        "stereoLayoutUnsupported",
+                        "The effect requires an identifiable front pair or a mono or stereo source.",
                         field: "nodes[\(node.nodeID.uuidString)].channelPolicy"
                     )
                     return nil
                 }
                 channelMask = Array(repeating: true, count: format.channelCount)
-            default:
-                rejectPolicy()
-                return nil
             }
-
-        case DSPNodeConfiguration.tubeTypeID:
-            switch node.channelPolicy {
-            case "allChannels":
-                channelMask = Array(repeating: true, count: format.channelCount)
-            case "fullRange":
-                guard hasCompleteLayout, let channelLabels else {
-                    warn(
-                        "unknownChannelLayout",
-                        "Tube processing was bypassed because the source has no complete channel map.",
-                        field: "nodes[\(node.nodeID.uuidString)].channelPolicy"
-                    )
-                    return nil
-                }
-                channelMask = channelLabels.map { !lfeLabels.contains($0) }
-            default:
-                rejectPolicy()
-                return nil
-            }
-
-        default:
-            return nil
+        } else if policy == "fullRange", let fullRange = format.fullRangeChannelMask {
+            channelMask = fullRange
+        } else {
+            channelMask = Array(repeating: true, count: format.channelCount)
         }
         guard channelMask.contains(true) else {
             warn(
@@ -854,6 +1167,9 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             )
             return nil
         }
+        let selected = channelMask.indices.filter { channelMask[$0] }
+        // The pair a stereo kernel works on; a mono source uses one channel twice.
+        let pair = (left: selected[0], right: selected.count > 1 ? selected[1] : selected[0])
 
         let emptyNode = RuntimeNode(
             nodeID: node.nodeID,
@@ -863,163 +1179,132 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             filters: [],
             effect: nil,
             flatGain: nil,
-            stereoWidthKernel: nil,
-            virtualBassKernel: nil,
             tubeKernel: nil
         )
-
-        switch node.typeID {
-        case DSPNodeConfiguration.stereoWidthTypeID:
-            guard node.quality == "standard" else {
-                rejectQuality()
-                return nil
-            }
-            guard let raw = node.stereoWidthParameters,
-                  let width = bounded(raw.width, range: DSPStereoWidthParameters.widthRange, key: "width"),
-                  let outputTrimDB = bounded(
-                    raw.outputTrimDB,
-                    range: DSPStereoWidthParameters.outputTrimRange,
-                    key: "outputTrimDB"
-                  ) else {
-                invalidParameters()
-                return nil
-            }
-            if abs(width - 1) < 1e-12, abs(outputTrimDB) < 1e-12 { return nil }
+        func trimOnly(_ trimDB: Double) -> RuntimeNode? {
+            guard trimDB != 0 else { return nil }
             var runtimeNode = emptyNode
-            runtimeNode.staticPeakResponseDB = 20 * log10(max(1, width)) + outputTrimDB
-            if abs(width - 1) < 1e-12 {
-                runtimeNode.effect = .flatGain
-                runtimeNode.flatGain = pow(10, outputTrimDB / 20)
-                return runtimeNode
-            }
-            guard let pair = frontPairMask(),
-                  let channelLabels,
-                  let left = pair.indices.first(where: { pair[$0] && channelLabels[$0] == leftLabel }),
-                  let right = pair.indices.first(where: { pair[$0] && channelLabels[$0] == rightLabel }) else {
-                return nil
-            }
-            runtimeNode.effect = .stereoWidth
-            runtimeNode.stereoWidthKernel = DSPStereoWidthKernel(
-                leftChannel: left,
-                rightChannel: right,
-                width: width,
-                outputGain: pow(10, outputTrimDB / 20)
-            )
+            runtimeNode.effect = .flatGain
+            runtimeNode.flatGain = pow(10, trimDB / 20)
+            runtimeNode.staticPeakResponseDB = trimDB
+            runtimeNode.levelOffsetDB = trimDB
             return runtimeNode
-
-        case DSPNodeConfiguration.virtualBassTypeID:
-            guard node.quality == "oversampling2x" || node.quality == "oversampling4x" else {
-                rejectQuality()
-                return nil
-            }
-            guard let raw = node.virtualBassParameters,
-                  let lowFrequencyHz = bounded(
-                    raw.lowFrequencyHz,
-                    range: DSPVirtualBassParameters.lowFrequencyRange,
-                    key: "lowFrequencyHz"
-                  ),
-                  let highFrequencyHz = bounded(
-                    raw.highFrequencyHz,
-                    range: DSPVirtualBassParameters.highFrequencyRange,
-                    key: "highFrequencyHz"
-                  ),
-                  let amount = bounded(raw.amount, range: DSPVirtualBassParameters.amountRange, key: "amount"),
-                  let driveDB = bounded(raw.driveDB, range: DSPVirtualBassParameters.driveRange, key: "driveDB"),
-                  let harmonics = bounded(
-                    raw.harmonics,
-                    range: DSPVirtualBassParameters.harmonicsRange,
-                    key: "harmonics"
-                  ),
-                  let mix = bounded(raw.mix, range: DSPVirtualBassParameters.mixRange, key: "mix"),
-                  let outputTrimDB = bounded(
-                    raw.outputTrimDB,
-                    range: DSPVirtualBassParameters.outputTrimRange,
-                    key: "outputTrimDB"
-                  ),
-                  lowFrequencyHz < highFrequencyHz else {
-                invalidParameters()
-                return nil
-            }
-            let wetGain = amount * mix
-            if wetGain == 0 {
-                return nil
-            }
-            let parameters = DSPVirtualBassParameters(
-                lowFrequencyHz: lowFrequencyHz,
-                highFrequencyHz: highFrequencyHz,
-                amount: amount,
-                driveDB: driveDB,
-                harmonics: harmonics,
-                mix: mix,
-                outputTrimDB: outputTrimDB
-            )
-            let factor = node.quality == "oversampling4x" ? 4 : 2
-            guard let kernel = DSPVirtualBassKernel(
-                format: format,
-                selectedChannels: channelMask,
-                parameters: parameters,
-                factor: factor
-            ) else {
+        }
+        func blockNode(_ kernel: DSPEffectKernel?, peakDB: Double, trimDB: Double, nonlinear: Bool) -> RuntimeNode? {
+            guard let kernel else {
                 warn(
                     "nativeKernelPreparationFailed",
-                    "Virtual bass could not prepare stable filters for this source format.",
+                    "The effect could not prepare stable filters for this source format.",
                     field: basePath
                 )
                 return nil
             }
             var runtimeNode = emptyNode
-            runtimeNode.effect = .virtualBass
-            runtimeNode.virtualBassKernel = kernel
-            let drive = pow(10, driveDB / 20)
-            let evenBound = 1 / max(1e-12, pow(tanh(drive), 2))
-            runtimeNode.staticPeakResponseDB = 20 * log10(1 + wetGain * 4 * evenBound) + outputTrimDB
-            warn(
-                "nonlinearPeakGuaranteeUnavailable",
-                "Virtual bass uses static headroom only; it has no peak guarantee.",
-                field: basePath
-            )
+            runtimeNode.effect = .block
+            runtimeNode.blockKernel = kernel
+            runtimeNode.staticPeakResponseDB = peakDB
+            runtimeNode.levelOffsetDB = trimDB
+            if nonlinear {
+                warn(
+                    "nonlinearPeakGuaranteeUnavailable",
+                    "The effect uses static headroom only; it has no peak guarantee.",
+                    field: basePath
+                )
+            }
             return runtimeNode
+        }
+
+        switch node.typeID {
+        case DSPNodeConfiguration.classicBassTypeID:
+            guard let parameters = node.effectParameters(DSPClassicBassParameters.self) else { return nil }
+            let kind = context.outputKind
+            let tightens = parameters.tightenDryBass == .on
+                || (parameters.tightenDryBass == .automatic && parameters.resolved(for: kind).profile.tightensDryBass)
+            if parameters.intensity == 0, parameters.bassGainDB == 0, !tightens { return trimOnly(parameters.outputTrimDB) }
+            let kernel = DSPClassicBassKernel(format: format, selectedChannels: channelMask,
+                                              parameters: parameters, outputKind: kind, outputCeiling: bassOutputCeiling)
+            return blockNode(kernel.map(DSPEffectKernel.classicBass),
+                             peakDB: DSPClassicBassKernel.staticPeakResponseDB(parameters: parameters, outputKind: kind),
+                             trimDB: parameters.outputTrimDB, nonlinear: true)
+
+        case DSPNodeConfiguration.hybridBassTypeID:
+            guard let parameters = node.effectParameters(DSPHybridBassParameters.self) else { return nil }
+            let tightens = parameters.tightenDryBass == .on
+            if parameters.intensity == 0, parameters.bassGainDB == 0, !tightens { return trimOnly(parameters.outputTrimDB) }
+            let kernel = DSPHybridBassKernel(format: format, selectedChannels: channelMask,
+                                             parameters: parameters, outputKind: context.outputKind, outputCeiling: bassOutputCeiling)
+            return blockNode(kernel.map(DSPEffectKernel.hybridBass),
+                             peakDB: DSPHybridBassKernel.staticPeakResponseDB(parameters: parameters),
+                             trimDB: parameters.outputTrimDB, nonlinear: true)
+
+        case DSPNodeConfiguration.stereoWidthTypeID:
+            guard let parameters = node.stereoWidthParameters else { return nil }
+            guard abs(parameters.width - 1) >= 1e-12 else { return trimOnly(parameters.outputTrimDB) }
+            let kernel = DSPStereoWidthKernel(leftChannel: pair.left, rightChannel: pair.right,
+                                              sampleRate: format.sampleRate, parameters: parameters)
+            // The loudness gain may add up to 3 dB on a narrowed image.
+            // Widening leaves the mid at unity and the guard holds the side
+            // under it, so it reserves nothing: reserving the worst case,
+            // 20·log10(width), turned the whole chain down by up to 9.5 dB
+            // and was heard as the effect making music quieter. The rare
+            // in-phase side peak is left to the limiter (our choice).
+            let peakDB = (parameters.loudnessMatchEnabled && parameters.width < 1 ? 3 : 0)
+                + parameters.outputTrimDB
+            return blockNode(kernel.map(DSPEffectKernel.stereoWidth), peakDB: peakDB,
+                             trimDB: parameters.outputTrimDB, nonlinear: false)
+
+        case DSPNodeConfiguration.crossfeedTypeID:
+            guard let parameters = node.effectParameters(DSPCrossfeedParameters.self) else { return nil }
+            let kernel = DSPCrossfeedKernel(leftChannel: pair.left, rightChannel: pair.right,
+                                            sampleRate: format.sampleRate, parameters: parameters)
+            return blockNode(kernel.map(DSPEffectKernel.crossfeed), peakDB: 0, trimDB: 0, nonlinear: false)
+
+        case DSPNodeConfiguration.spatialAudioTypeID:
+            guard let parameters = node.effectParameters(DSPSpatialAudioParameters.self) else { return nil }
+            guard parameters.mix > 0 else { return trimOnly(parameters.outputTrimDB) }
+            switch DSPSpatialAudioKernel.prepare(format: format, leftChannel: pair.left, rightChannel: pair.right,
+                                                 parameters: parameters) {
+            case .success(let kernel):
+                return blockNode(.spatial(kernel), peakDB: parameters.outputTrimDB,
+                                 trimDB: parameters.outputTrimDB, nonlinear: false)
+            case .failure(.missingImpulseResponse):
+                warn(
+                    "dsp.impulseResponseMissing",
+                    "Spatial audio was bypassed because its impulse response file is missing.",
+                    field: "\(basePath).impulseResponseID"
+                )
+                return nil
+            case .failure:
+                warn(
+                    "nativeKernelPreparationFailed",
+                    "Spatial audio could not prepare its responses for this source format.",
+                    field: basePath
+                )
+                return nil
+            }
+
+        case DSPNodeConfiguration.reverbTypeID:
+            guard let parameters = node.effectParameters(DSPReverbParameters.self) else { return nil }
+            guard parameters.mix > 0 else { return nil }
+            let kernel = DSPReverbKernel(sampleRate: format.sampleRate, leftChannel: pair.left,
+                                         rightChannel: pair.right, design: DSPReverbDesign(parameters: parameters),
+                                         mix: parameters.mix)
+            return blockNode(kernel.map(DSPEffectKernel.reverb),
+                             peakDB: DSPReverbKernel.staticPeakResponseDB(mix: parameters.mix),
+                             trimDB: 0, nonlinear: false)
+
+        case DSPNodeConfiguration.compressorTypeID:
+            guard let parameters = node.effectParameters(DSPCompressorParameters.self) else { return nil }
+            let kernel = DSPCompressorKernel(format: format, selectedChannels: channelMask, parameters: parameters)
+            let makeupDB = parameters.loudnessMatchEnabled ? 0
+                : max(0, parameters.bands.prefix(3).map(\.gainDB).max() ?? 0) + parameters.band(.master).gainDB
+            return blockNode(kernel.map(DSPEffectKernel.compressor), peakDB: makeupDB + parameters.outputTrimDB,
+                             trimDB: parameters.outputTrimDB, nonlinear: true)
 
         case DSPNodeConfiguration.tubeTypeID:
-            guard node.quality == "oversampling2x" || node.quality == "oversampling4x" else {
-                rejectQuality()
-                return nil
-            }
-            guard let raw = node.tubeParameters,
-                  let driveDB = bounded(raw.driveDB, range: DSPTubeParameters.driveRange, key: "driveDB"),
-                  let bias = bounded(raw.bias, range: DSPTubeParameters.biasRange, key: "bias"),
-                  let mix = bounded(raw.mix, range: DSPTubeParameters.mixRange, key: "mix"),
-                  let inputTrimDB = bounded(
-                    raw.inputTrimDB,
-                    range: DSPTubeParameters.inputTrimRange,
-                    key: "inputTrimDB"
-                  ),
-                  let outputTrimDB = bounded(
-                    raw.outputTrimDB,
-                    range: DSPTubeParameters.outputTrimRange,
-                    key: "outputTrimDB"
-                  ),
-                  let dcBlockHz = bounded(
-                    raw.dcBlockHz,
-                    range: DSPTubeParameters.dcBlockFrequencyRange,
-                    key: "dcBlockHz"
-                  ) else {
-                invalidParameters()
-                return nil
-            }
-            if mix == 0 {
-                return nil
-            }
-            let parameters = DSPTubeParameters(
-                driveDB: driveDB,
-                bias: bias,
-                mix: mix,
-                inputTrimDB: inputTrimDB,
-                outputTrimDB: outputTrimDB,
-                dcRemovalEnabled: raw.dcRemovalEnabled,
-                dcBlockHz: dcBlockHz
-            )
-            let factor = node.quality == "oversampling4x" ? 4 : 2
+            guard let parameters = node.tubeParameters else { return nil }
+            if parameters.isDry { return trimOnly(parameters.outputTrimDB) }
+            let factor = node.quality == DSPNodeConfiguration.oversampling4xQuality ? 4 : 2
             guard let kernel = DSPTubeKernel(
                 format: format,
                 selectedChannels: channelMask,
@@ -1036,11 +1321,16 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             var runtimeNode = emptyNode
             runtimeNode.effect = .tube
             runtimeNode.tubeKernel = kernel
-            let drive = pow(10, driveDB / 20)
-            let biasedSlope = max(1e-12, drive * (1 - pow(tanh(bias), 2)))
-            let shapedBound = (1 + abs(tanh(bias))) / biasedSlope
-            let dcBound = raw.dcRemovalEnabled ? 2.0 : 1.0
-            runtimeNode.staticPeakResponseDB = 20 * log10(1 + mix * shapedBound * dcBound) + outputTrimDB
+            // The classic shaper is normalized to unity small-signal gain, so
+            // the wet path follows its input trim; saturation only lowers the
+            // peak. Hi-fi adds harmonics a few percent of the band level. The
+            // rare excess is left to the safety limiter.
+            let wetLevel = pow(10, parameters.inputTrimDB / 20)
+            let peak = parameters.mode == .classic
+                ? (1 - parameters.mix) + parameters.mix * wetLevel
+                : 1 + 0.1 * parameters.hifiAmount * wetLevel
+            runtimeNode.staticPeakResponseDB = 20 * log10(max(1, peak)) + parameters.outputTrimDB
+            runtimeNode.levelOffsetDB = parameters.outputTrimDB
             warn(
                 "nonlinearPeakGuaranteeUnavailable",
                 "Tube processing uses static headroom only; it has no peak guarantee.",
@@ -1157,6 +1447,9 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             var pathConfiguration = configuration
             let includedNodeIDs = Set(nodeIDs)
             pathConfiguration.nodes.removeAll { !includedNodeIDs.contains($0.nodeID) }
+            if !includedNodeIDs.contains(DSPEqualLoudnessStage.nodeID) {
+                pathConfiguration.equalLoudness.enabled = false
+            }
             let linearPeakDB = DSPParametricEQMath.estimatedPeakResponseDB(
                 configuration: pathConfiguration,
                 context: context,
@@ -1168,6 +1461,35 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             peakDB = max(peakDB, linearPeakDB + nativePeakDB)
         }
         return peakDB
+    }
+
+    /// Level-referenced nodes see program level regardless of gain staging:
+    /// each one cancels the broadband gain applied before it, which is the
+    /// chain input gain with its automatic headroom plus the trims of earlier
+    /// nodes on its channels. Tonal stages such as EQ boosts still drive it,
+    /// as an equalizer ahead of an analog saturator would.
+    private static func applyProgramLevelReference(
+        to nodes: inout [RuntimeNode],
+        chainGainDB: Double,
+        channelCount: Int
+    ) {
+        var channelGainDB = Array(repeating: chainGainDB, count: channelCount)
+        for index in nodes.indices {
+            let mask = nodes[index].channelMask
+            var upstreamDB = -Double.infinity
+            for channel in 0..<min(channelCount, mask.count) where mask[channel] {
+                upstreamDB = max(upstreamDB, channelGainDB[channel])
+            }
+            if upstreamDB.isFinite {
+                nodes[index].tubeKernel?.setProgramLevelOffset(dB: upstreamDB)
+                nodes[index].blockKernel?.setProgramLevelOffset(dB: upstreamDB)
+            }
+            let offset = nodes[index].levelOffsetDB
+            guard offset != 0 else { continue }
+            for channel in 0..<min(channelCount, mask.count) where mask[channel] {
+                channelGainDB[channel] += offset
+            }
+        }
     }
 
     private static func normalizedTrim(

@@ -993,7 +993,7 @@ final class AppleMusicPlaybackAdapter {
                 )
                 if didCommit {
                     await MainActor.run {
-                        metadataStore.storeNetworkArtwork(networkArtwork, for: identity, source: "onlineFallback")
+                        _ = metadataStore.storeNetworkArtwork(networkArtwork, for: identity, source: "onlineFallback")
                     }
                 }
                 return

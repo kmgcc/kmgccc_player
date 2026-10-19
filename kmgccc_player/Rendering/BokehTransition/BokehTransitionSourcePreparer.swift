@@ -93,7 +93,13 @@ final class BokehTransitionSourcePreparer {
         onReady: @escaping @MainActor (BokehTransitionPreparedSourceSet) -> Void
     ) {
         let identity = frames.identity(renderSize: renderSize, tier: tier)
-        if currentSourceSet?.identity == identity { return }
+        if let currentSourceSet, currentSourceSet.identity == identity {
+            // SwiftUI state may be cleared independently of this cache after a
+            // transition. Republish the cached set without repeating the
+            // downsample work so the caller can restore its ready state.
+            onReady(currentSourceSet)
+            return
+        }
         // The three render callbacks and fullscreen geometry updates can all
         // request the same source set while downsampling is still running.
         // Restarting identical work repeatedly starves first-entry preparation

@@ -75,7 +75,9 @@ private extension NetEaseCoverService {
     }
 
     func searchAlbumResults(artist: String, album: String, limit: Int) async throws -> [AlbumSearchResult] {
-        let query = "\(artist) \(album)".trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanArtist = LibraryNormalization.isUnknownArtist(artist) ? "" : artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanAlbum = LibraryNormalization.isUnknownAlbum(album) ? "" : album.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = "\(cleanArtist) \(cleanAlbum)".trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
             throw NetEaseCoverError.noResults
         }

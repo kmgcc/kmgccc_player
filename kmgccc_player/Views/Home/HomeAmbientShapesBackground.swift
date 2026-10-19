@@ -541,7 +541,7 @@ final class HomeAmbientRootView: NSView {
 
     private static func shapeCount(seed: UInt64) -> Int {
         var rng = HomeAmbientRandom(seed: seed ^ 0x5368_6170_6543_6F75)
-        let range = ProcessInfo.processInfo.isLowPowerModeEnabled ? 10...14 : 16...24
+        let range = SystemConditionMonitor.shared.isLowPowerModeEnabled ? 10...14 : 16...24
         return rng.nextInt(in: range)
     }
 

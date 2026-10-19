@@ -83,7 +83,10 @@ nonisolated enum ImportEnrichmentWorker {
         let normalizedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !(normalizedTitle?.isEmpty ?? true) || !normalizedArtist.isEmpty || !normalizedAlbum.isEmpty else {
+        let hasValidTitle = normalizedTitle?.isEmpty == false
+        let hasValidAlbum = !normalizedAlbum.isEmpty && !LibraryNormalization.isUnknownAlbum(normalizedAlbum)
+
+        guard hasValidTitle || hasValidAlbum else {
             return .noResults
         }
 
@@ -246,6 +249,11 @@ nonisolated enum ImportEnrichmentWorker {
         size: Int
     ) async throws -> Data {
         try Task.checkCancellation()
+        let hasValidArtist = !artist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !LibraryNormalization.isUnknownArtist(artist)
+        let hasValidAlbum = !album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !LibraryNormalization.isUnknownAlbum(album)
+        guard hasValidArtist && hasValidAlbum else {
+            throw CoverDownloadError.invalidImageData
+        }
         guard
             let normalizedData = ArtworkDataNormalizer.normalizedJPEGData(
                 from: try await CoverDownloadService.downloadCoverData(
@@ -267,7 +275,9 @@ nonisolated enum ImportEnrichmentWorker {
     ) async throws -> Data {
         try Task.checkCancellation()
         let session = makeNetEaseSession()
-        let query = "\(artist) \(album)".trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanArtist = LibraryNormalization.isUnknownArtist(artist) ? "" : artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanAlbum = LibraryNormalization.isUnknownAlbum(album) ? "" : album.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = "\(cleanArtist) \(cleanAlbum)".trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
             throw NetEaseCoverError.noResults
         }
@@ -538,13 +548,14 @@ nonisolated enum MetadataEnrichmentWorker {
         artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
     ) async -> ImportArtistArtworkOutcome {
         guard !Task.isCancelled else { return .failed("已取消") }
-        guard !artist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let cleanArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanArtist.isEmpty, !LibraryNormalization.isUnknownArtist(cleanArtist) else {
             return .noResults
         }
         do {
             let candidates = try await withCoverLookupTimeout(metadataTimeout) {
                 try Task.checkCancellation()
-                return try await artistArtworkProviderCoordinator.searchCandidates(artist: artist)
+                return try await artistArtworkProviderCoordinator.searchCandidates(artist: cleanArtist)
             }
             try Task.checkCancellation()
             guard let best = CoverCandidateSorter.bestAutomaticCandidate(from: candidates) else {
@@ -557,7 +568,7 @@ nonisolated enum MetadataEnrichmentWorker {
             return .completed(normalizedData)
         } catch let error as CoverLookupTimeoutError {
             Log.warning(
-                "Import artist artwork timed out for \(artist): \(error)",
+                "Import artist artwork timed out for \(cleanArtist): \(error)",
                 category: .import
             )
             return .failed("歌手封面查找超时")
@@ -565,7 +576,7 @@ nonisolated enum MetadataEnrichmentWorker {
             return .failed("已取消")
         } catch {
             Log.warning(
-                "Import artist artwork failed for \(artist): \(error)",
+                "Import artist artwork failed for \(cleanArtist): \(error)",
                 category: .import
             )
             return .failed(error.localizedDescription)
@@ -580,7 +591,8 @@ nonisolated enum MetadataEnrichmentWorker {
         qqMusicCoverService: QQMusicCoverService
     ) async -> ImportAlbumArtworkOutcome {
         guard !Task.isCancelled else { return .failed("已取消") }
-        guard !album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let cleanAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanAlbum.isEmpty, !LibraryNormalization.isUnknownAlbum(cleanAlbum) else {
             return .noResults
         }
         let outcome = await ImportEnrichmentWorker.fetchCover(

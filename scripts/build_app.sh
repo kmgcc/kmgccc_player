@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build and validate the app using only inputs available in a clean checkout.
+# Build and validate the app using only inputs available in the checkout.
+# Preserve DerivedData between builds; use CLEAN_BUILD=1 for a fresh build.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIGURATION="${CONFIGURATION:-Release}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 MELISMAKIT_EXPECTED_SOURCE="${MELISMAKIT_EXPECTED_SOURCE:-local}"
+CLEAN_BUILD="${CLEAN_BUILD:-0}"
 
 if (($# > 0)); then
   CONFIGURATION="$1"
@@ -26,6 +28,10 @@ case "$MELISMAKIT_EXPECTED_SOURCE" in
   remote) MELISMAKIT_DEPENDENCY_FLAG="--require-remote" ;;
   *) echo "error: MELISMAKIT_EXPECTED_SOURCE must be local or remote" >&2; exit 2 ;;
 esac
+case "$CLEAN_BUILD" in
+  0|1) ;;
+  *) echo "error: CLEAN_BUILD must be 0 or 1" >&2; exit 2 ;;
+esac
 
 DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-${TMPDIR:-/tmp}/kmgccc-player-$CONFIGURATION}"
 PROJECT="$REPO_ROOT/kmgccc_player.xcodeproj"
@@ -35,7 +41,9 @@ BUILD_LOG="${KMGCCC_BUILD_LOG:-$REPO_ROOT/build/logs/build_app-$(date +%Y%m%d-%H
 
 "$SCRIPT_DIR/check-melismakit-dependency.sh" "$MELISMAKIT_DEPENDENCY_FLAG"
 
-rm -rf "$DERIVED_DATA_PATH"
+if [[ "$CLEAN_BUILD" == "1" ]]; then
+  rm -rf "$DERIVED_DATA_PATH"
+fi
 
 XCODEBUILD_ARGS=(
   -project "$PROJECT"
@@ -46,6 +54,10 @@ XCODEBUILD_ARGS=(
   BUILD_EXTENSION_MODE=disabled
   CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-NO}"
 )
+if [[ "$CONFIGURATION" == "Release" ]]; then
+  # Keep production optimization while excluding test coverage instrumentation.
+  XCODEBUILD_ARGS+=(ENABLE_CODE_COVERAGE=NO CLANG_ENABLE_CODE_COVERAGE=NO CLANG_COVERAGE_MAPPING=NO)
+fi
 if [[ -n "${CODE_SIGN_IDENTITY:-}" ]]; then
   XCODEBUILD_ARGS+=("CODE_SIGN_IDENTITY=$CODE_SIGN_IDENTITY")
 fi
@@ -61,6 +73,7 @@ fi
 
 mkdir -p "$(dirname "$BUILD_LOG")"
 if ! xcodebuild "${XCODEBUILD_ARGS[@]}" \
+  -showBuildTimingSummary \
   -verbose \
   build >"$BUILD_LOG" 2>&1; then
   echo "error: xcodebuild failed; recent output:" >&2

@@ -29,6 +29,7 @@ struct HomeView: View {
     @Environment(HomeViewModel.self) private var homeVM
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionPolicy) private var configuredMotionPolicy
+    @Environment(\.motionTokens) private var motionTokens
     @State private var didPassStartupGate = false
     @State private var startupFallbackExpired = false
     @State private var layout = HomeWindowLayoutState.shared
@@ -255,7 +256,7 @@ struct HomeView: View {
                 .frame(width: rightInset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .transition(.opacity)
+        .transition(.opacity.animation(motionPolicy.animation(for: motionTokens[.contentReplacement])))
     }
 
     private var startupLoadingBottomInset: CGFloat {
@@ -381,8 +382,7 @@ struct HomeView: View {
                 playlists: homeVM.playlists,
                 preferenceRanking: homeVM.preferenceRanking,
                 libraryVM: libraryVM,
-                playlistArtworkPipeline: cacheServices.playlistArtworkPipeline,
-                artworkDerivativeStore: cacheServices.artworkDerivativeStore,
+                cacheServices: cacheServices,
                 mode: mode,
                 sectionOrder: settings.homeSectionOrder
             )

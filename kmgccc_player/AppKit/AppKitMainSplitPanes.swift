@@ -44,6 +44,7 @@ struct AppKitMainSidebarPaneRoot: View {
                 .modelContainer(appSession.sharedModelContainer)
                 .tint(ThemeStore.shared.accentColor)
                 .accentColor(ThemeStore.shared.accentColor)
+                .preferredColorScheme(AppSettings.shared.colorScheme)
         } else if appSession.hasCompletedInitialSetup {
             // Setup finished without an active library: keep the sidebar and
             // content pane in the same explicit recovery state instead of
@@ -356,24 +357,26 @@ struct AppKitMainContentPaneRoot: View {
                     FullscreenPlayerView(hostContext: .embeddedWindow) {
                         fullscreenWindowManager.closeFullscreenPlayerInWindow()
                     }
+                    .environment(AppSettings.shared)
+                    .environment(appSession.uiState)
+                    .environment(libraryVM)
+                    .environment(playerVM)
+                    .environment(playbackCoordinator)
+                    .environment(lyricsVM)
+                    .environment(ledMeterProvider)
+                    .environment(importEnrichmentService)
+                    .environment(cacheServices)
+                    .environment(skinManager)
+                    .environment(cacheServices.coverDownloadService)
+                    .environment(cacheServices.netEaseCoverService)
+                    .environmentObject(themeStore)
+                    .environment(\.libraryPresentedAccentColor, themeStore.accentColor)
+                    .modelContainer(appSession.sharedModelContainer)
+                    .tint(themeStore.accentColor)
+                    .accentColor(themeStore.accentColor)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .zIndex(1)
-                .environment(AppSettings.shared)
-                .environment(appSession.uiState)
-                .environment(libraryVM)
-                .environment(playerVM)
-                .environment(playbackCoordinator)
-                .environment(lyricsVM)
-                .environment(ledMeterProvider)
-                .environment(importEnrichmentService)
-
-                .environment(cacheServices)
-                .environment(skinManager)
-                .environment(cacheServices.coverDownloadService)
-                .environment(cacheServices.netEaseCoverService)
-                .environmentObject(themeStore)
-                .modelContainer(appSession.sharedModelContainer)
             }
         }
 
@@ -483,6 +486,7 @@ struct AppKitMainContentPaneRoot: View {
             .modelContainer(appSession.sharedModelContainer)
             .tint(themeStore.accentColor)
             .accentColor(themeStore.accentColor)
+            .preferredColorScheme(settings.colorScheme)
             .motionEnvironment()
             .sheet(item: crashPromptBinding) { _ in
                 CrashReportPromptSheet(
@@ -563,27 +567,14 @@ struct AppKitMainContentPaneRoot: View {
     }
 
     private func applyAppearanceToWindows() {
-        if settings.followSystemAppearance {
-            NSApp.appearance = nil
-            for window in NSApp.windows {
-                window.appearance = nil
-            }
-            return
-        }
-
-        let appearanceName: NSAppearance.Name = settings.manualAppearance == .dark ? .darkAqua : .aqua
-        let appearance = NSAppearance(named: appearanceName)
-        NSApp.appearance = appearance
-        for window in NSApp.windows {
-            window.appearance = appearance
-        }
+        settings.applyAppearanceToAppAndWindows()
     }
 
     private func syncThemeStoreWithSwiftUIColorScheme(_ newScheme: ColorScheme) {
-        themeStore.colorScheme = newScheme
-        Task { @MainActor in
-            await themeStore.refreshPalette(reason: "swiftui_colorScheme_changed")
-        }
+        let targetScheme = settings.followSystemAppearance
+            ? newScheme
+            : (settings.manualAppearance == .dark ? .dark : .light)
+        themeStore.updateColorScheme(targetScheme, reason: "swiftui_colorScheme_changed")
     }
 
     private func syncFullscreenWindowEditorDependencies() {
@@ -666,6 +657,7 @@ struct AppKitMainLyricsPaneRoot: View {
             .modelContainer(appSession.sharedModelContainer)
             .tint(ThemeStore.shared.accentColor)
             .accentColor(ThemeStore.shared.accentColor)
+            .preferredColorScheme(AppSettings.shared.colorScheme)
             .motionEnvironment()
         } else {
             ProgressView()
@@ -747,6 +739,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .all)
+        .preferredColorScheme(settings.colorScheme)
         .motionEnvironment()
     }
 

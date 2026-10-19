@@ -134,12 +134,7 @@ private final class MusicPreferenceResetDialogController: NSObject, NSWindowDele
         }
 
         let windowSize = NSSize(width: 540, height: 560)
-        let panel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.titled, .closable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
+        let (panel, visualEffect) = AppDialogTokens.makePanel(width: windowSize.width, height: windowSize.height)
 
         panel.title = ""
         panel.titlebarAppearsTransparent = true
@@ -154,15 +149,6 @@ private final class MusicPreferenceResetDialogController: NSObject, NSWindowDele
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
-        let visualEffect = NSVisualEffectView()
-        visualEffect.material = .popover
-        visualEffect.blendingMode = .behindWindow
-        visualEffect.state = .active
-        visualEffect.frame = NSRect(origin: .zero, size: windowSize)
-        visualEffect.autoresizingMask = [.width, .height]
-        visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = AppDialogTokens.windowCornerRadius
-        panel.contentView = visualEffect
 
         let rootView = MusicPreferenceResetDialogView(
             viewModel: viewModel,
@@ -242,7 +228,9 @@ private struct MusicPreferenceResetDialogView: View {
             title: headerTitle,
             subtitle: headerSubtitle,
             systemImage: headerIconName,
-            iconColor: headerIconColor
+            iconColor: headerIconColor,
+            floatsActions: viewModel.stage == .running || viewModel.stage == .result,
+            onClose: viewModel.stage == .running ? nil : (viewModel.stage == .result ? onCloseResult : onCancel)
         ) {
             contentView
         } footer: {
@@ -450,7 +438,7 @@ private struct MusicPreferenceResetDialogView: View {
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
 
-                        ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
                             VStack(alignment: .leading, spacing: 10) {
                                 ForEach(result.failures.prefix(8)) { failure in
                                     VStack(alignment: .leading, spacing: 4) {
@@ -466,7 +454,6 @@ private struct MusicPreferenceResetDialogView: View {
                                 }
                             }
                         }
-                        .frame(maxHeight: 180)
                     }
                 }
             }
@@ -475,9 +462,7 @@ private struct MusicPreferenceResetDialogView: View {
     }
 
     private var footerView: some View {
-        HStack(spacing: 12) {
-            Spacer()
-
+        Group {
             switch viewModel.stage {
             case .selection:
                 SettingsTaskDialogButton("取消", kind: .secondary, action: onCancel)

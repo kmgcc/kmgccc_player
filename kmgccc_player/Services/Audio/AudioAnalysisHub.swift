@@ -62,6 +62,9 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
     // Consumers
     private nonisolated(unsafe) var consumers: [UUID: @Sendable (AudioAnalysisData) -> Void] = [:]
+    // Immutable between registrations. Copying the snapshot at each FFT tick
+    // shares its storage instead of allocating Array(consumers.values) at 30 Hz.
+    private nonisolated(unsafe) var consumerSnapshot: [@Sendable (AudioAnalysisData) -> Void] = []
     private let consumerLock = NSLock()
 #if DEBUG
     /// Read-only runtime acceptance telemetry; includes all App consumers.
@@ -153,6 +156,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         let id = UUID()
         consumerLock.lock()
         consumers[id] = callback
+        consumerSnapshot = Array(consumers.values)
         consumerLock.unlock()
         updateTimerState()
         return id
@@ -161,6 +165,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     func removeConsumer(_ id: UUID) {
         consumerLock.lock()
         consumers.removeValue(forKey: id)
+        consumerSnapshot = Array(consumers.values)
         consumerLock.unlock()
         updateTimerState()
     }
@@ -516,7 +521,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         )
 
         consumerLock.lock()
-        let currentConsumers = Array(consumers.values)
+        let currentConsumers = consumerSnapshot
         consumerLock.unlock()
 
         for consumer in currentConsumers {

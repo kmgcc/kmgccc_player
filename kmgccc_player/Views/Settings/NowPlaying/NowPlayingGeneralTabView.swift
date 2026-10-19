@@ -40,7 +40,8 @@ struct NowPlayingGeneralTabView: View {
 
             SettingsSection("settings.now_playing.select_skin") {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                    SkinPackageSettingsActions(skin: SkinRegistry.skin(for: nowPlayingSkin))
+                    // 自定义皮肤包管理入口（导入/导出/重载/删除）暂未开放，待功能完善后恢复
+                    // SkinPackageSettingsActions(skin: SkinRegistry.skin(for: nowPlayingSkin))
                     SkinSelectorRow(
                         skins: SkinRegistry.nowPlayingOptions,
                         selectedSkinID: $nowPlayingSkin,

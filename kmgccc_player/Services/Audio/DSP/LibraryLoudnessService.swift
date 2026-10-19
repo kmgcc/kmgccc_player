@@ -1,7 +1,17 @@
 import AVFoundation
 import CryptoKit
 import Foundation
+import Observation
 import PlayerAutomationProtocol
+
+/// Compact per-track summary kept for the whole library, so status counts and
+/// idle planning never decode every cached record.
+nonisolated struct LoudnessIndexEntry: Codable, Equatable, Sendable {
+    var analyzerVersion: Int
+    var usable: Bool
+    var failed: Bool
+    var analyzedAt: Date
+}
 
 private actor LoudnessDerivedCache {
     private let rootURL: URL
@@ -11,6 +21,8 @@ private actor LoudnessDerivedCache {
         self.rootURL = rootURL
     }
 
+    private var indexURL: URL { rootURL.appendingPathComponent("index.json", isDirectory: false) }
+
     func loadRecent(limit: Int) throws -> [LoudnessTrackRecord] {
         try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true, attributes: nil)
         let urls = try fileManager.contentsOfDirectory(
@@ -19,17 +31,15 @@ private actor LoudnessDerivedCache {
             options: [.skipsHiddenFiles]
         )
         let mostRecentURLs = try urls.compactMap { url -> (URL, Date)? in
-            guard url.pathExtension == "json" else { return nil }
+            guard url.pathExtension == "json", url.lastPathComponent != "index.json" else { return nil }
             let values = try url.resourceValues(forKeys: [.contentModificationDateKey])
             return (url, values.contentModificationDate ?? .distantPast)
         }
         .sorted { $0.1 > $1.1 }
         .prefix(max(0, limit))
-        let recentURLs = Array(mostRecentURLs).reversed()
         let decoder = JSONDecoder()
-        return recentURLs.compactMap { entry in
-            let url = entry.0
-            guard let data = try? Data(contentsOf: url),
+        return Array(mostRecentURLs).reversed().compactMap { entry in
+            guard let data = try? Data(contentsOf: entry.0),
                   let record = try? decoder.decode(LoudnessTrackRecord.self, from: data),
                   record.cacheRecordVersion == LoudnessTrackRecord.currentCacheRecordVersion else {
                 return nil
@@ -51,8 +61,53 @@ private actor LoudnessDerivedCache {
         let url = rootURL.appendingPathComponent("\(record.id.uuidString).json")
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(record)
-        try data.write(to: url, options: [.atomic])
+        try encoder.encode(record).write(to: url, options: [.atomic])
+    }
+
+    func loadIndex() -> [UUID: LoudnessIndexEntry]? {
+        guard let data = try? Data(contentsOf: indexURL) else { return nil }
+        return try? JSONDecoder().decode([UUID: LoudnessIndexEntry].self, from: data)
+    }
+
+    /// Rebuilds the index from every record file when the index file is
+    /// missing or unreadable.
+    func rebuildIndex() -> [UUID: LoudnessIndexEntry] {
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: rootURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else { return [:] }
+        let decoder = JSONDecoder()
+        var index: [UUID: LoudnessIndexEntry] = [:]
+        for url in urls where url.pathExtension == "json" && url.lastPathComponent != "index.json" {
+            guard let data = try? Data(contentsOf: url),
+                  let record = try? decoder.decode(LoudnessTrackRecord.self, from: data),
+                  record.cacheRecordVersion == LoudnessTrackRecord.currentCacheRecordVersion else { continue }
+            index[record.id] = LoudnessIndexEntry(
+                analyzerVersion: record.analyzerVersion,
+                usable: record.measurement?.isUsable == true,
+                failed: record.measurement == nil,
+                analyzedAt: record.analyzedAt
+            )
+        }
+        return index
+    }
+
+    func storeIndex(_ index: [UUID: LoudnessIndexEntry]) throws {
+        try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true, attributes: nil)
+        try JSONEncoder().encode(index).write(to: indexURL, options: [.atomic])
+    }
+
+    /// Removes the record files of tracks outside `keeping`.
+    func removeRecords(notIn keeping: Set<UUID>) -> Int {
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: rootURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        var removed = 0
+        for url in urls where url.pathExtension == "json" && url.lastPathComponent != "index.json" {
+            guard let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent),
+                  !keeping.contains(id) else { continue }
+            if (try? fileManager.removeItem(at: url)) != nil { removed += 1 }
+        }
+        return removed
     }
 }
 
@@ -61,51 +116,300 @@ private nonisolated struct LoudnessWorkerOutcome: Sendable {
     let failure: String?
 }
 
-/// Library-scoped offline loudness scanner and derived-cache owner.
-/// All file decoding runs on one utility worker at a time; playback lookups
-/// only inspect the in-memory snapshot and current file identity.
+nonisolated enum LoudnessAnalysisPhase: String, Codable, Equatable, Sendable {
+    case readingTags
+    case analyzing
+    case saving
+
+    nonisolated var title: String {
+        switch self {
+        case .readingTags: "读取标签"
+        case .analyzing: "分析音频"
+        case .saving: "保存结果"
+        }
+    }
+}
+
+/// Measurement status of one track as the listener can see it.
+nonisolated enum LoudnessTrackMeasurementState: Equatable, Sendable {
+    case unmeasured
+    case waiting(BackgroundWorkPriority)
+    case measuring(phase: LoudnessAnalysisPhase, fraction: Double?)
+    case paused
+    case measured
+    case failed(String)
+}
+
+nonisolated struct LoudnessLibraryProgress: Equatable, Sendable {
+    var measured: Int
+    var failed: Int
+    var remaining: Int
+}
+
+/// What playback applies to one track, and whether an album gain is still
+/// being completed for it.
+nonisolated struct LoudnessPlaybackPlan: Equatable, Sendable {
+    var decision: LoudnessGainDecision
+    /// Set when this track belongs to an album normalized as one unit.
+    var albumKey: String?
+    /// The album unifies but not every measurable member is measured yet;
+    /// the track gain (or unity) is used meanwhile.
+    var awaitingAlbum: Bool
+    var trackMeasured: Bool
+
+    nonisolated static let disabled = LoudnessPlaybackPlan(
+        decision: .unity(source: LoudnessGainDecision.Source.disabled),
+        albumKey: nil, awaitingAlbum: false, trackMeasured: false
+    )
+}
+
+/// Library-scoped loudness measurement and derived-cache owner, and a work
+/// source of the App-level background scheduler. The scheduler pulls the next
+/// track to measure when a compute and disk slot is free; measurement never
+/// runs on the library's write queue, and playback only reads the in-memory
+/// snapshot.
+///
+/// What is still to measure is derived from this service's own state: the
+/// tracks the listener asked for, the songs coming up in the queue, and the
+/// library in idle order. Nothing is persisted as a queue.
+@Observable
 @MainActor
-final class LibraryLoudnessService {
-    private static let maximumInMemoryRecords = 256
+final class LibraryLoudnessService: BackgroundWorkSource {
+    private static let maximumInMemoryRecords = 512
+    private nonisolated static let decodeChunkFrames: AVAudioFrameCount = 32_768
+    /// A decode that ends before this share of the declared length is a
+    /// failure rather than a short tail.
+    private nonisolated static let minimumDecodedShare = 0.9
+    /// The idle order is rebuilt at most this often while songs change.
+    private static let idleOrderRefreshSeconds: TimeInterval = 60
 
-    private let cache: LoudnessDerivedCache
-    private var records: [UUID: LoudnessTrackRecord] = [:]
-    private var recordLRU: [UUID] = []
-    private var pendingCacheLoads: Set<UUID> = []
-    private var hasLoadedSnapshot = false
-    private var activeTrackID: UUID?
-    private var activeWorker: Task<LoudnessWorkerOutcome, Error>?
-    private var isScanning = false
-    private var isClosed = false
-    private var playbackAACGaplessTrimEnabled = false
+    @ObservationIgnored private let cache: LoudnessDerivedCache
+    @ObservationIgnored private var records: [UUID: LoudnessTrackRecord] = [:]
+    @ObservationIgnored private var recordLRU: [UUID] = []
+    @ObservationIgnored private var pendingCacheLoads: Set<UUID> = []
+    @ObservationIgnored private var waiters: [UUID: [CheckedContinuation<Void, Never>]] = [:]
+    @ObservationIgnored private var indexSaveTask: Task<Void, Never>?
+    @ObservationIgnored private var isClosed = false
+    @ObservationIgnored private var playbackAACGaplessTrimEnabled = false
+    @ObservationIgnored nonisolated let sourceID: String
+    /// Tracks whose stored result is ignored on their next measurement.
+    @ObservationIgnored private var forcedTrackIDs: Set<UUID> = []
+    @ObservationIgnored private var backgroundActivityTask: Task<Void, Never>?
+    @ObservationIgnored private var backgroundRevealTask: Task<Void, Never>?
+    /// The listener's requests and the songs coming up, in the order they are
+    /// measured. Idle work is derived from `idleOrder` instead.
+    @ObservationIgnored private var userQueue: [UUID] = []
+    @ObservationIgnored private var upcomingQueue: [UUID] = []
+    @ObservationIgnored private var pendingPriority: [UUID: BackgroundWorkPriority] = [:]
+    @ObservationIgnored private var idleOrder: [UUID] = []
+    @ObservationIgnored private var idleCursor = 0
+    @ObservationIgnored private var idleOrderRevision: Int?
+    @ObservationIgnored private var idleOrderBuiltAt: TimeInterval = 0
+    /// Priority each measurement in flight was started at.
+    @ObservationIgnored private var inFlightPriority: [UUID: BackgroundWorkPriority] = [:]
 
-    var onMissingMeasurement: (@MainActor (UUID) -> Void)?
+    private(set) var index: [UUID: LoudnessIndexEntry] = [:]
+    private(set) var states: [UUID: LoudnessTrackMeasurementState] = [:]
+    private(set) var hasLoadedSnapshot = false
+    private(set) var isIdleScanActive = false
+    /// The listener paused the library-wide measurement for this session.
+    private(set) var isIdleScanPausedByListener = false
+    /// Idle measurement ran recently; the sidebar shows a notice while true.
+    private(set) var isBackgroundAnalysisVisible = false
 
-    init(libraryPaths: LibraryPaths) {
+    @ObservationIgnored weak var scheduler: BackgroundWorkScheduler?
+    @ObservationIgnored private(set) var owner: BackgroundWorkOwner = .app
+    @ObservationIgnored var trackProvider: (@MainActor (UUID) -> Track?)?
+    /// Library songs in idle measurement order: upcoming, often played, rest.
+    @ObservationIgnored var idleOrderProvider: (@MainActor () -> [UUID])?
+    /// Changes whenever the library's songs change, so the idle order is
+    /// rebuilt to include added songs.
+    @ObservationIgnored var libraryRevisionProvider: (@MainActor () -> Int)?
+    @ObservationIgnored var libraryTrackIDsProvider: (@MainActor () -> [UUID])?
+    @ObservationIgnored var albumJudgementProvider: (@MainActor (Track) -> LoudnessAlbumJudgement?)?
+    /// Called after a track's measurement result changes.
+    @ObservationIgnored var onMeasurementFinished: (@MainActor (UUID) -> Void)?
+    /// Called when an album's set of available measurements changes.
+    @ObservationIgnored var onAlbumMeasurementsChanged: (@MainActor (String) -> Void)?
+
+    init(libraryPaths: LibraryPaths, libraryID: UUID = UUID()) {
         cache = LoudnessDerivedCache(
-            rootURL: libraryPaths.cacheRootURL.appendingPathComponent("Loudness", isDirectory: true)
+            rootURL: libraryPaths.loudnessCacheRootURL
+        )
+        sourceID = "loudness:\(libraryID.uuidString)"
+    }
+
+    // MARK: - Work source
+
+    nonisolated var domain: BackgroundWorkDomain { .loudness }
+    nonisolated var resources: BackgroundWorkResources { [.compute, .disk] }
+
+    /// Connects the service to the scheduler as a source owned by a library
+    /// session.
+    func attach(scheduler: BackgroundWorkScheduler, owner: BackgroundWorkOwner) {
+        self.scheduler = scheduler
+        self.owner = owner
+        scheduler.register(self)
+    }
+
+    var progress: BackgroundWorkProgress {
+        let progress = libraryProgress(trackIDs: libraryTrackIDsProvider?() ?? [])
+        return BackgroundWorkProgress(
+            completed: progress.measured, failed: progress.failed, remaining: progress.remaining
         )
     }
 
-    func loadSnapshot() async {
-        guard !isClosed else { return }
-        do {
-            let loaded = try await cache.loadRecent(limit: Self.maximumInMemoryRecords)
-            guard !isClosed else { return }
-            for record in loaded { insert(record) }
-            hasLoadedSnapshot = true
-        } catch {
-            if !isClosed { hasLoadedSnapshot = true }
+    func hasWork(priority: BackgroundWorkPriority, excluding: Set<String>) -> Bool {
+        nextCandidate(priority: priority, excluding: excluding) != nil
+    }
+
+    func nextUnit(priority: BackgroundWorkPriority, excluding: Set<String>) -> BackgroundWorkUnit? {
+        guard let trackID = nextCandidate(priority: priority, excluding: excluding) else { return nil }
+        return BackgroundWorkUnit(id: trackID.uuidString, priority: priority) { [weak self] context in
+            guard let self else { return .cancelled }
+            return await self.runMeasurement(trackID: trackID, priority: priority, context: context)
         }
     }
 
-    /// Returns the raw cache projection requested by callers. File identity
-    /// validation is intentionally performed at playback use, not by this read.
+    private func nextCandidate(priority: BackgroundWorkPriority, excluding: Set<String>) -> UUID? {
+        guard !isClosed else { return nil }
+        switch priority {
+        case .userRequested:
+            return userQueue.first { !excluding.contains($0.uuidString) }
+        case .upcoming:
+            return upcomingQueue.first { !excluding.contains($0.uuidString) }
+        case .idleBatch:
+            return nextIdleCandidate(excluding: excluding)
+        }
+    }
+
+    /// The first track in idle order that still needs a measurement. The
+    /// cursor only moves past tracks that are settled; tracks that are in
+    /// flight or queued at a higher priority are skipped without moving it.
+    private func nextIdleCandidate(excluding: Set<String>) -> UUID? {
+        guard isIdleScanActive, hasLoadedSnapshot, !isIdleScanPausedByListener else { return nil }
+        refreshIdleOrderIfNeeded()
+        while idleCursor < idleOrder.count, isIdleSettled(idleOrder[idleCursor]) { idleCursor += 1 }
+        var probe = idleCursor
+        while probe < idleOrder.count {
+            let id = idleOrder[probe]
+            if !isIdleSettled(id), pendingPriority[id] == nil, !excluding.contains(id.uuidString) { return id }
+            probe += 1
+        }
+        return nil
+    }
+
+    private func isIdleSettled(_ id: UUID) -> Bool {
+        if case .failed = states[id] { return true }
+        if let entry = index[id], entry.analyzerVersion == LoudnessMeasurement.currentAnalyzerVersion { return true }
+        return false
+    }
+
+    private func refreshIdleOrderIfNeeded() {
+        let revision = libraryRevisionProvider?() ?? 0
+        let now = ProcessInfo.processInfo.systemUptime
+        let exhausted = idleCursor >= idleOrder.count
+        if let built = idleOrderRevision {
+            guard built != revision,
+                  exhausted || now - idleOrderBuiltAt >= Self.idleOrderRefreshSeconds else { return }
+        }
+        idleOrder = idleOrderProvider?() ?? []
+        idleCursor = 0
+        idleOrderRevision = revision
+        idleOrderBuiltAt = now
+    }
+
+    private func dequeue(_ trackID: UUID) {
+        guard pendingPriority.removeValue(forKey: trackID) != nil else { return }
+        userQueue.removeAll { $0 == trackID }
+        upcomingQueue.removeAll { $0 == trackID }
+    }
+
+    func loadSnapshot() async {
+        guard !isClosed, !hasLoadedSnapshot else { return }
+        if let loaded = try? await cache.loadRecent(limit: Self.maximumInMemoryRecords) {
+            guard !isClosed else { return }
+            for record in loaded { insert(record) }
+        }
+        var loadedIndex = await cache.loadIndex()
+        if loadedIndex == nil {
+            let rebuilt = await cache.rebuildIndex()
+            loadedIndex = rebuilt
+            try? await cache.storeIndex(rebuilt)
+        }
+        guard !isClosed else { return }
+        index.merge(loadedIndex ?? [:]) { current, _ in current }
+        hasLoadedSnapshot = true
+    }
+
+    /// Drops measurements of songs that left the library. Measuring a song
+    /// means decoding all of it, so records live as long as their song
+    /// instead of under a size limit.
+    func pruneRecords(keeping trackIDs: Set<UUID>) async {
+        guard hasLoadedSnapshot, !isClosed, !trackIDs.isEmpty else { return }
+        let removedFiles = await cache.removeRecords(notIn: trackIDs)
+        guard !isClosed else { return }
+        let staleIDs = index.keys.filter { !trackIDs.contains($0) }
+        for id in staleIDs {
+            index[id] = nil
+            records[id] = nil
+        }
+        if !staleIDs.isEmpty {
+            try? await cache.storeIndex(index)
+        }
+        if removedFiles > 0 || !staleIDs.isEmpty {
+            Log.info(
+                "[Loudness] pruned records=\(removedFiles) indexEntries=\(staleIDs.count)",
+                category: .perf
+            )
+        }
+    }
+
+    func updatePlaybackTrimPolicy(enabled: Bool) {
+        playbackAACGaplessTrimEnabled = enabled
+    }
+
+    // MARK: - Status
+
+    func measurementState(for trackID: UUID) -> LoudnessTrackMeasurementState {
+        if let state = states[trackID] { return state }
+        if let entry = index[trackID], entry.analyzerVersion == LoudnessMeasurement.currentAnalyzerVersion {
+            return entry.failed || !entry.usable ? .failed("无法测量这首歌曲") : .measured
+        }
+        if let priority = pendingPriority[trackID] { return .waiting(priority) }
+        if isIdleScanActive { return .waiting(.idleBatch) }
+        return .unmeasured
+    }
+
+    func record(for trackID: UUID) -> LoudnessTrackRecord? { records[trackID] }
+
+    func libraryProgress(trackIDs: [UUID]) -> LoudnessLibraryProgress {
+        var measured = 0
+        var failed = 0
+        for id in trackIDs {
+            guard let entry = index[id], entry.analyzerVersion == LoudnessMeasurement.currentAnalyzerVersion else { continue }
+            if entry.usable { measured += 1 } else { failed += 1 }
+        }
+        return LoudnessLibraryProgress(measured: measured, failed: failed,
+                                       remaining: max(0, trackIDs.count - measured - failed))
+    }
+
+    /// Library tracks whose current measurement failed, in library order.
+    func failedTrackIDs(in trackIDs: [UUID]) -> [UUID] {
+        trackIDs.filter { id in
+            if case .failed = measurementState(for: id) { return true }
+            return false
+        }
+    }
+
+    /// Why a measurement failed, when this session saw the failure.
+    func failureMessage(for trackID: UUID) -> String? {
+        if case .failed(let message) = measurementState(for: trackID) { return message }
+        return nil
+    }
+
     func recordsSnapshot(trackIDs: [UUID]) -> [UUID: LoudnessTrackRecord] {
-        guard !trackIDs.isEmpty else { return [:] }
-        return Dictionary(uniqueKeysWithValues: Set(trackIDs).compactMap { id in
-            records[id].map { (id, $0) }
-        })
+        Dictionary(uniqueKeysWithValues: Set(trackIDs).compactMap { id in records[id].map { (id, $0) } })
     }
 
     func loadRecordsSnapshot(trackIDs: [UUID]) async -> [UUID: LoudnessTrackRecord] {
@@ -126,322 +430,453 @@ final class LibraryLoudnessService {
         return result
     }
 
-    func updatePlaybackTrimPolicy(enabled: Bool) {
-        playbackAACGaplessTrimEnabled = enabled
+    // MARK: - Playback
+
+    /// The gain playback should use now for `track`. Missing measurements are
+    /// queued as upcoming work; nothing here decodes audio.
+    func playbackPlan(
+        track: Track,
+        fileURL: URL?,
+        configuration: AudioLoudnessConfiguration
+    ) -> LoudnessPlaybackPlan {
+        guard configuration.enabled, !isClosed else { return .disabled }
+        let trackRecord = currentRecord(for: track, fileURL: fileURL)
+        let trackMeasured = trackRecord?.measurement?.isUsable == true
+        if trackRecord == nil { requestMeasurement(trackIDs: [track.id], priority: .upcoming) }
+        let trackDecision = LoudnessGainSelector.trackGain(
+            configuration: configuration,
+            measurement: trackRecord?.measurement
+        )
+
+        guard let judgement = albumJudgementProvider?(track), judgement.unifies,
+              judgement.memberIDs.count > 1 else {
+            return LoudnessPlaybackPlan(decision: trackDecision, albumKey: nil,
+                                        awaitingAlbum: false, trackMeasured: trackMeasured)
+        }
+        let status = albumMeasurementStatus(memberIDs: judgement.memberIDs, playingTrackID: track.id,
+                                            playingRecord: trackRecord)
+        if !status.missing.isEmpty {
+            requestMeasurement(trackIDs: status.missing, priority: .upcoming)
+        }
+        if status.missing.isEmpty, !status.loading,
+           let albumDecision = LoudnessGainSelector.albumGain(configuration: configuration,
+                                                              measurements: status.measurements) {
+            return LoudnessPlaybackPlan(decision: albumDecision, albumKey: judgement.albumKey,
+                                        awaitingAlbum: false, trackMeasured: trackMeasured)
+        }
+        return LoudnessPlaybackPlan(decision: trackDecision, albumKey: judgement.albumKey,
+                                    awaitingAlbum: true, trackMeasured: trackMeasured)
     }
 
-    func gainDecision(
-        track: Track,
-        fileURL: URL,
-        configuration: AudioLoudnessConfiguration,
-        albumTracks: [Track]?,
-        continuousAlbum: Bool
-    ) -> LoudnessGainDecision {
-        guard configuration.enabled else { return .unity(source: "disabled") }
-
-        let wantsAlbum = configuration.mode == "album"
-            || (configuration.mode == "auto" && continuousAlbum)
-        if wantsAlbum {
-            return albumGainDecision(
-                track: track,
-                fileURL: fileURL,
-                configuration: configuration,
-                albumTracks: albumTracks,
-                shouldScheduleMissing: configuration.allowBackgroundScan
-            )
-        }
-
-        let currentIdentity = try? Self.fileIdentity(for: fileURL)
-        let trimSnapshot = playbackAACGaplessTrimEnabled
-        let cachedRecord = records[track.id]
-        let record: LoudnessTrackRecord?
-        if let cachedRecord, let currentIdentity,
-           Self.isCurrent(cachedRecord, for: currentIdentity, playbackAACGaplessTrimEnabled: trimSnapshot) {
-            touch(track.id)
-            record = cachedRecord
-        } else {
-            record = nil
-            if let currentIdentity {
-                if cachedRecord != nil {
-                    if configuration.allowBackgroundScan { onMissingMeasurement?(track.id) }
-                } else {
-                    requestCacheRecordLoad(
-                        trackID: track.id,
-                        identity: currentIdentity,
-                        trimSnapshot: trimSnapshot,
-                        shouldScheduleMissing: configuration.allowBackgroundScan
-                    )
+    private func albumMeasurementStatus(
+        memberIDs: [UUID],
+        playingTrackID: UUID,
+        playingRecord: LoudnessTrackRecord?
+    ) -> (measurements: [LoudnessMeasurement], missing: [UUID], loading: Bool) {
+        var measurements: [LoudnessMeasurement] = []
+        var missing: [UUID] = []
+        var loading = false
+        for id in memberIDs {
+            let record = id == playingTrackID ? playingRecord : records[id].flatMap { isCurrentVersion($0) ? $0 : nil }
+            if let record {
+                touch(id)
+                // A member that could not be decoded is left out of the album.
+                if let measurement = record.measurement, measurement.isUsable { measurements.append(measurement) }
+                continue
+            }
+            if case .failed = states[id] { continue }
+            if let entry = index[id], entry.analyzerVersion == LoudnessMeasurement.currentAnalyzerVersion {
+                if entry.usable {
+                    loading = true
+                    requestCacheRecordLoad(trackID: id)
                 }
+                continue
+            }
+            missing.append(id)
+        }
+        return (measurements, missing, loading)
+    }
+
+    // MARK: - Measurement requests
+
+    /// Queues measurement of tracks that have no current result. A request
+    /// for a track already queued only raises its priority. Idle priority is
+    /// not requested per track: the library scan derives it.
+    func requestMeasurement(trackIDs: [UUID], priority: BackgroundWorkPriority) {
+        guard !isClosed, scheduler != nil, priority != .idleBatch else { return }
+        for id in trackIDs {
+            if case .measuring = states[id] { continue }
+            if priority != .userRequested, case .failed = states[id] { continue }
+            switch priority {
+            case .userRequested:
+                if pendingPriority[id] == .userRequested { continue }
+                upcomingQueue.removeAll { $0 == id }
+                userQueue.append(id)
+                pendingPriority[id] = .userRequested
+            case .upcoming:
+                if let existing = pendingPriority[id], existing <= .upcoming { continue }
+                upcomingQueue.append(id)
+                pendingPriority[id] = .upcoming
+            case .idleBatch:
+                break
             }
         }
-
-        var decision = LoudnessGainSelector.trackGain(
-            configuration: configuration,
-            measurement: record?.measurement,
-            metadata: record?.metadata
-        )
-        if record == nil {
-            let diagnostic = DSPDiagnostic(
-                code: currentIdentity == nil ? "audio.loudnessFileIdentityUnavailable" : "audio.loudnessCacheMissingOrStale",
-                message: currentIdentity == nil
-                    ? "The current file identity could not be read, so cached loudness was not used."
-                    : (cachedRecord != nil
-                        ? "The cached loudness record does not match this file or analysis policy."
-                        : (hasLoadedSnapshot
-                            ? "No loudness record is loaded for this track yet."
-                            : "The loudness cache snapshot is still loading.")),
-                fieldPath: "loudness.cache",
-                retryable: configuration.allowBackgroundScan
-            )
-            decision.diagnostics.append(diagnostic)
-        }
-        return decision
+        scheduler?.noteWorkAvailable()
     }
 
+    /// Starts the library-wide pass: every track without a current
+    /// measurement becomes idle work, in the order the library provides
+    /// (upcoming, often played, then the rest). Songs added later join when
+    /// the order is rebuilt.
+    func startIdleLibraryScan() {
+        guard !isClosed, hasLoadedSnapshot, !isIdleScanPausedByListener else { return }
+        isIdleScanActive = true
+        idleOrderRevision = nil
+        scheduler?.noteWorkAvailable()
+    }
+
+    /// Withdraws idle work when volume normalization is switched off. A
+    /// listener's explicit request keeps running.
+    func stopIdleLibraryScan(clearingPause: Bool = false) {
+        if clearingPause { isIdleScanPausedByListener = false }
+        isIdleScanActive = false
+        idleOrder = []
+        idleCursor = 0
+        idleOrderRevision = nil
+        // A running idle measurement stops at its next checkpoint.
+        let runningIdle = inFlightPriority.filter { $0.value == .idleBatch }.map(\.key)
+        if !runningIdle.isEmpty {
+            scheduler?.cancelRunningUnits(sourceID: sourceID, unitIDs: Set(runningIdle.map(\.uuidString)))
+            for id in runningIdle where pendingPriority[id] == nil {
+                if case .measuring = states[id] { states[id] = nil }
+            }
+        }
+        setBackgroundAnalysisVisible(false)
+    }
+
+    /// The listener's pause from the sidebar notice. Playback still measures
+    /// the songs it needs; the library-wide pass waits for `resume`.
+    func pauseIdleLibraryScan() {
+        isIdleScanPausedByListener = true
+        stopIdleLibraryScan()
+    }
+
+    func resumeIdleLibraryScan() {
+        isIdleScanPausedByListener = false
+        startIdleLibraryScan()
+    }
+
+    /// Explicit Job request: measures the targets at the listener's priority
+    /// and reports real progress until each one finishes. `force` measures
+    /// again even when a current result is stored.
     func scan(
         trackIDs: [UUID],
-        reporter: LibraryAutomationJobReporter,
-        trackProvider: @escaping @MainActor (UUID) -> Track?
+        force: Bool = false,
+        reporter: LibraryAutomationJobReporter
     ) async {
         guard !isClosed else { return }
         var seen = Set<UUID>()
         let targets = trackIDs.filter { seen.insert($0).inserted }
         guard !targets.isEmpty else { return }
-        guard !isScanning else {
+        for id in targets {
+            // A listener's request starts from scratch for these tracks.
+            if case .measuring = states[id] { continue }
+            states[id] = nil
+            index[id] = nil
+        }
+        if force { forcedTrackIDs.formUnion(targets) }
+        requestMeasurement(trackIDs: targets, priority: .userRequested)
+        reporter.recordProgress(completedCount: 0, totalCount: targets.count, phase: "Analyzing")
+
+        var completed = 0
+        var available = 0
+        await withTaskCancellationHandler {
             for id in targets {
-                reporter.recordFailure("Another loudness scan is already active; this Job did not take ownership of its target.", itemID: id)
+                if Task.isCancelled { break }
+                await waitForMeasurement(trackID: id)
+                completed += 1
+                switch states[id] ?? measurementState(for: id) {
+                case .measured: available += 1
+                case .failed(let message): reporter.recordFailure(message, itemID: id)
+                default: reporter.recordFailure("测量未完成。", itemID: id)
+                }
+                reporter.recordProgress(completedCount: completed, totalCount: targets.count, phase: "Analyzing")
+                reporter.recordCheckpoint("Analyzed \(completed) item(s)")
             }
-            return
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.cancelRequested(targets) }
         }
-        isScanning = true
-        defer { isScanning = false }
-        var completedCount = 0
-        var availableMeasurementCount = 0
-        var unavailableMeasurementCount = 0
-
-        for (index, trackID) in targets.enumerated() {
-            if Task.isCancelled || isClosed {
-                for pendingID in targets[index...] {
-                    reporter.recordFailure("The loudness scan was cancelled before this item started.", itemID: pendingID)
-                }
-                break
-            }
-            activeTrackID = trackID
-            reporter.recordProgress(
-                completedCount: completedCount,
-                totalCount: targets.count,
-                phase: "Analyzing"
-            )
-
-            guard let track = trackProvider(trackID) else {
-                reporter.recordFailure("The requested track is no longer in this library.", itemID: trackID)
-                completedCount += 1
-                activeTrackID = nil
-                continue
-            }
-
-            let resolution = track.resolveFileURL()
-            guard let fileURL = resolution.url else {
-                resolution.lease.release()
-                reporter.recordFailure("The track source could not be opened with its current library locator.", itemID: trackID)
-                completedCount += 1
-                activeTrackID = nil
-                continue
-            }
-
-            do {
-                let beforeIdentity = try Self.fileIdentity(for: fileURL)
-                let trimSnapshot = playbackAACGaplessTrimEnabled
-                let worker = Task.detached(priority: .utility) {
-                    try await Self.analyze(
-                        trackID: trackID,
-                        url: fileURL,
-                        identity: beforeIdentity,
-                        playbackAACGaplessTrimEnabled: trimSnapshot
-                    )
-                }
-                activeWorker = worker
-                let outcome = try await withTaskCancellationHandler {
-                    try await worker.value
-                } onCancel: {
-                    worker.cancel()
-                }
-                activeWorker = nil
-
-                let afterIdentity = try Self.fileIdentity(for: fileURL)
-                guard beforeIdentity == afterIdentity,
-                      trimSnapshot == playbackAACGaplessTrimEnabled else {
-                    reporter.recordFailure("The file or playback trim policy changed during loudness analysis; its result was discarded.", itemID: trackID)
-                    completedCount += 1
-                    activeTrackID = nil
-                    resolution.lease.release()
-                    continue
-                }
-
-                insert(outcome.record)
-                if outcome.record.measurement?.status == .available {
-                    availableMeasurementCount += 1
-                } else {
-                    unavailableMeasurementCount += 1
-                }
-                do {
-                    try await cache.store(outcome.record)
-                } catch {
-                    reporter.recordFailure("The loudness result was measured but could not be saved to the library cache.", itemID: trackID)
-                }
-                if let failure = outcome.failure {
-                    reporter.recordFailure(failure, itemID: trackID)
-                }
-                resolution.lease.release()
-                completedCount += 1
-                activeTrackID = nil
-                reporter.recordCheckpoint("Analyzed \(completedCount) item(s)")
-            } catch is CancellationError {
-                activeWorker = nil
-                resolution.lease.release()
-                reporter.recordFailure("The loudness scan was cancelled before this item completed.", itemID: trackID)
-                completedCount += 1
-                activeTrackID = nil
-                for pendingID in targets.dropFirst(completedCount) {
-                    reporter.recordFailure("The loudness scan was cancelled before this item started.", itemID: pendingID)
-                }
-                break
-            } catch {
-                activeWorker = nil
-                resolution.lease.release()
-                reporter.recordFailure("The source could not be measured: \(error.localizedDescription)", itemID: trackID)
-                completedCount += 1
-                activeTrackID = nil
-            }
-        }
-
         reporter.recordResult(.object([
             "operationType": .string(AutomationMethod.audioLoudnessAnalyze),
             "trackIDs": .array(targets.map { .string($0.uuidString) }),
-            "processedCount": .number(Double(completedCount)),
-            "availableMeasurementCount": .number(Double(availableMeasurementCount)),
-            "unavailableMeasurementCount": .number(Double(unavailableMeasurementCount)),
-            "fixtureValidated": .boolean(false),
-            "currentPlaybackUnchanged": .boolean(true)
+            "processedCount": .number(Double(completed)),
+            "availableMeasurementCount": .number(Double(available)),
+            "unavailableMeasurementCount": .number(Double(completed - available)),
+            "currentPlaybackUnchanged": .boolean(true),
         ]))
-        reporter.recordProgress(
-            completedCount: completedCount,
-            totalCount: max(targets.count, 1),
-            phase: "Finished"
-        )
+        reporter.recordProgress(completedCount: completed, totalCount: max(targets.count, 1), phase: "Finished")
     }
 
     func cancel() {
         isClosed = true
-        onMissingMeasurement = nil
-        activeWorker?.cancel()
-        activeWorker = nil
-        activeTrackID = nil
+        setBackgroundAnalysisVisible(false)
+        scheduler?.unregister(sourceID: sourceID)
+        userQueue.removeAll()
+        upcomingQueue.removeAll()
+        pendingPriority.removeAll()
+        idleOrder = []
+        onMeasurementFinished = nil
+        onAlbumMeasurementsChanged = nil
         pendingCacheLoads.removeAll(keepingCapacity: false)
+        for continuations in waiters.values { continuations.forEach { $0.resume() } }
+        waiters.removeAll()
+        if let indexSaveTask {
+            indexSaveTask.cancel()
+            let snapshot = index
+            let cache = cache
+            Task { try? await cache.storeIndex(snapshot) }
+        }
     }
 
-    private func albumGainDecision(
-        track: Track,
-        fileURL: URL,
-        configuration: AudioLoudnessConfiguration,
-        albumTracks: [Track]?,
-        shouldScheduleMissing: Bool
-    ) -> LoudnessGainDecision {
-        guard !track.albumGroupKey.isEmpty, var members = albumTracks, !members.isEmpty else {
-            return .unity(source: "unity.albumIncomplete", diagnostic: DSPDiagnostic(
-                code: "audio.loudnessAlbumUnavailable",
-                message: "A complete album group is required for album normalization.",
-                fieldPath: "loudness.album",
-                retryable: shouldScheduleMissing
-            ))
+    /// The listener cancelled a Job: its tracks leave the queues, any
+    /// measurement in flight stops, and waiters are released.
+    private func cancelRequested(_ trackIDs: [UUID]) {
+        let inFlight = Set(trackIDs.filter { inFlightPriority[$0] != nil }.map(\.uuidString))
+        if !inFlight.isEmpty { scheduler?.cancelRunningUnits(sourceID: sourceID, unitIDs: inFlight) }
+        for id in trackIDs {
+            dequeue(id)
+            forcedTrackIDs.remove(id)
+            if case .measuring = states[id] { states[id] = nil }
+            resumeWaiters(id)
         }
-        if !members.contains(where: { $0.id == track.id }) { members.append(track) }
-        members = members.filter { $0.albumGroupKey == track.albumGroupKey }
-        guard members.contains(where: { $0.id == track.id }) else {
-            return .unity(source: "unity.albumIncomplete")
+    }
+
+    private func waitForMeasurement(trackID: UUID) async {
+        switch measurementState(for: trackID) {
+        case .waiting, .measuring, .paused:
+            await withCheckedContinuation { continuation in
+                waiters[trackID, default: []].append(continuation)
+            }
+        default:
+            return
+        }
+    }
+
+    private func resumeWaiters(_ trackID: UUID) {
+        waiters.removeValue(forKey: trackID)?.forEach { $0.resume() }
+    }
+
+    // MARK: - Worker
+
+    /// Measures one track. Returns when the track is settled (measured or
+    /// failed) or when the unit was stopped, in which case the track stays
+    /// outstanding and is handed out again.
+    private func runMeasurement(
+        trackID: UUID,
+        priority: BackgroundWorkPriority,
+        context: BackgroundWorkContext
+    ) async -> BackgroundWorkOutcome {
+        guard !isClosed else { return .cancelled }
+        inFlightPriority[trackID] = priority
+        let isIdleWork = priority == .idleBatch
+        if isIdleWork { noteBackgroundAnalysisActivity() }
+        defer {
+            inFlightPriority[trackID] = nil
+            if isIdleWork { noteBackgroundAnalysisActivity() }
+        }
+        guard let track = trackProvider?(trackID) else {
+            let message = "这首歌曲已不在资料库中。"
+            finishFailure(trackID, message: message)
+            return .failed(message)
+        }
+        states[trackID] = .measuring(phase: .readingTags, fraction: nil)
+        let resolution = track.resolveFileURL()
+        defer { resolution.lease.release() }
+        guard let fileURL = resolution.url,
+              let identity = try? Self.fileIdentity(for: fileURL) else {
+            let message = "无法打开这首歌曲的音频文件。"
+            finishFailure(trackID, message: message)
+            return .failed(message)
+        }
+        let trim = playbackAACGaplessTrimEnabled
+        // The forced flag is only spent when the track settles, so a measurement
+        // that was stopped and handed out again is still forced.
+        let forced = forcedTrackIDs.contains(trackID)
+        var cached = forced ? nil : records[trackID]
+        if cached == nil, !forced { cached = await cache.load(id: trackID) }
+        guard !isClosed else { return .cancelled }
+        if let cached, Self.isCurrent(cached, for: identity, playbackAACGaplessTrimEnabled: trim) {
+            insert(cached)
+            finishSuccess(cached, store: false)
+            return .completed
         }
 
-        var resolvedRecords: [LoudnessTrackRecord] = []
-        var missingOrStale: [UUID] = []
-        var waitingForCache: Set<UUID> = []
-        resolvedRecords.reserveCapacity(members.count)
-
-        func inspectCachedRecord(for member: Track, identity: LoudnessFileIdentity) {
-            if let candidate = records[member.id] {
-                if Self.isCurrent(
-                    candidate,
-                    for: identity,
-                    playbackAACGaplessTrimEnabled: playbackAACGaplessTrimEnabled
-                ) {
-                    touch(member.id)
-                    resolvedRecords.append(candidate)
-                } else {
-                    missingOrStale.append(member.id)
-                }
-            } else {
-                requestCacheRecordLoad(
-                    trackID: member.id,
-                    identity: identity,
-                    trimSnapshot: playbackAACGaplessTrimEnabled,
-                    shouldScheduleMissing: shouldScheduleMissing
+        let progress: @Sendable (LoudnessAnalysisPhase, Double?) -> Void = { [weak self] phase, fraction in
+            Task { @MainActor [weak self] in
+                guard let self, case .measuring = self.states[trackID] else { return }
+                self.states[trackID] = .measuring(phase: phase, fraction: fraction)
+            }
+        }
+        do {
+            let outcome = try await Task.detached(priority: context.taskPriority) {
+                try await Self.analyze(
+                    trackID: trackID, url: fileURL, identity: identity,
+                    playbackAACGaplessTrimEnabled: trim, context: context, progress: progress
                 )
-                waitingForCache.insert(member.id)
+            }.value
+            guard !isClosed else { return .cancelled }
+            guard (try? Self.fileIdentity(for: fileURL)) == identity, trim == playbackAACGaplessTrimEnabled else {
+                let message = "音频文件正在变化，请稍后重试。"
+                finishFailure(trackID, message: message)
+                return .failed(message)
             }
-        }
-
-        for member in members {
-            if member.id == track.id {
-                guard let identity = try? Self.fileIdentity(for: fileURL) else {
-                    missingOrStale.append(member.id)
-                    continue
-                }
-                inspectCachedRecord(for: member, identity: identity)
-            } else {
-                let resolution = member.resolveFileURL()
-                defer { resolution.lease.release() }
-                guard let resolvedURL = resolution.url else {
-                    missingOrStale.append(member.id)
-                    continue
-                }
-                guard let identity = try? Self.fileIdentity(for: resolvedURL) else {
-                    missingOrStale.append(member.id)
-                    continue
-                }
-                inspectCachedRecord(for: member, identity: identity)
+            states[trackID] = .measuring(phase: .saving, fraction: 1)
+            insert(outcome.record)
+            if let failure = outcome.failure {
+                try? await cache.store(outcome.record)
+                finishFailure(trackID, message: failure, record: outcome.record)
+                return .failed(failure)
             }
+            finishSuccess(outcome.record, store: true)
+            return .completed
+        } catch is CancellationError {
+            // Stopped by the scheduler or the listener; whoever asked for the
+            // stop settles the waiters.
+            if !isClosed, case .measuring = states[trackID] { states[trackID] = nil }
+            return .cancelled
+        } catch {
+            let message = "无法测量：\(error.localizedDescription)"
+            finishFailure(trackID, message: message)
+            return .failed(message)
         }
+    }
 
-        if !missingOrStale.isEmpty || !waitingForCache.isEmpty {
-            if shouldScheduleMissing {
-                for id in missingOrStale { onMissingMeasurement?(id) }
-            }
-            return .unity(source: "unity.albumIncomplete", diagnostic: DSPDiagnostic(
-                code: "audio.loudnessAlbumUnavailable",
-                message: "Every member of the album needs a current loudness record before one shared gain can be applied.",
-                fieldPath: "loudness.album",
-                retryable: shouldScheduleMissing
-            ))
+    private func finishSuccess(_ record: LoudnessTrackRecord, store: Bool) {
+        let id = record.id
+        if store {
+            let cache = cache
+            Task { try? await cache.store(record) }
         }
-
-        guard resolvedRecords.count == members.count else { return .unity(source: "unity.albumIncomplete") }
-        let measurements = resolvedRecords.compactMap(\.measurement)
-        if measurements.count == resolvedRecords.count,
-           measurements.allSatisfy({ $0.status == .available }) {
-            return LoudnessGainSelector.albumGain(
-                configuration: configuration,
-                measurements: measurements,
-                metadata: resolvedRecords.map(\.metadata)
-            )
-        }
-        return LoudnessGainSelector.albumGain(
-            configuration: configuration,
-            measurements: [],
-            metadata: resolvedRecords.map(\.metadata)
+        index[id] = LoudnessIndexEntry(
+            analyzerVersion: record.analyzerVersion,
+            usable: record.measurement?.isUsable == true,
+            failed: record.measurement == nil,
+            analyzedAt: record.analyzedAt
         )
+        states[id] = record.measurement?.isUsable == true ? .measured : .failed("这首歌曲没有可测量的声音。")
+        settle(id)
+        scheduleIndexSave()
+        notifyChanged(id)
+    }
+
+    private func finishFailure(_ trackID: UUID, message: String, record: LoudnessTrackRecord? = nil) {
+        states[trackID] = .failed(message)
+        index[trackID] = LoudnessIndexEntry(
+            analyzerVersion: LoudnessMeasurement.currentAnalyzerVersion,
+            usable: false, failed: true, analyzedAt: record?.analyzedAt ?? Date()
+        )
+        settle(trackID)
+        scheduleIndexSave()
+        notifyChanged(trackID)
+    }
+
+    /// A track reached a final result: it leaves the queues and anyone
+    /// waiting for it is released.
+    private func settle(_ trackID: UUID) {
+        dequeue(trackID)
+        forcedTrackIDs.remove(trackID)
+        resumeWaiters(trackID)
+    }
+
+    /// Keeps the sidebar notice up while idle measurement keeps finding work,
+    /// and through short pauses (for example while the listener reaches for
+    /// the pause button); it goes once the pass ends or stays quiet.
+    private func noteBackgroundAnalysisActivity() {
+        let hasPendingIdleWork = inFlightPriority.values.contains(.idleBatch)
+            || nextIdleCandidate(excluding: []) != nil
+        guard isIdleScanActive, hasPendingIdleWork else {
+            setBackgroundAnalysisVisible(false)
+            return
+        }
+        // The notice appears once the pass has run for a few seconds, so a
+        // short pass never flashes it, and leaves after a minute without
+        // progress.
+        if !isBackgroundAnalysisVisible, backgroundRevealTask == nil {
+            backgroundRevealTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: Self.backgroundNoticeDelay)
+                guard !Task.isCancelled, let self else { return }
+                self.backgroundRevealTask = nil
+                self.isBackgroundAnalysisVisible = true
+            }
+        }
+        backgroundActivityTask?.cancel()
+        backgroundActivityTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.backgroundNoticeLinger)
+            guard !Task.isCancelled else { return }
+            self?.setBackgroundAnalysisVisible(false)
+        }
+    }
+
+    private func setBackgroundAnalysisVisible(_ visible: Bool) {
+        if !visible {
+            backgroundActivityTask?.cancel()
+            backgroundActivityTask = nil
+            backgroundRevealTask?.cancel()
+            backgroundRevealTask = nil
+        }
+        if isBackgroundAnalysisVisible != visible { isBackgroundAnalysisVisible = visible }
+    }
+
+    private static let backgroundNoticeDelay: Duration = .seconds(3)
+    private static let backgroundNoticeLinger: Duration = .seconds(60)
+
+    private func notifyChanged(_ trackID: UUID) {
+        onMeasurementFinished?(trackID)
+        if let albumKey = trackProvider?(trackID)?.albumGroupKey, !albumKey.isEmpty {
+            onAlbumMeasurementsChanged?(albumKey)
+        }
+    }
+
+    private func scheduleIndexSave() {
+        guard indexSaveTask == nil else { return }
+        indexSaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard let self, !Task.isCancelled else { return }
+            self.indexSaveTask = nil
+            let snapshot = self.index
+            try? await self.cache.storeIndex(snapshot)
+        }
+    }
+
+    // MARK: - Records
+
+    private func currentRecord(for track: Track, fileURL: URL?) -> LoudnessTrackRecord? {
+        guard let record = records[track.id] else {
+            if index[track.id] != nil { requestCacheRecordLoad(trackID: track.id) }
+            return nil
+        }
+        if let fileURL {
+            guard let identity = try? Self.fileIdentity(for: fileURL),
+                  Self.isCurrent(record, for: identity, playbackAACGaplessTrimEnabled: playbackAACGaplessTrimEnabled)
+            else { return nil }
+        } else if !isCurrentVersion(record) {
+            return nil
+        }
+        touch(track.id)
+        return record
+    }
+
+    private func isCurrentVersion(_ record: LoudnessTrackRecord) -> Bool {
+        record.cacheRecordVersion == LoudnessTrackRecord.currentCacheRecordVersion
+            && record.playbackAACGaplessTrimEnabled == playbackAACGaplessTrimEnabled
+            && (record.measurement.map {
+                $0.analyzerVersion == LoudnessMeasurement.currentAnalyzerVersion
+                    && $0.trimPolicyVersion == LoudnessMeasurement.currentTrimPolicyVersion
+            } ?? false)
     }
 
     private func insert(_ record: LoudnessTrackRecord) {
-        if let current = records[record.id], current.analyzedAt >= record.analyzedAt {
+        if let current = records[record.id], current.analyzedAt > record.analyzedAt {
             touch(record.id)
             return
         }
@@ -458,24 +893,15 @@ final class LibraryLoudnessService {
         recordLRU.append(id)
     }
 
-    private func requestCacheRecordLoad(
-        trackID: UUID,
-        identity: LoudnessFileIdentity,
-        trimSnapshot: Bool,
-        shouldScheduleMissing: Bool
-    ) {
-        guard pendingCacheLoads.insert(trackID).inserted else { return }
+    private func requestCacheRecordLoad(trackID: UUID) {
+        guard !isClosed, pendingCacheLoads.insert(trackID).inserted else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let loaded = await cache.load(id: trackID)
-            pendingCacheLoads.remove(trackID)
-            guard !isClosed else { return }
-            if let loaded { insert(loaded) }
-            let currentRecordMatchesSnapshot = records[trackID].map {
-                Self.isCurrent($0, for: identity, playbackAACGaplessTrimEnabled: trimSnapshot)
-            } ?? false
-            guard shouldScheduleMissing, !currentRecordMatchesSnapshot else { return }
-            onMissingMeasurement?(trackID)
+            let loaded = await self.cache.load(id: trackID)
+            self.pendingCacheLoads.remove(trackID)
+            guard !self.isClosed, let loaded else { return }
+            self.insert(loaded)
+            self.notifyChanged(trackID)
         }
     }
 
@@ -488,7 +914,9 @@ final class LibraryLoudnessService {
               record.metadataParserVersion == LoudnessMetadata.currentParserVersion,
               record.playbackAACGaplessTrimEnabled == playbackAACGaplessTrimEnabled,
               record.fileIdentity == identity else { return false }
-        guard let measurement = record.measurement else { return true }
+        // A failure carries no analyzer version; it is decoded again when
+        // requested instead of being reused across analyzer changes.
+        guard let measurement = record.measurement else { return false }
         return measurement.analyzerVersion == LoudnessMeasurement.currentAnalyzerVersion
             && measurement.decoderRuleVersion == LoudnessMeasurement.currentDecoderRuleVersion
             && measurement.trimPolicyVersion == LoudnessMeasurement.currentTrimPolicyVersion
@@ -522,15 +950,21 @@ final class LibraryLoudnessService {
         )
     }
 
+    /// One sequential decode of the playback frame range. Pause and cancel
+    /// are honored between decode chunks; progress is reported at most four
+    /// times a second.
     private nonisolated static func analyze(
         trackID: UUID,
         url: URL,
         identity: LoudnessFileIdentity,
-        playbackAACGaplessTrimEnabled: Bool
+        playbackAACGaplessTrimEnabled: Bool,
+        context: BackgroundWorkContext,
+        progress: @escaping @Sendable (LoudnessAnalysisPhase, Double?) -> Void
     ) async throws -> LoudnessWorkerOutcome {
-        try Task.checkCancellation()
+        try await context.checkpoint()
+        progress(.readingTags, nil)
         var metadata = await readMetadata(from: url)
-        try Task.checkCancellation()
+        try await context.checkpoint()
 
         var measurement: LoudnessMeasurement?
         var failure: String?
@@ -547,27 +981,58 @@ final class LibraryLoudnessService {
             let analyzer = LoudnessAnalyzer(format: dspFormat)
             guard let buffer = AVAudioPCMBuffer(
                 pcmFormat: audioFile.processingFormat,
-                frameCapacity: 8_192
+                frameCapacity: decodeChunkFrames
             ) else {
                 throw LoudnessScanError.bufferAllocationFailed
             }
 
+            progress(.analyzing, 0)
+            var lastReport = ProcessInfo.processInfo.systemUptime
+            var decoderStoppedEarly = false
             while audioFile.framePosition < endFrame {
-                try Task.checkCancellation()
+                try await context.checkpoint()
                 let remaining = endFrame - audioFile.framePosition
                 let requestedFrames = AVAudioFrameCount(min(Int64(buffer.frameCapacity), remaining))
                 guard requestedFrames > 0 else { break }
-                try audioFile.read(into: buffer, frameCount: requestedFrames)
+                do {
+                    try audioFile.read(into: buffer, frameCount: requestedFrames)
+                } catch {
+                    // A damaged tail ends decoding the same way it ends playback.
+                    decoderStoppedEarly = true
+                    break
+                }
                 let frameCount = Int(buffer.frameLength)
-                guard frameCount > 0 else { break }
+                guard frameCount > 0 else {
+                    decoderStoppedEarly = true
+                    break
+                }
                 guard let channelData = buffer.floatChannelData else {
                     throw LoudnessScanError.floatPCMUnavailable
                 }
                 analyzer.append(channelData: UnsafePointer(channelData), frameCount: frameCount)
+                let now = ProcessInfo.processInfo.systemUptime
+                if now - lastReport >= 0.25, range.frameCount > 0 {
+                    lastReport = now
+                    progress(.analyzing, Double(analyzer.receivedFrames) / Double(range.frameCount))
+                }
             }
             var result = analyzer.finish(playbackAACGaplessTrimEnabled: playbackAACGaplessTrimEnabled)
             let analyzedFrames = result.analyzedFrameCount
-            guard analyzedFrames == range.frameCount else { throw LoudnessScanError.incompleteDecodedRange }
+            // The declared length is an estimate for VBR MP3 and can overstate
+            // files with a damaged tail; decoding usually ends a fraction of a
+            // second early. What decodes is what plays, so it is measured,
+            // unless most of the file is missing.
+            if analyzedFrames < range.frameCount {
+                guard Double(analyzedFrames) >= Double(range.frameCount) * Self.minimumDecodedShare else {
+                    throw LoudnessScanError.incompleteDecodedRange
+                }
+                result.diagnostics.append(DSPDiagnostic(
+                    code: "audio.loudnessDecodedShort",
+                    message: "Decoding ended \(range.frameCount - analyzedFrames) frame(s) before the declared length"
+                        + (decoderStoppedEarly ? " at end of stream." : "."),
+                    fieldPath: "loudness.analysisFrameRange"
+                ))
+            }
             result.validStartFrame = range.startingFrame
             result.validEndFrame = range.startingFrame + analyzedFrames
             result.analysisFrameRange = "renderer-decoded-range-v2"
@@ -580,10 +1045,14 @@ final class LibraryLoudnessService {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            failure = "Audio decoding failed; the source metadata was retained without a PCM measurement."
+            failure = "音频无法解码，未能测量响度。"
+            Log.warning(
+                "[Loudness] decode failed track=\(trackID) file=\(url.lastPathComponent) error=\(error.localizedDescription)",
+                category: .audio
+            )
             metadata.diagnostics.append(DSPDiagnostic(
                 code: "audio.loudnessDecodeFailed",
-                message: "The file metadata was retained, but decoded PCM was unavailable for loudness measurement.",
+                message: "Decoded PCM was unavailable for loudness measurement: \(error.localizedDescription)",
                 fieldPath: "loudness.measurement",
                 retryable: true
             ))
@@ -633,10 +1102,7 @@ final class LibraryLoudnessService {
         } catch {
             readFailed = true
         }
-        let metadata = LoudnessMetadataParser.parse(
-            tags: tags,
-            containerHint: containerHint(for: url)
-        )
+        let metadata = LoudnessMetadataParser.parse(tags: tags, containerHint: containerHint(for: url))
         guard readFailed else { return metadata }
         var result = metadata
         result.diagnostics.append(DSPDiagnostic(

@@ -6,7 +6,7 @@ struct SkinSceneActions {
     var previous: () -> Void = {}
     var next: () -> Void = {}
     var seek: (Double) -> Void = { _ in }
-    var setVolume: (Double) -> Void = { _ in }
+    var setVolume: @MainActor @Sendable (Double) -> Void = { _ in }
     var setPlaybackOrder: (PlaybackOrderMode) -> Void = { _ in }
     var setExternalPlaybackOrder: (AppleMusicPlaybackMode) -> Void = { _ in }
     var like: () -> Void = {}

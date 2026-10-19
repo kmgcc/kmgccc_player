@@ -340,6 +340,20 @@ extension ArtworkColorExtractor {
         return analyzeInternal(sample: sample, microAccentCandidates: microAccentCandidates)
     }
 
+    nonisolated static func analyze(from url: URL) -> ArtworkColorAnalysis? {
+        guard let sample = sampledBitmap(from: url, side: 64) else { return nil }
+        let microAccentCandidates = sampledBitmap(from: url, side: 192)
+            .map { computeMicroAccentCandidates(from: $0) } ?? []
+        return analyzeInternal(sample: sample, microAccentCandidates: microAccentCandidates)
+    }
+
+    nonisolated static func analyze(from cgImage: CGImage) -> ArtworkColorAnalysis? {
+        guard let sample = sampledBitmap(from: cgImage, side: 64) else { return nil }
+        let microAccentCandidates = sampledBitmap(from: cgImage, side: 192)
+            .map { computeMicroAccentCandidates(from: $0) } ?? []
+        return analyzeInternal(sample: sample, microAccentCandidates: microAccentCandidates)
+    }
+
     /// Test / self-check entry point. Accepts a synthetic RGBA pixel buffer
     /// without going through `CGImageSource`, so the colour decision engine
     /// can be exercised with deterministic inputs (see

@@ -9,6 +9,7 @@ import SwiftUI
 
 struct FullscreenQuickAppearancePanel: View {
     let scale: CGFloat
+    let glassStyle: FullscreenControlsGlassStyle
     let foregroundProfile: FullscreenOverlayForegroundProfile
     let onDismiss: () -> Void
 
@@ -32,12 +33,6 @@ struct FullscreenQuickAppearancePanel: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            // Clear Glass remains the surface. This is a single polarity-aware
-            // tint layer (not another material) that quiets busy artwork.
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(presentationStyle.surfaceTintColor.opacity(0.20))
-                .allowsHitTesting(false)
-
             FullscreenSettingsContainerView(
                 presentationStyle: presentationStyle,
                 embedsScrollView: true
@@ -45,33 +40,23 @@ struct FullscreenQuickAppearancePanel: View {
             .padding(.horizontal, contentPadding)
             .padding(.top, contentPadding)
             .padding(.bottom, presentationStyle.panelBottomPadding)
-            .environment(\.colorScheme, foregroundProfile.colorScheme)
+            .environment(\.colorScheme, glassStyle.colorScheme)
 
             closeButton
                 .padding(.top, presentationStyle.panelBottomPadding)
                 .padding(.trailing, presentationStyle.panelBottomPadding)
         }
         .frame(width: panelWidth, height: panelHeight, alignment: .topLeading)
-        .glassEffect(
-            .clear,
-            in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        .liquidGlassRect(
+            cornerRadius: cornerRadius,
+            colorScheme: glassStyle.colorScheme,
+            accentColor: glassStyle.accentColor,
+            prominence: .prominent,
+            materialStyle: glassStyle.materialStyle,
+            isFloating: true
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(
-                    GlassStyleTokens.glassBorderColor(for: foregroundProfile.colorScheme),
-                    lineWidth: presentationStyle.scaled(GlassStyleTokens.hairlineWidth)
-                )
-                .allowsHitTesting(false)
-        )
-        .background(
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(presentationStyle.surfaceTintColor.opacity(0.08))
-                .allowsHitTesting(false)
-        )
-        .subtleFloatingShadow()
         .controlSize(presentationStyle.controlSize)
-        .environment(\.colorScheme, foregroundProfile.colorScheme)
+        .environment(\.colorScheme, glassStyle.colorScheme)
         .onAppear(perform: registerDismissHandler)
         .onDisappear(perform: unregisterDismissHandler)
     }

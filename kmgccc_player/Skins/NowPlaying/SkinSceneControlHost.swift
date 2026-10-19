@@ -37,7 +37,6 @@ struct SkinSceneControlHost<Content: View>: View {
             presentation: .init(
                 glassStyle: .init(colorScheme: theme.colorScheme, accentColor: theme.accentColor, materialStyle: material),
                 miniPlayerForegroundProfile: profile,
-                quickPanelForegroundProfile: .init(primary: profile.primary, isDarkForeground: theme.colorScheme == .light),
                 primaryColor: Color(nsColor: profile.primary), iconBlendMode: profile.iconBlendMode,
                 playbackMode: playback.stablePresentation.localPlaybackOrderMode ?? settings.playbackOrderMode,
                 hasTrack: playback.stablePresentation.hasTrack, isShowingLyrics: lyricsVisible,
@@ -91,7 +90,8 @@ struct SkinSceneControlHost<Content: View>: View {
                             .onTapGesture { controls.isQuickAppearancePanelPresented = false }
                             .skinControlRegion()
                         FullscreenQuickAppearancePanel(
-                            scale: scale, foregroundProfile: native.presentation.quickPanelForegroundProfile,
+                            scale: scale, glassStyle: native.presentation.glassStyle,
+                            foregroundProfile: native.presentation.quickPanelForegroundProfile,
                             onDismiss: { controls.isQuickAppearancePanelPresented = false }
                         )
                         .frame(width: 560 * scale, height: 690 * scale)

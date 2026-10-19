@@ -62,12 +62,20 @@ final class AppleMusicBridge: @unchecked Sendable {
     nonisolated(unsafe) private var fetchPositionScript: NSAppleScript?
     nonisolated(unsafe) private var fetchFullScript: NSAppleScript?
     nonisolated(unsafe) private var controlScripts: [ControlScript: NSAppleScript] = [:]
+    nonisolated(unsafe) private var scriptsAreCompiled = false
+    private let scriptInitializationLock = NSLock()
     private let pollingScriptLock = NSLock()
     private let controlScriptLock = NSLock()
     private let artworkScriptLock = NSLock()
 
-    init() {
+    init() {}
+
+    private nonisolated func prepareScriptsIfNeeded() {
+        scriptInitializationLock.lock()
+        defer { scriptInitializationLock.unlock() }
+        guard !scriptsAreCompiled else { return }
         compileScripts()
+        scriptsAreCompiled = true
     }
 
     nonisolated func isMusicAppRunning() -> Bool {
@@ -90,6 +98,7 @@ final class AppleMusicBridge: @unchecked Sendable {
         guard isMusicAppRunning() else {
             return NowPlayingInfo(state: .stopped)
         }
+        prepareScriptsIfNeeded()
         guard let descriptor = execute(fetchPositionScript, lock: pollingScriptLock),
               descriptor.numberOfItems >= 2 else {
             return NowPlayingInfo(state: .unknown)
@@ -120,6 +129,7 @@ final class AppleMusicBridge: @unchecked Sendable {
         guard isMusicAppRunning() else {
             return .failure(.appNotRunning)
         }
+        prepareScriptsIfNeeded()
 
         let execution = executeDetailed(fetchFullScript, lock: pollingScriptLock)
         if let errorNumber = execution.errorNumber,
@@ -275,27 +285,32 @@ final class AppleMusicBridge: @unchecked Sendable {
 
     @discardableResult
     nonisolated func playPause() -> Bool {
-        execute(controlScripts[.playPause], lock: controlScriptLock) != nil
+        prepareScriptsIfNeeded()
+        return execute(controlScripts[.playPause], lock: controlScriptLock) != nil
     }
 
     @discardableResult
     nonisolated func play() -> Bool {
-        execute(controlScripts[.play], lock: controlScriptLock) != nil
+        prepareScriptsIfNeeded()
+        return execute(controlScripts[.play], lock: controlScriptLock) != nil
     }
 
     @discardableResult
     nonisolated func pause() -> Bool {
-        execute(controlScripts[.pause], lock: controlScriptLock) != nil
+        prepareScriptsIfNeeded()
+        return execute(controlScripts[.pause], lock: controlScriptLock) != nil
     }
 
     @discardableResult
     nonisolated func nextTrack() -> Bool {
-        execute(controlScripts[.nextTrack], lock: controlScriptLock) != nil
+        prepareScriptsIfNeeded()
+        return execute(controlScripts[.nextTrack], lock: controlScriptLock) != nil
     }
 
     @discardableResult
     nonisolated func previousTrack() -> Bool {
-        execute(controlScripts[.previousTrack], lock: controlScriptLock) != nil
+        prepareScriptsIfNeeded()
+        return execute(controlScripts[.previousTrack], lock: controlScriptLock) != nil
     }
 
     @discardableResult

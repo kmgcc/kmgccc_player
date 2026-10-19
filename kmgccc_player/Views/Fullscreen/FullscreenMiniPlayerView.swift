@@ -117,9 +117,6 @@ struct FullscreenMiniPlayerView: View {
             : playbackModeExpandedWidth
         return isPlaybackModeExpanded ? expandedWidth : playbackModeCollapsedWidth
     }
-    private var minimumProgressAreaWidth: CGFloat { layoutMetrics.minimumProgressAreaWidth }
-    private var preferredProgressAreaWidth: CGFloat { layoutMetrics.preferredProgressAreaWidth }
-    private var hStackSpacing: CGFloat { layoutMetrics.sectionSpacing }
     private var hPadding: CGFloat { layoutMetrics.horizontalPadding }
     private var vPadding: CGFloat { 8 * scale }
     private var trackInfoHSpacing: CGFloat { 16 * scale }
@@ -137,7 +134,7 @@ struct FullscreenMiniPlayerView: View {
         let policy = configuredMotionPolicy.resolving(
             accessibilityReduceMotion: reduceMotion
         )
-        return policy.animation(for: motionTokens[.layout])
+        return policy.animation(for: motionTokens.miniPlayerLayout)
     }
 
     var body: some View {
@@ -159,7 +156,10 @@ struct FullscreenMiniPlayerView: View {
             profile: resolvedForegroundProfile
         )
 #endif
-        HStack(spacing: hStackSpacing) {
+        MiniPlayerContentLayout(
+            metrics: layoutMetrics, playbackModeWidth: playbackModeOccupancyWidth,
+            height: barHeight - vPadding * 2
+        ) {
             // Left: Cover + Title/Artist
             FullscreenMiniPlayerLeftSection(
                 hasTrack: playbackCoordinator.stablePresentation.hasTrack,
@@ -204,21 +204,12 @@ struct FullscreenMiniPlayerView: View {
 
             // Playback Mode
             playbackModeView
-                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
-                .frame(width: playbackModeOccupancyWidth, alignment: .leading)
 
-            // The progress/spectrum row is the only flexible section. Its
-            // proposal follows the outer pill's animated width on every frame,
-            // while the fixed controls keep their positions and dimensions.
+            // The layout proposes the current remaining width, not the final
+            // width of an independently animated outer frame.
             FullscreenMiniPlayerLivePresentationReader { presentation in
                 progressArea(presentation: presentation)
             }
-                .frame(
-                    minWidth: minimumProgressAreaWidth,
-                    idealWidth: preferredProgressAreaWidth,
-                    maxWidth: .infinity
-                )
-                .layoutPriority(-1)
                 .frame(height: barHeight - vPadding * 2, alignment: .center)
 
             // Volume removed - now external component
@@ -226,6 +217,7 @@ struct FullscreenMiniPlayerView: View {
         .padding(.horizontal, hPadding)
         .padding(.vertical, vPadding)
         .frame(height: barHeight)
+        .clipShape(Capsule())
         .liquidGlassPill(
             colorScheme: glassStyle.colorScheme,
             accentColor: glassStyle.accentColor,
@@ -289,12 +281,12 @@ struct FullscreenMiniPlayerView: View {
                     mode: playbackMode,
                     isEnabled: isEnabled,
                     isExpanded: isPlaybackModeExpanded,
+                    expansionWidths: playbackModeCollapsedWidth...playbackModeExpandedWidth,
                     iconSize: 16 * scale,
                     selectedColor: controlPrimaryColor,
                     unselectedColor: controlSecondaryColor,
                     useScreenBlend: usesScreenBlendForControls,
                     pillTintColor: fullscreenControlPillTintColor,
-                    pillTintBlendMode: .normal,
                     onInteraction: onInteraction,
                     scale: scale,
                     onModeChange: { mode in
@@ -308,12 +300,12 @@ struct FullscreenMiniPlayerView: View {
                     mode: presentation.appleMusicPlaybackMode ?? .sequence,
                     isEnabled: isEnabled,
                     isExpanded: isPlaybackModeExpanded,
+                    expansionWidths: playbackModeCollapsedWidth...layoutMetrics.externalPlaybackModeExpandedWidth,
                     iconSize: 16 * scale,
                     selectedColor: controlPrimaryColor,
                     unselectedColor: controlSecondaryColor,
                     useScreenBlend: usesScreenBlendForControls,
                     pillTintColor: fullscreenControlPillTintColor,
-                    pillTintBlendMode: .normal,
                     onInteraction: onInteraction,
                     scale: scale,
                     onModeChange: { mode in
@@ -322,13 +314,14 @@ struct FullscreenMiniPlayerView: View {
                 )
             }
         }
-        .frame(width: playbackModeOccupancyWidth, height: 36 * scale, alignment: .leading)
+        .environment(\.colorScheme, glassStyle.colorScheme)
+        .frame(maxWidth: .infinity)
+        .frame(height: 36 * scale)
         .anchorPreference(
             key: PlaybackModeRetapTipAnchorPreferenceKey.self,
             value: .bounds
         ) { $0 }
         .contentShape(Capsule())
-        .motionAnimation(.layout, value: isPlaybackModeExpanded)
         .onHover { hovering in
             guard isEnabled else {
                 if isPlaybackModeExpanded {
@@ -339,7 +332,7 @@ struct FullscreenMiniPlayerView: View {
             if hovering {
                 onInteraction()
             }
-            withAnimation(layoutAnimation) {
+            FullscreenBottomControlsAnimationPolicy.animateGeometry(with: layoutAnimation) {
                 isPlaybackModeExpanded = hovering
             }
         }
@@ -482,12 +475,13 @@ struct FullscreenMiniPlayerView: View {
                 .blendMode(isEnabled ? controlBlendMode : .normal)
                 .frame(width: 24)
 
-            Slider(
-                value: Binding(
+            VolumeSlider(
+                volume: Binding(
                     get: { presentation.volume },
                     set: { playbackCoordinator.setVolume($0) }
                 ),
-                in: 0...1
+                markerColor: controlPrimaryColor.opacity(0.85),
+                hidesMarkerAtDefault: true
             )
             .controlSize(.regular)
             .tint(controlPrimaryColor)

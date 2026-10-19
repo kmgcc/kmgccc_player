@@ -38,6 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.debug("[AppDelegate] didFinishLaunching", category: .ui)
+        AppSettings.shared.applyAppearanceToAppAndWindows()
+        installSystemAppearanceObserver()
         disableWindowTabbing()
         configureMainMenu()
         installKeyboardPlaybackMonitor()
@@ -101,6 +103,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func disableWindowTabbing() {
         NSWindow.allowsAutomaticWindowTabbing = false
+    }
+
+    private func installSystemAppearanceObserver() {
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                if AppSettings.shared.followSystemAppearance {
+                    AppSettings.shared.applyAppearanceToAppAndWindows()
+                }
+            }
+        }
     }
 
     // MARK: - Keyboard playback monitor

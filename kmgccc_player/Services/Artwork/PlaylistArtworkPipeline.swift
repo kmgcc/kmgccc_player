@@ -133,17 +133,16 @@ actor PlaylistArtworkPipeline {
         return UUID(uuidString: uuidString)
     }
 
-    @discardableResult
+    /// Loads the requests in order. It runs inside a unit of the App background
+    /// scheduler; the checkpoint between requests lets a more urgent unit take
+    /// over and ends the prefetch when it is cancelled.
     nonisolated func prefetch(
         _ requests: [PlaylistArtworkRequest],
-        priority: TaskPriority = .background
-    ) -> Task<Void, Never>? {
-        guard !requests.isEmpty else { return nil }
-        return Task.detached(priority: priority) {
-            for request in requests {
-                if Task.isCancelled { return }
-                _ = await self.load(request)
-            }
+        context: BackgroundWorkContext
+    ) async {
+        for request in requests {
+            guard (try? await context.checkpoint()) != nil else { return }
+            _ = await self.load(request)
         }
     }
 

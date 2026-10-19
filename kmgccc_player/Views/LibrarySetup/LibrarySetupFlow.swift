@@ -1,4 +1,5 @@
 import AppKit
+import PopupKit
 import SwiftUI
 
 struct LibrarySetupFlow: View {
@@ -90,13 +91,13 @@ struct LibrarySetupFlow: View {
             title: title,
             subtitle: subtitle,
             systemImage: icon,
-            iconColor: themeStore.accentColor
+            iconColor: themeStore.accentColor,
+            onClose: { dismissFlow() }
         ) {
             content.frame(maxWidth: .infinity, minHeight: 220, alignment: .topLeading)
         } footer: {
-            HStack {
+            Group {
                 if canGoBack { SettingsTaskDialogButton("返回", kind: .secondary) { goBack() } }
-                Spacer()
                 footerButtons
             }
         }
@@ -200,7 +201,7 @@ struct LibrarySetupFlow: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .appPopupContentBackground(cornerRadius: 10)
                     storageDirectorySection
                     if case .failed(let message) = flow.operation {
                         Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
@@ -223,7 +224,8 @@ struct LibrarySetupFlow: View {
                 } label: {
                     Label("添加文件或文件夹", systemImage: "plus")
                 }
-                .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
+                .buttonStyle(AppPanelButtonStyle())
+                .font(.system(size: 13, weight: .medium))
                 Spacer()
                 if !flow.selectedMusicURLs.isEmpty {
                     Text("已选择 \(flow.selectedMusicURLs.count) 项")
@@ -233,7 +235,7 @@ struct LibrarySetupFlow: View {
             }
 
             if !flow.selectedMusicURLs.isEmpty {
-                ScrollView {
+                AppPopupScrollRegion {
                     VStack(spacing: 0) {
                         ForEach(Array(flow.selectedMusicURLs.enumerated()), id: \.element) { index, url in
                             HStack(spacing: 10) {
@@ -300,12 +302,13 @@ struct LibrarySetupFlow: View {
             Button(flow.storageParentURL == nil ? "选择位置" : "更改") {
                 chooseStorageLocation()
             }
-            .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
+            .buttonStyle(AppPanelButtonStyle())
+            .font(.system(size: 13, weight: .medium))
             .disabled(flow.operation == .working)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .appPopupContentBackground(cornerRadius: 10)
     }
 
     @ViewBuilder
@@ -531,51 +534,37 @@ private struct LibraryPlaylistCreationPrompt: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
-        AppDialogFrame(
-            header: {
-                AppDialogHeader(
-                    title: "创建播放列表？",
-                    subtitle: "从已选音乐中选择要同步的来源",
-                    systemImage: "music.note.list",
-                    iconColor: themeStore.accentColor
-                )
-                .padding(.horizontal, AppDialogTokens.headerHorizontalPadding)
-                .padding(.top, 12)
-                .padding(.bottom, 12)
-            },
-            content: {
-                Text("文件夹来源会持续同步；单独歌曲只加入这次创建的播放列表。")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(20)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            },
-            footer: {
-                AppDialogFooter {
-                    HStack {
-                        Spacer()
-                        Button("取消") { dismiss() }
-                            .keyboardShortcut(.cancelAction)
-                            .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
-                        Button("暂不新建") {
-                            onSkip()
-                            dismiss()
-                        }
-                        .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
-                        Button("创建播放列表") {
-                            onCreate()
-                            dismiss()
-                        }
-                        .keyboardShortcut(.defaultAction)
-                        .buttonStyle(
-                            AppDialogGlassButtonStyle(kind: .primary, tint: themeStore.accentColor)
-                        )
-                    }
+        AppPopupFrame(
+            title: "创建播放列表？", subtitle: "从已选音乐中选择要同步的来源", systemImage: "music.note.list",
+            onClose: { dismiss() }
+        ) {
+            Text("文件夹来源会持续同步；单独歌曲只加入这次创建的播放列表。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+        } footer: {
+            AppPopupActionGroup {
+                Button("取消") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
+                Button("暂不新建") {
+                    onSkip()
+                    dismiss()
                 }
+                .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
+                Button("创建播放列表") {
+                    onCreate()
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(
+                    AppDialogGlassButtonStyle(kind: .primary, tint: themeStore.accentColor)
+                )
             }
-        )
-        .frame(width: 460)
+        }
+        .frame(width: AppPopupStyle().width)
     }
 }
 
@@ -601,94 +590,80 @@ struct LibraryImportSourceSelectionSheet: View {
     }
 
     var body: some View {
-        AppDialogFrame(
-            header: {
-                AppDialogHeader(
-                    title: "选择播放列表来源",
-                    subtitle: "选择要同步的来源",
-                    systemImage: "music.note.list",
-                    iconColor: themeStore.accentColor
-                )
-                .padding(.horizontal, AppDialogTokens.headerHorizontalPadding)
-                .padding(.top, 12)
-                .padding(.bottom, 12)
-            },
-            content: {
-                VStack(alignment: .leading, spacing: 12) {
-                    ScrollView(.vertical) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(entries) { entry in
-                                let isSelected = selectedEntryIDs.contains(entry.id)
-                                Button {
-                                    if isSelected {
-                                        selectedEntryIDs.remove(entry.id)
-                                    } else {
-                                        selectedEntryIDs.insert(entry.id)
-                                    }
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                                            .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
-                                            .font(.system(size: 16, weight: .medium))
-                                        Image(systemName: entry.kind == .directory ? "folder.fill" : "music.note.list")
-                                            .foregroundStyle(.secondary)
-                                            .frame(width: 16)
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(entry.displayName)
-                                                .lineLimit(1)
-                                                .truncationMode(.middle)
-                                            Text(entry.detail)
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                            .truncationMode(.middle)
-                                        }
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+        AppPopupFrame(
+            title: "选择播放列表来源", subtitle: "选择要同步的来源", systemImage: "music.note.list",
+            onClose: { dismiss() }
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                AppPopupScrollRegion(height: 190) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(entries) { entry in
+                            let isSelected = selectedEntryIDs.contains(entry.id)
+                            Button {
+                                if isSelected {
+                                    selectedEntryIDs.remove(entry.id)
+                                } else {
+                                    selectedEntryIDs.insert(entry.id)
                                 }
-                                .buttonStyle(.plain)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 8)
-                                .background(
-                                    isSelected
-                                        ? themeStore.accentColor.opacity(0.10)
-                                        : Color.primary.opacity(0.045),
-                                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                )
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
+                                        .font(.system(size: 16, weight: .medium))
+                                    Image(systemName: entry.kind == .directory ? "folder.fill" : "music.note.list")
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 16)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(entry.displayName)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                        Text(entry.detail)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(
+                                isSelected
+                                    ? themeStore.accentColor.opacity(0.10)
+                                    : Color.primary.opacity(0.045),
+                                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            )
                         }
                     }
-                    .frame(maxHeight: 190)
-                    .padding(.leading, 4)
+                }
+                .frame(maxHeight: 190)
+                .padding(.leading, 4)
 
-                    Text("文件夹来源会随扫描更新。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            },
-            footer: {
-                AppDialogFooter {
-                    HStack {
-                        Spacer()
-                        Button("取消") { dismiss() }
-                            .keyboardShortcut(.cancelAction)
-                            .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
-                        Button("继续") {
-                            let selected = entries.filter { selectedEntryIDs.contains($0.id) }
-                            onConfirm(selected)
-                            dismiss()
-                        }
-                        .keyboardShortcut(.defaultAction)
-                        .buttonStyle(
-                            AppDialogGlassButtonStyle(kind: .primary, tint: themeStore.accentColor)
-                        )
-                    }
-                }
+                Text("文件夹来源会随扫描更新。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-        )
-        .frame(width: 460)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+        } footer: {
+            AppPopupActionGroup {
+                Button("取消") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
+                Button("继续") {
+                    let selected = entries.filter { selectedEntryIDs.contains($0.id) }
+                    onConfirm(selected)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(
+                    AppDialogGlassButtonStyle(kind: .primary, tint: themeStore.accentColor)
+                )
+            }
+        }
+        .frame(width: AppPopupStyle().width)
     }
 }

@@ -192,10 +192,12 @@ struct NativePagePresentation: NSViewRepresentable {
                     // spacer. It has no visible rows and is already valid.
                     if visible.location != NSNotFound, visible.length > 0 {
                         for row in visible.location..<min(NSMaxRange(visible), table.numberOfRows) {
-                            guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true),
-                                  let column = table.tableColumns.first,
-                                  abs(cell.bounds.width - column.width) < 1 else { return nil }
+                            guard let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) else { return nil }
                             cell.layoutSubtreeIfNeeded()
+                            // Sidebar cells have native insets and need not fill
+                            // the column. Their actual frames participate in the
+                            // stable-layout fingerprint below.
+                            guard cell.bounds.width > 0, cell.bounds.height > 0 else { return nil }
                         }
                     }
                 }

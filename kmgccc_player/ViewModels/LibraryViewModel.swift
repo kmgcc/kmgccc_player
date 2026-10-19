@@ -103,6 +103,9 @@ struct LibraryAutomationAlbumMetadataPatch {
     let metadataSource: String?
     let metadataFetchedAt: Date?
     let metadataConfidence: Double?
+    /// "专辑内响度统一": true or false overrides, nil follows the automatic
+    /// judgement. Applied only when `fields` names it.
+    var loudnessUnified: Bool? = nil
 }
 
 struct LibraryAutomationEntityMetadataMutationOutcome {
@@ -399,8 +402,16 @@ final class LibraryViewModel {
 
     /// All tracks loaded from Music Library (in-memory snapshot).
     private(set) var allTracks: [Track] = [] {
-        didSet { albumKeyFirstTrackMap = nil }
+        didSet {
+            albumKeyFirstTrackMap = nil
+            tracksRevision &+= 1
+        }
     }
+
+    /// Bumped whenever `allTracks` is reassigned. Background work sources
+    /// compare it to know when to include added songs. Not observed.
+    @ObservationIgnored
+    private(set) var tracksRevision = 0
     private(set) var playlistItemAddedAtMap: [UUID: [UUID: Date]] = [:]
 
     /// Rebuildable quality and duplicate projection for the Data settings
@@ -531,7 +542,9 @@ final class LibraryViewModel {
         if isSameSelection {
             searchResetTrigger += 1
         } else {
-            let navAnimation = MotionPolicy.full.animation(for: MotionTokens.standard[.navigation])
+            let navAnimation = MotionPolicy.system(
+                accessibilityReduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            ).animation(for: MotionTokens.standard[.navigation])
             withAnimation(navAnimation) {
                 currentSelection = selection
             }
@@ -2134,7 +2147,8 @@ final class LibraryViewModel {
                 entry.qqMusicAlbumMid ?? "",
                 entry.metadataSource ?? "",
                 fetchedAt,
-                confidence
+                confidence,
+                entry.loudnessUnifiedOverride.map { $0 ? "unified" : "perTrack" } ?? ""
             ]
         )
     }
@@ -2558,19 +2572,28 @@ final class LibraryViewModel {
                 changed = changed || updated.metadataConfidence != patch.metadataConfidence
                 updated.metadataConfidence = patch.metadataConfidence
             }
-            guard changed else {
+            let loudnessChanged = patch.fields.contains("loudnessUnified")
+                && current.loudnessUnifiedOverride != patch.loudnessUnified
+            guard changed || loudnessChanged else {
                 skippedIDs.append(albumID)
                 return
             }
 
-            updated.updatedAt = Date()
-            try await self.repository.applyAlbumEdits(original: current, updated: updated)
-            await self.refresh()
+            let resultingKey = LibraryNormalization.retitledAlbumKey(
+                existingKey: current.canonicalKey,
+                newAlbumTitle: updated.displayTitle
+            )
+            if changed {
+                updated.updatedAt = Date()
+                try await self.repository.applyAlbumEdits(original: current, updated: updated)
+                await self.refresh()
+            }
+            if loudnessChanged {
+                self.setAlbumLoudnessOverride(albumKey: changed ? resultingKey : current.canonicalKey,
+                                              unified: patch.loudnessUnified)
+            }
             let resultingID = self.albumEntries.first {
-                $0.canonicalKey == LibraryNormalization.retitledAlbumKey(
-                    existingKey: current.canonicalKey,
-                    newAlbumTitle: updated.displayTitle
-                )
+                $0.canonicalKey == (changed ? resultingKey : current.canonicalKey)
             }?.id ?? albumID
             updatedIDs.append(resultingID)
         }
@@ -2799,6 +2822,37 @@ final class LibraryViewModel {
         markRefreshTrigger(affectsHome: true)
     }
 
+    /// Whether a playlist with songs has no cover on disk yet, neither its own
+    /// nor a generated one. Reads only the small sidecar file.
+    func playlistLacksPersistedCover(_ playlist: Playlist) -> Bool {
+        guard !playlist.tracks.isEmpty else { return false }
+        guard let sidecar = libraryService.loadPlaylistSidecar(playlistID: playlist.id) else { return true }
+        return sidecar.headerArtworkSource != .custom
+            && sidecar.customHeaderArtworkFileName == nil
+            && sidecar.generatedHeaderArtworkFileName == nil
+    }
+
+    /// Generates and saves the first cover of a playlist ahead of its first
+    /// visit. The resolver keeps an existing cover, so a cover made meanwhile
+    /// by a visible page wins. Returns whether the playlist now has a cover.
+    func generateMissingPlaylistCover(
+        playlistID: UUID,
+        priority: TaskPriority
+    ) async -> Bool {
+        guard let playlist = playlists.first(where: { $0.id == playlistID }),
+              !playlist.tracks.isEmpty else { return false }
+        let request = DetailHeaderArtworkRequest.playlist(
+            selectionIdentity: "playlist-\(playlistID)",
+            playlistID: playlistID,
+            tracks: playlist.tracks
+        )
+        let resolved = await detailHeaderArtworkResolver.resolveDeferredArtwork(
+            for: request,
+            priority: priority
+        )
+        return resolved != nil
+    }
+
     private func refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
         playlistID: UUID,
         previousTrackCount: Int
@@ -2994,6 +3048,9 @@ final class LibraryViewModel {
         _ entry: ArtistEntry,
         minimumConfidence: Double = 0.70
     ) async -> ArtistEntry? {
+        guard !LibraryNormalization.isUnknownArtist(entry.displayName) else {
+            return nil
+        }
         do {
             let detail = try await metadataDetailCoordinator.fetchArtistDetail(
                 name: entry.displayName,
@@ -3037,6 +3094,9 @@ final class LibraryViewModel {
     }
 
     func searchArtistArtworkCandidates(_ entry: ArtistEntry) async -> [CoverCandidate] {
+        guard !LibraryNormalization.isUnknownArtist(entry.displayName) else {
+            return []
+        }
         do {
             return try await artistArtworkProviderCoordinator.searchCandidates(
                 artist: entry.displayName,
@@ -3057,6 +3117,9 @@ final class LibraryViewModel {
         allowReplacingExistingArtwork: Bool,
         reason: String
     ) async -> Bool {
+        guard !LibraryNormalization.isUnknownArtist(entry.displayName) else {
+            return false
+        }
         guard allowReplacingExistingArtwork || !hasPersistedArtistArtwork(entry) else {
             return false
         }
@@ -3218,6 +3281,9 @@ final class LibraryViewModel {
         _ entry: AlbumEntry,
         minimumConfidence: Double = 0.70
     ) async -> AlbumEntry? {
+        guard !LibraryNormalization.isUnknownAlbum(entry.displayTitle) else {
+            return nil
+        }
         do {
             let detail = try await metadataDetailCoordinator.fetchAlbumDetail(
                 album: entry.displayTitle,
@@ -3241,6 +3307,26 @@ final class LibraryViewModel {
             )
             return nil
         }
+    }
+
+    /// Called after an album's "专辑内响度统一" switch changes, with its key.
+    @ObservationIgnored var onAlbumLoudnessOverrideChanged: (@MainActor (String) -> Void)?
+
+    /// The library's loudness measurements, read by the song information
+    /// editors. Owned by the library session.
+    @ObservationIgnored weak var loudnessService: LibraryLoudnessService?
+
+    /// Measures the given songs again, ignoring stored results.
+    @ObservationIgnored var onRemeasureLoudness: (@MainActor ([UUID]) -> Void)?
+
+    /// Stores the album's loudness switch. Nil returns it to the automatic
+    /// judgement; renames and merges carry the stored value along.
+    func setAlbumLoudnessOverride(albumKey: String, unified: Bool?) {
+        guard let index = albumEntries.firstIndex(where: { $0.canonicalKey == albumKey }) else { return }
+        guard albumEntries[index].loudnessUnifiedOverride != unified else { return }
+        guard libraryService.setAlbumLoudnessOverride(albumID: albumEntries[index].id, unified: unified) else { return }
+        albumEntries[index].loudnessUnifiedOverride = unified
+        onAlbumLoudnessOverrideChanged?(albumKey)
     }
 
     func saveAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async {

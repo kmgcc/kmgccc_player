@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import PopupKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -143,7 +144,6 @@ struct BatchTrackEditSheet: View {
         VStack(spacing: 0) {
             headerView
 
-            Divider()
 
             if tracks.isEmpty {
                 emptyView
@@ -164,11 +164,11 @@ struct BatchTrackEditSheet: View {
                 .clipped()
             }
 
-            Divider()
 
-            footerView
+            AppDialogFooter { footerView }
         }
         .frame(width: 1120, height: 812)
+        .appPopupSurface()
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
         .onAppear {
@@ -283,41 +283,17 @@ struct BatchTrackEditSheet: View {
     }
 
     private var headerView: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("批量编辑歌曲信息")
-                    .font(.title2)
-                    .fontWeight(.bold)
-
-                if let track = currentTrack {
-                    Text(
-                        "当前：\(currentIndex + 1)/\(tracks.count) · \(track.title) · \(displayArtist(track.artist)) · \(displayAlbum(track.album))"
-                    )
-                    .font(.subheadline)
-                    .foregroundStyle(appFgSecondary)
-                }
-            }
-
-            Spacer()
-
-            if isSavingCurrent {
-                ProgressView()
-                    .controlSize(.small)
-            }
-
-            GlassIconButton(
-                systemImage: "xmark",
-                size: GlassStyleTokens.headerControlHeight,
-                iconSize: GlassStyleTokens.headerStandardIconSize,
-                isPrimary: false,
-                help: "关闭",
-                surfaceVariant: .defaultToolbar
-            ) {
-                dismiss()
+        AppDialogHeader(
+            title: "批量编辑歌曲信息",
+            subtitle: currentTrack.map {
+                "当前：\(currentIndex + 1)/\(tracks.count) · \($0.title) · \(displayArtist($0.artist)) · \(displayAlbum($0.album))"
+            }, systemImage: "music.note.list", iconColor: themeStore.accentColor
+        ) {
+            HStack(spacing: AppPopupStyle().buttonSpacing) {
+                if isSavingCurrent { ProgressView().controlSize(.small) }
+                AppPopupCloseButton { dismiss() }
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
     }
 
     private var emptyView: some View {
@@ -334,7 +310,7 @@ struct BatchTrackEditSheet: View {
     }
 
     private var queuePanel: some View {
-        ScrollView {
+        AppPopupScrollRegion {
             LazyVStack(spacing: 8) {
                 ForEach(Array(trackSnapshots.enumerated()), id: \.element.listRowID) { index, snapshot in
                     queueRow(snapshot: snapshot, index: index)
@@ -421,7 +397,7 @@ struct BatchTrackEditSheet: View {
     }
 
     private var editorPanel: some View {
-        ScrollView {
+        AppPopupScrollRegion {
             VStack(alignment: .leading, spacing: 16) {
                 metadataSection
                 lyricsSection
@@ -469,14 +445,14 @@ struct BatchTrackEditSheet: View {
                     Button("导入封面") {
                         showingArtworkPicker = true
                     }
-                    .buttonStyle(.bordered)
-                    .clipShape(Capsule())
+                    .buttonStyle(AppPanelButtonStyle())
+                    .font(.system(size: 13, weight: .medium))
 
                     Button("查找封面") {
                         fetchCover()
                     }
-                    .buttonStyle(.bordered)
-                    .clipShape(Capsule())
+                    .buttonStyle(AppPanelButtonStyle())
+                    .font(.system(size: 13, weight: .medium))
                     .disabled(coverCoordinator?.isLoading == true)
 
                     if artworkData != nil {
@@ -484,9 +460,8 @@ struct BatchTrackEditSheet: View {
                             artworkData = nil
                             coverCoordinator?.clear()
                         }
-                        .buttonStyle(.bordered)
-                        .tint(.red)
-                        .clipShape(Capsule())
+                        .buttonStyle(AppPanelButtonStyle())
+                        .font(.system(size: 13, weight: .medium))
                     }
 
                     if let error = coverCoordinator?.error {
@@ -559,8 +534,7 @@ struct BatchTrackEditSheet: View {
                     } label: {
                         Label("查找元数据", systemImage: "sparkle.magnifyingglass")
                     }
-                    .buttonStyle(.bordered)
-                    .clipShape(Capsule())
+                    .buttonStyle(AppPanelButtonStyle())
                     .disabled(isMetadataLookupInFlight)
                     .font(.caption)
 
@@ -610,6 +584,9 @@ struct BatchTrackEditSheet: View {
                     .foregroundStyle(appFgSecondary)
                     .padding(.top, 2)
                 }
+
+                TrackLoudnessMetadataSection(trackIDs: tracks.map(\.id))
+                    .padding(.top, 4)
             }
         }
         .padding(14)
@@ -630,8 +607,7 @@ struct BatchTrackEditSheet: View {
                 } label: {
                     Label("AMLL DB", systemImage: "arrow.up.right.square")
                 }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
+                .buttonStyle(AppPanelButtonStyle())
                 .font(.caption)
 
                 Button {
@@ -639,15 +615,13 @@ struct BatchTrackEditSheet: View {
                 } label: {
                     Label("TTML Tool", systemImage: "hammer.fill")
                 }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
+                .buttonStyle(AppPanelButtonStyle())
                 .font(.caption)
 
                 Button("导入歌词文件") {
                     showingLyricsPicker = true
                 }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
+                .buttonStyle(AppPanelButtonStyle())
                 .font(.caption)
             }
 
@@ -675,8 +649,7 @@ struct BatchTrackEditSheet: View {
                     Button("重置") {
                         lyricsTimeOffsetMs = 0
                     }
-                    .buttonStyle(.bordered)
-                    .clipShape(Capsule())
+                    .buttonStyle(AppPanelButtonStyle())
                     .font(.caption)
                 }
 
@@ -769,12 +742,8 @@ struct BatchTrackEditSheet: View {
                         .allowsHitTesting(false)
                 }
             }
-            .background(.thinMaterial)
+            .appPopupContentBackground()
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.secondary.opacity(0.22), lineWidth: 1)
-            }
             .padding(.trailing, 18)
         }
     }
@@ -794,7 +763,7 @@ struct BatchTrackEditSheet: View {
     }
 
     private var footerView: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: AppPopupStyle().buttonSpacing) {
             if let statusMessage {
                 Text(statusMessage)
                     .font(.caption)
@@ -807,8 +776,7 @@ struct BatchTrackEditSheet: View {
             Button("跳过本首") {
                 skipCurrentTrack()
             }
-            .buttonStyle(.bordered)
-            .clipShape(Capsule())
+            .buttonStyle(AppDialogGlassButtonStyle())
             .disabled(tracks.isEmpty)
 
             Button("保存当前") {
@@ -818,19 +786,15 @@ struct BatchTrackEditSheet: View {
                     reason: "手动保存"
                 )
             }
-            .buttonStyle(.bordered)
-            .clipShape(Capsule())
+            .buttonStyle(AppDialogGlassButtonStyle())
             .disabled(tracks.isEmpty || isSavingCurrent)
 
             Button(currentIndex >= tracks.count - 1 ? "完成" : "下一首") {
                 goNextTrack()
             }
-            .buttonStyle(.borderedProminent)
-            .clipShape(Capsule())
+            .buttonStyle(AppDialogGlassButtonStyle(kind: .primary))
             .disabled(tracks.isEmpty || isSavingCurrent)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
     }
 
     // MARK: - Actions
@@ -868,7 +832,7 @@ struct BatchTrackEditSheet: View {
         metadataSource = track.metadataSource ?? ""
         metadataFetchedAt = track.metadataFetchedAt
         metadataConfidence = track.metadataConfidence
-        lyricsText = LyricsFormatSupport.normalizedTTMLText(track.loadTTMLLyricsIfNeeded()) ?? ""
+        lyricsText = LyricsFormatSupport.normalizedTTMLText(track.readTTMLLyricsText()) ?? ""
         artworkData = track.loadArtworkDataIfNeeded()
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
         statusMessage = nil

@@ -9,9 +9,10 @@ nonisolated enum LoudnessMeasurementStatus: String, Codable, Equatable, Sendable
     case resourceLimit
 }
 
-/// Fixed-size distribution of 100 ms-step, 400 ms-window K-weighted block
-/// energies. Bin counts are merged across an album, then converted back to
-/// representative linear energies for the two gating passes.
+/// Distribution of 100 ms-step, 400 ms-window K-weighted block energies in
+/// 0.1 LU bins. Album loudness merges the members' histograms and gates the
+/// result, so no raw block energies are kept long term. Only non-empty bins
+/// are stored, which keeps a typical record to a few kilobytes.
 nonisolated struct LoudnessEnergyHistogram: Codable, Equatable, Sendable {
     nonisolated static let minimumLUFS = -70.0
     nonisolated static let maximumLUFS = 50.0
@@ -20,8 +21,30 @@ nonisolated struct LoudnessEnergyHistogram: Codable, Equatable, Sendable {
 
     var counts: [UInt32]
 
+    private enum CodingKeys: String, CodingKey {
+        case bins
+    }
+
     nonisolated init() {
         counts = Array(repeating: 0, count: Self.binCount)
+    }
+
+    nonisolated init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        counts = Array(repeating: 0, count: Self.binCount)
+        for pair in try container.decode([[UInt32]].self, forKey: .bins)
+        where pair.count == 2 && Int(pair[0]) < Self.binCount {
+            counts[Int(pair[0])] = pair[1]
+        }
+    }
+
+    nonisolated func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(nonEmptyBins.map { [UInt32($0.index), $0.count] }, forKey: .bins)
+    }
+
+    nonisolated var nonEmptyBins: [(index: Int, count: UInt32)] {
+        counts.indices.compactMap { counts[$0] > 0 ? ($0, counts[$0]) : nil }
     }
 
     nonisolated var blockCount: Int64 {
@@ -56,7 +79,9 @@ nonisolated struct LoudnessEnergyHistogram: Codable, Equatable, Sendable {
 /// Measurement values and a compact block-energy distribution retained so
 /// album results can be gated together without averaging per-track LUFS values.
 nonisolated struct LoudnessMeasurement: Codable, Equatable, Sendable {
-    static let currentAnalyzerVersion = 1
+    /// 2: exact block gating, BS.1770 Annex 2 true peak, sparse histogram.
+    /// 3: a decode that ends shortly before the declared length is measured.
+    static let currentAnalyzerVersion = 3
     static let currentDecoderRuleVersion = 1
     /// Changes whenever the decoded-frame crop policy changes. The first
     /// scanner uses the renderer's reconciled decoded-frame range.
@@ -84,6 +109,10 @@ nonisolated struct LoudnessMeasurement: Codable, Equatable, Sendable {
     nonisolated var analyzedFrameCount: Int64 {
         max(0, validEndFrame - validStartFrame)
     }
+
+    nonisolated var isUsable: Bool {
+        status == .available && integratedLUFS?.isFinite == true && gatedBlockCount > 0
+    }
 }
 
 nonisolated struct LoudnessFileIdentity: Codable, Equatable, Sendable {
@@ -93,6 +122,9 @@ nonisolated struct LoudnessFileIdentity: Codable, Equatable, Sendable {
     var modificationTimeNanoseconds: Int64
 }
 
+/// Normalization tags found in the file. They are kept for diagnostics only;
+/// sources disagree on reference level and reliability, so playback gain is
+/// always computed from the App's own measurement.
 nonisolated struct LoudnessMetadata: Codable, Equatable, Sendable {
     static let currentParserVersion = 1
     var replayGainTrackDB: Double?
@@ -150,13 +182,39 @@ nonisolated struct LoudnessTrackRecord: Codable, Equatable, Sendable, Identifiab
 }
 
 nonisolated struct LoudnessGainDecision: Codable, Equatable, Sendable {
+    nonisolated enum Source {
+        nonisolated static let track = "measured.track"
+        nonisolated static let album = "measured.album"
+        nonisolated static let disabled = "disabled"
+        nonisolated static let missing = "unity.missing"
+        nonisolated static let invalid = "unity.invalidMeasurement"
+    }
+
     var gainDB: Double
     var source: String
     var peakBasis: String
+    var measuredLUFS: Double?
     var diagnostics: [DSPDiagnostic]
 
+    nonisolated init(
+        gainDB: Double,
+        source: String,
+        peakBasis: String,
+        measuredLUFS: Double? = nil,
+        diagnostics: [DSPDiagnostic] = []
+    ) {
+        self.gainDB = gainDB
+        self.source = source
+        self.peakBasis = peakBasis
+        self.measuredLUFS = measuredLUFS
+        self.diagnostics = diagnostics
+    }
+
+    nonisolated var linearGain: Double { pow(10, gainDB / 20) }
+    nonisolated var isMeasured: Bool { source.hasPrefix("measured.") }
+
     nonisolated static func unity(
-        source: String = "unity",
+        source: String = Source.missing,
         diagnostic: DSPDiagnostic? = nil
     ) -> LoudnessGainDecision {
         LoudnessGainDecision(
@@ -168,162 +226,64 @@ nonisolated struct LoudnessGainDecision: Codable, Equatable, Sendable {
     }
 }
 
+/// Fixed-gain normalization from the App's own BS.1770 measurements. A gain
+/// never raises the measured true peak above the fixed ceiling; no limiter is
+/// used, so a quiet track may stay below the target rather than lose dynamics.
 nonisolated enum LoudnessGainSelector {
-    private static let metadataPeakMarginDB = 2.0
-    private static let r128ReferenceLUFS = -23.0
+    /// Margin added to a sample peak when no true peak is available.
+    private static let samplePeakMarginDB = 2.0
 
     nonisolated static func trackGain(
         configuration: AudioLoudnessConfiguration,
-        measurement: LoudnessMeasurement?,
-        metadata: LoudnessMetadata? = nil
+        measurement: LoudnessMeasurement?
     ) -> LoudnessGainDecision {
-        guard configuration.enabled else {
-            return .unity(source: "disabled")
-        }
-
-        if let measurement,
-           measurement.status == .available,
-           let integrated = measurement.integratedLUFS,
-           integrated.isFinite {
-            return normalizedGain(
-                configuration: configuration,
-                measuredLUFS: integrated,
-                truePeakDBTP: measurement.truePeakDBTP,
-                samplePeakDBFS: measurement.samplePeakDBFS,
-                source: "measured.bs1770",
-                inheritedDiagnostics: measurement.diagnostics + (metadata?.diagnostics ?? [])
-            )
-        }
-
-        if let metadata, metadata.r128IsReliable,
-           let tagGain = metadata.r128TrackGainDB,
-           tagGain.isFinite {
-            let target = finiteTarget(configuration.targetLUFS)
-            let gain = tagGain + target - r128ReferenceLUFS
-            return boundedMetadataGain(
-                gain,
-                peakRatio: metadata.replayGainTrackPeak,
-                configuration: configuration,
-                source: "metadata.r128",
-                inheritedDiagnostics: metadata.diagnostics
-            )
-        }
-
-        if let metadata, metadata.replayGainIsReliable,
-           let gain = metadata.replayGainTrackDB,
-           gain.isFinite {
-            let referenceLUFS = metadata.replayGainReferenceLUFS
-            guard let referenceLUFS, referenceLUFS.isFinite else {
-                return .unity(
-                    source: "unity.metadataReferenceUnknown",
-                    diagnostic: DSPDiagnostic(
-                        code: "audio.loudnessReplayGainReferenceUnknown",
-                        message: "The normalization tag reference cannot be converted to an integrated loudness target.",
-                        fieldPath: "loudness.metadata.replayGainReference"
-                    )
-                )
-            }
-            var diagnostics = metadata.diagnostics
-            diagnostics.append(DSPDiagnostic(
-                code: "loudness.replayGainReference",
-                message: "ReplayGain was converted from its explicit reference level to the selected integrated loudness target.",
-                fieldPath: "loudness.metadata.replayGain"
+        guard configuration.enabled else { return .unity(source: LoudnessGainDecision.Source.disabled) }
+        guard let measurement, measurement.isUsable, let integrated = measurement.integratedLUFS else {
+            return .unity(diagnostic: DSPDiagnostic(
+                code: "audio.loudnessUnavailable",
+                message: "No current loudness measurement is available.",
+                fieldPath: "loudness.measurement",
+                retryable: true
             ))
-            return boundedMetadataGain(
-                gain + finiteTarget(configuration.targetLUFS) - referenceLUFS,
-                peakRatio: metadata.replayGainTrackPeak,
-                configuration: configuration,
-                source: "metadata.replaygain",
-                inheritedDiagnostics: diagnostics
-            )
         }
-
-        var diagnostics = metadata?.diagnostics ?? []
-        diagnostics.append(DSPDiagnostic(
-            code: "audio.loudnessUnavailable",
-            message: "No current loudness measurement or reliable normalization tag is available.",
-            fieldPath: "loudness.measurement",
-            retryable: true
-        ))
-        return LoudnessGainDecision(
-            gainDB: 0,
-            source: "unity.missing",
-            peakBasis: "unknown",
-            diagnostics: diagnostics
+        return normalizedGain(
+            configuration: configuration,
+            measuredLUFS: integrated,
+            truePeakDBTP: measurement.truePeakDBTP,
+            samplePeakDBFS: measurement.samplePeakDBFS,
+            source: LoudnessGainDecision.Source.track,
+            inheritedDiagnostics: []
         )
     }
 
+    /// One gain for a whole album. Members' block histograms are merged and
+    /// gated together (never an average of per-track LUFS), and the loudest
+    /// member's true peak bounds the boost. Members that could not be
+    /// measured are left out. Returns nil when no member is usable.
     nonisolated static func albumGain(
         configuration: AudioLoudnessConfiguration,
-        measurements: [LoudnessMeasurement],
-        metadata: [LoudnessMetadata] = []
-    ) -> LoudnessGainDecision {
-        guard configuration.enabled else {
-            return .unity(source: "disabled")
+        measurements: [LoudnessMeasurement]
+    ) -> LoudnessGainDecision? {
+        guard configuration.enabled else { return .unity(source: LoudnessGainDecision.Source.disabled) }
+        let usable = measurements.filter(\.isUsable)
+        guard !usable.isEmpty else { return nil }
+        var histogram = LoudnessEnergyHistogram()
+        for measurement in usable {
+            guard histogram.merge(measurement.gatedBlockEnergyHistogram) else { return nil }
         }
-
-        let hasCompleteMeasurements = !measurements.isEmpty
-            && measurements.allSatisfy {
-                $0.status == .available
-                    && $0.integratedLUFS?.isFinite == true
-                    && $0.gatedBlockCount > 0
-            }
-        if hasCompleteMeasurements {
-            var histogram = LoudnessEnergyHistogram()
-            for measurement in measurements {
-                guard histogram.merge(measurement.gatedBlockEnergyHistogram) else {
-                    return missingAlbumDecision()
-                }
-            }
-            guard let integrated = LoudnessAnalyzer.integratedLUFS(from: histogram) else {
-                return missingAlbumDecision()
-            }
-            let peaks = measurements.compactMap(\.truePeakDBTP)
-            let samplePeaks = measurements.compactMap(\.samplePeakDBFS)
-            let inherited = measurements.flatMap(\.diagnostics)
-            return normalizedGain(
-                configuration: configuration,
-                measuredLUFS: integrated,
-                truePeakDBTP: peaks.max(),
-                samplePeakDBFS: samplePeaks.max(),
-                source: "measured.album",
-                inheritedDiagnostics: inherited
-            )
-        }
-
-        if !metadata.isEmpty,
-           metadata.allSatisfy({ $0.replayGainIsReliable && $0.replayGainAlbumDB?.isFinite == true }),
-           let referenceLUFS = metadata.first?.replayGainReferenceLUFS,
-           metadata.allSatisfy({ $0.replayGainReferenceLUFS == referenceLUFS }),
-           let albumGain = metadata.first?.replayGainAlbumDB,
-           metadata.allSatisfy({ abs(($0.replayGainAlbumDB ?? .infinity) - albumGain) < 0.01 }) {
-            guard referenceLUFS.isFinite else {
-                return missingAlbumDecision()
-            }
-            return boundedMetadataGain(
-                albumGain + finiteTarget(configuration.targetLUFS) - referenceLUFS,
-                peakRatio: metadata.compactMap(\.replayGainAlbumPeak).max(),
-                configuration: configuration,
-                source: "metadata.replaygain.album",
-                inheritedDiagnostics: metadata.flatMap(\.diagnostics)
-            )
-        }
-
-        if !metadata.isEmpty,
-           metadata.allSatisfy({ $0.r128IsReliable && $0.r128AlbumGainDB?.isFinite == true }),
-           let albumGain = metadata.first?.r128AlbumGainDB,
-           metadata.allSatisfy({ abs(($0.r128AlbumGainDB ?? .infinity) - albumGain) < 0.01 }) {
-            let target = finiteTarget(configuration.targetLUFS)
-            return boundedMetadataGain(
-                albumGain + target - r128ReferenceLUFS,
-                peakRatio: metadata.compactMap(\.replayGainAlbumPeak).max(),
-                configuration: configuration,
-                source: "metadata.r128.album",
-                inheritedDiagnostics: metadata.flatMap(\.diagnostics)
-            )
-        }
-
-        return missingAlbumDecision()
+        let integrated = usable.count == 1
+            ? usable[0].integratedLUFS
+            : LoudnessAnalyzer.integratedLUFS(from: histogram)
+        guard let integrated else { return nil }
+        let truePeaks = usable.compactMap(\.truePeakDBTP)
+        return normalizedGain(
+            configuration: configuration,
+            measuredLUFS: integrated,
+            truePeakDBTP: truePeaks.count == usable.count ? truePeaks.max() : nil,
+            samplePeakDBFS: usable.compactMap(\.samplePeakDBFS).max(),
+            source: LoudnessGainDecision.Source.album,
+            inheritedDiagnostics: []
+        )
     }
 
     private nonisolated static func normalizedGain(
@@ -343,12 +303,12 @@ nonisolated enum LoudnessGainSelector {
             conservativePeak = truePeakDBTP
         } else if let samplePeakDBFS, samplePeakDBFS.isFinite {
             peakBasis = "samplePeak"
-            conservativePeak = samplePeakDBFS + metadataPeakMarginDB
+            conservativePeak = samplePeakDBFS + samplePeakMarginDB
         } else {
             peakBasis = "unknown"
-            conservativePeak = metadataPeakMarginDB
+            conservativePeak = samplePeakMarginDB
         }
-        return boundedGain(
+        var decision = boundedGain(
             requested,
             peakBasis: peakBasis,
             peakDB: conservativePeak,
@@ -356,29 +316,8 @@ nonisolated enum LoudnessGainSelector {
             source: source,
             inheritedDiagnostics: inheritedDiagnostics
         )
-    }
-
-    private nonisolated static func boundedMetadataGain(
-        _ requested: Double,
-        peakRatio: Double?,
-        configuration: AudioLoudnessConfiguration,
-        source: String,
-        inheritedDiagnostics: [DSPDiagnostic]
-    ) -> LoudnessGainDecision {
-        let peakDB: Double?
-        if let peakRatio, peakRatio.isFinite, peakRatio > 0 {
-            peakDB = 20 * log10(peakRatio) + metadataPeakMarginDB
-        } else {
-            peakDB = nil
-        }
-        return boundedGain(
-            requested,
-            peakBasis: peakDB == nil ? "unknown" : "samplePeak",
-            peakDB: peakDB ?? metadataPeakMarginDB,
-            configuration: configuration,
-            source: source,
-            inheritedDiagnostics: inheritedDiagnostics
-        )
+        decision.measuredLUFS = measuredLUFS
+        return decision
     }
 
     private nonisolated static func boundedGain(
@@ -391,7 +330,7 @@ nonisolated enum LoudnessGainSelector {
     ) -> LoudnessGainDecision {
         guard requestedGainDB.isFinite, peakDB.isFinite else {
             return .unity(
-                source: "unity.invalidMeasurement",
+                source: LoudnessGainDecision.Source.invalid,
                 diagnostic: DSPDiagnostic(
                     code: "audio.loudnessInvalidMeasurement",
                     message: "The loudness or peak data is not finite, so no gain was applied.",
@@ -400,12 +339,9 @@ nonisolated enum LoudnessGainSelector {
             )
         }
 
-        let maxBoost = finiteLimit(configuration.maxBoostDB, fallback: 0, lowerBound: 0)
-        let maxAttenuation = finiteLimit(configuration.maxAttenuationDB, fallback: 0, lowerBound: 0)
-        let ceiling = configuration.truePeakCeilingDBTP.isFinite
-            ? configuration.truePeakCeilingDBTP
-            : -1
-        let peakAllowedGain = ceiling - peakDB
+        let maxBoost = configuration.maxBoostDB
+        let maxAttenuation = configuration.maxAttenuationDB
+        let peakAllowedGain = configuration.truePeakCeilingDBTP - peakDB
         let requestedAfterBoostLimit = min(requestedGainDB, maxBoost)
         let peakSafeGain = min(requestedAfterBoostLimit, peakAllowedGain)
         let applied: Double
@@ -415,7 +351,7 @@ nonisolated enum LoudnessGainSelector {
             applied = peakSafeGain
             diagnostics.append(DSPDiagnostic(
                 code: "audio.loudnessPeakAttenuationConflict",
-                message: "The peak ceiling requires more attenuation than the configured limit; peak safety takes priority.",
+                message: "The peak ceiling requires more attenuation than the fixed limit; peak safety takes priority.",
                 fieldPath: "loudness.maxAttenuationDB"
             ))
         } else {
@@ -431,7 +367,7 @@ nonisolated enum LoudnessGainSelector {
         } else if requestedGainDB > maxBoost {
             diagnostics.append(DSPDiagnostic(
                 code: "audio.loudnessBoostLimited",
-                message: "The requested normalization exceeds the configured maximum boost.",
+                message: "The requested normalization exceeds the fixed maximum boost.",
                 fieldPath: "loudness.maxBoostDB"
             ))
         }
@@ -444,27 +380,9 @@ nonisolated enum LoudnessGainSelector {
         )
     }
 
-    private nonisolated static func missingAlbumDecision() -> LoudnessGainDecision {
-        .unity(
-            source: "unity.albumIncomplete",
-            diagnostic: DSPDiagnostic(
-                code: "audio.loudnessAlbumUnavailable",
-                message: "A complete album measurement is required before applying album normalization.",
-                fieldPath: "loudness.album",
-                retryable: true
-            )
-        )
-    }
-
     private nonisolated static func finiteTarget(_ value: Double) -> Double {
-        value.isFinite ? min(max(value, -60), 6) : -18
-    }
-
-    private nonisolated static func finiteLimit(
-        _ value: Double,
-        fallback: Double,
-        lowerBound: Double
-    ) -> Double {
-        value.isFinite ? max(value, lowerBound) : fallback
+        value.isFinite
+            ? min(max(value, AudioLoudnessConfiguration.targetRange.lowerBound), AudioLoudnessConfiguration.targetRange.upperBound)
+            : AudioLoudnessConfiguration.defaultTargetLUFS
     }
 }

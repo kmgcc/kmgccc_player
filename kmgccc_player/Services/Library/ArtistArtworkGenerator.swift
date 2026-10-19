@@ -7,6 +7,7 @@
 
 import AppKit
 import Foundation
+import ImageIO
 
 nonisolated struct ArtistArtworkTrackSource: Sendable {
     let id: UUID
@@ -45,7 +46,15 @@ actor ArtistArtworkGenerator {
     }
 
     private nonisolated static let placeholderCache = PlaceholderCacheBox()
-    private nonisolated static let defaultPlaceholderPixelSide = 640
+    private nonisolated static let defaultPlaceholderPixelSide = 256
+
+    nonisolated func clearMemory() {
+        Self.placeholderCache.cache.removeAllObjects()
+    }
+
+    nonisolated static func clearMemory() {
+        placeholderCache.cache.removeAllObjects()
+    }
 
     func generateArtwork(
         artistName: String,
@@ -175,15 +184,14 @@ actor ArtistArtworkGenerator {
         let sortedTracks = trackSources.sorted { $0.id.uuidString < $1.id.uuidString }
 
         if let representative = sortedTracks.first(where: {
-            let artworkData = artworkData(for: $0)
-            guard let artworkData else { return false }
-            return !artworkData.isEmpty
+            ($0.artworkData != nil && !$0.artworkData!.isEmpty) || $0.artworkURL != nil
         }) {
-            let checksum = ArtworkLoader.checksum(for: artworkData(for: representative))
-            return "\(text)|\(representative.id.uuidString)|\(checksum)|\(sortedTracks.count)|\(pixelSide)"
+            let keyPart = representative.artworkURL?.standardizedFileURL.path
+                ?? (representative.artworkData.map { String(ArtworkLoader.checksum(for: $0)) } ?? representative.id.uuidString)
+            return "\(text)|\(representative.id.uuidString)|\(keyPart)|\(pixelSide)"
         }
 
-        return "\(text)|fallback|\(sortedTracks.count)|\(pixelSide)"
+        return "\(text)|fallback|\(pixelSide)"
     }
 
     private nonisolated static func resolveGradientSpec(
@@ -193,26 +201,26 @@ actor ArtistArtworkGenerator {
         let sortedTracks = trackSources.sorted { $0.id.uuidString < $1.id.uuidString }
 
         for source in sortedTracks {
-            let artworkData = artworkData(for: source)
-            guard let artworkData, !artworkData.isEmpty else { continue }
-            let palette = ArtworkColorExtractor.uiThemePalette(from: artworkData, maxColors: 3)
-            if let spec = gradientSpec(from: palette, artistName: artistName) {
-                return spec
-            }
-            if let average = ArtworkColorExtractor.averageColor(from: artworkData) {
-                return gradientSpec(fromAverageColor: average, artistName: artistName)
+            if let url = source.artworkURL {
+                let palette = ArtworkColorExtractor.uiThemePalette(from: url, maxColors: 3)
+                if let spec = gradientSpec(from: palette, artistName: artistName) {
+                    return spec
+                }
+                if let average = ArtworkColorExtractor.averageColor(from: url) {
+                    return gradientSpec(fromAverageColor: average, artistName: artistName)
+                }
+            } else if let artworkData = source.artworkData, !artworkData.isEmpty {
+                let palette = ArtworkColorExtractor.uiThemePalette(from: artworkData, maxColors: 3)
+                if let spec = gradientSpec(from: palette, artistName: artistName) {
+                    return spec
+                }
+                if let average = ArtworkColorExtractor.averageColor(from: artworkData) {
+                    return gradientSpec(fromAverageColor: average, artistName: artistName)
+                }
             }
         }
 
         return fallbackGradient(for: artistName)
-    }
-
-    private nonisolated static func artworkData(for source: ArtistArtworkTrackSource) -> Data? {
-        if let data = source.artworkData, !data.isEmpty {
-            return data
-        }
-        guard let url = source.artworkURL else { return nil }
-        return try? Data(contentsOf: url)
     }
 
     private nonisolated static func gradientSpec(

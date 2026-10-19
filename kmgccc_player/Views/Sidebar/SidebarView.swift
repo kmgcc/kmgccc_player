@@ -13,6 +13,7 @@
 import Observation
 import AppKit
 import MotionKit
+import PopupKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -644,9 +645,10 @@ struct SidebarView: View {
     private var updateSidebarProgress: SidebarTaskProgress? {
         switch updateCoordinator.state {
         case .checking(let manual):
+            guard manual else { return nil }
             return SidebarTaskProgress(
                 title: "正在检查更新",
-                detail: manual ? "正在获取最新版本信息" : "后台检查进行中",
+                detail: "正在获取最新版本信息",
                 fractionCompleted: nil,
                 state: .running
             )
@@ -734,6 +736,35 @@ struct SidebarView: View {
             || importEnrichmentService.completionSummary != nil
             || activeLibraryImportTask != nil
             || !uiState.libraryImportFailureReports.isEmpty
+            || backgroundLoudnessSidebarProgress != nil
+    }
+
+    private var activeSessionForLoudness: LibrarySession? {
+        appSession.activeLibraryBinding.activeSession
+    }
+
+    /// Library-wide loudness measurement running in idle time. A Job the
+    /// listener started has its own card above.
+    private var backgroundLoudnessSidebarProgress: SidebarTaskProgress? {
+        guard let session = activeSessionForLoudness,
+              session.loudnessService.isBackgroundAnalysisVisible,
+              !appSession.activeLibraryTasks.contains(where: {
+                  !$0.state.isTerminal && $0.kind == .loudnessAnalysis
+              }) else { return nil }
+        let ids = session.libraryViewModel.allTracks.map(\.id)
+        let progress = session.loudnessService.libraryProgress(trackIDs: ids)
+        // Only a large library pass interrupts; a short one stays on the
+        // Background Tasks page.
+        guard progress.remaining >= SidebarTaskVisibility.largeBatchCount else { return nil }
+        let done = progress.measured + progress.failed
+        let total = max(ids.count, 1)
+        return SidebarTaskProgress(
+            title: "正在分析",
+            detail: "分析歌曲音量以提供音量均衡",
+            fractionCompleted: Double(done) / Double(total),
+            state: .running,
+            systemImage: "minus.forwardslash.plus"
+        )
     }
 
     private var sidebarTaskProgressStack: some View {
@@ -758,6 +789,14 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
                 .help("点击查看导入状态")
                 .transition(.opacity)
+            }
+
+            if let progress = backgroundLoudnessSidebarProgress {
+                SidebarTaskProgressView(
+                    progress: progress,
+                    onPause: { activeSessionForLoudness?.pauseIdleLoudnessScan() }
+                )
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
             if let progress = updateSidebarProgress {
@@ -798,14 +837,17 @@ struct SidebarView: View {
             }
 
             if importEnrichmentService.hasOutstandingWork {
-                Button {
-                    EnrichmentStatusDialogPresenter.present(service: importEnrichmentService)
-                } label: {
-                    SidebarTaskProgressView(progress: importEnrichmentSidebarProgress)
+                // A few songs fill in quietly; only a large batch interrupts.
+                if importEnrichmentService.progress.totalEnqueued >= SidebarTaskVisibility.largeBatchCount {
+                    Button {
+                        EnrichmentStatusDialogPresenter.present(service: importEnrichmentService)
+                    } label: {
+                        SidebarTaskProgressView(progress: importEnrichmentSidebarProgress)
+                    }
+                    .buttonStyle(.plain)
+                    .help("点击查看每首歌曲的补全状态")
+                    .transition(.opacity)
                 }
-                .buttonStyle(.plain)
-                .help("点击查看每首歌曲的补全状态")
-                .transition(.opacity)
             } else if let summary = importEnrichmentService.completionSummary {
                 SidebarEnrichmentCompletionNotice(
                     summary: summary,
@@ -817,18 +859,12 @@ struct SidebarView: View {
         }
     }
 
+    /// The latest running task the sidebar shows. Each task kind registers its
+    /// own rule (see `SidebarTaskVisibility`); the host applies it and the
+    /// anti-flicker delay.
     private var activeLibraryImportTask: LibraryOperationTaskDescriptor? {
         appSession.activeLibraryTasks.reversed().first { task in
-            !task.state.isTerminal
-                && [
-                    .importFiles,
-                    .sourceScan,
-                    .ncmConversion,
-                    .enrichment,
-                    .automation,
-                    .libraryBundleExport,
-                    .embeddedTagWrite
-                ].contains(task.kind)
+            !task.state.isTerminal && appSession.sidebarVisibleTaskIDs.contains(task.id)
         }
     }
 
@@ -842,7 +878,18 @@ struct SidebarView: View {
             case .ncmConversion: title = "正在转换歌曲"
             case .enrichment: title = "正在补全信息"
             case .automation: title = "正在处理自动化任务"
+            case .loudnessAnalysis: title = "正在测量响度"
             default: title = "正在导入歌曲"
+            }
+            if task.kind == .loudnessAnalysis, let total = task.totalCount, total > 0 {
+                let completed = min(task.completedCount ?? 0, total)
+                return SidebarTaskProgress(
+                    title: title,
+                    detail: "\(completed) / \(total)",
+                    fractionCompleted: Double(completed) / Double(total),
+                    state: .running,
+                    systemImage: "waveform"
+                )
             }
             return SidebarTaskProgress(
                 title: title,
@@ -1022,7 +1069,7 @@ struct SidebarView: View {
     private var appearanceSwitchButton: some View {
         let effectiveManualMode: AppSettings.ManualAppearance = {
             if settings.followSystemAppearance {
-                return currentColorScheme == .dark ? .dark : .light
+                return settings.resolvedColorScheme == .dark ? .dark : .light
             }
             return settings.manualAppearance
         }()
@@ -1075,12 +1122,13 @@ struct SidebarView: View {
             }
             settings.manualAppearance = target
         }
+        settings.applyAppearanceToAppAndWindows()
     }
 
     private func nextAppearanceTarget() -> AppSettings.ManualAppearance {
         let currentManual: AppSettings.ManualAppearance = {
             if settings.followSystemAppearance {
-                return currentColorScheme == .dark ? .dark : .light
+                return settings.resolvedColorScheme == .dark ? .dark : .light
             }
             return settings.manualAppearance
         }()
@@ -1531,16 +1579,22 @@ private struct SidebarPlaylistThumbnail: View {
             return nil
         }
 
-        let fileName: String?
-        switch sidecar.headerArtworkSource {
-        case .some(.generated):
-            fileName = sidecar.generatedHeaderArtworkFileName ?? sidecar.customHeaderArtworkFileName
-        case .some(.custom), .some(.none), nil:
-            fileName = sidecar.customHeaderArtworkFileName ?? sidecar.generatedHeaderArtworkFileName
-        }
-        guard let fileName, !fileName.isEmpty else { return nil }
+        let candidateFileNames: [String] = {
+            switch sidecar.headerArtworkSource {
+            case .some(.generated):
+                return [sidecar.generatedHeaderArtworkFileName, sidecar.customHeaderArtworkFileName].compactMap { $0 }
+            case .some(.custom), .some(.none), nil:
+                return [sidecar.customHeaderArtworkFileName, sidecar.generatedHeaderArtworkFileName].compactMap { $0 }
+            }
+        }()
 
-        guard let fileURL = paths.playlistAssetURL(fileName: fileName) else { return nil }
+        let resolvedFileURL = candidateFileNames.lazy.compactMap { name -> URL? in
+            guard !name.isEmpty, let url = paths.playlistAssetURL(fileName: name) else { return nil }
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }.first ?? candidateFileNames.first.flatMap { paths.playlistAssetURL(fileName: $0) }
+
+        guard let fileURL = resolvedFileURL else { return nil }
+        let fileName = fileURL.lastPathComponent
         let revision = sidecar.artworkRevision ?? fileName
         return PlaylistArtworkRequest(
             sourceIdentity: "sidebar-playlist-\(playlistID.uuidString)-\(revision)",
@@ -1674,42 +1728,28 @@ private struct SidebarUpdateReleaseNotesView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Image(systemName: "doc.text.magnifyingglass")
-                    .foregroundStyle(themeStore.accentColor)
-                Text("更新日志")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                Spacer(minLength: 0)
-            }
-
-            Text("版本 \(notice.version)")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 9) {
+        AppPopupFrame(
+            title: "更新日志", subtitle: "版本 \(notice.version)", systemImage: "doc.text.magnifyingglass",
+            onClose: { dismiss() }, showsFooter: false
+        ) {
+            AppPopupScrollRegion(height: AppPopupStyle().readerHeight) {
+                VStack(alignment: .leading, spacing: AppPopupStyle().rowSpacing) {
                     ForEach(Array(notice.notes.enumerated()), id: \.offset) { _, note in
                         Text("• \(note)")
-                            .font(.body)
                             .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+            } actions: {
+                Button("关闭") { dismiss() }
+                    .buttonStyle(AppDialogGlassButtonStyle())
+                    .keyboardShortcut(.cancelAction)
             }
-
-            HStack {
-                Spacer(minLength: 0)
-                Button("关闭") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-            }
+        } footer: {
+            EmptyView()
         }
-        .padding(24)
-        .frame(width: 390, height: 330)
+        .frame(width: AppPopupStyle().width)
     }
 }
 
@@ -1817,6 +1857,7 @@ private struct SidebarTaskProgressView: View {
     let onDismiss: (() -> Void)?
     let onRetry: (() -> Void)?
     let onShowReleaseNotes: (() -> Void)?
+    let onPause: (() -> Void)?
 
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -1824,12 +1865,14 @@ private struct SidebarTaskProgressView: View {
         progress: SidebarTaskProgress,
         onDismiss: (() -> Void)? = nil,
         onRetry: (() -> Void)? = nil,
-        onShowReleaseNotes: (() -> Void)? = nil
+        onShowReleaseNotes: (() -> Void)? = nil,
+        onPause: (() -> Void)? = nil
     ) {
         self.progress = progress
         self.onDismiss = onDismiss
         self.onRetry = onRetry
         self.onShowReleaseNotes = onShowReleaseNotes
+        self.onPause = onPause
     }
 
     var body: some View {
@@ -1860,6 +1903,19 @@ private struct SidebarTaskProgressView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(themeStore.accentColor)
                     .help("重新检查更新")
+                }
+
+                if let onPause {
+                    Button(action: onPause) {
+                        Image(systemName: "pause.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .frame(width: 18, height: 18)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                    .help("暂停分析")
+                    .accessibilityLabel("暂停分析")
                 }
 
                 if let onDismiss {
@@ -1922,7 +1978,7 @@ private struct SidebarTaskProgressView: View {
                     .scaleEffect(0.7)
                     .tint(themeStore.accentColor)
             } else {
-                Image(systemName: "arrow.down.circle")
+                Image(systemName: progress.systemImage ?? "arrow.down.circle")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(themeStore.accentColor)
             }

@@ -105,6 +105,10 @@ struct FullscreenPlayerView: View {
     @State private var rightPanelDisplayState: RightPanelDisplayState = .lyrics
     @State private var lastRightPanelDisplayStateBeforeQueue: RightPanelDisplayState = .lyrics
     @State private var lyricsCoordinator = FullscreenLyricsCoordinator()
+#if DEBUG
+    @State private var lifecycleInvariantBaseline: FullscreenHostLifecycleInvariant.Snapshot?
+    @State private var lifecycleInvariantTask: Task<Void, Never>?
+#endif
     @State private var lastFullscreenLyricsReloadSignature: FullscreenLyricsReloadSignature?
     @State private var lastFullscreenLyricsReloadAt: TimeInterval = 0
     /// Last fully decoded artwork committed to the skin layer. Track metadata
@@ -303,11 +307,12 @@ struct FullscreenPlayerView: View {
                 "onChange(skinID) old=\(oldValue) new=\(newValue) external=\(playbackCoordinator.presentation.source.isExternal) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
                 category: .fullscreen
             )
+            // Release only what the previous skin cached. A full presentation
+            // purge here also cancelled the artwork loads the incoming skin had
+            // just started, leaving it on an empty background, and made every
+            // shared artwork cache decode again in the middle of the switch.
             skinSession.perform {
-                await CacheManager.purgePresentationMemoryCaches(
-                    reason: "fullscreen-skin-changed-\(oldValue)-to-\(newValue)",
-                    cacheServices: cacheServices
-                )
+                await SkinRegistry.fullscreenSkin(for: oldValue).releaseCachedResources()
             }
             let oldDescriptor = SkinRegistry.fullscreenSkin(for: oldValue).descriptor
             let newDescriptor = SkinRegistry.fullscreenSkin(for: newValue).descriptor
@@ -362,6 +367,13 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: colorScheme) { _, _ in
             forceRefreshFullscreenLyricsColors(reason: "colorScheme-change")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: DebugUIHooks.fullscreenLyricsToggleNotification)) { _ in
+            let mode = FullscreenWindowManager.shared.presentationMode
+            guard (hostContext == .embeddedWindow && mode == .embeddedInWindow)
+                || (hostContext == .systemFullscreenSpace && mode == .systemFullscreenSpace) else { return }
+            handleLyricsButtonTap()
+            DebugUIHooks.record("fullscreen-lyrics host=\(hostContext.rawValue) visible=\(isShowingLyricsPanel)")
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleQueuePanel)) { _ in
             // Cycle through right panel states: lyrics -> queue -> hidden -> lyrics
@@ -458,6 +470,11 @@ struct FullscreenPlayerView: View {
 
     private func handleFullscreenAppear() {
         skinSession.activate(settings.fullscreen.skinID, revision: SkinRegistry.catalog.revision(for: settings.fullscreen.skinID))
+#if DEBUG
+        lifecycleInvariantTask?.cancel()
+        lifecycleInvariantTask = nil
+        lifecycleInvariantBaseline = FullscreenHostLifecycleInvariant.capture(meter: ledMeterProvider)
+#endif
         guard !didHandleFullscreenAppear else { return }
         FSDiagnostics.emit(
             "handleFullscreenAppear ENTER host=\(hostContext.rawValue) skin=\(settings.fullscreen.skinID) external=\(playbackCoordinator.presentation.source.isExternal) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
@@ -554,6 +571,22 @@ struct FullscreenPlayerView: View {
         // removed before its initial geometry/theme gate completed. The
         // manager updates the native surface state before the next appearance.
         LyricsSurfaceManager.shared.reportFullscreenVisible(false)
+
+#if DEBUG
+        lifecycleInvariantTask?.cancel()
+        if let baseline = lifecycleInvariantBaseline {
+            lifecycleInvariantBaseline = nil
+            let context = hostContext.rawValue
+            let meter = ledMeterProvider
+            lifecycleInvariantTask = Task {
+                await FullscreenHostLifecycleInvariant.verify(
+                    baseline: baseline,
+                    context: context,
+                    meter: meter
+                )
+            }
+        }
+#endif
     }
 
     private var fullscreenDetailReaderTargetTrack: Track? {
@@ -1308,7 +1341,7 @@ struct FullscreenPlayerView: View {
     }
 
     private var bottomControlsAnimation: Animation? {
-        motionPolicy.animation(for: motionTokens[.layout])
+        motionPolicy.animation(for: motionTokens.miniPlayerLayout)
     }
 
     private func animateFullscreenBottomControlsGeometry(_ updates: () -> Void) {
@@ -1567,7 +1600,6 @@ struct FullscreenPlayerView: View {
             presentation: FullscreenBottomBarPresentation(
                 glassStyle: glassStyle,
                 miniPlayerForegroundProfile: foregroundProfile,
-                quickPanelForegroundProfile: fullscreenQuickPanelForegroundProfile,
                 primaryColor: fullscreenMiniPlayerPrimaryColor,
                 iconBlendMode: fullscreenMiniPlayerIconBlendMode,
                 playbackMode: currentPlaybackMode,
@@ -3057,7 +3089,7 @@ struct FullscreenPlayerView: View {
             return fileText
         }
 
-        if let ttml = LyricsFormatSupport.normalizedTTMLText(track.ttmlLyricText ?? track.loadTTMLLyricsIfNeeded()) {
+        if let ttml = LyricsFormatSupport.normalizedTTMLText(track.ttmlLyricText ?? track.readTTMLLyricsText()) {
             return ttml
         }
 

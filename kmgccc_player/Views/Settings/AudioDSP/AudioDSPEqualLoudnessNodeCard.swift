@@ -1,209 +1,14 @@
+//
+//  AudioDSPEqualLoudnessNodeCard.swift
+//  myPlayer2
+//
+//  Response preview for the equal-loudness stage shown in the effect rack.
+//
+
 import SwiftUI
 
-@MainActor
-struct AudioDSPEqualLoudnessNodeCard: View {
-    let node: DSPNodeConfiguration
-    let index: Int
-    let nodeCount: Int
-    let context: DSPEqualLoudnessContext
-    let sampleRate: Double
-    @Binding var isExpanded: Bool
-    let onEnabledChange: @MainActor @Sendable (Bool) -> Void
-    let onChannelPolicyChange: @MainActor @Sendable (String) -> Void
-    let onParametersChange: (DSPEqualLoudnessParameters) -> Void
-    let onCommit: () -> Void
-    let onMove: (Int) -> Void
-    let onRemove: () -> Void
-
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    private var parameters: DSPEqualLoudnessParameters? {
-        node.equalLoudnessParameters
-    }
-
-    private var currentGains: DSPEqualLoudnessGains {
-        DSPEqualLoudnessMath.gains(node: node, context: context)
-    }
-
-    var body: some View {
-        SettingsSection("等响补偿 \(index + 1)") {
-            VStack(alignment: .leading, spacing: 12) {
-                SettingsSwitchRow(
-                    title: "启用等响补偿",
-                    isOn: Binding(get: { node.enabled }, set: onEnabledChange)
-                )
-
-                HStack(spacing: 8) {
-                    CapsulePicker(
-                        label: "声道范围",
-                        options: ["fullRange", "allChannels"],
-                        selection: channelPolicyBinding,
-                        displayName: { $0 == "fullRange" ? "全频" : "所有声道" }
-                    )
-
-                    Spacer(minLength: 0)
-
-                    Button {
-                        onMove(-1)
-                    } label: {
-                        Label("上移", systemImage: "chevron.up")
-                            .labelStyle(.iconOnly)
-                    }
-                    .dspIconButtonStyle()
-                    .accessibilityLabel("上移等响补偿")
-                    .disabled(index == 0)
-
-                    Button {
-                        onMove(1)
-                    } label: {
-                        Label("下移", systemImage: "chevron.down")
-                            .labelStyle(.iconOnly)
-                    }
-                    .dspIconButtonStyle()
-                    .accessibilityLabel("下移等响补偿")
-                    .disabled(index == nodeCount - 1)
-
-                    Button(role: .destructive, action: onRemove) {
-                        Label("移除", systemImage: "trash")
-                            .labelStyle(.iconOnly)
-                    }
-                    .dspIconButtonStyle()
-                    .accessibilityLabel("移除等响补偿")
-                }
-
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(context.referenceDB == nil ? "相对补偿" : "设备参考")
-                        .settingsRowLabelStyle()
-                    Spacer(minLength: 4)
-                    Text("低频 +\(currentGains.bassDB.formatted(.number.precision(.fractionLength(1)))) · 高频 +\(currentGains.trebleDB.formatted(.number.precision(.fractionLength(1)))) dB")
-                        .font(.caption.monospacedDigit())
-                        .settingsDescriptionStyle()
-                }
-
-                AudioDSPEqualLoudnessResponseCurve(
-                    node: node,
-                    context: context,
-                    sampleRate: sampleRate,
-                    accentColor: themeStore.accentColor
-                )
-
-                DisclosureGroup("补偿参数", isExpanded: $isExpanded) {
-                    if parameters != nil {
-                        VStack(alignment: .leading, spacing: 12) {
-                            DSPRangeSliderRow(
-                                title: "强度",
-                                value: parameterBinding(\.strength),
-                                range: DSPEqualLoudnessParameters.strengthRange,
-                                step: 0.01,
-                                unit: "",
-                                onCommit: onCommit
-                            )
-                            DSPRangeSliderRow(
-                                title: "最大低频补偿",
-                                value: parameterBinding(\.maxBassGainDB),
-                                range: DSPEqualLoudnessParameters.maxBassGainRange,
-                                step: 0.1,
-                                onCommit: onCommit
-                            )
-                            DSPRangeSliderRow(
-                                title: "最大高频补偿",
-                                value: parameterBinding(\.maxTrebleGainDB),
-                                range: DSPEqualLoudnessParameters.maxTrebleGainRange,
-                                step: 0.1,
-                                onCommit: onCommit
-                            )
-                            DSPRangeSliderRow(
-                                title: "低架频率",
-                                value: parameterBinding(\.bassFrequencyHz),
-                                range: DSPEqualLoudnessParameters.bassFrequencyRange,
-                                step: 1,
-                                unit: "Hz",
-                                onCommit: onCommit
-                            )
-                            DSPRangeSliderRow(
-                                title: "低架斜率 S",
-                                value: parameterBinding(\.bassQ),
-                                range: DSPEqualLoudnessParameters.shelfSlopeRange,
-                                step: 0.01,
-                                unit: "S",
-                                onCommit: onCommit
-                            )
-                            DSPRangeSliderRow(
-                                title: "高架频率",
-                                value: parameterBinding(\.trebleFrequencyHz),
-                                range: DSPEqualLoudnessParameters.trebleFrequencyRange,
-                                step: 100,
-                                unit: "Hz",
-                                onCommit: onCommit
-                            )
-                            DSPRangeSliderRow(
-                                title: "高架斜率 S",
-                                value: parameterBinding(\.trebleQ),
-                                range: DSPEqualLoudnessParameters.shelfSlopeRange,
-                                step: 0.01,
-                                unit: "S",
-                                onCommit: onCommit
-                            )
-                            DSPRangeSliderRow(
-                                title: "补偿窗口",
-                                value: parameterBinding(\.compensationWindowDB),
-                                range: DSPEqualLoudnessParameters.compensationWindowRange,
-                                step: 1,
-                                onCommit: onCommit
-                            )
-
-                            CapsulePicker(
-                                label: "余量参与",
-                                options: DSPHeadroomMode.allCases,
-                                selection: headroomModeBinding,
-                                displayName: { $0 == .automatic ? "自动余量" : "不计入余量" }
-                            )
-                        }
-                        .padding(.top, 10)
-                    } else {
-                        Text("等响补偿参数无法读取。")
-                            .settingsDescriptionStyle()
-                            .padding(.top, 8)
-                    }
-                }
-            }
-        }
-    }
-
-    private var channelPolicyBinding: Binding<String> {
-        Binding(get: { node.channelPolicy }, set: onChannelPolicyChange)
-    }
-
-    private var headroomModeBinding: Binding<DSPHeadroomMode> {
-        Binding(
-            get: { node.equalLoudnessParameters?.headroomMode ?? .automatic },
-            set: { mode in
-                var updated = node.equalLoudnessParameters ?? DSPEqualLoudnessParameters()
-                updated.headroomMode = mode
-                onParametersChange(updated)
-                onCommit()
-            }
-        )
-    }
-
-    private func parameterBinding<Value>(
-        _ keyPath: WritableKeyPath<DSPEqualLoudnessParameters, Value>
-    ) -> Binding<Value> {
-        Binding(
-            get: {
-                (node.equalLoudnessParameters ?? DSPEqualLoudnessParameters())[keyPath: keyPath]
-            },
-            set: { value in
-                var updated = node.equalLoudnessParameters ?? DSPEqualLoudnessParameters()
-                updated[keyPath: keyPath] = value
-                onParametersChange(updated)
-            }
-        )
-    }
-}
-
 struct AudioDSPEqualLoudnessResponseCurve: View, Equatable {
-    let node: DSPNodeConfiguration
+    let stage: DSPEqualLoudnessStage
     let context: DSPEqualLoudnessContext
     let sampleRate: Double
     let accentColor: Color
@@ -211,30 +16,26 @@ struct AudioDSPEqualLoudnessResponseCurve: View, Equatable {
     private let dbSpan = 12.0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("当前补偿曲线")
-                .settingsDescriptionStyle()
-            GeometryReader { geometry in
-                let plot = CGRect(
-                    x: 4,
-                    y: 4,
-                    width: max(1, geometry.size.width - 8),
-                    height: max(1, geometry.size.height - 8)
-                )
-                Canvas { canvas, _ in
-                    drawGrid(in: &canvas, plot: plot)
-                    drawResponse(in: &canvas, plot: plot)
-                }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("等响补偿频率响应曲线")
-                .accessibilityValue(curveAccessibilityValue)
+        GeometryReader { geometry in
+            let plot = CGRect(
+                x: 4,
+                y: 4,
+                width: max(1, geometry.size.width - 8),
+                height: max(1, geometry.size.height - 8)
+            )
+            Canvas { canvas, _ in
+                drawGrid(in: &canvas, plot: plot)
+                drawResponse(in: &canvas, plot: plot)
             }
-            .frame(height: 96)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("等响补偿频率响应曲线")
+            .accessibilityValue(curveAccessibilityValue)
         }
+        .frame(height: 96)
     }
 
     private var curveAccessibilityValue: String {
-        let gains = DSPEqualLoudnessMath.gains(node: node, context: context)
+        let gains = DSPEqualLoudnessMath.gains(stage: stage, context: context)
         return "低频补偿 \(gains.bassDB.formatted(.number.precision(.fractionLength(1)))) dB，高频补偿 \(gains.trebleDB.formatted(.number.precision(.fractionLength(1)))) dB"
     }
 
@@ -252,7 +53,7 @@ struct AudioDSPEqualLoudnessResponseCurve: View, Equatable {
         let lowLog = log10(20.0)
         let highLog = log10(max(20.1, highFrequency))
         let pointCount = max(80, Int(plot.width))
-        let coefficients = (DSPEqualLoudnessMath.bands(node: node, context: context) ?? [])
+        let coefficients = (DSPEqualLoudnessMath.bands(stage: stage, context: context) ?? [])
             .filter(\.enabled)
             .compactMap { DSPParametricEQMath.coefficients(for: $0, sampleRate: sampleRate) }
         var path = Path()

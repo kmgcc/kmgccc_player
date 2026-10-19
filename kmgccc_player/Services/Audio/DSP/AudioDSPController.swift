@@ -5,6 +5,7 @@
 //  App-owned configuration, apply state, and preset operations for audio DSP.
 //
 
+import AppKit
 import Foundation
 import Observation
 
@@ -19,10 +20,24 @@ nonisolated struct DSPConfigurationValidationError: Error, LocalizedError, Senda
 @Observable
 @MainActor
 final class AudioDSPController {
+    let processingLoad = DSPProcessingLoadPresentation()
+    let limiterWarning = DSPLimiterWarningPresentation()
+    @ObservationIgnored private var processingLoadObservers: Set<UUID> = []
+    @ObservationIgnored private var processingLoadGeneration = UUID()
+    @ObservationIgnored private var processingLoadBindingID = UUID()
+    @ObservationIgnored private var monitorProcessingLoad: (@MainActor (Bool, UUID) -> Void)?
     private(set) var configuration: AudioDSPConfiguration
     private(set) var revisionString: String
     private(set) var presets: [DSPPresetDocument]
-    private(set) var selectedPresetID: UUID?
+    private(set) var selectedPresetID: UUID? {
+        didSet {
+            guard oldValue != selectedPresetID else { return }
+            // Undo history belongs to one preset. The editable copy made by
+            // the first edit of a built-in preset continues that history.
+            if !isApplyingUndoableEdit { discardEditHistory() }
+            onSelectedPresetChange?(selectedPresetID)
+        }
+    }
     private(set) var isModified = false
     private(set) var status: DSPApplyStatus
     private(set) var preparedRevision: String?
@@ -32,12 +47,22 @@ final class AudioDSPController {
     private(set) var diagnostics: [DSPDiagnostic] = []
 
     var applyConfiguration: (@MainActor (AudioDSPConfiguration, String, UUID) -> Void)?
+    var onPresetDeleted: (@MainActor (UUID) -> Void)?
+    /// Every change of the selected preset, including the editable copy made
+    /// when the built-in preset is edited. The device owner remembers it.
+    @ObservationIgnored var onSelectedPresetChange: (@MainActor (UUID?) -> Void)?
 
     @ObservationIgnored private let store: DSPPresetStore
     @ObservationIgnored private var sourceIsLocal = true
     @ObservationIgnored private var latestRequestID: UUID?
     @ObservationIgnored private var pendingApplyTask: Task<Void, Never>?
+    @ObservationIgnored private var lastApplyDispatchTime: TimeInterval = 0
     @ObservationIgnored private var draftWriteTask: Task<Void, Never>?
+    @ObservationIgnored private var draftWriteDelayTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingWorkingDraft: DSPWorkingDraftDocument?
+    @ObservationIgnored private var pendingPresetEdits: [UUID: DSPPresetDocument] = [:]
+    @ObservationIgnored private var pendingNewPresetIDs: Set<UUID> = []
+    @ObservationIgnored private var immediatePersistenceRequested = false
     @ObservationIgnored private var pendingConfiguration: AudioDSPConfiguration?
     @ObservationIgnored private var pendingRevision: String?
     @ObservationIgnored private var pendingRequestID: UUID?
@@ -45,6 +70,12 @@ final class AudioDSPController {
     @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
     @ObservationIgnored private var requestStatusByID: [UUID: DSPApplyStatus] = [:]
     @ObservationIgnored private var requestStatusOrder: [UUID] = []
+    /// Lent by the settings view while it is shown, so Edit > Undo and
+    /// ⌘Z / ⇧⌘Z in that window step through parameter edits.
+    @ObservationIgnored private weak var undoManager: UndoManager?
+    @ObservationIgnored private var isApplyingUndoableEdit = false
+    @ObservationIgnored private var isEditStepOpen = false
+    @ObservationIgnored private var editStepCloseTask: Task<Void, Never>?
 
     init(store: DSPPresetStore? = nil) {
         let initialRevision = UUID().uuidString
@@ -74,7 +105,8 @@ final class AudioDSPController {
     func apply(
         _ candidate: AudioDSPConfiguration,
         expectedRevision: String? = nil,
-        dryRun: Bool = false
+        dryRun: Bool = false,
+        createEditablePreset: Bool = true
     ) throws -> DSPApplyStatus {
         if let expectedRevision, expectedRevision != revisionString {
             throw DSPConfigurationValidationError(diagnostics: [DSPDiagnostic(
@@ -90,12 +122,18 @@ final class AudioDSPController {
             return DSPApplyStatus(revisionString: revisionString, state: .ready)
         }
 
+        // Automation, script application and preset loading change the chain
+        // outside the history, so earlier steps no longer describe it.
+        if !isApplyingUndoableEdit, validated != configuration { discardEditHistory() }
         hasReceivedUserConfiguration = true
         supersedeLatestPendingRequest()
-        pendingApplyTask?.cancel()
         let nextRevision = UUID().uuidString
         let requestID = UUID()
         configuration = validated
+        if !validated.enabled || !validated.limiter.enabled {
+            limiterWarning.reset()
+        }
+        if createEditablePreset { ensureEditablePreset() }
         revisionString = nextRevision
         latestRequestID = requestID
         pendingConfiguration = validated
@@ -138,20 +176,16 @@ final class AudioDSPController {
             return status
         }
 
-        status = DSPApplyStatus(
-            requestID: requestID,
-            revisionString: nextRevision,
-            state: .preparing,
-            format: status.format
-        )
+        status = preparingStatus(requestID: requestID, revision: nextRevision)
         remember(status)
-        scheduleApplyAfterDebounce()
+        scheduleApply()
         return status
     }
 
-    /// Coalesces continuous edits into one renderer request. Call this when an
-    /// interaction ends so the final value is sent without waiting for debounce.
+    /// Continuous edits publish at most once per 35 ms. Ending an interaction
+    /// sends its final value immediately.
     func commitPendingApply() {
+        closeEditStep()
         pendingApplyTask?.cancel()
         pendingApplyTask = nil
         dispatchPendingApply()
@@ -160,8 +194,10 @@ final class AudioDSPController {
 
     /// Convenience path for UI bindings. Validation failures stay visible in
     /// the shared controller state instead of escaping a SwiftUI setter.
+    /// Edits become undo steps unless `recordsUndo` is false.
     func updateConfiguration(
         commit: Bool = false,
+        recordsUndo: Bool = true,
         _ update: (inout AudioDSPConfiguration) -> Void
     ) {
         var candidate = configuration
@@ -172,19 +208,106 @@ final class AudioDSPController {
             if commit { commitPendingApply() }
             return
         }
+        let previous = configuration
+        isApplyingUndoableEdit = recordsUndo
+        defer { isApplyingUndoableEdit = false }
         do {
             _ = try apply(candidate)
+            if recordsUndo { recordEditStep(restoring: previous, isDiscrete: commit) }
             if commit { commitPendingApply() }
         } catch {
             record(error)
         }
     }
 
+    // MARK: - Undo
+
+    func attachUndoManager(_ manager: UndoManager?) {
+        guard let manager, manager !== undoManager else { return }
+        discardEditHistory()
+        undoManager = manager
+    }
+
+    /// Steps left behind would change the sound from a page that no longer
+    /// shows it.
+    func detachUndoManager(_ manager: UndoManager?) {
+        guard let manager, manager === undoManager else { return }
+        discardEditHistory()
+        undoManager = nil
+    }
+
+    /// A drag, or a quick run of key presses, is one step. The step is
+    /// registered when it opens; undo reads the chain as it stands then.
+    private func recordEditStep(restoring previous: AudioDSPConfiguration, isDiscrete: Bool) {
+        if isDiscrete { closeEditStep() }
+        if !isEditStepOpen {
+            isEditStepOpen = true
+            registerEditStepUndo(restoring: previous)
+        }
+        if !isDiscrete { scheduleEditStepClose() }
+    }
+
+    private func scheduleEditStepClose() {
+        editStepCloseTask?.cancel()
+        editStepCloseTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, let self else { return }
+            // Holding a control still to listen keeps the drag in one step;
+            // its release commits.
+            if NSEvent.pressedMouseButtons != 0 {
+                self.scheduleEditStepClose()
+            } else {
+                self.closeEditStep()
+            }
+        }
+    }
+
+    private func closeEditStep() {
+        editStepCloseTask?.cancel()
+        editStepCloseTask = nil
+        isEditStepOpen = false
+    }
+
+    private func registerEditStepUndo(restoring target: AudioDSPConfiguration) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: self) { controller in
+            controller.restoreEditStep(target)
+        }
+        undoManager.setActionName("音效调整")
+    }
+
+    /// Registering from inside undo files the inverse as redo, and the reverse.
+    private func restoreEditStep(_ target: AudioDSPConfiguration) {
+        closeEditStep()
+        let current = configuration
+        isApplyingUndoableEdit = true
+        defer { isApplyingUndoableEdit = false }
+        do {
+            _ = try apply(target)
+            commitPendingApply()
+            registerEditStepUndo(restoring: current)
+        } catch {
+            record(error)
+        }
+    }
+
+    private func discardEditHistory() {
+        closeEditStep()
+        undoManager?.removeAllActions(withTarget: self)
+    }
+
+    @discardableResult
     func bindPlayback(
+        monitorLoad: (@MainActor (Bool, UUID) -> Void)? = nil,
         apply handler: @escaping @MainActor (AudioDSPConfiguration, String, UUID) -> Void
-    ) {
+    ) -> UUID {
         supersedeLatestPendingRequest()
         applyConfiguration = handler
+        monitorProcessingLoad?(false, UUID())
+        processingLoadBindingID = UUID()
+        monitorProcessingLoad = monitorLoad
+        processingLoad.clear()
+        refreshProcessingLoadMonitoring()
         guard sourceIsLocal else {
             let requestID = UUID()
             latestRequestID = requestID
@@ -194,7 +317,7 @@ final class AudioDSPController {
                 state: .inactiveExternalSource
             )
             remember(status)
-            return
+            return processingLoadBindingID
         }
         pendingConfiguration = configuration
         pendingRevision = revisionString
@@ -207,12 +330,44 @@ final class AudioDSPController {
         )
         remember(status)
         dispatchPendingApply()
+        return processingLoadBindingID
+    }
+
+    /// Multiple settings windows can observe the same live chain. Leaving one
+    /// window must not turn off another window's measurement.
+    func setProcessingLoadVisible(_ visible: Bool, observerID: UUID) {
+        let wasVisible = !processingLoadObservers.isEmpty
+        if visible { processingLoadObservers.insert(observerID) }
+        else { processingLoadObservers.remove(observerID) }
+        guard wasVisible != !processingLoadObservers.isEmpty else { return }
+        refreshProcessingLoadMonitoring()
+    }
+
+    private func refreshProcessingLoadMonitoring() {
+        processingLoadGeneration = UUID()
+        monitorProcessingLoad?(!processingLoadObservers.isEmpty && sourceIsLocal, processingLoadGeneration)
+    }
+
+    func receiveProcessingLoad(_ update: DSPProcessingLoadUpdate, bindingID: UUID) {
+        guard bindingID == processingLoadBindingID,
+              update.monitoringGeneration == processingLoadGeneration,
+              sourceIsLocal, !processingLoadObservers.isEmpty else { return }
+        if let snapshot = update.snapshot {
+            guard configuration.enabled,
+                  snapshot.revision == revisionString,
+                  snapshot.requestID == latestRequestID else { return }
+        }
+        guard let snapshot = update.snapshot else { return }
+        let nodeIDs = Set(configuration.nodes.map(\.nodeID) + [DSPEqualLoudnessStage.nodeID, DSPLimiterConfiguration.nodeID])
+        processingLoad.update(snapshot, retainingNodeIDs: nodeIDs)
     }
 
     func setSourceIsLocal(_ isLocal: Bool) {
         guard sourceIsLocal != isLocal else { return }
         supersedeLatestPendingRequest()
         sourceIsLocal = isLocal
+        if !isLocal { processingLoad.clear() }
+        refreshProcessingLoadMonitoring()
         pendingApplyTask?.cancel()
         pendingApplyTask = nil
         pendingConfiguration = nil
@@ -257,6 +412,10 @@ final class AudioDSPController {
     }
 
     func detachPlayback() {
+        monitorProcessingLoad?(false, UUID())
+        monitorProcessingLoad = nil
+        processingLoadBindingID = UUID()
+        processingLoad.clear()
         supersedeLatestPendingRequest()
         pendingApplyTask?.cancel()
         pendingApplyTask = nil
@@ -290,9 +449,22 @@ final class AudioDSPController {
         guard event.requestID == latestRequestID,
               event.revisionString == revisionString else { return }
 
+        if event.state == .preparing {
+            eventStatus = preparingStatus(requestID: event.requestID, revision: event.revisionString)
+            remember(eventStatus)
+        }
         status = eventStatus
-        diagnostics = event.diagnostics
-        lastError = event.state == .failed ? event.diagnostics.first : nil
+        // A preparing event carries no diagnostics and is not an outcome. Keep
+        // the previous set so the status section does not blink on every edit.
+        if event.state != .preparing {
+            diagnostics = event.diagnostics
+        }
+        if event.state == .failed {
+            lastError = event.diagnostics.first
+        } else if [.ready, .scheduled, .audible].contains(event.state) {
+            // Report the failure until a later configuration is actually applied.
+            lastError = nil
+        }
         switch event.state {
         case .ready:
             preparedRevision = event.revisionString
@@ -376,7 +548,13 @@ final class AudioDSPController {
         configuration explicitConfiguration: AudioDSPConfiguration? = nil
     ) async throws -> DSPPresetDocument {
         let savedConfiguration = try validate(explicitConfiguration ?? configuration)
+        let selectionAtSave = selectedPresetID
         var expectedStoreRevision = expectedPresetRevision
+        if let id {
+            expectedStoreRevision = await flushPresetEdits(id: id, expectedRevision: expectedPresetRevision)
+        } else {
+            await flushPendingPersistence()
+        }
         if expectedStoreRevision == nil, let id {
             if let existing = presets.first(where: { $0.presetID == id }) {
                 expectedStoreRevision = existing.revisionString
@@ -391,11 +569,33 @@ final class AudioDSPController {
         )
         let saved = try await store.save(document, expectedRevision: expectedStoreRevision)
         await reloadPresets()
-        if saved.configuration == configuration {
+        if saved.configuration == configuration, selectedPresetID == selectionAtSave {
             selectedPresetID = saved.presetID
             refreshModifiedState()
             scheduleWorkingDraftWrite(immediate: true)
         }
+        return saved
+    }
+
+    @discardableResult
+    func copyCurrentPreset(name: String) async throws -> DSPPresetDocument {
+        let sourceID = selectedPresetID
+        let snapshot = configuration
+        let saved = try await savePreset(name: name, configuration: snapshot)
+        if selectedPresetID == sourceID {
+            selectedPresetID = saved.presetID
+            refreshModifiedState()
+            scheduleWorkingDraftWrite(immediate: true)
+        }
+        return saved
+    }
+
+    @discardableResult
+    func createPreset(name: String) async throws -> DSPPresetDocument {
+        let emptyConfiguration = AudioDSPConfiguration(enabled: configuration.enabled, nodes: [])
+        let saved = try await savePreset(name: name, configuration: emptyConfiguration)
+        _ = try selectPreset(id: saved.presetID, expectedPresetRevision: saved.revisionString)
+        commitPendingApply()
         return saved
     }
 
@@ -408,15 +608,16 @@ final class AudioDSPController {
         guard id != DSPPresetDocument.flatPresetID else {
             throw DSPPresetStoreError.immutableBuiltIn
         }
+        let resolvedExpectedRevision = await flushPresetEdits(id: id, expectedRevision: expectedPresetRevision)
         var document = try await store.preset(id: id)
-        if let expectedPresetRevision,
-           document.revisionString != expectedPresetRevision {
+        if let resolvedExpectedRevision,
+           document.revisionString != resolvedExpectedRevision {
             throw DSPPresetStoreError.revisionConflict
         }
         document.name = name
         let saved = try await store.save(
             document,
-            expectedRevision: expectedPresetRevision ?? document.revisionString
+            expectedRevision: resolvedExpectedRevision ?? document.revisionString
         )
         await reloadPresets()
         refreshModifiedState()
@@ -425,7 +626,8 @@ final class AudioDSPController {
 
     @discardableResult
     func duplicatePreset(id: UUID, name: String, expectedPresetRevision: String? = nil) async throws -> DSPPresetDocument {
-        let expected = expectedPresetRevision ?? presets.first(where: { $0.presetID == id })?.revisionString
+        let expected = await flushPresetEdits(id: id, expectedRevision: expectedPresetRevision)
+            ?? presets.first(where: { $0.presetID == id })?.revisionString
         let source = try await store.preset(id: id)
         if let expected, source.revisionString != expected { throw DSPPresetStoreError.revisionConflict }
         let copied = try await store.importPreset(source, name: name)
@@ -434,7 +636,7 @@ final class AudioDSPController {
     }
 
     func deletePreset(id: UUID, expectedPresetRevision: String? = nil) async throws {
-        var expectedStoreRevision = expectedPresetRevision
+        var expectedStoreRevision = await flushPresetEdits(id: id, expectedRevision: expectedPresetRevision)
         if expectedStoreRevision == nil {
             if let existing = presets.first(where: { $0.presetID == id }) {
                 expectedStoreRevision = existing.revisionString
@@ -444,15 +646,18 @@ final class AudioDSPController {
             }
         }
         try await store.delete(id: id, expectedRevision: expectedStoreRevision)
+        pendingPresetEdits[id] = nil
+        pendingNewPresetIDs.remove(id)
         await reloadPresets()
         if selectedPresetID == id {
             selectedPresetID = nil
             isModified = true
             scheduleWorkingDraftWrite(immediate: true)
         }
+        onPresetDeleted?(id)
     }
 
-    func selectPreset(id: UUID, expectedRevision: String? = nil, expectedPresetRevision: String? = nil) throws -> DSPApplyStatus {
+    func selectPreset(id: UUID, expectedRevision: String? = nil, expectedPresetRevision: String? = nil, enableDSP: Bool? = nil) throws -> DSPApplyStatus {
         if let expectedRevision, expectedRevision != revisionString {
             throw DSPConfigurationValidationError(diagnostics: [DSPDiagnostic(
                 code: "dsp.revisionConflict",
@@ -467,8 +672,11 @@ final class AudioDSPController {
         if let expectedPresetRevision, expectedPresetRevision != document.revisionString {
             throw DSPPresetStoreError.revisionConflict
         }
-        let validated = try validate(document.configuration)
+        var candidate = pendingPresetEdits[id]?.configuration ?? document.configuration
+        if let enableDSP { candidate.enabled = enableDSP }
+        let validated = try validate(candidate)
         let previousID = selectedPresetID
+        scheduleWorkingDraftWrite(immediate: true)
         selectedPresetID = id
         do {
             let newStatus = try apply(validated)
@@ -598,6 +806,9 @@ final class AudioDSPController {
 
     private func merge(_ result: DSPPresetStoreLoadResult) {
         presets = [.flat] + result.presets
+        for document in pendingPresetEdits.values where !presets.contains(where: { $0.presetID == document.presetID }) {
+            upsertPreset(document)
+        }
         diagnostics = result.diagnostics
         lastError = result.diagnostics.first
         refreshModifiedState()
@@ -610,17 +821,63 @@ final class AudioDSPController {
             isModified = true
             return
         }
-        isModified = configuration != selected.configuration
+        isModified = pendingNewPresetIDs.contains(selectedPresetID)
+            || pendingPresetEdits[selectedPresetID] != nil
+            || configuration != selected.configuration
     }
 
-    private func scheduleApplyAfterDebounce() {
-        pendingApplyTask?.cancel()
+    private func ensureEditablePreset() {
+        if let selectedPresetID,
+           let selected = presets.first(where: { $0.presetID == selectedPresetID }),
+           !selected.isBuiltIn || selected.configuration == configuration {
+            return
+        }
+        let document = DSPPresetDocument(
+            name: selectedPresetID == DSPPresetDocument.flatPresetID ? "Flat 副本" : "我的预设",
+            configuration: configuration
+        )
+        selectedPresetID = document.presetID
+        pendingNewPresetIDs.insert(document.presetID)
+        upsertPreset(document)
+    }
+
+    private func upsertPreset(_ document: DSPPresetDocument) {
+        if let index = presets.firstIndex(where: { $0.presetID == document.presetID }) {
+            guard presets[index] != document else { return }
+            presets[index] = document
+        } else {
+            presets.append(document)
+        }
+        presets.sort {
+            if $0.isBuiltIn != $1.isBuiltIn { return $0.isBuiltIn }
+            let order = $0.name.localizedStandardCompare($1.name)
+            return order == .orderedSame
+                ? $0.presetID.uuidString < $1.presetID.uuidString
+                : order == .orderedAscending
+        }
+    }
+
+    private func scheduleApply() {
+        guard pendingApplyTask == nil else { return }
+        let delay = max(0, 0.035 - (ProcessInfo.processInfo.systemUptime - lastApplyDispatchTime))
+        if delay == 0 {
+            dispatchPendingApply()
+            return
+        }
         pendingApplyTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(35))
+            try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self else { return }
             self.pendingApplyTask = nil
             self.dispatchPendingApply()
         }
+    }
+
+    private func preparingStatus(requestID: UUID?, revision: String) -> DSPApplyStatus {
+        DSPApplyStatus(requestID: requestID, revisionString: revision, state: .preparing,
+            format: status.format, headroomDB: status.headroomDB,
+            processingLatencyFrames: status.processingLatencyFrames,
+            mediaMappingLatencyFrames: status.mediaMappingLatencyFrames, peakGuarantee: status.peakGuarantee,
+            warnings: status.warnings)
     }
 
     private func dispatchPendingApply() {
@@ -644,13 +901,9 @@ final class AudioDSPController {
         }
 
         if let applyConfiguration {
-            status = DSPApplyStatus(
-                requestID: requestID,
-                revisionString: revision,
-                state: .preparing,
-                format: status.format
-            )
+            status = preparingStatus(requestID: requestID, revision: revision)
             remember(status)
+            lastApplyDispatchTime = ProcessInfo.processInfo.systemUptime
             applyConfiguration(configuration, revision, requestID)
         } else {
             status = DSPApplyStatus(
@@ -665,24 +918,76 @@ final class AudioDSPController {
     }
 
     private func scheduleWorkingDraftWrite(immediate: Bool = false) {
-        draftWriteTask?.cancel()
-        let draft = DSPWorkingDraftDocument(
+        pendingWorkingDraft = DSPWorkingDraftDocument(
             revisionString: revisionString,
             selectedPresetID: selectedPresetID,
             configuration: configuration
         )
-        draftWriteTask = Task { [weak self] in
-            if !immediate {
-                try? await Task.sleep(for: .milliseconds(250))
-                guard !Task.isCancelled else { return }
-            }
-            guard let self else { return }
-            do {
-                try await self.store.saveWorkingDraft(draft)
-            } catch {
-                self.record(error)
-            }
+        if let selectedPresetID,
+           var document = presets.first(where: { $0.presetID == selectedPresetID }),
+           !document.isBuiltIn {
+            document.configuration = configuration
+            pendingPresetEdits[selectedPresetID] = document
         }
+        if immediate {
+            immediatePersistenceRequested = true
+            draftWriteDelayTask?.cancel()
+        }
+        guard draftWriteTask == nil else { return }
+        draftWriteTask = Task { [weak self] in
+            guard let self else { return }
+            await self.persistPendingEdits()
+        }
+    }
+
+    /// A single writer takes the latest value every 150 ms, including during a
+    /// continuous drag. Pending edits retain each preset's identity across selection.
+    private func persistPendingEdits() async {
+        while pendingWorkingDraft != nil || !pendingPresetEdits.isEmpty {
+            if !immediatePersistenceRequested {
+                let delay = Task<Void, Never> {
+                    do { try await Task.sleep(for: .milliseconds(150)) }
+                    catch { }
+                }
+                draftWriteDelayTask = delay
+                await delay.value
+                draftWriteDelayTask = nil
+            }
+            immediatePersistenceRequested = false
+            if let draft = pendingWorkingDraft {
+                do { try await store.saveWorkingDraft(draft) }
+                catch { record(error) }
+                if pendingWorkingDraft == draft { pendingWorkingDraft = nil }
+            }
+            for id in Array(pendingPresetEdits.keys) {
+                guard let edit = pendingPresetEdits[id] else { continue }
+                do {
+                    if let saved = try await store.saveEditedPreset(
+                        edit, createIfMissing: pendingNewPresetIDs.contains(id)
+                    ) {
+                        pendingNewPresetIDs.remove(id)
+                        upsertPreset(saved)
+                    }
+                } catch {
+                    record(error)
+                }
+                if pendingPresetEdits[id] == edit { pendingPresetEdits[id] = nil }
+            }
+            refreshModifiedState()
+        }
+        draftWriteTask = nil
+    }
+
+    func flushPendingPersistence() async {
+        scheduleWorkingDraftWrite(immediate: true)
+        await draftWriteTask?.value
+    }
+
+    private func flushPresetEdits(id: UUID, expectedRevision: String?) async -> String? {
+        let previousRevision = presets.first(where: { $0.presetID == id })?.revisionString
+        await flushPendingPersistence()
+        guard let expectedRevision, expectedRevision == previousRevision else { return expectedRevision }
+        return presets.first(where: { $0.presetID == id })?.revisionString ?? expectedRevision
     }
 
     private func supersedeLatestPendingRequest() {
@@ -768,10 +1073,14 @@ final class AudioDSPController {
         if !configuration.outputTrimDB.isFinite || !(-24...24).contains(configuration.outputTrimDB) {
             add("dsp.invalidParameter", "输出增益范围为 −24 至 +24 dB。", "outputTrimDB")
         }
-        if !configuration.headroom.marginDB.isFinite || !(0...12).contains(configuration.headroom.marginDB) {
-            add("dsp.invalidParameter", "余量范围为 0 至 12 dB。", "headroom.marginDB")
+        if !configuration.headroom.maximumAttenuationDB.isFinite
+            || !DSPHeadroomConfiguration.maximumAttenuationRange.contains(configuration.headroom.maximumAttenuationDB) {
+            add("dsp.invalidParameter", "最大衰减范围为 0 至 12 dB。", "headroom.maximumAttenuationDB")
         }
-
+        if !configuration.limiter.ceilingDB.isFinite
+            || !DSPLimiterConfiguration.ceilingRange.contains(configuration.limiter.ceilingDB) {
+            add("dsp.invalidParameter", "限幅上限范围为 −6 至 0 dB。", "limiter.ceilingDB")
+        }
         let scriptNodeCount = configuration.nodes.filter {
             $0.typeID == DSPNodeConfiguration.scriptTypeID
         }.count
@@ -781,14 +1090,11 @@ final class AudioDSPController {
         var totalScriptOperationsPerSecond = 0.0
         var scriptLatencyFrames = 0
         let nativeLatencyFrames = configuration.nodes.filter { $0.enabled }.reduce(0) { total, node in
-            if node.typeID == DSPNodeConfiguration.virtualBassTypeID,
-               let parameters = node.virtualBassParameters, parameters.amount * parameters.mix > 0 {
-                return total + 64
-            }
-            if node.typeID == DSPNodeConfiguration.tubeTypeID,
-               let parameters = node.tubeParameters, parameters.mix > 0 { return total + 64 }
-            return total
-        }
+            total + Self.declaredLatencyFrames(of: node, sampleRate: format?.sampleRate ?? 48_000)
+        } + (configuration.limiter.enabled
+            ? format.map { DSPPeakLimiterKernel.lookaheadFrames(sampleRate: $0.sampleRate) }
+                ?? DSPPeakLimiterKernel.maximumLookaheadFrames
+            : 0)
         var seenIDs = Set<UUID>()
         for (index, node) in configuration.nodes.enumerated() {
             let prefix = "nodes.\(index)"
@@ -801,10 +1107,7 @@ final class AudioDSPController {
             }
             guard node.enabled else { continue }
             guard node.typeID == DSPNodeConfiguration.parametricEQTypeID
-                    || node.typeID == DSPNodeConfiguration.equalLoudnessTypeID
-                    || node.typeID == DSPNodeConfiguration.stereoWidthTypeID
-                    || node.typeID == DSPNodeConfiguration.virtualBassTypeID
-                    || node.typeID == DSPNodeConfiguration.tubeTypeID
+                    || DSPNodeConfiguration.nativeEffectTypeIDs.contains(node.typeID)
                     || node.typeID == DSPNodeConfiguration.scriptTypeID else {
                 add(
                     "dsp.unsupportedNode",
@@ -976,163 +1279,22 @@ final class AudioDSPController {
                 continue
             }
 
-            if node.typeID == DSPNodeConfiguration.stereoWidthTypeID {
-                for parameterKey in node.parameters.keys.sorted()
-                    where !DSPStereoWidthParameters.supportedParameterKeys.contains(parameterKey) {
+            if let supportedKeys = DSPNodeConfiguration.supportedParameterKeys(forTypeID: node.typeID) {
+                let title = DSPNodeConfiguration.displayTitle(forTypeID: node.typeID)
+                for parameterKey in node.parameters.keys.sorted() where !supportedKeys.contains(parameterKey) {
                     add(
                         "dsp.unsupportedParameter",
-                        "此立体声扩展参数暂不支持：\(parameterKey)。",
+                        "此\(title)参数暂不支持：\(parameterKey)。",
                         "\(prefix).parameters.\(parameterKey)",
                         nodeID: node.nodeID
                     )
                 }
-                guard let parameters = node.stereoWidthParameters else {
-                    add("dsp.invalidParameter", "立体声扩展参数不完整。", "\(prefix).parameters", nodeID: node.nodeID)
+                guard let issues = node.nativeParameterIssues else {
+                    add("dsp.invalidParameter", "\(title)参数不完整。", "\(prefix).parameters", nodeID: node.nodeID)
                     continue
                 }
-                if !parameters.width.isFinite || !DSPStereoWidthParameters.widthRange.contains(parameters.width) {
-                    add("dsp.invalidParameter", "宽度范围为 0 至 2。", "\(prefix).parameters.width", nodeID: node.nodeID)
-                }
-                if !parameters.outputTrimDB.isFinite
-                    || !DSPStereoWidthParameters.outputTrimRange.contains(parameters.outputTrimDB) {
-                    add("dsp.invalidParameter", "输出增益范围为 −24 至 +6 dB。", "\(prefix).parameters.outputTrimDB", nodeID: node.nodeID)
-                }
-                continue
-            }
-
-            if node.typeID == DSPNodeConfiguration.virtualBassTypeID {
-                for parameterKey in node.parameters.keys.sorted()
-                    where !DSPVirtualBassParameters.supportedParameterKeys.contains(parameterKey) {
-                    add(
-                        "dsp.unsupportedParameter",
-                        "此虚拟低音参数暂不支持：\(parameterKey)。",
-                        "\(prefix).parameters.\(parameterKey)",
-                        nodeID: node.nodeID
-                    )
-                }
-                guard let parameters = node.virtualBassParameters else {
-                    add("dsp.invalidParameter", "虚拟低音参数不完整。", "\(prefix).parameters", nodeID: node.nodeID)
-                    continue
-                }
-                if !parameters.lowFrequencyHz.isFinite
-                    || !DSPVirtualBassParameters.lowFrequencyRange.contains(parameters.lowFrequencyHz) {
-                    add("dsp.invalidParameter", "低频范围为 20 至 180 Hz。", "\(prefix).parameters.lowFrequencyHz", nodeID: node.nodeID)
-                }
-                if !parameters.highFrequencyHz.isFinite
-                    || !DSPVirtualBassParameters.highFrequencyRange.contains(parameters.highFrequencyHz) {
-                    add("dsp.invalidParameter", "高频范围为 40 至 300 Hz。", "\(prefix).parameters.highFrequencyHz", nodeID: node.nodeID)
-                }
-                if parameters.lowFrequencyHz.isFinite, parameters.highFrequencyHz.isFinite,
-                   parameters.lowFrequencyHz >= parameters.highFrequencyHz {
-                    add("dsp.invalidParameter", "频带下限必须低于上限。", "\(prefix).parameters.highFrequencyHz", nodeID: node.nodeID)
-                }
-                if !parameters.amount.isFinite || !DSPVirtualBassParameters.amountRange.contains(parameters.amount) {
-                    add("dsp.invalidParameter", "强度范围为 0 至 1。", "\(prefix).parameters.amount", nodeID: node.nodeID)
-                }
-                if !parameters.driveDB.isFinite || !DSPVirtualBassParameters.driveRange.contains(parameters.driveDB) {
-                    add("dsp.invalidParameter", "驱动范围为 0 至 18 dB。", "\(prefix).parameters.driveDB", nodeID: node.nodeID)
-                }
-                if !parameters.harmonics.isFinite || !DSPVirtualBassParameters.harmonicsRange.contains(parameters.harmonics) {
-                    add("dsp.invalidParameter", "谐波倾向范围为 0 至 1。", "\(prefix).parameters.harmonics", nodeID: node.nodeID)
-                }
-                if !parameters.mix.isFinite || !DSPVirtualBassParameters.mixRange.contains(parameters.mix) {
-                    add("dsp.invalidParameter", "混合范围为 0 至 1。", "\(prefix).parameters.mix", nodeID: node.nodeID)
-                }
-                if !parameters.outputTrimDB.isFinite
-                    || !DSPVirtualBassParameters.outputTrimRange.contains(parameters.outputTrimDB) {
-                    add("dsp.invalidParameter", "输出增益范围为 −24 至 +6 dB。", "\(prefix).parameters.outputTrimDB", nodeID: node.nodeID)
-                }
-                continue
-            }
-
-            if node.typeID == DSPNodeConfiguration.tubeTypeID {
-                for parameterKey in node.parameters.keys.sorted()
-                    where !DSPTubeParameters.supportedParameterKeys.contains(parameterKey) {
-                    add(
-                        "dsp.unsupportedParameter",
-                        "此电子管参数暂不支持：\(parameterKey)。",
-                        "\(prefix).parameters.\(parameterKey)",
-                        nodeID: node.nodeID
-                    )
-                }
-                guard let parameters = node.tubeParameters else {
-                    add("dsp.invalidParameter", "电子管参数不完整。", "\(prefix).parameters", nodeID: node.nodeID)
-                    continue
-                }
-                if !parameters.driveDB.isFinite || !DSPTubeParameters.driveRange.contains(parameters.driveDB) {
-                    add("dsp.invalidParameter", "驱动范围为 0 至 18 dB。", "\(prefix).parameters.driveDB", nodeID: node.nodeID)
-                }
-                if !parameters.bias.isFinite || !DSPTubeParameters.biasRange.contains(parameters.bias) {
-                    add("dsp.invalidParameter", "偏置范围为 −0.5 至 +0.5。", "\(prefix).parameters.bias", nodeID: node.nodeID)
-                }
-                if !parameters.mix.isFinite || !DSPTubeParameters.mixRange.contains(parameters.mix) {
-                    add("dsp.invalidParameter", "混合范围为 0 至 1。", "\(prefix).parameters.mix", nodeID: node.nodeID)
-                }
-                if !parameters.inputTrimDB.isFinite
-                    || !DSPTubeParameters.inputTrimRange.contains(parameters.inputTrimDB) {
-                    add("dsp.invalidParameter", "输入增益范围为 −24 至 +12 dB。", "\(prefix).parameters.inputTrimDB", nodeID: node.nodeID)
-                }
-                if !parameters.outputTrimDB.isFinite
-                    || !DSPTubeParameters.outputTrimRange.contains(parameters.outputTrimDB) {
-                    add("dsp.invalidParameter", "输出增益范围为 −24 至 +6 dB。", "\(prefix).parameters.outputTrimDB", nodeID: node.nodeID)
-                }
-                if !parameters.dcBlockHz.isFinite
-                    || !DSPTubeParameters.dcBlockFrequencyRange.contains(parameters.dcBlockHz) {
-                    add("dsp.invalidParameter", "直流阻隔频率范围为 5 至 40 Hz。", "\(prefix).parameters.dcBlockHz", nodeID: node.nodeID)
-                }
-                continue
-            }
-
-            if node.typeID == DSPNodeConfiguration.equalLoudnessTypeID {
-                for parameterKey in node.parameters.keys.sorted()
-                    where !DSPEqualLoudnessParameters.supportedParameterKeys.contains(parameterKey) {
-                    add(
-                        "dsp.unsupportedParameter",
-                        "此等响参数暂不支持：\(parameterKey)。",
-                        "\(prefix).parameters.\(parameterKey)",
-                        nodeID: node.nodeID
-                    )
-                }
-                guard let parameters = node.equalLoudnessParameters else {
-                    add(
-                        "dsp.invalidParameter",
-                        "等响补偿参数不完整。",
-                        "\(prefix).parameters",
-                        nodeID: node.nodeID
-                    )
-                    continue
-                }
-                if !parameters.strength.isFinite
-                    || !DSPEqualLoudnessParameters.strengthRange.contains(parameters.strength) {
-                    add("dsp.invalidParameter", "强度范围为 0 至 1。", "\(prefix).parameters.strength", nodeID: node.nodeID)
-                }
-                if !parameters.maxBassGainDB.isFinite
-                    || !DSPEqualLoudnessParameters.maxBassGainRange.contains(parameters.maxBassGainDB) {
-                    add("dsp.invalidParameter", "低频补偿范围为 0 至 12 dB。", "\(prefix).parameters.maxBassGainDB", nodeID: node.nodeID)
-                }
-                if !parameters.maxTrebleGainDB.isFinite
-                    || !DSPEqualLoudnessParameters.maxTrebleGainRange.contains(parameters.maxTrebleGainDB) {
-                    add("dsp.invalidParameter", "高频补偿范围为 0 至 6 dB。", "\(prefix).parameters.maxTrebleGainDB", nodeID: node.nodeID)
-                }
-                if !parameters.bassFrequencyHz.isFinite
-                    || !DSPEqualLoudnessParameters.bassFrequencyRange.contains(parameters.bassFrequencyHz) {
-                    add("dsp.invalidParameter", "低架频率范围为 20 至 500 Hz。", "\(prefix).parameters.bassFrequencyHz", nodeID: node.nodeID)
-                }
-                if !parameters.trebleFrequencyHz.isFinite
-                    || !DSPEqualLoudnessParameters.trebleFrequencyRange.contains(parameters.trebleFrequencyHz) {
-                    add("dsp.invalidParameter", "高架频率范围为 1,000 至 20,000 Hz。", "\(prefix).parameters.trebleFrequencyHz", nodeID: node.nodeID)
-                }
-                if !parameters.bassQ.isFinite
-                    || !DSPEqualLoudnessParameters.shelfSlopeRange.contains(parameters.bassQ) {
-                    add("dsp.invalidParameter", "低架斜率 S 范围为 0.25 至 1。", "\(prefix).parameters.bassQ", nodeID: node.nodeID)
-                }
-                if !parameters.trebleQ.isFinite
-                    || !DSPEqualLoudnessParameters.shelfSlopeRange.contains(parameters.trebleQ) {
-                    add("dsp.invalidParameter", "高架斜率 S 范围为 0.25 至 1。", "\(prefix).parameters.trebleQ", nodeID: node.nodeID)
-                }
-                if !parameters.compensationWindowDB.isFinite
-                    || !DSPEqualLoudnessParameters.compensationWindowRange.contains(parameters.compensationWindowDB) {
-                    add("dsp.invalidParameter", "补偿窗口范围为 1 至 60 dB。", "\(prefix).parameters.compensationWindowDB", nodeID: node.nodeID)
+                for issue in issues {
+                    add("dsp.invalidParameter", issue.message, "\(prefix).parameters.\(issue.key)", nodeID: node.nodeID)
                 }
                 continue
             }
@@ -1202,13 +1364,61 @@ final class AudioDSPController {
                 }
             }
         }
+        let stage = configuration.equalLoudness.parameters
+        if !stage.strength.isFinite || !DSPEqualLoudnessParameters.strengthRange.contains(stage.strength) {
+            add("dsp.invalidParameter", "强度范围为 0 至 1。", "equalLoudness.parameters.strength")
+        }
+        if !stage.bassFrequencyHz.isFinite
+            || !DSPEqualLoudnessParameters.bassFrequencyRange.contains(stage.bassFrequencyHz) {
+            add("dsp.invalidParameter", "低架频率范围为 20 至 500 Hz。", "equalLoudness.parameters.bassFrequencyHz")
+        }
+        if !stage.trebleFrequencyHz.isFinite
+            || !DSPEqualLoudnessParameters.trebleFrequencyRange.contains(stage.trebleFrequencyHz) {
+            add("dsp.invalidParameter", "高架频率范围为 1,000 至 20,000 Hz。", "equalLoudness.parameters.trebleFrequencyHz")
+        }
+        if !stage.bassQ.isFinite || !DSPEqualLoudnessParameters.shelfSlopeRange.contains(stage.bassQ) {
+            add("dsp.invalidParameter", "低架斜率 S 范围为 0.25 至 1。", "equalLoudness.parameters.bassQ")
+        }
+        if !stage.trebleQ.isFinite || !DSPEqualLoudnessParameters.shelfSlopeRange.contains(stage.trebleQ) {
+            add("dsp.invalidParameter", "高架斜率 S 范围为 0.25 至 1。", "equalLoudness.parameters.trebleQ")
+        }
+        if let calibration = configuration.equalLoudness.calibration,
+           !calibration.points.allSatisfy({
+               $0.coordinate.isFinite && $0.bassDB.isFinite && $0.trebleDB.isFinite
+           }) {
+            add("dsp.invalidParameter", "等响标定数据无法读取。", "equalLoudness.calibration")
+        }
+
         let renderCost = DSPScriptCompiler.estimatedRendererOperationsPerSecond(
             baseOperationsPerSecond: totalScriptOperationsPerSecond,
             latencyFrames: scriptLatencyFrames + nativeLatencyFrames)
         if format != nil, renderCost > DSPScriptCompiler.maximumChainWeightedOperationsPerSecond {
-            add("dsp.invalidParameter", "含延迟预览的脚本总成本不能超过 48 M 次估算运算/秒。", "nodes")
+            add("dsp.invalidParameter", "脚本总成本不能超过 48 M 次估算运算/秒。", "nodes")
+        }
+        if let format,
+           scriptLatencyFrames + nativeLatencyFrames > RendererDSPLookahead.maximumFrames(sampleRate: format.sampleRate) {
+            add("dsp.invalidParameter", "效果链总延迟不能超过 300 ms。", "nodes")
         }
         return result
+    }
+
+    /// Latency an enabled native node declares, before the source format is
+    /// known in detail; the processor reports the prepared value.
+    nonisolated static func declaredLatencyFrames(of node: DSPNodeConfiguration, sampleRate: Double) -> Int {
+        switch node.typeID {
+        case DSPNodeConfiguration.tubeTypeID:
+            return node.tubeParameters.map { $0.isDry ? 0 : 64 } ?? 0
+        case DSPNodeConfiguration.hybridBassTypeID:
+            if node.effectParameters(DSPHybridBassParameters.self)?.intensity == 0 { return 0 }
+            return DSPHybridBassEngine.latencyFrames(sampleRate: sampleRate)
+        case DSPNodeConfiguration.spatialAudioTypeID:
+            return DSPConvolutionSpectra.headBlockSize
+        case DSPNodeConfiguration.compressorTypeID:
+            return node.effectParameters(DSPCompressorParameters.self)
+                .map { Int(($0.lookaheadMs / 1_000 * sampleRate).rounded()) } ?? 0
+        default:
+            return 0
+        }
     }
 
     private static func disabledUnknownNodeWarnings(

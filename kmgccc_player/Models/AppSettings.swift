@@ -8,6 +8,7 @@
 
 import Foundation
 import SwiftUI
+import AppKit
 
 enum PlaybackOrderMode: String, CaseIterable, Identifiable {
     case sequence
@@ -153,6 +154,9 @@ struct FullscreenLyricsTypography: Codable, Equatable {
 extension Notification.Name {
     static let lyricSpringSettingsDidSettle = Notification.Name("kmgccc_player.lyricSpringSettingsDidSettle")
     static let lyricHighlightModeDidChange = Notification.Name("kmgccc_player.lyricHighlightModeDidChange")
+    static let volumeControlTargetDidChange = Notification.Name("kmgccc_player.volumeControlTargetDidChange")
+    /// A choice that background scheduling reads has changed.
+    static let backgroundWorkSettingsDidChange = Notification.Name("kmgccc_player.backgroundWorkSettingsDidChange")
 }
 
 /// Observable app settings using AppStorage for persistence.
@@ -211,9 +215,53 @@ public final class AppSettings {
 
     // MARK: - Audio Settings
 
+    public enum VolumeControlTarget: String, CaseIterable, Identifiable, Sendable {
+        case app = "app"
+        case system = "system"
+
+        public var id: String { rawValue }
+
+        public var title: String {
+            switch self {
+            case .app: return "应用音量"
+            case .system: return "系统音量"
+            }
+        }
+    }
+
+    private enum AudioKeys {
+        static let volumeControlTarget = "volumeControlTarget"
+        static let didMigrateVolumeTargetToSystem = "didMigrateVolumeControlTargetToSystem"
+    }
+
     /// Master volume (0.0 to 1.0)
     @ObservationIgnored
     @AppStorage("volume") var volume: Double = AppSettings.defaultVolume
+
+    /// Volume control target (app or system).
+    public var volumeControlTarget: VolumeControlTarget {
+        get {
+            access(keyPath: \.volumeControlTarget)
+            if !UserDefaults.standard.bool(forKey: AudioKeys.didMigrateVolumeTargetToSystem) {
+                UserDefaults.standard.set(true, forKey: AudioKeys.didMigrateVolumeTargetToSystem)
+                UserDefaults.standard.set(VolumeControlTarget.system.rawValue, forKey: AudioKeys.volumeControlTarget)
+                return .system
+            }
+            let raw = UserDefaults.standard.string(forKey: AudioKeys.volumeControlTarget)
+                ?? VolumeControlTarget.system.rawValue
+            return VolumeControlTarget(rawValue: raw) ?? .system
+        }
+        set {
+            UserDefaults.standard.set(true, forKey: AudioKeys.didMigrateVolumeTargetToSystem)
+            withMutation(keyPath: \.volumeControlTarget) {
+                UserDefaults.standard.set(newValue.rawValue, forKey: AudioKeys.volumeControlTarget)
+            }
+            NotificationCenter.default.post(
+                name: .volumeControlTargetDidChange,
+                object: nil
+            )
+        }
+    }
 
     // MARK: - LED Meter Settings
 
@@ -365,11 +413,74 @@ public final class AppSettings {
         static let cliEnabled = "automationCLIEnabled"
     }
 
+    private enum BackgroundWorkKeys {
+        static let preparationEnabled = "backgroundPreparationEnabled"
+        static let pacing = "backgroundPacingMode"
+        static let disabledDomains = "backgroundDisabledDomains"
+    }
+
     private enum PlaybackOrderKeys {
         static let mode = "playbackOrderMode"
         static let shuffleEnabled = "shuffleEnabled"
         static let repeatMode = "repeatMode"
         static let stopAfterTrack = "stopAfterTrack"
+    }
+
+    // MARK: - Background Work Settings
+
+    /// Master switch for idle preparation and preloading. Work the listener
+    /// asks for, and what volume normalization needs for the playing and
+    /// next song, is not affected.
+    var backgroundPreparationEnabled: Bool {
+        get {
+            access(keyPath: \.backgroundPreparationEnabled)
+            let defaults = UserDefaults.standard
+            if defaults.object(forKey: BackgroundWorkKeys.preparationEnabled) == nil { return true }
+            return defaults.bool(forKey: BackgroundWorkKeys.preparationEnabled)
+        }
+        set {
+            withMutation(keyPath: \.backgroundPreparationEnabled) {
+                UserDefaults.standard.set(newValue, forKey: BackgroundWorkKeys.preparationEnabled)
+            }
+            NotificationCenter.default.post(name: .backgroundWorkSettingsDidChange, object: nil)
+        }
+    }
+
+    var backgroundPacingMode: BackgroundPacingMode {
+        get {
+            access(keyPath: \.backgroundPacingMode)
+            let raw = UserDefaults.standard.string(forKey: BackgroundWorkKeys.pacing)
+            return raw.flatMap(BackgroundPacingMode.init(rawValue:)) ?? .gentle
+        }
+        set {
+            withMutation(keyPath: \.backgroundPacingMode) {
+                UserDefaults.standard.set(newValue.rawValue, forKey: BackgroundWorkKeys.pacing)
+            }
+            NotificationCenter.default.post(name: .backgroundWorkSettingsDidChange, object: nil)
+        }
+    }
+
+    /// Domains the listener switched off on the background tasks page.
+    var backgroundDisabledDomains: Set<BackgroundWorkDomain> {
+        get {
+            access(keyPath: \.backgroundDisabledDomains)
+            let raw = UserDefaults.standard.stringArray(forKey: BackgroundWorkKeys.disabledDomains) ?? []
+            return Set(raw.compactMap(BackgroundWorkDomain.init(rawValue:)))
+        }
+        set {
+            withMutation(keyPath: \.backgroundDisabledDomains) {
+                UserDefaults.standard.set(newValue.map(\.rawValue).sorted(), forKey: BackgroundWorkKeys.disabledDomains)
+            }
+            NotificationCenter.default.post(name: .backgroundWorkSettingsDidChange, object: nil)
+        }
+    }
+
+    var backgroundWorkConfiguration: BackgroundWorkConfiguration {
+        BackgroundWorkConfiguration(
+            preparationEnabled: backgroundPreparationEnabled,
+            pacing: backgroundPacingMode,
+            disabledDomains: backgroundDisabledDomains
+        )
     }
 
     // MARK: - Automation Settings
@@ -447,6 +558,8 @@ public final class AppSettings {
                 defaults.set(newValue.rawValue, forKey: AppearanceKeys.artworkTintMode)
                 defaults.removeObject(forKey: AppearanceKeys.globalArtworkTintEnabled)
             }
+            // Per-song colours are idle work in rich mode.
+            NotificationCenter.default.post(name: .backgroundWorkSettingsDidChange, object: nil)
         }
     }
 
@@ -512,6 +625,9 @@ public final class AppSettings {
                     forKey: AppearanceKeys.followSystemAppearance
                 )
             }
+            Task { @MainActor in
+                self.applyAppearanceToAppAndWindows()
+            }
         }
     }
 
@@ -528,6 +644,9 @@ public final class AppSettings {
             withMutation(keyPath: \.manualAppearance) {
                 UserDefaults.standard.set(
                     newValue.rawValue, forKey: AppearanceKeys.manualAppearance)
+            }
+            Task { @MainActor in
+                self.applyAppearanceToAppAndWindows()
             }
         }
     }
@@ -1805,6 +1924,41 @@ public final class AppSettings {
 
     var colorScheme: ColorScheme? {
         followSystemAppearance ? nil : (manualAppearance == .dark ? .dark : .light)
+    }
+
+    var resolvedColorScheme: ColorScheme {
+        if followSystemAppearance {
+            let isDark: Bool
+            if let window = NSApp.windows.first(where: { $0.isVisible }),
+               let match = window.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) {
+                isDark = match == .darkAqua
+            } else {
+                isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            }
+            return isDark ? .dark : .light
+        } else {
+            return manualAppearance == .dark ? .dark : .light
+        }
+    }
+
+    @MainActor
+    func applyAppearanceToAppAndWindows() {
+        if followSystemAppearance {
+            NSApp.appearance = nil
+            for window in NSApp.windows {
+                window.appearance = nil
+            }
+        } else {
+            let appearanceName: NSAppearance.Name = manualAppearance == .dark ? .darkAqua : .aqua
+            let appearance = NSAppearance(named: appearanceName)
+            NSApp.appearance = appearance
+            for window in NSApp.windows {
+                window.appearance = appearance
+            }
+        }
+
+        let targetScheme = resolvedColorScheme
+        ThemeStore.shared.updateColorScheme(targetScheme, reason: "applyAppearanceToAppAndWindows")
     }
 
     var accentColor: Color {

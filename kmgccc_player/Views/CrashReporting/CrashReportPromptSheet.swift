@@ -1,4 +1,5 @@
 import Foundation
+import PopupKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -18,15 +19,10 @@ struct CrashReportPromptSheet: View {
     private let characterLimit = 1_000
 
     var body: some View {
-        VStack(spacing: 0) {
-            AppDialogConfirmHeader(
-                iconName: "exclamationmark.triangle.fill",
-                iconColor: .orange,
-                title: "检测到 App 上次意外退出"
-            )
-
-            AppDialogDivider()
-
+        AppPopupFrame(
+            title: "检测到 App 上次意外退出", systemImage: "exclamationmark.triangle",
+            onClose: onCancel
+        ) {
             VStack(alignment: .leading, spacing: 10) {
                 Text("崩溃前你正在进行什么操作？")
                     .font(.headline)
@@ -55,10 +51,6 @@ struct CrashReportPromptSheet: View {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(.quaternary.opacity(0.5))
                 )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(.separator.opacity(0.55), lineWidth: 0.5)
-                )
                 .accessibilityLabel("崩溃前的操作说明")
 
                 HStack {
@@ -70,36 +62,27 @@ struct CrashReportPromptSheet: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
-            .padding(20)
 
-            AppDialogDivider()
-
-            HStack(spacing: 10) {
+        } footer: {
+            AppPopupActionGroup {
                 Button("保存报告…") {
                     prepareExport()
                 }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
+                .buttonStyle(AppDialogGlassButtonStyle())
                 .disabled(isPreparingExport)
 
-                Spacer()
                 Button("取消", action: onCancel)
-                    .buttonStyle(.bordered)
-                    .clipShape(Capsule())
+                    .buttonStyle(AppDialogGlassButtonStyle())
                     .keyboardShortcut(.cancelAction)
 
                 Button("发送") {
                     onSend(description)
                 }
-                .buttonStyle(.borderedProminent)
-                .clipShape(Capsule())
+                .buttonStyle(AppDialogGlassButtonStyle(kind: .primary))
                 .keyboardShortcut(.return, modifiers: .command)
             }
-            .controlSize(.large)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
         }
-        .frame(width: 520)
+        .frame(width: AppPopupStyle().width)
         .interactiveDismissDisabled()
         .onAppear {
             descriptionIsFocused = true

@@ -2,11 +2,14 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// 自定义皮肤包管理操作视图（导入、导出、重载、删除）。
+/// 当前版本暂未对外开放，入口已在设置页面暂时隐藏，源码与逻辑完整保留供后续版本开放。
 /// Only panel and selection state lives here; installation is owned by SkinPackageStore.
 struct SkinPackageSettingsActions: View {
     let skin: any NowPlayingSkin
     @Environment(SkinManager.self) private var manager
     @Environment(AppSettings.self) private var settings
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
     @State private var showsRemoval = false
     @State private var isWorking = false
     @State private var pendingArchive: URL?
@@ -24,7 +27,8 @@ struct SkinPackageSettingsActions: View {
             if isWorking { ProgressView().controlSize(.small) }
             Spacer(minLength: 0)
         }
-        .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
+        .font(.system(size: presentationStyle.scaled(12), weight: .medium))
+        .buttonStyle(AppPanelButtonStyle())
         .disabled(isWorking)
         .confirmationDialog("已有此皮肤", isPresented: $showsConflict, titleVisibility: .visible) {
             Button("替换") { importPending(.replace) }

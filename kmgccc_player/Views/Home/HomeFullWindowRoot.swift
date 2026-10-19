@@ -23,11 +23,10 @@ struct HomeFullWindowRoot: View {
     @ObservedObject var appSession: AppSessionHost
     @State private var settings = AppSettings.shared
     @State private var layout = HomeWindowLayoutState.shared
-    @State private var hasMountedHome = false
 
     var body: some View {
         Group {
-            if hasMountedHome || shouldRenderHome {
+            if shouldRenderHome {
                 if let libraryVM = appSession.libraryVM,
                    let playerVM = appSession.playerVM,
                    let playbackCoordinator = appSession.playbackCoordinator,
@@ -75,9 +74,6 @@ struct HomeFullWindowRoot: View {
         .allowsHitTesting(shouldRenderHome)
         .accessibilityHidden(!shouldRenderHome)
         .transaction { $0.animation = nil }
-        .onChange(of: shouldRenderHome, initial: true) { _, active in
-            if active { hasMountedHome = true }
-        }
         .motionEnvironment()
     }
 

@@ -12,7 +12,6 @@ import Foundation
 final class ExternalPlaybackMetadataStore {
     private enum Keys {
         static let overrides = "externalPlayback.matchOverrides.v1"
-        static let records = "externalPlayback.cacheRecords.v1"
     }
 
     private let storage: LibraryStorageLocations
@@ -50,66 +49,6 @@ final class ExternalPlaybackMetadataStore {
         ) ?? [:]
     }
 
-    static func migrateLegacyPersistenceIfNeeded(
-        to storage: LibraryStorageLocations,
-        stagingRootURL: URL,
-        defaults: UserDefaults
-    ) throws {
-        let fileManager = FileManager.default
-        let destination = storage.externalPlaybackMetadataURL
-            .appendingPathComponent("records.json")
-        let stagingDirectory = stagingRootURL.appendingPathComponent(
-            "LegacyExternalPlaybackMetadata",
-            isDirectory: true
-        )
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let legacyData = defaults.data(forKey: Keys.records)
-        if let legacyData {
-            _ = try decoder.decode(
-                [String: ExternalPlaybackCacheRecord].self,
-                from: legacyData
-            )
-        }
-
-        if fileManager.fileExists(atPath: destination.path) {
-            let destinationData = try Data(contentsOf: destination)
-            _ = try decoder.decode(
-                [String: ExternalPlaybackCacheRecord].self,
-                from: destinationData
-            )
-            return
-        }
-
-        guard let legacyData else { return }
-        try fileManager.createDirectory(
-            at: stagingDirectory,
-            withIntermediateDirectories: true
-        )
-        let stagedURL = stagingDirectory.appendingPathComponent("records.json")
-        try? fileManager.removeItem(at: stagedURL)
-        try legacyData.write(to: stagedURL, options: .atomic)
-        try fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        guard !fileManager.fileExists(atPath: destination.path) else {
-            try? fileManager.removeItem(at: stagedURL)
-            let destinationData = try Data(contentsOf: destination)
-            _ = try decoder.decode(
-                [String: ExternalPlaybackCacheRecord].self,
-                from: destinationData
-            )
-            return
-        }
-        try fileManager.moveItem(at: stagedURL, to: destination)
-        try? fileManager.removeItem(at: stagingDirectory)
-    }
-
-    static func removeLegacyPersistence(defaults: UserDefaults) {
-        defaults.removeObject(forKey: Keys.records)
-    }
-
     func effectiveMetadata(for raw: ExternalPlaybackRawMetadata) -> ExternalPlaybackEffectiveMetadata {
         let override = overrides[raw.stableKey]
         return ExternalPlaybackEffectiveMetadata(
@@ -124,7 +63,8 @@ final class ExternalPlaybackMetadataStore {
         overrides[stableKey]
     }
 
-    func saveOverride(_ override: ExternalPlaybackMatchOverride, for stableKey: String) {
+    @discardableResult
+    func saveOverride(_ override: ExternalPlaybackMatchOverride, for stableKey: String) -> Bool {
         if override.isEmpty {
             overrides.removeValue(forKey: stableKey)
         } else {
@@ -135,13 +75,14 @@ final class ExternalPlaybackMetadataStore {
         // However, if the metadata override changed, auto-lyrics may be stale; we clear only auto-lyrics.
         if let existing = records[stableKey],
            existing.overrideFingerprint != override.fingerprint {
-            updateRecord(stableKey: stableKey) { record in
+            _ = updateRecord(stableKey: stableKey) { record in
                 record.networkLyrics = nil
                 record.lyricsSource = nil
             }
         }
-        persistOverrides()
-        persistRecords()
+        let overridesWritten = persistOverrides()
+        let recordsWritten = persistRecords()
+        return overridesWritten && recordsWritten
     }
 
     func clearOverride(for stableKey: String) {
@@ -243,8 +184,9 @@ final class ExternalPlaybackMetadataStore {
         return cachedNetworkArtwork(for: stableKey)
     }
 
-    func storeNetworkArtwork(_ data: Data, for stableKey: String, source: String) {
-        guard !data.isEmpty else { return }
+    @discardableResult
+    func storeNetworkArtwork(_ data: Data, for stableKey: String, source: String) -> Bool {
+        guard !data.isEmpty else { return true }
         let fileName = "\(sanitize(stableKey))-\(ArtworkAssetStore.checksum(for: data)).img"
         let directory = artworkCacheDirectory()
         let fileURL = directory.appendingPathComponent(fileName)
@@ -257,13 +199,14 @@ final class ExternalPlaybackMetadataStore {
                 "[ExternalPlayback] failed to cache artwork for \(stableKey): \(error.localizedDescription)",
                 category: .library
             )
-            return
+            return false
         }
-        updateRecord(stableKey: stableKey) { record in
+        let indexed = updateRecord(stableKey: stableKey) { record in
             record.networkArtworkFileName = fileName
             record.artworkSource = source
         }
         recordArtworkWriteAndTrimIfNeeded()
+        return indexed
     }
 
     private func touchItem(at url: URL) {
@@ -324,7 +267,8 @@ final class ExternalPlaybackMetadataStore {
         overrides[stableKey]?.manuallySelectedLyrics != nil
     }
 
-    func saveManualLyrics(_ lyrics: String, source: String, for stableKey: String) {
+    @discardableResult
+    func saveManualLyrics(_ lyrics: String, source: String, for stableKey: String) -> Bool {
         if var override = overrides[stableKey] {
             override.manuallySelectedLyrics = lyrics
             override.manuallySelectedLyricsSource = source
@@ -340,11 +284,12 @@ final class ExternalPlaybackMetadataStore {
                 updatedAt: Date()
             )
         }
-        persistOverrides()
+        let overridesWritten = persistOverrides()
         // Also stamp the record so resolve() knows manual lyrics are present.
-        updateRecord(stableKey: stableKey) { record in
+        let recordWritten = updateRecord(stableKey: stableKey) { record in
             record.manualLyricsFingerprint = overrides[stableKey]?.manualLyricsFingerprint
         }
+        return overridesWritten && recordWritten
     }
 
     /// Returns auto-fetched network lyrics (excluding manual lock and empty noResult markers).
@@ -458,34 +403,45 @@ final class ExternalPlaybackMetadataStore {
         await clearAutomaticCaches()
     }
 
-    private func updateRecord(stableKey: String, mutate: (inout ExternalPlaybackCacheRecord) -> Void) {
-        guard var record = records[stableKey] else { return }
+    /// Returns whether the updated records reached disk; the metadata editor surfaces that
+    /// result, other call sites ignore it.
+    @discardableResult
+    private func updateRecord(
+        stableKey: String,
+        mutate: (inout ExternalPlaybackCacheRecord) -> Void
+    ) -> Bool {
+        guard var record = records[stableKey] else { return true }
         mutate(&record)
         record.updatedAt = Date()
         records[stableKey] = record
-        persistRecords()
+        return persistRecords()
     }
 
-    private func persistOverrides() {
+    @discardableResult
+    private func persistOverrides() -> Bool {
         do {
             let data = try encoder.encode(overrides)
             defaults.set(data, forKey: Keys.overrides)
+            return true
         } catch {
             Log.error(
                 "[ExternalPlayback] failed to encode match overrides: \(error.localizedDescription)",
                 category: .library
             )
+            return false
         }
     }
 
-    private func persistRecords() {
+    @discardableResult
+    private func persistRecords() -> Bool {
         persist(
             records,
             to: storage.externalPlaybackMetadataURL.appendingPathComponent("records.json")
         )
     }
 
-    private func persist<T: Encodable>(_ value: T, to url: URL) {
+    @discardableResult
+    private func persist<T: Encodable>(_ value: T, to url: URL) -> Bool {
         let data: Data
         do {
             data = try encoder.encode(value)
@@ -494,16 +450,18 @@ final class ExternalPlaybackMetadataStore {
                 "[ExternalPlayback] failed to encode \(url.lastPathComponent): \(error.localizedDescription)",
                 category: .library
             )
-            return
+            return false
         }
         do {
             try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
+            return true
         } catch {
             Log.error(
                 "[ExternalPlayback] failed to write \(url.path): \(error.localizedDescription)",
                 category: .library
             )
+            return false
         }
     }
 

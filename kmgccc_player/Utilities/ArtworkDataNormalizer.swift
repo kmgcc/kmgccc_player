@@ -12,8 +12,10 @@ import ImageIO
 import UniformTypeIdentifiers
 
 nonisolated enum ArtworkDataNormalizer {
-    static let importMaxPixelSize = 1_200
-    static let storedMaxPixelSize = 1_200
+    // Storage keeps enough detail for a large Retina cover. Playback/list
+    // derivatives retain their own smaller decode budgets.
+    static let importMaxPixelSize = 2_560
+    static let storedMaxPixelSize = 2_560
 
     static func normalizedJPEGData(
         from data: Data,
@@ -31,6 +33,10 @@ nonisolated enum ArtworkDataNormalizer {
             else {
                 return nil
             }
+
+            // Import and persistence can both normalize the same cover. Keep
+            // already-sized JPEG bytes to avoid successive lossy encodes.
+            if canKeepJPEG(source, maxPixelSize: maxPixelSize) { return data }
 
             return normalizedJPEGData(
                 from: source,
@@ -55,6 +61,10 @@ nonisolated enum ArtworkDataNormalizer {
                 return nil
             }
 
+            if canKeepJPEG(source, maxPixelSize: maxPixelSize) {
+                return try? Data(contentsOf: fileURL)
+            }
+
             return normalizedJPEGData(
                 from: source,
                 maxPixelSize: maxPixelSize,
@@ -71,6 +81,16 @@ nonisolated enum ArtworkDataNormalizer {
                 [kCGImageSourceShouldCache: false] as CFDictionary
             ) != nil
         }
+    }
+
+    private static func canKeepJPEG(_ source: CGImageSource, maxPixelSize: Int) -> Bool {
+        guard let type = CGImageSourceGetType(source), type as String == UTType.jpeg.identifier,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber else { return false }
+        let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        return orientation == 1 && width.intValue > 0 && height.intValue > 0
+            && max(width.intValue, height.intValue) <= max(1, maxPixelSize)
     }
 
     private static func normalizedJPEGData(

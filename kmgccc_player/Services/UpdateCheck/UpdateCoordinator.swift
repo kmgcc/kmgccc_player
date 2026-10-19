@@ -104,6 +104,20 @@ final class UpdateCoordinator: NSObject, ObservableObject {
     private var expiryTimer: Timer?
     private var activeObserver: NSObjectProtocol?
 
+    /// An automatically found update waits for the App scheduler to let its
+    /// download start: Sparkle's reply is held here, and the scheduler's task
+    /// answers it when the machine is idle on AC power and a usable network.
+    private struct DeferredDownload {
+        let taskKey: String
+        let reply: (SPUUserUpdateChoice) -> Void
+    }
+
+    private weak var backgroundScheduler: BackgroundWorkScheduler?
+    private var deferredDownload: DeferredDownload?
+    private var scheduledDownloadCompletion: CheckedContinuation<BackgroundWorkOutcome, Never>?
+    private var downloadAgingTask: Task<Void, Never>?
+    private static let downloadAgingInterval: Duration = .seconds(24 * 3600)
+
     private override init() {
         UpdatePreferences.migrateIfNeeded()
         automaticUpdatesEnabled = UpdatePreferences.automaticUpdatesEnabled()
@@ -177,6 +191,16 @@ final class UpdateCoordinator: NSObject, ObservableObject {
         return false
     }
 
+    /// Lets the App scheduler decide when an automatically found update starts
+    /// downloading. Without it the download starts at once, as for a manual
+    /// check.
+    func bindBackgroundWork(scheduler: BackgroundWorkScheduler) {
+        backgroundScheduler = scheduler
+    }
+
+    /// Whether a found update is waiting for an idle moment to download.
+    var isDownloadDeferred: Bool { deferredDownload != nil }
+
     func startAutomaticUpdatesIfNeeded() {
         guard startUpdaterIfNeeded() else { return }
         expireReadyUpdateIfNeeded()
@@ -194,6 +218,12 @@ final class UpdateCoordinator: NSObject, ObservableObject {
     func checkManually() {
         guard startUpdaterIfNeeded() else { return }
         expireReadyUpdateIfNeeded()
+
+        // The listener asked for what was waiting for an idle moment.
+        if let deferred = deferredDownload {
+            backgroundScheduler?.promote(taskKey: deferred.taskKey, to: .userRequested)
+            return
+        }
 
         guard !isCheckInFlight else {
             showAlert(
@@ -417,6 +447,7 @@ final class UpdateCoordinator: NSObject, ObservableObject {
     private func cancelCurrentUpdate(markSuppressed: Bool) {
         let build = readyMetadata?.build ?? currentItem?.versionString
 
+        discardDeferredDownload()
         readyChoiceReply?(.skip)
         readyChoiceReply = nil
         downloadCancellation?()
@@ -445,9 +476,104 @@ final class UpdateCoordinator: NSObject, ObservableObject {
         } else {
             state = .idle
         }
+        finishScheduledDownload(.cancelled)
+    }
+
+    // MARK: Scheduled download
+
+    private func deferDownload(
+        item: SUAppcastItem,
+        reply: @escaping (SPUUserUpdateChoice) -> Void,
+        scheduler: BackgroundWorkScheduler
+    ) {
+        let key = "app-update:\(item.versionString)"
+        deferredDownload = DeferredDownload(taskKey: key, reply: reply)
+        state = .idle
+        scheduler.submit(
+            key: key,
+            owner: .app,
+            domain: .appUpdate,
+            priority: .idleBatch,
+            resources: [.network],
+            runsToCompletion: true
+        ) { [weak self] context in
+            guard let self else { return .cancelled }
+            return await self.runDeferredDownload(context: context)
+        }
+        scheduleDownloadAging(taskKey: key)
+    }
+
+    /// After a day without an idle moment the download is treated as upcoming
+    /// work, which also runs on battery. A metered or missing network still
+    /// holds it back.
+    private func scheduleDownloadAging(taskKey: String) {
+        downloadAgingTask?.cancel()
+        downloadAgingTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.downloadAgingInterval)
+            guard !Task.isCancelled, let self,
+                  self.deferredDownload?.taskKey == taskKey else { return }
+            self.backgroundScheduler?.promote(taskKey: taskKey, to: .upcoming)
+        }
+    }
+
+    /// The scheduler's unit: answers Sparkle's held reply, then stays until the
+    /// update is prepared, failed or cancelled. Sparkle's download cannot pause
+    /// and resume, so the scheduler never preempts it; if the network is lost
+    /// the unit is cancelled, the download is abandoned and begins again
+    /// later.
+    private func runDeferredDownload(context: BackgroundWorkContext) async -> BackgroundWorkOutcome {
+        guard let pending = deferredDownload else {
+            // The Sparkle session this task belonged to ended with the network
+            // gone. Ask for the update again, which queues it anew.
+            if automaticUpdatesEnabled, !isCheckInFlight {
+                beginCheck(.automatic, useFallback: false)
+            }
+            return .cancelled
+        }
+        deferredDownload = nil
+        downloadAgingTask?.cancel()
+        downloadAgingTask = nil
+        state = .downloading(progress: nil)
+        pending.reply(.install)
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<BackgroundWorkOutcome, Never>) in
+                scheduledDownloadCompletion = continuation
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.abandonScheduledDownload() }
+        }
+    }
+
+    private func abandonScheduledDownload() {
+        guard scheduledDownloadCompletion != nil else { return }
+        if let cancel = downloadCancellation {
+            // Sparkle reports the cancellation, which ends the cycle and
+            // resolves the waiting unit.
+            downloadCancellation = nil
+            cancel()
+        } else {
+            finishScheduledDownload(.cancelled)
+        }
+    }
+
+    private func finishScheduledDownload(_ outcome: BackgroundWorkOutcome) {
+        guard let continuation = scheduledDownloadCompletion else { return }
+        scheduledDownloadCompletion = nil
+        continuation.resume(returning: outcome)
+    }
+
+    /// Drops an update that is still waiting for its idle moment.
+    private func discardDeferredDownload() {
+        downloadAgingTask?.cancel()
+        downloadAgingTask = nil
+        guard let pending = deferredDownload else { return }
+        deferredDownload = nil
+        pending.reply(.dismiss)
+        backgroundScheduler?.cancel(taskKey: pending.taskKey)
     }
 
     private func markReady(item: SUAppcastItem) {
+        finishScheduledDownload(.completed)
         captureUpdate(item)
         let metadata = UpdateReadyMetadata(
             version: item.displayVersionString,
@@ -676,6 +802,11 @@ final class UpdateCoordinator: NSObject, ObservableObject {
     }
 
     private func finishUpdateCheckWithFailure(_ error: Error) {
+        guard checkKind == .manual else {
+            Log.info("[UpdateCoordinator] Automatic update check failed silently: \(error)", category: .ui)
+            resetAfterAbortedInstallation(finalState: .idle)
+            return
+        }
         let failure = UpdateFailure(
             stage: .download,
             title: "检查更新失败",
@@ -722,6 +853,12 @@ final class UpdateCoordinator: NSObject, ObservableObject {
         expiryTimer = nil
         clearTerminationRetry()
         state = finalState
+
+        if case .failed(let failure) = finalState {
+            finishScheduledDownload(.failed(failure.message))
+        } else {
+            finishScheduledDownload(.cancelled)
+        }
 
         if wasPreparingInstallation {
             installationDidAbortHandler?()
@@ -787,6 +924,9 @@ extension UpdateCoordinator: SPUUserDriver {
 
         if updateState.userInitiated && updateState.stage == .notDownloaded {
             showManualUpdatePrompt(item: appcastItem, reply: reply)
+        } else if !updateState.userInitiated, updateState.stage == .notDownloaded,
+                  let scheduler = backgroundScheduler {
+            deferDownload(item: appcastItem, reply: reply, scheduler: scheduler)
         } else {
             state = .downloading(progress: nil)
             reply(.install)
@@ -849,10 +989,17 @@ extension UpdateCoordinator: SPUUserDriver {
         case .ready, .installReplyPending, .waitingForTermination, .installing:
             failure = UpdateFailure(stage: .installation, title: "更新安装失败", message: error.localizedDescription, metadata: readyMetadata)
         default:
-            failure = UpdateFailure(stage: .download, title: "检查更新失败", message: error.localizedDescription, metadata: nil)
+            if checkKind == .automatic {
+                Log.info("[UpdateCoordinator] Automatic update check error handled silently: \(error)", category: .ui)
+                failure = nil
+            } else {
+                failure = UpdateFailure(stage: .download, title: "检查更新失败", message: error.localizedDescription, metadata: nil)
+            }
         }
         if let failure {
             resetAfterAbortedInstallation(finalState: .failed(failure))
+        } else {
+            resetAfterAbortedInstallation(finalState: .idle)
         }
         acknowledgement()
     }

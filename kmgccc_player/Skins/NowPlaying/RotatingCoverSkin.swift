@@ -45,10 +45,6 @@ struct RotatingCoverSkin: NowPlayingSkin {
     var fullscreenSettingsView: AnyView? {
         AnyView(RotatingCoverSkinFullscreenSettingsView())
     }
-
-    func releaseCachedResources() async {
-        Self.purgeCaches()
-    }
 }
 
 private enum RotatingCoverLayout {
@@ -385,24 +381,10 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
 // inherit any actor isolation from the caller — that inheritance was the
 // remaining cause of `_dispatch_assert_queue_fail` after the previous patch.
 private enum RotatingCoverCDMotionBlurRenderer {
-    private nonisolated(unsafe) static var ciContext: CIContext?
-    private nonisolated static let ciContextLock = NSLock()
-
     private nonisolated static func currentCIContext() -> CIContext {
-        ciContextLock.lock()
-        defer { ciContextLock.unlock() }
-        if let ciContext { return ciContext }
-        let created = CIContext(options: [.cacheIntermediates: false])
-        ciContext = created
-        return created
+        SharedCoreImageContext.context
     }
 
-    nonisolated static func clearCaches() {
-        ciContextLock.lock()
-        defer { ciContextLock.unlock() }
-        ciContext?.clearCaches()
-        ciContext = nil
-    }
     nonisolated private static let angularBlurRadiusDegrees: CGFloat = 180
     nonisolated private static let angularSampleStepDegrees: CGFloat = 0.75
     nonisolated private static let angularBlurAccumulationAlpha: CGFloat = 24.0
@@ -490,9 +472,7 @@ private enum RotatingCoverCDMotionBlurRenderer {
             .clampedToExtent()
             .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 4.0])
             .cropped(to: bounds)
-        let ctx = currentCIContext()
-        defer { ctx.clearCaches() }
-        return ctx.createCGImage(blurred, from: bounds)
+        return currentCIContext().createCGImage(blurred, from: bounds)
     }
 
     nonisolated private static func densifiedOpaqueBlurImage(
@@ -653,28 +633,32 @@ private struct RotatingDiscLayerView<Content: View>: NSViewRepresentable {
         Coordinator(rotation: rotation)
     }
 
-    func makeNSView(context: Context) -> RotatingDiscHostView {
-        let view = RotatingDiscHostView(rootView: AnyView(content), discSize: discSize)
+    func makeNSView(context: Context) -> RotatingDiscHostView<Content> {
+        let view = RotatingDiscHostView(rootView: content, discSize: discSize)
         context.coordinator.attach(to: view)
         return view
     }
 
-    func updateNSView(_ nsView: RotatingDiscHostView, context: Context) {
-        nsView.setRootView(AnyView(content))
+    func updateNSView(_ nsView: RotatingDiscHostView<Content>, context: Context) {
+        nsView.setRootView(content)
         nsView.updateDiscSize(discSize)
         context.coordinator.attach(to: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: RotatingDiscHostView<Content>, coordinator: Coordinator) {
+        coordinator.detach()
     }
 
     final class Coordinator {
         private let rotation: RotatingCoverRotation
         private var angleCancellable: AnyCancellable?
-        private weak var hostView: RotatingDiscHostView?
+        private weak var hostView: RotatingDiscHostView<Content>?
 
         init(rotation: RotatingCoverRotation) {
             self.rotation = rotation
         }
 
-        func attach(to view: RotatingDiscHostView) {
+        func attach(to view: RotatingDiscHostView<Content>) {
             guard hostView !== view else { return }
             hostView = view
             angleCancellable?.cancel()
@@ -683,15 +667,21 @@ private struct RotatingDiscLayerView<Content: View>: NSViewRepresentable {
                     view?.setRotationAngle(angle)
                 }
         }
+
+        func detach() {
+            angleCancellable?.cancel()
+            angleCancellable = nil
+            hostView = nil
+        }
     }
 }
 
-private final class RotatingDiscHostView: NSView {
-    private let hostingView: NSHostingView<AnyView>
+private final class RotatingDiscHostView<Content: View>: NSView {
+    private let hostingView: NSHostingView<Content>
     private let widthConstraint: NSLayoutConstraint
     private let heightConstraint: NSLayoutConstraint
 
-    init(rootView: AnyView, discSize: CGFloat) {
+    init(rootView: Content, discSize: CGFloat) {
         hostingView = NSHostingView(rootView: rootView)
         let safeDiscSize = Self.sanitizedDiscSize(discSize)
         widthConstraint = hostingView.widthAnchor.constraint(equalToConstant: safeDiscSize)
@@ -721,7 +711,7 @@ private final class RotatingDiscHostView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func setRootView(_ rootView: AnyView) {
+    func setRootView(_ rootView: Content) {
         hostingView.rootView = rootView
     }
 
@@ -1303,12 +1293,5 @@ private struct PillSpectrumContainer: NSViewRepresentable {
             )
             return (resolved.fillColors, resolved.strokeColors)
         }
-    }
-}
-
-extension RotatingCoverSkin {
-    @MainActor
-    static func purgeCaches() {
-        RotatingCoverCDMotionBlurRenderer.clearCaches()
     }
 }

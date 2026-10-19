@@ -8,6 +8,8 @@
 import Foundation
 
 nonisolated struct DSPWorkingDraftDocument: Codable, Equatable, Sendable {
+    nonisolated static let schemaVersion = 2
+
     var schemaVersion: Int
     var revisionString: String
     var selectedPresetID: UUID?
@@ -15,7 +17,7 @@ nonisolated struct DSPWorkingDraftDocument: Codable, Equatable, Sendable {
     var configuration: AudioDSPConfiguration
 
     nonisolated init(
-        schemaVersion: Int = 1,
+        schemaVersion: Int = Self.schemaVersion,
         revisionString: String,
         selectedPresetID: UUID?,
         updatedAt: Date = Date(),
@@ -112,7 +114,7 @@ actor DSPPresetStore {
                 if url.lastPathComponent == Self.workingDraftFilename {
                     do {
                         let draft = try decoder.decode(DSPWorkingDraftDocument.self, from: Data(contentsOf: url))
-                        guard draft.schemaVersion == 1 else {
+                        guard draft.schemaVersion == DSPWorkingDraftDocument.schemaVersion else {
                             throw DSPPresetStoreError.unsupportedSchema(draft.schemaVersion)
                         }
                         workingDraft = draft
@@ -220,6 +222,25 @@ actor DSPPresetStore {
             try encoder.encode(draft),
             to: rootURL.appendingPathComponent(Self.workingDraftFilename)
         )
+    }
+
+    /// Update only the edited configuration, preserving the preset's latest name.
+    /// An edit of a deleted preset must not recreate its file.
+    func saveEditedPreset(
+        _ document: DSPPresetDocument,
+        createIfMissing: Bool = false
+    ) throws -> DSPPresetDocument? {
+        guard !document.isBuiltIn else { throw DSPPresetStoreError.immutableBuiltIn }
+        let destination = presetURL(for: document.presetID)
+        guard FileManager.default.fileExists(atPath: destination.path) else {
+            guard createIfMissing else { return nil }
+            return try save(document)
+        }
+        var existing = try readExistingPreset(at: destination)
+        guard existing.configuration != document.configuration else { return existing }
+        let expectedRevision = existing.revisionString
+        existing.configuration = document.configuration
+        return try save(existing, expectedRevision: expectedRevision)
     }
 
     func export(_ document: DSPPresetDocument) throws -> Data {

@@ -8,6 +8,7 @@
 
 import AppKit
 import MotionKit
+import PopupKit
 import SwiftUI
 
 /// Settings view with sidebar categories.
@@ -27,7 +28,9 @@ struct SettingsView: View {
 
     @State private var selection: SettingsCategory = .appearance
     @State private var columnVisibility = NavigationSplitViewVisibility.all
-    @State private var currentSubpage: SettingsSubpage? = nil
+    @State private var subpagePath: [SettingsSubpage] = []
+
+    private var currentSubpage: SettingsSubpage? { subpagePath.last }
 
     private var motionPolicy: MotionPolicy {
         configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
@@ -55,51 +58,62 @@ struct SettingsView: View {
                     max: 300
                 )
         } detail: {
-            ZStack(alignment: .topLeading) {
-                detailView
-                    .id(selection)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .offset(x: currentSubpage == nil ? 0 : -60)
-                    .opacity(currentSubpage == nil ? 1 : 0)
-                    .allowsHitTesting(currentSubpage == nil)
-
-                if let subpage = currentSubpage {
-                    subpageView(for: subpage)
+            GeometryReader { proxy in
+                ZStack(alignment: .topLeading) {
+                    // Keep earlier pages alive outside the clip without fading
+                    // the entire text and control hierarchy into a composited layer.
+                    detailView
+                        .id(selection)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        .background {
-                            ThemedBaseBackgroundColorView()
-                                .padding(.horizontal, -40)
-                        }
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .trailing),
-                            removal: .move(edge: .trailing)
-                        ))
-                }
+                        .offset(x: currentSubpage == nil ? 0 : -proxy.size.width)
+                        .allowsHitTesting(currentSubpage == nil)
+                        .disabled(currentSubpage != nil)
+                        .accessibilityHidden(currentSubpage != nil)
 
-                if currentSubpage != nil {
-                    settingsBackButton
-                        .padding(.top, 18)
-                        .padding(.leading, 24)
-                        .transition(.asymmetric(
-                            insertion: .opacity.combined(with: .move(edge: .leading)),
-                            removal: .opacity
-                        ))
+                    ForEach(subpagePath, id: \.self) { subpage in
+                        subpageView(for: subpage)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .background {
+                                ThemedBaseBackgroundColorView()
+                                    .padding(.horizontal, -40)
+                            }
+                            .offset(x: currentSubpage == subpage ? 0 : -proxy.size.width)
+                            .allowsHitTesting(currentSubpage == subpage)
+                            .disabled(currentSubpage != subpage)
+                            .accessibilityHidden(currentSubpage != subpage)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .trailing),
+                                removal: .move(edge: .trailing)
+                            ))
+                    }
+
+                    if currentSubpage != nil {
+                        settingsBackButton
+                            .padding(.top, 18)
+                            .padding(.leading, 24)
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .move(edge: .leading)),
+                                removal: .opacity
+                            ))
+                    }
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .clipped()
-            .motionAnimation(navigationSpec, value: currentSubpage)
-            .environment(\.navigateSettingsSubpage) { page in
-                navigateToSubpage(page)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .clipped()
+                .motionAnimation(navigationSpec, value: subpagePath)
+                .environment(\.navigateSettingsSubpage) { page in
+                    navigateToSubpage(page)
+                }
             }
         }
         .navigationSplitViewStyle(.prominentDetail)
+        .appPopupAppearance()
+        .presentationCornerRadius(AppPopupStyle().cornerRadius)
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
         .overlay(alignment: .topTrailing) {
             settingsCloseButton
-                .padding(.top, 18)
-                .padding(.trailing, 20)
+                .padding(.top, AppPopupStyle().closeMarginTop)
+                .padding(.trailing, AppPopupStyle().closeMarginTrailing)
         }
         .onExitCommand {
             if currentSubpage != nil {
@@ -110,12 +124,13 @@ struct SettingsView: View {
         }
         .onChange(of: selection) { _, _ in
             if currentSubpage != nil {
-                currentSubpage = nil
+                subpagePath = []
             }
         }
         .frame(minWidth: 760, minHeight: 680)
         .scrollContentBackground(.hidden)
         .background(ThemedBaseBackgroundColorView())
+        .environment(\.fullscreenSettingsPresentationStyle, .settingsWindow)
         .environment(\.settingsAppForegroundColors, appForegroundColors)
         .foregroundStyle(appForegroundColors.primary)
         .onAppear {
@@ -197,26 +212,7 @@ struct SettingsView: View {
 
 
     private var settingsCloseButton: some View {
-        Button {
-            dismiss()
-        } label: {
-            Image(systemName: "xmark")
-                .font(.system(size: GlassStyleTokens.headerStandardIconSize, weight: .semibold))
-                .foregroundStyle(themeStore.accentColor.opacity(colorScheme == .dark ? 0.94 : 0.84))
-                .frame(
-                    width: GlassStyleTokens.headerControlHeight,
-                    height: GlassStyleTokens.headerControlHeight
-                )
-                .contentShape(Circle())
-                .liquidGlassCircle(
-                    colorScheme: colorScheme,
-                    accentColor: nil as Color?,
-                    isFloating: true
-                )
-        }
-        .buttonStyle(.plain)
-        .help("关闭")
-        .accessibilityLabel(Text("关闭"))
+        AppPopupCloseButton { dismiss() }
     }
 
     private var settingsBackButton: some View {
@@ -244,7 +240,12 @@ struct SettingsView: View {
 
     private func navigateToSubpage(_ subpage: SettingsSubpage?) {
         withAnimation(navigationAnimation) {
-            currentSubpage = subpage
+            if let subpage {
+                guard !subpagePath.contains(subpage) else { return }
+                subpagePath.append(subpage)
+            } else if !subpagePath.isEmpty {
+                subpagePath.removeLast()
+            }
         }
     }
 

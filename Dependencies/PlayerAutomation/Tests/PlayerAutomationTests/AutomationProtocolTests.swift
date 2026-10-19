@@ -1412,13 +1412,19 @@ func globalLoudnessUsesExistingJobsAndAudioScopes() throws {
     }
     #expect(parameters["fade"] == AutomationDSPToolCatalog.fadeSchema)
     #expect(parameters["loudness"] == AutomationDSPToolCatalog.loudnessSchema)
-    #expect(parameters["deviceReferences"] == AutomationDSPToolCatalog.deviceReferencesSchema)
+    #expect(parameters["deviceReferences"] == nil)
 }
 
 @Test
 func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
-    #expect(AutomationDSPToolCatalog.builtInNodeSchemas.count == 6)
-    for typeID in ["stereoWidth", "virtualBass", "tube"] {
+    #expect(AutomationDSPToolCatalog.builtInNodeSchemas.count == 10)
+    #expect(!AutomationDSPToolCatalog.builtInNodeSchemas.contains { node in
+        guard case .object(let fields) = node else { return false }
+        return fields["typeID"] == .string("equalLoudness") || fields["typeID"] == .string("virtualBass")
+    })
+    let nativeTypes = ["virtualBassClassic", "virtualBassHybrid", "stereoWidth", "crossfeed",
+                       "spatialAudio", "reverb", "tube", "compressor"]
+    for typeID in nativeTypes {
         let raw = try #require(AutomationDSPToolCatalog.builtInNodeSchemas.first { node in
             guard case .object(let fields) = node else { return false }
             return fields["typeID"] == .string(typeID)
@@ -1433,21 +1439,42 @@ func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
             continue
         }
         #expect(Set(defaults.keys) == Set(properties.keys))
-        #expect(required.count == properties.count)
+        let isBass = typeID == "virtualBassClassic" || typeID == "virtualBassHybrid"
+        let optionalKeys: Set<String> = isBass ? ["targetSettings"] : []
+        #expect(required.count == properties.count - optionalKeys.count)
         let requiredKeys = required.compactMap { value -> String? in
             guard case .string(let key) = value else { return nil }
             return key
         }
         #expect(requiredKeys.count == required.count)
-        #expect(Set(requiredKeys) == Set(properties.keys))
-        if typeID == "stereoWidth" {
-            #expect(qualities == [.string("standard")])
-            #expect(node["declaredLatencyFramesWhenActive"] == .number(0))
-        } else {
+        #expect(Set(requiredKeys) == Set(properties.keys).subtracting(optionalKeys))
+        if isBass {
+            #expect(defaults["bassGainDB"] == .number(3))
+            guard case .object(let gain) = properties["bassGainDB"],
+                  case .object(let amount) = properties["intensity"],
+                  case .object(let saved) = properties["targetSettings"],
+                  case .object(let targets) = saved["properties"],
+                  case .object(let targetDefaults) = defaults["targetSettings"] else {
+                Issue.record("Incomplete bass controls or per-target settings")
+                continue
+            }
+            #expect(gain["minimum"] == .number(0))
+            #expect(gain["maximum"] == .number(9))
+            #expect(amount["maximum"] == .number(2))
+            #expect(Set(targets.keys) == Set(["auto", "headphones", "speakers"]))
+            #expect(Set(targetDefaults.keys) == Set(targets.keys))
+        }
+        // Every effect is audible as added: no zero strength or mix default.
+        for key in ["intensity", "mix", "width", "hifiAmount"] {
+            if let value = defaults[key] { #expect(value != .number(0)) }
+        }
+        if typeID == "tube" {
             #expect(qualities == [.string("oversampling2x"), .string("oversampling4x")])
             #expect(node["declaredLatencyFramesWhenActive"] == .number(64))
-            #expect(defaults["mix"] == .number(0))
             #expect(node["peakGuarantee"] == .string("unavailable"))
+        } else {
+            #expect(qualities == [.string("standard")])
+            #expect(node["declaredLatencyFramesWhenActive"] != nil || node["declaredLatencySeconds"] != nil)
         }
     }
 }

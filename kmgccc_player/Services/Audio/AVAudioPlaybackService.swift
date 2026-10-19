@@ -19,6 +19,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     // MARK: - Published State
 
+    /// Latest transport intent shared by every playback surface. The renderer
+    /// can remain audible briefly while a pause fades out.
     private(set) var isPlaying: Bool = false
     private(set) var currentTime: Double = 0
     private(set) var duration: Double = 0
@@ -36,8 +38,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     var volume: Double {
         didSet {
             rendererPipeline.setVolume(Float(volume))
-            scheduleListeningContextUpdate()
-            AppSettings.shared.volume = volume
+            if AppSettings.shared.volumeControlTarget != .system {
+                AppSettings.shared.volume = volume
+            }
             // Forward the output volume for spectrum diagnostics; analysis PCM
             // remains upstream of renderer master gain.
             AudioVisualizationService.shared.updateVolume(Float(volume * (transportState?.envelopeGain ?? 1)))
@@ -45,8 +48,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private weak var globalsController: AudioProcessingGlobalsController?
+    private weak var dspDeviceController: AudioDSPDeviceController?
     private var processingGlobals = AudioProcessingGlobals()
-    private var listeningContextTask: Task<Void, Never>?
     private var transportState: AudioTransportTransitionState?
     private var pauseTransitionPending = false
     private(set) var currentLoudnessGainDB = 0.0
@@ -57,9 +60,22 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private var activeDecodedStartFrame: AVAudioFramePosition = 0
     private var activeDecodedFrameCount: AVAudioFrameCount?
     private var prefetchedDecodedRange: (start: AVAudioFramePosition, count: AVAudioFrameCount?)?
-    private var albumGainLock: (key: String, decision: LoudnessGainDecision)?
-    private var queuedLoudnessDecisions: [UUID: LoudnessGainDecision] = [:]
-    var loudnessGainProvider: ((Track, URL, AudioLoudnessConfiguration, Bool) -> LoudnessGainDecision)?
+    /// The plan in use for the current song, and the song it was made for.
+    private(set) var currentLoudnessPlan: LoudnessPlaybackPlan?
+    private var currentLoudnessContext: (track: Track, url: URL)?
+    /// Plans for gapless-queued next songs, keyed by renderer segment.
+    private var queuedLoudness: [UUID: (track: Track, url: URL, plan: LoudnessPlaybackPlan)] = [:]
+    /// Albums whose shared gain has already replaced a provisional track gain
+    /// mid-song; that slow transition happens once per album.
+    private var albumTransitionsDone: Set<String> = []
+    /// Gain the listener hears now, reported from the output clock.
+    private(set) var audibleLoudnessGainDB: Double?
+    var loudnessPlanProvider: ((Track, URL?, AudioLoudnessConfiguration) -> LoudnessPlaybackPlan)?
+    var onLoudnessEnabledChanged: ((Bool) -> Void)?
+    var onListeningStarted: (() -> Void)?
+    var onAudioSupplyShortfall: (() -> Void)?
+    private static let loudnessSwitchGlideSeconds = 0.25
+    private static let albumReadyGlideSeconds = 4.0
 
     // MARK: - Renderer Components
 
@@ -241,13 +257,23 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         self.smartController = smartController
         self.libraryPaths = libraryPaths
         self.authorizedSourceRootsProvider = authorizedSourceRootsProvider
-        self.volume = AppSettings.shared.volume
+        if AppSettings.shared.volumeControlTarget == .system {
+            self.volume = AppSettings.defaultVolume
+        } else {
+            self.volume = AppSettings.shared.volume
+        }
         setupSmartController()
         setupRendererPipeline()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleOutputDevicePreferenceChange),
             name: .audioOutputDevicePreferenceDidChange,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleVolumeControlTargetDidChange),
+            name: .volumeControlTargetDidChange,
             object: nil
         )
         refreshOutputLatency(force: true)
@@ -337,6 +363,13 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
                 category: .audio
             )
         }
+        rendererPipeline.onAudibleLoudnessGain = { [weak self] segmentID, gainDB in
+            guard let self, segmentID == self.spatialCurrentSegmentID else { return }
+            self.audibleLoudnessGainDB = gainDB
+        }
+        rendererPipeline.onSupplyShortfall = { [weak self] in
+            self?.onAudioSupplyShortfall?()
+        }
         rendererPipeline.onFailure = { [weak self] segmentID, error in
             guard let self else { return }
             self.handleRendererFailure(segmentID: segmentID, error: error)
@@ -349,25 +382,52 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         rendererPipeline.onDSPApplyEvent = { [weak controller] event in
             Task { @MainActor [weak controller] in controller?.receive(event) }
         }
-        controller.bindPlayback { [weak self] configuration, revision, requestID in
+        let bindingID = controller.bindPlayback(monitorLoad: { [weak self] enabled, generation in
+            self?.rendererPipeline.setDSPProcessingLoadMonitoring(enabled, generation: generation)
+        }) { [weak self] configuration, revision, requestID in
             self?.rendererPipeline.applyDSP(configuration, revision: revision, requestID: requestID)
         }
+        rendererPipeline.onDSPProcessingLoad = { [weak self, weak controller] update, timeline, transport in
+            guard let self,
+                  self.rendererPipeline.isTimelineCurrent(timeline),
+                  self.rendererPipeline.isTransportCommandCurrent(transport) else { return }
+            controller?.receiveProcessingLoad(update, bindingID: bindingID)
+        }
+    }
+
+    func bindAudioDSPDevices(_ controller: AudioDSPDeviceController) {
+        dspDeviceController = controller
+        controller.attachOutputRoute(owner: self) { [weak self] in self?.refreshOutputLatency(force: true) }
+        rendererPipeline.onOutputDeviceChange = { [weak self] uid in
+            guard let self, self.routedOutputDeviceUID == uid else { return }
+            // Availability can change while the renderer commits its route.
+            let availableUID = AudioOutputLatencyMonitor.currentSnapshot(forDeviceUID: uid).deviceUID
+            self.dspDeviceController?.receiveOutputDeviceUID(availableUID, ownerID: ObjectIdentifier(self))
+        }
+        refreshOutputLatency(force: true)
+    }
+
+    func unbindAudioDSPDevices() {
+        dspDeviceController?.detachOutputRoute(owner: self)
+        dspDeviceController = nil
+        rendererPipeline.onOutputDeviceChange = nil
     }
 
     func bindAudioProcessingGlobals(_ controller: AudioProcessingGlobalsController) {
         globalsController = controller
-        rendererPipeline.onTransportStateChange = { [weak self] state, generation in
+        rendererPipeline.onTransportStateChange = { [weak self] state, generation, commandGeneration in
             Task { @MainActor [weak self] in
-                guard let self, self.rendererPipeline.isTimelineCurrent(generation) else { return }
+                guard let self,
+                      self.rendererPipeline.isTimelineCurrent(generation),
+                      self.rendererPipeline.isTransportCommandCurrent(commandGeneration) else { return }
                 self.transportState = state
                 AudioVisualizationService.shared.updateVolume(Float(self.volume * state.envelopeGain))
                 guard self.audioFile != nil else { self.publishProcessingRuntime(); return }
-                let wasPlaying = self.isPlaying
-                self.isPlaying = state.actualPlaying
-                if state.actualPlaying && (!wasPlaying || self.progressTimer == nil) {
+                if state.actualPlaying && self.progressTimer == nil {
                     AudioAnalysisHub.shared.setPlaying(true)
                     self.startProgressTimer()
                 } else if !state.actualPlaying && state.phase == "idle" {
+                    self.updateSpatialRendererProgress()
                     self.pauseTransitionPending = false
                     AudioAnalysisHub.shared.setPlaying(false)
                     self.stopProgressTimer()
@@ -378,59 +438,55 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
         controller.bindPlayback { [weak self] configuration, _, _ in
             guard let self else { return }
+            let previous = self.processingGlobals.loudness
             self.processingGlobals = configuration
             self.rendererPipeline.setFadeConfiguration(configuration.fade)
-            self.scheduleListeningContextUpdate(immediate: true)
+            self.rendererPipeline.setLoudnessNormalizationActive(configuration.loudness.enabled)
+            self.publishProcessingRuntime()
+            if previous.enabled != configuration.loudness.enabled {
+                self.onLoudnessEnabledChanged?(configuration.loudness.enabled)
+            }
+            if previous != configuration.loudness {
+                // A listener's switch or target change applies to the song
+                // that is playing now, with a short glide.
+                self.reapplyLoudnessPlans(glideSeconds: Self.loudnessSwitchGlideSeconds)
+            }
         }
     }
 
     func unbindAudioProcessingGlobals() {
         globalsController = nil
-        listeningContextTask?.cancel()
         rendererPipeline.onTransportStateChange = nil
-        loudnessGainProvider = nil
+        loudnessPlanProvider = nil
+        onLoudnessEnabledChanged = nil
+    }
+
+    func setEqualLoudnessContext(_ context: DSPEqualLoudnessContext) {
+        rendererPipeline.setEqualLoudnessContext(context)
     }
 
     func togglePlayPause() {
-        if isPlaying && !pauseTransitionPending { pause() } else { resume() }
-    }
-
-    private func scheduleListeningContextUpdate(immediate: Bool = false) {
-        listeningContextTask?.cancel()
-        listeningContextTask = Task { @MainActor [weak self] in
-            if !immediate { try? await Task.sleep(for: .milliseconds(35)) }
-            guard !Task.isCancelled, let self else { return }
-            let context = DSPEqualLoudnessContext(
-                appGain: self.volume, deviceUID: self.routedOutputDeviceUID,
-                referenceDB: self.routedOutputDeviceUID.flatMap { self.processingGlobals.deviceReferences[$0] }
-            )
-            self.rendererPipeline.setEqualLoudnessContext(context)
-            self.publishProcessingRuntime()
-        }
+        if isPlaying { pause() } else { resume() }
     }
 
     private func publishProcessingRuntime() {
         globalsController?.publishRuntimeState(AudioProcessingRuntimeState(
-            transport: transportState, outputDeviceUID: routedOutputDeviceUID,
-            appGain: volume, volumeSource: "appOnly",
-            referenceDB: routedOutputDeviceUID.flatMap { processingGlobals.deviceReferences[$0] }
+            transport: transportState, outputDeviceUID: routedOutputDeviceUID
         ))
     }
 
-    private func lockLoudnessGain(track: Track, url: URL) -> (gain: Double, decision: LoudnessGainDecision?) {
-        guard processingGlobals.loudness.enabled else { return (1, nil) }
-        let queue = currentQueueTracks()
-        let continuousAlbum = !smartController.isShuffleEnabled && !track.albumGroupKey.isEmpty
-            && queue.count > 1 && queue.allSatisfy { $0.albumGroupKey == track.albumGroupKey }
-        let albumKey = track.albumGroupKey + ":" + queue.map { $0.id.uuidString }.joined(separator: ",")
-        if (processingGlobals.loudness.mode == "album" || (processingGlobals.loudness.mode == "auto" && continuousAlbum)), let locked = albumGainLock, locked.key == albumKey {
-            return (pow(10, locked.decision.gainDB / 20), locked.decision)
-        }
-        guard let decision = loudnessGainProvider?(track, url, processingGlobals.loudness, continuousAlbum) else { return (1, nil) }
-        if processingGlobals.loudness.mode == "album" || (processingGlobals.loudness.mode == "auto" && continuousAlbum) {
-            albumGainLock = (albumKey, decision)
-        } else { albumGainLock = nil }
-        return (pow(10, decision.gainDB / 20), decision)
+    /// The loudness plan for a song about to be loaded or queued. Missing
+    /// measurements are queued by the provider and do not delay playback.
+    private func makeLoudnessPlan(track: Track, url: URL?) -> LoudnessPlaybackPlan {
+        guard processingGlobals.loudness.enabled else { return .disabled }
+        return loudnessPlanProvider?(track, url, processingGlobals.loudness) ?? .disabled
+    }
+
+    private func adoptCurrentLoudnessPlan(_ plan: LoudnessPlaybackPlan, track: Track, url: URL) {
+        currentLoudnessPlan = plan
+        currentLoudnessContext = (track, url)
+        activeNormalizationGain = plan.decision.linearGain
+        publishLoudnessDecision(plan.decision)
     }
 
     private func publishLoudnessDecision(_ decision: LoudnessGainDecision?) {
@@ -438,6 +494,48 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         currentLoudnessSource = decision?.source ?? (processingGlobals.loudness.enabled ? "unavailable" : "disabled")
         currentLoudnessPeakBasis = decision?.peakBasis ?? "unknown"
         currentLoudnessDiagnostics = decision?.diagnostics ?? []
+    }
+
+    /// Re-evaluates the current and gapless-queued songs after a listener
+    /// changes a loudness setting, and glides the renderer to the new gains.
+    func reapplyLoudnessPlans(glideSeconds: Double) {
+        if let context = currentLoudnessContext, let segmentID = spatialCurrentSegmentID {
+            let plan = makeLoudnessPlan(track: context.track, url: context.url)
+            adoptCurrentLoudnessPlan(plan, track: context.track, url: context.url)
+            if let albumKey = plan.albumKey, !plan.awaitingAlbum { albumTransitionsDone.insert(albumKey) }
+            rendererPipeline.setNormalizationGain(plan.decision.linearGain, forSegment: segmentID, glideSeconds: glideSeconds)
+        }
+        for (segmentID, queued) in queuedLoudness {
+            let plan = makeLoudnessPlan(track: queued.track, url: queued.url)
+            queuedLoudness[segmentID] = (queued.track, queued.url, plan)
+            rendererPipeline.setNormalizationGain(plan.decision.linearGain, forSegment: segmentID, glideSeconds: glideSeconds)
+        }
+    }
+
+    /// A background measurement finished. It never changes the song that is
+    /// playing, with one exception: the first time an album's shared gain
+    /// becomes ready while one of its songs plays on a provisional gain, the
+    /// song moves to the album gain over a few seconds, so a seamless album
+    /// does not jump level at its next track boundary.
+    func loudnessAlbumMeasurementsChanged(_ albumKey: String) {
+        if let plan = currentLoudnessPlan, plan.awaitingAlbum, plan.albumKey == albumKey,
+           !albumTransitionsDone.contains(albumKey),
+           let context = currentLoudnessContext, let segmentID = spatialCurrentSegmentID {
+            let updated = makeLoudnessPlan(track: context.track, url: context.url)
+            if !updated.awaitingAlbum, updated.albumKey == albumKey {
+                albumTransitionsDone.insert(albumKey)
+                adoptCurrentLoudnessPlan(updated, track: context.track, url: context.url)
+                rendererPipeline.setNormalizationGain(
+                    updated.decision.linearGain, forSegment: segmentID, glideSeconds: Self.albumReadyGlideSeconds
+                )
+            }
+        }
+        for (segmentID, queued) in queuedLoudness where queued.plan.albumKey == albumKey && queued.plan.awaitingAlbum {
+            let plan = makeLoudnessPlan(track: queued.track, url: queued.url)
+            queuedLoudness[segmentID] = (queued.track, queued.url, plan)
+            rendererPipeline.setNormalizationGain(plan.decision.linearGain, forSegment: segmentID,
+                                                  glideSeconds: Self.loudnessSwitchGlideSeconds)
+        }
     }
 
     /// Refresh the active Core Audio output route at the same cadence as the
@@ -467,13 +565,26 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         if outputDeviceChanged {
             rendererPipeline.setAudioOutputDeviceUniqueID(selectedOutputUID)
             pauseTransitionPending = false
-            scheduleListeningContextUpdate(immediate: true)
+            publishProcessingRuntime()
+        } else if force {
+            rendererPipeline.setAudioOutputDeviceUniqueID(selectedOutputUID)
         }
     }
 
     @objc nonisolated private func handleOutputDevicePreferenceChange(_ notification: Notification) {
         Task { @MainActor [weak self] in
             self?.refreshOutputLatency(force: true)
+        }
+    }
+
+    @objc nonisolated private func handleVolumeControlTargetDidChange(_ notification: Notification) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if AppSettings.shared.volumeControlTarget == .system {
+                self.volume = AppSettings.defaultVolume
+            } else {
+                self.volume = AppSettings.shared.volume
+            }
         }
     }
 
@@ -583,7 +694,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
                 discardedResource.lease.release()
             }
         }
-        if let id = spatialPendingBoundary?.descriptor.id { queuedLoudnessDecisions.removeValue(forKey: id) }
+        if let id = spatialPendingBoundary?.descriptor.id { queuedLoudness.removeValue(forKey: id) }
         spatialPendingBoundary = nil
         prefetchedDecodedRange = nil
         return discardPendingRendererSegment ? nil : discardedResource
@@ -842,9 +953,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let position = max(0, min(requestedPosition, upperBound))
         let frame = AVAudioFramePosition(position * sampleRate)
         let provider = AVFilePCMProvider(file: resource.file, startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
-        let loudness = lockLoudnessGain(track: track, url: resource.resolvedURL)
-        activeNormalizationGain = loudness.gain
-        publishLoudnessDecision(loudness.decision)
+        adoptCurrentLoudnessPlan(makeLoudnessPlan(track: track, url: resource.resolvedURL),
+                                 track: track, url: resource.resolvedURL)
         pauseTransitionPending = false
         let segmentID = UUID()
 
@@ -881,6 +991,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         isPlaying = shouldAutoplay
         if isPlaying {
             startProgressTimer()
+            onListeningStarted?()
         } else if duration > 0 {
             smartController.updateProgress(currentTime: currentTime, duration: duration)
         }
@@ -993,8 +1104,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     func pause() {
-        guard isPlaying, !pauseTransitionPending else { return }
-        pauseTransitionPending = true
+        guard isPlaying else { return }
+        pauseTransitionPending = audioFile != nil
+        isPlaying = false
 
         if LogConfig.audioVerbose {
             Log.info(
@@ -1012,6 +1124,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     func resume() {
         guard let currentTrack else { return }
+        pauseTransitionPending = false
         if audioFile == nil {
             if prepTask != nil {
                 if restorePausedGeneration == playGeneration {
@@ -1025,8 +1138,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             }
             return
         }
-        guard !isPlaying || pauseTransitionPending else { return }
-        pauseTransitionPending = false
+        guard !isPlaying else { return }
 
         if LogConfig.audioVerbose {
             Log.info(
@@ -1089,8 +1201,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         invalidatePreparation()
         cancelPendingCompletion()
         pauseTransitionPending = false
-        queuedLoudnessDecisions.removeAll()
-        if clearQueue { albumGainLock = nil }
+        queuedLoudness.removeAll()
         activeTimelineToken = UUID()
         let prefetchedToRelease = resetGaplessSchedulingState(
             reason: "stopPlayback",
@@ -1114,6 +1225,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         activeDecodedFrameCount = nil
         prefetchedDecodedRange = nil
         activeNormalizationGain = 1
+        currentLoudnessPlan = nil
+        currentLoudnessContext = nil
+        audibleLoudnessGainDB = nil
         publishLoudnessDecision(nil)
         rendererPipeline.stop {
             currentLeaseToRelease?.release()
@@ -1302,7 +1416,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private func updateSpatialRendererProgress() {
-        guard isPlaying, spatialPendingSeek == nil else { return }
+        guard isPlaying || pauseTransitionPending, spatialPendingSeek == nil else { return }
 
         let mediaTime = spatialClockTime - spatialCurrentLogicalStart
         currentTime = max(0, min(mediaTime, duration))
@@ -1310,6 +1424,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             smartController.updateProgress(currentTime: currentTime, duration: duration)
         }
 
+        // A pause fade still advances the audible clock, but cannot prefetch or
+        // auto-advance into another track after the user's pause command.
+        guard isPlaying else { return }
         maybeTriggerGaplessPrefetch()
 
         guard duration > 0, mediaTime >= duration - 0.02 else { return }
@@ -1451,12 +1568,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         )
 
         let nextTrack = currentQueueTracks().first { $0.id == resource.trackID }
-        let loudness = nextTrack.map { lockLoudnessGain(track: $0, url: resource.resolvedURL) }
+        let loudness = nextTrack.map { makeLoudnessPlan(track: $0, url: resource.resolvedURL) }
         guard let loadSegmentID = rendererLoadSegmentID,
               let descriptor = rendererPipeline.append(
                 source: provider,
                 expectedLoadSegmentID: loadSegmentID,
-                normalizationGain: loudness?.gain ?? 1
+                normalizationGain: loudness?.decision.linearGain ?? 1
               ) else {
             logGaplessFallback(
                 .notScheduledInTime,
@@ -1466,7 +1583,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             return
         }
 
-        if let decision = loudness?.decision { queuedLoudnessDecisions[descriptor.id] = decision }
+        if let nextTrack, let loudness {
+            queuedLoudness[descriptor.id] = (nextTrack, resource.resolvedURL, loudness)
+        }
         let token = UUID()
         prefetchedResource = resource
         prefetchedDecodedRange = (startFrame, frameCount)
@@ -1579,9 +1698,14 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         sampleRate = resource.sampleRate
         duration = pending.duration
         spatialCurrentSegmentID = pending.descriptor.id
-        let decision = queuedLoudnessDecisions.removeValue(forKey: pending.descriptor.id)
-        activeNormalizationGain = pow(10, (decision?.gainDB ?? 0) / 20)
-        publishLoudnessDecision(decision)
+        if let queued = queuedLoudness.removeValue(forKey: pending.descriptor.id) {
+            adoptCurrentLoudnessPlan(queued.plan, track: queued.track, url: queued.url)
+        } else {
+            currentLoudnessPlan = nil
+            currentLoudnessContext = nil
+            activeNormalizationGain = 1
+            publishLoudnessDecision(nil)
+        }
         spatialCurrentLogicalStart = pending.descriptor.presentationStartSeconds - lookaheadSeconds
         spatialPendingBoundary = nil
         activeTimelineToken = pending.token

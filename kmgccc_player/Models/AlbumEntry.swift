@@ -31,6 +31,9 @@ struct AlbumEntry: Identifiable {
     var artworkData: Data?
     var createdAt: Date
     var updatedAt: Date
+    /// "专辑内响度统一": true forces one album gain, false forces per-track
+    /// gains, nil follows the automatic judgement.
+    var loudnessUnifiedOverride: Bool?
 
     // Derived fields (populated at sync time, not persisted)
     var trackCount: Int
@@ -91,8 +94,10 @@ struct AlbumEntry: Identifiable {
         trackCount: Int,
         totalDuration: Double,
         isOrphaned: Bool,
-        hasUserEditedContent: Bool = false
+        hasUserEditedContent: Bool = false,
+        loudnessUnifiedOverride: Bool? = nil
     ) {
+        self.loudnessUnifiedOverride = loudnessUnifiedOverride
         self.id = id
         self.canonicalKey = canonicalKey
         self.displayTitle = displayTitle

@@ -116,23 +116,23 @@ struct KmgcccPlayerApp: App {
         ColorSystemSelfCheck.runIfRequested()
         #endif
 
-        let bootstrap: LegacyLibraryBootstrapResult
+        let bootstrap: LibraryBootstrapResult
         if Self.isRunningTests {
             bootstrap = .noLibrary
         } else {
             do {
-                bootstrap = try LegacyLibraryBootstrap().run()
+                bootstrap = try LibraryBootstrap().run()
             } catch {
-                // A damaged registry must not be replaced by an empty one. Keep the
-                // existing single-library startup path available until recovery UI loads.
+                // A damaged registry must not be replaced by an empty one. The
+                // session host falls back to the factory-default library.
                 Log.error("[LibraryBootstrap] pre-container bootstrap failed: \(error)", category: .library)
                 bootstrap = .noLibrary
             }
         }
         let initialLibraryContext = bootstrap.context
         if let initialLibraryContext {
-            // Libraries upgraded in place from the pre-manifest layout may be
-            // missing scaffolding that open-time validation requires.
+            // Recreate missing directories or settings that open-time
+            // validation requires.
             do {
                 try LibraryScaffoldingRepair.repairIfNeeded(at: initialLibraryContext.rootURL)
             } catch {

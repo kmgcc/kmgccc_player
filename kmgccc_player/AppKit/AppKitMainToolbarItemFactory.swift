@@ -6,6 +6,8 @@
 //
 
 import AppKit
+import MotionKit
+import SwiftUI
 
 @MainActor
 struct AppKitMainToolbarItemFactory {
@@ -25,6 +27,7 @@ struct AppKitMainToolbarItemFactory {
         let isMultiselectMode: Bool
         let generation: Int
         let splitView: NSSplitView?
+        let historyViewModel: PlaybackHistoryViewModel?
     }
 
     func makeItem(
@@ -35,6 +38,18 @@ struct AppKitMainToolbarItemFactory {
         searchBridge: AppKitMainToolbarSearchBridge
     ) -> NSToolbarItem? {
         switch identifier {
+        case AppKitMainToolbarController.Identifier.historySectionTitle:
+            guard let historyVM = context.historyViewModel else { return nil }
+            let item = NSToolbarItem(itemIdentifier: identifier)
+            item.label = "日期"
+            item.paletteLabel = item.label
+            let view = NSHostingView(rootView: PlaybackHistoryToolbarTitleView(historyVM: historyVM))
+            view.frame = NSRect(x: 0, y: 0, width: 144, height: 28)
+            item.view = view
+            item.isBordered = false
+            item.visibilityPriority = .low
+            return item
+
         case AppKitMainToolbarController.Identifier.sidebarToggle:
             return makeSidebarToggleItem(
                 identifier: identifier,
@@ -277,5 +292,37 @@ struct AppKitMainToolbarItemFactory {
         item.autovalidates = false
         item.isEnabled = true
         return item
+    }
+}
+
+private struct PlaybackHistoryToolbarTitleView: View {
+    let historyVM: PlaybackHistoryViewModel
+    @ObservedObject private var themeStore = ThemeStore.shared
+    @Environment(\.motionPolicy) private var motionPolicy
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            if let title = historyVM.toolbarSectionTitle {
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                    .lineLimit(1)
+                    .id(title)
+                    .transition(.asymmetric(
+                        insertion: .offset(y: rollDistance).combined(with: .opacity),
+                        removal: .offset(y: -rollDistance).combined(with: .opacity)
+                    ))
+            }
+        }
+        .frame(width: 144, height: 28, alignment: .leading)
+        .clipped()
+        .motionAnimation(.contentReplacement, value: historyVM.toolbarSectionTitle)
+        .allowsHitTesting(false)
+        .accessibilityHidden(historyVM.toolbarSectionTitle == nil)
+    }
+
+    private var rollDistance: CGFloat {
+        motionPolicy.resolving(accessibilityReduceMotion: accessibilityReduceMotion) == .full ? 8 : 0
     }
 }

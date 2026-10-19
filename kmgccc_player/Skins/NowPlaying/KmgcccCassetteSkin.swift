@@ -160,9 +160,13 @@ private final class CassetteThemeAssetCache {
     private let lock = NSLock()
     private var resolvedAspectRatio: CGFloat?
 
+    // One set at the 960 px cap is about 12 MB, and the displayed set is alive
+    // in its Image views anyway. A smaller limit evicted the set on insertion,
+    // so every body evaluation decrypted and decoded all five images again;
+    // the view clears this cache when it disappears.
     private init() {
         cache.countLimit = 2
-        cache.totalCostLimit = 4 * 1024 * 1024
+        cache.totalCostLimit = 32 * 1024 * 1024
     }
 
     func imageSet(
@@ -301,17 +305,14 @@ private enum CassetteAssetToneMapper {
                 "CIColorMap",
                 parameters: ["inputGradientImage": gradient]
             )
-            let context = CIContext(options: [.cacheIntermediates: false])
             let outputSpace = CGColorSpace(name: CGColorSpace.displayP3)
                 ?? CGColorSpaceCreateDeviceRGB()
-            let rendered = context.createCGImage(
+            return SharedCoreImageContext.context.createCGImage(
                 mapped,
                 from: input.extent,
                 format: .RGBA8,
                 colorSpace: outputSpace
             )
-            context.clearCaches()
-            return rendered
         }
     }
 
@@ -863,7 +864,9 @@ actor CassetteArtworkCache {
     private var costs: [String: Int] = [:]
     private var totalBytes = 0
     private let maxCount = 8
-    private let maxTotalBytes = 4 * 1024 * 1024
+    // Room for the current and previous artwork at the 1080 px processing cap
+    // (about 4.7 MB each); below one image the new entry was evicted at once.
+    private let maxTotalBytes = 12 * 1024 * 1024
     private var memoryGeneration: UInt64 = 0
 
     func generation() -> UInt64 {
@@ -949,7 +952,7 @@ private enum CassetteArtworkToneMapper {
         maxPixel: Int
     ) -> (image: CGImage, before: CassetteLumaStats, after: CassetteLumaStats)? {
         return autoreleasepool {
-            let ciContext = CIContext(options: [.cacheIntermediates: false])
+            let ciContext = SharedCoreImageContext.context
             guard let linearSpace = CGColorSpace(name: CGColorSpace.linearSRGB) else { return nil }
             guard let input = downsampledInputImage(data: data, maxPixel: maxPixel), !input.extent.isEmpty else { return nil }
 
@@ -1049,8 +1052,6 @@ private enum CassetteArtworkToneMapper {
                     linearSpace: linearSpace
                 )
             else { return nil }
-
-            ciContext.clearCaches()
 
             #if DEBUG
                 let overflow = after.high > hi + 1e-4

@@ -7,138 +7,54 @@
 
 import SwiftUI
 
-struct AudioDSPNodeCard: View {
-    let node: DSPNodeConfiguration
-    let index: Int
-    let nodeCount: Int
-    let configuration: AudioDSPConfiguration
-    let format: DSPAudioFormat?
-    let headroomDB: Double?
-    @Binding var isExpanded: Bool
-    let onEnabledChange: @MainActor @Sendable (Bool) -> Void
-    let onChannelPolicyChange: @MainActor @Sendable (String) -> Void
-    let onBandChange: (Int, DSPParametricEQBand) -> Void
-    let onCommit: () -> Void
-    let onMove: (Int) -> Void
-    let onRemove: () -> Void
-
-    var body: some View {
-        SettingsSection("均衡器 \(index + 1)") {
-            VStack(alignment: .leading, spacing: 12) {
-                SettingsSwitchRow(
-                    title: "启用九段均衡器",
-                    isOn: Binding(
-                        get: { node.enabled },
-                        set: onEnabledChange
-                    )
-                )
-
-                HStack(spacing: 8) {
-                    CapsulePicker(
-                        label: "声道范围",
-                        options: ["fullRange", "allChannels"],
-                        selection: channelPolicyBinding,
-                        displayName: { $0 == "fullRange" ? "全频" : "所有声道" }
-                    )
-
-                    Spacer(minLength: 0)
-
-                    Button {
-                        onMove(-1)
-                    } label: {
-                        Label("上移", systemImage: "chevron.up")
-                            .labelStyle(.iconOnly)
-                    }
-                    .dspIconButtonStyle()
-                    .accessibilityLabel("上移均衡器")
-                    .disabled(index == 0)
-
-                    Button {
-                        onMove(1)
-                    } label: {
-                        Label("下移", systemImage: "chevron.down")
-                            .labelStyle(.iconOnly)
-                    }
-                    .dspIconButtonStyle()
-                    .accessibilityLabel("下移均衡器")
-                    .disabled(index == nodeCount - 1)
-
-                    Button(role: .destructive, action: onRemove) {
-                        Label("移除", systemImage: "trash")
-                            .labelStyle(.iconOnly)
-                    }
-                    .dspIconButtonStyle()
-                    .accessibilityLabel("移除均衡器")
-                }
-
-                DisclosureGroup("曲线与频段参数", isExpanded: $isExpanded) {
-                    if let bands = node.parametricEQBands {
-                        AudioDSPEQEditor(
-                            configuration: configuration,
-                            node: node,
-                            bands: bands,
-                            format: format,
-                            headroomDB: headroomDB,
-                            onBandChange: onBandChange,
-                            onCommit: onCommit
-                        )
-                        .equatable()
-                        .padding(.top, 10)
-                    } else {
-                        Text("均衡器参数无法读取。")
-                            .settingsDescriptionStyle()
-                            .padding(.top, 8)
-                    }
-                }
-            }
-        }
-    }
-
-    private var channelPolicyBinding: Binding<String> {
-        Binding(
-            get: { node.channelPolicy },
-            set: onChannelPolicyChange
-        )
-    }
-}
-
 struct AudioDSPEQEditor: View, Equatable {
-    let configuration: AudioDSPConfiguration
     let node: DSPNodeConfiguration
     let bands: [DSPParametricEQBand]
-    let format: DSPAudioFormat?
-    let headroomDB: Double?
+    let sampleRate: Double?
     let onBandChange: (Int, DSPParametricEQBand) -> Void
     let onCommit: () -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
-    @State private var draggedBandIndex: Int?
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var dragSession: CurveDragSession?
     @State private var activeBandIndex: Int? = 0
+    @State private var curveCache = DSPEQCurveCache()
 
+    /// Closures are intentionally excluded: they route by node ID, which is
+    /// compared, and always reach the same controller.
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.node.nodeID == rhs.node.nodeID && lhs.bands == rhs.bands
-            && lhs.format == rhs.format && lhs.headroomDB == rhs.headroomDB
+            && lhs.sampleRate == rhs.sampleRate
     }
 
     private let dbSpan = 18.0
     private let fallbackPreviewSampleRate = 48_000.0
-    private let bandColumnWidth: CGFloat = 88
+    private let bandColumnWidth: CGFloat = 60
+    /// A press must land this close to a control point to start dragging it.
+    private let bandHitRadius: CGFloat = 14
 
-    private var sampleRate: Double {
-        guard let sampleRate = format?.sampleRate, sampleRate.isFinite, sampleRate > 0 else {
+    private var resolvedSampleRate: Double {
+        guard let sampleRate, sampleRate.isFinite, sampleRate > 0 else {
             return fallbackPreviewSampleRate
         }
         return sampleRate
     }
 
     var body: some View {
+        let palette = DSPRackPalette(themeStore: themeStore, colorScheme: colorScheme)
+        let pointColors = BandPointColors(
+            current: themeStore.accentColor,
+            currentLabel: .white,
+            other: palette.mutedMark,
+            otherLabel: themeStore.appForegroundPalette.primaryColor
+        )
         VStack(alignment: .leading, spacing: 12) {
             GeometryReader { geometry in
                 let plot = plotRect(in: geometry.size)
                 Canvas { context, size in
                     drawGrid(in: &context, plot: plot)
                     drawResponse(in: &context, plot: plot)
-                    drawBandPoints(in: &context, plot: plot)
+                    drawBandPoints(in: &context, plot: plot, colors: pointColors)
                     drawLabels(in: &context, plot: plot, size: size)
                 }
                 .contentShape(Rectangle())
@@ -146,25 +62,16 @@ struct AudioDSPEQEditor: View, Equatable {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("九段均衡器频响曲线")
                 .accessibilityValue(accessibilityCurveValue)
-                .accessibilityHint("启用频段后，可拖动曲线上的控制点调整频率与增益；也可使用下方参数列。")
+                .accessibilityHint("拖动控制点调整频率与增益。")
             }
             .frame(height: 172)
 
-            HStack {
-                Text(format.map { "采样率 \(formatSampleRate($0.sampleRate))" } ?? "预览按 48 kHz 绘制")
-                Spacer(minLength: 8)
-                if let headroomDB {
-                    Text("余量估计 \(headroomDB, format: .number.precision(.fractionLength(1))) dB")
-                }
-            }
-            .settingsDescriptionStyle()
-
             HorizontalFadeScrollContainer(
-                spacing: 8,
+                spacing: 6,
                 fadeWidth: 16,
-                verticalPadding: 4,
-                leadingScrollPadding: 4,
-                trailingScrollPadding: 4,
+                verticalPadding: 2,
+                leadingScrollPadding: 0,
+                trailingScrollPadding: 0,
                 showsEdgeFade: true,
                 showsScrollButtons: true
             ) {
@@ -179,8 +86,8 @@ struct AudioDSPEQEditor: View, Equatable {
                             activeBandIndex = index
                             onBandChange(index, changedBand.normalized)
                         },
-                            onCommit: onCommit
-                        )
+                        onCommit: onCommit
+                    )
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -190,7 +97,7 @@ struct AudioDSPEQEditor: View, Equatable {
 
     private var accessibilityCurveValue: String {
         let enabledCount = bands.filter(\.enabled).count
-        return "\(enabledCount) 个频段启用，预览采样率 \(formatSampleRate(sampleRate))"
+        return "\(enabledCount) 个频段启用"
     }
 
     private func plotRect(in size: CGSize) -> CGRect {
@@ -202,6 +109,8 @@ struct AudioDSPEQEditor: View, Equatable {
         )
     }
 
+    // MARK: - Drawing
+
     private func drawGrid(in context: inout GraphicsContext, plot: CGRect) {
         for db in stride(from: -18.0, through: 18.0, by: 9.0) {
             let y = dbToY(db, in: plot)
@@ -212,7 +121,7 @@ struct AudioDSPEQEditor: View, Equatable {
             )
         }
 
-        for frequency in [20.0, 100.0, 1_000.0, 10_000.0, 20_000.0] {
+        for frequency in Self.gridFrequencies {
             let x = frequencyToX(frequency, in: plot)
             let thickness: CGFloat = 0.55
             context.fill(
@@ -223,9 +132,231 @@ struct AudioDSPEQEditor: View, Equatable {
     }
 
     private func drawResponse(in context: inout GraphicsContext, plot: CGRect) {
+        // The ribbon depends only on this node's bands, the sample rate and the
+        // plot rect. Every other parameter edit redraws the canvas without
+        // changing any of them, so the response is memoized by that key.
+        guard let ribbon = curveCache.ribbon(
+            bands: bands, sampleRate: resolvedSampleRate, plot: plot, dbSpan: dbSpan
+        ) else { return }
+        context.fill(ribbon, with: .color(themeStore.accentColor))
+    }
+
+    /// Points are opaque; the current band uses the accent and the others a
+    /// foreground tier, so overlapping points never blend.
+    private func drawBandPoints(in context: inout GraphicsContext, plot: CGRect, colors: BandPointColors) {
+        let highlighted = dragSession?.bandIndex ?? activeBandIndex
+        let enabled = bands.indices.filter { bands[$0].enabled }
+        // The current point is drawn last so it stays on top.
+        let order = enabled.filter { $0 != highlighted } + enabled.filter { $0 == highlighted }
+        for index in order {
+            let point = bandPoint(bands[index], in: plot)
+            let isCurrent = highlighted == index
+            let radius: CGFloat = isCurrent ? 8.5 : 7.5
+            let rect = CGRect(
+                x: point.x - radius,
+                y: point.y - radius,
+                width: radius * 2,
+                height: radius * 2
+            )
+            context.fill(
+                Path(ellipseIn: rect),
+                with: .color(isCurrent ? colors.current : colors.other)
+            )
+            context.draw(
+                Text("\(index + 1)")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(isCurrent ? colors.currentLabel : colors.otherLabel),
+                at: point,
+                anchor: .center
+            )
+        }
+    }
+
+    private func drawLabels(in context: inout GraphicsContext, plot: CGRect, size: CGSize) {
+        for db in [-18.0, 0.0, 18.0] {
+            context.draw(
+                Text(db > 0 ? "+\(Int(db))" : "\(Int(db))")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary),
+                at: CGPoint(x: 29, y: dbToY(db, in: plot)),
+                anchor: .trailing
+            )
+        }
+
+        for frequency in Self.gridFrequencies {
+            let label: String
+            switch frequency {
+            case 1_000: label = "1k"
+            case 10_000: label = "10k"
+            case 20_000: label = "20k"
+            default: label = "\(Int(frequency))"
+            }
+            context.draw(
+                Text(label)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary),
+                at: CGPoint(x: frequencyToX(frequency, in: plot), y: size.height - 3),
+                anchor: .bottom
+            )
+        }
+    }
+
+    private static let gridFrequencies: [Double] = [20, 100, 1_000, 10_000, 20_000]
+
+    // MARK: - Curve Dragging
+
+    /// A drag only edits a band when it starts on that band's control point.
+    /// The grab offset keeps the point under the same spot of the pointer, so a
+    /// press slightly off-center never makes the point jump.
+    private func curveDragGesture(in plot: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if dragSession == nil {
+                    guard let index = hitBand(at: value.startLocation, in: plot) else { return }
+                    let point = bandPoint(bands[index], in: plot)
+                    dragSession = CurveDragSession(
+                        bandIndex: index,
+                        grabOffset: CGSize(
+                            width: point.x - value.startLocation.x,
+                            height: point.y - value.startLocation.y
+                        )
+                    )
+                    activeBandIndex = index
+                }
+                guard let session = dragSession else { return }
+                let target = CGPoint(
+                    x: value.location.x + session.grabOffset.width,
+                    y: value.location.y + session.grabOffset.height
+                )
+                if updateBand(session.bandIndex, at: target, in: plot), !session.didChange {
+                    dragSession?.didChange = true
+                }
+            }
+            .onEnded { _ in
+                let didChange = dragSession?.didChange == true
+                dragSession = nil
+                if didChange { onCommit() }
+            }
+    }
+
+    private func hitBand(at location: CGPoint, in plot: CGRect) -> Int? {
+        let limit = bandHitRadius * bandHitRadius
+        return bands.indices
+            .filter { bands[$0].enabled }
+            .map { ($0, distanceSquared(location, bandPoint(bands[$0], in: plot))) }
+            .filter { $0.1 <= limit }
+            .min { $0.1 < $1.1 }?
+            .0
+    }
+
+    /// Returns whether the band actually changed.
+    @discardableResult
+    private func updateBand(_ index: Int, at location: CGPoint, in plot: CGRect) -> Bool {
+        guard bands.indices.contains(index) else { return false }
+        var band = bands[index]
+        band.frequencyHz = xToFrequency(location.x, in: plot).rounded()
+        if band.type.usesGain {
+            band.gainDB = (yToDB(location.y, in: plot) * 10).rounded() / 10
+        }
+        let normalized = band.normalized
+        guard normalized != bands[index] else { return false }
+        onBandChange(index, normalized)
+        return true
+    }
+
+    // MARK: - Coordinate Mapping
+
+    private func bandPoint(_ band: DSPParametricEQBand, in plot: CGRect) -> CGPoint {
+        let gain = band.type.usesGain ? band.gainDB : 0
+        return CGPoint(x: frequencyToX(band.frequencyHz, in: plot), y: dbToY(gain, in: plot))
+    }
+
+    private func frequencyToX(_ frequency: Double, in plot: CGRect) -> CGFloat {
+        let range = DSPParametricEQBand.frequencyRange
+        let low = log10(range.lowerBound)
+        let high = log10(range.upperBound)
+        let clampedFrequency = min(max(frequency, range.lowerBound), range.upperBound)
+        return plot.minX + plot.width * CGFloat((log10(clampedFrequency) - low) / (high - low))
+    }
+
+    private func xToFrequency(_ x: CGFloat, in plot: CGRect) -> Double {
+        let low = log10(DSPParametricEQBand.frequencyRange.lowerBound)
+        let high = log10(DSPParametricEQBand.frequencyRange.upperBound)
+        let boundedX = min(max(x, plot.minX), plot.maxX)
+        let amount = Double(boundedX - plot.minX) / Double(max(1, plot.width))
+        return pow(10, low + (high - low) * amount)
+    }
+
+    private func dbToY(_ db: Double, in plot: CGRect) -> CGFloat {
+        let value = min(max(db, -dbSpan), dbSpan)
+        return plot.midY - plot.height * CGFloat(value / (dbSpan * 2))
+    }
+
+    private func yToDB(_ y: CGFloat, in plot: CGRect) -> Double {
+        let boundedY = min(max(y, plot.minY), plot.maxY)
+        return Double(plot.midY - boundedY) / Double(max(1, plot.height)) * dbSpan * 2
+    }
+
+    private func distanceSquared(_ lhs: CGPoint, _ rhs: CGPoint) -> CGFloat {
+        let dx = lhs.x - rhs.x
+        let dy = lhs.y - rhs.y
+        return dx * dx + dy * dy
+    }
+}
+
+private struct BandPointColors {
+    let current: Color
+    let currentLabel: Color
+    let other: Color
+    let otherLabel: Color
+}
+
+private struct CurveDragSession: Equatable {
+    let bandIndex: Int
+    let grabOffset: CGSize
+    var didChange = false
+}
+
+/// Memoizes the filled response ribbon for one band set, sample rate and plot
+/// rect. Building it costs one `DSPBiquadCoefficients.responseDB` evaluation per
+/// plotted sample per enabled band, which is far too heavy to repeat on every
+/// unrelated parameter edit.
+private final class DSPEQCurveCache {
+    private struct Key: Equatable {
+        var bands: [DSPParametricEQBand]
+        var sampleRate: Double
+        var plot: CGRect
+        var dbSpan: Double
+    }
+
+    private var key: Key?
+    private var ribbon: Path?
+
+    func ribbon(
+        bands: [DSPParametricEQBand],
+        sampleRate: Double,
+        plot: CGRect,
+        dbSpan: Double
+    ) -> Path? {
+        let candidate = Key(bands: bands, sampleRate: sampleRate, plot: plot, dbSpan: dbSpan)
+        if key == candidate { return ribbon }
+        let computed = Self.makeRibbon(
+            bands: bands, sampleRate: sampleRate, plot: plot, dbSpan: dbSpan
+        )
+        key = candidate
+        ribbon = computed
+        return computed
+    }
+
+    private static func makeRibbon(
+        bands: [DSPParametricEQBand],
+        sampleRate: Double,
+        plot: CGRect,
+        dbSpan: Double
+    ) -> Path? {
         let pointCount = max(100, Int(plot.width * 1.2))
         // Coefficients depend on the bands and sample rate, not on the plotted
-        // frequency. Prepare each filter once per drawing pass.
+        // frequency. Prepare each filter once per ribbon.
         let coefficients = bands.filter(\.enabled).compactMap {
             DSPParametricEQMath.coefficients(for: $0, sampleRate: sampleRate)
         }
@@ -239,13 +370,13 @@ struct AudioDSPEQEditor: View, Equatable {
             let gain = coefficients.reduce(0.0) {
                 $0 + $1.responseDB(at: frequency, sampleRate: sampleRate)
             }
-            let point = CGPoint(
+            let bounded = min(max(gain.isFinite ? gain : 0, -dbSpan), dbSpan)
+            responsePoints.append(CGPoint(
                 x: plot.minX + plot.width * CGFloat(position),
-                y: dbToY(gain.isFinite ? gain : 0, in: plot)
-            )
-            responsePoints.append(point)
+                y: plot.midY - plot.height * CGFloat(bounded / (dbSpan * 2))
+            ))
         }
-        guard responsePoints.count > 1 else { return }
+        guard responsePoints.count > 1 else { return nil }
 
         let normals = responsePoints.indices.map { index -> CGVector in
             let previous = responsePoints[max(0, index - 1)]
@@ -280,157 +411,7 @@ struct AudioDSPEQEditor: View, Equatable {
             ))
         }
         responseArea.closeSubpath()
-        context.fill(responseArea, with: .color(themeStore.accentColor))
-    }
-
-    private func drawBandPoints(in context: inout GraphicsContext, plot: CGRect) {
-        for (index, band) in bands.enumerated() where band.enabled {
-            let point = bandPoint(band, in: plot)
-            let isCurrent = (draggedBandIndex == index) || (activeBandIndex == index)
-            let radius: CGFloat = isCurrent ? 8.5 : 7.0
-            let rect = CGRect(
-                x: point.x - radius,
-                y: point.y - radius,
-                width: radius * 2,
-                height: radius * 2
-            )
-            if isCurrent {
-                // Outer radial accent halo ring
-                let outerRadius: CGFloat = 13.0
-                let outerRect = CGRect(
-                    x: point.x - outerRadius,
-                    y: point.y - outerRadius,
-                    width: outerRadius * 2,
-                    height: outerRadius * 2
-                )
-                let haloRing = Path(ellipseIn: outerRect).strokedPath(StrokeStyle(lineWidth: 1.5))
-                context.fill(haloRing, with: .color(themeStore.accentColor.opacity(0.55)))
-
-                context.fill(Path(ellipseIn: rect), with: .color(themeStore.accentColor))
-                context.draw(
-                    Text("\(index + 1)")
-                        .font(.system(size: 8, weight: .heavy, design: .rounded))
-                        .foregroundStyle(.white),
-                    at: point,
-                    anchor: .center
-                )
-            } else {
-                context.fill(Path(ellipseIn: rect), with: .color(themeStore.accentColor.opacity(0.24)))
-                context.draw(
-                    Text("\(index + 1)")
-                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .foregroundStyle(themeStore.accentColor),
-                    at: point,
-                    anchor: .center
-                )
-            }
-        }
-    }
-
-    private func drawLabels(in context: inout GraphicsContext, plot: CGRect, size: CGSize) {
-        for db in [-18.0, 0.0, 18.0] {
-            context.draw(
-                Text(db > 0 ? "+\(Int(db))" : "\(Int(db))")
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary),
-                at: CGPoint(x: 29, y: dbToY(db, in: plot)),
-                anchor: .trailing
-            )
-        }
-
-        for frequency in [20.0, 100.0, 1_000.0, 10_000.0, 20_000.0] {
-            let label: String
-            switch frequency {
-            case 1_000: label = "1k"
-            case 10_000: label = "10k"
-            default: label = "\(Int(frequency))"
-            }
-            context.draw(
-                Text(label)
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary),
-                at: CGPoint(x: frequencyToX(frequency, in: plot), y: size.height - 3),
-                anchor: .bottom
-            )
-        }
-    }
-
-    private func curveDragGesture(in plot: CGRect) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                if draggedBandIndex == nil {
-                    draggedBandIndex = nearestEnabledBand(to: value.location, in: plot)
-                    if let draggedBandIndex {
-                        activeBandIndex = draggedBandIndex
-                    }
-                }
-                guard let draggedBandIndex else { return }
-                updateBand(draggedBandIndex, at: value.location, in: plot)
-            }
-            .onEnded { _ in
-                draggedBandIndex = nil
-                onCommit()
-            }
-    }
-
-    private func nearestEnabledBand(to location: CGPoint, in plot: CGRect) -> Int? {
-        let nearest = bands.enumerated()
-            .filter { $0.element.enabled }
-            .min {
-                distanceSquared(location, bandPoint($0.element, in: plot))
-                    < distanceSquared(location, bandPoint($1.element, in: plot))
-            }
-        return nearest?.offset
-    }
-
-    private func updateBand(_ index: Int, at location: CGPoint, in plot: CGRect) {
-        guard bands.indices.contains(index) else { return }
-        var band = bands[index]
-        band.frequencyHz = xToFrequency(location.x, in: plot)
-        if band.type.usesGain {
-            band.gainDB = yToDB(location.y, in: plot)
-        }
-        onBandChange(index, band.normalized)
-    }
-
-    private func bandPoint(_ band: DSPParametricEQBand, in plot: CGRect) -> CGPoint {
-        let gain = band.type.usesGain ? band.gainDB : 0
-        return CGPoint(x: frequencyToX(band.frequencyHz, in: plot), y: dbToY(gain, in: plot))
-    }
-
-    private func frequencyToX(_ frequency: Double, in plot: CGRect) -> CGFloat {
-        let low = log10(DSPParametricEQBand.frequencyRange.lowerBound)
-        let high = log10(DSPParametricEQBand.frequencyRange.upperBound)
-        let clampedFrequency = min(max(frequency, DSPParametricEQBand.frequencyRange.lowerBound), DSPParametricEQBand.frequencyRange.upperBound)
-        return plot.minX + plot.width * CGFloat((log10(clampedFrequency) - low) / (high - low))
-    }
-
-    private func xToFrequency(_ x: CGFloat, in plot: CGRect) -> Double {
-        let low = log10(DSPParametricEQBand.frequencyRange.lowerBound)
-        let high = log10(DSPParametricEQBand.frequencyRange.upperBound)
-        let boundedX = min(max(x, plot.minX), plot.maxX)
-        let amount = Double(boundedX - plot.minX) / Double(max(1, plot.width))
-        return pow(10, low + (high - low) * amount)
-    }
-
-    private func dbToY(_ db: Double, in plot: CGRect) -> CGFloat {
-        let value = min(max(db, -dbSpan), dbSpan)
-        return plot.midY - plot.height * CGFloat(value / (dbSpan * 2))
-    }
-
-    private func yToDB(_ y: CGFloat, in plot: CGRect) -> Double {
-        let boundedY = min(max(y, plot.minY), plot.maxY)
-        return Double(plot.midY - boundedY) / Double(max(1, plot.height)) * dbSpan * 2
-    }
-
-    private func distanceSquared(_ lhs: CGPoint, _ rhs: CGPoint) -> CGFloat {
-        let dx = lhs.x - rhs.x
-        let dy = lhs.y - rhs.y
-        return dx * dx + dy * dy
-    }
-
-    private func formatSampleRate(_ sampleRate: Double) -> String {
-        "\((sampleRate / 1_000).formatted(.number.precision(.fractionLength(1)))) kHz"
+        return responseArea
     }
 }
 
@@ -444,11 +425,13 @@ private struct AudioDSPBandColumn: View {
     let onCommit: () -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(spacing: 7) {
+        let palette = DSPRackPalette(themeStore: themeStore, colorScheme: colorScheme)
+        VStack(spacing: 10) {
             Text("\(index + 1)")
-                .font(.system(.caption, design: .rounded).weight(.bold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(isActive ? themeStore.accentColor : .secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .accessibilityHidden(true)
@@ -456,75 +439,77 @@ private struct AudioDSPBandColumn: View {
             Toggle("启用", isOn: enabledBinding)
                 .labelsHidden()
                 .toggleStyle(.switch)
+                .controlSize(.mini)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .accessibilityLabel("启用第 \(index + 1) 段")
 
-            Menu {
-                ForEach(DSPFilterType.allCases, id: \.self) { type in
-                    Button(type.localizedDSPTitle) {
-                        var updated = band
-                        updated.type = type
-                        onSelect()
-                        onChange(updated.normalized)
-                        onCommit()
+            VStack(spacing: 10) {
+                Picker("滤波器", selection: typeBinding) {
+                    ForEach(DSPFilterType.allCases, id: \.self) { type in
+                        Text(type.localizedDSPTitle).tag(type)
                     }
                 }
-            } label: {
-                Text(band.type.localizedDSPTitle)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
-            .menuStyle(.borderlessButton)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .accessibilityLabel("第 \(index + 1) 段滤波器")
-
-            scrubbableField(
-                title: "频率 Hz",
-                keyPath: \.frequencyHz,
-                range: DSPParametricEQBand.frequencyRange,
-                step: 10,
-                unit: "Hz",
-                digits: 0
-            )
-
-            if band.type.usesGain {
-                scrubbableField(
-                    title: "增益 dB",
-                    keyPath: \.gainDB,
-                    range: DSPParametricEQBand.gainRange,
-                    step: 0.5,
-                    unit: "dB",
-                    digits: 1
-                )
-            } else {
-                VStack(spacing: 2) {
-                    Text("增益 dB")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                    Text("—")
-                        .font(.caption.monospacedDigit())
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.vertical, 3)
-                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
                 .frame(maxWidth: .infinity, alignment: .center)
-            }
+                .accessibilityLabel("第 \(index + 1) 段滤波器")
 
-            scrubbableField(
-                title: band.type.usesSlope ? "斜率 S" : "Q",
-                keyPath: \.q,
-                range: band.type.usesSlope ? DSPParametricEQBand.shelfSlopeRange : DSPParametricEQBand.qRange,
-                step: 0.05,
-                unit: band.type.usesSlope ? "S" : "",
-                digits: 2
-            )
+                scrubbableField(
+                    title: "频率",
+                    keyPath: \.frequencyHz,
+                    range: DSPParametricEQBand.frequencyRange,
+                    step: 1,
+                    unit: "Hz",
+                    digits: 0,
+                    scale: .logarithmic(decadesPerPoint: 0.003)
+                )
+
+                if band.type.usesGain {
+                    scrubbableField(
+                        title: "增益",
+                        keyPath: \.gainDB,
+                        range: DSPParametricEQBand.gainRange,
+                        step: 0.1,
+                        unit: "dB",
+                        digits: 1,
+                        scale: .linear(perPoint: 0.04)
+                    )
+                } else {
+                    VStack(spacing: 2) {
+                        Text("增益")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text("—")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 3)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .accessibilityHidden(true)
+                }
+
+                // Q and shelf slope are ratio-like and need fine control, so
+                // they scrub slowly on a logarithmic scale.
+                scrubbableField(
+                    title: band.type.usesSlope ? "斜率" : "Q",
+                    keyPath: \.q,
+                    range: band.type.usesSlope ? DSPParametricEQBand.shelfSlopeRange : DSPParametricEQBand.qRange,
+                    step: 0.01,
+                    unit: "",
+                    digits: 2,
+                    scale: .logarithmic(decadesPerPoint: 0.0015)
+                )
+            }
+            .opacity(band.enabled ? 1 : 0.5)
         }
         .frame(width: width, alignment: .top)
-        .padding(8)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(isActive ? themeStore.accentColor.opacity(0.12) : Color.primary.opacity(0.035))
+                .fill(isActive ? palette.activeBandSurface : palette.bandSurface)
         )
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .onTapGesture {
@@ -532,10 +517,25 @@ private struct AudioDSPBandColumn: View {
         }
     }
 
+    private var typeBinding: Binding<DSPFilterType> {
+        Binding(
+            get: { band.type },
+            set: { type in
+                guard type != band.type else { return }
+                var updated = band
+                updated.type = type
+                onSelect()
+                onChange(updated.normalized)
+                onCommit()
+            }
+        )
+    }
+
     private var enabledBinding: Binding<Bool> {
         Binding(
             get: { band.enabled },
             set: { value in
+                guard value != band.enabled else { return }
                 var updated = band
                 updated.enabled = value
                 onChange(updated.normalized)
@@ -549,8 +549,9 @@ private struct AudioDSPBandColumn: View {
         keyPath: WritableKeyPath<DSPParametricEQBand, Double>,
         range: ClosedRange<Double>,
         step: Double,
-        unit: String = "",
-        digits: Int
+        unit: String,
+        digits: Int,
+        scale: ScrubScale
     ) -> some View {
         VStack(spacing: 2) {
             Text(title)
@@ -565,6 +566,7 @@ private struct AudioDSPBandColumn: View {
                 unit: unit,
                 fractionDigits: digits,
                 alignment: .center,
+                scrubScale: scale,
                 onCommit: onCommit
             )
             .accessibilityLabel("第 \(index + 1) 段\(title)")
@@ -594,14 +596,5 @@ private extension DSPFilterType {
         case .highPass: "高通"
         case .notch: "陷波"
         }
-    }
-}
-
-extension View {
-    func dspIconButtonStyle() -> some View {
-        buttonStyle(.bordered)
-            .buttonBorderShape(.capsule)
-            .clipShape(Capsule())
-            .controlSize(.small)
     }
 }

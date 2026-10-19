@@ -10,7 +10,10 @@ BUNDLE_ID="kmgccc.player"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$REPO_ROOT/build/DerivedData}"
+# Keep manual runs out of the ad-hoc test/agent build directory: sharing one
+# DerivedData lets a rebuild swap the App bundle while another session's XCTest
+# host is running from it. Override with DERIVED_DATA_PATH when needed.
+DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$REPO_ROOT/build/DerivedData-run}"
 APP_BUNDLE="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/$APP_NAME.app"
 PREBUILT_APP="${KMGCCC_PREBUILT_APP:-}"
 if [[ -n "$PREBUILT_APP" ]]; then
@@ -22,6 +25,9 @@ APP_BINARY="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 # Export log level for the app, defaulting to info
 export KMGCCC_LOG_LEVEL="${KMGCCC_LOG_LEVEL:-info}"
 KMGCCC_DEBUG_PERF="${KMGCCC_DEBUG_PERF:-0}"
+# Allocation backtraces for memory investigation: "lite" keeps live allocations,
+# "1" records every event and enables malloc_history -highWaterMark.
+MALLOC_STACK_LOGGING="${KMGCCC_MALLOC_STACK_LOGGING:-}"
 PROCESS_PREFLIGHT="$SCRIPT_DIR/check-app-process-state.sh"
 DEPENDENCY_PREFLIGHT="$SCRIPT_DIR/check-melismakit-dependency.sh"
 MELISMAKIT_EXPECTED_SOURCE="${MELISMAKIT_EXPECTED_SOURCE:-local}"
@@ -153,6 +159,11 @@ echo "Building $APP_NAME ($CONFIGURATION) via xcodebuild..."
 echo "========================================"
 
 mkdir -p "$(dirname "$BUILD_LOG")"
+XCODEBUILD_EXTRA_ARGS=(-showBuildTimingSummary)
+if [[ "$CONFIGURATION" == "Release" ]]; then
+    # Override inherited coverage settings without changing -O or WMO.
+    XCODEBUILD_EXTRA_ARGS+=(ENABLE_CODE_COVERAGE=NO CLANG_ENABLE_CODE_COVERAGE=NO CLANG_COVERAGE_MAPPING=NO)
+fi
 if ! xcodebuild \
     -project "$REPO_ROOT/kmgccc_player.xcodeproj" \
     -scheme "$APP_NAME" \
@@ -160,6 +171,7 @@ if ! xcodebuild \
     -destination 'platform=macOS' \
     -derivedDataPath "$DERIVED_DATA_PATH" \
     CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-YES}" \
+    "${XCODEBUILD_EXTRA_ARGS[@]}" \
     -verbose \
     build >"$BUILD_LOG" 2>&1; then
     echo "error: xcodebuild failed; recent output:" >&2
@@ -185,17 +197,24 @@ if [ ! -x "$APP_BINARY" ]; then
 fi
 
 open_app() {
+    local env_args=(
+        --env "KMGCCC_LOG_LEVEL=$KMGCCC_LOG_LEVEL"
+        --env "KMGCCC_DEBUG_PERF=$KMGCCC_DEBUG_PERF"
+    )
+    if [ -n "$MALLOC_STACK_LOGGING" ]; then
+        env_args+=(--env "MallocStackLogging=$MALLOC_STACK_LOGGING")
+    fi
+    # Darwin-notification UI actions for local memory measurement (DebugUIHooks).
+    if [ -n "${KMGCCC_DEBUG_UI_HOOKS:-}" ]; then
+        env_args+=(--env "KMGCCC_DEBUG_UI_HOOKS=$KMGCCC_DEBUG_UI_HOOKS")
+    fi
+    if [ -n "${KMGCCC_CI_MEMORY_LIMIT_MB:-}" ]; then
+        env_args+=(--env "KMGCCC_CI_MEMORY_LIMIT_MB=$KMGCCC_CI_MEMORY_LIMIT_MB")
+    fi
     if [ "$#" -gt 0 ]; then
-        /usr/bin/open -n \
-            --env "KMGCCC_LOG_LEVEL=$KMGCCC_LOG_LEVEL" \
-            --env "KMGCCC_DEBUG_PERF=$KMGCCC_DEBUG_PERF" \
-            "$APP_BUNDLE" \
-            --args "$@"
+        /usr/bin/open -n "${env_args[@]}" "$APP_BUNDLE" --args "$@"
     else
-        /usr/bin/open -n \
-            --env "KMGCCC_LOG_LEVEL=$KMGCCC_LOG_LEVEL" \
-            --env "KMGCCC_DEBUG_PERF=$KMGCCC_DEBUG_PERF" \
-            "$APP_BUNDLE"
+        /usr/bin/open -n "${env_args[@]}" "$APP_BUNDLE"
     fi
 }
 

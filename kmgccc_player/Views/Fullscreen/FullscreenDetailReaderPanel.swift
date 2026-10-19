@@ -8,6 +8,7 @@
 //
 
 import AppKit
+import PopupKit
 import SwiftUI
 
 struct FullscreenDetailReaderPanel: View {
@@ -30,9 +31,6 @@ struct FullscreenDetailReaderPanel: View {
 
     private var panelWidth: CGFloat { presentationStyle.panelSize.width }
     private var panelHeight: CGFloat { presentationStyle.scaled(640) }
-    private var cornerRadius: CGFloat { presentationStyle.panelCornerRadius }
-    private var contentPadding: CGFloat { presentationStyle.panelContentPadding }
-    private var closeButtonSize: CGFloat { presentationStyle.closeButtonSize }
 
     private var paragraphs: [String] {
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
@@ -42,107 +40,42 @@ struct FullscreenDetailReaderPanel: View {
     }
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            // Polarity-aware tint layer
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(presentationStyle.surfaceTintColor.opacity(0.20))
-                .allowsHitTesting(false)
-
-            VStack(alignment: .leading, spacing: presentationStyle.scaled(14)) {
-                // Header Area
-                panelHeader
-                    .padding(.trailing, closeButtonSize + presentationStyle.scaled(10))
-
-                // Text reader card with ultra thin material
-                textReaderCard
+        AppPopupFrame(
+            title: title, subtitle: attributionNote, systemImage: "text.quote",
+            onClose: onDismiss, showsFooter: false, style: popupStyle,
+            primaryColor: presentationStyle.primaryTextColor,
+            secondaryColor: presentationStyle.secondaryTextColor
+        ) {
+            AppPopupScrollRegion {
+                VStack(alignment: .leading, spacing: popupStyle.sectionSpacing) {
+                    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        emptyStateView
+                    } else {
+                        ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, paragraph in
+                            Text(paragraph)
+                                .font(.system(size: popupStyle.bodySize))
+                                .lineSpacing(popupStyle.bodyLineSpacing)
+                                .foregroundStyle(presentationStyle.primaryTextColor)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+            } actions: {
+                Button("关闭", action: onDismiss).buttonStyle(AppDialogGlassButtonStyle())
             }
-            .padding(.horizontal, contentPadding)
-            .padding(.top, contentPadding)
-            .padding(.bottom, presentationStyle.panelBottomPadding)
-            .environment(\.colorScheme, foregroundProfile.colorScheme)
-
-            closeButton
-                .padding(.top, presentationStyle.panelBottomPadding)
-                .padding(.trailing, presentationStyle.panelBottomPadding)
+        } footer: {
+            EmptyView()
         }
         .frame(width: panelWidth, height: panelHeight, alignment: .topLeading)
-        .glassEffect(
-            .clear,
-            in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(
-                    GlassStyleTokens.glassBorderColor(for: foregroundProfile.colorScheme),
-                    lineWidth: presentationStyle.scaled(GlassStyleTokens.hairlineWidth)
-                )
-                .allowsHitTesting(false)
-        )
-        .background(
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(presentationStyle.surfaceTintColor.opacity(0.08))
-                .allowsHitTesting(false)
-        )
-        .subtleFloatingShadow()
         .controlSize(presentationStyle.controlSize)
         .environment(\.colorScheme, foregroundProfile.colorScheme)
         .onAppear(perform: registerDismissHandler)
         .onDisappear(perform: unregisterDismissHandler)
     }
 
-    // MARK: - Header
-
-    private var panelHeader: some View {
-        VStack(alignment: .leading, spacing: presentationStyle.scaled(4)) {
-            Text(title)
-                .font(.system(size: presentationStyle.scaled(20), weight: .bold))
-                .foregroundStyle(presentationStyle.primaryTextColor)
-                .lineLimit(2)
-
-            if let attributionNote, !attributionNote.isEmpty {
-                Text(attributionNote)
-                    .font(.system(size: presentationStyle.scaled(12), weight: .medium))
-                    .foregroundStyle(presentationStyle.secondaryTextColor)
-                    .lineLimit(1)
-            }
-        }
-    }
-
-    // MARK: - Text Reader Card
-
-    private var textReaderCard: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: presentationStyle.scaled(14)) {
-                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    emptyStateView
-                } else {
-                    ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, paragraph in
-                        Text(paragraph)
-                            .font(.system(size: presentationStyle.scaled(14.5), weight: .regular))
-                            .lineSpacing(presentationStyle.scaled(7))
-                            .foregroundStyle(presentationStyle.primaryTextColor.opacity(0.95))
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
-            .padding(presentationStyle.scaled(18))
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .background(
-            RoundedRectangle(cornerRadius: presentationStyle.scaled(16), style: .continuous)
-                .fill(.ultraThinMaterial)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: presentationStyle.scaled(16), style: .continuous)
-                .strokeBorder(
-                    GlassStyleTokens.glassBorderColor(for: foregroundProfile.colorScheme).opacity(0.5),
-                    lineWidth: presentationStyle.scaled(0.5)
-                )
-                .allowsHitTesting(false)
-        )
-    }
+    private var popupStyle: AppPopupStyle { AppPopupStyle().scaled(by: Double(scale)) }
 
     private var emptyStateView: some View {
         VStack(spacing: presentationStyle.scaled(10)) {
@@ -155,20 +88,6 @@ struct FullscreenDetailReaderPanel: View {
                 .foregroundStyle(presentationStyle.secondaryTextColor)
         }
         .frame(maxWidth: .infinity, minHeight: presentationStyle.scaled(200))
-    }
-
-    // MARK: - Close Button
-
-    private var closeButton: some View {
-        Button(action: onDismiss) {
-            Image(systemName: "xmark")
-                .font(.system(size: 13 * scale, weight: .semibold))
-                .foregroundStyle(presentationStyle.primaryTextColor)
-                .frame(width: closeButtonSize, height: closeButtonSize)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("关闭")
     }
 
     // MARK: - Dismiss Handling

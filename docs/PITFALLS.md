@@ -7,6 +7,7 @@
 - 生产环境歌词只采用原生 `NativeLyrics` 引擎（Core Text + Core Animation）；不要在歌词渲染层中引入 DOM、JavaScript bridge 或歌词 WebView fallback。
 - `kmgccc_player/Resources/AMLL/` 只保留网格背景所需的 `background.html`、生成的 `amll-background.js` 和字体资源；生成 JavaScript 不可手改，用 `scripts/sync-amll-from-fork.sh` 从 fork 同步。
 - `AMLLMeshGradientBackgroundView` 的 WebView 只服务背景动画，不得复用于歌词，也不要在歌词 View 中创建第二套渲染状态。
+- TTML 在 Swift 侧有四处独立实现：生成在 `Services/LDDC/LRCConverterService.swift`（手写官方 AMLL 命名空间），解析有 `Services/Search/TTMLPlainTextExtractor.swift`（搜索索引）与 `Services/Fullscreen/FullscreenTTMLTimingExtractor.swift`（全屏 timing），渲染主路径走 MelismaKit 的 `TTMLDecoder`。Swift 侧无法复用官方 JS 包，改 TTML 结构、命名空间或时间语义时四处必须一起改，并各自补样本验证。
 
 ## 全屏
 
@@ -23,6 +24,10 @@
 - 主题颜色只经 `ThemeStore` / `SemanticPalette`；绕过它们直接取色会在深浅色切换与 P3 输出上出问题。
 - 频谱视图共享 `LEDMeterServiceProvider` / `AudioAnalysisHub` 分析服务；**禁止**为单个视图另装 AVAudioEngine tap。
 
+## 弹窗与按钮
+
+- Liquid Glass 的点击命中由**被包裹内容**的 content shape 决定，不是由 `glassEffect(_:in:)` 的形状决定。交互式玻璃（`.interactive()`）必须裹在已经声明 `contentShape` 的内容上：`PopupButtonAppearance`（PopupKit）与 `AppPanelButtonStyle` 都先在 label 上声明 `Capsule`，再应用 `glassEffect`。只在 `glassEffect` 之后补 `contentShape` 时，胶囊里除文字外的区域会表现为按下有玻璃高亮、动作不触发；2026-10-15 歌曲信息编辑弹窗的取消 / 保存更改点不动就是这个原因。新增玻璃按钮时保持「label → contentShape → glassEffect」的顺序。
+
 ## 外部组件
 
 - 外部组件一律从 `Bundle.main.resourceURL` 解析；不要添加系统 Python、venv 或环境变量 fallback。
@@ -31,8 +36,9 @@
 ## 工程
 
 - 工程使用 Xcode **文件夹同步组**（PBXFileSystemSynchronizedRootGroup，无 membershipExceptions）：**App target** 的 9 个同步目录（AppKit、Models、Rendering、Repositories、Services、Skins、Utilities、ViewModels、Views）里新建 `.swift` 文件即自动入 target，不需要也不应该手改 project.pbxproj 登记文件。
-- `kmgccc_playerTests/` **不是**同步组：新增测试文件必须显式登记进 test target 的 Sources，否则文件会安静地永不编译、永不运行（已有先例：两个测试文件自 2026-09-03 起从未执行）。提交测试前对一次账：`ls kmgccc_playerTests/*.swift` 的文件必须都能在 project.pbxproj 里找到对应登记项。
+- `kmgccc_playerTests/` **不是**同步组：新增测试文件必须显式登记进 test target 的 Sources，否则文件会安静地永不编译、永不运行（先例：两个测试文件自 2026-09-03 起从未执行，2026-10-09 已按删除处理）。提交测试前对一次账：`ls kmgccc_playerTests/*.swift` 的文件必须都能在 project.pbxproj 里找到对应登记项。test target 现在只编译测试文件，类型统一经 `@testable import kmgccc_player` 取自 App 模块；2026-10-09 已清掉此前显式编译的 26 个重复生产源，不要再把生产源码加进 test target。
 - 两套测试定位不同：`kmgccc_playerTests/` 是挂在 scheme 上的 XCTest target（宿主测试，经 `TEST_HOST` 链接 App）；`Tests/` 是用 `xcrun swiftc -parse-as-library` 直接编译被测源码的轻量脚本回归（刻意不依赖 App / SwiftData target）。新增测试先想清楚进哪条轨。
+- XCTest 宿主就是 App 本体，进程名与真 App 相同（都是 `kmgccc_player`）。门禁运行期间按名字清场会杀掉测试宿主，报错形态是 `The test runner exited with code 0 before finishing running tests`，与提交内容无关，且会让整次门禁结果无法归因。`check-app-process-state.sh --terminate-existing` 现在识别 XCTest 宿主并拒绝终止；`verify.sh` 在开跑前与 XCTest 前各检查一次，发现已有 App 实例或本工作区的并发 `xcodebuild` 时直接拒绝运行。手工运行 App 走 `build_and_run.sh`，它使用独立的 `build/DerivedData-run`，不要与临时测试构建共用产物目录。
 - 日志使用现有 `Log` 分类，**不加临时 `print`**——严禁在业务逻辑中引入裸 print，统一走现有 `Log` 分类。
 
 ## 提交与验证

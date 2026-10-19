@@ -49,7 +49,12 @@ struct BokehTransitionSurface: NSViewRepresentable {
         if snapshot.surfaceOpacity <= 0.5 {
             view.alphaValue = 0
         }
-        let shouldDraw = snapshot.isActive && context.coordinator.renderer.isAvailable
+        let hasInstalledSource = sourceSet.map {
+            context.coordinator.renderer.isReady(for: $0.identity)
+        } ?? false
+        let shouldDraw = snapshot.isActive
+            && context.coordinator.renderer.isAvailable
+            && hasInstalledSource
         if !shouldDraw {
             // A missing or rejected runtime library must never leave a stale
             // drawable above the Gaussian fallback.
@@ -68,9 +73,28 @@ struct BokehTransitionSurface: NSViewRepresentable {
     }
 
     private func installSourceIfNeeded(in view: MTKView, coordinator: Coordinator) {
-        guard let sourceSet else { return }
-        guard coordinator.sourceIdentity != sourceSet.identity else { return }
-        coordinator.renderer.install(sourceSet)
+        guard let sourceSet else {
+            coordinator.sourceIdentity = nil
+            return
+        }
+
+        if coordinator.sourceIdentity == sourceSet.identity,
+           coordinator.renderer.isReady(for: sourceSet.identity) {
+            return
+        }
+        if coordinator.renderer.isReady(for: sourceSet.identity) {
+            coordinator.sourceIdentity = sourceSet.identity
+            view.drawableSize = sourceSet.identity.renderSize.cgSize
+            return
+        }
+
+        guard coordinator.renderer.install(sourceSet),
+              coordinator.renderer.isReady(for: sourceSet.identity) else {
+            // Do not memoize a failed upload. A later representable update can
+            // retry the same source set instead of remaining permanently cold.
+            coordinator.sourceIdentity = nil
+            return
+        }
         coordinator.sourceIdentity = sourceSet.identity
         view.drawableSize = sourceSet.identity.renderSize.cgSize
     }

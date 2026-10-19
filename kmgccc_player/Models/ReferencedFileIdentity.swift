@@ -378,13 +378,16 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
             return hadMembership && location.sourceMemberships.isEmpty ? nil : location
         }
         if primaryHadMembership && sourceMemberships.isEmpty {
-            fileBookmarkData = Data()
-            lastKnownPath = ""
-            fingerprint = nil
-            ncmSourceIdentity = nil
-            primaryAudioProperties = nil
-            primaryContentDigest = nil
-            primaryAvailabilityRaw = nil
+            let fileStillExists = !lastKnownPath.isEmpty && FileManager.default.fileExists(atPath: lastKnownPath)
+            if alternateLocations.isEmpty && !fileStillExists {
+                fileBookmarkData = Data()
+                lastKnownPath = ""
+                fingerprint = nil
+                ncmSourceIdentity = nil
+                primaryAudioProperties = nil
+                primaryContentDigest = nil
+                primaryAvailabilityRaw = nil
+            }
         }
         if primarySourceID == sourceID,
            !sourceMemberships.contains(where: { $0.sourceID == sourceID }) {

@@ -6,6 +6,7 @@
 //  The glass treatment intentionally mirrors the fullscreen volume HUD capsule.
 //
 
+import PopupKit
 import SwiftUI
 
 struct ScrollWheelVolumeTipView: View {
@@ -20,42 +21,18 @@ struct ScrollWheelVolumeTipView: View {
     var blendMode: BlendMode = .normal
 
     var body: some View {
-        HStack(spacing: 12 * scale) {
-            Image(systemName: "scroll")
-                .font(.system(size: 22 * scale, weight: .semibold))
-                .frame(width: 32 * scale)
-
-            VStack(alignment: .leading, spacing: 2 * scale) {
-                Text("滚轮调节音量")
-                    .font(.system(size: 15 * scale, weight: .semibold))
-                Text("在封面区域滚动滚轮或双指轻扫触控板，即可调节音量")
-                    .font(.system(size: 12 * scale))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11 * scale, weight: .semibold))
-                    .frame(width: 22 * scale, height: 22 * scale)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("关闭")
+        AppPopupFrame(
+            title: "滚轮调节音量", systemImage: "scroll", onClose: onClose, showsFooter: false,
+            foregroundBlendMode: blendMode,
+            style: AppPopupStyle.appTip.scaled(by: Double(scale)),
+            primaryColor: foregroundColor, secondaryColor: foregroundColor.opacity(0.72)
+        ) {
+            Text("在封面区域滚动滚轮或双指轻扫触控板，即可调节音量")
+                .fixedSize(horizontal: false, vertical: true)
+        } footer: {
+            EmptyView()
         }
-        .foregroundStyle(foregroundColor)
-        .compositingGroup()
-        .blendMode(blendMode)
-        .padding(.horizontal, 16 * scale)
-        .padding(.vertical, 12 * scale)
-        .frame(minWidth: 260 * scale)
-        .contentShape(Capsule())
-        .liquidGlassPill(
-            colorScheme: glassStyle.colorScheme,
-            accentColor: glassStyle.accentColor,
-            prominence: .standard,
-            materialStyle: glassStyle.materialStyle,
-            isFloating: true
-        )
+        .frame(width: 320 * scale)
         .environment(\.colorScheme, glassStyle.colorScheme)
         .zIndex(20)
     }

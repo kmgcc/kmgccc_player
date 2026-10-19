@@ -4,6 +4,112 @@ import XCTest
 
 @MainActor
 final class AudioDSPControllerTests: XCTestCase {
+    func testLoadMonitoringKeepsMultipleWindowsAndRejectsRetiredVisibilityGeneration() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let controller = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        await controller.ensureLoaded()
+        controller.updateConfiguration(commit: true) { $0.enabled = true }
+        var requests: [(Bool, UUID)] = []
+        var appliedID: UUID?
+        let binding = controller.bindPlayback(monitorLoad: { enabled, generation in
+            requests.append((enabled, generation))
+        }) { _, _, id in appliedID = id }
+        let first = UUID(), second = UUID()
+        controller.setProcessingLoadVisible(true, observerID: first)
+        let generation = try XCTUnwrap(requests.last).1
+        controller.setProcessingLoadVisible(true, observerID: second)
+        controller.setProcessingLoadVisible(false, observerID: first)
+        XCTAssertEqual(requests.map { $0.0 }, [false, true])
+        let snapshot = processingLoadSnapshot(controller: controller, requestID: try XCTUnwrap(appliedID))
+        controller.receiveProcessingLoad(DSPProcessingLoadUpdate(monitoringGeneration: generation, snapshot: snapshot), bindingID: binding)
+        XCTAssertNotNil(controller.processingLoad.snapshot)
+        controller.setProcessingLoadVisible(false, observerID: second)
+        XCTAssertEqual(requests.map { $0.0 }, [false, true, false])
+        XCTAssertEqual(controller.processingLoad.snapshot?.chain.averageRatio, 0.1)
+        controller.setProcessingLoadVisible(true, observerID: first)
+        controller.receiveProcessingLoad(DSPProcessingLoadUpdate(monitoringGeneration: generation, snapshot: snapshot), bindingID: binding)
+        XCTAssertEqual(controller.processingLoad.snapshot?.chain.averageRatio, 0.1)
+        controller.setProcessingLoadVisible(false, observerID: first)
+        await controller.flushPendingPersistence()
+    }
+
+    func testLoadMeasurementsRejectOldConfigurationsAndRetiredPlaybackBindings() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let controller = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        await controller.ensureLoaded()
+        controller.updateConfiguration(commit: true) { $0.enabled = true }
+        var generation = UUID()
+        var appliedID: UUID?
+        let observer = UUID()
+        let oldBinding = controller.bindPlayback(monitorLoad: { _, value in generation = value }) { _, _, id in appliedID = id }
+        controller.setProcessingLoadVisible(true, observerID: observer)
+        let old = processingLoadSnapshot(controller: controller, requestID: try XCTUnwrap(appliedID))
+        controller.receiveProcessingLoad(DSPProcessingLoadUpdate(monitoringGeneration: generation, snapshot: old), bindingID: oldBinding)
+        XCTAssertNotNil(controller.processingLoad.snapshot)
+        controller.updateConfiguration(commit: true) { $0.inputTrimDB = 1 }
+        XCTAssertEqual(controller.processingLoad.snapshot?.chain.averageRatio, 0.1)
+        controller.receiveProcessingLoad(DSPProcessingLoadUpdate(monitoringGeneration: generation, snapshot: old), bindingID: oldBinding)
+        XCTAssertEqual(controller.processingLoad.snapshot?.chain.averageRatio, 0.1)
+        let newBinding = controller.bindPlayback(monitorLoad: { _, value in generation = value }) { _, _, id in appliedID = id }
+        let current = processingLoadSnapshot(controller: controller, requestID: try XCTUnwrap(appliedID))
+        let update = DSPProcessingLoadUpdate(monitoringGeneration: generation, snapshot: current)
+        controller.receiveProcessingLoad(update, bindingID: oldBinding)
+        XCTAssertNil(controller.processingLoad.snapshot)
+        controller.receiveProcessingLoad(update, bindingID: newBinding)
+        XCTAssertNotNil(controller.processingLoad.snapshot)
+        controller.setSourceIsLocal(false)
+        XCTAssertNil(controller.processingLoad.snapshot)
+        controller.receiveProcessingLoad(update, bindingID: newBinding)
+        XCTAssertNil(controller.processingLoad.snapshot)
+        controller.detachPlayback()
+        controller.setProcessingLoadVisible(false, observerID: observer)
+        await controller.flushPendingPersistence()
+    }
+
+    func testLoadPresentationRetainsLastResultUntilReplacedOrExplicitlyCleared() {
+        let presentation = DSPProcessingLoadPresentation()
+        presentation.update(DSPProcessingLoadSnapshot(requestID: nil, revision: "test",
+            format: DSPAudioFormat(sampleRate: 48_000, channelCount: 2,
+                rawLayoutData: nil, channelLabels: nil, layoutIsKnown: false),
+            nodes: [:], chain: DSPProcessingLoad(averageRatio: 0.1, sampledPeakRatio: 0.2), sampleCount: 4))
+        XCTAssertNotNil(presentation.snapshot)
+        presentation.update(nil)
+        XCTAssertEqual(presentation.snapshot?.chain.averageRatio, 0.1)
+        presentation.update(DSPProcessingLoadSnapshot(requestID: nil, revision: "fresh",
+            format: DSPAudioFormat(sampleRate: 48_000, channelCount: 2,
+                rawLayoutData: nil, channelLabels: nil, layoutIsKnown: false),
+            nodes: [:], chain: DSPProcessingLoad(averageRatio: 0.3, sampledPeakRatio: 0.4), sampleCount: 4))
+        XCTAssertEqual(presentation.snapshot?.chain.averageRatio, 0.3)
+        presentation.clear()
+        XCTAssertNil(presentation.snapshot)
+    }
+
+    func testLoadPresentationKeepsTemporarilyInactiveNodesAndDropsRemovedNodes() {
+        let presentation = DSPProcessingLoadPresentation()
+        let active = UUID(), inactive = UUID(), removed = UUID()
+        let format = DSPAudioFormat(sampleRate: 48_000, channelCount: 2,
+            rawLayoutData: nil, channelLabels: nil, layoutIsKnown: false)
+        let initial = DSPProcessingLoad(averageRatio: 0.1, sampledPeakRatio: 0.2)
+        presentation.update(DSPProcessingLoadSnapshot(requestID: nil, revision: "old", format: format,
+            nodes: [active: initial, inactive: initial, removed: initial], chain: initial, sampleCount: 2))
+        let fresh = DSPProcessingLoad(averageRatio: 0.3, sampledPeakRatio: 0.4)
+        presentation.update(DSPProcessingLoadSnapshot(requestID: nil, revision: "new", format: format,
+            nodes: [active: fresh], chain: fresh, sampleCount: 2), retainingNodeIDs: [active, inactive])
+        XCTAssertEqual(presentation.snapshot?.nodes[active], fresh)
+        XCTAssertEqual(presentation.snapshot?.nodes[inactive], initial)
+        XCTAssertNil(presentation.snapshot?.nodes[removed])
+        XCTAssertEqual(presentation.snapshot?.chain, fresh)
+    }
+
+    private func processingLoadSnapshot(controller: AudioDSPController, requestID: UUID) -> DSPProcessingLoadSnapshot {
+        DSPProcessingLoadSnapshot(requestID: requestID, revision: controller.revisionString,
+            format: DSPAudioFormat(sampleRate: 48_000, channelCount: 2,
+                rawLayoutData: nil, channelLabels: nil, layoutIsKnown: false),
+            nodes: [:], chain: DSPProcessingLoad(averageRatio: 0.1, sampledPeakRatio: 0.2), sampleCount: 4)
+    }
+
     func testRepeatedUnchangedUIEditsKeepRevisionAndCommitPendingValue() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -27,6 +133,75 @@ final class AudioDSPControllerTests: XCTestCase {
         controller.updateConfiguration(commit: true) { $0.inputTrimDB = -3 }
         XCTAssertEqual(controller.revisionString, revision)
         XCTAssertEqual(appliedValues, [-3])
+    }
+
+    func testUndoAndRedoStepThroughSettingsEditsWithADragAsOneStep() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let controller = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        await controller.ensureLoaded()
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        controller.attachUndoManager(undo)
+        let original = controller.configuration.inputTrimDB
+
+        undo.beginUndoGrouping()
+        controller.updateConfiguration(commit: true) { $0.inputTrimDB = 1 }
+        undo.endUndoGrouping()
+        undo.beginUndoGrouping()
+        for value in stride(from: 1.5, through: 4, by: 0.5) {
+            controller.updateConfiguration { $0.inputTrimDB = value }
+        }
+        controller.commitPendingApply()
+        undo.endUndoGrouping()
+        let editedPresetID = controller.selectedPresetID
+
+        undo.undo()
+        XCTAssertEqual(controller.configuration.inputTrimDB, 1)
+        undo.undo()
+        XCTAssertEqual(controller.configuration.inputTrimDB, original)
+        XCTAssertFalse(undo.canUndo)
+        // Undoing into Flat's values keeps editing the copy the first edit made.
+        XCTAssertEqual(controller.selectedPresetID, editedPresetID)
+
+        undo.redo()
+        XCTAssertEqual(controller.configuration.inputTrimDB, 1)
+        undo.redo()
+        XCTAssertEqual(controller.configuration.inputTrimDB, 4)
+        XCTAssertFalse(undo.canRedo)
+        await controller.flushPendingPersistence()
+    }
+
+    func testChangesOutsideTheHistoryAndLeavingThePageClearIt() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let controller = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        await controller.ensureLoaded()
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        controller.attachUndoManager(undo)
+
+        undo.beginUndoGrouping()
+        controller.updateConfiguration(commit: true) { $0.inputTrimDB = 2 }
+        undo.endUndoGrouping()
+        XCTAssertTrue(undo.canUndo)
+        var external = controller.configuration
+        external.outputTrimDB = -2
+        _ = try controller.apply(external)
+        XCTAssertFalse(undo.canUndo)
+
+        undo.beginUndoGrouping()
+        controller.updateConfiguration(commit: true) { $0.inputTrimDB = 3 }
+        undo.endUndoGrouping()
+        _ = try controller.selectPreset(id: DSPPresetDocument.flatPresetID)
+        XCTAssertFalse(undo.canUndo)
+
+        undo.beginUndoGrouping()
+        controller.updateConfiguration(commit: true) { $0.inputTrimDB = 5 }
+        undo.endUndoGrouping()
+        controller.detachUndoManager(undo)
+        XCTAssertFalse(undo.canUndo)
+        await controller.flushPendingPersistence()
     }
 
     func testRecursiveUnknownParametersSurvivePresetRoundTrip() async throws {
@@ -235,10 +410,12 @@ final class AudioDSPControllerTests: XCTestCase {
         _ = try controller.apply(changed)
         XCTAssertTrue(controller.isModified)
         _ = try controller.selectPreset(id: saved.presetID, expectedPresetRevision: saved.revisionString)
-        XCTAssertEqual(controller.configuration, savedConfiguration)
+        XCTAssertEqual(controller.configuration, changed)
+        await controller.flushPendingPersistence()
         XCTAssertFalse(controller.isModified)
-        try await controller.deletePreset(id: saved.presetID, expectedPresetRevision: saved.revisionString)
-        XCTAssertEqual(controller.configuration, savedConfiguration)
+        let persisted = try XCTUnwrap(controller.presets.first(where: { $0.presetID == saved.presetID }))
+        try await controller.deletePreset(id: saved.presetID, expectedPresetRevision: persisted.revisionString)
+        XCTAssertEqual(controller.configuration, changed)
         XCTAssertNil(controller.selectedPresetID)
         XCTAssertTrue(controller.isModified)
     }
@@ -427,6 +604,378 @@ final class AudioDSPControllerTests: XCTestCase {
             rebuffered: false
         ))
         XCTAssertEqual(controller.requestStatus(id: firstRequestID)?.state, .audible)
+    }
+
+    func testContinuousEditsSaveBeforeTheDragEnds() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DSPPresetStore(rootURL: root)
+        let controller = AudioDSPController(store: store)
+        await controller.ensureLoaded()
+        let preset = try await controller.createPreset(name: "Live")
+        var observedSavedEdit = false
+
+        for index in 1...18 {
+            controller.updateConfiguration { $0.inputTrimDB = -Double(index) / 2 }
+            try await Task.sleep(for: .milliseconds(20))
+            let saved = try await store.preset(id: preset.presetID)
+            if index < 18, saved.configuration.inputTrimDB < 0 {
+                observedSavedEdit = true
+            }
+        }
+
+        XCTAssertTrue(observedSavedEdit, "Continuous input must not postpone every disk write until release.")
+        controller.commitPendingApply()
+        await controller.flushPendingPersistence()
+        let saved = try await store.preset(id: preset.presetID)
+        XCTAssertEqual(saved.configuration, controller.configuration)
+        XCTAssertFalse(controller.isModified)
+    }
+
+    func testImmediatePresetSwitchRetainsEditsToThePreviousPreset() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DSPPresetStore(rootURL: root)
+        let controller = AudioDSPController(store: store)
+        await controller.ensureLoaded()
+        let first = try await controller.createPreset(name: "First")
+        let second = try await controller.createPreset(name: "Second")
+
+        _ = try controller.selectPreset(id: first.presetID)
+        controller.updateConfiguration { $0.outputTrimDB = -6 }
+        _ = try controller.selectPreset(id: second.presetID)
+        await controller.flushPendingPersistence()
+
+        let persistedFirst = try await store.preset(id: first.presetID)
+        let persistedSecond = try await store.preset(id: second.presetID)
+        XCTAssertEqual(persistedFirst.configuration.outputTrimDB, -6)
+        XCTAssertEqual(persistedSecond.configuration.outputTrimDB, 0)
+        _ = try controller.selectPreset(id: first.presetID)
+        XCTAssertEqual(controller.configuration.outputTrimDB, -6)
+        await controller.flushPendingPersistence()
+    }
+
+    func testCopyUsesCurrentEditsAndSubsequentChangesStayInTheCopy() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DSPPresetStore(rootURL: root)
+        let controller = AudioDSPController(store: store)
+        await controller.ensureLoaded()
+        let original = try await controller.createPreset(name: "Original")
+        controller.updateConfiguration {
+            $0.inputTrimDB = -4
+            $0.nodes.append(DSPNodeConfiguration(typeID: "future.effect", enabled: false,
+                parameters: ["opaque": .string("preserve me")]))
+        }
+        let snapshot = controller.configuration
+        var applyCount = 0
+        controller.bindPlayback { _, _, _ in applyCount += 1 }
+        controller.commitPendingApply()
+        applyCount = 0
+
+        let copy = try await controller.copyCurrentPreset(name: "Copy")
+        XCTAssertNotEqual(copy.presetID, original.presetID)
+        XCTAssertEqual(copy.configuration, snapshot)
+        XCTAssertEqual(controller.selectedPresetID, copy.presetID)
+        XCTAssertEqual(applyCount, 0, "Copying identical parameters must not rebuild the audio chain.")
+        controller.updateConfiguration { $0.inputTrimDB = -9 }
+        await controller.flushPendingPersistence()
+
+        let persistedOriginal = try await store.preset(id: original.presetID)
+        let persistedCopy = try await store.preset(id: copy.presetID)
+        XCTAssertEqual(persistedOriginal.configuration, snapshot)
+        XCTAssertEqual(persistedCopy.configuration.inputTrimDB, -9)
+    }
+
+    func testFlatEditCreatesAnEditablePresetAndRestoresAfterReload() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DSPPresetStore(rootURL: root)
+        let controller = AudioDSPController(store: store)
+        await controller.ensureLoaded()
+        controller.updateConfiguration { $0.inputTrimDB = -3 }
+        let editedID = try XCTUnwrap(controller.selectedPresetID)
+        XCTAssertNotEqual(editedID, DSPPresetDocument.flatPresetID)
+        await controller.flushPendingPersistence()
+
+        let flat = try await store.preset(id: DSPPresetDocument.flatPresetID)
+        XCTAssertEqual(flat.configuration, .defaultFlat)
+        let restored = AudioDSPController(store: store)
+        await restored.ensureLoaded()
+        XCTAssertEqual(restored.selectedPresetID, editedID)
+        XCTAssertEqual(restored.configuration, controller.configuration)
+        XCTAssertFalse(restored.isModified)
+    }
+
+    func testNewPresetStartsWithAnEmptyChainAndPreservesEnablement() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let controller = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        await controller.ensureLoaded()
+        controller.updateConfiguration { $0.enabled = true; $0.inputTrimDB = -4 }
+        let saved = try await controller.createPreset(name: "Empty")
+
+        XCTAssertEqual(controller.selectedPresetID, saved.presetID)
+        XCTAssertTrue(controller.configuration.enabled)
+        XCTAssertTrue(controller.configuration.nodes.isEmpty)
+        XCTAssertEqual(controller.configuration.inputTrimDB, 0)
+        XCTAssertEqual(controller.configuration.outputTrimDB, 0)
+        await controller.flushPendingPersistence()
+    }
+
+    func testAutosavePreservesRenamingAndDoesNotRecreateDeletedPreset() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DSPPresetStore(rootURL: root)
+        let controller = AudioDSPController(store: store)
+        await controller.ensureLoaded()
+        let original = try await controller.createPreset(name: "Original")
+        controller.updateConfiguration { $0.inputTrimDB = -3 }
+        _ = try await controller.renamePreset(id: original.presetID, name: "Renamed",
+            expectedPresetRevision: original.revisionString)
+        controller.updateConfiguration { $0.outputTrimDB = -2 }
+        await controller.flushPendingPersistence()
+        let renamed = try await store.preset(id: original.presetID)
+        XCTAssertEqual(renamed.name, "Renamed")
+        XCTAssertEqual(renamed.configuration.inputTrimDB, -3)
+        XCTAssertEqual(renamed.configuration.outputTrimDB, -2)
+
+        try await store.delete(id: renamed.presetID, expectedRevision: renamed.revisionString)
+        let obsoleteEdit = try await store.saveEditedPreset(renamed)
+        XCTAssertNil(obsoleteEdit)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("\(renamed.presetID.uuidString).json").path))
+    }
+
+    func testEachDeviceRemembersItsOwnPresetAndOtherwisePlaysFlat() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (defaults, suite) = deviceDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = DSPPresetStore(rootURL: root)
+        let dsp = AudioDSPController(store: store)
+        await dsp.ensureLoaded()
+        let headphonesSound = try await dsp.savePreset(name: "Headphones", configuration: AudioDSPConfiguration(enabled: true, inputTrimDB: -2))
+        let speakerSound = try await dsp.savePreset(name: "Speakers", configuration: AudioDSPConfiguration(enabled: true, inputTrimDB: -8))
+        let list = TestDeviceList([testDevice("headphones"), testDevice("speakers")])
+        let devices = AudioDSPDeviceController(dsp: dsp, userDefaults: defaults, deviceProvider: list.provider)
+        await devices.ensureLoaded()
+
+        devices.receiveOutputDeviceUID("headphones")
+        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.flatPresetID)
+        try await devices.selectPresetForCurrentDevice(headphonesSound.presetID)
+        dsp.updateConfiguration(commit: true) { $0.inputTrimDB = -3 }
+        devices.receiveOutputDeviceUID("headphones") // Repeated report / unchanged wake.
+        XCTAssertEqual(dsp.selectedPresetID, headphonesSound.presetID)
+
+        devices.receiveOutputDeviceUID("speakers")
+        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.flatPresetID)
+        XCTAssertFalse(dsp.configuration.enabled)
+        // A selection made by hand is remembered for the device.
+        try await devices.selectPresetForCurrentDevice(speakerSound.presetID)
+
+        devices.receiveOutputDeviceUID("headphones")
+        XCTAssertEqual(dsp.selectedPresetID, headphonesSound.presetID)
+        XCTAssertEqual(dsp.configuration.inputTrimDB, -3)
+        devices.receiveOutputDeviceUID("speakers")
+        XCTAssertEqual(dsp.selectedPresetID, speakerSound.presetID)
+        XCTAssertEqual(devices.profiles["headphones"]?.presetID, headphonesSound.presetID)
+        XCTAssertEqual(devices.profiles["speakers"]?.presetID, speakerSound.presetID)
+        await dsp.flushPendingPersistence()
+        let saved = try await store.preset(id: headphonesSound.presetID)
+        XCTAssertEqual(saved.configuration.inputTrimDB, -3)
+    }
+
+    func testAnotherDevicesPresetIsCopiedNeverShared() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (defaults, suite) = deviceDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let dsp = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        await dsp.ensureLoaded()
+        let calibration = EqualLoudnessCalibration(
+            deviceKey: "first", deviceName: "first", axis: .decibels,
+            points: [EqualLoudnessCalibrationPoint(coordinate: -20, bassDB: 0, trebleDB: 0)]
+        )
+        var configuration = AudioDSPConfiguration(enabled: true, inputTrimDB: -4)
+        configuration.equalLoudness = DSPEqualLoudnessStage(enabled: true, calibration: calibration)
+        let preset = try await dsp.savePreset(name: "Exclusive", configuration: configuration)
+        let list = TestDeviceList([testDevice("first"), testDevice("second")])
+        let devices = AudioDSPDeviceController(dsp: dsp, userDefaults: defaults, deviceProvider: list.provider)
+        await devices.ensureLoaded()
+        devices.receiveOutputDeviceUID("first")
+        try await devices.selectPresetForCurrentDevice(preset.presetID)
+
+        devices.receiveOutputDeviceUID("second")
+        XCTAssertEqual(devices.presetOwner(preset.presetID, excluding: devices.currentDevice)?.deviceKey, "first")
+        do {
+            try await devices.selectPresetForCurrentDevice(preset.presetID)
+            XCTFail("A preset cannot belong to two devices")
+        } catch is DSPConfigurationValidationError { }
+        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.flatPresetID)
+
+        try await devices.selectPresetForCurrentDevice(preset.presetID, copyIfOwned: true)
+        let copyID = try XCTUnwrap(dsp.selectedPresetID)
+        XCTAssertNotEqual(copyID, preset.presetID)
+        XCTAssertEqual(devices.profiles["second"]?.presetID, copyID)
+        XCTAssertEqual(devices.profiles["first"]?.presetID, preset.presetID)
+        XCTAssertEqual(dsp.configuration.inputTrimDB, -4)
+        XCTAssertTrue(dsp.configuration.equalLoudness.enabled)
+        XCTAssertNil(dsp.configuration.equalLoudness.calibration)
+        await dsp.flushPendingPersistence()
+    }
+
+    func testDeletingTheCurrentDevicesPresetReturnsItToFlat() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (defaults, suite) = deviceDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let dsp = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        await dsp.ensureLoaded()
+        let bound = try await dsp.savePreset(name: "Bound", configuration: AudioDSPConfiguration(enabled: true, inputTrimDB: -4))
+        let list = TestDeviceList([testDevice("current")])
+        let devices = AudioDSPDeviceController(dsp: dsp, userDefaults: defaults, deviceProvider: list.provider)
+        await devices.ensureLoaded()
+        devices.receiveOutputDeviceUID("current")
+        try await devices.selectPresetForCurrentDevice(bound.presetID)
+        XCTAssertEqual(dsp.configuration.inputTrimDB, -4)
+        try await dsp.deletePreset(id: bound.presetID)
+        XCTAssertNil(devices.profiles["current"])
+        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.flatPresetID)
+        XCTAssertFalse(dsp.configuration.enabled)
+        await dsp.flushPendingPersistence()
+    }
+
+    func testStartupReappliesTheRememberedPresetAndUnknownRouteKeepsTheSound() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (defaults, suite) = deviceDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = DSPPresetStore(rootURL: root)
+        let dsp = AudioDSPController(store: store)
+        await dsp.ensureLoaded()
+        let bound = try await dsp.savePreset(name: "Bound", configuration: AudioDSPConfiguration(enabled: true))
+        let list = TestDeviceList([testDevice("airpods")])
+        let devices = AudioDSPDeviceController(dsp: dsp, userDefaults: defaults, deviceProvider: list.provider)
+        await devices.ensureLoaded()
+        devices.receiveOutputDeviceUID("airpods")
+        try await devices.selectPresetForCurrentDevice(bound.presetID)
+        devices.receiveOutputDeviceUID(nil)
+        XCTAssertNil(devices.currentDevice)
+        XCTAssertEqual(dsp.selectedPresetID, bound.presetID)
+        // Choosing flat by hand on an unknown route is not remembered anywhere.
+        _ = try dsp.selectPreset(id: DSPPresetDocument.flatPresetID)
+        XCTAssertEqual(devices.profiles["airpods"]?.presetID, bound.presetID)
+        await dsp.flushPendingPersistence()
+
+        let restoredDSP = AudioDSPController(store: store)
+        await restoredDSP.ensureLoaded()
+        XCTAssertEqual(restoredDSP.selectedPresetID, DSPPresetDocument.flatPresetID)
+        let restoredDevices = AudioDSPDeviceController(dsp: restoredDSP, userDefaults: defaults, deviceProvider: list.provider)
+        restoredDevices.receiveOutputDeviceUID("airpods")
+        await restoredDevices.ensureLoaded()
+        XCTAssertEqual(restoredDSP.selectedPresetID, bound.presetID)
+        XCTAssertTrue(restoredDSP.configuration.enabled)
+        await restoredDSP.flushPendingPersistence()
+    }
+
+    func testEditingFlatGivesTheDeviceItsOwnPreset() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (defaults, suite) = deviceDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let dsp = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        let list = TestDeviceList([testDevice("headphones"), testDevice("speakers")])
+        let devices = AudioDSPDeviceController(dsp: dsp, userDefaults: defaults, deviceProvider: list.provider)
+        await devices.ensureLoaded()
+        devices.receiveOutputDeviceUID("headphones")
+        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.flatPresetID)
+        dsp.updateConfiguration(commit: true) { $0.inputTrimDB = -5 }
+        let ownID = try XCTUnwrap(devices.profiles["headphones"]?.presetID)
+        XCTAssertNotEqual(ownID, DSPPresetDocument.flatPresetID)
+        XCTAssertEqual(dsp.selectedPresetID, ownID)
+
+        devices.receiveOutputDeviceUID("speakers")
+        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.flatPresetID)
+        XCTAssertNil(devices.profiles["speakers"])
+        devices.receiveOutputDeviceUID("headphones")
+        XCTAssertEqual(dsp.selectedPresetID, ownID)
+        XCTAssertEqual(dsp.configuration.inputTrimDB, -5)
+        await dsp.flushPendingPersistence()
+    }
+
+    func testDataSourceSeparatesRoutesThatShareOneDevice() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (defaults, suite) = deviceDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let dsp = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        await dsp.ensureLoaded()
+        let jackSound = try await dsp.savePreset(name: "Jack", configuration: AudioDSPConfiguration(enabled: true, inputTrimDB: -6))
+        let speaker = testDevice("builtin", dataSource: 0x6973_706B) // 'ispk'
+        let jack = testDevice("builtin", dataSource: 0x6864_706E) // 'hdpn'
+        XCTAssertEqual(speaker.id, "builtin#ispk")
+        XCTAssertEqual(jack.id, "builtin#hdpn")
+        let list = TestDeviceList([jack])
+        let devices = AudioDSPDeviceController(dsp: dsp, userDefaults: defaults, deviceProvider: list.provider)
+        await devices.ensureLoaded()
+        let renderer = NSObject()
+        devices.attachOutputRoute(owner: renderer, refresh: {})
+        devices.receiveOutputDeviceUID("builtin", ownerID: ObjectIdentifier(renderer))
+        try await devices.selectPresetForCurrentDevice(jackSound.presetID)
+
+        // Unplugging the headphones keeps the UID and changes the source.
+        list.devices = [speaker]
+        devices.refreshDevices()
+        XCTAssertEqual(devices.currentDevice?.id, speaker.id)
+        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.flatPresetID)
+        list.devices = [jack]
+        devices.refreshDevices()
+        XCTAssertEqual(dsp.selectedPresetID, jackSound.presetID)
+        XCTAssertEqual(devices.profiles.keys.sorted(), [jack.id])
+        await dsp.flushPendingPersistence()
+    }
+
+    private func deviceDefaults() -> (UserDefaults, String) {
+        let suite = "AudioDSPDeviceTests-\(UUID().uuidString)"
+        return (UserDefaults(suiteName: suite)!, suite)
+    }
+
+    func testRetiredRouteOwnerCannotChangeDeviceOrDetachNewRenderer() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (defaults, suite) = deviceDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let dsp = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        let list = TestDeviceList([testDevice("previous"), testDevice("current"), testDevice("next")])
+        let devices = AudioDSPDeviceController(dsp: dsp, userDefaults: defaults, deviceProvider: list.provider)
+        await devices.ensureLoaded()
+        let previous = NSObject()
+        let current = NSObject()
+        devices.attachOutputRoute(owner: previous, refresh: {})
+        devices.receiveOutputDeviceUID("previous", ownerID: ObjectIdentifier(previous))
+        devices.attachOutputRoute(owner: current, refresh: {})
+        devices.receiveOutputDeviceUID("current", ownerID: ObjectIdentifier(current))
+        devices.detachOutputRoute(owner: previous)
+        devices.receiveOutputDeviceUID("previous", ownerID: ObjectIdentifier(previous))
+        XCTAssertEqual(devices.currentDevice?.uid, "current")
+        devices.receiveOutputDeviceUID("next", ownerID: ObjectIdentifier(current))
+        XCTAssertEqual(devices.currentDevice?.uid, "next")
+        await dsp.flushPendingPersistence()
+    }
+
+    private func testDevice(_ uid: String, dataSource: UInt32? = nil) -> DSPOutputDevice {
+        DSPOutputDevice(
+            key: DSPOutputDeviceKey(uid: uid, dataSource: dataSource),
+            deviceID: 0, name: uid, transportType: 0
+        )
+    }
+
+    /// Stands in for Core Audio's device list.
+    @MainActor
+    private final class TestDeviceList {
+        var devices: [DSPOutputDevice]
+        init(_ devices: [DSPOutputDevice]) { self.devices = devices }
+        var provider: () -> [DSPOutputDevice] { { [unowned self] in self.devices } }
     }
 
     private func temporaryDirectory() -> URL {

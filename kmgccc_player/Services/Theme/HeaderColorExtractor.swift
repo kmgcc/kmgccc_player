@@ -85,7 +85,7 @@ final class HeaderColorExtractor {
         artworkIdentity: String,
         isDark: Bool? = nil
     ) -> (accent: Color, palette: SemanticPalette?, foreground: AppForegroundPalette?, checksum: UInt64)? {
-        let dark = isDark ?? (NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+        let dark = isDark ?? (AppSettings.shared.resolvedColorScheme == .dark)
         let identityCacheKey = "\(artworkIdentity)-\(dark ? "dark" : "light")" as NSString
         if let cached = latestByIdentityCache.object(forKey: identityCacheKey) {
             return renderedResult(from: cached)
@@ -109,7 +109,7 @@ final class HeaderColorExtractor {
         isDark: Bool? = nil
     ) async -> (accent: Color, palette: SemanticPalette)? {
         let checksum = ColorMath.fnv1a(data)
-        let dark = isDark ?? (NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+        let dark = isDark ?? (AppSettings.shared.resolvedColorScheme == .dark)
         let cacheKey = "\(artworkIdentity)-\(checksum)-\(dark ? "dark" : "light")" as NSString
         let identityCacheKey = "\(artworkIdentity)-\(dark ? "dark" : "light")" as NSString
 

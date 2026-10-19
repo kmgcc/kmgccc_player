@@ -36,7 +36,7 @@ final class ThemeStore: ObservableObject {
 
     static let shared = ThemeStore()
 
-    @Published var colorScheme: ColorScheme = .dark
+    @Published var colorScheme: ColorScheme = AppSettings.shared.resolvedColorScheme
     @Published var palette: ThemePalette?
     @Published private(set) var baseColor: Color
     @Published private(set) var accentColor: Color
@@ -80,7 +80,7 @@ final class ThemeStore: ObservableObject {
         qos: .userInitiated
     )
 
-    private var currentArtworkData: Data?
+    private var hasArtworkData: Bool = false
     private var currentArtworkChecksum: UInt64 = 0
     private var lastProcessedChecksum: UInt64 = 0
     private var lastProcessedArtworkIdentity: String?
@@ -88,6 +88,16 @@ final class ThemeStore: ObservableObject {
     private var pendingAssetTrackID: UUID?
     private var pendingArtworkChecksum: UInt64 = 0
     private var averageColorCache: NSColor?
+    /// The swatch engine is heavy and `artworkSwatchColors` runs from view
+    /// bodies, so its last result is reused until its inputs change.
+    private var artworkSwatchCache: ArtworkSwatchCache?
+
+    private struct ArtworkSwatchCache {
+        let isDark: Bool
+        let analysis: ArtworkColorAnalysis
+        let accent: NSColor
+        let colors: [Color]
+    }
 
     private init() {
         // Default theme color: soft warm amber, desaturated for calm light-mode appearance.
@@ -106,9 +116,11 @@ final class ThemeStore: ObservableObject {
         self.accentNSColor = ColorRenderingAdapter.makeNSColor(fallback)
         self.artworkBaseNSColor = ColorRenderingAdapter.makeNSColor(fallback)
         self.selectionFill = ColorRenderingAdapter.makeSwiftUIColor(fallback).opacity(0.14)
+        let initialScheme = AppSettings.shared.resolvedColorScheme
+        self.colorScheme = initialScheme
         self.semanticPalette = SemanticPaletteFactory.make(
             from: .neutralFallback,
-            scheme: .dark,
+            scheme: initialScheme,
             userFallbackAccent: fallback,
             useArtworkTint: AppSettings.shared.globalArtworkTintEnabled
         )
@@ -119,6 +131,14 @@ final class ThemeStore: ObservableObject {
         // Initial palette generation
         Task {
             await refreshPalette(reason: "init")
+        }
+    }
+
+    func updateColorScheme(_ newScheme: ColorScheme, reason: String = "manual") {
+        guard colorScheme != newScheme else { return }
+        colorScheme = newScheme
+        Task {
+            await refreshPalette(reason: reason)
         }
     }
 
@@ -250,7 +270,7 @@ final class ThemeStore: ObservableObject {
             }
             Log.debug("No artwork data, resetting to default", category: .theme)
             clearPendingArtworkTheme()
-            currentArtworkData = nil
+            hasArtworkData = false
             currentArtworkChecksum = 0
             lastProcessedChecksum = 0
             lastProcessedArtworkIdentity = nil
@@ -286,7 +306,7 @@ final class ThemeStore: ObservableObject {
             return
         }
 
-        currentArtworkData = data
+        hasArtworkData = true
         currentArtworkChecksum = checksum
         averageColorCache = nil
         holdCurrentThemeForPendingArtwork(
@@ -505,7 +525,7 @@ final class ThemeStore: ObservableObject {
         // (adjusted average artwork tint) but crushes near-mono OKLCH
         // chroma so grey/black/white covers cannot leak pink/blue/yellow
         // residue into the AMLL surface.
-        if currentArtworkData != nil {
+        if hasArtworkData {
             text = ArtworkColorExtractor.cssRGBA(semantic.lyrics.windowActive, alpha: 0.95)
             active = ArtworkColorExtractor.cssRGBA(semantic.lyrics.windowActive, alpha: 1.0)
             inactive = ArtworkColorExtractor.cssRGBA(
@@ -638,6 +658,50 @@ final class ThemeStore: ObservableObject {
         }
         return color
     }
+
+    /// Distinguishable colours for categorical charts. The first takes the
+    /// accent hue; the rest step evenly around the hue circle at one
+    /// lightness and chroma, so no category reads as more important.
+    func categoricalColors(count: Int) -> [Color] {
+        guard count > 0 else { return [] }
+        let isDark = colorScheme == .dark
+        let startHue = OKColor.nsColorToOKLCH(accentNSColor)?.h ?? 0.2
+        return (0..<count).map { index in
+            let lch = OKColor.OKLCH(
+                l: isDark ? 0.74 : 0.64,
+                c: isDark ? 0.12 : 0.13,
+                h: startHue + CGFloat(index) / CGFloat(count)
+            )
+            return ColorRenderingAdapter.makeSwiftUIColor(OKColor.okLCHToNSColor(lch, alpha: 1))
+        }
+    }
+
+    /// Multi-colour set drawn from the current artwork, using the same swatch
+    /// engine as the art background's small shapes. Falls back to
+    /// `categoricalColors` when the artwork yields fewer than `count` swatches.
+    func artworkSwatchColors(count: Int) -> [Color] {
+        guard count > 0 else { return [] }
+        let isDark = colorScheme == .dark
+        let swatches: [Color]
+        if let cached = artworkSwatchCache,
+           cached.isDark == isDark, cached.analysis == analysis, cached.accent == accentNSColor {
+            swatches = cached.colors
+        } else {
+            swatches = BKColorEngine.makeShapeSwatches(
+                seed: Self.artworkSwatchSeed,
+                extracted: analysis.topPalette,
+                fallback: [accentNSColor],
+                isDark: isDark,
+                analysis: analysis
+            ).colors.map { Color(cgColor: $0) }
+            artworkSwatchCache = ArtworkSwatchCache(
+                isDark: isDark, analysis: analysis, accent: accentNSColor, colors: swatches
+            )
+        }
+        return swatches.count >= count ? Array(swatches.prefix(count)) : categoricalColors(count: count)
+    }
+
+    private static let artworkSwatchSeed: UInt64 = 0x5A3C_91E2_7D4B_C0F1
 
     private nonisolated func computeChecksum(_ data: Data) -> UInt64 {
         ColorMath.fnv1a(data)

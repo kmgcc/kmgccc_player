@@ -10,6 +10,7 @@ import AppKit
 import Combine
 import CoreServices
 import Foundation
+import PopupKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -193,12 +194,8 @@ final class BatchImportProgressDialogController: NSObject, NSWindowDelegate {
         guard presentsWindow else { return }
 
         let windowSize = NSSize(width: 600, height: 560)
-        let panel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.titled, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
+        let (panel, visualEffect) = AppDialogTokens.makePanel(
+            width: windowSize.width, height: windowSize.height, closable: false)
 
         panel.title = ""
         panel.titlebarAppearsTransparent = true
@@ -219,21 +216,12 @@ final class BatchImportProgressDialogController: NSObject, NSWindowDelegate {
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
-        let visualEffect = NSVisualEffectView()
-        visualEffect.material = .popover
-        visualEffect.blendingMode = .behindWindow
-        visualEffect.state = .active
-        visualEffect.frame = NSRect(origin: .zero, size: windowSize)
-        visualEffect.autoresizingMask = [.width, .height]
-        visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = AppDialogTokens.windowCornerRadius
-        visualEffect.layer?.masksToBounds = true
-        panel.contentView = visualEffect
 
         let rootView = BatchImportProgressDialogView(
             viewModel: viewModel,
             onCancel: { [weak self] in self?.requestCancel() }
         )
+        .environmentObject(ThemeStore.shared)
             .frame(width: windowSize.width, height: windowSize.height)
         let hostingView = NSHostingView(rootView: rootView)
         hostingView.frame = NSRect(origin: .zero, size: windowSize)
@@ -365,60 +353,39 @@ private struct BatchImportProgressDialogView: View {
     let onCancel: () -> Void
 
     var body: some View {
-        AppDialogFrame(
-            header: {
-                AppDialogProgressHeader(
-                    title: viewModel.stage.title,
-                    counterText: viewModel.totalCount > 0
-                        ? "\(viewModel.completedCount)/\(viewModel.totalCount)"
-                        : "",
-                    progress: viewModel.progress,
-                    detail: viewModel.detail
-                )
-            },
-            content: {
-                contentView
-            },
-            footer: {
-                AppDialogFooter {
-                    HStack {
-                        Spacer()
-                        Button("取消") {
-                            onCancel()
+        AppPopupFrame(title: viewModel.stage.title, systemImage: "arrow.down.circle", showsFooter: false) {
+            VStack(alignment: .leading, spacing: AppPopupStyle().sectionSpacing) {
+                HStack {
+                    ProgressView(value: viewModel.progress)
+                    if viewModel.totalCount > 0 {
+                        Text("\(viewModel.completedCount)/\(viewModel.totalCount)").monospacedDigit()
+                    }
+                }
+                if !viewModel.detail.isEmpty {
+                    Text(viewModel.detail).foregroundStyle(.secondary).lineLimit(2)
+                }
+                AppPopupScrollRegion {
+                    if viewModel.sortedItems.isEmpty {
+                        Text("歌曲列表将在扫描完成后显示。")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        LazyVStack(spacing: AppPopupStyle().rowSpacing) {
+                            ForEach(viewModel.sortedItems) { item in
+                                BatchImportProgressRowView(item: item)
+                                    .padding(AppPopupStyle().rowPadding)
+                            }
                         }
+                    }
+                } actions: {
+                    Button("取消", action: onCancel)
                         .keyboardShortcut(.cancelAction)
                         .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
                         .disabled(!viewModel.canCancel)
-                    }
                 }
             }
-        )
-    }
-
-    private var contentView: some View {
-        VStack(spacing: 0) {
-            if viewModel.sortedItems.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("歌曲列表将在扫描完成后显示。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 16)
-            } else {
-                ScrollView(.vertical, showsIndicators: true) {
-                    VStack(spacing: 0) {
-                        ForEach(viewModel.sortedItems) { item in
-                            BatchImportProgressRowView(item: item)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 4)
-                        }
-                    }
-                    .padding(.vertical, 8)
-                }
-            }
+        } footer: {
+            EmptyView()
         }
     }
 }

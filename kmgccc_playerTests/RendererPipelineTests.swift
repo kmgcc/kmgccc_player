@@ -106,6 +106,98 @@ final class RendererSampleBufferTests: XCTestCase {
 }
 
 final class RendererTimelineTests: XCTestCase {
+    func testResumeDuringPauseFadePreservesRunningClockAnchor() {
+        let pipeline = RendererPlaybackPipeline()
+        pipeline.setVolume(0)
+        defer { pipeline.stop() }
+        pipeline.setFadeConfiguration(AudioFadeConfiguration(enabled: true))
+        let loaded = expectation(description: "playing timeline loaded")
+        pipeline.onTimelineMutationCommitted = { _, _, _ in loaded.fulfill() }
+        pipeline.load(
+            source: MemoryRendererPCMProvider(sampleRate: 48_000, channels: 2, frames: 0, marker: 0),
+            autoplay: true
+        )
+        wait(for: [loaded], timeout: 2)
+        let anchorMutations = pipeline.synchronizerAnchorMutationCountForTesting
+        let reversed = expectation(description: "pause fade reverses without re-anchoring output")
+        let reverseGate = OneShotGate()
+        let publicationGate = OneShotGate()
+        pipeline.onTransportStateChange = { [weak pipeline] state, _, _ in
+            guard let pipeline else { return }
+            if state.phase == "fadingOut", state.envelopeGain < 0.99, reverseGate.claim() {
+                XCTAssertTrue(state.actualPlaying)
+                pipeline.play()
+            } else if state.phase == "fadingIn", publicationGate.claim() {
+                XCTAssertTrue(state.actualPlaying)
+                XCTAssertGreaterThan(state.envelopeGain, 0)
+                XCTAssertLessThan(state.envelopeGain, 1)
+                XCTAssertEqual(pipeline.synchronizerAnchorMutationCountForTesting, anchorMutations)
+                reversed.fulfill()
+            }
+        }
+        pipeline.pause()
+        wait(for: [reversed], timeout: 2)
+    }
+
+    func testResumeAfterPauseFadeCompletesRestartsClock() {
+        let pipeline = RendererPlaybackPipeline()
+        pipeline.setVolume(0)
+        defer { pipeline.stop() }
+        pipeline.setFadeConfiguration(AudioFadeConfiguration(enabled: true))
+        let loaded = expectation(description: "playing timeline loaded")
+        pipeline.onTimelineMutationCommitted = { _, _, _ in loaded.fulfill() }
+        pipeline.load(
+            source: MemoryRendererPCMProvider(sampleRate: 48_000, channels: 2, frames: 0, marker: 0),
+            autoplay: true
+        )
+        wait(for: [loaded], timeout: 2)
+        let anchorMutations = pipeline.synchronizerAnchorMutationCountForTesting
+        let resumed = expectation(description: "completed pause restarts the clock")
+        let resumeGate = OneShotGate()
+        let publicationGate = OneShotGate()
+        pipeline.onTransportStateChange = { [weak pipeline] state, _, _ in
+            guard let pipeline else { return }
+            if !state.actualPlaying, state.phase == "idle", resumeGate.claim() {
+                XCTAssertEqual(pipeline.synchronizerAnchorMutationCountForTesting, anchorMutations + 1)
+                pipeline.play()
+            } else if state.desiredTransport == "playing", publicationGate.claim() {
+                XCTAssertTrue(state.actualPlaying)
+                XCTAssertEqual(pipeline.synchronizerAnchorMutationCountForTesting, anchorMutations + 2)
+                resumed.fulfill()
+            }
+        }
+        pipeline.pause()
+        wait(for: [resumed], timeout: 3)
+    }
+
+    func testNewTransportCommandInvalidatesAlreadyPublishedStateOnSameTimeline() {
+        let pipeline = RendererPlaybackPipeline()
+        pipeline.setVolume(0)
+        defer { pipeline.stop() }
+        let resumed = expectation(description: "latest play command is published")
+        let gate = OneShotGate()
+        pipeline.onTransportStateChange = { [weak pipeline] state, timeline, command in
+            guard let pipeline else { return }
+            if state.desiredTransport == "paused", gate.claim() {
+                XCTAssertTrue(pipeline.isTransportCommandCurrent(command))
+                pipeline.play()
+                // A callback queued for MainActor must reject this old pause
+                // even though no track load or seek replaced the timeline.
+                XCTAssertTrue(pipeline.isTimelineCurrent(timeline))
+                XCTAssertFalse(pipeline.isTransportCommandCurrent(command))
+            } else if state.desiredTransport == "playing" {
+                XCTAssertTrue(pipeline.isTransportCommandCurrent(command))
+                XCTAssertTrue(state.actualPlaying)
+                resumed.fulfill()
+            }
+        }
+        pipeline.load(
+            source: MemoryRendererPCMProvider(sampleRate: 48_000, channels: 2, frames: 0, marker: 0),
+            autoplay: false
+        )
+        wait(for: [resumed], timeout: 2)
+    }
+
     func testLoadSeekFailureIsScopedAndDoesNotCommitOrEnqueue() {
         let pipeline = RendererPlaybackPipeline()
         pipeline.setVolume(0)
@@ -321,7 +413,8 @@ final class RendererTimelineTests: XCTestCase {
         pipeline.applyDSP(
             AudioDSPConfiguration(
                 enabled: true, inputTrimDB: -3,
-                headroom: DSPHeadroomConfiguration(mode: .off)
+                headroom: DSPHeadroomConfiguration(mode: .off),
+                limiter: DSPLimiterConfiguration(enabled: false)
             ),
             revision: "recovered-output-test", requestID: requestID
         )
@@ -373,7 +466,8 @@ final class RendererTimelineTests: XCTestCase {
             AudioDSPConfiguration(
                 enabled: true,
                 headroom: DSPHeadroomConfiguration(mode: .off),
-                nodes: [node]
+                nodes: [node],
+                limiter: DSPLimiterConfiguration(enabled: false)
             ),
             revision: "gapless-replay-test",
             requestID: requestID

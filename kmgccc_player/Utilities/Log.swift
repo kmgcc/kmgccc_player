@@ -28,6 +28,7 @@ enum LogCategory: String, CaseIterable, Sendable {
     case ui = "ui"
     case playback = "playback"
     case telemetry = "telemetry"
+    case background = "background"
     case file = "file"
     case general = "general"
 }

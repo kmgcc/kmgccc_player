@@ -7,6 +7,7 @@
 
 import AppKit
 import ImageIO
+import PopupKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -43,7 +44,7 @@ struct TrackInfoEditorCore: View {
     let saveTitle: LocalizedStringKey
     let descriptionFallback: String?
     let showsDetailedMetadata: Bool
-    let onSave: () -> Void
+    let onSave: () -> Bool
     let onCancel: () -> Void
     let onClearOverride: (() -> Void)?
     let onRestoreAutomatic: (() -> Void)?
@@ -72,6 +73,7 @@ struct TrackInfoEditorCore: View {
     @State private var isMetadataLookupInFlight = false
     @State private var metadataLookupMessage: String?
     @State private var lyricsValidationMessage: String?
+    @State private var saveFailureMessage: String?
     @State private var coverFetchTask: Task<Void, Never>?
     @State private var metadataFetchTask: Task<Void, Never>?
     @State private var artworkPreviewTask: Task<Void, Never>?
@@ -92,21 +94,25 @@ struct TrackInfoEditorCore: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            headerView
-
-            Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    editorScrollContent
-                }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        AppPopupFrame(
+            title: mode == .local ? String(localized: "edit.track.title") : "编辑外部播放覆盖信息",
+            systemImage: "music.note",
+            onClose: {
+                onCancel(); dismiss()
             }
-
-            Divider()
-
+        ) {
+            VStack(alignment: .leading, spacing: 8) {
+                AppPopupScrollRegion {
+                    VStack(alignment: .leading, spacing: AppPopupStyle().sectionSpacing) { editorScrollContent }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if let saveFailureMessage {
+                    Text(saveFailureMessage)
+                        .font(.caption).foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        } footer: {
             footerView
         }
         .frame(width: 550, height: 750)
@@ -192,29 +198,6 @@ struct TrackInfoEditorCore: View {
         }
     }
 
-    private var headerView: some View {
-        HStack {
-            Text(mode == .local ? "edit.track.title" : "编辑外部播放覆盖信息")
-                .font(.title2)
-                .fontWeight(.bold)
-
-            Spacer()
-
-            GlassIconButton(
-                systemImage: "xmark",
-                size: GlassStyleTokens.headerControlHeight,
-                iconSize: GlassStyleTokens.headerStandardIconSize,
-                isPrimary: false,
-                help: "关闭",
-                surfaceVariant: .defaultToolbar
-            ) {
-                onCancel()
-                dismiss()
-            }
-        }
-        .padding()
-    }
-
     private var externalNoticeSection: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "info.circle.fill")
@@ -228,7 +211,7 @@ struct TrackInfoEditorCore: View {
             }
         }
         .padding(12)
-        .background(.thinMaterial)
+        .appPopupContentBackground()
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -285,25 +268,24 @@ struct TrackInfoEditorCore: View {
                         Button(LocalizedStringKey("edit.track.choose_image")) {
                             showingArtworkPicker = true
                         }
-                        .buttonStyle(.bordered)
-                        .clipShape(Capsule())
+                        .buttonStyle(AppPanelButtonStyle())
+                        .font(.system(size: 13, weight: .medium))
                     }
 
                     Button(LocalizedStringKey("查找封面")) {
                         fetchCover()
                     }
-                    .buttonStyle(.bordered)
-                    .clipShape(Capsule())
+                    .buttonStyle(AppPanelButtonStyle())
+                    .font(.system(size: 13, weight: .medium))
                     .disabled(coverCoordinator?.isLoading == true)
 
                     if artworkData != nil {
-                        Button(LocalizedStringKey("edit.track.remove_artwork")) {
+                        Button(LocalizedStringKey("edit.track.remove_artwork"), role: .destructive) {
                             artworkData = nil
                             coverCoordinator?.clear()
                         }
-                        .buttonStyle(.bordered)
-                        .tint(.red)
-                        .clipShape(Capsule())
+                        .buttonStyle(AppPanelButtonStyle())
+                        .font(.system(size: 13, weight: .medium))
                     }
 
                     if let error = coverCoordinator?.error {
@@ -443,7 +425,7 @@ struct TrackInfoEditorCore: View {
                 }
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.thinMaterial)
+                .appPopupContentBackground()
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
@@ -458,8 +440,8 @@ struct TrackInfoEditorCore: View {
                     } label: {
                         Label("查找元数据", systemImage: "sparkle.magnifyingglass")
                     }
-                    .buttonStyle(.bordered)
-                    .clipShape(Capsule())
+                    .buttonStyle(AppPanelButtonStyle())
+                    .font(.system(size: 13, weight: .medium))
                     .disabled(isMetadataLookupInFlight)
 
                     if isMetadataLookupInFlight {
@@ -498,6 +480,11 @@ struct TrackInfoEditorCore: View {
                         labeledField("厂牌 / 公司", prompt: "厂牌或公司", text: $labelOrCompany)
 
                         metadataReadonlySection
+
+                        if let trackID = lyricsSearchTrack?.id {
+                            TrackLoudnessMetadataSection(trackIDs: [trackID])
+                                .padding(.top, 4)
+                        }
                     }
                     .padding(.top, 10)
                 }
@@ -572,12 +559,8 @@ struct TrackInfoEditorCore: View {
                             .allowsHitTesting(false)
                     }
                 }
-                .background(.thinMaterial)
+                .appPopupContentBackground()
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(Color.secondary.opacity(0.22), lineWidth: 1)
-                }
                 .padding(.trailing, 18)
             }
         )
@@ -622,8 +605,7 @@ struct TrackInfoEditorCore: View {
                 } label: {
                     Label("AMLL DB", systemImage: "arrow.up.right.square")
                 }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
+                .buttonStyle(AppPanelButtonStyle())
                 .font(.caption)
 
                 Button {
@@ -631,24 +613,20 @@ struct TrackInfoEditorCore: View {
                 } label: {
                     Label("TTML Tool", systemImage: "hammer.fill")
                 }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
+                .buttonStyle(AppPanelButtonStyle())
                 .font(.caption)
 
                 Button(LocalizedStringKey("edit.track.import_lyrics")) {
                     showingLyricsPicker = true
                 }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
+                .buttonStyle(AppPanelButtonStyle())
                 .font(.caption)
 
                 if mode == .local || mode == .externalPlayback {
                     Button("清除歌词", role: .destructive) {
                         lyricsText = ""
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                    .clipShape(Capsule())
+                    .buttonStyle(AppPanelButtonStyle())
                     .font(.caption)
                     .disabled(lyricsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
@@ -718,8 +696,7 @@ struct TrackInfoEditorCore: View {
                 Button(LocalizedStringKey("edit.track.reset")) {
                     lyricsTimeOffsetMs = 0
                 }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
+                .buttonStyle(AppPanelButtonStyle())
                 .font(.caption)
             }
 
@@ -754,13 +731,12 @@ struct TrackInfoEditorCore: View {
     }
 
     private var footerView: some View {
-        HStack {
+        AppPopupActionGroup {
             Button(LocalizedStringKey("edit.track.cancel")) {
                 onCancel()
                 dismiss()
             }
-            .buttonStyle(.bordered)
-            .clipShape(Capsule())
+            .buttonStyle(AppDialogGlassButtonStyle())
             .keyboardShortcut(.escape)
 
             if let onClearOverride {
@@ -768,26 +744,26 @@ struct TrackInfoEditorCore: View {
                     onClearOverride()
                     dismiss()
                 }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
+                .buttonStyle(AppDialogGlassButtonStyle(kind: .destructive))
             }
 
-            Spacer()
 
             Button(saveTitle) {
                 if let message = LyricsFormatSupport.validateManualTTML(lyricsText) {
                     lyricsValidationMessage = message
                     return
                 }
-                onSave()
-                dismiss()
+                saveFailureMessage = nil
+                if onSave() {
+                    dismiss()
+                } else {
+                    saveFailureMessage = "无法保存，请重试。"
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .clipShape(Capsule())
+            .buttonStyle(AppDialogGlassButtonStyle(kind: .primary))
             .keyboardShortcut(.return)
             .disabled(!canSave || effectiveLyricsValidationError != nil)
         }
-        .padding()
     }
 
     private func scheduleLyricsValidation(

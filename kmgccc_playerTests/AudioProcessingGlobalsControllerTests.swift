@@ -37,29 +37,19 @@ final class AudioProcessingGlobalsControllerTests: XCTestCase {
         XCTAssertEqual(reloaded.configuration, candidate)
     }
 
-    func testReferenceIsStoredPerDeviceAndIgnoredForExternalPlayback() throws {
+    func testRuntimeStateIsIgnoredForExternalPlayback() throws {
         let (defaults, suiteName, storageKey) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let controller = AudioProcessingGlobalsController(
             userDefaults: defaults,
             storageKey: storageKey
         )
-        controller.publishRuntimeState(AudioProcessingRuntimeState(
-            outputDeviceUID: "device-A",
-            appGain: 0.5
-        ))
-        _ = try controller.useCurrentVolumeAsReference()
-        let expectedReferenceDB = 20 * log10(0.5)
-        XCTAssertEqual(controller.deviceReference(for: "device-A")!, expectedReferenceDB, accuracy: 1e-8)
-        XCTAssertEqual(controller.equalLoudnessContext.referenceDB!, expectedReferenceDB, accuracy: 1e-8)
+        controller.publishRuntimeState(AudioProcessingRuntimeState(outputDeviceUID: "device-A"))
+        XCTAssertEqual(controller.runtimeState.outputDeviceUID, "device-A")
 
         controller.setSourceIsLocal(false)
-        controller.publishRuntimeState(AudioProcessingRuntimeState(
-            outputDeviceUID: "stale-device",
-            appGain: 0.25
-        ))
+        controller.publishRuntimeState(AudioProcessingRuntimeState(outputDeviceUID: "stale-device"))
         XCTAssertNil(controller.runtimeState.outputDeviceUID)
-        XCTAssertEqual(controller.configuration.deviceReferences["device-A"], expectedReferenceDB)
 
         controller.detachPlayback()
         XCTAssertNil(controller.applyConfiguration)
@@ -74,10 +64,24 @@ final class AudioProcessingGlobalsControllerTests: XCTestCase {
             storageKey: storageKey
         )
         var invalid = controller.configuration
-        invalid.loudness.maxBoostDB = 24.1
+        invalid.loudness.targetLUFS = -24
         XCTAssertThrowsError(try controller.apply(invalid))
         XCTAssertEqual(controller.configuration, AudioProcessingGlobals())
         XCTAssertNil(defaults.data(forKey: storageKey))
+    }
+
+    func testFadeTogglePersistsAcrossReload() throws {
+        let (defaults, suiteName, storageKey) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let controller = AudioProcessingGlobalsController(userDefaults: defaults, storageKey: storageKey)
+        var candidate = controller.configuration
+        candidate.fade.enabled = true
+        _ = try controller.apply(candidate)
+        let reloaded = AudioProcessingGlobalsController(userDefaults: defaults, storageKey: storageKey)
+        XCTAssertTrue(reloaded.configuration.fade.enabled)
+        XCTAssertEqual(reloaded.configuration.fade.playFadeMs, 320)
+        XCTAssertEqual(reloaded.configuration.fade.pauseFadeMs, 700)
+        XCTAssertEqual(reloaded.configuration.fade.floorDB, -40)
     }
 
     private func makeDefaults() -> (UserDefaults, String, String) {

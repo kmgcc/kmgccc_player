@@ -76,8 +76,8 @@ actor ArtworkAssetStore {
     }()
     private let accentColorCache: NSCache<NSString, CachedArtworkAccent> = {
         let cache = NSCache<NSString, CachedArtworkAccent>()
-        cache.countLimit = 100_000
-        cache.totalCostLimit = 8 * 1024 * 1024
+        cache.countLimit = 1_000
+        cache.totalCostLimit = 2 * 1024 * 1024
         return cache
     }()
     private var inProgressTokens: [String: UUID] = [:]
@@ -103,11 +103,17 @@ actor ArtworkAssetStore {
         accentColorCache.removeAllObjects()
     }
 
+    func trimCachedImages() {
+        fullImageCache.removeAllObjects()
+    }
+
+    /// Drops cached full images. Extractions already running still deliver to
+    /// the views waiting on them: those views (the library returning after Now
+    /// Playing closes, a skin that just mounted) do not request again, so a nil
+    /// left them without artwork. The generation keeps the results out of the cache.
     func purgeHydratedImages() {
         fullImageGeneration &+= 1
         fullImageCache.removeAllObjects()
-        fullImageInProgressTokens.removeAll()
-        resumeAllFullImageWaiters(returning: nil)
     }
 
     func clearTrackDeletionResidue() {
@@ -359,16 +365,15 @@ actor ArtworkAssetStore {
         result: NSImage?
     ) {
         guard fullImageInProgressTokens[key] == operationToken else { return }
-        let finalResult = generation == fullImageGeneration ? result : nil
-        if let finalResult {
+        if let result, generation == fullImageGeneration {
             fullImageCache.setObject(
-                finalResult,
+                result,
                 forKey: cacheKey,
-                cost: Self.estimatedCost(for: finalResult)
+                cost: Self.estimatedCost(for: result)
             )
         }
         fullImageInProgressTokens.removeValue(forKey: key)
-        resumeFullImageWaiters(for: key, returning: finalResult)
+        resumeFullImageWaiters(for: key, returning: result)
     }
 
     private func cancelMetadataWaiter(for key: String, waiterID: UUID) {

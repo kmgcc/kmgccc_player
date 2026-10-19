@@ -629,7 +629,10 @@ final class LocalLibraryService {
         case let .managed(path):
             return TrackMediaLocator.isSafeRelativePath(path)
         case let .referenced(locator):
-            return !locator.fileBookmarkData.isEmpty || !locator.sourceMemberships.isEmpty
+            return !locator.fileBookmarkData.isEmpty
+                || !locator.sourceMemberships.isEmpty
+                || !locator.lastKnownPath.isEmpty
+                || !locator.alternateLocations.isEmpty
         }
     }
 
@@ -2149,6 +2152,9 @@ final class LocalLibraryService {
             persistedSidecar.trackSortKey = sidecar.trackSortKey ?? existing?.trackSortKey
             persistedSidecar.trackSortOrder = sidecar.trackSortOrder ?? existing?.trackSortOrder
             persistedSidecar.customTrackOrder = sidecar.customTrackOrder ?? existing?.customTrackOrder
+            // Writers that do not carry the album's loudness switch keep it;
+            // `setAlbumLoudnessOverride` is the one place that clears it.
+            persistedSidecar.loudnessUnified = sidecar.loudnessUnified ?? existing?.loudnessUnified
             let previousArtworkFileName = existing?.artworkFileName
             let metaURL = paths.albumMetaURL(for: sidecar.id)
             let data = try encoder.encode(persistedSidecar)
@@ -2203,6 +2209,23 @@ final class LocalLibraryService {
             return true
         } catch {
             Log.error("Failed to update album sort preference: \(error)", category: .library)
+            return false
+        }
+    }
+
+    /// Stores the album's "专辑内响度统一" switch. Nil returns the album to
+    /// the automatic judgement.
+    @discardableResult
+    func setAlbumLoudnessOverride(albumID: UUID, unified: Bool?) -> Bool {
+        guard let sidecar = loadAlbumSidecar(albumID: albumID) else { return false }
+        var updated = sidecar
+        updated.loudnessUnified = unified
+        do {
+            try fileManager.createDirectory(at: paths.albumFolderURL(for: albumID), withIntermediateDirectories: true)
+            try encoder.encode(updated).write(to: paths.albumMetaURL(for: albumID), options: .atomic)
+            return true
+        } catch {
+            Log.error("Failed to update album loudness switch: \(error)", category: .library)
             return false
         }
     }

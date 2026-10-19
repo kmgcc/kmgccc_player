@@ -47,7 +47,7 @@ flowchart TD
 
 本地播放的命令入口是 `PlaybackCoordinator`。界面调用它的 play、pause、seek、next、previous 等方法，当来源不是本地时，播放某个曲目会先切回 `.local`。协调器把具体操作交给 `PlayerViewModel`，后者持有当前曲目、队列、播放顺序、进度、音量和播放态，并调用 `AVAudioPlaybackService`。服务通过唯一的 `RendererPlaybackPipeline` 驱动 `AVSampleBufferAudioRenderer` 和 `AVSampleBufferRenderSynchronizer`；解码、segment、PTS、输出设备切换与恢复在管线串行队列执行。managed locator 由 captured `LibraryPaths` 解析；referenced locator 通过 source/file bookmark 和成对的 scope lease 解析。
 
-Renderer 保持源采样率与声道数，并向系统声明可用的空间化格式。输出设备 UID 绑定设备时钟；HAL 延迟只用于诊断。可视化延迟开关通过时间线保留零或固定 180 ms lead。无缝播放追加下一 segment，正常边界不重建输出对象。Renderer 连续故障只尝试一次重建；无法恢复或源读取失败时停止该请求，保留曲目与位置供用户重试。DSP 接入见 [实施计划](audio-dsp-implementation-plan.md)，当前输出统一阶段不包含效果处理。
+Renderer 保持源采样率与声道数，并向系统声明可用的空间化格式。输出设备 UID 绑定设备时钟；HAL 延迟只用于诊断。可视化延迟开关通过时间线保留零或固定 180 ms lead。无缝播放追加下一 segment，正常边界不重建输出对象。Renderer 连续故障只尝试一次重建；无法恢复或源读取失败时停止该请求，保留曲目与位置供用户重试。DSP 效果链由可编程节点接入渲染管线，脚本语言见 [DSP 脚本语言](audio-dsp-script-language.md)，当前输出统一阶段不包含效果处理。
 
 未来远程 catalog 不复用本地 bookmark/locator 伪装网络流。它应使用独立媒体表示、backend 与 playback adapter；当前 session/backend factory 和统一展示模型是预留边界，不包含未实现的远程 API 或行为承诺。
 
@@ -117,7 +117,7 @@ TTML 歌词文本
 
 有 `scene` 的皮肤由 `SkinSceneHost` 使用实际视口呈现，作者可以使用任意 SwiftUI 场景或 JSON 原生组合树。`SkinComponentCatalog` 登记可选封面、背景、文字、歌词、播放控制与共享可视化；新增组件不扩充宿主的皮肤 ID 分支。`SkinNativeLyricsMount` 以普通布局容器借用唯一歌词 view，激活和配置仍归原有 manager；作者覆盖叠在 App 配置之后，离开后恢复最新基础设置。
 
-五个内置模块与用户安装项共用 `PackagedSkin` 和同一 catalog。`registerBundled` 同时登记完整模块及封面、背景、装饰部件；原生布局工厂保留为既有外观的兼容适配。`SkinPackageStore` 在服务层管理普通 ZIP、安装资源、身份冲突与导出，设置面板呈现导入、导出、重载、删除和少量声明参数。同 ID 更新通过 catalog revision 使宿主会话失效；失败重载保留原登记。删除后相关选择恢复默认内置皮肤，播放继续。Web、开发目录监听与市场按[演进计划](skin-system-evolution-plan.md)继续推进；当前接入和实际验证边界见 [P3 实施记录](skin-system-p3.md)，作者入口见[原生皮肤开发](skin-authoring-native.md)。
+五个内置模块与用户安装项共用 `PackagedSkin` 和同一 catalog。`registerBundled` 同时登记完整模块及封面、背景、装饰部件；原生布局工厂保留为既有外观的兼容适配。`SkinPackageStore` 在服务层管理普通 ZIP、安装资源、身份冲突与导出，设置面板呈现导入、导出、重载、删除和少量声明参数。同 ID 更新通过 catalog revision 使宿主会话失效；失败重载保留原登记。删除后相关选择恢复默认内置皮肤，播放继续。Web、开发目录监听与市场在后续阶段推进，作者入口见[原生皮肤开发](skin-authoring-native.md)。
 
 修改皮肤时先确认它支持普通 Now Playing、全屏或两者；修改全屏窗口行为时，不要把系统全屏、窗口模拟全屏和普通窗口三条路径合为一个布尔判断。
 

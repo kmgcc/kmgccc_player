@@ -1,6 +1,6 @@
 # DSP 脚本语言 v1
 
-语言由 App 内置的 Swift 编译器与固定内存 VM 执行。其配置是 DSP 预设的一部分，保存草稿与实际生效代码分别管理。实现与验收状态见 [P6 实施记录](audio-dsp-p6-implementation.md)。
+语言由 App 内置的 Swift 编译器与固定内存 VM 执行。其配置是 DSP 预设的一部分，保存草稿与实际生效代码分别管理。
 
 ## 基本结构
 
@@ -61,7 +61,7 @@ process { output = input > 0 ? sqrt(input) : input; }
 
 ## 声道和延迟
 
-脚本默认 `fullRange`，只处理完整已知布局的非 LFE 声道；未知布局会报告准备旁路。可明确选择 `allChannels`。不要把编号 0/1 自动解释为任何多声道来源的前置左右声道，读取真实格式标签后再决定映射。
+脚本的声道范围跟随源格式：布局完整已知时处理非 LFE 声道，未知布局时处理全部声道。设置界面不暴露声道范围，请求的范围仅在源能支持时生效，不支持时放宽到全部声道而不是旁路。不要把编号 0/1 自动解释为任何多声道来源的前置左右声道，读取真实格式标签后再决定映射。
 
 ```text
 latency 64;
@@ -108,4 +108,4 @@ custom samples 是有限 Float32 范围内的 interleaved PCM，样本数须整�
 
 测试报告实际 fault 和诊断，不因旁路输出有限而隐藏故障。`elapsedMilliseconds` 是含信号生成/统计的实际用时；`estimatedProcessingMilliseconds` 是预算等价时间，不是 CPU 预测。响应点是摘要，复杂非线性或时变脚本不能仅靠它证明音质。
 
-资源上限、前瞻成本、编译验证状态及 P7 数值/设备验收见 [P6 实施记录](audio-dsp-p6-implementation.md)。
+资源上限与前瞻成本在编译期校验。

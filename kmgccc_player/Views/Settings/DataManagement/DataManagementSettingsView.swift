@@ -16,15 +16,20 @@ struct DataManagementSettingsView: View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsHeaderLabel("数据", systemImage: "arrow.counterclockwise.circle")
             SettingsTabSelector(
-                tabs: ["音乐", "应用数据"],
+                tabs: ["音乐", "应用数据", "后台任务", "存储空间"],
                 selectedTab: $selectedTab,
                 fillsWidth: true
             )
 
-            if selectedTab == 0 {
+            switch selectedTab {
+            case 0:
                 MusicSettingsView()
-            } else {
+            case 1:
                 ApplicationDataSettingsView()
+            case 2:
+                BackgroundTasksSettingsView()
+            default:
+                StorageSettingsView()
             }
         }
     }
@@ -34,7 +39,6 @@ private struct ApplicationDataSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
-    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
@@ -43,11 +47,7 @@ private struct ApplicationDataSettingsView: View {
     @AppStorage(CrashReportPreferences.automaticUploadKey) private var automaticCrashReportUploadEnabled = true
 
     @State private var showResetDataAlert: Bool = false
-    @State private var showClearIndexCacheAlert: Bool = false
-    @State private var showClearLibraryCacheAlert: Bool = false
-    @State private var isClearingLibraryCaches: Bool = false
     @State private var isMoreSettingsExpanded: Bool = false
-    @State private var cacheUsageSummary: DiskCacheUsageSummary?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -119,12 +119,9 @@ private struct ApplicationDataSettingsView: View {
                 .accessibilityLabel(isMoreSettingsExpanded ? "收起更多设置" : "展开更多设置")
             }) {
                 if isMoreSettingsExpanded {
-                    VStack(alignment: .leading, spacing: 16) {
-                        cacheManagementControls
-                        musicPreferenceResetControl
-                    }
+                    musicPreferenceResetControl
                 } else {
-                    Text("包含缓存清理与播放统计数据重置")
+                    Text("包含播放统计数据重置")
                         .settingsDescriptionStyle()
                 }
             }
@@ -152,24 +149,6 @@ private struct ApplicationDataSettingsView: View {
         } message: {
             Text("会清除应用偏好、界面布局、播放状态和自定义资料库位置设置。不会删除音乐资料库文件，也不会清除资料库内的歌曲、播放列表、艺人、专辑、自定义排序或手动编辑内容。")
         }
-        .alert("清除索引缓存？", isPresented: $showClearIndexCacheAlert) {
-            Button("取消", role: .cancel) {}
-            Button("清除", role: .destructive) {
-                Task {
-                    await libraryVM.clearIndexCacheAndRebuild()
-                }
-            }
-        } message: {
-            Text("将清空索引缓存并立即重新扫描音乐资料库，不会删除歌曲文件或播放列表。")
-        }
-        .alert("清理运行缓存？", isPresented: $showClearLibraryCacheAlert) {
-            Button("取消", role: .cancel) {}
-            Button("清除", role: .destructive) {
-                clearLibraryCaches()
-            }
-        } message: {
-            Text("将清除封面缩略图、联网搜索缓存、外部播放自动缓存、颜色缓存、Home 缓存和过期导入暂存。不会删除歌曲或手动外部播放规则。")
-        }
     }
 
     private func resetAppDataExceptMusicLibrary() {
@@ -179,30 +158,6 @@ private struct ApplicationDataSettingsView: View {
         UserDefaults.standard.removePersistentDomain(forName: bundleIdentifier)
         preservedTelemetryState.restore()
         UserDefaults.standard.synchronize()
-    }
-
-    private func clearLibraryCaches() {
-        guard !isClearingLibraryCaches else { return }
-        isClearingLibraryCaches = true
-        Task {
-            await CacheManager.clearLibraryCaches(
-                storageLocations: cacheServices.storageLocations,
-                trackArtworkCache: cacheServices.trackArtworkCache,
-                artworkDerivativeStore: cacheServices.artworkDerivativeStore,
-                amllDBService: cacheServices.amllDBService,
-                externalPlaybackMetadataStore: cacheServices.externalPlaybackMetadataStore
-            )
-            playbackCoordinator.clearExternalPlaybackRuntimeCaches()
-            await refreshCacheUsage()
-            isClearingLibraryCaches = false
-        }
-    }
-
-    private func refreshCacheUsage() async {
-        let summary = await CacheManager.calculateLibraryDiskCacheUsage(storage: cacheServices.storageLocations)
-        await MainActor.run {
-            self.cacheUsageSummary = summary
-        }
     }
 
     private var telemetryEnabledBinding: Binding<Bool> {
@@ -224,50 +179,6 @@ private struct ApplicationDataSettingsView: View {
                 MetricKitDiagnosticService.shared.automaticUploadPreferenceDidChange(newValue)
             }
         )
-    }
-
-    private var cacheUsageDescription: String {
-        if let summary = cacheUsageSummary {
-            return "已占用 \(summary.formattedTotalSize)（上限约 450 MB），包含封面缩略图、外部播放与歌词缓存"
-        }
-        return "包含可再生成的封面缩略图、歌词索引、外部播放自动缓存、颜色、Home 与导入暂存缓存"
-    }
-
-    private var cacheManagementControls: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 8) {
-                Button("清除索引缓存") {
-                    showClearIndexCacheAlert = true
-                }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
-
-                Text("重新建立音乐资料库的索引，供 app 内显示使用")
-                    .settingsDescriptionStyle()
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Button(role: .destructive) {
-                    showClearLibraryCacheAlert = true
-                } label: {
-                    if isClearingLibraryCaches {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Text("清理运行缓存")
-                    }
-                }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
-                .disabled(isClearingLibraryCaches)
-
-                Text(cacheUsageDescription)
-                    .settingsDescriptionStyle()
-            }
-        }
-        .task {
-            await refreshCacheUsage()
-        }
     }
 
     private var musicPreferenceResetControl: some View {

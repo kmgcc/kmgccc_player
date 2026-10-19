@@ -41,6 +41,8 @@ struct MiniPlayerView: View {
     @State private var isProgressHovering = false
     @State private var artworkImage: NSImage?
     @State private var isPlaybackModeExpanded = false
+    @State private var isVolumeHovering = false
+    @State private var isVolumeAdjusting = false
     @State private var isShowingExternalMatchEditor = false
     @State private var showPlaybackModeRetapTip = false
 
@@ -54,12 +56,13 @@ struct MiniPlayerView: View {
         let policy = configuredMotionPolicy.resolving(
             accessibilityReduceMotion: reduceMotion
         )
-        return policy.animation(for: motionTokens[.layout])
+        return policy.animation(for: motionTokens.miniPlayerLayout)
     }
     private var trackInfoIdealWidth: CGFloat { 100 }
     private var trackInfoMinWidth: CGFloat { 32 }
     private var trackInfoMaxWidth: CGFloat { 136 }
     private var progressAreaMinWidth: CGFloat { 96 }
+    private var isVolumeExpanded: Bool { isVolumeHovering || isVolumeAdjusting }
 
     var body: some View {
         let _ = ContextMenuDiagnostics.markBodyUpdate(
@@ -146,7 +149,7 @@ struct MiniPlayerView: View {
                 .frame(minWidth: progressAreaMinWidth, maxWidth: .infinity)
                 .layoutPriority(0)
 
-            // MARK: - Right: Volume Slider
+            // MARK: - Right: Hover-expanding volume control
             MiniPlayerPresentationReader { presentation in
                 volumeView(presentation: presentation)
             }
@@ -155,6 +158,7 @@ struct MiniPlayerView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 8)
             .frame(height: GlassStyleTokens.miniPlayerHeight)
+            .clipShape(Capsule())
             .liquidGlassPill(
                 colorScheme: colorScheme,
                 accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
@@ -165,7 +169,6 @@ struct MiniPlayerView: View {
             .contentShape(Capsule())
             .onTapGesture {}
         }
-        .motionAnimation(.layout, value: isPlaybackModeExpanded)
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
                 .environmentObject(themeStore)
@@ -180,6 +183,8 @@ struct MiniPlayerView: View {
             }
         }
         .onDisappear {
+            isVolumeHovering = false
+            isVolumeAdjusting = false
             FeatureTipPresentationCoordinator.shared.cancelPending(
                 key: FeatureTipCatalog.PlaybackModeRetap.key
             )
@@ -224,6 +229,8 @@ struct MiniPlayerView: View {
                     mode: currentPlaybackMode(for: presentation),
                     isEnabled: isEnabled,
                     isExpanded: isPlaybackModeExpanded,
+                    expansionWidths: playbackModeCollapsedWidth...playbackModeExpandedWidth,
+                    isolatesGeometryAnimation: false,
                     selectedColor: controlPrimaryColor,
                     unselectedColor: controlPrimaryColor.opacity(0.62),
                     pillTintColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
@@ -241,6 +248,8 @@ struct MiniPlayerView: View {
                     mode: presentation.appleMusicPlaybackMode ?? .sequence,
                     isEnabled: isEnabled,
                     isExpanded: isPlaybackModeExpanded,
+                    expansionWidths: playbackModeCollapsedWidth...150,
+                    isolatesGeometryAnimation: false,
                     selectedColor: controlPrimaryColor,
                     unselectedColor: controlPrimaryColor.opacity(0.62),
                     pillTintColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
@@ -265,7 +274,7 @@ struct MiniPlayerView: View {
                 }
                 return
             }
-            withAnimation(layoutAnimation) {
+            FullscreenBottomControlsAnimationPolicy.animateGeometry(with: layoutAnimation) {
                 isPlaybackModeExpanded = hovering
             }
         }
@@ -403,6 +412,7 @@ struct MiniPlayerView: View {
                 : .miniPlayer,
             adaptsWideVisualizationSegments: true,
             usesVisualizationAsCompactProgress: true,
+            isolatesGeometryAnimation: false,
             progress: progressDisplayTime(for: presentation),
             duration: presentation.duration,
             isSeekEnabled: presentation.isSeekEnabled,
@@ -519,31 +529,76 @@ struct MiniPlayerView: View {
 
     private func volumeView(presentation: NowPlayingPresentation) -> some View {
         let isEnabled = presentation.isVolumeControlEnabled
-        return HStack(spacing: 6) {
-            Button { toggleMute(presentation: presentation) } label: {
-                Image(systemName: volumeIcon(for: presentation))
-                    .font(.caption)
-                    .foregroundStyle(isEnabled ? Color.secondary : Color.secondary.opacity(0.4))
-                    .frame(width: 20, height: 20)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!isEnabled)
-            .help(presentation.volume == 0 ? "Unmute" : "Mute")
+        return MiniPlayerInterpolatedContent(
+            isVolumeExpanded ? 1 : 0,
+            clampsFraction: false,
+            isolatesGeometryAnimation: false
+        ) { phase in
+            let sliderWidth = max(0, 86 * phase)
+            let sliderOpacity = min(1, max(0, phase))
+            HStack(spacing: 0) {
+                VolumeSlider(
+                    volume: Binding(
+                        get: { presentation.volume },
+                        set: { playbackCoordinator.setVolume($0) }
+                    ),
+                    onAdjustingChanged: { adjusting in
+                        FullscreenBottomControlsAnimationPolicy.animateGeometry(with: layoutAnimation) {
+                            isVolumeAdjusting = adjusting
+                        }
+                    },
+                    markerColor: themeStore.accentColor.opacity(0.85),
+                    hidesMarkerAtDefault: true
+                )
+                .frame(width: 80)
+                .controlSize(.small)
+                .tint(themeStore.accentColor)
+                .disabled(!isEnabled)
+                .padding(.trailing, 6)
+                .frame(width: sliderWidth, alignment: .trailing)
+                .clipped()
+                .opacity(Double(sliderOpacity) * (isEnabled ? 1 : 0.45))
+                .allowsHitTesting(isVolumeExpanded)
+                .accessibilityHidden(!isVolumeExpanded)
 
-            VolumeSlider(
-                volume: Binding(
-                    get: { presentation.volume },
-                    set: { playbackCoordinator.setVolume($0) }
-                ),
-                markerColor: themeStore.accentColor.opacity(0.85),
-                hidesMarkerAtDefault: true
-            )
-            .frame(width: 80)
-            .controlSize(.small)
-            .tint(themeStore.accentColor)
-            .disabled(!isEnabled)
-            .opacity(isEnabled ? 1 : 0.45)
+                Button { toggleMute(presentation: presentation) } label: {
+                    Image(systemName: volumeIcon(for: presentation))
+                        .font(.caption)
+                        .foregroundStyle(isEnabled ? Color.secondary : Color.secondary.opacity(0.4))
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!isEnabled)
+                .help(presentation.volume == 0 ? "Unmute" : "Mute")
+                .accessibilityLabel("Volume")
+                .accessibilityValue(Text("\(Int((presentation.volume * 100).rounded()))%"))
+                .accessibilityAdjustableAction { direction in
+                    guard isEnabled else { return }
+                    switch direction {
+                    case .increment:
+                        playbackCoordinator.setVolume(VolumeControlBehavior.clamped(presentation.volume + 0.05))
+                    case .decrement:
+                        playbackCoordinator.setVolume(VolumeControlBehavior.clamped(presentation.volume - 0.05))
+                    @unknown default:
+                        break
+                    }
+                }
+            }
+            .frame(width: 20 + sliderWidth, height: 24, alignment: .trailing)
+        }
+        .frame(width: isVolumeExpanded ? 106 : 20, height: 24, alignment: .trailing)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            FullscreenBottomControlsAnimationPolicy.animateGeometry(with: layoutAnimation) {
+                isVolumeHovering = isEnabled && hovering
+            }
+        }
+        .onChange(of: isEnabled) { _, enabled in
+            if !enabled {
+                isVolumeHovering = false
+                isVolumeAdjusting = false
+            }
         }
     }
 
@@ -845,6 +900,8 @@ struct PlaybackModeSlider: View {
     let mode: PlaybackOrderMode
     let isEnabled: Bool
     let isExpanded: Bool
+    let expansionWidths: ClosedRange<CGFloat>?
+    let isolatesGeometryAnimation: Bool
     let iconSize: CGFloat
     let selectedColor: Color
     let unselectedColor: Color
@@ -860,6 +917,8 @@ struct PlaybackModeSlider: View {
         mode: PlaybackOrderMode,
         isEnabled: Bool,
         isExpanded: Bool = true,
+        expansionWidths: ClosedRange<CGFloat>? = nil,
+        isolatesGeometryAnimation: Bool = true,
         iconSize: CGFloat = 12,
         selectedColor: Color = .primary,
         unselectedColor: Color = .secondary,
@@ -874,6 +933,8 @@ struct PlaybackModeSlider: View {
         self.mode = mode
         self.isEnabled = isEnabled
         self.isExpanded = isExpanded
+        self.expansionWidths = expansionWidths
+        self.isolatesGeometryAnimation = isolatesGeometryAnimation
         self.iconSize = iconSize
         self.selectedColor = selectedColor
         self.unselectedColor = unselectedColor
@@ -886,6 +947,7 @@ struct PlaybackModeSlider: View {
         self.onCurrentModeRetap = onCurrentModeRetap
     }
 
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var configuredMotionPolicy
@@ -921,11 +983,8 @@ struct PlaybackModeSlider: View {
         }
     }
 
-    private var visibleModes: [PlaybackOrderMode] {
-        if isExpanded {
-            return [.shuffle, .sequence, .repeatOne, .stopAfterTrack]
-        }
-        return [mode]
+    private var allModes: [PlaybackOrderMode] {
+        [.shuffle, .sequence, .repeatOne, .stopAfterTrack]
     }
 
     private func symbol(for mode: PlaybackOrderMode) -> String {
@@ -942,79 +1001,116 @@ struct PlaybackModeSlider: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            let inset: CGFloat = 2 * scale
-            let totalWidth = geometry.size.width - inset * 2
-            let segmentCount = max(1, visibleModes.count)
-            let segmentWidth = max(1, totalWidth / CGFloat(segmentCount))
-            let baseOffset = isExpanded ? CGFloat(modeIndex) * segmentWidth : 0
-            let effectiveDrag = (isDragging && isExpanded) ? dragTranslation : 0
-            let knobOffset = clampOffset(baseOffset + effectiveDrag, maxValue: totalWidth - segmentWidth)
-            let snap = snapAnimation
+        MiniPlayerInterpolatedContent(
+            isExpanded ? 1 : 0,
+            clampsFraction: false,
+            isolatesGeometryAnimation: isolatesGeometryAnimation
+        ) { phase in
+            GeometryReader { geometry in
+                let inset: CGFloat = 2 * scale
+                let collapsedWidth = expansionWidths?.lowerBound ?? geometry.size.width
+                let expandedWidth = expansionWidths?.upperBound ?? geometry.size.width
+                let width = collapsedWidth + (expandedWidth - collapsedWidth) * phase
+                let totalWidth = max(0, width - inset * 2)
+                let collapsedSegmentWidth = max(0, collapsedWidth - inset * 2)
+                let expandedSegmentWidth = max(0, expandedWidth - inset * 2) / CGFloat(allModes.count)
+                // Interpolate the two endpoint segments, not a segment derived
+                // from the changing track width. The selected center then moves
+                // directly between its collapsed and expanded positions.
+                let segmentWidth = min(totalWidth, max(0,
+                    collapsedSegmentWidth + (expandedSegmentWidth - collapsedSegmentWidth) * phase
+                ))
+                let positionProgress = max(0, phase)
+                let baseOffset = CGFloat(modeIndex) * expandedSegmentWidth * positionProgress
+                let reveal = min(1, max(0, (phase - 0.12) / 0.63))
+                // Adjacent icons must separate too, not just clear the selected
+                // one. This keeps the three secondary icons from overlapping.
+                let separation = expandedSegmentWidth * positionProgress
+                let clearance = min(1, max(0,
+                    (separation - iconSize * 1.25) / (iconSize * 0.75)
+                ))
+                let secondaryOpacity = reveal * reveal * (3 - 2 * reveal)
+                    * clearance * clearance * (3 - 2 * clearance)
+                let effectiveDrag = (isDragging && isExpanded) ? dragTranslation : 0
+                let knobOffset = clampOffset(baseOffset + effectiveDrag, maxValue: totalWidth - segmentWidth)
+                let snap = snapAnimation
 
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(trackFill)
-                    .overlay(Capsule().stroke(trackBorder, lineWidth: 1 * scale))
-                    .compositingGroup()
-                    .blendMode(pillTintBlendMode ?? .normal)
-                    .allowsHitTesting(false)
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(.ultraThinMaterial)
+                        .allowsHitTesting(false)
 
-                Capsule()
-                    .fill(knobFill)
-                    .overlay(Capsule().stroke(knobBorder, lineWidth: 1 * scale))
-                    .compositingGroup()
-                    .blendMode(pillTintBlendMode ?? .normal)
-                    .frame(width: segmentWidth, height: geometry.size.height - inset * 2)
-                    .offset(x: knobOffset + inset)
-                    .allowsHitTesting(false)
-                    .motionAnimation(
-                        .control,
-                        value: modeIndex,
-                        enabled: motionPolicy != .disabled && !isDragging
-                    )
-                    .motionAnimation(
-                        .control,
-                        value: isExpanded,
-                        enabled: motionPolicy != .disabled && !isDragging
-                    )
+                    Capsule()
+                        .fill(trackFill)
+                        .compositingGroup()
+                        .blendMode(colorScheme == .dark ? .plusLighter : .plusDarker)
+                        .allowsHitTesting(false)
 
-                HStack(spacing: 0) {
-                    ForEach(Array(visibleModes.enumerated()), id: \.offset) { pair in
-                        let modeValue = pair.element
-                        segmentButton(
-                            systemImage: symbol(for: modeValue),
-                            mode: modeValue,
-                            isSelected: mode == modeValue,
-                            width: segmentWidth,
-                            snap: snap
+                    Capsule()
+                        .fill(knobFill)
+                        .compositingGroup()
+                        .blendMode(pillTintBlendMode ?? .normal)
+                        .frame(width: segmentWidth, height: geometry.size.height - inset * 2)
+                        .offset(x: knobOffset + inset)
+                        .allowsHitTesting(false)
+                        .motionAnimation(
+                            motionTokens.miniPlayerControl,
+                            value: modeIndex,
+                            enabled: motionPolicy != .disabled && !isDragging
                         )
+
+                    // Keep semantic identities alive while folding. Reusing array
+                    // position zero for a different mode replaces the visible icon.
+                    ZStack(alignment: .leading) {
+                        ForEach(allModes, id: \.self) { modeValue in
+                            // Keep every icon moving with the expanding track;
+                            // opacity follows the space opening between them.
+                            segmentButton(
+                                systemImage: symbol(for: modeValue),
+                                mode: modeValue,
+                                isSelected: mode == modeValue,
+                                width: segmentWidth,
+                                snap: snap
+                            )
+                            .offset(x: CGFloat(index(for: modeValue)) * expandedSegmentWidth * positionProgress)
+                            .opacity(modeValue == mode ? 1 : secondaryOpacity)
+                            .allowsHitTesting(modeValue == mode || (isExpanded && phase >= 0.98))
+                            .accessibilityHidden(modeValue != mode && (!isExpanded || phase < 0.98))
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, inset)
                 }
-                .padding(.horizontal, inset)
+                .frame(width: width, height: geometry.size.height, alignment: .leading)
+                .clipShape(Capsule())
+                .contentShape(Capsule())
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            guard isExpanded, phase >= 0.98 else { return }
+                            onInteraction?()
+                            isDragging = true
+                            dragTranslation = value.translation.width
+                        }
+                        .onEnded { value in
+                            guard isExpanded, phase >= 0.98 else { return }
+                            onInteraction?()
+                            let raw = baseOffset + value.translation.width
+                            let index = Int(round(raw / segmentWidth))
+                            let clampedIndex = max(0, min(3, index))
+                            let targetMode = modeForIndex(clampedIndex)
+                            finishDrag(at: targetMode, snap: snap)
+                        }
+                )
             }
-            .contentShape(Capsule())
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        guard isExpanded else { return }
-                        onInteraction?()
-                        isDragging = true
-                        dragTranslation = value.translation.width
-                    }
-                    .onEnded { value in
-                        guard isExpanded else { return }
-                        onInteraction?()
-                        let raw = baseOffset + value.translation.width
-                        let index = Int(round(raw / segmentWidth))
-                        let clampedIndex = max(0, min(3, index))
-                        let targetMode = modeForIndex(clampedIndex)
-                        finishDrag(at: targetMode, snap: snap)
-                    }
-            )
         }
         .opacity(isEnabled ? 1 : 0.4)
         .disabled(!isEnabled)
+        .onChange(of: isExpanded) { _, expanded in
+            guard !expanded else { return }
+            isDragging = false
+            dragTranslation = 0
+        }
         .onChange(of: modeIndex) { oldValue, newValue in
             guard oldValue != newValue else { return }
             animatedModeIndex = newValue
@@ -1091,6 +1187,7 @@ struct PlaybackModeSlider: View {
                 Rectangle()
                     .fill(Color.clear)
                 segmentIcon(systemImage: systemImage, index: index(for: mode), isSelected: isSelected)
+                    .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
             }
             .frame(width: width, height: 28 * scale)
             .contentShape(Rectangle())
@@ -1101,7 +1198,7 @@ struct PlaybackModeSlider: View {
     }
 
     private var snapAnimation: Animation? {
-        motionPolicy.animation(for: motionTokens[.control])
+        motionPolicy.animation(for: motionTokens.miniPlayerControl)
     }
 
     private var motionPolicy: MotionPolicy {
@@ -1143,19 +1240,11 @@ struct PlaybackModeSlider: View {
         return Color.secondary.opacity(0.2)
     }
 
-    private var trackBorder: Color {
-        selectedColor.opacity(0.16)
-    }
-
     private var knobFill: Color {
         if let pillTintColor {
             return pillTintColor.opacity(0.24)
         }
         return Color.primary.opacity(0.2)
-    }
-
-    private var knobBorder: Color {
-        selectedColor.opacity(0.24)
     }
 
     private func clampOffset(_ value: CGFloat, maxValue: CGFloat) -> CGFloat {
@@ -1167,6 +1256,8 @@ struct AppleMusicPlaybackModeSlider: View {
     let mode: AppleMusicPlaybackMode
     let isEnabled: Bool
     let isExpanded: Bool
+    let expansionWidths: ClosedRange<CGFloat>?
+    let isolatesGeometryAnimation: Bool
     let iconSize: CGFloat
     let selectedColor: Color
     let unselectedColor: Color
@@ -1182,6 +1273,8 @@ struct AppleMusicPlaybackModeSlider: View {
         mode: AppleMusicPlaybackMode,
         isEnabled: Bool,
         isExpanded: Bool = true,
+        expansionWidths: ClosedRange<CGFloat>? = nil,
+        isolatesGeometryAnimation: Bool = true,
         iconSize: CGFloat = 12,
         selectedColor: Color = .primary,
         unselectedColor: Color = .secondary,
@@ -1196,6 +1289,8 @@ struct AppleMusicPlaybackModeSlider: View {
         self.mode = mode
         self.isEnabled = isEnabled
         self.isExpanded = isExpanded
+        self.expansionWidths = expansionWidths
+        self.isolatesGeometryAnimation = isolatesGeometryAnimation
         self.iconSize = iconSize
         self.selectedColor = selectedColor
         self.unselectedColor = unselectedColor
@@ -1208,6 +1303,7 @@ struct AppleMusicPlaybackModeSlider: View {
         self.onCurrentModeRetap = onCurrentModeRetap
     }
 
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var configuredMotionPolicy
@@ -1220,87 +1316,122 @@ struct AppleMusicPlaybackModeSlider: View {
         index(for: mode)
     }
 
-    private var visibleModes: [AppleMusicPlaybackMode] {
-        isExpanded ? AppleMusicPlaybackMode.allCases : [mode]
-    }
+    private var allModes: [AppleMusicPlaybackMode] { AppleMusicPlaybackMode.allCases }
 
     var body: some View {
-        GeometryReader { geometry in
-            let inset: CGFloat = 2 * scale
-            let totalWidth = geometry.size.width - inset * 2
-            let segmentCount = max(1, visibleModes.count)
-            let segmentWidth = max(1, totalWidth / CGFloat(segmentCount))
-            let baseOffset = isExpanded ? CGFloat(modeIndex) * segmentWidth : 0
-            let effectiveDrag = (isDragging && isExpanded) ? dragTranslation : 0
-            let knobOffset = clampOffset(baseOffset + effectiveDrag, maxValue: totalWidth - segmentWidth)
-            let snap = snapAnimation
+        MiniPlayerInterpolatedContent(
+            isExpanded ? 1 : 0,
+            clampsFraction: false,
+            isolatesGeometryAnimation: isolatesGeometryAnimation
+        ) { phase in
+            GeometryReader { geometry in
+                let inset: CGFloat = 2 * scale
+                let collapsedWidth = expansionWidths?.lowerBound ?? geometry.size.width
+                let expandedWidth = expansionWidths?.upperBound ?? geometry.size.width
+                let width = collapsedWidth + (expandedWidth - collapsedWidth) * phase
+                let totalWidth = max(0, width - inset * 2)
+                let collapsedSegmentWidth = max(0, collapsedWidth - inset * 2)
+                let expandedSegmentWidth = max(0, expandedWidth - inset * 2) / CGFloat(allModes.count)
+                // Interpolate the two endpoint segments, not a segment derived
+                // from the changing track width. The selected center then moves
+                // directly between its collapsed and expanded positions.
+                let segmentWidth = min(totalWidth, max(0,
+                    collapsedSegmentWidth + (expandedSegmentWidth - collapsedSegmentWidth) * phase
+                ))
+                let positionProgress = max(0, phase)
+                let baseOffset = CGFloat(modeIndex) * expandedSegmentWidth * positionProgress
+                let reveal = min(1, max(0, (phase - 0.12) / 0.63))
+                // Adjacent icons must separate too, not just clear the selected
+                // one. This keeps the three secondary icons from overlapping.
+                let separation = expandedSegmentWidth * positionProgress
+                let clearance = min(1, max(0,
+                    (separation - iconSize * 1.25) / (iconSize * 0.75)
+                ))
+                let secondaryOpacity = reveal * reveal * (3 - 2 * reveal)
+                    * clearance * clearance * (3 - 2 * clearance)
+                let effectiveDrag = (isDragging && isExpanded) ? dragTranslation : 0
+                let knobOffset = clampOffset(baseOffset + effectiveDrag, maxValue: totalWidth - segmentWidth)
+                let snap = snapAnimation
 
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(trackFill)
-                    .overlay(Capsule().stroke(trackBorder, lineWidth: 1 * scale))
-                    .compositingGroup()
-                    .blendMode(pillTintBlendMode ?? .normal)
-                    .allowsHitTesting(false)
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(.ultraThinMaterial)
+                        .allowsHitTesting(false)
 
-                Capsule()
-                    .fill(knobFill)
-                    .overlay(Capsule().stroke(knobBorder, lineWidth: 1 * scale))
-                    .compositingGroup()
-                    .blendMode(pillTintBlendMode ?? .normal)
-                    .frame(width: segmentWidth, height: geometry.size.height - inset * 2)
-                    .offset(x: knobOffset + inset)
-                    .allowsHitTesting(false)
-                    .motionAnimation(
-                        .control,
-                        value: modeIndex,
-                        enabled: motionPolicy != .disabled && !isDragging
-                    )
-                    .motionAnimation(
-                        .control,
-                        value: isExpanded,
-                        enabled: motionPolicy != .disabled && !isDragging
-                    )
+                    Capsule()
+                        .fill(trackFill)
+                        .compositingGroup()
+                        .blendMode(colorScheme == .dark ? .plusLighter : .plusDarker)
+                        .allowsHitTesting(false)
 
-                HStack(spacing: 0) {
-                    ForEach(Array(visibleModes.enumerated()), id: \.offset) { pair in
-                        let modeValue = pair.element
-                        segmentButton(
-                            systemImage: symbol(for: modeValue),
-                            mode: modeValue,
-                            isSelected: mode == modeValue,
-                            width: segmentWidth,
-                            snap: snap
+                    Capsule()
+                        .fill(knobFill)
+                        .compositingGroup()
+                        .blendMode(pillTintBlendMode ?? .normal)
+                        .frame(width: segmentWidth, height: geometry.size.height - inset * 2)
+                        .offset(x: knobOffset + inset)
+                        .allowsHitTesting(false)
+                        .motionAnimation(
+                            motionTokens.miniPlayerControl,
+                            value: modeIndex,
+                            enabled: motionPolicy != .disabled && !isDragging
                         )
+
+                    // Keep semantic identities alive while folding. Reusing array
+                    // position zero for a different mode replaces the visible icon.
+                    ZStack(alignment: .leading) {
+                        ForEach(allModes, id: \.self) { modeValue in
+                            // Keep every icon moving with the expanding track;
+                            // opacity follows the space opening between them.
+                            segmentButton(
+                                systemImage: symbol(for: modeValue),
+                                mode: modeValue,
+                                isSelected: mode == modeValue,
+                                width: segmentWidth,
+                                snap: snap
+                            )
+                            .offset(x: CGFloat(index(for: modeValue)) * expandedSegmentWidth * positionProgress)
+                            .opacity(modeValue == mode ? 1 : secondaryOpacity)
+                            .allowsHitTesting(modeValue == mode || (isExpanded && phase >= 0.98))
+                            .accessibilityHidden(modeValue != mode && (!isExpanded || phase < 0.98))
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, inset)
                 }
-                .padding(.horizontal, inset)
+                .frame(width: width, height: geometry.size.height, alignment: .leading)
+                .clipShape(Capsule())
+                .contentShape(Capsule())
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            guard isExpanded, phase >= 0.98 else { return }
+                            onInteraction?()
+                            isDragging = true
+                            dragTranslation = value.translation.width
+                        }
+                        .onEnded { value in
+                            guard isExpanded, phase >= 0.98 else { return }
+                            onInteraction?()
+                            let raw = baseOffset + value.translation.width
+                            let index = Int(round(raw / segmentWidth))
+                            dragTranslation = 0
+                            isDragging = false
+                            let clampedIndex = max(0, min(AppleMusicPlaybackMode.allCases.count - 1, index))
+                            let targetMode = modeForIndex(clampedIndex)
+                            guard targetMode != mode else { return }
+                            commitModeChange(targetMode, snap: snap)
+                        }
+                )
             }
-            .contentShape(Capsule())
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        guard isExpanded else { return }
-                        onInteraction?()
-                        isDragging = true
-                        dragTranslation = value.translation.width
-                    }
-                    .onEnded { value in
-                        guard isExpanded else { return }
-                        onInteraction?()
-                        let raw = baseOffset + value.translation.width
-                        let index = Int(round(raw / segmentWidth))
-                        dragTranslation = 0
-                        isDragging = false
-                        let clampedIndex = max(0, min(AppleMusicPlaybackMode.allCases.count - 1, index))
-                        let targetMode = modeForIndex(clampedIndex)
-                        guard targetMode != mode else { return }
-                        commitModeChange(targetMode, snap: snap)
-                    }
-            )
         }
         .opacity(isEnabled ? 1 : 0.4)
         .disabled(!isEnabled)
+        .onChange(of: isExpanded) { _, expanded in
+            guard !expanded else { return }
+            isDragging = false
+            dragTranslation = 0
+        }
         .onChange(of: mode) { oldValue, newValue in
             guard oldValue != newValue else { return }
             animatedMode = newValue
@@ -1348,6 +1479,7 @@ struct AppleMusicPlaybackModeSlider: View {
                 Rectangle()
                     .fill(Color.clear)
                 segmentIcon(systemImage: systemImage, mode: mode, isSelected: isSelected)
+                    .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
             }
             .frame(width: width, height: 28 * scale)
             .contentShape(Rectangle())
@@ -1358,7 +1490,7 @@ struct AppleMusicPlaybackModeSlider: View {
     }
 
     private var snapAnimation: Animation? {
-        motionPolicy.animation(for: motionTokens[.control])
+        motionPolicy.animation(for: motionTokens.miniPlayerControl)
     }
 
     private var motionPolicy: MotionPolicy {
@@ -1435,19 +1567,11 @@ struct AppleMusicPlaybackModeSlider: View {
         return Color.secondary.opacity(0.2)
     }
 
-    private var trackBorder: Color {
-        selectedColor.opacity(0.16)
-    }
-
     private var knobFill: Color {
         if let pillTintColor {
             return pillTintColor.opacity(0.24)
         }
         return Color.primary.opacity(0.2)
-    }
-
-    private var knobBorder: Color {
-        selectedColor.opacity(0.24)
     }
 
     private func clampOffset(_ value: CGFloat, maxValue: CGFloat) -> CGFloat {

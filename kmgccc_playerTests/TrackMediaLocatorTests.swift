@@ -94,6 +94,84 @@ final class TrackMediaLocatorTests: XCTestCase {
     }
 
     @MainActor
+    func testFileBackedLyricsRelease() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let trackID = UUID()
+        let paths = LibraryPaths(rootURL: root)
+        let ttmlURL = try XCTUnwrap(paths.trackAssetURL(for: trackID, fileName: "lyrics.ttml"))
+        try FileManager.default.createDirectory(
+            at: ttmlURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let sampleTTML = "<tt><body><div><p>Lyrics</p></div></body></tt>"
+        try sampleTTML.write(to: ttmlURL, atomically: true, encoding: .utf8)
+
+        // Case 1: Track with on-disk TTML file
+        let trackWithDisk = Track(
+            id: trackID,
+            title: "Song With File",
+            ttmlLyricText: sampleTTML,
+            libraryRootSnapshot: root.path,
+            ttmlLyricsFileName: "lyrics.ttml"
+        )
+        XCTAssertEqual(trackWithDisk.ttmlLyricText, sampleTTML)
+        trackWithDisk.releaseFileBackedLyricsText()
+        XCTAssertNil(trackWithDisk.ttmlLyricText)
+
+        // Reload should re-read from disk
+        XCTAssertEqual(trackWithDisk.loadTTMLLyricsIfNeeded(), sampleTTML)
+        XCTAssertEqual(trackWithDisk.ttmlLyricText, sampleTTML)
+
+        // Case 2: Track with pure inline lyrics (no file on disk)
+        let inlineTrack = Track(
+            id: UUID(),
+            title: "Inline Song",
+            ttmlLyricText: sampleTTML,
+            libraryRootSnapshot: root.path,
+            ttmlLyricsFileName: nil
+        )
+        inlineTrack.releaseFileBackedLyricsText()
+        // Must preserve inline lyrics when no file is present
+        XCTAssertEqual(inlineTrack.ttmlLyricText, sampleTTML)
+    }
+
+    @MainActor
+    func testLyricsInspectionDoesNotRetainFileTextOrDiscardInlineEdits() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let trackID = UUID()
+        let paths = LibraryPaths(rootURL: root)
+        let ttmlURL = try XCTUnwrap(paths.trackAssetURL(for: trackID, fileName: "lyrics.ttml"))
+        let plainURL = try XCTUnwrap(paths.trackAssetURL(for: trackID, fileName: "lyrics.lrc"))
+        try FileManager.default.createDirectory(at: ttmlURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let ttml = "<tt><body><div><p>Lyrics</p></div></body></tt>"
+        let plain = "[00:01.00]Lyrics"
+        try ttml.write(to: ttmlURL, atomically: true, encoding: .utf8)
+        try plain.write(to: plainURL, atomically: true, encoding: .utf8)
+        let track = Track(id: trackID, title: "Song", libraryRootSnapshot: root.path)
+        track.ttmlLyricsFileName = "lyrics.ttml"
+        track.lyricsFileName = "lyrics.lrc"
+
+        XCTAssertEqual(track.readTTMLLyricsText(), ttml)
+        XCTAssertEqual(track.readLyricsText(), plain)
+        XCTAssertNil(track.ttmlLyricText)
+        XCTAssertNil(track.lyricsText)
+
+        track.ttmlLyricsFileName = nil
+        track.lyricsFileName = "lyrics.ttml"
+        XCTAssertEqual(track.readTTMLLyricsText(), ttml)
+        XCTAssertNil(track.ttmlLyricText)
+
+        track.ttmlLyricText = "inline TTML draft"
+        track.lyricsText = "inline plain draft"
+        XCTAssertEqual(track.readTTMLLyricsText(), "inline TTML draft")
+        XCTAssertEqual(track.readLyricsText(), "inline plain draft")
+        XCTAssertEqual(track.ttmlLyricText, "inline TTML draft")
+        XCTAssertEqual(track.lyricsText, "inline plain draft")
+    }
+
+    @MainActor
     func testAlbumAndArtistArtworkRequireNonemptyReadableFiles() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -86,6 +86,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     /// call-through semantics; production runs the batched detached path.
     private let usesInjectedImportSidecarWriter: Bool
     private let usesInjectedLocatorSidecarWriter: Bool
+    private weak var backgroundScheduler: BackgroundWorkScheduler?
+    private var backgroundOwner: BackgroundWorkOwner = .app
+    /// Why a leftover-folder scan is wanted but has not run yet. A reload
+    /// before the session binds to the scheduler leaves it here.
+    private var pendingResidueScanReason: String?
 
     init(
         modelContext: ModelContext? = nil,
@@ -130,6 +135,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     func setChangeHandler(_ handler: LibraryRepositoryChangeHandler?) {
         changeHandler = handler
+    }
+
+    /// Connects the repository to the App scheduler, which runs the scan for
+    /// leftover import folders as idle disk work.
+    func bindBackgroundWork(scheduler: BackgroundWorkScheduler, owner: BackgroundWorkOwner) {
+        backgroundScheduler = scheduler
+        backgroundOwner = owner
+        if let reason = pendingResidueScanReason { scheduleResidueScan(reason: reason) }
     }
 
     // MARK: - Boot/Reload
@@ -250,13 +263,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     func persistedTrackIndexIDs() throws -> Set<UUID> {
         guard let indexContext else {
-            throw LibraryUpgradeValidationError.trackIndexUnavailable
+            throw LibraryStorageValidationError.trackIndexUnavailable
         }
         return Set(try indexContext.fetch(FetchDescriptor<TrackIndexEntry>()).map(\.id))
     }
 
     func addTrack(_ track: Track) async {
-        allTracks.append(track)
+        appendNewTracks([track])
         _ = await persistImportedTrackResources([track], reason: "initialImport")
         scheduleSearchIndexUpsert(for: [track], reason: "initialImport")
         rebuildRuntimeDerivedState()
@@ -275,7 +288,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func addTracks(_ tracks: [Track]) async {
-        allTracks.append(contentsOf: tracks)
+        appendNewTracks(tracks)
         _ = await persistImportedTrackResources(tracks, reason: "initialImport")
         scheduleSearchIndexUpsert(for: tracks, reason: "initialImport")
         rebuildRuntimeDerivedState()
@@ -301,6 +314,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         _ tracks: [Track],
         visibilityGate: @MainActor ([UUID]) async -> Set<UUID>
     ) async -> LibraryTrackPersistenceResult {
+        var seenIDs = Set<UUID>()
+        let tracks = tracks.filter { seenIDs.insert($0.id).inserted }
         let persistence = await persistImportedTrackResources(tracks, reason: "initialImportCommit")
         let persistedIDs = Set(persistence.persistedTrackIDs)
         let visibleIDs = await visibilityGate(persistence.persistedTrackIDs).intersection(persistedIDs)
@@ -315,8 +330,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     private func attachImportedTracks(_ tracks: [Track]) async {
-        allTracks.append(contentsOf: tracks)
-        scheduleSearchIndexUpsert(for: tracks, reason: "initialImport")
+        let attachedTracks = appendNewTracks(tracks)
+        guard !attachedTracks.isEmpty else { return }
+        scheduleSearchIndexUpsert(for: attachedTracks, reason: "initialImport")
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
         let capturedPaths = paths
@@ -1060,6 +1076,16 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     // MARK: - Cache Maintenance
 
+    /// A reload can publish a committed sidecar while import awaits its
+    /// visibility gate. Keep the runtime instance already used by playlists.
+    @discardableResult
+    private func appendNewTracks(_ tracks: [Track]) -> [Track] {
+        var knownIDs = Set(allTracks.map(\.id))
+        let newTracks = tracks.filter { knownIDs.insert($0.id).inserted }
+        allTracks.append(contentsOf: newTracks)
+        return newTracks
+    }
+
     func clearIndexCacheAndRebuild() async {
         clearTrackIndexCache()
         for url in TrackIndexStorePaths.relatedStoreFiles(in: paths) where fileManager.fileExists(atPath: url.path)
@@ -1410,9 +1436,45 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             }
         }
 
+        scheduleResidueScan(reason: reason)
+
+        if !orphanReport.deletedArtistIDs.isEmpty || !orphanReport.deletedAlbumIDs.isEmpty {
+            Log.info(
+                "[LibraryMaintenance] after reload complete reason=\(reason) deletedArtists=\(orphanReport.deletedArtistIDs.count) deletedAlbums=\(orphanReport.deletedAlbumIDs.count)",
+                category: .library
+            )
+        }
+        CacheManager.trimProcessMemory()
+    }
+
+    /// Queues the scan for track folders left behind by failed imports as idle
+    /// disk work. The library state the scan compares against is read when it
+    /// runs, not when it is queued, so songs imported in between are kept.
+    private func scheduleResidueScan(reason: String) {
+        pendingResidueScanReason = reason
+        guard let scheduler = backgroundScheduler else { return }
+        scheduler.submit(
+            key: "library-residue:\(paths.tracksRootURL.path)",
+            owner: backgroundOwner,
+            domain: .libraryMaintenance,
+            priority: .idleBatch,
+            resources: [.disk]
+        ) { [weak self] context in
+            guard let self else { return .cancelled }
+            return await self.runResidueScan(context: context)
+        }
+    }
+
+    private func runResidueScan(context: BackgroundWorkContext) async -> BackgroundWorkOutcome {
+        guard (try? await context.checkpoint()) != nil else { return .cancelled }
+        let reason = pendingResidueScanReason ?? "idleMaintenance"
+        let importActivity = await LibraryImportCoordinator.shared.snapshot()
+        // An import that began after the scan was queued owns its folders;
+        // the scan is queued again by the next reload.
+        guard !importActivity.isImporting else { return .cancelled }
         let referencedTrackIDs = Set(allTracks.map(\.id))
         let capturedPaths = paths
-        let cleanupReport = await Task.detached(priority: .utility) { @Sendable in
+        let report = await Task.detached(priority: context.taskPriority) { @Sendable in
             LibraryMaintenanceService().cleanupFailedImportTrackDirectories(
                 tracksRootURL: capturedPaths.tracksRootURL,
                 referencedTrackIDs: referencedTrackIDs,
@@ -1420,15 +1482,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 reason: reason
             )
         }.value
-
-        if cleanupReport.deletedCount > 0 || cleanupReport.failedDeleteCount > 0
-            || !orphanReport.deletedArtistIDs.isEmpty || !orphanReport.deletedAlbumIDs.isEmpty {
+        pendingResidueScanReason = nil
+        if report.deletedCount > 0 || report.failedDeleteCount > 0 {
             Log.info(
-                "[LibraryMaintenance] after reload complete reason=\(reason) deletedTrackDirs=\(cleanupReport.deletedCount) failedTrackDirDeletes=\(cleanupReport.failedDeleteCount) deletedArtists=\(orphanReport.deletedArtistIDs.count) deletedAlbums=\(orphanReport.deletedAlbumIDs.count)",
+                "[LibraryMaintenance] residue scan complete reason=\(reason) deletedTrackDirs=\(report.deletedCount) failedTrackDirDeletes=\(report.failedDeleteCount)",
                 category: .library
             )
         }
-        CacheManager.trimProcessMemory()
+        return .completed
     }
 
     private func writePlaylistToDisk(
@@ -1502,7 +1563,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             metadataFetchedAt: entry.metadataFetchedAt,
             metadataConfidence: entry.metadataConfidence,
             createdAt: entry.createdAt,
-            updatedAt: entry.updatedAt
+            updatedAt: entry.updatedAt,
+            loudnessUnified: entry.loudnessUnifiedOverride
         )
         let destinationArtworkURL = entry.artworkFileName.map {
             libraryService.paths.albumFolderURL(for: entry.id).appendingPathComponent($0)
@@ -1609,7 +1671,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             updatedAt: Date(),
             trackCount: max(preferred.trackCount, fallback.trackCount),
             totalDuration: max(preferred.totalDuration, fallback.totalDuration),
-            isOrphaned: false
+            isOrphaned: false,
+            loudnessUnifiedOverride: preferred.loudnessUnifiedOverride ?? fallback.loudnessUnifiedOverride
         )
     }
 
@@ -2247,7 +2310,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         _ tracks: [Track],
         reason: String
     ) async -> LibraryTrackPersistenceResult {
-        let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
+        let uniqueTracks = Dictionary(tracks.map { ($0.id, $0) }, uniquingKeysWith: { existing, _ in existing }).values.sorted {
             $0.id.uuidString < $1.id.uuidString
         }
         guard !uniqueTracks.isEmpty else {

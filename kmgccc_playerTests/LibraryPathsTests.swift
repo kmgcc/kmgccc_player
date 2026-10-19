@@ -13,7 +13,6 @@ final class LibraryPathsTests: XCTestCase {
         let urls = paths.requiredDirectories + [
             paths.manifestURL,
             paths.librarySettingsURL,
-            paths.upgradeJournalURL,
             paths.playbackHistoryStoreURL,
             paths.trackIndexStoreURL,
             paths.searchIndexStoreURL,
@@ -285,7 +284,10 @@ final class DiskCacheOptimizationTests: XCTestCase {
             48 * 1024 * 1024 +
             4 * 1024 * 1024
 
-        XCTAssertEqual(DiskCacheBudget.totalCeilingBytes, expectedCeiling)
+        let registeredCeiling = LibraryCacheArea.allCases
+            .flatMap(\.trimRules)
+            .reduce(Int64(0)) { $0 + $1.budget.maxBytes }
+        XCTAssertEqual(registeredCeiling, expectedCeiling)
         XCTAssertGreaterThan(DiskCacheBudget.trackOriginals.targetFraction, 0.5)
         XCTAssertLessThanOrEqual(DiskCacheBudget.trackOriginals.targetFraction, 1.0)
     }
@@ -410,25 +412,31 @@ final class DiskCacheOptimizationTests: XCTestCase {
         XCTAssertEqual(r3, .empty)
     }
 
-    func testCalculateLibraryDiskCacheUsage() async throws {
+    func testLibraryFolderUsageGroupsFilesByCategory() throws {
         let libraryRoot = tempDirectory.appendingPathComponent("LibRoot", isDirectory: true)
         let paths = kmgccc_player.LibraryPaths(rootURL: libraryRoot)
         let storage = LibraryStorageLocations(paths: paths)
+        let fileManager = FileManager.default
+        let trackFolder = paths.trackFolderURL(for: UUID())
 
-        try FileManager.default.createDirectory(at: storage.trackArtworkOriginalsURL, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: storage.trackArtworkDerivativesURL, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: storage.qqMusicCoverCacheURL, withIntermediateDirectories: true)
-
+        for directory in [
+            storage.trackArtworkOriginalsURL, storage.qqMusicCoverCacheURL,
+            paths.loudnessCacheRootURL, trackFolder,
+        ] {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
         try Data(repeating: 1, count: 1024).write(to: storage.trackArtworkOriginalsURL.appendingPathComponent("track1.img"))
-        try Data(repeating: 2, count: 2048).write(to: storage.trackArtworkDerivativesURL.appendingPathComponent("deriv1.img"))
-        try Data(repeating: 3, count: 4096).write(to: storage.qqMusicCoverCacheURL.appendingPathComponent("cover.img"))
+        try Data(repeating: 2, count: 2048).write(to: storage.qqMusicCoverCacheURL.appendingPathComponent("cover.img"))
+        try Data(repeating: 3, count: 512).write(to: paths.loudnessCacheRootURL.appendingPathComponent("a.json"))
+        try Data(repeating: 4, count: 8192).write(to: trackFolder.appendingPathComponent("audio.m4a"))
+        try Data(repeating: 5, count: 256).write(to: trackFolder.appendingPathComponent("meta.json"))
 
-        let usage = await CacheManager.calculateLibraryDiskCacheUsage(storage: storage)
-        XCTAssertEqual(usage.trackOriginalsBytes, 1024)
-        XCTAssertEqual(usage.trackDerivativesBytes, 2048)
-        XCTAssertEqual(usage.qqMusicCoverBytes, 4096)
-        XCTAssertEqual(usage.totalBytes, 1024 + 2048 + 4096)
-        XCTAssertEqual(usage.totalFileCount, 3)
+        let usage = StorageUsageScanner.measureLibraryFolder(storage: storage)
+
+        XCTAssertEqual(Set(usage.keys), [.artworkCache, .onlineCache, .indexes, .music, .libraryContent])
+        XCTAssertGreaterThanOrEqual(usage[.artworkCache] ?? 0, 1024)
+        XCTAssertGreaterThanOrEqual(usage[.onlineCache] ?? 0, 2048)
+        XCTAssertGreaterThanOrEqual(usage[.music] ?? 0, 8192)
     }
 
     func testArtworkDerivativeJPEGCompressionRatio() throws {
@@ -595,22 +603,61 @@ final class DiskCacheOptimizationTests: XCTestCase {
         }
     }
 
-    func testCalculateLibraryDiskCacheUsageIncludesScanAndOtherCaches() async throws {
-        let libraryRoot = tempDirectory.appendingPathComponent("LibRootScanTest", isDirectory: true)
-        let paths = kmgccc_player.LibraryPaths(rootURL: libraryRoot)
-        let storage = LibraryStorageLocations(paths: paths)
+    func testCacheAreasStayInsideCacheRootWithoutOverlap() {
+        let storage = LibraryStorageLocations(
+            paths: kmgccc_player.LibraryPaths(rootURL: URL(fileURLWithPath: "/tmp/Lib", isDirectory: true))
+        )
+        let cacheRoot = storage.libraryCacheRootURL.standardizedFileURL.path + "/"
+        let areaPaths = LibraryCacheArea.allCases.map { $0.url(in: storage).standardizedFileURL.path }
 
-        try FileManager.default.createDirectory(at: storage.trackArtworkOriginalsURL, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: storage.libraryScanCacheRootURL, withIntermediateDirectories: true)
+        XCTAssertTrue(areaPaths.allSatisfy { $0.hasPrefix(cacheRoot) })
+        for (index, path) in areaPaths.enumerated() {
+            for other in areaPaths[(index + 1)...] {
+                XCTAssertFalse(path.hasPrefix(other + "/") || other.hasPrefix(path + "/"), "\(path) overlaps \(other)")
+                XCTAssertNotEqual(path, other)
+            }
+        }
+    }
 
-        try Data(repeating: 1, count: 1024).write(to: storage.trackArtworkOriginalsURL.appendingPathComponent("track1.img"))
-        try Data(repeating: 2, count: 2048).write(to: storage.libraryScanCacheRootURL.appendingPathComponent("manifest.json"))
+    func testPathClassifierAssignsEveryLibraryPlane() {
+        let storage = LibraryStorageLocations(
+            paths: kmgccc_player.LibraryPaths(rootURL: URL(fileURLWithPath: "/tmp/Lib", isDirectory: true))
+        )
+        let classifier = LibraryPathClassifier(storage: storage)
+        let track = UUID().uuidString
 
-        let usage = await CacheManager.calculateLibraryDiskCacheUsage(storage: storage)
-        XCTAssertEqual(usage.trackOriginalsBytes, 1024)
-        XCTAssertEqual(usage.otherBytes, 2048)
-        XCTAssertEqual(usage.totalBytes, 1024 + 2048)
-        XCTAssertEqual(usage.totalFileCount, 2)
+        XCTAssertEqual(classifier.category(forRelativePath: "Tracks/\(track)/audio.flac"), .music)
+        XCTAssertEqual(classifier.category(forRelativePath: "Tracks/\(track)/artwork.jpg"), .libraryContent)
+        XCTAssertEqual(classifier.category(forRelativePath: "PlaybackHistory/PlaybackHistory.sqlite"), .libraryContent)
+        XCTAssertEqual(classifier.category(forRelativePath: "Index/LibrarySearch.sqlite-wal"), .indexes)
+        XCTAssertEqual(classifier.category(forRelativePath: "Cache/Loudness/index.json"), .indexes)
+        XCTAssertEqual(classifier.category(forRelativePath: "Cache/LibraryScan/manifest.json"), .indexes)
+        XCTAssertEqual(classifier.category(forRelativePath: "Cache/Artwork/Derivatives/a.heic"), .artworkCache)
+        XCTAssertEqual(classifier.category(forRelativePath: "Cache/Artwork/QQMusic/Images/a.jpg"), .onlineCache)
+        XCTAssertEqual(classifier.category(forRelativePath: "Cache/Lyrics/AMLLDB/raw-lyrics-index.jsonl"), .onlineCache)
+        XCTAssertEqual(classifier.category(forRelativePath: "Cache/Home/startup-snapshot-v1.json"), .otherCache)
+        XCTAssertEqual(classifier.category(forRelativePath: "Cache/Retired/old.bin"), .otherCache)
+        XCTAssertEqual(classifier.category(forRelativePath: "Settings/DomainMigrationBackups/x/Tracks/meta.json"), .otherCache)
+        XCTAssertEqual(classifier.category(forRelativePath: ".kmgccc-library-manifest.json"), .otherCache)
+    }
+
+    func testUnregisteredCacheItemsListsOnlyUnknownEntries() throws {
+        let storage = LibraryStorageLocations(
+            paths: kmgccc_player.LibraryPaths(
+                rootURL: tempDirectory.appendingPathComponent("LibUnregistered", isDirectory: true)
+            )
+        )
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: storage.trackArtworkDerivativesURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: storage.homeCacheURL, withIntermediateDirectories: true)
+        let strayDirectory = storage.libraryCacheRootURL.appendingPathComponent("Retired", isDirectory: true)
+        let strayArtwork = storage.artworkCacheRootURL.appendingPathComponent("Old", isDirectory: true)
+        try fileManager.createDirectory(at: strayDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: strayArtwork, withIntermediateDirectories: true)
+
+        let items = Set(CacheManager.unregisteredCacheItems(in: storage).map(\.standardizedFileURL.path))
+
+        XCTAssertEqual(items, [strayDirectory.standardizedFileURL.path, strayArtwork.standardizedFileURL.path])
     }
 }
 

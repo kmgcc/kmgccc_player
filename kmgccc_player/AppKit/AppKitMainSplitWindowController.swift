@@ -244,6 +244,10 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         super.init(window: window)
 
         window.title = "kmgccc_player"
+        if !AppSettings.shared.followSystemAppearance {
+            let appearanceName: NSAppearance.Name = AppSettings.shared.manualAppearance == .dark ? .darkAqua : .aqua
+            window.appearance = NSAppearance(named: appearanceName)
+        }
         ColorRenderingAdapter.configureNativeWindowForDisplayP3(window)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -661,6 +665,10 @@ private final class AppKitMainRootViewController: NSViewController {
         // PagePresentation owns entry. Remove the outgoing Home surface at
         // the route boundary so it cannot show behind another live page.
         homeFullWindowHost.isHidden = !isHome
+        if !isHome {
+            CacheManager.purgeHomePresentationMemoryCaches()
+            CacheManager.trimProcessMemory()
+        }
     }
 
     private func setFileDropOverlayVisible(_ isVisible: Bool) {

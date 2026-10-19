@@ -1,4 +1,5 @@
 import Foundation
+@testable import kmgccc_player
 import XCTest
 
 final class CrashReportSanitizerTests: XCTestCase {
@@ -192,6 +193,54 @@ final class CrashReportDeliveryModelTests: XCTestCase {
 }
 
 final class MetricKitDiagnosticTests: XCTestCase {
+    func testSanitizerPreservesDeepCallStackOnUtilityWorker() async throws {
+        let frameCount = 180
+        let input = Data((
+            String(repeating: #"{"binaryName":"kmgccc_player","address":1,"subFrames":["#, count: frameCount)
+                + #"{"reason":"token=secret-value /Users/alice/Desktop/private.flac"}"#
+                + String(repeating: "]}", count: frameCount)
+        ).utf8)
+
+        let result = try await Task.detached(priority: .utility) {
+            try MetricKitDiagnosticSanitizer.sanitize(input)
+        }.value
+
+        var frame = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.json.utf8)) as? NSDictionary)
+        for _ in 0..<frameCount {
+            XCTAssertEqual(frame.object(forKey: "binaryName") as? String, "kmgccc_player")
+            let children = try XCTUnwrap(frame.object(forKey: "subFrames") as? NSArray)
+            XCTAssertEqual(children.count, 1)
+            frame = try XCTUnwrap(children.firstObject as? NSDictionary)
+        }
+        XCTAssertEqual(result.counts["secret"], 1)
+        XCTAssertEqual(result.counts["externalPath"], 1)
+        XCTAssertFalse(result.json.contains("secret-value"))
+        XCTAssertFalse(result.json.contains("alice"))
+    }
+
+    func testSanitizerKeepsCanonicalJSONAndScalarTypes() throws {
+        let input = Data(#"{"z":null,"a10":true,"a2":false,"A":1.25,"a":[-2,"quote\" and slash/",{}]}"#.utf8)
+        let object = try JSONSerialization.jsonObject(with: input)
+        let expected = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+
+        let result = try MetricKitDiagnosticSanitizer.sanitize(input)
+
+        XCTAssertEqual(Data(result.json.utf8), expected)
+        XCTAssertTrue(result.counts.isEmpty)
+    }
+
+    func testSanitizerRejectsOversizedOutput() {
+        let input = Data(("[" + Array(repeating: "1234567890", count: 1_000).joined(separator: ",") + "]").utf8)
+        // Each array stays below the per-array cap; the complete diagnostic
+        // must still respect the upload size budget.
+        let large = Data(("[" + Array(repeating: String(decoding: input, as: UTF8.self), count: 200).joined(separator: ",") + "]").utf8)
+
+        XCTAssertThrowsError(try MetricKitDiagnosticSanitizer.sanitize(large))
+    }
+
     func testSanitizerRemovesExternalPathsSecretsAndURLDetails() throws {
         let input = Data(#"{"callStackTree":{"callStackPerThread":true,"binaryName":"/Users/alice/Desktop/My Song.flac"},"reason":"token=secret-value https://example.com/path?user=alice","symbol":"Player.openTrack()"}"#.utf8)
 

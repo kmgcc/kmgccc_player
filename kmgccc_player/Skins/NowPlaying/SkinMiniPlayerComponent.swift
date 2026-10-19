@@ -31,9 +31,14 @@ struct SkinMiniPlayerComponent: View {
                 let leadingWidth = (capsuleControls.isLeftActionsExpanded ? metrics.leadingExpandedWidth : metrics.leadingCollapsedWidth) * scale
                 let volumeWidth = (capsuleControls.isVolumeExpanded ? metrics.volumeExpandedWidth : metrics.volumeCollapsedWidth) * scale
                 GlassEffectContainer(spacing: 0) {
-                    HStack(spacing: metrics.spacing * scale) {
-                        SkinLeadingCapsule(configuration: .init(values: ["scale": .number(scale)]), controls: capsuleControls)
-                            .frame(width: leadingWidth, height: metrics.buttonSize * scale)
+                    MiniPlayerCapsuleRowLayout(
+                        leadingWidth: leadingWidth, volumeWidth: volumeWidth,
+                        spacing: metrics.spacing * scale, height: metrics.buttonSize * scale
+                    ) {
+                        SkinLeadingCapsule(
+                            configuration: .init(values: ["scale": .number(scale)]),
+                            controls: capsuleControls, usesContainerWidth: true
+                        )
                         FullscreenMiniPlayerView(
                             scale: scale, isSpectrumActive: isActive,
                             glassStyle: native.presentation.glassStyle,
@@ -47,10 +52,10 @@ struct SkinMiniPlayerComponent: View {
                             onShowDetailRequested: native.actions.showDetailRequested,
                             foregroundProfile: native.presentation.miniPlayerForegroundProfile
                         )
-                        .frame(width: max(0, proxy.size.width - leadingWidth - volumeWidth - metrics.spacing * 2 * scale),
-                               height: metrics.buttonSize * scale)
-                        SkinVolumeCapsule(configuration: .init(values: ["scale": .number(scale)]), controls: capsuleControls)
-                            .frame(width: volumeWidth, height: metrics.buttonSize * scale)
+                        SkinVolumeCapsule(
+                            configuration: .init(values: ["scale": .number(scale)]),
+                            controls: capsuleControls, usesContainerWidth: true
+                        )
                     }
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
@@ -63,6 +68,7 @@ struct SkinMiniPlayerComponent: View {
 struct SkinLeadingCapsule: View {
     let configuration: SkinComponentConfiguration
     var controls: FullscreenBottomControlsCoordinator? = nil
+    var usesContainerWidth = false
     @Environment(\.skinNativeControls) private var native
     @Environment(\.skinSceneSurface) private var surface
     @Environment(\.motionTokens) private var motionTokens
@@ -78,7 +84,7 @@ struct SkinLeadingCapsule: View {
                 presentation: native.presentation, actions: native.actions, controls: model,
                 isFullscreen: surface == .fullscreen,
                 showsLyricsButton: configuration.boolean("showsLyricsButton", fallback: true),
-                onHoverStateChanged: hoverChanged
+                onHoverStateChanged: hoverChanged, usesContainerWidth: usesContainerWidth
             )
             .skinProvidesControls(configuration.boolean("showsLyricsButton", fallback: true)
                 ? [.fullscreen, .lyricsToggle, .quickPanel] : [.fullscreen, .quickPanel])
@@ -102,7 +108,7 @@ struct SkinLeadingCapsule: View {
     private func setExpanded(_ expanded: Bool, reason: String) {
         model.setLeftActionsExpanded(expanded, reason: reason) { updates in
             FullscreenBottomControlsAnimationPolicy.animateGeometry(
-                with: configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion).animation(for: motionTokens[.layout]), updates
+                with: configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion).animation(for: motionTokens.miniPlayerLayout), updates
             )
         }
     }
@@ -112,6 +118,7 @@ struct SkinLeadingCapsule: View {
 struct SkinVolumeCapsule: View {
     let configuration: SkinComponentConfiguration
     var controls: FullscreenBottomControlsCoordinator? = nil
+    var usesContainerWidth = false
     @Environment(\.skinNativeControls) private var native
     @Environment(PlaybackCoordinator.self) private var playback
     @Environment(\.motionTokens) private var motionTokens
@@ -136,7 +143,8 @@ struct SkinVolumeCapsule: View {
                 isEnabled: native.presentation.isVolumeControlEnabled,
                 usesAdaptiveForeground: native.presentation.usesAdaptiveVolumeForeground,
                 forceDarkForegroundProfile: false, usesInternalHoverExpansion: false,
-                foregroundProfile: native.presentation.miniPlayerForegroundProfile
+                foregroundProfile: native.presentation.miniPlayerForegroundProfile,
+                usesContainerWidth: usesContainerWidth
             )
             .environment(\.colorScheme, native.presentation.glassStyle.colorScheme)
             .onDisappear { model.cancelVolumeCollapse() }
@@ -162,7 +170,7 @@ struct SkinVolumeCapsule: View {
             expanded, reason: reason, volumeControlEnabled: playback.stablePresentation.isVolumeControlEnabled
         ) { updates in
             FullscreenBottomControlsAnimationPolicy.animateGeometry(
-                with: configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion).animation(for: motionTokens[.layout]), updates
+                with: configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion).animation(for: motionTokens.miniPlayerLayout), updates
             )
         }
     }

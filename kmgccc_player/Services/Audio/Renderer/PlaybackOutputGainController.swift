@@ -48,6 +48,7 @@ nonisolated final class PlaybackOutputGainController: @unchecked Sendable {
     func transition(
         playing: Bool,
         configuration: AudioFadeConfiguration,
+        isCurrent: @escaping @Sendable () -> Bool = { true },
         startWhen: @escaping @Sendable () -> Bool = { true },
         completion: @escaping @Sendable () -> Void
     ) {
@@ -77,6 +78,7 @@ nonisolated final class PlaybackOutputGainController: @unchecked Sendable {
         source.schedule(deadline: .now(), repeating: .milliseconds(5), leeway: .milliseconds(1))
         source.setEventHandler { [weak self] in
             guard let self, self.generation == token else { return }
+            guard isCurrent() else { self.cancel(); return }
             if self.transitionStartTime == nil {
                 guard startWhen() else { return }
                 self.transitionStartTime = ProcessInfo.processInfo.systemUptime

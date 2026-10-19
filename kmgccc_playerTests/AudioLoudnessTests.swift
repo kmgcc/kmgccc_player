@@ -31,7 +31,97 @@ final class AudioLoudnessTests: XCTestCase {
         XCTAssertEqual(measurement.samplePeakDBFS ?? .infinity, -20, accuracy: 0.02)
         XCTAssertGreaterThanOrEqual(measurement.truePeakDBTP ?? -.infinity, measurement.samplePeakDBFS ?? .infinity)
         XCTAssertEqual(measurement.analysisFrameRange, "provided-decoded-frames-v2")
-        XCTAssertTrue(measurement.diagnostics.contains { $0.code == "audio.loudnessTruePeakFixturePending" })
+        // K-weighting is normalized so a 997 Hz tone reads its mean-square
+        // level: one channel at amplitude 0.1 is about −23.0 LUFS.
+        XCTAssertEqual(measurement.integratedLUFS ?? 0, 20 * log10(0.1) - 3.0103, accuracy: 0.1)
+    }
+
+    func testBlockGatingIsExactAcrossChunkBoundaries() {
+        let whole = analyzeMonoSine(frequency: 440, amplitude: 0.3, duration: 3,
+                                    label: UInt32(kAudioChannelLabel_Mono), chunkFrames: 4_096)
+        let odd = analyzeMonoSine(frequency: 440, amplitude: 0.3, duration: 3,
+                                  label: UInt32(kAudioChannelLabel_Mono), chunkFrames: 1_237)
+        XCTAssertEqual(whole.gatedBlockCount, odd.gatedBlockCount)
+        XCTAssertEqual(whole.integratedLUFS ?? 0, odd.integratedLUFS ?? 1, accuracy: 1e-4)
+        XCTAssertEqual(whole.truePeakDBTP ?? 0, odd.truePeakDBTP ?? 1, accuracy: 1e-4)
+    }
+
+    func testInterSamplePeakExceedsSamplePeak() {
+        // A quarter-rate tone sampled at ±45° never hits its crest on a sample.
+        let measurement = analyzeMonoSine(frequency: 12_000, amplitude: 0.5, duration: 1,
+                                          label: UInt32(kAudioChannelLabel_Mono), phase: Double.pi / 4)
+        let samplePeak = measurement.samplePeakDBFS ?? 0
+        let truePeak = measurement.truePeakDBTP ?? -100
+        XCTAssertGreaterThan(truePeak - samplePeak, 2)
+        XCTAssertEqual(truePeak, 20 * log10(0.5), accuracy: 0.6)
+    }
+
+    func testChainHeadGainRampIsContinuousAcrossInterleavedFrames() {
+        let pcm = CanonicalPCM(frames: 4, channelCount: 2, sampleRate: 48_000, data: Array(repeating: 1, count: 8))
+        let ramped = RendererPlaybackPipeline.applyingGainRamp(pcm, from: 1, to: 0.5)
+        XCTAssertEqual(ramped.data[0], ramped.data[1])
+        XCTAssertEqual(Double(ramped.data[6]), 0.5, accuracy: 1e-6)
+        XCTAssertTrue(zip(ramped.data.enumerated().filter { $0.offset % 2 == 0 }.map(\.element),
+                          ramped.data.enumerated().filter { $0.offset % 2 == 0 }.map(\.element).dropFirst())
+            .allSatisfy { $0 >= $1 })
+        XCTAssertEqual(RendererPlaybackPipeline.applyingGainRamp(pcm, from: 1, to: 1).data, pcm.data)
+    }
+
+    func testSparseHistogramRoundTrip() throws {
+        var histogram = LoudnessEnergyHistogram()
+        for lufs in [-30.0, -20.0, -20.0, -12.5] {
+            XCTAssertTrue(histogram.add(linearEnergy: 10.0.pow((lufs + 0.691) / 10)))
+        }
+        let data = try JSONEncoder().encode(histogram)
+        XCTAssertLessThan(data.count, 200)
+        XCTAssertEqual(try JSONDecoder().decode(LoudnessEnergyHistogram.self, from: data), histogram)
+    }
+
+    func testLoudnessSettingsKeepOnlySwitchAndTarget() throws {
+        let configuration = AudioLoudnessConfiguration(enabled: true, targetLUFS: -16)
+        let data = try JSONEncoder().encode(configuration)
+        let keys = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any]).keys
+        XCTAssertEqual(Set(keys), ["enabled", "targetLUFS"])
+        XCTAssertEqual(try JSONDecoder().decode(AudioLoudnessConfiguration.self, from: data), configuration)
+        XCTAssertEqual(configuration.maxBoostDB, 12)
+        XCTAssertEqual(configuration.truePeakCeilingDBTP, -1)
+    }
+
+    func testAlbumPolicyExcludesUnreliableGroupsAndAcceptsRealAlbums() {
+        func member(_ album: String, artist: String, albumArtist: String? = nil,
+                    codec: String? = "flac", rate: Int? = 44_100) -> LoudnessAlbumMember {
+            LoudnessAlbumMember(trackID: UUID(), album: album, albumArtist: albumArtist,
+                                artist: artist, codec: codec, sampleRateHz: rate)
+        }
+        let real = [member("Blue", artist: "Joni Mitchell"), member("Blue", artist: "Joni Mitchell")]
+        XCTAssertNil(LoudnessAlbumPolicy.automaticExclusion(albumType: nil, members: real))
+
+        XCTAssertEqual(LoudnessAlbumPolicy.automaticExclusion(albumType: nil, members: [
+            member("未知专辑", artist: "A"), member("未知专辑", artist: "A"),
+        ]), .unreliableAlbumName)
+        XCTAssertEqual(LoudnessAlbumPolicy.automaticExclusion(albumType: nil, members: [
+            member("2019", artist: "A"),
+        ]), .unreliableAlbumName)
+        XCTAssertEqual(LoudnessAlbumPolicy.automaticExclusion(albumType: nil, members: [
+            member("Live", artist: "A & 未知歌手"), member("Live", artist: "A"),
+        ]), .unreliableArtist)
+        XCTAssertEqual(LoudnessAlbumPolicy.automaticExclusion(albumType: nil, members: [
+            member("Hits", artist: "A", albumArtist: "群星"), member("Hits", artist: "B", albumArtist: "群星"),
+        ]), .compilation)
+        XCTAssertEqual(LoudnessAlbumPolicy.automaticExclusion(albumType: nil, members: [
+            member("Blue", artist: "A", codec: "flac"), member("Blue", artist: "A", codec: "mp3"),
+        ]), .mixedSources)
+        XCTAssertEqual(LoudnessAlbumPolicy.automaticExclusion(albumType: nil, members: [
+            member("Greatest", artist: "A"), member("Greatest", artist: "B"), member("Greatest", artist: "C"),
+        ]), .scatteredArtists)
+
+        let judgement = LoudnessAlbumPolicy.judge(
+            albumKey: "k", albumType: nil,
+            members: [member("Greatest", artist: "A"), member("Greatest", artist: "B"), member("Greatest", artist: "C")],
+            override: true
+        )
+        XCTAssertFalse(judgement.automaticallyUnifies)
+        XCTAssertTrue(judgement.unifies)
     }
 
     func testShortAndSilentInputsDoNotProduceArtificialLoudness() {
@@ -127,20 +217,13 @@ final class AudioLoudnessTests: XCTestCase {
         let quietLUFS = try XCTUnwrap(LoudnessAnalyzer.integratedLUFS(from: quiet))
         let loudLUFS = try XCTUnwrap(LoudnessAnalyzer.integratedLUFS(from: loud))
 
-        let decision = LoudnessGainSelector.albumGain(
-            configuration: AudioLoudnessConfiguration(
-                enabled: true,
-                mode: "album",
-                targetLUFS: -18,
-                maxBoostDB: 12,
-                maxAttenuationDB: 24,
-                truePeakCeilingDBTP: 20
-            ),
+        let decision = try XCTUnwrap(LoudnessGainSelector.albumGain(
+            configuration: AudioLoudnessConfiguration(enabled: true, targetLUFS: -18),
             measurements: [
-                measurement(lufs: quietLUFS, histogram: quiet, truePeak: -8),
-                measurement(lufs: loudLUFS, histogram: loud, truePeak: -3),
+                measurement(lufs: quietLUFS, histogram: quiet, truePeak: -12),
+                measurement(lufs: loudLUFS, histogram: loud, truePeak: -8),
             ]
-        )
+        ))
         var combined = quiet
         XCTAssertTrue(combined.merge(loud))
         let pooledLUFS = try XCTUnwrap(LoudnessAnalyzer.integratedLUFS(from: combined))
@@ -153,13 +236,7 @@ final class AudioLoudnessTests: XCTestCase {
     func testPeakCeilingTakesPriorityOverRequestedBoost() {
         let histogram = oneEnergyHistogram(lufs: -40)
         let decision = LoudnessGainSelector.trackGain(
-            configuration: AudioLoudnessConfiguration(
-                enabled: true,
-                targetLUFS: -18,
-                maxBoostDB: 12,
-                maxAttenuationDB: 24,
-                truePeakCeilingDBTP: -1
-            ),
+            configuration: AudioLoudnessConfiguration(enabled: true, targetLUFS: -18),
             measurement: measurement(lufs: -40, histogram: histogram, truePeak: 5)
         )
 
@@ -184,8 +261,7 @@ final class AudioLoudnessTests: XCTestCase {
 
         let replayGainDecision = LoudnessGainSelector.trackGain(
             configuration: AudioLoudnessConfiguration(enabled: true),
-            measurement: nil,
-            metadata: replayGain
+            measurement: nil
         )
         XCTAssertEqual(replayGainDecision.gainDB, 0)
 
@@ -202,26 +278,19 @@ final class AudioLoudnessTests: XCTestCase {
         XCTAssertTrue(opus.diagnostics.contains { $0.code == "audio.loudnessOpusGainBaselineUnknown" })
     }
 
-    func testVerifiedFLACR128Q78ConvertsFromMinus23LUFS() {
+    func testNormalizationTagsAreParsedButNeverDriveGain() {
         let metadata = LoudnessMetadataParser.parse(
             tags: [LoudnessMetadataTag(key: "R128_TRACK_GAIN", value: "-256")],
             containerHint: "flac"
         )
         let decision = LoudnessGainSelector.trackGain(
-            configuration: AudioLoudnessConfiguration(
-                enabled: true,
-                targetLUFS: -23,
-                maxBoostDB: 12,
-                maxAttenuationDB: 24,
-                truePeakCeilingDBTP: 12
-            ),
-            measurement: nil,
-            metadata: metadata
+            configuration: AudioLoudnessConfiguration(enabled: true, targetLUFS: -23),
+            measurement: nil
         )
 
         XCTAssertTrue(metadata.r128IsReliable)
-        XCTAssertEqual(decision.gainDB, -1, accuracy: 0.001)
-        XCTAssertEqual(decision.source, "metadata.r128")
+        XCTAssertEqual(decision.gainDB, 0)
+        XCTAssertEqual(decision.source, LoudnessGainDecision.Source.missing)
     }
 
     private func analyzeMonoSine(
@@ -230,7 +299,8 @@ final class AudioLoudnessTests: XCTestCase {
         duration: Double,
         label: UInt32,
         layoutIsKnown: Bool = true,
-        phase: Double = 0
+        phase: Double = 0,
+        chunkFrames: Int = 4_096
     ) -> LoudnessMeasurement {
         let sampleRate = 48_000.0
         let channelFormat = AVAudioFormat(
@@ -247,7 +317,7 @@ final class AudioLoudnessTests: XCTestCase {
             layoutIsKnown: layoutIsKnown
         )
         let analyzer = LoudnessAnalyzer(format: analysisFormat)
-        let buffer = AVAudioPCMBuffer(pcmFormat: channelFormat, frameCapacity: 4_096)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: channelFormat, frameCapacity: AVAudioFrameCount(chunkFrames))!
         let channelData = buffer.floatChannelData!
         let totalFrames = Int(sampleRate * duration)
         var offset = 0

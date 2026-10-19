@@ -71,41 +71,147 @@ final class LibrarySession: LibrarySessionLifecycle {
 
     var audioDSPPresentationLeadSeconds: Double { playbackService.audioOutputDelay }
 
-    func bindAudioDSP(_ controller: AudioDSPController) {
+    func bindAudioDSP(_ controller: AudioDSPController, devices: AudioDSPDeviceController) {
         playbackService.bindAudioDSP(controller)
+        playbackService.bindAudioDSPDevices(devices)
     }
 
-    func bindAudioProcessingGlobals(_ controller: AudioProcessingGlobalsController) {
+    func bindAudioProcessingGlobals(
+        _ controller: AudioProcessingGlobalsController,
+        scheduler: BackgroundWorkScheduler,
+        habits: ListeningHabitForecast
+    ) {
         playbackService.bindAudioProcessingGlobals(controller)
-        loudnessService.updatePlaybackTrimPolicy(enabled: AppSettings.shared.audioAACGaplessTrimEnabled)
-        playbackService.loudnessGainProvider = { [weak self] track, url, configuration, continuousAlbum in
-            guard let self else {
-                return LoudnessGainSelector.trackGain(configuration: configuration, measurement: nil)
-            }
+        let owner = backgroundOwner ?? scheduler.makeLibraryOwner(libraryID: context.id)
+        backgroundOwner = owner
+        backgroundScheduler = scheduler
+        playbackCoordinator.bindBackgroundWork(scheduler: scheduler, owner: owner)
+        cacheServices.bindBackgroundWork(scheduler: scheduler, owner: owner)
+        repository.bindBackgroundWork(scheduler: scheduler, owner: owner)
+        let lender = scheduler.lender(owner: owner)
+        backgroundLender = lender
+        importEnrichmentService.bindBackgroundWork(lender: lender)
+        cacheServices.coverDownloadService.bindBackgroundWork(lender: lender)
+        sourceReconnectService?.bindBackgroundWork(lender: lender)
+        referencedSourceReconciler?.bindBackgroundWork(lender: lender)
+        fileImportService.bindBackgroundWork(scheduler: scheduler)
+        configureLoudness(scheduler: scheduler, owner: owner, habits: habits)
+        playbackService.loudnessPlanProvider = { [weak self] track, url, configuration in
+            guard let self else { return .disabled }
             self.loudnessService.updatePlaybackTrimPolicy(enabled: AppSettings.shared.audioAACGaplessTrimEnabled)
-            let album = track.albumGroupKey.isEmpty ? nil : self.libraryViewModel.allTracks.filter {
-                $0.albumGroupKey == track.albumGroupKey
-            }
-            return self.loudnessService.gainDecision(track: track, fileURL: url,
-                configuration: configuration, albumTracks: album, continuousAlbum: continuousAlbum)
+            return self.loudnessService.playbackPlan(track: track, fileURL: url, configuration: configuration)
         }
-        loudnessService.onMissingMeasurement = { [weak self] id in
-            self?.scheduleMissingLoudnessMeasurement(trackID: id)
+        playbackService.onLoudnessEnabledChanged = { [weak self] enabled in
+            self?.loudnessEnabledDidChange(enabled)
         }
-        if controller.configuration.loudness.enabled {
-            Task { [weak self] in await self?.loudnessService.loadSnapshot() }
+        loudnessEnabledDidChange(controller.configuration.loudness.enabled)
+    }
+
+    func setEqualLoudnessContext(_ context: DSPEqualLoudnessContext) {
+        playbackService.setEqualLoudnessContext(context)
+    }
+
+    /// Playback signals the background scheduler and habit forecast use:
+    /// listening starts, and audio supply that ran short.
+    func bindBackgroundSignals(scheduler: BackgroundWorkScheduler, habits: ListeningHabitForecast) {
+        playbackService.onListeningStarted = { [weak self, weak habits] in
+            habits?.recordListeningStart()
+            // Volume normalization is on whenever its idle scan is active or
+            // paused by the listener.
+            guard let self,
+                  self.loudnessService.isIdleScanActive || self.loudnessService.isIdleScanPausedByListener
+            else { return }
+            self.loudnessService.requestMeasurement(trackIDs: self.upcomingQueueTrackIDs(limit: 3), priority: .upcoming)
         }
+        playbackService.onAudioSupplyShortfall = { [weak scheduler] in
+            scheduler?.noteAudioSupplyShortfall()
+        }
+    }
+
+    /// The next songs in play order after the current one.
+    func upcomingQueueTrackIDs(limit: Int) -> [UUID] {
+        let queue = playbackService.currentQueueTracks()
+        guard !queue.isEmpty else { return [] }
+        let start = (playbackService.currentQueueDisplayIndex() ?? -1) + 1
+        guard start < queue.count else { return [] }
+        return queue[start..<min(queue.count, start + max(0, limit))].map(\.id)
+    }
+
+    /// A background result for an album: only a first album-gain arrival
+    /// changes the playing song.
+    func refreshLoudnessForAlbum(_ albumKey: String) {
+        playbackService.loudnessAlbumMeasurementsChanged(albumKey)
+    }
+
+    /// A listener's setting change (switch, target or album switch) applies
+    /// to the playing and queued songs with a short glide.
+    func reapplyLoudnessToPlayback() {
+        playbackService.reapplyLoudnessPlans(glideSeconds: 0.25)
     }
 
     var audioNormalizationGainDB: Double { playbackService.currentLoudnessGainDB }
     var audioNormalizationSource: String { playbackService.currentLoudnessSource }
+    var audioNormalizationAudibleGainDB: Double? { playbackService.audibleLoudnessGainDB }
+    var audioNormalizationPlan: LoudnessPlaybackPlan? { playbackService.currentLoudnessPlan }
 
     var audioNormalizationState: [String: AutomationJSONValue] {
-        ["gainDB": .number(playbackService.currentLoudnessGainDB),
-         "source": .string(playbackService.currentLoudnessSource),
-         "peakBasis": .string(playbackService.currentLoudnessPeakBasis),
-         "diagnostics": (try? AutomationWireCoding.decoder().decode(AutomationJSONValue.self,
-             from: AutomationWireCoding.encoder().encode(playbackService.currentLoudnessDiagnostics))) ?? .array([])]
+        var state: [String: AutomationJSONValue] = [
+            "gainDB": .number(playbackService.currentLoudnessGainDB),
+            "source": .string(playbackService.currentLoudnessSource),
+            "peakBasis": .string(playbackService.currentLoudnessPeakBasis),
+            "awaitingAlbum": .boolean(playbackService.currentLoudnessPlan?.awaitingAlbum ?? false),
+            "albumKey": playbackService.currentLoudnessPlan?.albumKey.map(AutomationJSONValue.string) ?? .null,
+            "audibleGainDB": playbackService.audibleLoudnessGainDB.map(AutomationJSONValue.number) ?? .null,
+            "diagnostics": (try? AutomationWireCoding.decoder().decode(AutomationJSONValue.self,
+                from: AutomationWireCoding.encoder().encode(playbackService.currentLoudnessDiagnostics))) ?? .array([]),
+        ]
+        if let measured = playbackService.currentLoudnessPlan?.decision.measuredLUFS {
+            state["measuredLUFS"] = .number(measured)
+        }
+        return state
+    }
+
+    /// Listening-time forecast used to order idle preparation.
+    var loudnessHabits: ListeningHabitForecast?
+
+    /// Owner of this session's background work, issued by the scheduler the
+    /// first time the session binds to it. Revoking it ends every unit the
+    /// session started.
+    private(set) var backgroundOwner: BackgroundWorkOwner?
+    private weak var backgroundScheduler: BackgroundWorkScheduler?
+    /// Lends this session's pipelines channel slots from the scheduler.
+    private(set) var backgroundLender: BackgroundWorkLender = .none
+
+    private func revokeBackgroundWork() {
+        guard let backgroundOwner else { return }
+        backgroundScheduler?.revoke(owner: backgroundOwner)
+    }
+
+    private var storageMaintenance: LibraryStorageMaintenance?
+
+    /// Starts recurring idle upkeep of this library's caches, loudness
+    /// records and search index log.
+    func startStorageMaintenance(scheduler: BackgroundWorkScheduler) {
+        guard storageMaintenance == nil, !isClosed else { return }
+        let owner = backgroundOwner ?? scheduler.makeLibraryOwner(libraryID: context.id)
+        backgroundOwner = owner
+        backgroundScheduler = scheduler
+        let maintenance = LibraryStorageMaintenance(
+            storage: cacheServices.storageLocations
+        ) { [weak self] in
+            guard let self, !self.isClosed, self.libraryViewModel.state == .loaded else { return }
+            await self.loudnessService.pruneRecords(
+                keeping: Set(self.libraryViewModel.allTracks.map(\.id))
+            )
+            await self.searchIndex.compact()
+        }
+        storageMaintenance = maintenance
+        maintenance.start(scheduler: scheduler, owner: owner)
+    }
+
+    private func stopStorageMaintenance() {
+        storageMaintenance?.stop()
+        storageMaintenance = nil
     }
 
     private let playbackService: AVAudioPlaybackService
@@ -113,7 +219,6 @@ final class LibrarySession: LibrarySessionLifecycle {
     private let mutationCoordinator: LibraryMutationCoordinator
     private var isLoaded = false
     private var isClosed = false
-    private(set) var didCompleteLegacyUpgrade = false
     private(set) var initialReconcileOutcome: InitialReconcileOutcome?
 
     init(
@@ -148,7 +253,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         ledMeterProvider: LEDMeterServiceProvider
     ) {
         self.context = context
-        self.loudnessService = LibraryLoudnessService(libraryPaths: context.paths)
+        self.loudnessService = LibraryLoudnessService(libraryPaths: context.paths, libraryID: context.id)
         self.rootAccessLease = rootAccessLease
         self.writerLease = writerLease
         self.modelContainer = modelContainer
@@ -191,19 +296,6 @@ final class LibrarySession: LibrarySessionLifecycle {
                 operationCoordinator: operationCoordinator
             )
         }
-        let upgrade = LegacyLibraryUpgradeCoordinator(
-            context: context,
-            storageLocations: cacheServices.storageLocations
-        ) { [context, libraryViewModel, repository, searchIndex, playbackHistoryStore] in
-            try await LibraryUpgradeSessionValidator.validate(
-                context: context,
-                libraryViewModel: libraryViewModel,
-                repository: repository,
-                searchIndex: searchIndex,
-                playbackHistoryStore: playbackHistoryStore
-            )
-        }
-        didCompleteLegacyUpgrade = await upgrade.runIfNeeded() == .completed
         if let referencedSourceReconciler, let libraryChangeMonitor {
             try await startReferencedSourceMonitor(
                 libraryChangeMonitor,
@@ -412,6 +504,24 @@ final class LibrarySession: LibrarySessionLifecycle {
             reporter.recordProgress(completedCount: 0, totalCount: totalCount, phase: "Starting")
             await work(reporter)
         }, kind: .automation, retrySpec: retrySpec)
+        guard started else { return nil }
+        return operationCoordinator.taskDescriptors.last
+    }
+
+    /// A read-only Job that does not take a place in the write queue.
+    func startConcurrentJob(
+        kind: LibraryTaskKind,
+        totalCount: Int,
+        retrySpec: LibraryOperationRetrySpec? = nil,
+        work: @escaping @MainActor (LibraryAutomationJobReporter) async -> Void
+    ) -> LibraryOperationTaskDescriptor? {
+        guard !isClosed, totalCount > 0 else { return nil }
+        let started = operationCoordinator.startConcurrent({ [weak self] in
+            guard let self else { return }
+            let reporter = LibraryAutomationJobReporter(operationCoordinator: self.operationCoordinator)
+            reporter.recordProgress(completedCount: 0, totalCount: totalCount, phase: "Starting")
+            await work(reporter)
+        }, kind: kind, retrySpec: retrySpec)
         guard started else { return nil }
         return operationCoordinator.taskDescriptors.last
     }
@@ -789,14 +899,14 @@ final class LibrarySession: LibrarySessionLifecycle {
 
     private func automationLyricsQuality(_ track: Track) -> Int {
         let ttml = track.ttmlLyricText
-            ?? track.loadTTMLLyricsIfNeeded()
+            ?? track.readTTMLLyricsText()
             ?? (track.ttmlLyricsFileName.flatMap { context.paths.trackAssetURL(for: track.id, fileName: $0) }).flatMap({ try? String(contentsOf: $0, encoding: .utf8) })
         if let ttml, !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return lyricsQuality(ttml)
         }
         if track.ttmlLyricsFileName != nil { return 1 }
         let plain = track.lyricsText
-            ?? track.loadLyricsIfNeeded()
+            ?? track.readLyricsText()
             ?? (track.lyricsFileName.flatMap { context.paths.trackAssetURL(for: track.id, fileName: $0) }).flatMap({ try? String(contentsOf: $0, encoding: .utf8) })
         if let plain, !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return LyricsFormatSupport.looksLikeLRC(plain) ? 1 : 0
@@ -1051,13 +1161,21 @@ final class LibrarySession: LibrarySessionLifecycle {
                     continue
                 }
                 do {
-                    let writeTask = Task.detached(priority: .utility) {
-                        _ = try MP3EmbeddedTagService.patch(at: request.fileURL, fields: request.fields)
-                    }
-                    try await withTaskCancellationHandler {
-                        try await writeTask.value
-                    } onCancel: {
-                        writeTask.cancel()
+                    // The write holds a disk slot, so idle disk work steps
+                    // aside while the file changes.
+                    try await self.backgroundLender.withLease(
+                        domain: .fileWork,
+                        priority: .userRequested,
+                        resources: [.disk]
+                    ) {
+                        let writeTask = Task.detached(priority: .utility) {
+                            _ = try MP3EmbeddedTagService.patch(at: request.fileURL, fields: request.fields)
+                        }
+                        try await withTaskCancellationHandler {
+                            try await writeTask.value
+                        } onCancel: {
+                            writeTask.cancel()
+                        }
                     }
                     updatedTrackIDs.append(request.trackID)
                     self.operationCoordinator.recordCheckpoint("wrote embedded tags \(request.trackID.uuidString)")
@@ -1665,7 +1783,10 @@ final class LibrarySession: LibrarySessionLifecycle {
         guard !isClosed else { return }
         operationCoordinator.stopAcceptingNewOperations()
         loudnessService.cancel()
+        stopStorageMaintenance()
+        revokeBackgroundWork()
         playbackService.unbindAudioProcessingGlobals()
+        playbackService.unbindAudioDSPDevices()
         await libraryChangeMonitor?.stopAndWait()
         await operationCoordinator.cancelAndWait()
         await fileImportService.quiesce()
@@ -1681,6 +1802,9 @@ final class LibrarySession: LibrarySessionLifecycle {
     func close() async {
         guard !isClosed else { return }
         operationCoordinator.stopAcceptingNewOperations()
+        loudnessService.cancel()
+        stopStorageMaintenance()
+        revokeBackgroundWork()
         await libraryChangeMonitor?.stopAndWait()
         await operationCoordinator.cancelAndWait()
         await fileImportService.quiesce()

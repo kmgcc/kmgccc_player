@@ -213,8 +213,26 @@ nonisolated enum LibraryNormalization {
             : canonical
     }
 
+    static func isUnknownArtist(_ value: String?) -> Bool {
+        guard let value else { return true }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return true }
+        let unknownNames: Set<String> = [
+            "未知歌手", "未知艺人", "未知艺术家", "未知", "unknown", "unknown artist", "<unknown>", "none", "n/a", "null"
+        ]
+        if unknownNames.contains(trimmed) { return true }
+        return normalizeArtist(value) == normalizeArtist(nil)
+    }
+
     static func isUnknownAlbum(_ value: String?) -> Bool {
-        comparisonKey(canonicalAlbumTitle(value)) == comparisonKey(unknownAlbum)
+        guard let value else { return true }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return true }
+        let unknownNames: Set<String> = [
+            "未知专辑", "未知唱片集", "未标注专辑", "无专辑", "unknown album", "untitled album", "unknown", "<unknown>", "untitled", "none", "n/a", "null"
+        ]
+        if unknownNames.contains(trimmed) { return true }
+        return comparisonKey(canonicalAlbumTitle(value)) == comparisonKey(unknownAlbum)
     }
 
     /// §10.3 evidence-aware album key. Priority: MusicBrainz Release ID wins
@@ -333,6 +351,17 @@ nonisolated enum LibraryNormalization {
             Log.error("Failed to compile artist split pattern: \(error)", category: .library)
             return nil
         }
+    }
+
+    /// Every split artist name, including unknown placeholders, for callers
+    /// that must notice a placeholder hidden inside a joined credit.
+    static func artistDisplayNameParts(_ value: String) -> [String] {
+        splitArtistDisplayNames(value)
+    }
+
+    /// True for an empty title or any recognized unknown-album placeholder.
+    static func isPlaceholderAlbumTitle(_ value: String?) -> Bool {
+        canonicalAlbumTitle(value) == unknownAlbum
     }
 
     private static func splitArtistDisplayNames(_ value: String) -> [String] {

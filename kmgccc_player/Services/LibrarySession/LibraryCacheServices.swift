@@ -28,9 +28,15 @@ final class LibraryCacheServices {
     let playlistArtworkPipeline: PlaylistArtworkPipeline
 
     @ObservationIgnored
-    private var artworkColorPrefetchTask: Task<Void, Never>?
+    private weak var backgroundScheduler: BackgroundWorkScheduler?
     @ObservationIgnored
-    private var artworkColorPrefetchGeneration: UInt64 = 0
+    private var backgroundOwner: BackgroundWorkOwner = .app
+    @ObservationIgnored
+    private(set) var artworkColorSource: ArtworkColorWorkSource?
+    @ObservationIgnored
+    private(set) var missingPlaylistArtworkSource: MissingPlaylistArtworkWorkSource?
+    @ObservationIgnored
+    private(set) var pageThumbnailSource: PageThumbnailWorkSource?
 
     init(paths: LibraryPaths) {
         let storage = StorageLocations.scoped(to: paths)
@@ -52,7 +58,7 @@ final class LibraryCacheServices {
     }
 
     func close() async {
-        cancelArtworkColorPrefetch()
+        detachBackgroundSources()
         amllDBService.close()
         amllDBRawIndexCache.close()
         await trackArtworkCache.clearMemory()
@@ -61,58 +67,125 @@ final class LibraryCacheServices {
         await playlistArtworkPipeline.clearMemory()
     }
 
-    func prefetchArtworkColorsWhenIdle(
-        from tracks: [Track],
-        shouldContinue: @escaping @MainActor () -> Bool
-    ) {
-        cancelArtworkColorPrefetch()
-        guard !tracks.isEmpty else { return }
-
-        artworkColorPrefetchGeneration &+= 1
-        let generation = artworkColorPrefetchGeneration
-        let artworkCache = trackArtworkCache
-        artworkColorPrefetchTask = Task(priority: .background) { @MainActor [weak self] in
-            guard let self else { return }
-            defer {
-                if self.artworkColorPrefetchGeneration == generation {
-                    self.artworkColorPrefetchTask = nil
-                }
-            }
-
-            try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled,
-                  self.artworkColorPrefetchGeneration == generation,
-                  shouldContinue()
-            else { return }
-
-            for startIndex in stride(from: 0, to: tracks.count, by: 24) {
-                guard !Task.isCancelled,
-                      self.artworkColorPrefetchGeneration == generation,
-                      shouldContinue()
-                else { return }
-                let endIndex = min(startIndex + 24, tracks.count)
-
-                for track in tracks[startIndex..<endIndex] {
-                    guard !Task.isCancelled,
-                          self.artworkColorPrefetchGeneration == generation,
-                          shouldContinue()
-                    else { return }
-                    guard let source = track.trackArtworkSource() else { continue }
-                    _ = await artworkCache.artworkAccentColor(
-                        for: source,
-                        purpose: "idle-artwork-color",
-                        priority: .background
-                    )
-                    await Task.yield()
-                }
-
-                try? await Task.sleep(for: .milliseconds(125))
-            }
-        }
+    /// Connects the library's caches to the App scheduler, so prefetches run as
+    /// upcoming work owned by this library session.
+    func bindBackgroundWork(scheduler: BackgroundWorkScheduler, owner: BackgroundWorkOwner) {
+        backgroundScheduler = scheduler
+        backgroundOwner = owner
+        amllDBRawIndexCache.bindBackgroundWork(scheduler: scheduler, owner: owner)
     }
 
-    func cancelArtworkColorPrefetch() {
-        artworkColorPrefetchGeneration &+= 1
-        artworkColorPrefetchTask = nil
+    /// Runs a cover prefetch as upcoming work. Nil when the library is not
+    /// bound to a scheduler yet, in which case the cover loads when it is shown.
+    @discardableResult
+    func submitArtworkPrefetch(
+        domain: BackgroundWorkDomain,
+        resources: BackgroundWorkResources = [.compute],
+        operation: @escaping @Sendable (BackgroundWorkContext) async -> Void
+    ) -> BackgroundTaskHandle? {
+        guard let scheduler = backgroundScheduler else { return nil }
+        return scheduler.submitWork(
+            owner: backgroundOwner,
+            domain: domain,
+            priority: .upcoming,
+            resources: resources,
+            operation: operation
+        )
+    }
+
+    /// Registers the library's artwork accent colours as a backlog of the App
+    /// scheduler. The scheduler pulls batches as idle work when the machine is
+    /// quiet, whether or not the App is in front; the source follows the
+    /// library, so added songs join the pass.
+    func attachArtworkColorSource(
+        scheduler: BackgroundWorkScheduler,
+        owner: BackgroundWorkOwner,
+        libraryID: UUID,
+        trackIDs: @escaping @MainActor () -> [UUID],
+        revision: @escaping @MainActor () -> Int,
+        sources: @escaping @MainActor ([UUID]) -> [TrackArtworkSource],
+        isEnabled: @escaping @MainActor () -> Bool
+    ) {
+        if let existing = artworkColorSource {
+            scheduler.unregister(sourceID: existing.sourceID)
+        }
+        let source = ArtworkColorWorkSource(
+            libraryID: libraryID,
+            owner: owner,
+            artworkCache: trackArtworkCache,
+            trackIDs: trackIDs,
+            revision: revision,
+            sources: sources,
+            isEnabled: isEnabled
+        )
+        backgroundScheduler = scheduler
+        artworkColorSource = source
+        scheduler.register(source)
+    }
+
+    /// Registers the playlists that still lack a saved cover as a backlog of
+    /// the App scheduler, so their covers are made in idle time.
+    func attachMissingPlaylistArtworkSource(
+        scheduler: BackgroundWorkScheduler,
+        owner: BackgroundWorkOwner,
+        libraryID: UUID,
+        playlists: @escaping @MainActor () -> [Playlist],
+        lacksCover: @escaping @MainActor (Playlist) -> Bool,
+        generate: @escaping @MainActor (UUID, TaskPriority) async -> Bool,
+        isEnabled: @escaping @MainActor () -> Bool
+    ) {
+        if let existing = missingPlaylistArtworkSource {
+            scheduler.unregister(sourceID: existing.sourceID)
+        }
+        let source = MissingPlaylistArtworkWorkSource(
+            libraryID: libraryID,
+            owner: owner,
+            playlists: playlists,
+            lacksCover: lacksCover,
+            generate: generate,
+            isEnabled: isEnabled
+        )
+        backgroundScheduler = scheduler
+        missingPlaylistArtworkSource = source
+        scheduler.register(source)
+    }
+
+    /// Registers the Home page's album and artist thumbnails as a backlog of
+    /// the App scheduler, made in idle time at the sizes the page asks for.
+    func attachPageThumbnailSource(
+        scheduler: BackgroundWorkScheduler,
+        owner: BackgroundWorkOwner,
+        libraryID: UUID,
+        candidates: @escaping @MainActor () -> [PageThumbnailCandidate],
+        isEnabled: @escaping @MainActor () -> Bool
+    ) {
+        if let existing = pageThumbnailSource {
+            scheduler.unregister(sourceID: existing.sourceID)
+        }
+        let source = PageThumbnailWorkSource(
+            libraryID: libraryID,
+            owner: owner,
+            derivativeStore: artworkDerivativeStore,
+            candidates: candidates,
+            isEnabled: isEnabled
+        )
+        backgroundScheduler = scheduler
+        pageThumbnailSource = source
+        scheduler.register(source)
+    }
+
+    func detachBackgroundSources() {
+        if let source = artworkColorSource {
+            backgroundScheduler?.unregister(sourceID: source.sourceID)
+        }
+        artworkColorSource = nil
+        if let source = pageThumbnailSource {
+            backgroundScheduler?.unregister(sourceID: source.sourceID)
+        }
+        pageThumbnailSource = nil
+        if let source = missingPlaylistArtworkSource {
+            backgroundScheduler?.unregister(sourceID: source.sourceID)
+        }
+        missingPlaylistArtworkSource = nil
     }
 }

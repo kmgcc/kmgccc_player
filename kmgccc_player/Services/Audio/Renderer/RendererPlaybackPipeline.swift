@@ -9,6 +9,7 @@
 //
 
 import AVFoundation
+import Accelerate
 import Foundation
 import os
 
@@ -179,13 +180,28 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     )
 
     static let targetAheadSeconds: Double = 1.5
-    private static let dspTargetAheadSeconds: Double = 0.6
+    /// Queued output depth while the DSP chain is on. A parameter edit can only
+    /// take effect where the queued output ends, so this depth is also how long
+    /// the change waits before it is audible. It exists to absorb producer
+    /// hiccups, and the 30 Hz top-up below refills it, so it stays short.
+    private static let dspTargetAheadSeconds: Double = 0.25
+    /// Feed top-up cadence. Independent of the ahead target so a deep queue does
+    /// not also mean a slow refill after a flush, a seek or a dry renderer.
+    private static let feedTopUpInterval: TimeInterval = 1.0 / 30.0
     static let chunkFrames: AVAudioFrameCount = 8192
     static let enqueueBlockFrames: Int = 2048
-    private static let dspLedgerByteLimit = 32 * 1_024 * 1_024
-    private static let dspFutureByteBudget = 24 * 1_024 * 1_024
-    private static let dspWarmupByteLimit = 16 * 1_024 * 1_024
-    private static let dspReplacementByteLimit = 64 * 1_024 * 1_024
+    private static let dspLedgerByteLimit = 8 * 1_024 * 1_024
+    private static let dspFutureByteBudget = 8 * 1_024 * 1_024
+    private static let dspWarmupByteLimit = 8 * 1_024 * 1_024
+    private static let dspReplacementByteLimit = 24 * 1_024 * 1_024
+    /// Bounded chase of blocks produced while a replacement was preparing.
+    private static let dspPreparationMaximumExtensions = 3
+    /// Headroom the swap point must keep ahead of the play clock before the
+    /// queued output is flushed and replaced. The whole flush round trip has to
+    /// fit inside this window; a shorter one lets the renderer run dry, which is
+    /// audible. When it cannot be met the swap waits for the queue horizon
+    /// instead of interrupting playback.
+    private static let dspFlushSafetySeconds: Double = 0.15
     // Visualizer analysis delivers fine-grained slices (≈23ms @ 44.1kHz)
     // so downstream FFT/LED calculations advance continuously without burstiness.
     static let analysisChunkFrames: Int = 1024
@@ -195,6 +211,13 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             return dspOutputBoundaries.count
         }
         return pipelineQueue.sync { dspOutputBoundaries.count }
+    }
+
+    var synchronizerAnchorMutationCountForTesting: Int {
+        if DispatchQueue.getSpecific(key: pipelineQueueKey) != nil {
+            return synchronizerAnchorMutationCount
+        }
+        return pipelineQueue.sync { synchronizerAnchorMutationCount }
     }
 
     var dspOutputHistoryIsNonoverlappingForTesting: Bool {
@@ -228,8 +251,21 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let sourceFormat: DSPAudioFormat
         let formatDescription: CMAudioFormatDescription
         var nextSourceFrame: AVAudioFramePosition
+        /// Target of the chain-head loudness stage for this source.
         var normalizationGain: Double = 1
+        /// Glide length for the next change of `normalizationGain`.
+        var pendingGainGlideSeconds: Double?
         var didReportExhaustion = false
+    }
+
+    /// Chain-head loudness gain, advanced once per produced block. Gains move
+    /// along a dB-linear glide so a switch, a retarget or a gapless boundary
+    /// never steps the level.
+    private struct LoudnessGainRamp {
+        var current: Double
+        var target: Double
+        var framesRemaining: Int
+        var segmentID: UUID
     }
 
     private struct DSPPCMBlock {
@@ -281,12 +317,15 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let presentationTime: Double
         let frameCount: Int
         let format: DSPAudioFormat
-        let normalizationGain: Double
+        /// Loudness gain at the first and after the last frame of this block.
+        let gainStart: Double
+        let gainEnd: Double
         var request: DSPApplyRequest?
         var headroomDB: Double
         var processingLatencyFrames: Int
         var peakGuarantee: String
         var warnings: [DSPDiagnostic]
+        var state: AudioDSPProcessor.StateSnapshot?
 
         var endPresentationTime: Double {
             presentationTime + Double(frameCount) / format.sampleRate
@@ -314,9 +353,13 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         case unavailablePCM
         case timelineChanged
         case incompleteQueue
+        case superseded
     }
 
-    private struct DSPReplacementBlock {
+    /// Prepared on the DSP preparation queue and handed to `pipelineQueue`.
+    /// `CMSampleBuffer` and the processor carry no Sendable conformance, but the
+    /// handoff is strictly one-directional and never aliased by both queues.
+    private struct DSPReplacementBlock: @unchecked Sendable {
         let raw: DSPPCMBlock
         let oldOutput: CanonicalPCM
         let output: CanonicalPCM
@@ -325,9 +368,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let processingLatencyFrames: Int
         let peakGuarantee: String
         let warnings: [DSPDiagnostic]
+        let state: AudioDSPProcessor.StateSnapshot?
     }
 
-    private struct DSPReplacementTransaction {
+    private struct DSPReplacementTransaction: @unchecked Sendable {
         let request: DSPApplyRequest
         let transactionID: UUID
         let timelineGeneration: UUID
@@ -336,7 +380,6 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let startPTS: Double
         let oldHorizonPTS: Double
         let format: DSPAudioFormat
-        let warmupBlocks: [DSPPCMBlock]
         let blocks: [DSPReplacementBlock]
         let finalProcessor: AudioDSPProcessor
         let warnings: [DSPDiagnostic]
@@ -346,11 +389,41 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let retryCount: Int
     }
 
+    private struct DSPPreparationBlock: @unchecked Sendable {
+        let raw: DSPPCMBlock
+        let oldOutput: CanonicalPCM
+        let lookahead: CanonicalPCM?
+        let formatDescription: CMAudioFormatDescription
+    }
+
+    private struct DSPPreparationPlan: @unchecked Sendable {
+        let request: DSPApplyRequest
+        let timelineGeneration: UUID
+        let rendererGeneration: UUID
+        let rendererID: ObjectIdentifier
+        let startPTS: Double
+        let horizon: Double
+        let format: DSPAudioFormat
+        let warmup: [DSPPCMBlock]
+        let state: AudioDSPProcessor.StateSnapshot?
+        let blocks: [DSPPreparationBlock]
+        let retryCount: Int
+        let prefix: DSPReplacementTransaction?
+    }
+
+    private struct DSPHorizonTransition {
+        let previous: AudioDSPProcessor
+        let weights: [Double]
+        var offsetSeconds: Double = 0
+    }
+
     private struct AnalysisChunk {
         let presentationTime: Double
         let pcm: CanonicalPCM
         let segmentID: UUID
         let dspRevision: String
+        /// Effect meter readings for this chunk, published when it is heard.
+        var meters: [DSPNodeMeterReading] = []
     }
 
     private var segments: [Segment] = []
@@ -359,9 +432,14 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     private var enqueueToken = UUID()
     private var isLoaded = false
     private var isPlaybackActive = false
+    private var synchronizerAnchorMutationCount = 0
     private var activeLoadSegmentID: UUID?
     private var timelineGeneration = UUID()
     private let timelineGenerationGate = RendererTimelineGeneration()
+    /// Advances at command ingress, before a busy decode queue can finish an
+    /// old fade or deliver its state back to MainActor.
+    private var transportCommandGeneration = UUID()
+    private let transportCommandGate = RendererTimelineGeneration()
     private var rendererFailureRecoveryBudget = RendererFailureRecoveryBudget()
     private var pendingAutoFlushResync = false
     /// Renderer PTS lead used for source re-seeks after a route/mode flush.
@@ -370,9 +448,22 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     private var analysisLeadSeconds: Double = 0
     private var analysisDeliveryLeadSeconds: Double = 0
     private var analysisQueue: [AnalysisChunk] = []
-    private var dspConfiguration = AudioDSPConfiguration.defaultFlat
+    private var dspConfiguration = AudioDSPConfiguration.defaultFlat {
+        didSet {
+            // Spatial audio renders its own binaural image; the system must
+            // not spatialize it a second time.
+            if oldValue.rendersSpatialImage != dspConfiguration.rendersSpatialImage {
+                configureSpatialization(renderer)
+            }
+        }
+    }
     private var dspRevision = "initial"
     private var dspProcessor: AudioDSPProcessor?
+    private var dspLoadMonitoringEnabled = false
+    private var dspLoadMonitoringGeneration = UUID()
+    private var dspLoadMeasurement: DSPProcessingLoadAccumulator?
+    private var dspLoadProcessorID: ObjectIdentifier?
+    private var dspLoadSettlingFrames = 0
     private var latestAcceptedDSPRequest: DSPApplyRequest?
     private var effectiveDSPRequest: DSPApplyRequest?
     private var pendingDecodedPCM: PendingDecodedPCM?
@@ -383,10 +474,30 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     private var pendingAudibleDSPEvent: DSPApplyEvent?
     private var activeDSPTransaction: DSPReplacementTransaction?
     private var queuedDSPApply: DSPApplyRequest?
+    private let dspPreparationQueue = DispatchQueue(label: "kmg.myplayer2.dsp-preparation", qos: .userInitiated)
+    private let dspRequestGate = RendererTimelineGeneration()
+    private var dspPreparationID: UUID?
+    private var preparingDSPRequest: DSPApplyRequest?
+    private var dspPreparationSeconds: Double = 0
+    private var dspHorizonTransition: DSPHorizonTransition?
     private var currentVolume: Float = 1
     private var fadeConfiguration = AudioFadeConfiguration()
-    private var desiredDSPContext = DSPEqualLoudnessContext.appOnly
-    private var dspContext = DSPEqualLoudnessContext.appOnly
+    private var desiredDSPContext = DSPEqualLoudnessContext.inactive
+    private var dspContext = DSPEqualLoudnessContext.inactive
+    private var loudnessRamp: LoudnessGainRamp?
+    /// Volume normalization keeps the short queue so a switch is heard soon.
+    private var loudnessNormalizationActive = false
+    /// Set while queued output is being flushed to re-render it from an
+    /// earlier boundary; the producer stays paused until the flush returns.
+    private var producerRewindID: UUID?
+    private var lastAudibleLoudness: (segmentID: UUID, gainDB: Double)?
+    private var lastSupplyShortfallReport: TimeInterval = 0
+    private static let defaultGainGlideSeconds = 0.25
+    private static let gaplessGainGlideSeconds = 0.008
+
+    private var isProducerHeld: Bool {
+        activeDSPTransaction != nil || producerRewindID != nil
+    }
     private let outputGainController: PlaybackOutputGainController
     /// Core Audio UID currently selected for this renderer. On macOS the
     /// synchronizer uses the attached audio renderer's device clock, so keeping
@@ -416,12 +527,19 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     /// The segment ID lets the owner discard a callback from an older seek.
     var onTimelineMutationCommitted: ((UUID, Double, Bool) -> Void)?
     var onSystemReconfigEvent: (() -> Void)?
+    /// Main-queue confirmation after the renderer commits an output route.
+    var onOutputDeviceChange: ((String?) -> Void)?
     var onEnqueue: (@Sendable (CanonicalPCM, Double) -> Void)?
     var onAnalysisPCM: (@Sendable (CanonicalPCM) -> Void)?
     var onSegmentExhausted: ((RendererSegmentDescriptor) -> Void)?
     var onFailure: ((_ segmentID: UUID?, _ error: RendererPipelineError) -> Void)?
     var onDSPApplyEvent: (@Sendable (DSPApplyEvent) -> Void)?
-    var onTransportStateChange: (@Sendable (AudioTransportTransitionState, UUID) -> Void)?
+    var onDSPProcessingLoad: (@MainActor @Sendable (DSPProcessingLoadUpdate, UUID, UUID) -> Void)?
+    /// Main-queue report of the loudness gain at the output clock.
+    var onAudibleLoudnessGain: ((UUID, Double) -> Void)?
+    /// Main-queue notice that the output queue ran short.
+    var onSupplyShortfall: (() -> Void)?
+    var onTransportStateChange: (@Sendable (AudioTransportTransitionState, UUID, UUID) -> Void)?
 
     private static let feedInterval: TimeInterval = 0.1
     private static let analysisInterval: TimeInterval = 1.0 / 60.0
@@ -441,11 +559,13 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         outputGainController = PlaybackOutputGainController(queue: queue)
         outputGainController.writeGain = { [weak self] gain in self?.renderer.volume = gain }
         outputGainController.publish = { [weak self] state in
-            guard let self else { return }
-            self.onTransportStateChange?(state, self.timelineGeneration)
+            guard let self,
+                  self.transportCommandGate.isCurrent(self.transportCommandGeneration) else { return }
+            self.onTransportStateChange?(state, self.timelineGeneration, self.transportCommandGeneration)
         }
         pipelineQueue.setSpecific(key: pipelineQueueKey, value: ())
         timelineGeneration = timelineGenerationGate.current()
+        transportCommandGeneration = transportCommandGate.current()
         configureRenderer(renderer)
         synchronizer.addRenderer(renderer)
         // Keep this ordering identical to the verified AVSampleBuffer demo:
@@ -480,7 +600,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     }
 
     private func configureSpatialization(_ renderer: AVSampleBufferAudioRenderer) {
-        renderer.allowedAudioSpatializationFormats = [.monoStereoAndMultichannel]
+        renderer.allowedAudioSpatializationFormats = dspConfiguration.rendersSpatialImage
+            ? [] : [.monoStereoAndMultichannel]
     }
 
     private func installRendererObservers(
@@ -534,21 +655,64 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
 
     func isTimelineCurrent(_ generation: UUID) -> Bool { timelineGenerationGate.isCurrent(generation) }
 
+    func isTransportCommandCurrent(_ generation: UUID) -> Bool { transportCommandGate.isCurrent(generation) }
+
     func setFadeConfiguration(_ configuration: AudioFadeConfiguration) {
         pipelineQueue.async { [weak self] in self?.fadeConfiguration = configuration }
     }
 
+    /// Equal-loudness control changes travel the parameter channel: only the
+    /// two shelf gains move, the chain keeps its state, and a change that
+    /// leaves every shelf where it is does no work at all.
     func setEqualLoudnessContext(_ context: DSPEqualLoudnessContext) {
         pipelineQueue.async { [weak self] in
             guard let self, self.desiredDSPContext != context else { return }
+            let previous = self.desiredDSPContext
             self.desiredDSPContext = context
+            // Effects with an automatic target retune when the route changes
+            // between headphones and speakers.
+            if let request = self.latestAcceptedDSPRequest,
+               previous.outputKind != context.outputKind,
+               request.configuration.followsOutputKind {
+                self.applyDSP(request.configuration, revision: request.revision, requestID: request.requestID)
+                return
+            }
             guard let request = self.latestAcceptedDSPRequest,
-                  request.configuration.enabled,
-                  request.configuration.nodes.contains(where: { $0.enabled && $0.typeID == "equalLoudness" }) else {
+                  let before = DSPEqualLoudnessMath.chainGains(configuration: request.configuration, context: previous),
+                  let after = DSPEqualLoudnessMath.chainGains(configuration: request.configuration, context: context)
+            else {
                 self.dspContext = context
                 return
             }
+            let unchanged = abs(before.bassDB - after.bassDB) < 0.01 && abs(before.trebleDB - after.trebleDB) < 0.01
+            guard !unchanged else { return }
             self.applyDSP(request.configuration, revision: request.revision, requestID: request.requestID)
+        }
+    }
+
+    /// Keeps the short queue while volume normalization is on, so switching it
+    /// or retargeting a gain is heard within one short queue depth.
+    func setLoudnessNormalizationActive(_ active: Bool) {
+        pipelineQueue.async { [weak self] in self?.loudnessNormalizationActive = active }
+    }
+
+    /// Retargets the chain-head loudness gain of a queued source. The current
+    /// source glides to the new gain over `glideSeconds`; when the queued
+    /// output is deep, it is re-rendered from a safe boundary so the change
+    /// starts within a few hundred milliseconds instead of after the queue.
+    func setNormalizationGain(_ gain: Double, forSegment segmentID: UUID, glideSeconds: Double) {
+        pipelineQueue.async { [weak self] in
+            guard let self,
+                  let index = self.segments.firstIndex(where: { $0.descriptor.id == segmentID }) else { return }
+            let bounded = gain.isFinite ? max(0, gain) : 1
+            guard abs(self.segments[index].normalizationGain - bounded) > 1e-9 else { return }
+            self.segments[index].normalizationGain = bounded
+            self.segments[index].pendingGainGlideSeconds = max(0.001, glideSeconds)
+            let clock = self.currentSynchronizerClockSeconds()
+            let audibleSegment = self.activeSegmentID(atTimelineClock: clock)
+            if audibleSegment == segmentID, self.nextPresentationTime - clock > 0.45 {
+                self.rewindProducerForGainChange(segmentID: segmentID)
+            }
         }
     }
 
@@ -578,12 +742,20 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         revision: String,
         requestID: UUID
     ) {
+        // Invalidate stale preparation before this request reaches the busy
+        // producer queue. Only the newest ingress request starts work.
+        let token = dspRequestGate.advance()
         pipelineQueue.async { [weak self] in
             guard let self else { return }
             let request = DSPApplyRequest(
                 configuration: configuration, revision: revision, requestID: requestID,
-                token: UUID(), context: self.desiredDSPContext
+                token: token, context: self.desiredDSPContext
             )
+            guard self.dspRequestGate.isCurrent(token) else {
+                self.emitDSPEvent(request, state: .superseded, format: self.currentDSPFormat,
+                    scheduledPTS: nil, audiblePTS: nil, headroomDB: nil, warnings: [], diagnostics: [])
+                return
+            }
             if let superseded = self.queuedDSPApply, superseded.requestID != request.requestID {
                 self.emitDSPEvent(
                     superseded,
@@ -628,7 +800,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 warnings: [],
                 diagnostics: []
             )
-            guard self.activeDSPTransaction == nil else { return }
+            guard !self.isProducerHeld else { return }
             self.startNextDSPApply(retryCount: 0, afterPTS: nil)
         }
     }
@@ -679,6 +851,52 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         }
     }
 
+    /// Measurement is demand-driven and confined to the existing producer queue.
+    func setDSPProcessingLoadMonitoring(_ enabled: Bool, generation: UUID) {
+        pipelineQueue.async { [weak self] in
+            guard let self else { return }
+            self.dspLoadMonitoringEnabled = enabled
+            self.dspLoadMonitoringGeneration = generation
+            self.resetDSPProcessingLoad()
+        }
+    }
+
+    private func emitDSPProcessingLoad(_ snapshot: DSPProcessingLoadSnapshot?) {
+        let update = DSPProcessingLoadUpdate(monitoringGeneration: dspLoadMonitoringGeneration, snapshot: snapshot)
+        let timeline = timelineGeneration
+        let transport = transportCommandGeneration
+        DispatchQueue.main.async { [weak self] in
+            self?.onDSPProcessingLoad?(update, timeline, transport)
+        }
+    }
+
+    private func resetDSPProcessingLoad() {
+        dspLoadMeasurement = nil
+        dspLoadProcessorID = nil
+        dspLoadSettlingFrames = 0
+    }
+
+    private func processingLoadMeasurement(for processor: AudioDSPProcessor?, frames: Int) -> DSPProcessingLoadAccumulator? {
+        guard dspLoadMonitoringEnabled, isPlaybackActive, dspHorizonTransition == nil,
+              dspRevision == latestAcceptedDSPRequest?.revision,
+              let processor, !processor.hasProcessingFault,
+              !processor.isBypassed || !processor.idleProcessingNodeIDs.isEmpty else { return nil }
+        let identity = ObjectIdentifier(processor)
+        if dspLoadProcessorID != identity {
+            resetDSPProcessingLoad()
+            dspLoadProcessorID = identity
+            // Continuous parameter edits replace processors frequently. Wait
+            // for a short stable run before allocating or reading any clocks.
+            dspLoadSettlingFrames = Int((processor.format.sampleRate * DSPProcessingLoadAccumulator.sampleIntervalSeconds).rounded())
+        }
+        if dspLoadMeasurement == nil {
+            dspLoadSettlingFrames -= frames
+            guard dspLoadSettlingFrames <= 0 else { return nil }
+            dspLoadMeasurement = DSPProcessingLoadAccumulator(nodeIDs: processor.processingNodeIDs)
+        }
+        return dspLoadMeasurement
+    }
+
     private func emitDSPEvent(_ event: DSPApplyEvent) {
         DispatchQueue.main.async { [weak self] in
             self?.onDSPApplyEvent?(event)
@@ -720,12 +938,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         // runtime that will actually process the first newly queued sample,
         // even when decoding has already advanced dspProcessor to a later
         // format in the queue.
-        let processor = AudioDSPProcessor(
-            configuration: dspConfiguration,
-            format: firstBoundary.format, context: dspContext
-        )
         var warningsByID = [String: DSPDiagnostic]()
-        for warning in processor.diagnostics + additionalWarnings {
+        for warning in firstBoundary.warnings + additionalWarnings {
             warningsByID[warning.id] = warning
         }
         let warnings = warningsByID.values.sorted { $0.id < $1.id }
@@ -736,10 +950,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             format: firstBoundary.format,
             scheduledPTS: firstBoundary.presentationTime,
             audiblePTS: nil,
-            headroomDB: processor.headroomDB,
-            processingLatencyFrames: processor.processingLatencyFrames,
+            headroomDB: firstBoundary.headroomDB,
+            processingLatencyFrames: firstBoundary.processingLatencyFrames,
             mediaMappingLatencyFrames: 0,
-            peakGuarantee: processor.peakGuarantee,
+            peakGuarantee: firstBoundary.peakGuarantee,
             warnings: warnings,
             diagnostics: warnings,
             rebuffered: rebuffered
@@ -759,278 +973,318 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     }
 
     private func startNextDSPApply(retryCount: Int, afterPTS: Double?) {
-        guard activeDSPTransaction == nil,
-              let request = queuedDSPApply,
-              isLoaded,
+        guard !isProducerHeld, dspPreparationID == nil,
+              let request = queuedDSPApply, isLoaded,
               timelineGenerationGate.isCurrent(timelineGeneration) else { return }
         queuedDSPApply = nil
-
-        let clock = currentSynchronizerClockSeconds()
-        let analysisPublishedThrough = clock + analysisLeadSeconds
-            - analysisDeliveryLeadSeconds + 0.005
-        let earliestSafePTS = max(clock, analysisPublishedThrough) + 0.05
-        let targetPTS = max(earliestSafePTS, (afterPTS ?? 0) + (afterPTS == nil ? 0 : 0.05))
-        let horizon = nextPresentationTime
-        guard let boundary = dspOutputBoundaries.first(where: {
-            $0.presentationTime + 0.000_001 >= targetPTS
-                && $0.presentationTime < horizon - 0.000_001
-        }) else {
-            controlledDSPRebuffer(request, retryCount: retryCount)
-            return
-        }
-
-        do {
-            let transaction = try prepareDSPReplacement(
-                request,
-                boundary: boundary,
-                horizon: horizon,
-                retryCount: retryCount
-            )
-            let clockAfterPreparation = currentSynchronizerClockSeconds()
-            let analysisAfterPreparation = clockAfterPreparation
-                + analysisLeadSeconds - analysisDeliveryLeadSeconds
-            guard transaction.startPTS > max(
-                clockAfterPreparation,
-                analysisAfterPreparation + 0.005
-            ) + 0.02 else {
-                if retryCount == 0 {
-                    queuedDSPApply = request
-                    startNextDSPApply(retryCount: 1, afterPTS: transaction.startPTS)
-                } else {
-                    controlledDSPRebuffer(request, retryCount: retryCount + 1)
-                }
+        let format = replacementBoundary(afterPTS: afterPTS)?.format ?? currentDSPFormat
+        guard let format else { return }
+        let id = UUID()
+        let timeline = timelineGeneration
+        dspPreparationID = id
+        preparingDSPRequest = request
+        dspPreparationQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.dspRequestGate.isCurrent(request.token) else {
+                self.pipelineQueue.async { self.finishSupersededPreparation(id: id, request: request) }
                 return
             }
-            beginPartialDSPFlush(transaction)
-        } catch DSPApplyPreparationError.incompleteQueue {
-            controlledDSPRebuffer(request, retryCount: retryCount)
-        } catch DSPApplyPreparationError.timelineChanged {
-            emitDSPEvent(
-                request,
-                state: .failed,
-                format: boundary.format,
-                scheduledPTS: nil,
-                audiblePTS: nil,
-                headroomDB: nil,
-                warnings: [],
-                diagnostics: [DSPDiagnostic(
-                    code: "timelineChanged",
-                    message: "The output timeline changed while preparing this DSP update.",
-                    retryable: true
-                )]
-            )
-        } catch DSPApplyPreparationError.unavailablePCM {
-            emitDSPEvent(
-                request,
-                state: .failed,
-                format: boundary.format,
-                scheduledPTS: nil,
-                audiblePTS: nil,
-                headroomDB: nil,
-                warnings: [],
-                diagnostics: [DSPDiagnostic(
-                    code: "replacementPCMUnavailable",
-                    message: "The queued output could not be reconstructed safely.",
-                    retryable: true
-                )]
-            )
-        } catch {
-            finishWithFailure(
-                .sourceError(underlying: error),
-                segmentID: activeSegmentID(atTimelineClock: currentSynchronizerClockSeconds())
-            )
-            emitDSPEvent(
-                request,
-                state: .failed,
-                format: boundary.format,
-                scheduledPTS: nil,
-                audiblePTS: nil,
-                headroomDB: nil,
-                warnings: [],
-                diagnostics: [DSPDiagnostic(
-                    code: "sourceReplayFailed",
-                    message: "The PCM source failed while preparing the DSP update.",
-                    retryable: false
-                )]
-            )
+            let processor = AudioDSPProcessor(configuration: request.configuration, format: format, context: request.context)
+            self.pipelineQueue.async {
+                guard self.dspPreparationID == id else { return }
+                self.dspPreparationID = nil
+                self.preparingDSPRequest = nil
+                guard self.timelineGeneration == timeline, self.isLoaded,
+                      self.timelineGenerationGate.isCurrent(timeline) else { return }
+                guard self.dspRequestGate.isCurrent(request.token) else {
+                    self.finishSupersededPreparation(id: nil, request: request)
+                    return
+                }
+                // Parameter channel: the same topology with new values is
+                // adopted at the next produced block. Filters, oversamplers
+                // and reverb-like tails keep their state, so no queued audio
+                // is flushed and the edit is heard after one short queue.
+                if let effective = self.effectiveDSPRequest,
+                   effective.configuration.hasSameStructure(as: request.configuration),
+                   self.dspProcessor?.format == processor.format {
+                    self.installDSPAtQueueHorizon(request, processor: processor)
+                    return
+                }
+                guard let boundary = self.replacementBoundary(afterPTS: afterPTS), boundary.format == processor.format else {
+                    self.installDSPAtQueueHorizon(request, processor: processor)
+                    return
+                }
+                do {
+                    let plan = try self.prepareDSPReplacement(request, boundary: boundary,
+                        horizon: self.nextPresentationTime, retryCount: retryCount, processor: processor)
+                    self.runDSPPreparation(plan, processor: processor)
+                } catch {
+                    self.installDSPAtQueueHorizon(request, processor: processor)
+                }
+            }
         }
     }
 
+    private func replacementBoundary(afterPTS: Double?) -> DSPOutputBoundary? {
+        let clock = currentSynchronizerClockSeconds()
+        let analysisThrough = clock + analysisLeadSeconds - analysisDeliveryLeadSeconds + 0.005
+        let lead = max(Self.dspFlushSafetySeconds, dspPreparationSeconds * 1.5 + 0.04)
+        let target = max(max(clock, analysisThrough) + lead, (afterPTS ?? 0) + 0.03)
+        return dspOutputBoundaries.first {
+            $0.presentationTime >= target && $0.presentationTime < nextPresentationTime - 0.000_001
+        }
+    }
+
+    /// Snapshot only immutable PCM and state. The source cursor and renderer
+    /// remain confined to pipelineQueue; expensive processing runs elsewhere.
     private func prepareDSPReplacement(
         _ request: DSPApplyRequest,
-        boundary startBoundary: DSPOutputBoundary,
+        boundary start: DSPOutputBoundary,
         horizon: Double,
-        retryCount: Int
-    ) throws -> DSPReplacementTransaction {
+        retryCount: Int,
+        processor: AudioDSPProcessor,
+        prefix: DSPReplacementTransaction? = nil
+    ) throws -> DSPPreparationPlan {
         guard timelineGenerationGate.isCurrent(timelineGeneration),
-              let startIndex = dspOutputBoundaries.firstIndex(where: {
-                  DSPBlockKey($0) == DSPBlockKey(startBoundary)
-                      && abs($0.presentationTime - startBoundary.presentationTime) < 0.000_001
-              }) else { throw DSPApplyPreparationError.timelineChanged }
-
-        let replacementBoundaries = dspOutputBoundaries[startIndex...].filter {
-            $0.presentationTime < horizon - 0.000_001
+              let startIndex = dspOutputBoundaries.firstIndex(where: { $0.enqueueID == start.enqueueID }) else {
+            throw DSPApplyPreparationError.timelineChanged
         }
-        guard let first = replacementBoundaries.first,
-              abs(first.presentationTime - startBoundary.presentationTime) < 0.000_001,
-              let last = replacementBoundaries.last,
-              abs(last.endPresentationTime - horizon) <= max(1 / last.format.sampleRate, 0.000_1) else {
+        let boundaries = Array(dspOutputBoundaries[startIndex...].filter { $0.presentationTime < horizon - 0.000_001 })
+        guard let last = boundaries.last, abs(last.endPresentationTime - horizon) <= max(1 / last.format.sampleRate, 0.000_1) else {
             throw DSPApplyPreparationError.incompleteQueue
         }
-        for (previous, next) in zip(replacementBoundaries, replacementBoundaries.dropFirst()) {
-            let tolerance = max(1 / next.format.sampleRate, 0.000_1)
-            guard abs(previous.endPresentationTime - next.presentationTime) <= tolerance else {
+        for (previous, next) in zip(boundaries, boundaries.dropFirst()) {
+            guard abs(previous.endPresentationTime - next.presentationTime) <= max(1 / next.format.sampleRate, 0.000_1) else {
                 throw DSPApplyPreparationError.incompleteQueue
             }
         }
-
-        let warmupLowerBound = startBoundary.presentationTime - 2.0
-        var warmupBoundaries = dspOutputBoundaries[..<startIndex].filter { boundary in
-            boundary.endPresentationTime >= warmupLowerBound
-                && (segments.contains(where: { $0.descriptor.id == boundary.segmentID })
-                    || dspLedger.contains(where: { DSPBlockKey($0.raw) == DSPBlockKey(boundary) }))
-        }
-        if let formatChange = warmupBoundaries.lastIndex(where: { $0.format != startBoundary.format }) {
-            warmupBoundaries = Array(warmupBoundaries.suffix(from: warmupBoundaries.index(after: formatChange)))
-        }
-        if !warmupBoundaries.isEmpty {
-            // Keep only the contiguous suffix immediately preceding T.
-            var contiguousStart = warmupBoundaries.count - 1
-            while contiguousStart > 0 {
-                let previous = warmupBoundaries[contiguousStart - 1]
-                let next = warmupBoundaries[contiguousStart]
-                let tolerance = max(1 / next.format.sampleRate, 0.000_1)
-                guard previous.format == next.format,
-                      abs(previous.endPresentationTime - next.presentationTime) <= tolerance else { break }
-                contiguousStart -= 1
+        let state = prefix == nil ? start.state : nil
+        var warmupBoundaries: [DSPOutputBoundary] = []
+        if prefix == nil, processor.needsWarmup, state?.matches(request.configuration) != true {
+            warmupBoundaries = dspOutputBoundaries[..<startIndex].filter {
+                $0.endPresentationTime >= start.presentationTime - 2 && $0.format == start.format
             }
-            warmupBoundaries = Array(warmupBoundaries[contiguousStart...])
+            // A format change or recovery can leave unrelated earlier ranges.
+            while let first = warmupBoundaries.first, let second = warmupBoundaries.dropFirst().first,
+                  abs(first.endPresentationTime - second.presentationTime) > 1 / start.format.sampleRate {
+                warmupBoundaries.removeFirst()
+            }
         }
-
-        let oldBypass = replacementBoundaries.allSatisfy(\.outputIsIdentity)
-        let estimatedWarmupBytes = warmupBoundaries.reduce(0) {
-            $0 + $1.frameCount * $1.format.channelCount * MemoryLayout<Float>.size
-        }
-        let estimatedFutureBytes = replacementBoundaries.reduce(0) {
-            $0 + $1.frameCount * $1.format.channelCount * MemoryLayout<Float>.size
-        }
-        let pendingBytes = (pendingDecodedPCM?.pcm.data.count ?? 0) * MemoryLayout<Float>.size
-        let transitionWeightCount = Int(min(
-            1_000_000,
-            max(0, startBoundary.format.sampleRate * 0.03)
-        ))
-        let transitionWeightBytes = transitionWeightCount * MemoryLayout<Double>.size
-        let replacementMultiplier = oldBypass ? 3 : 4
-        guard estimatedFutureBytes * replacementMultiplier
-            + estimatedWarmupBytes + pendingBytes + transitionWeightBytes
-            <= Self.dspReplacementByteLimit else {
+        let warmup = try rawBlocks(for: warmupBoundaries)
+        let future = try rawBlocks(for: boundaries)
+        let warmupBytes = warmup.reduce(0) { $0 + $1.pcm.data.count * MemoryLayout<Float>.size }
+        let futureBytes = future.reduce(0) { $0 + $1.pcm.data.count * MemoryLayout<Float>.size }
+        let prefixBytes = prefix?.blocks.reduce(0) { $0 + $1.raw.pcm.data.count * MemoryLayout<Float>.size } ?? 0
+        guard warmupBytes <= Self.dspWarmupByteLimit,
+              warmupBytes + (futureBytes + prefixBytes) * 4 <= Self.dspReplacementByteLimit else {
             throw DSPApplyPreparationError.incompleteQueue
         }
-
-        let warmupRaw = try rawBlocks(for: warmupBoundaries)
-        let futureRaw = try rawBlocks(for: replacementBoundaries)
-        var oldOutputs = [DSPBlockKey: CanonicalPCM]()
-        for item in dspLedger { oldOutputs[DSPBlockKey(item.raw)] = item.output }
-        let identityKeys = Set(replacementBoundaries.filter(\.outputIsIdentity).map(DSPBlockKey.init))
-        for raw in futureRaw where oldOutputs[DSPBlockKey(raw)] == nil {
-            guard identityKeys.contains(DSPBlockKey(raw)) else {
-                throw DSPApplyPreparationError.unavailablePCM
-            }
-            oldOutputs[DSPBlockKey(raw)] = raw.pcm
-        }
-
-        // rawBlocks already returns one block per boundary, in timeline order.
-        // Re-keying those arrays loses enqueue identity and traps on replayed
-        // source ranges; process the authoritative ordered result directly.
-        let warmupBlocks = warmupRaw
-        let orderedFuture = futureRaw
-        var runtime = AudioDSPProcessor(
-            configuration: request.configuration,
-            format: startBoundary.format, context: request.context
-        )
-        let startHeadroomDB = runtime.headroomDB
-        let startLatencyFrames = runtime.processingLatencyFrames
-        let startPeakGuarantee = runtime.peakGuarantee
-        var warningByID = [String: DSPDiagnostic]()
-        for warning in runtime.diagnostics { warningByID[warning.id] = warning }
-        runtime.warm(with: warmupBlocks.map(\.pcm))
-        let transitionWeights = AudioDSPProcessor.transitionWeights(
-            sampleRate: startBoundary.format.sampleRate,
-            durationMilliseconds: 30
-        )
-        var transitionOffsetSeconds = 0.0
-        var replacements = [DSPReplacementBlock]()
-        replacements.reserveCapacity(orderedFuture.count)
-
-        for (rawIndex, raw) in orderedFuture.enumerated() {
-            if raw.format != runtime.format {
-                runtime = AudioDSPProcessor(
-                    configuration: request.configuration,
-                    format: raw.format, context: request.context
-                )
-                runtime.reset()
-                for warning in runtime.diagnostics { warningByID[warning.id] = warning }
-            }
-            let future = try dspLookahead(
-                after: raw, frameCount: runtime.processingLatencyFrames,
-                following: orderedFuture[(rawIndex + 1)...]
-            )
-            let processed = runtime.process(raw.pcm, lookahead: future)
-            let oldOutput = oldOutputs[DSPBlockKey(raw)] ?? raw.pcm
-            let output: CanonicalPCM
-            if transitionOffsetSeconds < 0.03 {
-                output = AudioDSPProcessor.crossfade(
-                    old: oldOutput,
-                    new: processed,
-                    weights: transitionWeights,
-                    transitionOffsetSeconds: transitionOffsetSeconds,
-                    weightSampleRate: startBoundary.format.sampleRate
-                )
-            } else {
-                output = processed
-            }
-            transitionOffsetSeconds += raw.pcm.seconds
+        var oldByKey = [DSPBlockKey: CanonicalPCM]()
+        for item in dspLedger { oldByKey[DSPBlockKey(item.raw)] = item.output }
+        var blocks = [DSPPreparationBlock]()
+        for (index, raw) in future.enumerated() {
             guard let segment = segments.first(where: { $0.descriptor.id == raw.segmentID }),
-                  let sampleBuffer = CMSampleBufferFactory.makeSampleBuffer(
-                      from: output,
-                      formatDescription: segment.formatDescription,
-                      presentationTime: CMSampleBufferFactory.time(
-                          frames: Int64((raw.presentationTime * raw.format.sampleRate).rounded()),
-                          sampleRate: raw.format.sampleRate
-                      )
-                  ) else {
+                  let old = oldByKey[DSPBlockKey(raw)] ?? (boundaries[index].outputIsIdentity ? raw.pcm : nil) else {
                 throw DSPApplyPreparationError.unavailablePCM
             }
-            replacements.append(DSPReplacementBlock(
-                raw: raw,
-                oldOutput: oldOutput,
-                output: output,
-                sampleBuffer: sampleBuffer,
-                headroomDB: runtime.headroomDB,
-                processingLatencyFrames: runtime.processingLatencyFrames,
-                peakGuarantee: runtime.peakGuarantee,
-                warnings: runtime.diagnostics
-            ))
+            let lookahead = try dspLookahead(after: raw, frameCount: processor.processingLatencyFrames,
+                following: future[(index + 1)...])
+            blocks.append(DSPPreparationBlock(raw: raw, oldOutput: old, lookahead: lookahead,
+                formatDescription: segment.formatDescription))
         }
+        return DSPPreparationPlan(request: request, timelineGeneration: timelineGeneration,
+            rendererGeneration: rendererGeneration, rendererID: ObjectIdentifier(renderer),
+            startPTS: prefix?.startPTS ?? start.presentationTime, horizon: horizon,
+            format: prefix?.format ?? start.format, warmup: warmup, state: state, blocks: blocks,
+            retryCount: retryCount, prefix: prefix)
+    }
 
-        return DSPReplacementTransaction(
-            request: request,
-            transactionID: UUID(),
-            timelineGeneration: timelineGeneration,
-            rendererGeneration: rendererGeneration,
-            rendererID: ObjectIdentifier(renderer),
-            startPTS: startBoundary.presentationTime,
-            oldHorizonPTS: horizon,
-            format: startBoundary.format,
-            warmupBlocks: warmupBlocks,
-            blocks: replacements,
-            finalProcessor: runtime,
-            warnings: warningByID.values.sorted { $0.id < $1.id },
-            headroomDB: startHeadroomDB,
-            processingLatencyFrames: startLatencyFrames,
-            peakGuarantee: startPeakGuarantee,
-            retryCount: retryCount
+    private func runDSPPreparation(
+        _ plan: DSPPreparationPlan,
+        processor: AudioDSPProcessor,
+        extensions: Int = 0
+    ) {
+        let id = UUID()
+        dspPreparationID = id
+        preparingDSPRequest = plan.request
+        dspPreparationQueue.async { [weak self] in
+            guard let self else { return }
+            let started = ProcessInfo.processInfo.systemUptime
+            let result = Result { try self.processDSPReplacement(plan, processor: processor) }
+            let elapsed = ProcessInfo.processInfo.systemUptime - started
+            self.pipelineQueue.async {
+                guard self.dspPreparationID == id else { return }
+                self.dspPreparationID = nil
+                self.preparingDSPRequest = nil
+                guard self.isLoaded, self.timelineGeneration == plan.timelineGeneration,
+                      self.timelineGenerationGate.isCurrent(plan.timelineGeneration),
+                      self.rendererGeneration == plan.rendererGeneration,
+                      ObjectIdentifier(self.renderer) == plan.rendererID else { return }
+                guard self.dspRequestGate.isCurrent(plan.request.token) else {
+                    self.finishSupersededPreparation(id: nil, request: plan.request)
+                    return
+                }
+                self.dspPreparationSeconds = elapsed
+                switch result {
+                case .failure:
+                    Self.pipelineLog.warning(
+                        "dsp apply: preparation failed after \(elapsed, format: .fixed(precision: 3))s; waiting for the queue horizon"
+                    )
+                    self.installDSPAtQueueHorizon(plan.request, processor: processor)
+                case .success(let transaction):
+                    let clock = self.currentSynchronizerClockSeconds()
+                    let safe = max(clock, clock + self.analysisLeadSeconds - self.analysisDeliveryLeadSeconds + 0.005) + 0.02
+                    guard transaction.startPTS > safe else {
+                        // A slow preparation never stops or rewinds playback.
+                        // Adopt its plan at the next produced block instead.
+                        Self.pipelineLog.info(
+                            "dsp apply: prepared in \(elapsed, format: .fixed(precision: 3))s but its swap point \(transaction.startPTS, format: .fixed(precision: 3))s is already behind; waiting for the queue horizon"
+                        )
+                        self.installDSPAtQueueHorizon(plan.request, processor: processor)
+                        return
+                    }
+                    // The feed keeps running during preparation. Cover the blocks
+                    // it produced since the snapshot, but never chase the feed
+                    // indefinitely: a preparation slower than real time adopts
+                    // its processor at the horizon instead of never landing.
+                    if self.nextPresentationTime > transaction.oldHorizonPTS + 0.000_001,
+                       extensions < Self.dspPreparationMaximumExtensions,
+                       let tail = self.dspOutputBoundaries.first(where: {
+                           abs($0.presentationTime - transaction.oldHorizonPTS) < 0.000_001
+                       }) {
+                        Self.pipelineLog.debug(
+                            "dsp apply: extending preparation #\(extensions + 1, privacy: .public) to the feed horizon"
+                        )
+                        do {
+                            let extensionPlan = try self.prepareDSPReplacement(plan.request, boundary: tail,
+                                horizon: self.nextPresentationTime, retryCount: plan.retryCount,
+                                processor: transaction.finalProcessor, prefix: transaction)
+                            self.runDSPPreparation(extensionPlan, processor: transaction.finalProcessor,
+                                extensions: extensions + 1)
+                        } catch {
+                            Self.pipelineLog.warning(
+                                "dsp apply: extension failed; waiting for the queue horizon"
+                            )
+                            self.installDSPAtQueueHorizon(plan.request, processor: transaction.finalProcessor)
+                        }
+                        return
+                    }
+                    Self.pipelineLog.info(
+                        "dsp apply: prepared in \(elapsed, format: .fixed(precision: 3))s with \(extensions, privacy: .public) extension(s), queued ahead \(self.nextPresentationTime - clock, format: .fixed(precision: 3))s"
+                    )
+                    self.beginPartialDSPFlush(transaction)
+                }
+            }
+        }
+    }
+
+    /// Called only on dspPreparationQueue. No live provider/renderer access.
+    private func processDSPReplacement(_ plan: DSPPreparationPlan, processor: AudioDSPProcessor) throws -> DSPReplacementTransaction {
+        var runtime = processor
+        if plan.prefix == nil {
+            if let state = plan.state, runtime.restoreState(state) {
+                // Recursive histories now start at exactly the selected PTS.
+            } else if runtime.needsWarmup {
+                for block in plan.warmup {
+                    guard dspRequestGate.isCurrent(plan.request.token), timelineGenerationGate.isCurrent(plan.timelineGeneration) else {
+                        throw DSPApplyPreparationError.superseded
+                    }
+                    runtime.warm(with: [block.pcm])
+                }
+            }
+        }
+        let startHeadroom = plan.prefix?.headroomDB ?? runtime.headroomDB
+        let startLatency = plan.prefix?.processingLatencyFrames ?? runtime.processingLatencyFrames
+        let startPeak = plan.prefix?.peakGuarantee ?? runtime.peakGuarantee
+        let weights = AudioDSPProcessor.transitionWeights(sampleRate: plan.format.sampleRate, durationMilliseconds: 30)
+        var blocks = plan.prefix?.blocks ?? []
+        var warnings = plan.prefix?.warnings ?? runtime.diagnostics
+        for item in plan.blocks {
+            guard dspRequestGate.isCurrent(plan.request.token), timelineGenerationGate.isCurrent(plan.timelineGeneration) else {
+                throw DSPApplyPreparationError.superseded
+            }
+            if runtime.format != item.raw.format {
+                runtime = AudioDSPProcessor(configuration: plan.request.configuration, format: item.raw.format, context: plan.request.context)
+            }
+            let state = runtime.stateSnapshot()
+            let processed = runtime.process(item.raw.pcm, lookahead: item.lookahead)
+            let output = AudioDSPProcessor.crossfade(old: item.oldOutput, new: processed, weights: weights,
+                transitionOffsetSeconds: item.raw.presentationTime - plan.startPTS, weightSampleRate: plan.format.sampleRate)
+            guard let buffer = CMSampleBufferFactory.makeSampleBuffer(from: output,
+                formatDescription: item.formatDescription, presentationTime: CMSampleBufferFactory.time(
+                    frames: Int64((item.raw.presentationTime * item.raw.format.sampleRate).rounded()), sampleRate: item.raw.format.sampleRate)) else {
+                throw DSPApplyPreparationError.unavailablePCM
+            }
+            warnings += runtime.diagnostics
+            blocks.append(DSPReplacementBlock(raw: item.raw, oldOutput: item.oldOutput, output: output,
+                sampleBuffer: buffer, headroomDB: runtime.headroomDB, processingLatencyFrames: runtime.processingLatencyFrames,
+                peakGuarantee: runtime.peakGuarantee, warnings: runtime.diagnostics, state: state))
+        }
+        return DSPReplacementTransaction(request: plan.request, transactionID: plan.prefix?.transactionID ?? UUID(),
+            timelineGeneration: plan.timelineGeneration, rendererGeneration: plan.rendererGeneration,
+            rendererID: plan.rendererID, startPTS: plan.startPTS, oldHorizonPTS: plan.horizon, format: plan.format,
+            blocks: blocks, finalProcessor: runtime, warnings: Self.deduplicatedDSPDiagnostics(warnings),
+            headroomDB: startHeadroom, processingLatencyFrames: startLatency, peakGuarantee: startPeak, retryCount: plan.retryCount)
+    }
+
+    private func finishSupersededPreparation(id: UUID?, request: DSPApplyRequest) {
+        if let id {
+            guard dspPreparationID == id else { return }
+            dspPreparationID = nil
+            preparingDSPRequest = nil
+        }
+        emitDSPEvent(request, state: .superseded, format: currentDSPFormat,
+            scheduledPTS: nil, audiblePTS: nil, headroomDB: nil, warnings: [], diagnostics: [])
+        startNextDSPApply(retryCount: 0, afterPTS: nil)
+    }
+
+    private func installDSPAtQueueHorizon(_ request: DSPApplyRequest, processor: AudioDSPProcessor) {
+        guard dspRequestGate.isCurrent(request.token), let format = currentDSPFormat else { return }
+        if processor.format != format {
+            let id = UUID()
+            let timeline = timelineGeneration
+            dspPreparationID = id
+            preparingDSPRequest = request
+            dspPreparationQueue.async { [weak self] in
+                guard let self else { return }
+                let updated = AudioDSPProcessor(configuration: request.configuration, format: format, context: request.context)
+                self.pipelineQueue.async {
+                    guard self.dspPreparationID == id else { return }
+                    self.dspPreparationID = nil
+                    self.preparingDSPRequest = nil
+                    guard self.isLoaded, self.timelineGeneration == timeline else { return }
+                    guard self.dspRequestGate.isCurrent(request.token) else {
+                        self.finishSupersededPreparation(id: nil, request: request)
+                        return
+                    }
+                    self.installDSPAtQueueHorizon(request, processor: updated)
+                }
+            }
+            return
+        }
+        if let previous = dspProcessor {
+            processor.reset()
+            processor.inheritState(from: previous)
+            dspHorizonTransition = DSPHorizonTransition(previous: previous,
+                weights: AudioDSPProcessor.transitionWeights(sampleRate: format.sampleRate, durationMilliseconds: 30))
+        }
+        dspProcessor = processor
+        dspConfiguration = request.configuration
+        dspRevision = request.revision
+        dspContext = request.context
+        effectiveDSPRequest = request
+        Self.pipelineLog.info(
+            "dsp apply: adopted at horizon \(self.nextPresentationTime, format: .fixed(precision: 3))s revision=\(request.revision, privacy: .public)"
         )
+        let event = DSPApplyEvent(requestID: request.requestID, revisionString: request.revision, state: .scheduled,
+            format: format, scheduledPTS: nextPresentationTime, audiblePTS: nil, headroomDB: processor.headroomDB,
+            processingLatencyFrames: processor.processingLatencyFrames, mediaMappingLatencyFrames: 0,
+            peakGuarantee: processor.peakGuarantee, warnings: processor.diagnostics, diagnostics: processor.diagnostics, rebuffered: false)
+        pendingAudibleDSPEvent = event
+        emitDSPEvent(event)
+        startFeedTimerIfNeeded()
+        // An edit that arrived while this one was preparing still has to land.
+        startQueuedDSPApply(afterPTS: nextPresentationTime)
     }
 
     private func rawBlocks(for boundaries: [DSPOutputBoundary]) throws -> [DSPPCMBlock] {
@@ -1111,7 +1365,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                             sourceFrameStart: boundary.sourceFrameStart,
                             presentationTime: boundary.presentationTime,
                             format: boundary.format,
-                            pcm: Self.applyingFixedGain(pcm, gain: boundary.normalizationGain)
+                            pcm: Self.applyingGainRamp(pcm, from: boundary.gainStart, to: boundary.gainEnd)
                         )
                         result[DSPBlockKey(boundary)] = block
                     }
@@ -1168,17 +1422,23 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
               timelineGenerationGate.isCurrent(transaction.timelineGeneration),
               transaction.rendererGeneration == rendererGeneration,
               transaction.rendererID == ObjectIdentifier(renderer) else { return }
+        guard dspRequestGate.isCurrent(transaction.request.token) else {
+            finishSupersededPreparation(id: nil, request: transaction.request)
+            return
+        }
         let clock = currentSynchronizerClockSeconds()
         let analysisPublishedThrough = clock + analysisLeadSeconds
             - analysisDeliveryLeadSeconds + 0.005
-        let safeThrough = max(clock, analysisPublishedThrough) + 0.02
-        guard transaction.startPTS > safeThrough else {
-            if transaction.retryCount == 0 {
-                queuedDSPApply = transaction.request
-                startNextDSPApply(retryCount: 1, afterPTS: transaction.startPTS)
-            } else {
-                controlledDSPRebuffer(transaction.request, retryCount: transaction.retryCount + 1)
-            }
+        let swapPoint = max(clock, analysisPublishedThrough)
+        // The flush removes every queued buffer from the swap point on, so the
+        // renderer only has `swapPoint - clock` left to cover the round trip
+        // that re-enqueues the replaced output.
+        let margin = transaction.startPTS - swapPoint
+        guard margin >= Self.dspFlushSafetySeconds else {
+            Self.pipelineLog.info(
+                "dsp apply: swap point \(transaction.startPTS, format: .fixed(precision: 3))s is only \(margin, format: .fixed(precision: 3))s ahead; waiting for the queue horizon"
+            )
+            installDSPAtQueueHorizon(transaction.request, processor: transaction.finalProcessor)
             return
         }
         activeDSPTransaction = transaction
@@ -1190,6 +1450,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let time = transaction.blocks.first.map {
             CMSampleBufferGetPresentationTimeStamp($0.sampleBuffer)
         } ?? CMTime(seconds: transaction.startPTS, preferredTimescale: 600)
+        Self.pipelineLog.info(
+            "dsp apply: flushing from \(transaction.startPTS, format: .fixed(precision: 3))s with \(margin, format: .fixed(precision: 3))s of margin, blocks=\(transaction.blocks.count, privacy: .public)"
+        )
         renderer.flush(fromSourceTime: time) { [weak self] succeeded in
             guard let self else { return }
             self.pipelineQueue.async { [weak self] in
@@ -1223,30 +1486,12 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
 
         activeDSPTransaction = nil
         guard succeeded else {
-            let retryRequest: DSPApplyRequest
-            if let latest = queuedDSPApply {
-                emitDSPEvent(
-                    transaction.request,
-                    state: .superseded,
-                    format: currentDSPFormat,
-                    scheduledPTS: nil,
-                    audiblePTS: nil,
-                    headroomDB: nil,
-                    warnings: transaction.warnings,
-                    diagnostics: []
-                )
-                retryRequest = latest
-                queuedDSPApply = latest
-            } else {
-                retryRequest = transaction.request
-                queuedDSPApply = transaction.request
-            }
-            if transaction.retryCount == 0 {
-                startQueuedDSPApply(afterPTS: transaction.startPTS, retryCount: 1)
-            } else {
-                queuedDSPApply = nil
-                controlledDSPRebuffer(retryRequest, retryCount: 2)
-            }
+            // Nothing was flushed, so the queued output is untouched: adopt the
+            // prepared processor at the queue horizon instead of stopping. A
+            // renderer whose current configuration does not support a partial
+            // flush answers this way, and that answer is normal here.
+            Self.pipelineLog.info("dsp apply: renderer rejected the flush; waiting for the queue horizon")
+            installDSPAtQueueHorizon(transaction.request, processor: transaction.finalProcessor)
             return
         }
         guard renderer.status != .failed else {
@@ -1265,160 +1510,27 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                     retryable: true
                 )]
             )
-            startQueuedDSPApply(afterPTS: transaction.startPTS, retryCount: 1)
+            startQueuedDSPApply(afterPTS: transaction.startPTS)
             return
         }
 
         if currentSynchronizerClockSeconds() >= transaction.startPTS {
-            let request = queuedDSPApply ?? transaction.request
-            if queuedDSPApply != nil {
-                emitDSPEvent(
-                    transaction.request,
-                    state: .superseded,
-                    format: transaction.format,
-                    scheduledPTS: nil,
-                    audiblePTS: nil,
-                    headroomDB: nil,
-                    warnings: transaction.warnings,
-                    diagnostics: []
-                )
-                queuedDSPApply = nil
-            }
-            controlledDSPRebuffer(request, retryCount: transaction.retryCount + 1)
-            return
-        }
-
-        if let latest = queuedDSPApply {
-            emitDSPEvent(
-                transaction.request,
-                state: .superseded,
-                format: currentDSPFormat,
-                scheduledPTS: nil,
-                audiblePTS: nil,
-                headroomDB: nil,
-                warnings: transaction.warnings,
-                diagnostics: []
+            // The flush landed after its own swap point, so the renderer has
+            // been without data since then. Enqueueing the prepared output now
+            // resumes with the new settings; rebuilding the timeline here would
+            // turn a short gap into a long one.
+            Self.pipelineLog.warning(
+                "dsp apply: flush completed behind \(transaction.startPTS, format: .fixed(precision: 3))s; committing late"
             )
-            queuedDSPApply = nil
-            do {
-                let latestTransaction = try prepareReplacement(
-                    from: transaction,
-                    request: latest
-                )
-                commitDSPReplacement(latestTransaction)
-            } catch {
-                // The successful flush removed future samples. Requeue the
-                // exact previous output before reporting a failed latest plan.
-                requeueUnmodifiedOutput(transaction)
-                emitDSPEvent(
-                    latest,
-                    state: .failed,
-                    format: currentDSPFormat,
-                    scheduledPTS: nil,
-                    audiblePTS: nil,
-                    headroomDB: nil,
-                    warnings: [],
-                    diagnostics: [DSPDiagnostic(
-                        code: "latestReplacementUnavailable",
-                        message: "The latest DSP update could not replace the already-flushed output.",
-                        retryable: true
-                    )]
-                )
-                startQueuedDSPApply(afterPTS: transaction.oldHorizonPTS, retryCount: 0)
-            }
+            commitDSPReplacement(transaction)
+            startQueuedDSPApply(afterPTS: transaction.startPTS)
             return
         }
 
+        // Enqueue the already-prepared output immediately after a successful
+        // flush. A newer edit starts a separate preparation while feeding runs.
         commitDSPReplacement(transaction)
-    }
-
-    private func prepareReplacement(
-        from transaction: DSPReplacementTransaction,
-        request: DSPApplyRequest
-    ) throws -> DSPReplacementTransaction {
-        var runtime = AudioDSPProcessor(
-            configuration: request.configuration,
-            format: transaction.blocks.first?.raw.format ?? transaction.finalProcessor.format, context: request.context
-        )
-        let startHeadroomDB = runtime.headroomDB
-        let startLatencyFrames = runtime.processingLatencyFrames
-        let startPeakGuarantee = runtime.peakGuarantee
-        var warningByID = [String: DSPDiagnostic]()
-        for warning in runtime.diagnostics { warningByID[warning.id] = warning }
-        runtime.warm(with: transaction.warmupBlocks.map(\.pcm))
-        let weights = AudioDSPProcessor.transitionWeights(
-            sampleRate: runtime.format.sampleRate,
-            durationMilliseconds: 30
-        )
-        var transitionOffsetSeconds = 0.0
-        var blocks = [DSPReplacementBlock]()
-        blocks.reserveCapacity(transaction.blocks.count)
-        let orderedRaw = transaction.blocks.map(\.raw)
-        for (rawIndex, original) in transaction.blocks.enumerated() {
-            if original.raw.format != runtime.format {
-                runtime = AudioDSPProcessor(
-                    configuration: request.configuration,
-                    format: original.raw.format, context: request.context
-                )
-                runtime.reset()
-                for warning in runtime.diagnostics { warningByID[warning.id] = warning }
-            }
-            let future = try dspLookahead(
-                after: original.raw, frameCount: runtime.processingLatencyFrames,
-                following: orderedRaw[(rawIndex + 1)...]
-            )
-            let processed = runtime.process(original.raw.pcm, lookahead: future)
-            let output: CanonicalPCM
-            if transitionOffsetSeconds < 0.03 {
-                output = AudioDSPProcessor.crossfade(
-                    old: original.oldOutput,
-                    new: processed,
-                    weights: weights,
-                    transitionOffsetSeconds: transitionOffsetSeconds,
-                    weightSampleRate: transaction.format.sampleRate
-                )
-            } else {
-                output = processed
-            }
-            transitionOffsetSeconds += original.raw.pcm.seconds
-            guard let segment = segments.first(where: { $0.descriptor.id == original.raw.segmentID }),
-                  let sampleBuffer = CMSampleBufferFactory.makeSampleBuffer(
-                      from: output,
-                      formatDescription: segment.formatDescription,
-                      presentationTime: CMSampleBufferFactory.time(
-                          frames: Int64((original.raw.presentationTime * original.raw.format.sampleRate).rounded()),
-                          sampleRate: original.raw.format.sampleRate
-                      )
-                  ) else { throw DSPApplyPreparationError.unavailablePCM }
-            blocks.append(DSPReplacementBlock(
-                raw: original.raw,
-                oldOutput: original.oldOutput,
-                output: output,
-                sampleBuffer: sampleBuffer,
-                headroomDB: runtime.headroomDB,
-                processingLatencyFrames: runtime.processingLatencyFrames,
-                peakGuarantee: runtime.peakGuarantee,
-                warnings: runtime.diagnostics
-            ))
-        }
-        return DSPReplacementTransaction(
-            request: request,
-            transactionID: transaction.transactionID,
-            timelineGeneration: transaction.timelineGeneration,
-            rendererGeneration: transaction.rendererGeneration,
-            rendererID: transaction.rendererID,
-            startPTS: transaction.startPTS,
-            oldHorizonPTS: transaction.oldHorizonPTS,
-            format: transaction.format,
-            warmupBlocks: transaction.warmupBlocks,
-            blocks: blocks,
-            finalProcessor: runtime,
-            warnings: warningByID.values.sorted { $0.id < $1.id },
-            headroomDB: startHeadroomDB,
-            processingLatencyFrames: startLatencyFrames,
-            peakGuarantee: startPeakGuarantee,
-            retryCount: transaction.retryCount
-        )
+        startQueuedDSPApply(afterPTS: transaction.startPTS)
     }
 
     private func commitDSPReplacement(_ transaction: DSPReplacementTransaction) {
@@ -1429,15 +1541,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         for block in transaction.blocks {
             renderer.enqueue(block.sampleBuffer)
         }
-        analysisQueue.removeAll { $0.presentationTime >= transaction.startPTS - 0.000_001 }
-        for block in transaction.blocks {
-            appendAnalysisChunks(
-                block.output,
-                presentationTime: block.raw.presentationTime,
-                segmentID: block.raw.segmentID,
-                revision: transaction.request.revision
-            )
-        }
+        // Analysis chunks carry the decoded source, which a DSP replacement
+        // leaves unchanged.
         // Crossfaded buffers retain their actual old/new mixture even when the
         // new processor is bypassed. A following edit may select an earlier T.
         var replacementByKey = [DSPBlockKey: DSPReplacementBlock]()
@@ -1451,6 +1556,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 dspOutputBoundaries[index].processingLatencyFrames = block.processingLatencyFrames
                 dspOutputBoundaries[index].peakGuarantee = block.peakGuarantee
                 dspOutputBoundaries[index].warnings = block.warnings
+                dspOutputBoundaries[index].state = block.state
             }
         }
         dspLedger.removeAll { $0.raw.presentationTime >= transaction.startPTS - 0.000_001 }
@@ -1462,6 +1568,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         dspContext = transaction.request.context
         effectiveDSPRequest = transaction.request
         dspProcessor = transaction.finalProcessor
+        dspHorizonTransition = nil
         nextPresentationTime = transaction.oldHorizonPTS
         pendingAudibleDSPEvent = DSPApplyEvent(
             requestID: transaction.request.requestID,
@@ -1498,107 +1605,28 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         _ pcm: CanonicalPCM,
         presentationTime: Double,
         segmentID: UUID,
-        revision: String
+        revision: String,
+        meters: [[DSPNodeMeterReading]] = []
     ) {
         var offset = 0
+        var index = 0
         while offset < pcm.frames {
             let count = min(Self.analysisChunkFrames, pcm.frames - offset)
             analysisQueue.append(AnalysisChunk(
                 presentationTime: presentationTime + Double(offset) / pcm.sampleRate,
                 pcm: pcm.slice(frameOffset: offset, frameCount: count),
                 segmentID: segmentID,
-                dspRevision: revision
+                dspRevision: revision,
+                meters: index < meters.count ? meters[index] : []
             ))
             offset += count
+            index += 1
         }
     }
 
-    private func requeueUnmodifiedOutput(_ transaction: DSPReplacementTransaction) {
-        for block in transaction.blocks {
-            guard let segment = segments.first(where: { $0.descriptor.id == block.raw.segmentID }),
-                  let buffer = CMSampleBufferFactory.makeSampleBuffer(
-                      from: block.oldOutput,
-                      formatDescription: segment.formatDescription,
-                      presentationTime: CMSampleBufferFactory.time(
-                          frames: Int64((block.raw.presentationTime * block.raw.format.sampleRate).rounded()),
-                          sampleRate: block.raw.format.sampleRate
-                      )
-                  ) else { continue }
-            renderer.enqueue(buffer)
-        }
-        analysisQueue.removeAll { $0.presentationTime >= transaction.startPTS - 0.000_001 }
-        for block in transaction.blocks {
-            appendAnalysisChunks(
-                block.oldOutput,
-                presentationTime: block.raw.presentationTime,
-                segmentID: block.raw.segmentID,
-                revision: dspRevision
-            )
-        }
-        nextPresentationTime = transaction.oldHorizonPTS
-        startFeedTimerIfNeeded()
-    }
-
-    private func startQueuedDSPApply(afterPTS: Double, retryCount: Int) {
-        guard let request = queuedDSPApply else { return }
-        if retryCount <= 1 {
-            startNextDSPApply(retryCount: retryCount, afterPTS: afterPTS)
-        } else {
-            queuedDSPApply = nil
-            controlledDSPRebuffer(request, retryCount: retryCount)
-        }
-    }
-
-    private func controlledDSPRebuffer(_ request: DSPApplyRequest, retryCount: Int) {
-        let currentTime = synchronizer.currentTime()
-        let clock = currentTime.isNumeric
-            && currentTime.seconds.isFinite
-            && currentTime.seconds >= 0
-            ? currentTime.seconds
-            : currentSynchronizerClockSeconds()
-        // Keep the renderer's original timebase tick for pause/flush/resume.
-        // The Double clock is still used to choose a source frame, but
-        // rebuilding a CMTime at timescale 600 would quantize an otherwise
-        // sample-precise synchronizer anchor.
-        let clockTime = currentTime.isNumeric
-            && currentTime.seconds.isFinite
-            && currentTime.seconds >= 0
-            ? currentTime
-            : CMTime(seconds: clock, preferredTimescale: 600)
-        let wasPlaying = isPlaybackActive
-        stopFeedTimer()
-        setSynchronizerRateSynchronously(0, time: clockTime)
-        renderer.flush()
-        analysisQueue.removeAll(keepingCapacity: true)
-        pendingDecodedPCM = nil
-        dspConfiguration = request.configuration
-        dspRevision = request.revision
-        dspContext = request.context
-        effectiveDSPRequest = request
-        guard recoverSources(atTimelineSeconds: clock, dspRebuffered: true), isLoaded else {
-            emitDSPEvent(
-                request,
-                state: .failed,
-                format: currentDSPFormat,
-                scheduledPTS: nil,
-                audiblePTS: nil,
-                headroomDB: nil,
-                warnings: [],
-                diagnostics: [DSPDiagnostic(
-                    code: "rebufferFailed",
-                    message: "The renderer could not rebuffer the requested DSP configuration.",
-                    retryable: true
-                )],
-                rebuffered: true
-            )
-            return
-        }
-        setSynchronizerRateSynchronously(
-            wasPlaying ? 1 : 0,
-            time: clockTime
-        )
-        isPlaybackActive = wasPlaying
-        startFeedTimerIfNeeded()
+    private func startQueuedDSPApply(afterPTS: Double) {
+        guard queuedDSPApply != nil else { return }
+        startNextDSPApply(retryCount: 0, afterPTS: afterPTS)
     }
 
     /// Binds the renderer and its synchronizer to a Core Audio output device.
@@ -1610,10 +1638,15 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     /// new device has become active.
     func setAudioOutputDeviceUniqueID(_ uniqueID: String?) {
         pipelineQueue.async { [weak self] in
-            guard let self, self.audioOutputDeviceUniqueID != uniqueID else { return }
+            guard let self else { return }
+            guard self.audioOutputDeviceUniqueID != uniqueID else {
+                self.publishOutputDevice(uniqueID)
+                return
+            }
 
             let oldUID = self.audioOutputDeviceUniqueID
             self.audioOutputDeviceUniqueID = uniqueID
+            self.resetDSPProcessingLoad()
             let clock = self.currentSynchronizerClockSeconds()
             let wasPlaying = self.outputGainController.desiredPlaying
             self.isPlaybackActive = wasPlaying
@@ -1630,6 +1663,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 Self.pipelineLog.info(
                     "output device clock selected old=\(oldUID ?? "default", privacy: .public) new=\(uniqueID ?? "default", privacy: .public) loaded=false"
                 )
+                self.publishOutputDevice(uniqueID)
                 return
             }
 
@@ -1648,6 +1682,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 self.recoverFailedRenderer(atTimelineClock: clock)
                 self.timelineMutationInProgress = false
                 self.resetStallBaseline(clock: clock)
+                self.publishOutputDevice(uniqueID)
                 return
             }
             if uniqueID == nil, oldUID != nil {
@@ -1674,10 +1709,17 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             self.timelineMutationInProgress = false
             self.resetStallBaseline(clock: clock)
 
+            self.publishOutputDevice(uniqueID)
+
             Self.pipelineLog.info(
                 "output device clock changed old=\(oldUID ?? "default", privacy: .public) new=\(uniqueID ?? "default", privacy: .public) anchor=\(clock, format: .fixed(precision: 3)) rate=\(wasPlaying ? 1 : 0)"
             )
         }
+    }
+
+    private func publishOutputDevice(_ uid: String?) {
+        guard renderer.status != .failed else { return }
+        DispatchQueue.main.async { [weak self] in self?.onOutputDeviceChange?(uid) }
     }
 
     /// Recreate the renderer when returning to the default output device. The
@@ -1711,10 +1753,13 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         fadeOnStart: Bool = false
     ) {
         let requestedGeneration = timelineGenerationGate.advance()
+        let transportGeneration = transportCommandGate.advance()
         pipelineQueue.async { [weak self] in
             guard let self else { return }
             guard self.timelineGenerationGate.isCurrent(requestedGeneration) else { return }
             self.timelineGeneration = requestedGeneration
+            self.transportCommandGeneration = transportGeneration
+            self.resetDSPProcessingLoad()
             self.stopFeedTimer()
             self.outputGainController.reset(playing: false, publish: false)
             self.activeLoadSegmentID = segmentID
@@ -1743,6 +1788,12 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             self.dspOutputBoundaries.removeAll(keepingCapacity: false)
             self.lastAudibleDSPFormat = nil
             self.activeDSPTransaction = nil
+            self.producerRewindID = nil
+            // A new track or a seek starts at its own gain without a glide.
+            self.loudnessRamp = nil
+            self.dspPreparationID = nil
+            self.preparingDSPRequest = nil
+            self.dspHorizonTransition = nil
             self.pendingAudibleDSPEvent = nil
             if let request = self.latestAcceptedDSPRequest {
                 self.dspConfiguration = request.configuration
@@ -1948,10 +1999,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             return
         }
         let request = DSPApplyRequest(configuration: base.configuration, revision: base.revision,
-            requestID: base.requestID, token: UUID(), context: desiredDSPContext)
+            requestID: base.requestID, token: base.token, context: desiredDSPContext)
         queuedDSPApply = request
         latestAcceptedDSPRequest = request
-        if activeDSPTransaction == nil { startNextDSPApply(retryCount: 0, afterPTS: nil) }
+        if !isProducerHeld { startNextDSPApply(retryCount: 0, afterPTS: nil) }
     }
 
     /// Remove an already-queued prediction after the named segment. The
@@ -2060,19 +2111,40 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         })?.presentationTime ?? clock
         let startPTS = max(clock, firstUnplayedPTS)
         let generation = timelineGeneration
-        outputGainController.transition(playing: true, configuration: fadeConfiguration, startWhen: { [weak self] in
-            guard let self, self.timelineGenerationGate.isCurrent(generation) else { return false }
-            return self.currentSynchronizerClockSeconds() >= startPTS
-        }) {}
+        let commandGeneration = transportCommandGeneration
+        let waitForAudio = outputGainController.envelope == 0
+        outputGainController.transition(
+            playing: true,
+            configuration: fadeConfiguration,
+            isCurrent: { [weak self] in
+                guard let self else { return false }
+                return self.timelineGenerationGate.isCurrent(generation)
+                    && self.transportCommandGate.isCurrent(commandGeneration)
+            },
+            startWhen: { [weak self] in
+                guard let self, self.timelineGenerationGate.isCurrent(generation) else { return false }
+                return !waitForAudio || self.currentSynchronizerClockSeconds() >= startPTS
+            }
+        ) {}
     }
 
     func play() {
         let expectedGeneration = timelineGenerationGate.current()
+        let commandGeneration = transportCommandGate.advance()
         pipelineQueue.async { [weak self] in
             guard let self,
                   self.isLoaded,
                   self.timelineGeneration == expectedGeneration,
-                  self.timelineGenerationGate.isCurrent(expectedGeneration) else { return }
+                  self.timelineGenerationGate.isCurrent(expectedGeneration),
+                  self.transportCommandGate.isCurrent(commandGeneration) else { return }
+            self.transportCommandGeneration = commandGeneration
+            // A pause envelope leaves the timebase running until it reaches
+            // silence. Reversing that envelope must preserve the live clock
+            // and queued PCM; setRate(time:) would re-anchor audible output.
+            if self.isPlaybackActive && !self.pendingAutoFlushResync {
+                self.beginPlaybackFadeIn()
+                return
+            }
             self.isPlaybackActive = true
             if self.pendingAutoFlushResync {
                 self.pendingAutoFlushResync = false
@@ -2094,13 +2166,27 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
 
     func pause() {
         let expectedGeneration = timelineGenerationGate.current()
+        let commandGeneration = transportCommandGate.advance()
         pipelineQueue.async { [weak self] in
             guard let self,
                   self.timelineGeneration == expectedGeneration,
-                  self.timelineGenerationGate.isCurrent(expectedGeneration) else { return }
-            self.outputGainController.transition(playing: false, configuration: self.fadeConfiguration) { [weak self] in
-                guard let self, self.timelineGenerationGate.isCurrent(expectedGeneration) else { return }
+                  self.timelineGenerationGate.isCurrent(expectedGeneration),
+                  self.transportCommandGate.isCurrent(commandGeneration) else { return }
+            self.transportCommandGeneration = commandGeneration
+            self.outputGainController.transition(
+                playing: false,
+                configuration: self.fadeConfiguration,
+                isCurrent: { [weak self] in
+                    guard let self else { return false }
+                    return self.timelineGenerationGate.isCurrent(expectedGeneration)
+                        && self.transportCommandGate.isCurrent(commandGeneration)
+                }
+            ) { [weak self] in
+                guard let self,
+                      self.timelineGenerationGate.isCurrent(expectedGeneration),
+                      self.transportCommandGate.isCurrent(commandGeneration) else { return }
                 self.isPlaybackActive = false
+                self.resetDSPProcessingLoad()
                 self.invalidateStallRecovery()
                 self.setSynchronizerRateSynchronously(0, time: self.synchronizer.currentTime())
             }
@@ -2112,6 +2198,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         // ordering with the following load() through the serial queue, but do
         // not make the UI wait for an in-flight decode or renderer flush.
         let stopGeneration = timelineGenerationGate.advance()
+        let transportGeneration = transportCommandGate.advance()
         pipelineQueue.async { [weak self] in
             guard let self else {
                 completion?()
@@ -2120,8 +2207,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             if self.timelineGenerationGate.isCurrent(stopGeneration) {
                 self.timelineGeneration = stopGeneration
             }
+            self.transportCommandGeneration = transportGeneration
             self.isLoaded = false
             self.isPlaybackActive = false
+            self.resetDSPProcessingLoad()
             self.outputGainController.reset(playing: false)
             self.activeLoadSegmentID = nil
             self.pendingAutoFlushResync = false
@@ -2137,6 +2226,11 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             self.lastAudibleDSPFormat = nil
             self.pendingAudibleDSPEvent = nil
             self.activeDSPTransaction = nil
+            self.producerRewindID = nil
+            self.loudnessRamp = nil
+            self.dspPreparationID = nil
+            self.preparingDSPRequest = nil
+            self.dspHorizonTransition = nil
             if let request = self.latestAcceptedDSPRequest ?? self.effectiveDSPRequest {
                 self.dspConfiguration = request.configuration
                 self.dspRevision = request.revision
@@ -2169,9 +2263,12 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
 
     private func startFeedTimerIfNeeded() {
         guard isLoaded, decodeIndex != nil, feedTimer == nil,
-              activeDSPTransaction == nil else { return }
+              !isProducerHeld else { return }
         let timer = DispatchSource.makeTimerSource(queue: pipelineQueue)
-        let cadence = min(Self.feedInterval, max(0.01, dspQueueAheadLimitSeconds() / 3))
+        // Top up on a fixed short cadence. Deriving it from the ahead target made
+        // a deeper queue refill more slowly, which is the opposite of what a
+        // flush, a seek or a drained renderer needs.
+        let cadence = min(Self.feedInterval, Self.feedTopUpInterval)
         timer.schedule(deadline: .now(), repeating: cadence)
         timer.setEventHandler { [weak self] in
             self?.provideMediaData()
@@ -2193,7 +2290,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let clock = currentSynchronizerClockSeconds()
         let aheadLimit = dspQueueAheadLimitSeconds()
         while count < max(0, maxChunks),
-              activeDSPTransaction == nil,
+              !isProducerHeld,
               nextPresentationTime - clock < aheadLimit,
               renderer.isReadyForMoreMediaData,
               enqueueOneChunk() {
@@ -2203,7 +2300,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
 
     private func provideMediaData() {
         guard isLoaded,
-              activeDSPTransaction == nil,
+              !isProducerHeld,
               timelineGenerationGate.isCurrent(timelineGeneration) else {
             stopFeedTimer()
             return
@@ -2224,7 +2321,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
 
     @discardableResult
     private func enqueueOneChunk() -> Bool {
-        guard activeDSPTransaction == nil,
+        guard !isProducerHeld,
               timelineGenerationGate.isCurrent(timelineGeneration) else { return false }
         while pendingDecodedPCM == nil {
             guard let index = decodeIndex, segments.indices.contains(index) else {
@@ -2286,10 +2383,15 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             return false
         }
 
-        let normalizationGain = segments[segmentIndex].normalizationGain
-        let rawPCM = Self.applyingFixedGain(pending.pcm.slice(
-            frameOffset: pending.frameOffset, frameCount: frameCount
-        ), gain: normalizationGain)
+        let gain = advanceLoudnessGain(
+            segmentIndex: segmentIndex,
+            frames: frameCount,
+            sampleRate: pending.format.sampleRate
+        )
+        // Visualization reads the decoded source before normalization gain
+        // and DSP, so neither changes how much the spectrum moves.
+        let sourcePCM = pending.pcm.slice(frameOffset: pending.frameOffset, frameCount: frameCount)
+        let rawPCM = Self.applyingGainRamp(sourcePCM, from: gain.start, to: gain.end)
         let sourceFrameStart = pending.sourceFrameStart + AVAudioFramePosition(pending.frameOffset)
         let ptsSeconds = pending.presentationTime + Double(pending.frameOffset) / rawPCM.sampleRate
         let pts = CMSampleBufferFactory.time(
@@ -2298,17 +2400,38 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         )
         guard timelineGenerationGate.isCurrent(timelineGeneration) else { return false }
         ensureDSPProcessor(for: pending.format)
-        let outputPCM: CanonicalPCM
+        let state = dspProcessor?.stateSnapshot()
+        let wasCrossfaded = dspHorizonTransition != nil
+        var outputPCM: CanonicalPCM
+        var meterReadings: [[DSPNodeMeterReading]] = []
+        let loadMeasurement = processingLoadMeasurement(for: dspProcessor, frames: rawPCM.frames)
         do {
             let future = try dspLookahead(
                 after: sourceFrameStart + AVAudioFramePosition(rawPCM.frames),
                 segmentID: pending.segmentID, format: pending.format,
-                frameCount: dspProcessor?.processingLatencyFrames ?? 0
+                frameCount: max(dspProcessor?.processingLatencyFrames ?? 0, dspHorizonTransition?.previous.processingLatencyFrames ?? 0)
             )
-            outputPCM = dspProcessor?.process(rawPCM, lookahead: future) ?? rawPCM
+            outputPCM = dspProcessor?.process(rawPCM, lookahead: future, loadMeasurement: loadMeasurement) ?? rawPCM
+            meterReadings = dspProcessor.map { $0.isBypassed ? [] : $0.meterReadingsByChunk() } ?? []
+            if var transition = dspHorizonTransition, transition.previous.format == pending.format {
+                let old = transition.previous.process(rawPCM, lookahead: future)
+                outputPCM = AudioDSPProcessor.crossfade(old: old, new: outputPCM, weights: transition.weights,
+                    transitionOffsetSeconds: transition.offsetSeconds, weightSampleRate: pending.format.sampleRate)
+                transition.offsetSeconds += rawPCM.seconds
+                dspHorizonTransition = transition.offsetSeconds < 0.03 ? transition : nil
+            }
         } catch {
             finishWithFailure(.sourceError(underlying: error), segmentID: pending.segmentID)
             return false
+        }
+        if dspLoadMonitoringEnabled, dspProcessor?.hasProcessingFault == true {
+            resetDSPProcessingLoad()
+        } else if let snapshot = loadMeasurement?.takeSnapshotIfDue(
+            requestID: effectiveDSPRequest?.requestID, revision: dspRevision, format: pending.format,
+            idleNodeIDs: dspProcessor?.idleProcessingNodeIDs ?? [],
+            excludedNodeIDs: dspProcessor?.faultedProcessingNodeIDs ?? []
+        ) {
+            emitDSPProcessingLoad(snapshot)
         }
         guard let sampleBuffer = CMSampleBufferFactory.makeSampleBuffer(
             from: outputPCM,
@@ -2334,42 +2457,34 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         )
         dspOutputBoundaries.append(DSPOutputBoundary(
             enqueueID: UUID(),
-            outputIsIdentity: dspProcessor?.isBypassed ?? true,
+            outputIsIdentity: (dspProcessor?.isBypassed ?? true) && !wasCrossfaded,
             segmentID: rawBlock.segmentID,
             sourceFrameStart: rawBlock.sourceFrameStart,
             presentationTime: rawBlock.presentationTime,
             frameCount: rawBlock.pcm.frames,
             format: rawBlock.format,
-            normalizationGain: normalizationGain,
+            gainStart: gain.start,
+            gainEnd: gain.end,
             request: effectiveDSPRequest,
             headroomDB: dspProcessor?.headroomDB ?? 0,
             processingLatencyFrames: dspProcessor?.processingLatencyFrames ?? 0,
             peakGuarantee: dspProcessor?.peakGuarantee ?? "bypassed",
-            warnings: dspProcessor?.diagnostics ?? []
+            warnings: dspProcessor?.diagnostics ?? [],
+            state: state
         ))
-        if let dspProcessor, !dspProcessor.isBypassed {
-            dspLedger.append(DSPQueuedBlock(
-                raw: rawBlock,
-                output: outputPCM,
-                revision: dspRevision
-            ))
-        }
+        // Bypass raw/output share the same immutable PCM array. Retaining a
+        // bounded history avoids provider seeks when DSP is first enabled.
+        dspLedger.append(DSPQueuedBlock(raw: rawBlock, output: outputPCM, revision: dspRevision))
         pruneDSPHistory()
 
         onEnqueue?(outputPCM, ptsSeconds)
-        var sliceOffset = 0
-        while sliceOffset < outputPCM.frames {
-            let sliceCount = min(Self.analysisChunkFrames, outputPCM.frames - sliceOffset)
-            let slicePTS = ptsSeconds + (Double(sliceOffset) / outputPCM.sampleRate)
-            let slicePCM = outputPCM.slice(frameOffset: sliceOffset, frameCount: sliceCount)
-            analysisQueue.append(AnalysisChunk(
-                presentationTime: slicePTS,
-                pcm: slicePCM,
-                segmentID: pending.segmentID,
-                dspRevision: dspRevision
-            ))
-            sliceOffset += sliceCount
-        }
+        appendAnalysisChunks(
+            sourcePCM,
+            presentationTime: ptsSeconds,
+            segmentID: pending.segmentID,
+            revision: dspRevision,
+            meters: meterReadings
+        )
         renderer.enqueue(sampleBuffer)
         nextPresentationTime = ptsSeconds + outputPCM.seconds
 
@@ -2387,17 +2502,19 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         following blocks: ArraySlice<DSPPCMBlock>
     ) throws -> CanonicalPCM? {
         guard frameCount > 0 else { return nil }
+        let channels = raw.format.channelCount
         var data = [Float]()
-        data.reserveCapacity(frameCount * raw.format.channelCount)
+        data.reserveCapacity(frameCount * channels)
         var expectedPTS = raw.endPresentationTime
         var lastSegmentID = raw.segmentID
         var lastSourceFrame = raw.sourceFrameStart + AVAudioFramePosition(raw.pcm.frames)
         for block in blocks {
             guard block.format == raw.format,
                   abs(block.presentationTime - expectedPTS) <= 0.5 / raw.format.sampleRate else {
-                let remaining = frameCount * raw.format.channelCount - data.count
-                data.append(contentsOf: repeatElement(Float(0), count: remaining))
-                return CanonicalPCM(frames: frameCount, channelCount: raw.format.channelCount,
+                // A gap or format boundary ends the window; the processor
+                // drains its remaining latency through zeros.
+                guard !data.isEmpty else { return nil }
+                return CanonicalPCM(frames: data.count / channels, channelCount: channels,
                                     sampleRate: raw.format.sampleRate, data: data)
             }
             let count = min(frameCount - data.count / raw.format.channelCount, block.pcm.frames)
@@ -2410,12 +2527,13 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                                     sampleRate: raw.format.sampleRate, data: data)
             }
         }
-        let remainingFrames = frameCount - data.count / raw.format.channelCount
+        let remainingFrames = frameCount - data.count / channels
         if let tail = try dspLookahead(after: lastSourceFrame, segmentID: lastSegmentID,
                                       format: raw.format, frameCount: remainingFrames) {
             data.append(contentsOf: tail.data)
         }
-        return CanonicalPCM(frames: frameCount, channelCount: raw.format.channelCount,
+        guard !data.isEmpty else { return nil }
+        return CanonicalPCM(frames: data.count / channels, channelCount: channels,
                             sampleRate: raw.format.sampleRate, data: data)
     }
 
@@ -2447,10 +2565,184 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         }
     }
 
-    private static func applyingFixedGain(_ pcm: CanonicalPCM, gain: Double) -> CanonicalPCM {
-        guard gain != 1 else { return pcm }
+    /// Applies a linear gain ramp across one interleaved block. Equal ends are
+    /// a fixed gain; unity is a pass-through that shares the source array.
+    static func applyingGainRamp(_ pcm: CanonicalPCM, from start: Double, to end: Double) -> CanonicalPCM {
+        let startGain = start.isFinite ? max(0, start) : 1
+        let endGain = end.isFinite ? max(0, end) : 1
+        if startGain == 1, endGain == 1 { return pcm }
+        let channels = max(1, pcm.channelCount)
+        var data = pcm.data
+        if abs(startGain - endGain) < 1e-12 {
+            var gain = Float(startGain)
+            data.withUnsafeMutableBufferPointer { buffer in
+                vDSP_vsmul(buffer.baseAddress!, 1, &gain, buffer.baseAddress!, 1, vDSP_Length(buffer.count))
+            }
+        } else {
+            let frames = pcm.frames
+            let step = (endGain - startGain) / Double(max(1, frames))
+            data.withUnsafeMutableBufferPointer { buffer in
+                for frame in 0..<frames {
+                    let gain = Float(startGain + step * Double(frame + 1))
+                    let base = frame * channels
+                    for channel in 0..<channels where base + channel < buffer.count {
+                        buffer[base + channel] *= gain
+                    }
+                }
+            }
+        }
         return CanonicalPCM(frames: pcm.frames, channelCount: pcm.channelCount,
-                            sampleRate: pcm.sampleRate, data: pcm.data.map { Float(Double($0) * gain) })
+                            sampleRate: pcm.sampleRate, data: data)
+    }
+
+    /// Advances the chain-head loudness glide by one block of `frames` and
+    /// returns the gain at its first and after its last frame.
+    private func advanceLoudnessGain(segmentIndex: Int, frames: Int, sampleRate: Double) -> (start: Double, end: Double) {
+        let segment = segments[segmentIndex]
+        let target = segment.normalizationGain
+        let rate = sampleRate.isFinite && sampleRate > 0 ? sampleRate : 44_100
+        var ramp: LoudnessGainRamp
+        if let current = loudnessRamp, current.segmentID == segment.descriptor.id {
+            ramp = current
+            if abs(ramp.target - target) > 1e-12 {
+                let seconds = segment.pendingGainGlideSeconds ?? Self.defaultGainGlideSeconds
+                ramp.target = target
+                ramp.framesRemaining = max(1, Int((rate * seconds).rounded()))
+            }
+        } else if let previous = loudnessRamp {
+            // Gapless boundary: the next source's gain takes effect at its
+            // first sample, softened by a few milliseconds against a click.
+            let glide = abs(previous.current - target) < 1e-9
+                ? 0
+                : max(1, Int((rate * Self.gaplessGainGlideSeconds).rounded()))
+            ramp = LoudnessGainRamp(current: previous.current, target: target,
+                                    framesRemaining: glide, segmentID: segment.descriptor.id)
+        } else {
+            ramp = LoudnessGainRamp(current: target, target: target, framesRemaining: 0,
+                                    segmentID: segment.descriptor.id)
+        }
+        segments[segmentIndex].pendingGainGlideSeconds = nil
+        let start = ramp.current
+        if ramp.framesRemaining <= frames {
+            ramp.current = ramp.target
+            ramp.framesRemaining = 0
+        } else {
+            let fraction = Double(frames) / Double(ramp.framesRemaining)
+            let startDB = 20 * log10(max(start, 1e-6))
+            let targetDB = 20 * log10(max(ramp.target, 1e-6))
+            ramp.current = pow(10, (startDB + (targetDB - startDB) * fraction) / 20)
+            ramp.framesRemaining -= frames
+        }
+        loudnessRamp = ramp
+        return (start, ramp.current)
+    }
+
+    /// Re-renders queued output from a boundary safely ahead of the clock so a
+    /// loudness change starts there instead of after a deep queue. Decoding,
+    /// DSP state and the gain glide all restart from that boundary.
+    private func rewindProducerForGainChange(segmentID: UUID) {
+        guard isLoaded, !isProducerHeld, dspPreparationID == nil,
+              timelineGenerationGate.isCurrent(timelineGeneration) else { return }
+        let clock = currentSynchronizerClockSeconds()
+        let analysisThrough = clock + analysisLeadSeconds - analysisDeliveryLeadSeconds + 0.005
+        let target = max(clock, analysisThrough) + Self.dspFlushSafetySeconds
+        guard let boundary = dspOutputBoundaries.first(where: {
+            $0.segmentID == segmentID
+                && $0.presentationTime >= target
+                && $0.presentationTime < nextPresentationTime - 0.000_001
+        }), nextPresentationTime - boundary.presentationTime > 0.2 else { return }
+        let processorIsBypassed = dspProcessor?.isBypassed ?? true
+        guard processorIsBypassed
+                || (boundary.state != nil && boundary.request?.requestID == effectiveDSPRequest?.requestID
+                    && boundary.request?.revision == effectiveDSPRequest?.revision) else { return }
+
+        let id = UUID()
+        producerRewindID = id
+        stopFeedTimer()
+        let timeline = timelineGeneration
+        let rendererGenerationID = rendererGeneration
+        let rendererID = ObjectIdentifier(renderer)
+        let time = CMSampleBufferFactory.time(
+            frames: Int64((boundary.presentationTime * boundary.format.sampleRate).rounded()),
+            sampleRate: boundary.format.sampleRate
+        )
+        renderer.flush(fromSourceTime: time) { [weak self] succeeded in
+            self?.pipelineQueue.async { [weak self] in
+                self?.completeProducerRewind(
+                    id: id, boundary: boundary, timeline: timeline,
+                    rendererGeneration: rendererGenerationID, rendererID: rendererID,
+                    succeeded: succeeded
+                )
+            }
+        }
+    }
+
+    private func completeProducerRewind(
+        id: UUID,
+        boundary: DSPOutputBoundary,
+        timeline: UUID,
+        rendererGeneration expectedRendererGeneration: UUID,
+        rendererID: ObjectIdentifier,
+        succeeded: Bool
+    ) {
+        guard producerRewindID == id else { return }
+        producerRewindID = nil
+        guard isLoaded, timelineGeneration == timeline,
+              timelineGenerationGate.isCurrent(timeline),
+              rendererGeneration == expectedRendererGeneration,
+              ObjectIdentifier(renderer) == rendererID else { return }
+        // A rejected flush leaves the queue intact: the glide simply starts
+        // where the queue ends.
+        guard succeeded, renderer.status != .failed,
+              let index = segments.firstIndex(where: { $0.descriptor.id == boundary.segmentID }) else {
+            if renderer.status == .failed { recoverFailedRenderer(atTimelineClock: currentSynchronizerClockSeconds()) }
+            startFeedTimerIfNeeded()
+            startQueuedDSPApply(afterPTS: nextPresentationTime)
+            return
+        }
+        do {
+            try segments[index].source.seek(to: boundary.sourceFrameStart)
+            segments[index].nextSourceFrame = boundary.sourceFrameStart
+            for later in segments.indices where later > index {
+                try segments[later].source.seek(to: 0)
+                segments[later].nextSourceFrame = 0
+            }
+        } catch {
+            finishWithFailure(.sourceError(underlying: error), segmentID: boundary.segmentID)
+            return
+        }
+        let pts = boundary.presentationTime
+        decodeIndex = index
+        pendingDecodedPCM = nil
+        nextPresentationTime = pts
+        dspOutputBoundaries.removeAll { $0.presentationTime >= pts - 0.000_001 }
+        dspLedger.removeAll { $0.raw.presentationTime >= pts - 0.000_001 }
+        analysisQueue.removeAll { $0.presentationTime >= pts - 0.000_001 }
+        dspHorizonTransition = nil
+        if dspProcessor != nil {
+            ensureDSPProcessor(for: boundary.format)
+            if let state = boundary.state, dspProcessor?.restoreState(state) == true {
+                // The chain resumes exactly where the kept output ended.
+            } else {
+                dspProcessor?.reset()
+            }
+        }
+        let rate = boundary.format.sampleRate
+        let glideSeconds = segments[index].pendingGainGlideSeconds ?? Self.defaultGainGlideSeconds
+        segments[index].pendingGainGlideSeconds = nil
+        loudnessRamp = LoudnessGainRamp(
+            current: boundary.gainStart,
+            target: segments[index].normalizationGain,
+            framesRemaining: max(1, Int((rate * glideSeconds).rounded())),
+            segmentID: boundary.segmentID
+        )
+        enqueueToken = UUID()
+        primeOneBatch(maxChunks: 4)
+        startFeedTimerIfNeeded()
+        startQueuedDSPApply(afterPTS: nextPresentationTime)
+        Self.pipelineLog.info(
+            "loudness: re-rendered from \(pts, format: .fixed(precision: 3))s for a gain change"
+        )
     }
 
     private func ensureDSPProcessor(for format: DSPAudioFormat) {
@@ -2464,13 +2756,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let currentPTS = currentSynchronizerClockSeconds()
         let earliestPTS = currentPTS - 2.5
         dspOutputBoundaries.removeAll { $0.endPresentationTime < earliestPTS }
-        if dspProcessor?.isBypassed ?? true {
-            // Steady bypass stores no raw history. Keep only outstanding old
-            // processed/crossfaded output until the output clock consumes it.
-            dspLedger.removeAll { $0.raw.endPresentationTime < currentPTS - 0.01 }
-        } else {
-            dspLedger.removeAll { $0.raw.endPresentationTime < earliestPTS }
-        }
+        dspLedger.removeAll { $0.raw.endPresentationTime < earliestPTS }
         var cachedBytes = dspLedger.reduce(0) {
             $0 + 4 * ($1.raw.pcm.data.count + $1.output.data.count)
         }
@@ -2485,7 +2771,12 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
 
     private func dspQueueAheadLimitSeconds() -> Double {
         guard let processor = dspProcessor, !processor.isBypassed else {
-            return Self.targetAheadSeconds
+            // An enabled chain that currently does nothing is one edit away from
+            // working again, so it keeps the short queue. A disabled chain has no
+            // edit to answer and keeps the deeper buffer.
+            return dspConfiguration.enabled || loudnessNormalizationActive
+                ? Self.dspTargetAheadSeconds
+                : Self.targetAheadSeconds
         }
         let candidateSegments = segments.dropFirst(max(0, decodeIndex ?? segments.count))
         let formats = candidateSegments.map(\.sourceFormat) + [processor.format]
@@ -2557,6 +2848,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             while let first = analysisQueue.first, first.presentationTime <= threshold {
                 analysisQueue.removeFirst()
                 onAnalysisPCM?(first.pcm)
+                DSPMeterBus.shared.publish(first.meters)
             }
             if var event = pendingAudibleDSPEvent,
                let scheduledPTS = event.scheduledPTS,
@@ -2569,10 +2861,37 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                 emitDSPEvent(event)
             }
             publishAudibleDSPFormatIfNeeded(at: clock)
+            publishAudibleLoudnessGainIfNeeded(at: clock)
+            // The queue ran nearly dry while the source still had audio:
+            // background work should yield to the producer.
+            if decodeIndex != nil, !isProducerHeld, nextPresentationTime - clock < 0.04 {
+                reportSupplyShortfall()
+            }
             detectStall(clock: clock)
         }
         prunePlayedSegments(clock: clock)
         pruneDSPHistory()
+    }
+
+    private func reportSupplyShortfall() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastSupplyShortfallReport > 5 else { return }
+        lastSupplyShortfallReport = now
+        DispatchQueue.main.async { [weak self] in self?.onSupplyShortfall?() }
+    }
+
+    /// Reports the loudness gain the listener actually hears, from the block
+    /// at the output clock, so status reflects audible rather than requested.
+    private func publishAudibleLoudnessGainIfNeeded(at clock: Double) {
+        guard let boundary = dspOutputBoundaries.first(where: {
+            $0.presentationTime <= clock && clock < $0.endPresentationTime
+        }) else { return }
+        let gainDB = 20 * log10(max(boundary.gainEnd, 1e-6))
+        if let last = lastAudibleLoudness, last.segmentID == boundary.segmentID,
+           abs(last.gainDB - gainDB) < 0.05 { return }
+        lastAudibleLoudness = (boundary.segmentID, gainDB)
+        let segmentID = boundary.segmentID
+        DispatchQueue.main.async { [weak self] in self?.onAudibleLoudnessGain?(segmentID, gainDB) }
     }
 
     /// Decoding can lead playback by seconds. Publish format-dependent routing
@@ -2632,6 +2951,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
               !stallRecoveryScheduled else { return }
 
         stallRecoveryScheduled = true
+        reportSupplyShortfall()
         let token = UUID()
         stallRecoveryToken = token
         let baselineClock = clock
@@ -2731,7 +3051,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     }
 
     private func takeDSPApplyForRendererRebuild() -> DSPApplyRequest? {
-        let activeRequest = activeDSPTransaction?.request
+        let activeRequest = activeDSPTransaction?.request ?? preparingDSPRequest
         guard let request = queuedDSPApply ?? activeRequest else { return nil }
         if queuedDSPApply != nil, let activeRequest {
             emitDSPEvent(
@@ -2746,6 +3066,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             )
         }
         activeDSPTransaction = nil
+        dspPreparationID = nil
+        preparingDSPRequest = nil
+        dspHorizonTransition = nil
         queuedDSPApply = nil
         return request
     }
@@ -2755,6 +3078,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         dspRebuffered: Bool = false
     ) -> Bool {
         stopFeedTimer()
+        producerRewindID = nil
+        // Recovery re-decodes from the clock at the current target gains.
+        loudnessRamp = nil
         guard isLoaded,
               timelineGenerationGate.isCurrent(timelineGeneration) else { return false }
         let interruptedDSPRequest = takeDSPApplyForRendererRebuild()
@@ -2954,6 +3280,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     /// keeping the operation on this queue makes a seek one ordered transaction
     /// instead of posting an anchor to main.async behind a stale route callback.
     private func setSynchronizerRateSynchronously(_ rate: Float, time: CMTime) {
+        synchronizerAnchorMutationCount += 1
         synchronizer.setRate(rate, time: time)
     }
 
@@ -2990,6 +3317,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         timelineGeneration = failureGeneration
         isLoaded = false
         isPlaybackActive = false
+        resetDSPProcessingLoad()
         outputGainController.reset(playing: false)
         activeLoadSegmentID = nil
         pendingAutoFlushResync = false
@@ -3005,6 +3333,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         lastAudibleDSPFormat = nil
         pendingAudibleDSPEvent = nil
         activeDSPTransaction = nil
+        dspPreparationID = nil
+        preparingDSPRequest = nil
+        dspHorizonTransition = nil
         queuedDSPApply = nil
         segments.removeAll(keepingCapacity: false)
         decodeIndex = nil
@@ -3099,6 +3430,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         resetStallBaseline(clock: clock)
         lastRecoveryWallTime = ProcessInfo.processInfo.systemUptime
         startFeedTimerIfNeeded()
+        publishOutputDevice(audioOutputDeviceUniqueID)
     }
 
     var diagnosticStatus: AVQueuedSampleBufferRenderingStatus { renderer.status }

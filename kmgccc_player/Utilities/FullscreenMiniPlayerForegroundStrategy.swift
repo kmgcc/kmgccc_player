@@ -320,6 +320,11 @@ extension FullscreenMiniPlayerForegroundProfile {
     nonisolated var complementaryGlassColorScheme: ColorScheme {
         isDarkForeground ? .light : .dark
     }
+
+    /// Quick settings follows the resolved Mini Player ink and surface polarity.
+    nonisolated var quickPanelForegroundProfile: FullscreenOverlayForegroundProfile {
+        FullscreenOverlayForegroundProfile(primary: primary, isDarkForeground: isDarkForeground)
+    }
 }
 
 extension FullscreenOverlayForegroundProfile {

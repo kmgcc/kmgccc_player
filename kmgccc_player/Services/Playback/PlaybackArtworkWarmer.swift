@@ -9,18 +9,29 @@ import Foundation
 
 /// Preloads the current track and a small neighbouring queue window.
 ///
-/// The warmer owns only its cancellable preload task and deduplication key;
+/// The warmer owns only its cancellable warm-up handle and deduplication key;
 /// playback state remains owned by `PlayerViewModel` and presentation remains
-/// owned by `PlaybackCoordinator`.
+/// owned by `PlaybackCoordinator`. The warm-up runs as upcoming work of the
+/// App background scheduler, so it never competes with idle preparation.
 @MainActor
 final class PlaybackArtworkWarmer {
     private let artworkCache: TrackArtworkCache
-    private var task: Task<Void, Never>?
+    private weak var scheduler: BackgroundWorkScheduler?
+    private var owner: BackgroundWorkOwner = .app
+    private var handle: BackgroundTaskHandle?
     private var signature: String?
     private var presentationSignature: String?
 
     init(artworkCache: TrackArtworkCache) {
         self.artworkCache = artworkCache
+    }
+
+    /// Connects the warmer to the App scheduler. Until then nothing is warmed;
+    /// the next presentation update after binding starts the warm-up.
+    func bind(scheduler: BackgroundWorkScheduler, owner: BackgroundWorkOwner) {
+        self.scheduler = scheduler
+        self.owner = owner
+        reset()
     }
 
     func update(
@@ -32,6 +43,7 @@ final class PlaybackArtworkWarmer {
             reset()
             return
         }
+        guard let scheduler else { return }
 
         // Progress-only presentation updates arrive several times per second.
         // Do not rebuild the queue window or resolve artwork paths unless the
@@ -74,8 +86,8 @@ final class PlaybackArtworkWarmer {
         }
 
         guard !sources.isEmpty else {
-            task?.cancel()
-            task = nil
+            handle?.cancel()
+            handle = nil
             signature = nil
             return
         }
@@ -84,16 +96,25 @@ final class PlaybackArtworkWarmer {
         guard nextSignature != signature else { return }
 
         signature = nextSignature
-        task?.cancel()
-        task = artworkCache.preloadPlaybackArtwork(
-            for: sources,
-            reason: "playback-current-window"
-        )
+        handle?.cancel()
+        let artworkCache = artworkCache
+        handle = scheduler.submitWork(
+            owner: owner,
+            domain: .playbackArtwork,
+            priority: .upcoming,
+            resources: [.compute, .disk]
+        ) { context in
+            await artworkCache.warmPlaybackArtwork(
+                for: sources,
+                reason: "playback-current-window",
+                context: context
+            )
+        }
     }
 
     func reset() {
-        task?.cancel()
-        task = nil
+        handle?.cancel()
+        handle = nil
         signature = nil
         presentationSignature = nil
     }

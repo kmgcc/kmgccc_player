@@ -64,6 +64,7 @@ final class PlaybackHistoryViewModel {
     var olderItemsLoaded = false
     var olderItemCount = 0
     var isLoading = true
+    var toolbarSectionTitle: String?
 
     var searchText = ""
     var searchRange: PlaybackHistorySearchRange = .all
@@ -133,6 +134,10 @@ final class PlaybackHistoryViewModel {
             ) ?? currentWeekStart
             items = store.fetchItems(from: previousWeekStart)
             olderItemCount = store.countItems(before: previousWeekStart)
+            if items.isEmpty, olderItemCount > 0 {
+                items = store.fetchItems()
+                olderItemCount = 0
+            }
         }
 
         let itemIDs = Set(items.map(\.id))

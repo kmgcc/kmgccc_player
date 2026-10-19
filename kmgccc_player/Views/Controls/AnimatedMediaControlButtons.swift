@@ -310,7 +310,13 @@ struct AnimatedPlayPauseButton: View {
     }
 
     private var cancelAnimation: Animation? {
-        motionPolicy.animation(for: motionTokens[.gestureSettle])
+        motionPolicy.animation(
+            for: motionTokens.phaseSpec(
+                for: .gestureSettle,
+                duration: motionTokens[.gestureSettle].duration,
+                bounce: 0.16
+            )
+        )
     }
 
     private var exitAnimation: Animation? {
@@ -318,7 +324,13 @@ struct AnimatedPlayPauseButton: View {
     }
 
     private var enterAnimation: Animation? {
-        motionPolicy.animation(for: motionTokens[.emphasis])
+        motionPolicy.animation(
+            for: motionTokens.phaseSpec(
+                for: .emphasis,
+                duration: motionTokens[.emphasis].duration,
+                bounce: 0.32
+            )
+        )
     }
 }
 
@@ -485,17 +497,33 @@ struct AnimatedSkipButton: View {
     }
 
     private var cancelAnimation: Animation? {
-        motionPolicy.animation(for: motionTokens[.gestureSettle])
+        motionPolicy.animation(
+            for: motionTokens.phaseSpec(
+                for: .gestureSettle,
+                duration: motionTokens[.gestureSettle].duration,
+                bounce: 0.16
+            )
+        )
     }
 
     private var releaseAnimation: Animation? {
-        motionPolicy.animation(for: motionTokens[.emphasis])
+        motionPolicy.animation(
+            for: motionTokens.phaseSpec(
+                for: .emphasis,
+                duration: motionTokens[.emphasis].duration,
+                bounce: 0.32
+            )
+        )
     }
 
     /// Keeps the relay's deliberate 0.58s visual window while deriving its
     /// spring behavior and Reduce Motion response from the emphasis token.
     private var relayAnimation: Animation? {
-        let relaySpec = motionTokens.phaseSpec(for: .emphasis, duration: 0.58)
+        let relaySpec = motionTokens.phaseSpec(
+            for: .emphasis,
+            duration: 0.58,
+            bounce: 0.32
+        )
         return motionPolicy.animation(for: relaySpec)
     }
 }

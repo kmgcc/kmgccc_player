@@ -895,6 +895,17 @@ struct PlusBlendTextForegroundProfile: Equatable, Sendable {
 }
 
 extension SemanticPalette {
+    /// The accent's complement: the opposite OKLCH hue at the accent's
+    /// lightness and chroma, gamut-mapped. For a second element that must
+    /// read apart from accent-coloured ones beside it. An achromatic accent
+    /// has no opposite hue and returns itself.
+    var complementaryAccent: NSColor {
+        guard let source = OKColor.nsColorToOKLCH(globalAccent), source.c > 0.02 else { return globalAccent }
+        let hue = (source.h + 0.5).truncatingRemainder(dividingBy: 1)
+        return OKColor.okLCHToNSColor(OKColor.OKLCH(l: source.l, c: source.c, h: hue), alpha: 1)
+    }
+
+    var complementaryAccentColor: Color { ColorRenderingAdapter.makeSwiftUIColor(complementaryAccent) }
     var globalAccentColor: Color { ColorRenderingAdapter.makeSwiftUIColor(globalAccent) }
     var globalAccentDisplayP3NSColor: NSColor { ColorRenderingAdapter.makeNSColor(globalAccent) }
     var uiAccentOnDarkColor: Color { ColorRenderingAdapter.makeSwiftUIColor(uiAccentOnDark) }

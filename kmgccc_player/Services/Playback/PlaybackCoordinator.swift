@@ -63,6 +63,7 @@ final class PlaybackCoordinator {
     private let systemNowPlayingProvider: SystemNowPlayingProvider
     private let settings: AppSettings
     private let preferenceStatsService: PreferenceStatsService
+    private let libraryTracksProvider: @MainActor () -> [Track]
     private let artworkCache: TrackArtworkCache
     private let meterProvider: AudioLevelMeterProtocol?
     private var presentationTimer: Timer?
@@ -77,7 +78,9 @@ final class PlaybackCoordinator {
     private var sidecarHydratingTrackID: UUID?
     private var deferredNowPlayingUpdateTask: Task<Void, Never>?
     private let artworkWarmer: PlaybackArtworkWarmer
+    private let nextSongLyricsPreloader: NextSongLyricsPreloader
     private let lyricSnippetSeekLeadInSeconds: Double = 0.8
+    private var lastRoutineTrimUptime: TimeInterval = 0
 
     private(set) var activeSource: PlaybackSource
     private(set) var presentation: NowPlayingPresentation = .emptyLocal
@@ -104,17 +107,24 @@ final class PlaybackCoordinator {
         preferenceStatsService: PreferenceStatsService = .shared,
         artworkCache: TrackArtworkCache,
         meterProvider: AudioLevelMeterProtocol? = nil,
-        artworkWarmer: PlaybackArtworkWarmer? = nil
+        artworkWarmer: PlaybackArtworkWarmer? = nil,
+        libraryTracksProvider: @escaping @MainActor () -> [Track] = { [] }
     ) {
         self.localPlayback = localPlayback
         self.appleMusicAdapter = appleMusicAdapter
         self.systemNowPlayingProvider = systemNowPlayingProvider
         self.settings = settings ?? AppSettings.shared
         self.preferenceStatsService = preferenceStatsService
+        self.libraryTracksProvider = libraryTracksProvider
         self.artworkCache = artworkCache
         self.meterProvider = meterProvider
         self.artworkWarmer = artworkWarmer ?? PlaybackArtworkWarmer(
             artworkCache: artworkCache
+        )
+        self.nextSongLyricsPreloader = NextSongLyricsPreloader(
+            trackLookup: { [weak localPlayback] id in
+                localPlayback?.currentQueueTracks.first { $0.id == id }
+            }
         )
         self.activeSource = PlaybackSource(
             rawValue: UserDefaults.standard.string(forKey: Keys.activeSource) ?? ""
@@ -123,6 +133,16 @@ final class PlaybackCoordinator {
             externalProvider(for: activeSource)?.start()
         }
         AudioVisualizationVisibilityRegistry.shared.setExternalMode(activeSource.isExternal)
+        SystemVolumeService.shared.onVolumeChanged = { [weak self] _ in
+            guard let self, self.settings.volumeControlTarget == .system else { return }
+            self.refreshPresentation()
+        }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleVolumeControlTargetDidChange),
+            name: .volumeControlTargetDidChange,
+            object: nil
+        )
         refreshPresentation()
         startPresentationTimer()
         NowPlayingService.shared.register(coordinator: self)
@@ -178,7 +198,11 @@ final class PlaybackCoordinator {
         recordCrashPlaybackCommand(.playPause)
         switch activeSource {
         case .local:
-            localPlayback?.togglePlayPause()
+            if localPlayback?.currentTrack == nil {
+                playRandomTracks(libraryTracksProvider(), libraryQueueSource: .librarySelection("allSongs"))
+            } else {
+                localPlayback?.togglePlayPause()
+            }
         case .appleMusic, .systemNowPlaying:
             activeExternalProvider?.playPause()
         }
@@ -202,12 +226,23 @@ final class PlaybackCoordinator {
         recordCrashPlaybackCommand(.resume)
         switch activeSource {
         case .local:
-            localPlayback?.resume()
+            if localPlayback?.currentTrack == nil {
+                playRandomTracks(libraryTracksProvider(), libraryQueueSource: .librarySelection("allSongs"))
+            } else {
+                localPlayback?.resume()
+            }
         case .appleMusic, .systemNowPlaying:
             activeExternalProvider?.play()
         }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
+    }
+
+    /// Lets the playing song's artwork warm-up run as upcoming work of the App
+    /// background scheduler.
+    func bindBackgroundWork(scheduler: BackgroundWorkScheduler, owner: BackgroundWorkOwner) {
+        artworkWarmer.bind(scheduler: scheduler, owner: owner)
+        nextSongLyricsPreloader.bind(scheduler: scheduler, owner: owner)
     }
 
     func close() {
@@ -219,9 +254,20 @@ final class PlaybackCoordinator {
         deferredNowPlayingUpdateTask = nil
         stopExternalProviders()
         artworkWarmer.reset()
+        nextSongLyricsPreloader.reset()
         onActiveSourceChanged = nil
         onTelemetryPlaybackStateChanged = nil
         onPresentationChanged = nil
+        NotificationCenter.default.removeObserver(self, name: .volumeControlTargetDidChange, object: nil)
+        SystemVolumeService.shared.onVolumeChanged = nil
+    }
+
+    @objc private func handleVolumeControlTargetDidChange() {
+        if settings.volumeControlTarget == .system {
+            localPlayback?.setVolume(AppSettings.defaultVolume)
+        }
+        refreshPresentation()
+        NowPlayingService.shared.updateNowPlaying(force: true)
     }
 
     func stop() {
@@ -325,6 +371,16 @@ final class PlaybackCoordinator {
     }
 
     func setVolume(_ volume: Double) {
+        if settings.volumeControlTarget == .system {
+            SystemVolumeService.shared.setSystemVolume(volume)
+            if let local = localPlayback, abs(local.volume - AppSettings.defaultVolume) > 0.001 {
+                local.setVolume(AppSettings.defaultVolume)
+            }
+            refreshPresentation()
+            NowPlayingService.shared.updateNowPlaying(force: true)
+            return
+        }
+
         switch activeSource {
         case .local:
             localPlayback?.setVolume(volume)
@@ -553,15 +609,21 @@ final class PlaybackCoordinator {
     }
 
     func refreshPresentation() {
-        let newPresentation: NowPlayingPresentation
+        let basePresentation: NowPlayingPresentation
         switch activeSource {
         case .local:
-            newPresentation = makeLocalPresentation()
+            basePresentation = makeLocalPresentation()
         case .appleMusic, .systemNowPlaying:
             activeExternalProvider?.tickPresentation()
             let externalPresentation = activeExternalProvider?.presentation
                 ?? NowPlayingPresentation.emptySystemNowPlaying
-            newPresentation = externalPresentation
+            basePresentation = externalPresentation
+        }
+
+        var newPresentation = basePresentation
+        if settings.volumeControlTarget == .system {
+            newPresentation.volume = SystemVolumeService.shared.systemVolume
+            newPresentation.isVolumeControlEnabled = true
         }
 
         let isPlaying = newPresentation.isPlaying
@@ -582,6 +644,22 @@ final class PlaybackCoordinator {
             presentation: newPresentation,
             queue: localPlayback?.currentQueueTracks ?? []
         )
+        nextSongLyricsPreloader.update(
+            activeSource: activeSource,
+            currentTrack: newPresentation.localTrack,
+            queue: localPlayback?.currentQueueTracks ?? []
+        )
+
+        let nowUptime = ProcessInfo.processInfo.systemUptime
+        if isPlaying && nowUptime - lastRoutineTrimUptime > 60 {
+            lastRoutineTrimUptime = nowUptime
+            if let currentID = newPresentation.localTrack?.id {
+                for queueTrack in (localPlayback?.currentQueueTracks ?? []) where queueTrack.id != currentID {
+                    queueTrack.releaseFileBackedResources()
+                }
+            }
+            CacheManager.trimRoutinePlaybackMemory()
+        }
 
         let previousPresentation = presentation
         if !newPresentation.isEffectivelyEqualIgnoringCurrentTime(to: stablePresentation) {
@@ -658,7 +736,7 @@ final class PlaybackCoordinator {
         currentPresentationInterval = interval
         let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) {
             [weak self] _ in
-            Task { @MainActor [weak self] in
+            MainActor.assumeIsolated {
                 self?.refreshPresentation()
             }
         }
@@ -678,22 +756,27 @@ final class PlaybackCoordinator {
 
     private func makeLocalPresentation() -> NowPlayingPresentation {
         guard let playback = localPlayback else {
-            presentation.localTrack?.releaseFileBackedArtworkData()
+            presentation.localTrack?.releaseFileBackedResources()
+            CacheManager.trimRoutinePlaybackMemory()
             return .emptyLocal
         }
         guard let track = playback.currentTrack else {
-            presentation.localTrack?.releaseFileBackedArtworkData()
+            presentation.localTrack?.releaseFileBackedResources()
+            CacheManager.trimRoutinePlaybackMemory()
             var empty = NowPlayingPresentation.emptyLocal
-            empty.volume = playback.volume
+            empty.isControlEnabled = libraryTracksProvider().contains { $0.availability != .missing }
+            empty.volume = settings.volumeControlTarget == .system
+                ? SystemVolumeService.shared.systemVolume
+                : playback.volume
             return empty
         }
 
         if let previousTrack = presentation.localTrack,
            previousTrack.id != track.id {
-            previousTrack.releaseFileBackedArtworkData()
+            previousTrack.releaseFileBackedResources()
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(500))
-                CacheManager.trimProcessMemory()
+                CacheManager.trimRoutinePlaybackMemory()
             }
         }
 
@@ -722,7 +805,9 @@ final class PlaybackCoordinator {
             currentTime: playback.currentTime,
             audioOutputDelay: playback.audioOutputDelay,
             isPlaying: playback.isPlaying,
-            volume: playback.volume,
+            volume: settings.volumeControlTarget == .system
+                ? SystemVolumeService.shared.systemVolume
+                : playback.volume,
             lyricsText: lyricsText,
             lyricsIdentity: track.id.uuidString,
             appleMusicPlaybackMode: nil,
@@ -804,18 +889,7 @@ final class PlaybackCoordinator {
             )
 
             async let ttmlTask: String? = Task.detached(priority: .utility) { @Sendable in
-                if let ttmlURL,
-                   let text = try? String(contentsOf: ttmlURL, encoding: .utf8),
-                   let ttml = LyricsFormatSupport.normalizedTTMLText(text) {
-                    return ttml
-                }
-                if let ttmlFallbackURL,
-                   ttmlFallbackURL.lastPathComponent.lowercased().hasSuffix(".ttml"),
-                   let text = try? String(contentsOf: ttmlFallbackURL, encoding: .utf8),
-                   let ttml = LyricsFormatSupport.normalizedTTMLText(text) {
-                    return ttml
-                }
-                return nil
+                LyricsSidecarReader.loadTTML(ttmlURL: ttmlURL, fallbackURL: ttmlFallbackURL)
             }.value
 
             let ttml = await ttmlTask

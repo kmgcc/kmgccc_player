@@ -10,6 +10,7 @@
 
 import AppKit
 import ImageIO
+import PopupKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -788,7 +789,8 @@ struct LibraryDetailHeaderView: View {
 
     private var canSearchArtistArtwork: Bool {
         if case .artist = config {
-            return true
+            let artistName = editTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !artistName.isEmpty && !LibraryNormalization.isUnknownArtist(artistName)
         }
         return false
     }
@@ -1207,6 +1209,7 @@ struct AlbumInfoEditSheet: View {
     @State private var metadataMessage: String?
     @State private var isArtworkGenerationInFlight = false
     @State private var coverCoordinator: CoverSearchCoordinator?
+    @State private var loudnessUnified = false
 
     var body: some View {
         metadataEntitySheet(
@@ -1256,6 +1259,13 @@ struct AlbumInfoEditSheet: View {
                 ("获取时间", metadataFetchedAt.map(formatMetadataDate) ?? ""),
                 ("置信度", metadataConfidence.map { String(format: "%.2f", $0) } ?? ""),
             ])
+
+            Divider()
+
+            SettingsSwitchRow(
+                title: "专辑内响度统一",
+                isOn: $loudnessUnified
+            )
         }
         .tint(themeStore.accentColor)
         .onAppear {
@@ -1292,9 +1302,26 @@ struct AlbumInfoEditSheet: View {
             || metadataFetchedAt != entry.metadataFetchedAt
             || metadataConfidence != entry.metadataConfidence
             || artworkData != entry.artworkData
+            || loudnessUnified != storedLoudnessUnified
+    }
+
+    /// Automatic judgement for this album, from its library members.
+    private var automaticLoudnessExclusion: LoudnessAlbumExclusion? {
+        let members = libraryVM.allTracks
+            .filter { $0.albumGroupKey == entry.canonicalKey }
+            .map(LoudnessAlbumMember.init(track:))
+        return LoudnessAlbumPolicy.automaticExclusion(
+            albumType: albumType.trimmingCharacters(in: .whitespacesAndNewlines),
+            members: members
+        )
+    }
+
+    private var storedLoudnessUnified: Bool {
+        entry.loudnessUnifiedOverride ?? (automaticLoudnessExclusion == nil)
     }
 
     private func load() {
+        loudnessUnified = entry.loudnessUnifiedOverride ?? (automaticLoudnessExclusion == nil)
         displayTitle = entry.displayTitle
         description = entry.description
         releaseYearText = entry.releaseYear.map(String.init) ?? entry.year.map(String.init) ?? ""
@@ -1365,6 +1392,10 @@ struct AlbumInfoEditSheet: View {
     }
 
     private func searchArtwork() {
+        guard !LibraryNormalization.isUnknownAlbum(entry.displayTitle) else {
+            metadataMessage = "未知专辑不支持在线查找封面"
+            return
+        }
         Task {
             await coverCoordinator?.search(
                 artist: entry.primaryArtistDisplayName,
@@ -1397,8 +1428,20 @@ struct AlbumInfoEditSheet: View {
 
     private func save() {
         let updated = currentDraft()
+        let unified = loudnessUnified
+        let loudnessChanged = unified != storedLoudnessUnified
+        let automatic = automaticLoudnessExclusion == nil
         Task {
             await libraryVM.saveAlbumEdits(original: entry, updated: updated)
+            if loudnessChanged {
+                // Matching the automatic judgement stores no override, so a
+                // later change of the album's facts is still followed.
+                let key = LibraryNormalization.retitledAlbumKey(
+                    existingKey: entry.canonicalKey,
+                    newAlbumTitle: updated.displayTitle
+                )
+                libraryVM.setAlbumLoudnessOverride(albumKey: key, unified: unified == automatic ? nil : unified)
+            }
             await MainActor.run {
                 onSaved()
                 dismiss()
@@ -1424,58 +1467,23 @@ private func metadataEntitySheet<Content: View>(
     onSave: @escaping () -> Void,
     @ViewBuilder content: () -> Content
 ) -> some View {
-    VStack(spacing: 0) {
-        HStack {
-            Label(title, systemImage: systemImage)
-                .font(.title2.bold())
-            Spacer()
-            GlassIconButton(
-                systemImage: "xmark",
-                size: GlassStyleTokens.headerControlHeight,
-                iconSize: GlassStyleTokens.headerStandardIconSize,
-                isPrimary: false,
-                help: "关闭",
-                surfaceVariant: .defaultToolbar
-            ) {
-                onCancel()
-            }
+    AppPopupFrame(title: title, systemImage: systemImage, onClose: onCancel) {
+        AppPopupScrollRegion {
+            VStack(alignment: .leading, spacing: AppPopupStyle().sectionSpacing) { content() }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture { clearCurrentTextInputFocus() }
         }
-        .padding()
-
-        Divider()
-
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                content()
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                clearCurrentTextInputFocus()
-            }
+    } footer: {
+        AppPopupActionGroup {
+            Button("取消", action: onCancel)
+                .buttonStyle(AppDialogGlassButtonStyle())
+                .keyboardShortcut(.cancelAction)
+            Button("保存", action: onSave)
+                .buttonStyle(AppDialogGlassButtonStyle(kind: .primary))
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canSave)
         }
-
-        Divider()
-
-        HStack {
-            Button("取消") {
-                onCancel()
-            }
-            .buttonStyle(.bordered)
-            .clipShape(Capsule())
-            .keyboardShortcut(.escape)
-
-            Spacer()
-            Button("保存") {
-                onSave()
-            }
-            .buttonStyle(.borderedProminent)
-            .clipShape(Capsule())
-            .keyboardShortcut(.return)
-            .disabled(!canSave)
-        }
-        .padding()
     }
     .frame(width: 560, height: 720)
 }
@@ -1532,18 +1540,18 @@ private func artworkEditor(
 
             VStack(alignment: .leading, spacing: 8) {
                 Button("选择图片", action: chooseImage)
-                    .buttonStyle(.bordered)
-                    .clipShape(Capsule())
+                    .buttonStyle(AppPanelButtonStyle())
+                    .font(.system(size: 13, weight: .medium))
 
                 Button("查找封面", action: searchArtwork)
-                    .buttonStyle(.bordered)
-                    .clipShape(Capsule())
+                    .buttonStyle(AppPanelButtonStyle())
+                    .font(.system(size: 13, weight: .medium))
                     .disabled(isLoading)
 
                 if let generateArtworkTitle, let generateArtwork {
                     Button(generateArtworkTitle, action: generateArtwork)
-                        .buttonStyle(.bordered)
-                        .clipShape(Capsule())
+                        .buttonStyle(AppPanelButtonStyle())
+                        .font(.system(size: 13, weight: .medium))
                         .disabled(isGeneratingArtwork)
                 }
 
@@ -1612,8 +1620,8 @@ private func metadataLookupButton(
         } label: {
             Label("查找元数据", systemImage: "sparkle.magnifyingglass")
         }
-        .buttonStyle(.bordered)
-        .clipShape(Capsule())
+        .buttonStyle(AppPanelButtonStyle())
+        .font(.system(size: 13, weight: .medium))
         .disabled(isLoading)
 
         if isLoading {
@@ -1660,12 +1668,8 @@ private func labeledEditor(_ label: String, prompt: String, text: Binding<String
                     .allowsHitTesting(false)
             }
         }
-        .background(.thinMaterial)
+        .appPopupContentBackground()
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.secondary.opacity(0.22), lineWidth: 1)
-        }
         .padding(.trailing, 18)
     }
 }
