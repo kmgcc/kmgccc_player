@@ -30,9 +30,11 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
     /// Show the What's New window if there's new content to display.
     func showIfNeeded() {
         guard !isPresented else { return }
-        guard WhatsNewConfig.shouldShowWhatsNew() else { return }
+        guard WhatsNewConfig.shouldShowAnnouncement() else { return }
         
-        let whatsNew = WhatsNewConfiguration.current
+        let whatsNew = WhatsNewConfig.shouldShowWelcome
+            ? WhatsNewConfiguration.welcome
+            : WhatsNewConfiguration.current
         show(whatsNew: whatsNew)
     }
 

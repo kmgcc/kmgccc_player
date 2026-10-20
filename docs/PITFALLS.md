@@ -7,7 +7,7 @@
 - 生产环境歌词只采用原生 `NativeLyrics` 引擎（Core Text + Core Animation）；不要在歌词渲染层中引入 DOM、JavaScript bridge 或歌词 WebView fallback。
 - `kmgccc_player/Resources/AMLL/` 只保留网格背景所需的 `background.html`、生成的 `amll-background.js` 和字体资源；生成 JavaScript 不可手改，用 `scripts/sync-amll-from-fork.sh` 从 fork 同步。
 - `AMLLMeshGradientBackgroundView` 的 WebView 只服务背景动画，不得复用于歌词，也不要在歌词 View 中创建第二套渲染状态。
-- TTML 在 Swift 侧有四处独立实现：生成在 `Services/LDDC/LRCConverterService.swift`（手写官方 AMLL 命名空间），解析有 `Services/Search/TTMLPlainTextExtractor.swift`（搜索索引）与 `Services/Fullscreen/FullscreenTTMLTimingExtractor.swift`（全屏 timing），渲染主路径走 MelismaKit 的 `TTMLDecoder`。Swift 侧无法复用官方 JS 包，改 TTML 结构、命名空间或时间语义时四处必须一起改，并各自补样本验证。
+- TTML 在 Swift 侧有五处独立实现：生成在 `Services/LDDC/LRCConverterService.swift`（手写官方 AMLL 命名空间）与 `Services/Lyrics/Formats/TTMLLyricsWriter.swift`（本地逐字格式，外壳与前者一致），解析有 `Services/Search/TTMLPlainTextExtractor.swift`（搜索索引）与 `Services/Fullscreen/FullscreenTTMLTimingExtractor.swift`（全屏 timing），渲染主路径走 MelismaKit 的 `TTMLDecoder`。Swift 侧无法复用官方 JS 包，改 TTML 结构、命名空间或时间语义时五处必须一起改，并各自补样本验证。
 
 ## 全屏
 

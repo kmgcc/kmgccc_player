@@ -63,7 +63,13 @@ private final class LibrarySetupPanelController: NSObject, NSWindowDelegate {
     func show() {
         didFinishClosing = false
         let size = NSSize(width: 500, height: 430)
-        let result = AppDialogTokens.makePanel(width: size.width, height: size.height)
+        // Keep the glass shadow inside the transparent host instead of
+        // clipping it where the dialog meets the native window edges.
+        let shadowInset: CGFloat = 32
+        let result = AppDialogTokens.makePanel(
+            width: size.width + shadowInset * 2,
+            height: size.height + shadowInset * 2
+        )
         let panel = result.panel
         panel.delegate = self
         let root = LibrarySetupFlow(
@@ -80,6 +86,7 @@ private final class LibrarySetupPanelController: NSObject, NSWindowDelegate {
         .environmentObject(appSession)
         .environmentObject(ThemeStore.shared)
         .frame(width: size.width, height: size.height)
+        .padding(shadowInset)
         .onChange(of: appSession.librarySetupFlow.presentation) { _, presentation in
             if presentation == .none { self.close() }
         }

@@ -188,7 +188,7 @@ struct LibrarySetupFlow: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("可以直接打开它；如需新建资料库，请返回并选择一个没有资料库的位置。")
+                    Text("可以直接打开它；如需新建资料库，请选择上级文件夹。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
@@ -379,7 +379,7 @@ struct LibrarySetupFlow: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = FileImportService.supportedUTTypes
+        panel.allowedContentTypes = FileImportService.importSelectionContentTypes
         panel.resolvesAliases = true
         panel.treatsFilePackagesAsDirectories = false
         panel.prompt = "添加"
@@ -437,7 +437,8 @@ struct LibrarySetupFlow: View {
                     parentURL: parent,
                     displayName: displayName,
                     initialImportSelection: initialImportSelection,
-                    initialImportPolicy: .background
+                    initialImportPolicy: .background,
+                    allowAlternateDestinationWhenOccupied: true
                 )
                 guard flow.isCurrentOperation(operation) else { return }
                 switch result {
@@ -451,15 +452,15 @@ struct LibrarySetupFlow: View {
                 }
             } catch {
                 guard flow.isCurrentOperation(operation) else { return }
-                flow.fail(creationFailureMessage(error, parent: parent))
+                flow.fail(creationFailureMessage(error, parent: parent, displayName: displayName))
             }
         }
         flow.setOperationCancellation { task.cancel() }
     }
 
-    private func creationFailureMessage(_ error: Error, parent: URL) -> String {
+    private func creationFailureMessage(_ error: Error, parent: URL, displayName: String) -> String {
         let destination = parent
-            .appendingPathComponent(LibraryPaths.rootDirectoryName, isDirectory: true)
+            .appendingPathComponent(LibraryPaths.newLibraryDirectoryName(for: displayName), isDirectory: true)
             .standardizedFileURL
             .path
         if let creationError = error as? LibraryCreationError {

@@ -1361,10 +1361,10 @@ final class AppSessionHost: ObservableObject {
     }
 
     /// Restores the startup invariant: when there is no active, reachable
-    /// library, the default empty library is opened or created at
-    /// `~/Music/kmgccc_player Library` before the main window is shown. This
-    /// keeps the normal empty-library shell available while the setup wizard
-    /// floats above it.
+    /// library, a legacy default root is opened if present; otherwise a named
+    /// empty library is created under `~/Music` before the main window is
+    /// shown. This keeps the normal empty-library shell available while the
+    /// setup wizard floats above it.
     private func ensureFactoryDefaultLibraryIfNeeded(
         allowUnreachableActiveLibrary: Bool = false
     ) async -> LibraryContext? {

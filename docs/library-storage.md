@@ -14,8 +14,10 @@ kmgccc_player 把用户资料库、可重建索引、派生缓存和系统缓存
 
 同一资料库不能混合两种 locator。模式在创建后不可修改；切换模式实际是切换到该模式最近使用的另一资料库，或进入创建流程。
 
+新建资料库时，在所选存储目录下创建 `kmgccc_player Library - <资料库名称>` 文件夹。向导遇到同名文件夹时依次追加 ` 2`、` 3`，因此同一存储目录可容纳多个资料库。目录名中的路径分隔符与控制字符替换为 `-`，名称较长时截短目录名；`library.json` 保留完整显示名。旧资料库继续使用已记录的路径与身份，改显示名也不改变现有文件夹名；旧默认目录 `~/Music/kmgccc_player Library` 仍可直接打开。
+
 ```text
-kmgccc_player Library/
+kmgccc_player Library - <资料库名称>/
   library.json
   Settings/
     library-settings.json
@@ -58,6 +60,11 @@ kmgccc_player Library/
 | 系统缓存 | WebKit、URLSession、Cookie、LocalStorage、IndexedDB | Apple 框架 | 使用框架 API 管理 |
 
 播放历史采用事件日志，但它记录用户行为，不是缓存。普通缓存清理不得删除播放历史、统计或偏好分数。
+
+歌曲拖入播放列表复用资料库的成员事务，按拖拽顺序追加并跳过已有歌曲。拖入艺人或专辑通过
+meta-only 路径保存用户修正，原音频文件的内嵌标签保持原样。明确的专辑归属保存在可选的
+`userMetadataOverride.albumGroupKey`，优先于同名专辑的自动分组；旧 sidecar 缺少此字段时继续
+沿用自动分组。修改专辑名称会更新或清除这份归属，艺人更名时同步迁移受影响的专辑键。
 
 ## Session 与切换边界
 

@@ -233,11 +233,9 @@ final class LibraryCreationService {
         let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { throw LibraryCreationError.invalidDisplayName }
 
-        // The picker asks for the directory that should contain the fixed
-        // library root. Users can still navigate into an existing
-        // `kmgccc_player Library` and choose that root itself. Treat that as
-        // selecting the existing library instead of silently creating a
-        // nested `kmgccc_player Library/kmgccc_player Library`.
+        // Selecting a library root itself still means opening that library,
+        // including roots created by older versions. Never nest a new library
+        // inside it.
         let selectedParent = parentURL.standardizedFileURL
         let selectedRootManifest = LibraryPaths(rootURL: selectedParent).manifestURL
         if await fileOperator.itemExists(at: selectedRootManifest) {
@@ -254,45 +252,32 @@ final class LibraryCreationService {
             }
         }
 
-        // Resolve the destination directory. The preferred name is the
-        // shared rootDirectoryName. Interactive creation keeps the default
-        // false and reports the concrete existing library to the wizard; only
-        // the system factory-default recovery path opts into a numbered
-        // sibling so it can guarantee a usable empty library without
-        // overwriting user data.
-        var destination = parentURL
-            .appendingPathComponent(LibraryPaths.rootDirectoryName, isDirectory: true)
+        // Different names share a parent without sharing a library root.
+        // The wizard and startup fallback choose a numbered sibling whenever
+        // a destination is occupied, leaving its contents untouched.
+        let directoryName = LibraryPaths.newLibraryDirectoryName(for: trimmedName)
+        var destination = selectedParent
+            .appendingPathComponent(directoryName, isDirectory: true)
             .standardizedFileURL
         var suffix = 1
         while await fileOperator.itemExists(at: destination) {
             try Task.checkCancellation()
+            if allowAlternateDestinationWhenOccupied {
+                suffix += 1
+                destination = selectedParent
+                    .appendingPathComponent("\(directoryName) \(suffix)", isDirectory: true)
+                    .standardizedFileURL
+                continue
+            }
             do {
                 let inspected = try await openService.inspect(
                     selectedURL: destination,
                     allowStalePathConflictRepair: allowStalePathConflictRepair
                 )
-                guard allowAlternateDestinationWhenOccupied else {
-                    return inspected.context.mode == mode
-                        ? .existingLibrary(inspected.context)
-                        : .existingLibraryModeMismatch(inspected.context, requestedMode: mode)
-                }
-                suffix += 1
-                destination = parentURL
-                    .appendingPathComponent("\(LibraryPaths.rootDirectoryName) \(suffix)", isDirectory: true)
-                    .standardizedFileURL
+                return inspected.context.mode == mode
+                    ? .existingLibrary(inspected.context)
+                    : .existingLibraryModeMismatch(inspected.context, requestedMode: mode)
             } catch {
-                // Never delete or overwrite unknown user data. Explicitly
-                // opting into an alternate destination (used by the system
-                // fallback and the confirmation button) moves to the next
-                // sibling; ordinary creation still reports the conflict.
-                if allowAlternateDestinationWhenOccupied,
-                   (try? await fileOperator.directoryIsEmpty(at: destination)) != true {
-                    suffix += 1
-                    destination = parentURL
-                        .appendingPathComponent("\(LibraryPaths.rootDirectoryName) \(suffix)", isDirectory: true)
-                        .standardizedFileURL
-                    continue
-                }
                 guard (try? await fileOperator.directoryIsEmpty(at: destination)) == true else {
                     throw LibraryCreationError.destinationContainsUnknownItems
                 }
