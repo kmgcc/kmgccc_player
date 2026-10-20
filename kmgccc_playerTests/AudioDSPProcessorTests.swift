@@ -947,4 +947,41 @@ final class DSPProcessingLoadAccumulatorTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(snapshot.nodes[active]).averageRatio, 0.008, accuracy: 1e-12)
         XCTAssertEqual(snapshot.chain.averageRatio, 0.04, accuracy: 1e-12)
     }
+
+    func testOversamplerStaysFlatToTwentyKilohertzAndRejectsAudibleAliasesAt44kHz() throws {
+        func magnitudeDB(_ taps: [Double], frequency: Double, sampleRate: Double) -> Double {
+            var real = 0.0, imaginary = 0.0
+            for (index, tap) in taps.enumerated() {
+                let angle = 2 * Double.pi * frequency / sampleRate * Double(index)
+                real += tap * cos(angle)
+                imaginary -= tap * sin(angle)
+            }
+            return 20 * log10(max(1e-300, hypot(real, imaginary)))
+        }
+        let sourceRate = 44_100.0
+        for factor in [2, 4] {
+            let plan = try XCTUnwrap(DSPPolyphaseFIRPlan(factor: factor))
+            let rate = sourceRate * Double(factor)
+            // Interleave the per-phase arms back into one up-sampling FIR.
+            var interpolation = [Double](repeating: 0, count: plan.tapCount)
+            for (phase, arm) in plan.interpolationWeights.enumerated() {
+                for (index, weight) in arm.reversed().enumerated() where phase + index * factor < plan.tapCount {
+                    interpolation[phase + index * factor] = weight
+                }
+            }
+            let unityOffset = 20 * log10(Double(factor))
+            for frequency in stride(from: 20.0, through: 20_000, by: 250) {
+                let cascade = magnitudeDB(interpolation, frequency: frequency, sampleRate: rate) - unityOffset
+                    + magnitudeDB(plan.decimationWeights, frequency: frequency, sampleRate: rate)
+                XCTAssertEqual(cascade, 0, accuracy: 0.01, "\(factor)x passband at \(frequency) Hz")
+            }
+            // Content above 24.1 kHz images or folds back below 20 kHz.
+            for frequency in stride(from: sourceRate - 20_000, through: rate / 2, by: 100) {
+                XCTAssertLessThan(magnitudeDB(plan.decimationWeights, frequency: frequency, sampleRate: rate), -88,
+                    "\(factor)x alias at \(frequency) Hz")
+                XCTAssertLessThan(magnitudeDB(interpolation, frequency: frequency, sampleRate: rate) - unityOffset, -88,
+                    "\(factor)x image at \(frequency) Hz")
+            }
+        }
+    }
 }
