@@ -53,6 +53,16 @@ enum SkinRegistry {
         }
     }
 
+    @MainActor
+    static func releaseInactiveCachedResources() async {
+        for skin in skins {
+            // A scene may borrow another skin's artwork/background component.
+            // Catalogue-wide retirement waits until every skin host has left.
+            guard SkinSession.activeSkinIDs.isEmpty else { return }
+            await skin.releaseCachedResources()
+        }
+    }
+
     static let defaultSkinID: String = "kmgccc.cassette"
 
     static let defaultFullscreenSkinID: String = "kmgccc.cassette"

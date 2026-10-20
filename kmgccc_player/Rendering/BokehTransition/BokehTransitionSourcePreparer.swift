@@ -94,6 +94,13 @@ final class BokehTransitionSourcePreparer {
     ) {
         let identity = frames.identity(renderSize: renderSize, tier: tier)
         if let currentSourceSet, currentSourceSet.identity == identity {
+            // Returning to a ready geometry retires a different pending one.
+            if pendingIdentity != nil {
+                generation &+= 1
+                task?.cancel()
+                task = nil
+                pendingIdentity = nil
+            }
             // SwiftUI state may be cleared independently of this cache after a
             // transition. Republish the cached set without repeating the
             // downsample work so the caller can restore its ready state.
@@ -112,11 +119,20 @@ final class BokehTransitionSourcePreparer {
         pendingIdentity = identity
 
         task = Task { [weak self] in
-            let prepared = await Task.detached(priority: .userInitiated) {
-                Self.prepare(frames: frames, identity: identity)
-            }.value
+            guard !Task.isCancelled else { return }
+            let prepareTask = Task.detached(priority: .userInitiated) {
+                autoreleasepool {
+                    Self.prepare(frames: frames, identity: identity)
+                }
+            }
+            let prepared = await withTaskCancellationHandler {
+                await prepareTask.value
+            } onCancel: {
+                prepareTask.cancel()
+            }
 
             guard let self, self.generation == expectedGeneration else { return }
+            self.task = nil
             self.pendingIdentity = nil
             guard !Task.isCancelled, let prepared else { return }
 

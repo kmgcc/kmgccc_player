@@ -407,6 +407,7 @@ struct CoverGradientBlurBackgroundView: View {
                             outputPixelSize: key.outputPixelSize
                         )
                     else { return nil }
+                    guard !Task.isCancelled else { return nil }
                     // Build the readability map from the final render in the
                     // same detached task - never on the main thread.
                     let map = RenderedBackdropReadabilityMap.make(from: image)
@@ -978,6 +979,7 @@ enum CoverGradientBlurRenderer {
         guard let finalImage = compositeFilter.outputImage?.cropped(to: outputRect) else {
             return nil
         }
+        guard !Task.isCancelled else { return nil }
         let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
         guard let cgImage = renderContext.createCGImage(
             finalImage,
@@ -1405,6 +1407,9 @@ enum CoverGradientBlurRenderer {
         canvasRect: CGRect,
         canvasLogicalHeight: CGFloat
     ) -> CIImage? {
+        if alphaMax == 0 {
+            return CIImage(color: .clear).cropped(to: canvasRect)
+        }
         guard let overlayGradientFilter = CIFilter(name: "CILinearGradient") else {
             return nil
         }
@@ -1741,9 +1746,20 @@ final class CoverGradientBlurRenderedImageBox: NSObject, @unchecked Sendable {
 actor CoverGradientBlurRenderStore {
     static let shared = CoverGradientBlurRenderStore()
 
-    private struct RenderRequestKey: Hashable {
+    private struct RenderRequestKey: Hashable, Sendable {
         let cacheKey: String
         let generation: UInt64
+    }
+
+    private struct PendingRender {
+        let id: UUID
+        let producer: @Sendable () async -> CoverGradientBlurRenderedImageBox?
+        var consumers: [UUID: CheckedContinuation<CoverGradientBlurRenderedImageBox?, Never>]
+    }
+
+    private struct ActiveRender {
+        let id: UUID
+        let task: Task<Void, Never>
     }
 
     private let cache: NSCache<NSString, CoverGradientBlurRenderedImageBox> = {
@@ -1752,84 +1768,117 @@ actor CoverGradientBlurRenderStore {
         cache.totalCostLimit = 4 * 1024 * 1024
         return cache
     }()
-    private var inFlightKeys: Set<RenderRequestKey> = []
-    private var waitingContinuations:
-        [RenderRequestKey: [CheckedContinuation<CoverGradientBlurRenderedImageBox?, Never>]] = [:]
-    private var renderQueueTail: Task<Void, Never>?
-    private var renderQueueTailID: UUID?
+    private var pendingRenders: [RenderRequestKey: PendingRender] = [:]
+    private var renderQueue: [RenderRequestKey] = []
+    private var activeRender: ActiveRender?
     private var memoryGeneration: UInt64 = 0
+
+    var waitingConsumerCountForTesting: Int {
+        pendingRenders.values.reduce(0) { $0 + $1.consumers.count }
+    }
 
     func image(
         for key: String,
         producer: @Sendable @escaping () async -> CoverGradientBlurRenderedImageBox?
     ) async -> CoverGradientBlurRenderedImageBox? {
+        guard !Task.isCancelled else { return nil }
         let requestGeneration = memoryGeneration
         if let cached = cache.object(forKey: key as NSString) {
             return cached
         }
 
         let requestKey = RenderRequestKey(cacheKey: key, generation: requestGeneration)
-        if inFlightKeys.contains(requestKey) {
-            return await withCheckedContinuation { continuation in
-                waitingContinuations[requestKey, default: []].append(continuation)
+        let consumerID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                if var pending = pendingRenders[requestKey] {
+                    pending.consumers[consumerID] = continuation
+                    pendingRenders[requestKey] = pending
+                } else {
+                    pendingRenders[requestKey] = PendingRender(
+                        id: UUID(),
+                        producer: producer,
+                        consumers: [consumerID: continuation]
+                    )
+                    renderQueue.append(requestKey)
+                    startNextRenderIfNeeded()
+                }
             }
+        } onCancel: {
+            Task { await self.cancelConsumer(consumerID, for: requestKey) }
         }
-
-        inFlightKeys.insert(requestKey)
-        let result = await produceSerially(producer)
-
-        if let result, memoryGeneration == requestGeneration {
-            cache.setObject(result, forKey: key as NSString, cost: result.cost)
-        }
-
-        inFlightKeys.remove(requestKey)
-        if let waiters = waitingContinuations.removeValue(forKey: requestKey) {
-            for continuation in waiters {
-                continuation.resume(returning: result)
-            }
-        }
-
-        return result
     }
 
-    /// Drops the cached render. A render already running still reaches the
-    /// views waiting for it: routine trims run half a second after every
-    /// track change, and a cancelled render left the new track's background
-    /// on the solid fallback, since its key had not changed and nothing
-    /// asked again. The generation keeps that result out of the cache.
+    /// Drops cached renders while requests with live consumers still finish.
+    /// The generation keeps their results out of the refreshed cache.
     func clearMemory() {
         memoryGeneration &+= 1
         cache.removeAllObjects()
     }
 
-    private func produceSerially(
-        _ producer: @Sendable @escaping () async -> CoverGradientBlurRenderedImageBox?
-    ) async -> CoverGradientBlurRenderedImageBox? {
-        guard !Task.isCancelled else { return nil }
+    private func cancelConsumer(_ consumerID: UUID, for key: RenderRequestKey) {
+        guard var pending = pendingRenders[key],
+              let continuation = pending.consumers.removeValue(forKey: consumerID) else { return }
+        if pending.consumers.isEmpty {
+            pendingRenders.removeValue(forKey: key)
+            renderQueue.removeAll { $0 == key }
+            if activeRender?.id == pending.id {
+                activeRender?.task.cancel()
+            }
+        } else {
+            pendingRenders[key] = pending
+        }
+        continuation.resume(returning: nil)
+    }
 
-        let queueID = UUID()
-        let previous = renderQueueTail
-        let task = Task { [producer] () -> CoverGradientBlurRenderedImageBox? in
-            await previous?.value
-            guard !Task.isCancelled else { return nil }
-            return await producer()
+    private func startNextRenderIfNeeded() {
+        guard activeRender == nil else { return }
+        while !renderQueue.isEmpty {
+            let key = renderQueue.removeFirst()
+            guard let pending = pendingRenders[key] else { continue }
+            let requestID = pending.id
+            let producer = pending.producer
+            let task = Task {
+                var result: CoverGradientBlurRenderedImageBox?
+                if !Task.isCancelled {
+                    result = await producer()
+                }
+                self.finishRender(
+                    for: key,
+                    requestID: requestID,
+                    result: Task.isCancelled ? nil : result
+                )
+            }
+            activeRender = ActiveRender(id: requestID, task: task)
+            return
         }
-        renderQueueTailID = queueID
-        renderQueueTail = Task {
-            _ = await task.value
-        }
+    }
 
-        let result = await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            task.cancel()
+    private func finishRender(
+        for key: RenderRequestKey,
+        requestID: UUID,
+        result: CoverGradientBlurRenderedImageBox?
+    ) {
+        if activeRender?.id == requestID {
+            activeRender = nil
         }
-
-        if renderQueueTailID == queueID {
-            renderQueueTail = nil
-            renderQueueTailID = nil
+        if let pending = pendingRenders[key], pending.id == requestID {
+            pendingRenders.removeValue(forKey: key)
+            if let result, memoryGeneration == key.generation {
+                cache.setObject(result, forKey: key.cacheKey as NSString, cost: result.cost)
+            }
+            for continuation in pending.consumers.values {
+                continuation.resume(returning: result)
+            }
         }
-        return result
+        // Wait for a cancelled producer to stop before starting another GPU
+        // render. Queued requests with no consumers drop their artwork captures
+        // immediately instead of keeping a chain of suspended Tasks alive.
+        startNextRenderIfNeeded()
     }
 }
 

@@ -47,7 +47,7 @@ struct SkinBackgroundComponent: View {
                 .frame(width: proxy.size.width, height: proxy.size.height)
                 .clipped()
                 .contentShape(Rectangle())
-                .contextMenu {
+                .contextMenuWithVisibleIcons {
                     Button("刷新皮肤", action: actions.reload)
                     Button("恢复外观", action: actions.restore)
                 }
