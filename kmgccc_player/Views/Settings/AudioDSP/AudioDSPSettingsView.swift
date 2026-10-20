@@ -56,7 +56,7 @@ struct AudioDSPSettingsView: View {
     private var shownConfiguration: AudioDSPConfiguration {
         guard isReadOnly, let viewedDevice else { return controller.configuration }
         let id = devices.presetID(for: viewedDevice)
-        return controller.presets.first { $0.presetID == id }?.configuration ?? .defaultFlat
+        return controller.presets.first { $0.presetID == id }?.configuration ?? .defaultEffects
     }
 
     var body: some View {
@@ -177,12 +177,10 @@ struct AudioDSPSettingsView: View {
     private var contentHierarchy: some View {
         VStack(alignment: .leading, spacing: SettingsStyleTokens.sectionSpacing) {
             deviceSection
-            Group {
-                linearNodeRackSection
-                diagnosticsSection
-            }
-            .disabled(isReadOnly)
-            .opacity(isReadOnly ? 0.5 : 1)
+            linearNodeRackSection
+            diagnosticsSection
+                .disabled(isReadOnly)
+                .opacity(isReadOnly ? 0.5 : 1)
         }
     }
 
@@ -387,6 +385,9 @@ struct AudioDSPSettingsView: View {
                 }
             )
         }
+        .disabled(isReadOnly || !shown.enabled)
+        .opacity(isReadOnly || !shown.enabled ? 0.5 : 1)
+        .allowsHitTesting(!isReadOnly && shown.enabled)
     }
 
     @ViewBuilder
@@ -599,7 +600,7 @@ struct AudioDSPSettingsView: View {
     }
 
     private func displayName(for document: DSPPresetDocument) -> String {
-        guard document.isBuiltIn else { return document.name }
+        guard document.presetID == DSPPresetDocument.flatPresetID else { return document.name }
         return NSLocalizedString(
             "dsp.preset.flat",
             value: "Flat",
@@ -667,8 +668,8 @@ struct AudioDSPSettingsView: View {
         }
     }
 
-    /// Runs after the confirmation dialog. Deleting the current preset returns
-    /// the chain to the built-in flat preset rather than keeping a draft.
+    /// Runs after confirmation. Deleting the current preset selects the
+    /// built-in default effect chain.
     private func deletePreset(id: UUID) {
         guard let document = controller.presets.first(where: { $0.presetID == id }), !document.isBuiltIn else { return }
         let wasSelected = controller.selectedPresetID == id
@@ -679,7 +680,7 @@ struct AudioDSPSettingsView: View {
                     expectedPresetRevision: document.revisionString
                 )
                 if wasSelected, controller.selectedPresetID == nil {
-                    _ = try controller.selectPreset(id: DSPPresetDocument.flatPresetID)
+                    _ = try controller.selectPreset(id: DSPPresetDocument.defaultPresetID)
                     controller.commitPendingApply()
                 }
             } catch {

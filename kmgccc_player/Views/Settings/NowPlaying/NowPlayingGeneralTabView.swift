@@ -31,8 +31,7 @@ struct NowPlayingGeneralTabView: View {
                         SettingsSwitchRow(
                             title: "启用艺术背景",
                             isOn: $nowPlayingArtBackgroundEnabled,
-                            detail: "遇到性能问题时，可以关闭此选项",
-                            detailFont: presentationStyle.captionFont
+                            info: "遇到性能问题时，可以关闭此选项。"
                         )
                     }
                 }

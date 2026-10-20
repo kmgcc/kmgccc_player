@@ -57,17 +57,14 @@ struct StorageSettingsView: View {
                         }
                         Divider()
                     }
-                    VStack(alignment: .leading, spacing: SettingsStyleTokens.inlineSpacing) {
-                        StorageActionButton(
-                            title: "清理全部缓存",
-                            isBusy: !model.busyCategories.isDisjoint(with: StorageCategory.cacheCategories),
-                            isDisabled: (model.report?.cleanableBytes ?? 0) == 0
-                        ) {
-                            clean(StorageCategory.cacheCategories)
-                        }
-                        Text("App 会在空闲时整理缓存，让它们保持在各自的上限以内；清理后，需要的内容会在使用时重新生成。")
-                            .settingsDescriptionStyle()
+                    StorageActionButton(
+                        title: "清理全部缓存",
+                        isBusy: !model.busyCategories.isDisjoint(with: StorageCategory.cacheCategories),
+                        isDisabled: (model.report?.cleanableBytes ?? 0) == 0
+                    ) {
+                        clean(StorageCategory.cacheCategories)
                     }
+                    .settingsInfoHint("App 会在空闲时整理缓存，让它们保持在各自的上限以内；清理后，需要的内容会在使用时重新生成。")
                 }
             }
 

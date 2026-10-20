@@ -33,7 +33,7 @@ struct BackgroundTasksSettingsView: View {
                 SettingsSwitchRow(
                     title: "空闲时提前准备",
                     isOn: preparationBinding,
-                    detail: "接通电源且空闲时提前分析响度、整理封面与歌词；使用电池时，仅准备即将播放的歌曲。"
+                    info: "接通电源且空闲时提前分析响度、整理封面与歌词；使用电池时，仅准备即将播放的歌曲。"
                 )
 
                 Divider()
@@ -42,11 +42,9 @@ struct BackgroundTasksSettingsView: View {
                     label: "处理节奏",
                     options: BackgroundPacingMode.allCases,
                     selection: pacingBinding,
-                    displayName: { Self.pacingTitle($0) }
+                    displayName: { Self.pacingTitle($0) },
+                    info: "轻缓计算更放松，且每项工作之间稍作停歇，电脑更安静、更凉爽。"
                 )
-
-                Text("轻缓计算更放松，且每项工作之间稍作停歇，电脑更安静、更凉爽。")
-                    .settingsDescriptionStyle()
             }
         }
     }

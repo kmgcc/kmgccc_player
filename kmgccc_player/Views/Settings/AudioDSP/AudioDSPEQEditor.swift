@@ -2,7 +2,7 @@
 //  AudioDSPEQEditor.swift
 //  myPlayer2
 //
-//  Nine-band EQ response and directly editable band controls.
+//  Ten-band EQ response and directly editable band controls.
 //
 
 import SwiftUI
@@ -60,7 +60,7 @@ struct AudioDSPEQEditor: View, Equatable {
                 .contentShape(Rectangle())
                 .gesture(curveDragGesture(in: plot))
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("九段均衡器频响曲线")
+                .accessibilityLabel("均衡器频响曲线")
                 .accessibilityValue(accessibilityCurveValue)
                 .accessibilityHint("拖动控制点调整频率与增益。")
             }
@@ -91,7 +91,7 @@ struct AudioDSPEQEditor: View, Equatable {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityLabel("九段均衡器参数")
+            .accessibilityLabel("均衡器参数")
         }
     }
 

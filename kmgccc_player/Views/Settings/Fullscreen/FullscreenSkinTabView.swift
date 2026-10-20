@@ -235,8 +235,6 @@ struct FullscreenSkinTabView: View {
                 step: 0.05
             )
             .frame(height: presentationStyle.tabHeight)
-            Text("调整歌曲封面的显示大小")
-                .settingsDescriptionStyle()
         }
     }
 

@@ -36,9 +36,12 @@ struct LabSampleView: View {
     var body: some View {
         PopupFrame(
             title: title,
+            subtitle: kind == .form && model.longContent
+                ? "播放列表名称可以包含中文、英文和标点。此处用于检查较长说明在窄窗口中的换行与按钮间距。" : nil,
             systemImage: kind.symbol,
             onClose: model.canDismiss(kind) ? onClose : nil,
             showsFooter: !floatsActions,
+            showsCloseButton: false,
             rendersSurface: rendersSurface
         ) {
             content
@@ -67,11 +70,6 @@ struct LabSampleView: View {
                     .accessibilityLabel("播放列表名称")
                 Toggle("使用歌曲封面", isOn: $keepsArtwork)
                     .toggleStyle(.switch)
-                if model.longContent {
-                    Text("播放列表名称可以包含中文、英文和标点。此处用于检查较长说明在窄窗口中的换行与按钮间距。")
-                        .foregroundStyle(model.palette.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
         case .task:
             LabTaskContent(model: model) { footer }

@@ -41,7 +41,7 @@ struct SettingsTaskDialog<Content: View, Footer: View>: View {
     var body: some View {
         AppPopupFrame(
             title: title, subtitle: subtitle, systemImage: systemImage,
-            onClose: onClose, showsFooter: !floatsActions, accent: iconColor
+            onClose: onClose, showsFooter: !floatsActions, showsCloseButton: false, accent: iconColor
         ) {
             if floatsActions {
                 AppPopupScrollRegion {

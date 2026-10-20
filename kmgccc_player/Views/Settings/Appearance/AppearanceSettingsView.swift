@@ -89,7 +89,7 @@ struct AppearanceSettingsView: View {
                         SettingsSwitchRow(
                             title: "HDR 效果",
                             isOn: $audioVisualizationHDREnabled,
-                            detail: "开启后部分视觉元素会使用 HDR 来增强可读性与视觉效果"
+                            info: "开启后部分视觉元素会使用 HDR 来增强可读性与视觉效果。"
                         )
                         .frame(maxWidth: .infinity)
                     }
@@ -112,7 +112,7 @@ struct AppearanceSettingsView: View {
                 }
             }
 
-            SettingsSection("主页板块顺序") {
+            SettingsSection("主页板块顺序", info: "拖动调整主页中各个板块的显示顺序。") {
                 homeSectionOrderEditor
             }
         }
@@ -157,6 +157,7 @@ struct AppearanceSettingsView: View {
             HStack(spacing: 8) {
                 Text("动态取色")
                     .settingsRowLabelStyle()
+                    .settingsInfoHint("简洁使用默认色，动态跟随播放封面，丰富为列表歌曲分别取色。")
 
                 Spacer(minLength: 6)
 
@@ -189,10 +190,6 @@ struct AppearanceSettingsView: View {
                 )
                 .fixedSize(horizontal: true, vertical: false)
             }
-
-            Text("简洁使用默认色，动态跟随播放封面，丰富为列表歌曲分别取色")
-                .font(.system(size: 11))
-                .foregroundStyle(appColors?.secondary ?? .secondary)
         }
     }
 
@@ -310,9 +307,6 @@ struct AppearanceSettingsView: View {
             }
 
             HStack {
-                Text("拖动调整主页中各个板块的显示顺序")
-                    .settingsDescriptionStyle()
-
                 Spacer(minLength: 0)
 
                 Button("恢复默认排序") {

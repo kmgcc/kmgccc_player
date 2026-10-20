@@ -139,9 +139,7 @@ struct ExternalPlaybackSettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .clipShape(Capsule())
                     .disabled(isClearingCaches)
-
-                    Text("清除自动匹配结果、自动封面和自动歌词缓存；保留手动匹配、手动歌词和播放源规则。")
-                        .settingsDescriptionStyle()
+                    .settingsInfoHint("清除自动匹配结果、自动封面和自动歌词缓存；保留手动匹配、手动歌词和播放源规则。")
                 }
             }
         }

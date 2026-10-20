@@ -194,7 +194,7 @@
 "edit.track.offset" = "歌词时间偏移";
 "edit.track.reset" = "重置";
 "edit.track.offset_desc" = "将所有歌词时间轴提前或延后。";
-"edit.track.paste_desc" = "仅支持 TTML 歌词。LRC / TXT / 普通文本请通过歌词搜索或导入流程自动转换。";
+"edit.track.paste_desc" = "可粘贴 TTML、LRC 或逐字歌词，其他格式会自动转为 TTML。";
 "edit.track.cancel" = "取消";
 "edit.track.save" = "保存更改";
 

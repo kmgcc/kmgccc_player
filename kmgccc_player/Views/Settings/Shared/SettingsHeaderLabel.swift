@@ -150,43 +150,53 @@ extension SettingsHeaderLabel {
 
 struct SettingsSectionTitle: View {
     let title: LocalizedStringKey
+    var info: String?
 
-    init(_ title: LocalizedStringKey) {
+    init(_ title: LocalizedStringKey, info: String? = nil) {
         self.title = title
+        self.info = info
     }
 
-    init(_ title: String) {
+    init(_ title: String, info: String? = nil) {
         self.title = LocalizedStringKey(title)
+        self.info = info
     }
 
     var body: some View {
+        // The style fills the width, so the mark joins the title before it.
         Text(title)
+            .settingsInfoHint(info)
             .settingsSectionTitleStyle()
     }
 }
 
 struct SettingsSection<Content: View, HeaderTrailing: View>: View {
     private let title: LocalizedStringKey?
+    private let info: String?
     private let headerTrailing: HeaderTrailing
     private let content: Content
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     init(
         _ title: LocalizedStringKey? = nil,
+        info: String? = nil,
         @ViewBuilder headerTrailing: () -> HeaderTrailing,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
+        self.info = info
         self.headerTrailing = headerTrailing()
         self.content = content()
     }
 
     init(
         _ title: String,
+        info: String? = nil,
         @ViewBuilder headerTrailing: () -> HeaderTrailing,
         @ViewBuilder content: () -> Content
     ) {
         self.title = LocalizedStringKey(title)
+        self.info = info
         self.headerTrailing = headerTrailing()
         self.content = content()
     }
@@ -204,7 +214,7 @@ struct SettingsSection<Content: View, HeaderTrailing: View>: View {
             if title != nil || HeaderTrailing.self != EmptyView.self {
                 HStack(spacing: presentationStyle.compactInlineSpacing) {
                     if let title {
-                        SettingsSectionTitle(title)
+                        SettingsSectionTitle(title, info: info)
                     }
                     if HeaderTrailing.self != EmptyView.self {
                         Spacer(minLength: 0)
@@ -218,12 +228,12 @@ struct SettingsSection<Content: View, HeaderTrailing: View>: View {
 }
 
 extension SettingsSection where HeaderTrailing == EmptyView {
-    init(_ title: LocalizedStringKey? = nil, @ViewBuilder content: () -> Content) {
-        self.init(title, headerTrailing: { EmptyView() }, content: content)
+    init(_ title: LocalizedStringKey? = nil, info: String? = nil, @ViewBuilder content: () -> Content) {
+        self.init(title, info: info, headerTrailing: { EmptyView() }, content: content)
     }
 
-    init(_ title: String, @ViewBuilder content: () -> Content) {
-        self.init(LocalizedStringKey(title), headerTrailing: { EmptyView() }, content: content)
+    init(_ title: String, info: String? = nil, @ViewBuilder content: () -> Content) {
+        self.init(LocalizedStringKey(title), info: info, headerTrailing: { EmptyView() }, content: content)
     }
 }
 
@@ -377,6 +387,8 @@ struct SettingsSwitchRow: View {
     var detailFont: Font?
     var titleColor: Color?
     var detailColor: Color?
+    /// Supplementary note shown from an info mark instead of a caption.
+    var info: String?
 
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
     @Environment(\.settingsAppForegroundColors) private var appColors
@@ -391,6 +403,7 @@ struct SettingsSwitchRow: View {
                 Text(title)
                     .font(titleFont ?? presentationStyle.rowLabelFont)
                     .foregroundStyle(resolvedTitleColor)
+                    .settingsInfoHint(info)
 
                 Spacer(minLength: presentationStyle.scaled(16))
 

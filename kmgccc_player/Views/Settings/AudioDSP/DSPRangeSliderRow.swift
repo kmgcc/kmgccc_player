@@ -16,6 +16,8 @@ struct DSPRangeSliderRow: View {
     let step: Double
     var unit: String = "dB"
     var fractionDigits: Int = 1
+    /// Supplementary note shown from an info mark beside the title.
+    var info: String? = nil
     var onCommit: (() -> Void)? = nil
 
     static let sliderWidth: CGFloat = 168
@@ -27,8 +29,9 @@ struct DSPRangeSliderRow: View {
                 .settingsRowLabelStyle()
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .help(title)
+                .settingsInfoHint(info)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             // The slider stays continuous and snaps through the same quantizer
             // as the number field, so both controls land on identical values.

@@ -7,6 +7,7 @@ public struct PopupFrame<Content: View, Footer: View>: View {
     private let systemImage: String?
     private let onClose: (() -> Void)?
     private let showsFooter: Bool
+    private let showsCloseButton: Bool
     private let rendersSurface: Bool
     private let foregroundBlendMode: BlendMode
     private let content: Content
@@ -21,6 +22,7 @@ public struct PopupFrame<Content: View, Footer: View>: View {
         systemImage: String? = nil,
         onClose: (() -> Void)? = nil,
         showsFooter: Bool = true,
+        showsCloseButton: Bool? = nil,
         rendersSurface: Bool = true,
         foregroundBlendMode: BlendMode = .normal,
         @ViewBuilder content: () -> Content,
@@ -31,6 +33,7 @@ public struct PopupFrame<Content: View, Footer: View>: View {
         self.systemImage = systemImage
         self.onClose = onClose
         self.showsFooter = showsFooter
+        self.showsCloseButton = showsCloseButton ?? !showsFooter
         self.rendersSurface = rendersSurface
         self.foregroundBlendMode = foregroundBlendMode
         self.content = content()
@@ -87,6 +90,8 @@ public struct PopupFrame<Content: View, Footer: View>: View {
     }
 
     private var header: some View {
-        PopupHeader(title: title, subtitle: subtitle, systemImage: systemImage, onClose: onClose)
+        PopupHeader(
+            title: title, subtitle: subtitle, systemImage: systemImage,
+            onClose: showsCloseButton ? onClose : nil)
     }
 }

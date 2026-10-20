@@ -208,7 +208,7 @@ struct MusicSettingsView: View {
     }
 
     private var trustedAudioRootSection: some View {
-        SettingsSection("受信任的音频目录") {
+        SettingsSection("受信任的音频目录", info: "目录内的自动化文件操作无需重复确认。") {
             VStack(alignment: .leading, spacing: 12) {
                 if let path = settings.trustedAudioRootPath {
                     HStack(alignment: .top, spacing: 10) {
@@ -231,8 +231,6 @@ struct MusicSettingsView: View {
                             .controlSize(.small)
                     }
                 } else {
-                    Text("目录内的自动化文件操作无需重复确认。")
-                        .settingsDescriptionStyle()
                     Button("选择目录…") { chooseTrustedAudioRoot() }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -815,7 +813,7 @@ struct MusicSettingsView: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = FileImportService.supportedUTTypes
+        panel.allowedContentTypes = FileImportService.importSelectionContentTypes
         panel.resolvesAliases = true
         panel.treatsFilePackagesAsDirectories = false
         panel.prompt = "添加"

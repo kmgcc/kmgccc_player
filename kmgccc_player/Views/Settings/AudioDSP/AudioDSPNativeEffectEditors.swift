@@ -85,48 +85,81 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
 
     // MARK: Virtual bass
 
+    private static let mixInfo = "处理后的声音与原声的比例。"
+    private static let bassCutoffInfo = "此频率以下的低音由谐波重新呈现。设备的低频越弱，可以设得越高。"
+
     private func classicBassEditor(_ parameters: DSPClassicBassParameters) -> some View {
-        let resolved = parameters.resolved(for: outputKind)
+        let intensityBinding = binding(DSPClassicBassParameters.self, \.intensity)
         return Group {
             targetPicker(DSPClassicBassParameters.self, current: parameters.target)
-            bassLevelControls(DSPClassicBassParameters.self, bassGain: \.bassGainDB,
-                              gainRange: DSPClassicBassParameters.bassGainRange, intensity: \.intensity,
-                              intensityRange: DSPClassicBassParameters.intensityRange)
+            DSPRangeSliderRow(
+                title: "强度",
+                value: Binding(get: { intensityBinding.wrappedValue * 100 }, set: { intensityBinding.wrappedValue = $0 / 100 }),
+                range: 0...100,
+                step: 1,
+                unit: "%",
+                fractionDigits: 0,
+                onCommit: onCommit
+            )
             DSPRangeSliderRow(
                 title: "截止频率",
-                value: automaticBinding(DSPClassicBassParameters.self, \.cutoffHz, resolved: resolved.cutoffHz),
+                value: binding(DSPClassicBassParameters.self, \.cutoffHz),
                 range: DSPClassicBassParameters.cutoffRange,
                 step: 1,
                 unit: "Hz",
                 fractionDigits: 0,
+                info: Self.bassCutoffInfo,
                 onCommit: onCommit
             )
-            CapsulePicker(
-                label: "音色",
-                options: DSPBassCharacter.allCases,
-                selection: choice(DSPClassicBassParameters.self, \.character),
-                displayName: { $0 == .round ? "圆润" : "紧实" }
+            retainsRealBassRow(binding(DSPClassicBassParameters.self, \.retainsRealBass))
+            DSPRangeSliderRow(
+                title: "冲击",
+                value: binding(DSPClassicBassParameters.self, \.impactDB),
+                range: DSPClassicBassParameters.impactDBRange,
+                step: 0.5,
+                unit: "dB",
+                fractionDigits: 1,
+                info: "高次谐波的衰减程度。数值越高，泛音越丰富，低音轮廓越清晰。",
+                onCommit: onCommit
             )
         }
     }
 
     private func hybridBassEditor(_ parameters: DSPHybridBassParameters) -> some View {
-        Group {
+        let intensityBinding = binding(DSPHybridBassParameters.self, \.intensity)
+        let impactBinding = binding(DSPHybridBassParameters.self, \.impact)
+        return Group {
             targetPicker(DSPHybridBassParameters.self, current: parameters.target)
-            bassLevelControls(DSPHybridBassParameters.self, bassGain: \.bassGainDB,
-                              gainRange: DSPHybridBassParameters.bassGainRange, intensity: \.intensity,
-                              intensityRange: DSPHybridBassParameters.intensityRange)
+            DSPRangeSliderRow(
+                title: "强度",
+                value: Binding(get: { intensityBinding.wrappedValue * 100 }, set: { intensityBinding.wrappedValue = $0 / 100 }),
+                range: 0...100,
+                step: 1,
+                unit: "%",
+                fractionDigits: 0,
+                onCommit: onCommit
+            )
             DSPRangeSliderRow(
                 title: "截止频率",
-                value: automaticBinding(DSPHybridBassParameters.self, \.cutoffHz,
-                                        resolved: parameters.resolvedCutoff(for: outputKind).cutoffHz),
+                value: binding(DSPHybridBassParameters.self, \.cutoffHz),
                 range: DSPHybridBassParameters.cutoffRange,
                 step: 1,
                 unit: "Hz",
                 fractionDigits: 0,
+                info: Self.bassCutoffInfo,
                 onCommit: onCommit
             )
-            amountSlider("瞬态", DSPHybridBassParameters.self, \.transient, range: DSPHybridBassParameters.transientRange)
+            retainsRealBassRow(binding(DSPHybridBassParameters.self, \.retainsRealBass))
+            DSPRangeSliderRow(
+                title: "冲击",
+                value: Binding(get: { impactBinding.wrappedValue * 100 }, set: { impactBinding.wrappedValue = $0 / 100 }),
+                range: 0...100,
+                step: 1,
+                unit: "%",
+                fractionDigits: 0,
+                info: "生成谐波时的驱动力度。数值越高，低音越饱满有力。",
+                onCommit: onCommit
+            )
         }
     }
 
@@ -153,7 +186,8 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                 case .headphones: "耳机"
                 case .speakers: "扬声器"
                 }
-            }
+            },
+            info: "耳机与扬声器各自保存一套参数。自动时跟随当前输出设备。"
         )
     }
 
@@ -167,6 +201,7 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
             step: 0.01,
             unit: "×",
             fractionDigits: 2,
+            info: "1.00× 为原始声场，低于此值收窄，高于此值展宽。",
             onCommit: onCommit
         )
     }
@@ -191,7 +226,8 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                     case .medium: "中"
                     case .strong: "重"
                     }
-                }
+                },
+                info: "让一侧的低频稍稍传入另一侧耳朵，耳机听感更接近音箱，久听也更从容。"
             )
         }
     }
@@ -212,7 +248,8 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                 label: "来源",
                 options: DSPSpatialSource.allCases,
                 selection: choice(DSPSpatialAudioParameters.self, \.source),
-                displayName: { $0 == .room ? "虚拟音箱" : "脉冲响应" }
+                displayName: { $0 == .room ? "虚拟音箱" : "脉冲响应" },
+                info: "虚拟音箱在耳机中模拟面前的一对音箱；脉冲响应可导入实测空间的音频文件。"
             )
 
             switch parameters.source {
@@ -240,6 +277,7 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                     step: 1,
                     unit: "°",
                     fractionDigits: 0,
+                    info: "每只音箱偏离正前方的角度。角度越大，声场越开阔。",
                     onCommit: onCommit
                 )
             case .impulseResponse:
@@ -259,6 +297,7 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                 step: 0.01,
                 unit: "",
                 fractionDigits: 2,
+                info: Self.mixInfo,
                 onCommit: onCommit
             )
 
@@ -351,9 +390,12 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                     }
                 }
             )
-            amountSlider("大小", DSPReverbParameters.self, \.size, range: DSPReverbParameters.sizeRange)
-            amountSlider("混合", DSPReverbParameters.self, \.mix, range: DSPReverbParameters.mixRange)
-            amountSlider("明暗", DSPReverbParameters.self, \.tone, range: DSPReverbParameters.toneRange)
+            amountSlider("大小", DSPReverbParameters.self, \.size, range: DSPReverbParameters.sizeRange,
+                         info: "空间越大，余响越悠长。")
+            amountSlider("混合", DSPReverbParameters.self, \.mix, range: DSPReverbParameters.mixRange,
+                         info: Self.mixInfo)
+            amountSlider("明暗", DSPReverbParameters.self, \.tone, range: DSPReverbParameters.toneRange,
+                         info: "向负值偏暗，高频余响收得更快；向正值偏亮，余响更通透。")
         }
     }
 
@@ -366,7 +408,8 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                 label: "模式",
                 options: DSPTubeMode.allCases,
                 selection: choice(DSPTubeParameters.self, \.mode),
-                displayName: { $0 == .classic ? "经典" : "高保真" }
+                displayName: { $0 == .classic ? "经典" : "高保真" },
+                info: "经典让整段声音一同饱和，色彩浓郁；高保真只在原声之上叠加少量谐波，原声保持完整。"
             )
             if qualities.count > 1 {
                 CapsulePicker(
@@ -390,10 +433,13 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                     value: binding(DSPTubeParameters.self, \.driveDB),
                     range: DSPTubeParameters.driveRange,
                     step: 0.1,
+                    info: "送入电子管的电平。数值越高，饱和越明显。",
                     onCommit: onCommit
                 )
-                amountSlider("不对称", DSPTubeParameters.self, \.bias, range: DSPTubeParameters.biasRange)
-                amountSlider("混合", DSPTubeParameters.self, \.mix, range: DSPTubeParameters.mixRange)
+                amountSlider("不对称", DSPTubeParameters.self, \.bias, range: DSPTubeParameters.biasRange,
+                             info: "偏离零点越远，偶次谐波越多，声音越温暖。")
+                amountSlider("混合", DSPTubeParameters.self, \.mix, range: DSPTubeParameters.mixRange,
+                             info: Self.mixInfo)
             case .hifi:
                 amountSlider("强度", DSPTubeParameters.self, \.hifiAmount, range: DSPTubeParameters.hifiAmountRange)
             }
@@ -415,6 +461,7 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                     update(DSPCompressorParameters.self) { current in
                         current.lowCrossoverHz = low
                         current.highCrossoverHz = high
+                        current.useCustomSettings()
                     }
                 },
                 onCommit: onCommit
@@ -429,20 +476,7 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                     set: { style in
                         guard style != parameters.style else { return }
                         update(DSPCompressorParameters.self, commit: true) { current in
-                            if current.style == .custom {
-                                current.customBands = current.bands
-                            }
-                            current.style = style
-                            if style != .custom {
-                                current.bands = zip(style.bands, current.bands).map { styled, existing in
-                                    var band = styled
-                                    band.attackMs = existing.attackMs
-                                    band.releaseMs = existing.releaseMs
-                                    return band
-                                }
-                            } else {
-                                current.bands = current.customBands
-                            }
+                            current.selectStyle(style)
                         }
                     }
                 ),
@@ -452,7 +486,8 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                     case .night: "夜间"
                     case .custom: "自定义"
                     }
-                }
+                },
+                info: "轻柔使整体动态更平稳；夜间更明显地收住响亮的段落，适合低音量聆听。调整任一数值即转为自定义。"
             )
             HStack(spacing: 6) {
                 ForEach(Array(DSPCompressorBandKey.allCases.enumerated()), id: \.offset) { index, key in
@@ -557,8 +592,7 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
             guard current.bands.indices.contains(index) else { return }
             current.bands[index].attackMs = times.attackMs
             current.bands[index].releaseMs = times.releaseMs
-            current.style = .custom
-            current.customBands = current.bands
+            current.useCustomSettings()
         }
     }
 
@@ -603,8 +637,7 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                             guard current.bands.indices.contains(index) else { return }
                             current.bands[index][keyPath: keyPath] = value
                             // Any hand edit makes the settings the listener's own.
-                            current.style = .custom
-                            current.customBands = current.bands
+                            current.useCustomSettings()
                         }
                     }
                 ),
@@ -649,6 +682,16 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
         )
     }
 
+    private func binding<P: DSPEffectParameterSet>(
+        _ type: P.Type,
+        _ keyPath: WritableKeyPath<P, Bool>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { current(type)[keyPath: keyPath] },
+            set: { value in update(type, commit: true) { $0[keyPath: keyPath] = value } }
+        )
+    }
+
     /// A frequency where 0 means "follow the target": the slider shows the
     /// value in use, and moving it stores an explicit one.
     private func automaticBinding<P: DSPEffectParameterSet>(
@@ -678,41 +721,13 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
         )
     }
 
-    private func bassLevelControls<P: DSPEffectParameterSet>(
-        _ type: P.Type,
-        bassGain: WritableKeyPath<P, Double>,
-        gainRange: ClosedRange<Double>,
-        intensity: WritableKeyPath<P, Double>,
-        intensityRange: ClosedRange<Double>
-    ) -> some View {
-        let amount = binding(type, intensity)
-        return Group {
-            DSPRangeSliderRow(
-                title: "低音增益",
-                value: binding(type, bassGain),
-                range: gainRange,
-                step: 0.5,
-                unit: "dB",
-                fractionDigits: 1,
-                onCommit: onCommit
-            )
-            DSPRangeSliderRow(
-                title: "虚拟低音",
-                value: Binding(get: { amount.wrappedValue * 100 }, set: { amount.wrappedValue = $0 / 100 }),
-                range: (intensityRange.lowerBound * 100)...(intensityRange.upperBound * 100),
-                step: 1,
-                unit: "%",
-                fractionDigits: 0,
-                onCommit: onCommit
-            )
-        }
-    }
 
     private func amountSlider<P: DSPEffectParameterSet>(
         _ title: String,
         _ type: P.Type,
         _ keyPath: WritableKeyPath<P, Double>,
-        range: ClosedRange<Double>
+        range: ClosedRange<Double>,
+        info: String? = nil
     ) -> some View {
         DSPRangeSliderRow(
             title: title,
@@ -721,8 +736,22 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
             step: 0.01,
             unit: "",
             fractionDigits: 2,
+            info: info,
             onCommit: onCommit
         )
+    }
+
+    private func retainsRealBassRow(_ isOn: Binding<Bool>) -> some View {
+        HStack {
+            Text("保留物理低音")
+                .font(.subheadline)
+                .settingsInfoHint("关闭后，截止频率以下的原声会被滤去，只由谐波呈现低音，适合难以重放低频的小扬声器。")
+            Spacer()
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+        }
     }
 }
 
