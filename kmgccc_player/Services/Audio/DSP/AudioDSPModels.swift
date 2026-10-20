@@ -143,6 +143,7 @@ nonisolated struct DSPParametricEQBand: Codable, Equatable, Sendable {
         DSPParametricEQBand(frequencyHz: 4_000),
         DSPParametricEQBand(frequencyHz: 8_000),
         DSPParametricEQBand(type: .highShelf, frequencyHz: 12_000),
+        DSPParametricEQBand(frequencyHz: 16_000),
     ]
 
     var enabled: Bool
@@ -199,7 +200,7 @@ nonisolated enum DSPHeadroomMode: String, Codable, CaseIterable, Equatable, Send
 /// gain stays the listener's own level; the safety limiter catches the rest.
 nonisolated struct DSPHeadroomConfiguration: Codable, Equatable, Sendable {
     nonisolated static let maximumAttenuationRange: ClosedRange<Double> = 0...12
-    nonisolated static let defaultMaximumAttenuationDB = 6.0
+    nonisolated static let defaultMaximumAttenuationDB = 10.0
 
     var mode: DSPHeadroomMode
     var maximumAttenuationDB: Double
@@ -327,7 +328,8 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
                   case .array(let values)? = parameters["bands"]
             else { return nil }
             let bands = values.compactMap(Self.decodeBand)
-            guard bands.count == values.count, bands.count == 9 else { return nil }
+            guard bands.count == values.count,
+                  bands.count == DSPParametricEQBand.defaultBands.count else { return nil }
             return bands
         }
         set {
@@ -460,7 +462,7 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
     /// diagnostics.
     nonisolated static func displayTitle(forTypeID typeID: String) -> String {
         switch typeID {
-        case parametricEQTypeID: "九段均衡器"
+        case parametricEQTypeID: "均衡器"
         case classicBassTypeID: "经典虚拟低音"
         case hybridBassTypeID: "虚拟低音"
         case stereoWidthTypeID: "立体声扩展"
@@ -522,6 +524,17 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
         nodeID: UUID = UUID(),
         enabled: Bool = true,
         parameters: DSPClassicBassParameters = DSPClassicBassParameters(),
+        channelPolicy: String = "fullRange"
+    ) -> DSPNodeConfiguration {
+        var node = effect(parameters, nodeID: nodeID, enabled: enabled)
+        node.channelPolicy = channelPolicy
+        return node
+    }
+
+    nonisolated static func hybridBass(
+        nodeID: UUID = UUID(),
+        enabled: Bool = true,
+        parameters: DSPHybridBassParameters = DSPHybridBassParameters(),
         channelPolicy: String = "fullRange"
     ) -> DSPNodeConfiguration {
         var node = effect(parameters, nodeID: nodeID, enabled: enabled)
@@ -702,6 +715,20 @@ nonisolated struct AudioDSPConfiguration: Codable, Equatable, Sendable {
         AudioDSPConfiguration(
             nodes: [.parametricEQ(nodeID: flatEQNodeID)]
         )
+    }
+
+    nonisolated static var defaultEffects: AudioDSPConfiguration {
+        AudioDSPConfiguration(nodes: [
+            .parametricEQ(nodeID: flatEQNodeID),
+            .effect(DSPHybridBassParameters(),
+                    nodeID: UUID(uuidString: "00000000-0000-0000-0000-000000000010")!, enabled: false),
+            .stereoWidth(nodeID: UUID(uuidString: "00000000-0000-0000-0000-000000000011")!),
+            .effect(DSPCrossfeedParameters(),
+                    nodeID: UUID(uuidString: "00000000-0000-0000-0000-000000000012")!, enabled: false),
+            .effect(DSPReverbParameters(),
+                    nodeID: UUID(uuidString: "00000000-0000-0000-0000-000000000013")!, enabled: false),
+            .tube(nodeID: UUID(uuidString: "00000000-0000-0000-0000-000000000014")!),
+        ])
     }
 
     /// Everything that changes the processing topology: node set and order,
@@ -1019,6 +1046,7 @@ nonisolated struct DSPApplyEvent: Codable, Equatable, Sendable {
 nonisolated struct DSPPresetDocument: Codable, Equatable, Sendable, Identifiable {
     nonisolated static let schemaVersion = 2
     nonisolated static let flatPresetID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    nonisolated static let defaultPresetID = UUID(uuidString: "00000000-0000-0000-0000-000000000005")!
 
     var schemaVersion: Int
     var presetID: UUID
@@ -1027,7 +1055,23 @@ nonisolated struct DSPPresetDocument: Codable, Equatable, Sendable, Identifiable
     var configuration: AudioDSPConfiguration
 
     nonisolated var id: UUID { presetID }
-    nonisolated var isBuiltIn: Bool { presetID == Self.flatPresetID }
+    nonisolated var isBuiltIn: Bool { Self.isBuiltIn(presetID) }
+
+    nonisolated static func isBuiltIn(_ id: UUID) -> Bool {
+        id == flatPresetID || id == defaultPresetID
+    }
+
+    nonisolated static var builtInPresets: [DSPPresetDocument] { [.defaultEffects, .flat] }
+
+    nonisolated static var defaultEffects: DSPPresetDocument {
+        DSPPresetDocument(
+            schemaVersion: schemaVersion,
+            presetID: defaultPresetID,
+            name: "默认",
+            revisionString: "builtin-default-v1",
+            configuration: .defaultEffects
+        )
+    }
 
     nonisolated static var flat: DSPPresetDocument {
         DSPPresetDocument(

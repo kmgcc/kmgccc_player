@@ -12,19 +12,6 @@ public enum VirtualBassMode: String, CaseIterable, Identifiable, Sendable {
     public var id: String { rawValue }
 }
 
-public struct VirtualBassParams: Equatable, Sendable {
-    public var cutoffHz: Double = 100.0
-    public var intensity: Double = 1.0
-    public var transient: Double = 1.0
-    public var character: Double = 0.7
-    public var wetSolo: Bool = false
-    public var bassGainDB: Double = 0.0
-    public var outputTrimDB: Double = 0.0
-    public var tightenDryBass: Bool = false
-
-    public init() {}
-}
-
 @MainActor
 public final class AudioPlayerEngine: ObservableObject {
     @Published public private(set) var isPlaying: Bool = false
@@ -62,6 +49,8 @@ public final class AudioPlayerEngine: ObservableObject {
     private var activeFixedClassic: FixedClassicBass?
     private var activeOriginalHybrid: OriginalHybridBass?
     private var activeFixedHybrid: FixedHybridBass?
+    private var rawPeakL: Float = 0.0
+    private var rawPeakR: Float = 0.0
 
     private var displayLinkTimer: Timer?
 
@@ -185,6 +174,7 @@ public final class AudioPlayerEngine: ObservableObject {
 
     private func updateDSP() {
         os_unfair_lock_lock(dspLock)
+        let modeChanged = (activeMode != mode)
         activeMode = mode
         let p = params
         let rate = sampleRate
@@ -194,37 +184,49 @@ public final class AudioPlayerEngine: ObservableObject {
         case .bypass:
             break
         case .originalClassic:
-            activeOriginalClassic = OriginalClassicBass(
-                sampleRate: rate, channels: ch,
-                cutoffHz: p.cutoffHz, floorHz: 35,
-                intensity: p.intensity, bassGainDB: p.bassGainDB,
-                tightenDryBass: p.tightenDryBass, outputTrimDB: p.outputTrimDB
-            )
+            if modeChanged || activeOriginalClassic == nil {
+                activeOriginalClassic = OriginalClassicBass(
+                    sampleRate: rate, channels: ch,
+                    cutoffHz: p.cutoffHz, floorHz: 35,
+                    intensity: p.intensity, bassGainDB: p.bassGainDB,
+                    tightenDryBass: p.tightenDryBass, outputTrimDB: p.outputTrimDB
+                )
+            }
         case .fixedClassic:
-            activeFixedClassic = FixedClassicBass(
-                sampleRate: rate, channels: ch,
-                cutoffHz: p.cutoffHz, floorHz: 35,
-                intensity: p.intensity, bassGainDB: p.bassGainDB,
-                tightenDryBass: p.tightenDryBass,
-                character: p.character, wetSolo: p.wetSolo,
-                outputTrimDB: p.outputTrimDB
-            )
+            if modeChanged || activeFixedClassic == nil {
+                activeFixedClassic = FixedClassicBass(
+                    sampleRate: rate, channels: ch,
+                    cutoffHz: p.cutoffHz, floorHz: 35,
+                    intensity: p.intensity, bassGainDB: p.bassGainDB,
+                    tightenDryBass: p.tightenDryBass,
+                    character: p.character, wetSolo: p.wetSolo,
+                    outputTrimDB: p.outputTrimDB
+                )
+            } else {
+                activeFixedClassic?.update(params: p)
+            }
         case .originalHybrid:
-            activeOriginalHybrid = OriginalHybridBass(
-                sampleRate: rate, channels: ch,
-                cutoffHz: p.cutoffHz, intensity: p.intensity,
-                bassGainDB: p.bassGainDB, tightenDryBass: p.tightenDryBass,
-                outputTrimDB: p.outputTrimDB
-            )
+            if modeChanged || activeOriginalHybrid == nil {
+                activeOriginalHybrid = OriginalHybridBass(
+                    sampleRate: rate, channels: ch,
+                    cutoffHz: p.cutoffHz, intensity: p.intensity,
+                    bassGainDB: p.bassGainDB, tightenDryBass: p.tightenDryBass,
+                    outputTrimDB: p.outputTrimDB
+                )
+            }
         case .fixedHybrid:
-            activeFixedHybrid = FixedHybridBass(
-                sampleRate: rate, channels: ch,
-                cutoffHz: p.cutoffHz, floorHz: 35,
-                intensity: p.intensity, transient: p.transient,
-                bassGainDB: p.bassGainDB, tightenDryBass: p.tightenDryBass,
-                character: p.character, wetSolo: p.wetSolo,
-                outputTrimDB: p.outputTrimDB
-            )
+            if modeChanged || activeFixedHybrid == nil {
+                activeFixedHybrid = FixedHybridBass(
+                    sampleRate: rate, channels: ch,
+                    cutoffHz: p.cutoffHz, floorHz: 35,
+                    intensity: p.intensity, transient: p.transient,
+                    bassGainDB: p.bassGainDB, tightenDryBass: p.tightenDryBass,
+                    character: p.character, wetSolo: p.wetSolo,
+                    outputTrimDB: p.outputTrimDB
+                )
+            } else {
+                activeFixedHybrid?.update(params: p)
+            }
         }
         os_unfair_lock_unlock(dspLock)
     }
@@ -251,16 +253,16 @@ public final class AudioPlayerEngine: ObservableObject {
         let currentMode = activeMode
 
         for frame in 0..<frameCount {
-            let currentIdx = playheadFrame
-            if currentIdx >= totalFrames {
-                // 播放完毕，循环播放
+            if playheadFrame >= totalFrames {
                 playheadFrame = 0
             }
+            let currentFrame = Int(playheadFrame)
+            playheadFrame += 1
 
             for ch in 0..<chCount {
                 guard let destPtr = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
                 let sourceCh = ch < buffer.format.channelCount ? ch : 0
-                let rawSample = Double(channelData[sourceCh][Int(playheadFrame)])
+                let rawSample = Double(channelData[sourceCh][currentFrame])
 
                 var processedSample = rawSample
                 switch currentMode {
@@ -291,26 +293,31 @@ public final class AudioPlayerEngine: ObservableObject {
                 if ch == 0 { peakL = max(peakL, absVal) }
                 if ch == 1 || chCount == 1 { peakR = max(peakR, absVal) }
             }
-
-            playheadFrame += 1
         }
         os_unfair_lock_unlock(dspLock)
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.leftMeter = min(1.0, peakL)
-            self.rightMeter = min(1.0, peakR)
-            self.isClipping = peakL >= 0.999 || peakR >= 0.999
-        }
+        // 线程安全更新峰值 (避免在实时音频线程内调用 DispatchQueue.main.async 分配内存和加锁)
+        rawPeakL = max(rawPeakL, peakL)
+        rawPeakR = max(rawPeakR, peakR)
 
         return noErr
     }
 
     private func startTimer() {
-        displayLinkTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        // 主线程 ~30fps 轮询平滑衰减电平与播放进度
+        displayLinkTimer = Timer.scheduledTimer(withTimeInterval: 0.033, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self = self, self.isPlaying, self.totalFrames > 0 else { return }
-                self.currentTime = Double(self.playheadFrame) / self.sampleRate
+                guard let self = self else { return }
+                if self.isPlaying, self.totalFrames > 0 {
+                    self.currentTime = Double(self.playheadFrame) / self.sampleRate
+                }
+                let l = self.rawPeakL
+                let r = self.rawPeakR
+                self.leftMeter = min(1.0, l)
+                self.rightMeter = min(1.0, r)
+                self.isClipping = l >= 0.999 || r >= 0.999
+                self.rawPeakL = l * 0.75
+                self.rawPeakR = r * 0.75
             }
         }
     }

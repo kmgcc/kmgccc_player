@@ -1,107 +1,254 @@
+import Accelerate
 import Foundation
 
-/// Classic virtual bass from a level-normalized analytic harmonic series.
-///
-/// The bass band is turned into an analytic signal z = I + jQ by a 90°
-/// phase-splitting allpass network. For one tone z = a·e^{jθ}, so
-/// Re(z^k)/a^{k−1} = a·cos kθ: the k-th harmonic at the bass's own level,
-/// the level tracking Oo & Gan recommend for psychoacoustic bass. Because
-/// z holds only positive frequencies, z^k holds only sums of them: two bass
-/// notes f₁ and f₂ give k·f₁, k·f₂ and sum partials such as f₁ + f₂. This
-/// avoids the direct difference products of a real-valued waveshaper;
-/// the approximate quadrature and moving level divisor can still make
-/// weaker sidebands. The level divisor is a peak
-/// follower of |z|, fast to rise and slow to fall, rather than |z| itself:
-/// dividing by the instantaneous amplitude, which beats at f₂ − f₁, would
-/// write those difference tones back as sidebands. The divisor never falls
-/// below |z|, so an onset cannot amplify the higher powers while the
-/// follower catches up.
-///
-/// A low shelf strengthens the original bass without lowering the rest of
-/// the music. Independently, powers 2–6 of the selected bass band create
-/// consecutive pitch cues in the audible bass and lower midrange. A wet
-/// high-pass keeps DC, sub-bass beating and low transient residue out of
-/// the addition; the upper rolloff limits the series to at most 800 Hz.
-/// The phase-splitting network is our minimax fit, 0.55° from quadrature
-/// over 12–300 Hz. Processing has no oversampling or latency.
-nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
-    private struct ChannelState {
-        var floorHighPass: DSPBiquad
-        var lowPass1: DSPBiquad
-        var lowPass2: DSPBiquad
-        var wetHighPass1: DSPBiquad
-        var wetHighPass2: DSPBiquad
-        var wetLowPass1: DSPBiquad
-        var wetLowPass2: DSPBiquad
-        var dryHighPass: DSPBiquad
-        var bassShelf: DSPBiquad
-        var envelope = 0.0
-        var dcInput = 0.0
-        var dcOutput = 0.0
+/// 90° phase-splitting allpass network yielding an analytic pair (re + j·im).
+nonisolated struct DSPQuadratureNetwork: Sendable {
+    private static let laggingCorners = [1.423, 7.784, 43.842, 209.892, 990.936]
+    private static let leadingCorners = [3.485, 19.237, 96.719, 480.311, 2382.655]
 
-        mutating func copyState(from source: ChannelState) {
-            floorHighPass.copyState(from: source.floorHighPass)
-            lowPass1.copyState(from: source.lowPass1)
-            lowPass2.copyState(from: source.lowPass2)
-            wetHighPass1.copyState(from: source.wetHighPass1)
-            wetHighPass2.copyState(from: source.wetHighPass2)
-            wetLowPass1.copyState(from: source.wetLowPass1)
-            wetLowPass2.copyState(from: source.wetLowPass2)
-            dryHighPass.copyState(from: source.dryHighPass)
-            bassShelf.copyState(from: source.bassShelf)
-            envelope = source.envelope
-            dcInput = source.dcInput
-            dcOutput = source.dcOutput
-        }
+    private var lagCoeffs: [Double]
+    private var leadCoeffs: [Double]
+    private var lagX: [Double]
+    private var lagY: [Double]
+    private var leadX: [Double]
+    private var leadY: [Double]
 
-        mutating func reset() {
-            floorHighPass.reset()
-            lowPass1.reset()
-            lowPass2.reset()
-            wetHighPass1.reset()
-            wetHighPass2.reset()
-            wetLowPass1.reset()
-            wetLowPass2.reset()
-            dryHighPass.reset()
-            bassShelf.reset()
-            envelope = 0
-            dcInput = 0
-            dcOutput = 0
+    var re: Double = 0
+    var im: Double = 0
+
+    init(sampleRate: Double) {
+        func coeff(_ corner: Double) -> Double {
+            let t = Double.pi * corner / sampleRate
+            return (t - 1.0) / (t + 1.0)
         }
+        self.lagCoeffs = Self.laggingCorners.map(coeff)
+        self.leadCoeffs = Self.leadingCorners.map(coeff)
+        let n = Self.laggingCorners.count
+        self.lagX = Array(repeating: 0, count: n)
+        self.lagY = Array(repeating: 0, count: n)
+        self.leadX = Array(repeating: 0, count: n)
+        self.leadY = Array(repeating: 0, count: n)
     }
 
-    /// Envelope floor at program level, about −60 dBFS: quieter bass fades
-    /// out of the synthesis instead of being normalized up.
-    private static let programEpsilon = 0.001
-    /// Level follower: rises within a millisecond, so |z| seldom passes it,
-    /// and falls over 200 ms, several beats of two neighbouring bass notes,
-    /// so it barely moves within one.
-    private static let attackSeconds = 0.001
-    private static let releaseSeconds = 0.2
-    /// Corner frequencies of the two first-order allpass branches; the
-    /// second branch leads the first by 90°.
-    private static let laggingCorners = [1.423, 7.784, 43.842, 209.892, 990.936]
-    private static let leadingCorners = [3.485, 19.237, 96.719, 480.311, 2_382.655]
-    private static var sectionCount: Int { laggingCorners.count }
+    @inline(__always)
+    mutating func process(_ x: Double) {
+        var a = x
+        var b = x
+        let n = lagCoeffs.count
+        for i in 0..<n {
+            let c = lagCoeffs[i]
+            let y = c * a + lagX[i] - c * lagY[i]
+            lagX[i] = a
+            lagY[i] = y
+            a = y
+        }
+        for i in 0..<n {
+            let c = leadCoeffs[i]
+            let y = c * b + leadX[i] - c * leadY[i]
+            leadX[i] = b
+            leadY[i] = y
+            b = y
+        }
+        self.re = a
+        self.im = -b
+    }
+
+    mutating func reset() {
+        for i in lagX.indices { lagX[i] = 0; lagY[i] = 0 }
+        for i in leadX.indices { leadX[i] = 0; leadY[i] = 0 }
+        re = 0
+        im = 0
+    }
+
+    mutating func copyState(from source: DSPQuadratureNetwork) {
+        lagX = source.lagX
+        lagY = source.lagY
+        leadX = source.leadX
+        leadY = source.leadY
+        re = source.re
+        im = source.im
+    }
+}
+
+/// ISO 226:2003 equal-loudness contour calculations.
+nonisolated enum DSPISOLoudness {
+    static let frequencies = [20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0, 200.0, 250.0, 315.0, 400.0, 500.0, 630.0, 800.0, 1000.0]
+    static let af = [0.532, 0.506, 0.480, 0.455, 0.432, 0.409, 0.387, 0.367, 0.349, 0.330, 0.315, 0.301, 0.288, 0.276, 0.267, 0.259, 0.253, 0.250]
+    static let lu = [-31.6, -27.2, -23.0, -19.1, -15.9, -13.0, -10.3, -8.1, -6.2, -4.5, -3.1, -2.0, -1.1, -0.4, 0.0, 0.3, 0.5, 0.0]
+    static let tf = [78.5, 68.7, 59.5, 51.1, 44.0, 37.5, 31.5, 26.5, 22.1, 17.9, 14.4, 11.4, 8.6, 6.2, 4.4, 3.0, 2.2, 2.4]
+
+    static func params(frequency: Double) -> (af: Double, lu: Double, tf: Double) {
+        let f = min(max(frequency, frequencies[0]), frequencies.last!)
+        let x = log(f)
+        var i = 0
+        while i < frequencies.count - 2 && log(frequencies[i + 1]) < x { i += 1 }
+        let x0 = log(frequencies[i])
+        let x1 = log(frequencies[i + 1])
+        let t = (x - x0) / (x1 - x0)
+        return (
+            af: af[i] + (af[i + 1] - af[i]) * t,
+            lu: lu[i] + (lu[i + 1] - lu[i]) * t,
+            tf: tf[i] + (tf[i + 1] - tf[i]) * t
+        )
+    }
+
+    static func splForPhon(frequency: Double, phon: Double) -> Double {
+        let p = params(frequency: frequency)
+        let term1 = 4.47e-3 * (pow(10.0, 0.025 * phon) - 1.15)
+        let term2 = pow(0.4 * pow(10.0, (p.tf + p.lu) / 10.0 - 9.0), p.af)
+        let afVal = max(1e-12, term1 + term2)
+        return (10.0 / p.af) * log10(afVal) - p.lu + 94.0
+    }
+
+    static func phonForSpl(frequency: Double, spl: Double) -> Double {
+        var lo = -10.0, hi = 130.0
+        for _ in 0..<50 {
+            let mid = 0.5 * (lo + hi)
+            if splForPhon(frequency: frequency, phon: mid) < spl {
+                lo = mid
+            } else {
+                hi = mid
+            }
+        }
+        return 0.5 * (lo + hi)
+    }
+
+    static func equalLoudnessShiftDB(f0: Double, fh: Double, spl: Double) -> Double {
+        let phon = phonForSpl(frequency: f0, spl: spl)
+        return splForPhon(frequency: fh, phon: phon) - spl
+    }
+}
+
+/// Fits fixed-corner low shelves + broadband gain to a target frequency curve using damped Gauss-Newton.
+nonisolated func fitPreEQShelves(
+    sampleRate: Double,
+    grid: [Double],
+    wantDB: [Double],
+    corners: [Double]
+) -> (sections: [DSPBiquadCoefficients], offsetDB: Double) {
+    guard !corners.isEmpty else {
+        let avgOffset = wantDB.isEmpty ? 0.0 : wantDB.reduce(0.0, +) / Double(wantDB.count)
+        return ([], avgOffset)
+    }
+
+    let pCount = corners.count + 1
+    var gains = Array(repeating: 0.0, count: corners.count)
+    var offset = 0.0
+
+    func shelvesDB(currentGains: [Double], freq: Double) -> Double {
+        var sum = 0.0
+        for i in corners.indices {
+            if currentGains[i] != 0,
+               let sec = DSPFilterDesign.section(.lowShelf, frequencyHz: corners[i], sampleRate: sampleRate, q: 1.0, gainDB: currentGains[i]) {
+                let resp = dspBiquadResponse(sections: [sec], frequencyHz: freq, sampleRate: sampleRate)
+                sum += 20.0 * log10(max(1e-6, hypot(resp.re, resp.im)))
+            }
+        }
+        return sum
+    }
+
+    for _ in 0..<10 {
+        let base = grid.map { shelvesDB(currentGains: gains, freq: $0) }
+        let r = grid.indices.map { wantDB[$0] - base[$0] - offset }
+
+        var jMat = Array(repeating: Array(repeating: 0.0, count: pCount), count: grid.count)
+        for i in corners.indices {
+            var gPerturb = gains
+            gPerturb[i] += 0.5
+            for j in grid.indices {
+                jMat[j][i] = (shelvesDB(currentGains: gPerturb, freq: grid[j]) - base[j]) / 0.5
+            }
+        }
+        for j in grid.indices {
+            jMat[j][pCount - 1] = 1.0
+        }
+
+        var aMat = Array(repeating: Array(repeating: 0.0, count: pCount), count: pCount)
+        var bVec = Array(repeating: 0.0, count: pCount)
+        for j in grid.indices {
+            for a in 0..<pCount {
+                bVec[a] += jMat[j][a] * r[j]
+                for c in 0..<pCount {
+                    aMat[a][c] += jMat[j][a] * jMat[j][c]
+                }
+            }
+        }
+        for a in 0..<pCount {
+            aMat[a][a] += 0.05
+        }
+
+        let d = solveLinearSystem4x4(A: aMat, b: bVec)
+        for i in corners.indices {
+            gains[i] = max(-12.0, min(24.0, gains[i] + d[i]))
+        }
+        offset += d[pCount - 1]
+    }
+
+    var sections: [DSPBiquadCoefficients] = []
+    for i in corners.indices {
+        if let sec = DSPFilterDesign.section(.lowShelf, frequencyHz: corners[i], sampleRate: sampleRate, q: 1.0, gainDB: gains[i]) {
+            sections.append(sec)
+        }
+    }
+    return (sections, offset)
+}
+
+nonisolated func solveLinearSystem4x4(A: [[Double]], b: [Double]) -> [Double] {
+    let n = b.count
+    var m = A.indices.map { A[$0] + [b[$0]] }
+    for c in 0..<n {
+        var p = c
+        for r in (c + 1)..<n {
+            if abs(m[r][c]) > abs(m[p][c]) { p = r }
+        }
+        m.swapAt(c, p)
+        let d = abs(m[c][c]) > 1e-12 ? m[c][c] : 1e-12
+        for r in (c + 1)..<n {
+            let f = m[r][c] / d
+            for k in c...n {
+                m[r][k] -= f * m[c][k]
+            }
+        }
+    }
+    var x = Array(repeating: 0.0, count: n)
+    for r in (0..<n).reversed() {
+        var s = m[r][n]
+        for k in (r + 1)..<n {
+            s -= m[r][k] * x[k]
+        }
+        let d = abs(m[r][r]) > 1e-12 ? m[r][r] : 1e-12
+        x[r] = s / d
+    }
+    return x
+}
+
+/// Classic virtual bass engine using Quadrature Analytic Harmonics
+/// with ISO 226 equal loudness matching and crest-factor normalization.
+nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
+    var latencyFrames: Int { 0 }
+    var stateBytes: Int { MemoryLayout<Self>.stride }
 
     private let selectedChannels: [Int]
-    private let weights: (w2: Double, w3: Double, w4: Double, w5: Double, w6: Double)
-    private let wetGain: Double
-    private let tightensDryBass: Bool
-    private let outputGain: Double
+    private let sampleRate: Double
+    private let retainsRealBass: Bool
+    private let amountGain: Double
+    private let outGain: Double
     private let peakCeiling: Double?
-    private let dcAlpha: Double
-    private let attack: Double
-    private let release: Double
-    private let laggingCoefficients: [Double]
-    private let leadingCoefficients: [Double]
-    private var epsilon = DSPClassicBassKernel.programEpsilon
-    private var states: [ChannelState]
-    /// Per channel and section: previous input and output of the lagging
-    /// branch, then of the leading branch.
-    private var allpassState: [Double]
 
-    let stateBytes: Int
+    // Filters
+    private var floorHP: DSPBiquadCascade
+    private var srcLP: DSPBiquadCascade
+    private var dryHP: [DSPBiquadCascade]
+    private var quad: DSPQuadratureNetwork
+    private var eq: DSPBiquadCascade
+    private var postHP: DSPBiquadCascade
+    private var postLP: DSPBiquadCascade
+
+    // Analytic generator weights and follower
+    private let weights: [Double]
+    private let K: Int
+    private let releaseCoeff: Double
+    private var followerG: Double = 1e-9
 
     init?(
         format: DSPAudioFormat,
@@ -110,71 +257,186 @@ nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
         outputKind: DSPOutputKind?,
         outputCeiling: Double? = nil
     ) {
-        let sampleRate = format.sampleRate
-        guard mask.count == format.channelCount, sampleRate.isFinite, sampleRate > 0 else { return nil }
-        let tuning = parameters.resolved(for: outputKind)
-        let sourceCutoff = min(tuning.cutoffHz, DSPBassProfile.maximumHarmonicFundamentalHz)
-        let wetCorner = max(30, sourceCutoff * 0.8)
-        let wetTop = min(DSPBassProfile.maximumHarmonicHz, max(280, 4 * sourceCutoff))
-        guard let floorHighPass = DSPFilterDesign.section(.highPass, frequencyHz: tuning.floorHz, sampleRate: sampleRate),
-              let lowPass1 = DSPFilterDesign.section(.lowPass, frequencyHz: sourceCutoff, sampleRate: sampleRate,
-                                                      q: DSPFilterDesign.fourthOrderQs[0]),
-              let lowPass2 = DSPFilterDesign.section(.lowPass, frequencyHz: sourceCutoff, sampleRate: sampleRate,
-                                                      q: DSPFilterDesign.fourthOrderQs[1]),
-              let wetHighPass1 = DSPFilterDesign.section(.highPass, frequencyHz: wetCorner, sampleRate: sampleRate,
-                                                          q: DSPFilterDesign.fourthOrderQs[0]),
-              let wetHighPass2 = DSPFilterDesign.section(.highPass, frequencyHz: wetCorner, sampleRate: sampleRate,
-                                                          q: DSPFilterDesign.fourthOrderQs[1]),
-              let wetLowPass1 = DSPFilterDesign.section(.lowPass, frequencyHz: wetTop, sampleRate: sampleRate,
-                                                         q: DSPFilterDesign.fourthOrderQs[0]),
-              let wetLowPass2 = DSPFilterDesign.section(.lowPass, frequencyHz: wetTop, sampleRate: sampleRate,
-                                                         q: DSPFilterDesign.fourthOrderQs[1]),
-              let dryHighPass = DSPFilterDesign.section(.highPass, frequencyHz: tuning.cutoffHz * 0.8,
-                                                        sampleRate: sampleRate),
-              let bassShelf = DSPFilterDesign.section(.lowShelf, frequencyHz: tuning.cutoffHz, sampleRate: sampleRate,
-                                                      q: 1, gainDB: parameters.bassGainDB) else { return nil }
+        let fs = format.sampleRate
+        guard mask.count == format.channelCount, fs.isFinite, fs > 0 else { return nil }
         selectedChannels = mask.indices.filter { mask[$0] }
         guard !selectedChannels.isEmpty else { return nil }
+        self.sampleRate = fs
 
-        let series = parameters.character == .round ? tuning.profile.roundWeights : tuning.profile.tightWeights
-        weights = (series[0], series[1], series[2], series[3], series[4])
-        wetGain = tuning.floorHz < sourceCutoff ? parameters.intensity * tuning.profile.intensityScale : 0
-        switch parameters.tightenDryBass {
-        case .automatic: tightensDryBass = tuning.profile.tightensDryBass
-        case .on: tightensDryBass = true
-        case .off: tightensDryBass = false
+        let settings = parameters.resolved(for: outputKind)
+        let fc = max(40.0, min(160.0, settings.cutoffHz))
+        let floorHz = max(20.0, min(45.0, fc * 0.7))
+        self.retainsRealBass = settings.retainsRealBass
+
+        // Intensity mapping: -12 dB ~ +12 dB (50% = 0 dB)
+        if settings.intensity <= 0.001 {
+            self.amountGain = 0.0
+        } else {
+            let intensityDB = -12.0 + 24.0 * settings.intensity
+            self.amountGain = pow(10.0, intensityDB / 20.0)
         }
-        let gain = pow(10, parameters.outputTrimDB / 20)
-        outputGain = gain
-        peakCeiling = outputCeiling.map { $0 / gain }
-        dcAlpha = exp(-2 * Double.pi * 5 / sampleRate)
-        attack = 1 - exp(-1 / (Self.attackSeconds * sampleRate))
-        release = 1 - exp(-1 / (Self.releaseSeconds * sampleRate))
-        // Bilinear first-order allpass (a + z⁻¹)/(1 + a·z⁻¹) per corner.
-        func coefficient(_ corner: Double) -> Double {
-            // Bilinear analogue corners also work at the hybrid engine's
-            // low rate; clamping a corner at Nyquist spoils quadrature there.
-            let t = Double.pi * corner / sampleRate
-            return (t - 1) / (t + 1)
+
+        // Floor highpass: 4th-order Butterworth at floorHz
+        guard let fhp1 = DSPFilterDesign.section(.highPass, frequencyHz: floorHz, sampleRate: fs, q: DSPFilterDesign.fourthOrderQs[0]),
+              let fhp2 = DSPFilterDesign.section(.highPass, frequencyHz: floorHz, sampleRate: fs, q: DSPFilterDesign.fourthOrderQs[1]) else { return nil }
+        self.floorHP = DSPBiquadCascade([fhp1, fhp2])
+
+        // Source lowpass: 4th-order Butterworth at 1.25 fc
+        guard let slp1 = DSPFilterDesign.section(.lowPass, frequencyHz: 1.25 * fc, sampleRate: fs, q: DSPFilterDesign.fourthOrderQs[0]),
+              let slp2 = DSPFilterDesign.section(.lowPass, frequencyHz: 1.25 * fc, sampleRate: fs, q: DSPFilterDesign.fourthOrderQs[1]) else { return nil }
+        self.srcLP = DSPBiquadCascade([slp1, slp2])
+
+        // Dry crossover highpass per channel (if not retaining real bass, 4th-order LR at 0.85 fc)
+        var dryHPList: [DSPBiquadCascade] = []
+        if !retainsRealBass {
+            let xover = 0.85 * fc
+            guard let dhp1 = DSPFilterDesign.section(.highPass, frequencyHz: xover, sampleRate: fs, q: DSPFilterDesign.butterworthQ),
+                  let dhp2 = DSPFilterDesign.section(.highPass, frequencyHz: xover, sampleRate: fs, q: DSPFilterDesign.butterworthQ) else { return nil }
+            for _ in selectedChannels {
+                dryHPList.append(DSPBiquadCascade([dhp1, dhp2]))
+            }
         }
-        laggingCoefficients = Self.laggingCorners.map(coefficient)
-        leadingCoefficients = Self.leadingCorners.map(coefficient)
-        let channel = ChannelState(
-            floorHighPass: DSPBiquad(floorHighPass), lowPass1: DSPBiquad(lowPass1), lowPass2: DSPBiquad(lowPass2),
-            wetHighPass1: DSPBiquad(wetHighPass1), wetHighPass2: DSPBiquad(wetHighPass2),
-            wetLowPass1: DSPBiquad(wetLowPass1), wetLowPass2: DSPBiquad(wetLowPass2),
-            dryHighPass: DSPBiquad(dryHighPass), bassShelf: DSPBiquad(bassShelf)
-        )
-        states = Array(repeating: channel, count: selectedChannels.count)
-        allpassState = Array(repeating: 0, count: selectedChannels.count * Self.sectionCount * 4)
-        stateBytes = selectedChannels.count * (MemoryLayout<ChannelState>.stride + Self.sectionCount * 32)
+        self.dryHP = dryHPList
+
+        self.quad = DSPQuadratureNetwork(sampleRate: fs)
+
+        // Post-highpass: 6th-order (36 dB/oct, tight6) at 0.95 fc (LR4 + 1st section of BW4)
+        let hpFc = 0.95 * fc
+        guard let php1 = DSPFilterDesign.section(.highPass, frequencyHz: hpFc, sampleRate: fs, q: DSPFilterDesign.butterworthQ),
+              let php2 = DSPFilterDesign.section(.highPass, frequencyHz: hpFc, sampleRate: fs, q: DSPFilterDesign.butterworthQ),
+              let php3 = DSPFilterDesign.section(.highPass, frequencyHz: hpFc, sampleRate: fs, q: DSPFilterDesign.fourthOrderQs[0]) else { return nil }
+        let postHPCoeffs = [php1, php2, php3]
+        self.postHP = DSPBiquadCascade(postHPCoeffs)
+
+        // Post-lowpass: 4th-order Butterworth tracking min(2 * fc, 320 Hz)
+        let lpFc = min(2.0 * fc, 320.0)
+        guard let plp1 = DSPFilterDesign.section(.lowPass, frequencyHz: lpFc, sampleRate: fs, q: DSPFilterDesign.fourthOrderQs[0]),
+              let plp2 = DSPFilterDesign.section(.lowPass, frequencyHz: lpFc, sampleRate: fs, q: DSPFilterDesign.fourthOrderQs[1]) else { return nil }
+        let postLPCoeffs = [plp1, plp2]
+        self.postLP = DSPBiquadCascade(postLPCoeffs)
+
+        // Harmonic series orders and geometric decay
+        let slopeDB = max(-20.0, min(-8.0, settings.impactDB))
+        let rho = pow(10.0, slopeDB / 20.0)
+        let maxK = max(3, min(12, Int(((1.25 * fc) / floorHz).rounded(.up)) + 2))
+        self.K = maxK
+
+        var w = Array(repeating: 0.0, count: maxK + 1)
+        var sumW = 0.0
+        for k in 2...maxK {
+            w[k] = pow(rho, Double(k - 2))
+            sumW += w[k]
+        }
+        // Crest-factor normalization
+        let wScale = 1.0 / max(1.0, sumW * 0.72)
+        for k in 2...maxK {
+            w[k] *= wScale
+        }
+        self.weights = w
+
+        // ISO 226 equal-loudness pre-EQ model fitting
+        let postCoeffs = postHPCoeffs + postLPCoeffs
+        let match = 0.25
+        let loudnessRefDB = 84.0
+
+        func modelAt(f0: Double) -> (powerDB: Double, targetDB: Double) {
+            var pw = 0.0
+            var fp = 0.0
+            for k in 2...maxK {
+                let resp = dspBiquadResponse(sections: postCoeffs, frequencyHz: Double(k) * f0, sampleRate: fs)
+                let m = w[k] * hypot(resp.re, resp.im)
+                pw += m * m
+                fp += m * m * Double(k) * f0
+            }
+            let safePw = max(pw, 1e-30)
+            let shift = match * DSPISOLoudness.equalLoudnessShiftDB(f0: max(f0, 20.0), fh: fp / safePw, spl: loudnessRefDB)
+            return (powerDB: 10.0 * log10(safePw), targetDB: shift)
+        }
+
+        let lo = 1.2 * floorHz
+        let hi = 0.75 * fc
+        var grid: [Double] = []
+        if hi > lo {
+            for i in 0..<32 {
+                grid.append(lo * pow(hi / lo, Double(i) / 31.0))
+            }
+        } else {
+            grid.append(sqrt(floorHz * fc))
+        }
+
+        let wantDB = grid.map { f -> Double in
+            let m = modelAt(f0: f)
+            return max(-9.0, min(4.5, m.targetDB - m.powerDB))
+        }
+
+        let corners = [2.0, 3.0, 4.0]
+            .map { (0.8 * fc) / $0 }
+            .filter { $0 > 0.75 * floorHz && hi > lo }
+
+        let fit = fitPreEQShelves(sampleRate: fs, grid: grid, wantDB: wantDB, corners: corners)
+        self.eq = DSPBiquadCascade(fit.sections)
+        self.outGain = pow(10.0, fit.offsetDB / 20.0)
+
+        // Follower release: 120 ms
+        self.releaseCoeff = exp(-1.0 / (0.12 * fs))
+
+        self.peakCeiling = outputCeiling
     }
 
-    /// Bass reinforcement leaves the rest of the track at its original
-    /// level. Reserve only an explicit broadband trim; peaks use the chain's
-    /// limiter instead of turning the entire track down before this effect.
-    static func staticPeakResponseDB(parameters: DSPClassicBassParameters, outputKind: DSPOutputKind?) -> Double {
-        parameters.outputTrimDB
+    mutating func process(_ samples: UnsafeMutablePointer<Double>, frames: Int, channels: Int) {
+        guard amountGain > 0 || !retainsRealBass else { return }
+        let count = selectedChannels.count
+        let invCount = 1.0 / Double(count)
+
+        for frame in 0..<frames {
+            let base = frame * channels
+
+            // 1. Mono bass extraction
+            var mid = 0.0
+            for i in 0..<count {
+                mid += samples[base + selectedChannels[i]]
+            }
+            mid *= invCount
+
+            let bass = floorHP.process(mid)
+            let filtered = srcLP.process(bass)
+            let eqBass = eq.process(filtered)
+
+            // 2. 90° quadrature phase splitting
+            quad.process(eqBass)
+            let zr = quad.re
+            let zi = quad.im
+            let a = sqrt(zr * zr + zi * zi)
+            followerG = max(a, followerG * releaseCoeff, 1e-9)
+
+            // 3. Polynomial harmonic generation
+            let g = followerG
+            let ur = zr / g
+            let ui = zi / g
+            var pr = ur
+            var pi = ui
+            var acc = 0.0
+
+            for k in 2...K {
+                let nr = pr * ur - pi * ui
+                pi = pr * ui + pi * ur
+                pr = nr
+                acc += weights[k] * pr
+            }
+
+            // 4. Bandpass and soft saturation ceiling
+            let rawH = postLP.process(postHP.process(g * acc)) * outGain
+            let h = (tanh(rawH * 0.9) / 0.9) * amountGain
+
+            // 5. Channel mixing with peak control
+            for i in 0..<count {
+                let offset = base + selectedChannels[i]
+                let original = samples[offset]
+                let dry = retainsRealBass ? original : dryHP[i].process(original)
+                let enhanced = dry + h
+                samples[offset] = DSPBassPeakControl.mix(original: original, enhanced: enhanced, ceiling: peakCeiling)
+            }
+        }
     }
 
     func makeFreshState() -> DSPClassicBassKernel {
@@ -184,114 +446,34 @@ nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
     }
 
     mutating func copyState(from source: DSPClassicBassKernel) {
-        guard states.count == source.states.count else { return }
-        for index in states.indices { states[index].copyState(from: source.states[index]) }
-        if allpassState.count == source.allpassState.count {
-            DSPStateCopy.assign(&allpassState, from: source.allpassState)
+        floorHP.copyState(from: source.floorHP)
+        srcLP.copyState(from: source.srcLP)
+        if dryHP.count == source.dryHP.count {
+            for i in dryHP.indices { dryHP[i].copyState(from: source.dryHP[i]) }
         }
+        quad.copyState(from: source.quad)
+        eq.copyState(from: source.eq)
+        postHP.copyState(from: source.postHP)
+        postLP.copyState(from: source.postLP)
+        followerG = source.followerG
     }
 
     mutating func reset() {
-        for index in states.indices { states[index].reset() }
-        DSPStateCopy.clear(&allpassState)
+        floorHP.reset()
+        srcLP.reset()
+        for i in dryHP.indices { dryHP[i].reset() }
+        quad.reset()
+        eq.reset()
+        postHP.reset()
+        postLP.reset()
+        followerG = 1e-9
     }
 
     mutating func setProgramLevelOffset(dB offsetDB: Double) {
-        guard offsetDB.isFinite else { return }
-        epsilon = Self.programEpsilon * pow(10, offsetDB / 20)
+        // Analytic follower dynamically tracks level
     }
 
-    mutating func processTransientHarmonic(sample: Double) -> Double {
-        guard !states.isEmpty else { return 0 }
-        let band = states[0].lowPass2.process(
-            states[0].lowPass1.process(states[0].floorHighPass.process(sample)))
-
-        let epsilonVal = 0.005
-        let evenHarmonics = sqrt(band * band + epsilonVal * epsilonVal) - epsilonVal
-        let oddHarmonics = tanh(1.6 * band)
-        let rawHarmonics = weights.w2 * evenHarmonics + weights.w3 * oddHarmonics
-
-        let dcBlocked = rawHarmonics - states[0].dcInput + dcAlpha * states[0].dcOutput
-        states[0].dcInput = rawHarmonics
-        states[0].dcOutput = dcBlocked
-
-        let highPassed = states[0].wetHighPass2.process(
-            states[0].wetHighPass1.process(dcBlocked))
-        let wet = states[0].wetLowPass2.process(states[0].wetLowPass1.process(highPassed))
-
-        let wetCeiling = 0.32
-        let uncompressedWet = wet * wetGain
-        return wetCeiling * tanh(uncompressedWet / wetCeiling)
-    }
-
-    mutating func process(_ samples: UnsafeMutablePointer<Double>, frames: Int, channels: Int) {
-        // An ordinary bass shelf needs neither quadrature nor synthesis.
-        if wetGain == 0 {
-            for frame in 0..<frames {
-                for index in selectedChannels.indices {
-                    let offset = frame * channels + selectedChannels[index]
-                    let dry = tightensDryBass ? states[index].dryHighPass.process(samples[offset]) : samples[offset]
-                    let enhanced = states[index].bassShelf.process(dry)
-                    samples[offset] = DSPBassPeakControl.mix(original: dry, enhanced: enhanced, ceiling: peakCeiling) * outputGain
-                }
-            }
-            return
-        }
-        let (w2, w3, _, _, _) = weights
-        let count = selectedChannels.count
-        let dcAlpha = dcAlpha
-        let wetGain = wetGain
-        let outputGain = outputGain
-        let tightensDryBass = tightensDryBass
-        let wetCeiling = 0.32
-        let dryDucking = tightensDryBass ? 0.68 : (1.0 / (1.0 + 0.45 * min(wetGain, 2.0)))
-
-        var channelStates = states
-        states = []
-        var quadrature = allpassState
-        allpassState = []
-        defer {
-            states = channelStates
-            allpassState = quadrature
-        }
-        selectedChannels.withUnsafeBufferPointer { selected in
-            channelStates.withUnsafeMutableBufferPointer { states in
-                for frame in 0..<frames {
-                    let base = frame * channels
-                    for index in 0..<count {
-                        let offset = base + selected[index]
-                        let sample = samples[offset]
-                        let band = states[index].lowPass2.process(
-                            states[index].lowPass1.process(states[index].floorHighPass.process(sample)))
-
-                        let epsilonVal = 0.005
-                        let evenHarmonics = sqrt(band * band + epsilonVal * epsilonVal) - epsilonVal
-                        let oddHarmonics = tanh(1.6 * band)
-                        let rawHarmonics = w2 * evenHarmonics + w3 * oddHarmonics
-
-                        let dcBlocked = rawHarmonics - states[index].dcInput + dcAlpha * states[index].dcOutput
-                        states[index].dcInput = rawHarmonics
-                        states[index].dcOutput = dcBlocked
-
-                        let highPassed = states[index].wetHighPass2.process(
-                            states[index].wetHighPass1.process(dcBlocked))
-                        let wet = states[index].wetLowPass2.process(states[index].wetLowPass1.process(highPassed))
-
-                        let uncompressedWet = wet * wetGain
-                        let scaledWet = wetCeiling * tanh(uncompressedWet / wetCeiling)
-
-                        let dry = tightensDryBass
-                            ? states[index].dryHighPass.process(sample)
-                            : sample
-                        let dryWithShelf = states[index].bassShelf.coefficients != .identity
-                            ? states[index].bassShelf.process(dry)
-                            : dry
-
-                        let enhanced = dryWithShelf * dryDucking + scaledWet
-                        samples[offset] = DSPBassPeakControl.mix(original: dry, enhanced: enhanced, ceiling: peakCeiling) * outputGain
-                    }
-                }
-            }
-        }
+    static func staticPeakResponseDB(parameters: DSPClassicBassParameters, outputKind: DSPOutputKind?) -> Double {
+        0.0
     }
 }

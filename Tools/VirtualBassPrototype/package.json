@@ -1,0 +1,11 @@
+{
+  "name": "virtual-bass-prototype",
+  "private": true,
+  "type": "module",
+  "description": "Standalone virtual bass prototype: real-time browser demo and offline test harness. No dependencies.",
+  "scripts": {
+    "serve": "node serve.mjs",
+    "analyze": "node tools/analyze.mjs",
+    "render": "node tools/render.mjs"
+  }
+}

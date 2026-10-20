@@ -6,10 +6,9 @@ final class AudioDSPProcessorTests: XCTestCase {
     func testNativeDryEffectsHaveKnownZeroLoadAndWetEffectsRemainMeasurable() throws {
         var dryBass = DSPClassicBassParameters()
         dryBass.intensity = 0
-        dryBass.bassGainDB = 0
-        dryBass.tightenDryBass = .off
+        dryBass.retainsRealBass = true
         let bass = DSPNodeConfiguration.classicBass(parameters: dryBass)
-        let tube = DSPNodeConfiguration.tube(parameters: DSPTubeParameters(mix: 0))
+        let tube = DSPNodeConfiguration.tube(parameters: DSPTubeParameters(mode: .classic, mix: 0))
         let format = DSPAudioFormat(sampleRate: 48_000, channelCount: 2, rawLayoutData: nil,
             channelLabels: [UInt32(kAudioChannelLabel_Left), UInt32(kAudioChannelLabel_Right)], layoutIsKnown: true)
         var configuration = AudioDSPConfiguration(enabled: true,
@@ -27,7 +26,7 @@ final class AudioDSPProcessorTests: XCTestCase {
         XCTAssertEqual(snapshot.nodes[bass.nodeID]?.averageRatio, 0)
         XCTAssertEqual(snapshot.nodes[tube.nodeID]?.averageRatio, 0)
         configuration.nodes[0].setEffectParameters(DSPClassicBassParameters())
-        configuration.nodes[1].tubeParameters = DSPTubeParameters(mix: 0.6)
+        configuration.nodes[1].tubeParameters = DSPTubeParameters(mode: .classic, mix: 0.6)
         let wet = AudioDSPProcessor(configuration: configuration, format: format)
         XCTAssertFalse(wet.isBypassed)
         XCTAssertTrue(wet.processingNodeIDs.contains(bass.nodeID))
@@ -755,6 +754,21 @@ final class AudioDSPProcessorTests: XCTestCase {
         XCTAssertNil(Guide.blocker(step: 1, reading: reading(-24), recordedCoordinates: [-20]))
         XCTAssertNotNil(Guide.blocker(step: 3, reading: reading(-19), recordedCoordinates: [-20, -26, -32]))
         XCTAssertNil(Guide.blocker(step: 3, reading: reading(-12), recordedCoordinates: [-20, -26, -32]))
+    }
+
+    func testCalibrationVolumeRampIsGradualAndReachesTheTarget() {
+        typealias Guide = EqualLoudnessCalibrationGuide
+        let start = 2.0 / 16, target = 8.0 / 16
+        let values = (0...80).map { Guide.rampScalar(from: start, to: target, progress: Double($0) / 80) }
+        XCTAssertEqual(values.first, start)
+        XCTAssertEqual(values.last, target)
+        XCTAssertEqual(values[40], sqrt(start * target), accuracy: 1e-12)
+        for index in 1..<values.count {
+            XCTAssertGreaterThanOrEqual(values[index], values[index - 1])
+            XCTAssertLessThan(values[index] - values[index - 1], 0.02)
+        }
+        XCTAssertEqual(Guide.rampScalar(from: 0, to: target, progress: 0), 0)
+        XCTAssertTrue(Guide.rampScalar(from: 0, to: target, progress: 0.5).isFinite)
     }
 
     func testCalibrationAllowsCutsAboveTheReference() {

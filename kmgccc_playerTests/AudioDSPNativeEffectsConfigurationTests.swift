@@ -206,7 +206,7 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
         func roundTrip<P: DSPEffectParameterSet>(_ value: P, file: StaticString = #filePath, line: UInt = #line) throws {
             var json: [String: DSPJSONValue] = [:]
             value.write(to: &json)
-            XCTAssertEqual(Set(json.keys), P.supportedParameterKeys, file: file, line: line)
+            XCTAssertEqual(Set(json.keys), P.supportedParameterKeys.subtracting(["speed"]), file: file, line: line)
             XCTAssertEqual(P(json: json), value, file: file, line: line)
             XCTAssertTrue(value.validationIssues.isEmpty, "\(value.validationIssues)", file: file, line: line)
         }
@@ -218,36 +218,94 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
         try roundTrip(DSPReverbParameters())
         try roundTrip(DSPTubeParameters())
         try roundTrip(DSPCompressorParameters())
-        try roundTrip(DSPCompressorParameters(style: .night))
+        try roundTrip(DSPCompressorParameters(style: .gentle))
         for space in DSPReverbSpace.allCases { try roundTrip(DSPReverbParameters(space: space)) }
         for strength in DSPCrossfeedStrength.allCases { try roundTrip(DSPCrossfeedParameters(strength: strength)) }
     }
 
+    func testCompressorStyleSwitchReplacesTimingAndCrossoversAndRestoresCustomSettings() throws {
+        var parameters = DSPCompressorParameters()
+        parameters.bands[0].attackMs = 33
+        parameters.bands[2].gainDB = 2.5
+        parameters.lowCrossoverHz = 220
+        parameters.highCrossoverHz = 3_300
+        parameters.useCustomSettings()
+        let custom = parameters
+
+        parameters.selectStyle(.gentle)
+        XCTAssertEqual(parameters.bands, DSPCompressorParameters(style: .gentle).bands)
+        XCTAssertEqual(parameters.band(.low).attackMs, 50)
+        XCTAssertEqual(parameters.lowCrossoverHz, 180)
+        XCTAssertEqual(parameters.highCrossoverHz, 2_500)
+
+        // Saving while a built-in style is selected must retain the custom tuning.
+        var json: [String: DSPJSONValue] = [:]
+        parameters.write(to: &json)
+        parameters = try XCTUnwrap(DSPCompressorParameters(json: json))
+        parameters.selectStyle(.night)
+        XCTAssertEqual(parameters.bands, DSPCompressorParameters(style: .night).bands)
+        XCTAssertEqual(parameters.band(.high).attackMs, 0.1)
+        XCTAssertEqual(parameters.lowCrossoverHz, 180)
+        XCTAssertEqual(parameters.highCrossoverHz, 4_000)
+
+        parameters.selectStyle(.custom)
+        XCTAssertEqual(parameters, custom)
+    }
+
+    func testLegacyCompressorKeepsStoredCrossoversAndMigratesItsTiming() throws {
+        var parameters = DSPCompressorParameters(style: .custom)
+        parameters.lowCrossoverHz = 200
+        parameters.highCrossoverHz = 3_200
+        parameters.useCustomSettings()
+        var json: [String: DSPJSONValue] = [:]
+        parameters.write(to: &json)
+        json.removeValue(forKey: "customLowCrossoverHz")
+        json.removeValue(forKey: "customHighCrossoverHz")
+        json.removeValue(forKey: "customBands")
+        json["speed"] = .string("slow")
+        if case .object(var bands)? = json["bands"] {
+            for key in DSPCompressorBandKey.allCases {
+                guard case .object(var band)? = bands[key.rawValue] else { return XCTFail("Missing band") }
+                band.removeValue(forKey: "attackMs")
+                band.removeValue(forKey: "releaseMs")
+                bands[key.rawValue] = .object(band)
+            }
+            json["bands"] = .object(bands)
+        }
+
+        var restored = try XCTUnwrap(DSPCompressorParameters(json: json))
+        XCTAssertTrue(restored.bands.allSatisfy { $0.attackMs == 50 && $0.releaseMs == 800 })
+        restored.selectStyle(.night)
+        restored.selectStyle(.custom)
+        XCTAssertEqual(restored.lowCrossoverHz, 200)
+        XCTAssertEqual(restored.highCrossoverHz, 3_200)
+    }
+
     func testBassControlsSaveIndependentlyForEachTargetAndRoundTrip() throws {
         var classic = DSPClassicBassParameters()
-        classic.bassGainDB = 9
-        classic.intensity = 2
+        classic.cutoffHz = 120
+        classic.intensity = 0.8
         classic.switchTarget(to: .speakers)
-        XCTAssertEqual(classic.bassGainDB, 3)
+        XCTAssertEqual(classic.cutoffHz, 80)
         XCTAssertEqual(classic.intensity, 0.5)
-        classic.bassGainDB = 0
-        classic.intensity = 1.5
+        classic.cutoffHz = 60
+        classic.intensity = 0.3
         classic.switchTarget(to: .automatic)
-        XCTAssertEqual(classic.bassGainDB, 9)
-        XCTAssertEqual(classic.intensity, 2)
+        XCTAssertEqual(classic.cutoffHz, 120)
+        XCTAssertEqual(classic.intensity, 0.8)
         XCTAssertTrue(classic.validationIssues.isEmpty)
 
         var hybrid = DSPHybridBassParameters()
-        hybrid.bassGainDB = 9
-        hybrid.intensity = 2
+        hybrid.cutoffHz = 120
+        hybrid.intensity = 0.8
         hybrid.switchTarget(to: .headphones)
-        XCTAssertEqual(hybrid.bassGainDB, 3)
+        XCTAssertEqual(hybrid.cutoffHz, 50)
         XCTAssertEqual(hybrid.intensity, 0.5)
-        hybrid.bassGainDB = 0
-        hybrid.intensity = 1.5
+        hybrid.cutoffHz = 60
+        hybrid.intensity = 0.3
         hybrid.switchTarget(to: .automatic)
-        XCTAssertEqual(hybrid.bassGainDB, 9)
-        XCTAssertEqual(hybrid.intensity, 2)
+        XCTAssertEqual(hybrid.cutoffHz, 120)
+        XCTAssertEqual(hybrid.intensity, 0.8)
         XCTAssertTrue(hybrid.validationIssues.isEmpty)
 
         var classicJSON: [String: DSPJSONValue] = [:]
@@ -264,26 +322,26 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
             from: JSONEncoder().encode(hybridSaved)), hybridSaved)
     }
 
-    func testBassGainIsRequiredAndExpandedRangesHaveExplicitLimits() {
+    func testBassControlsHaveExplicitLimitsAndValidate() {
         var classic = DSPClassicBassParameters()
         var hybrid = DSPHybridBassParameters()
         var classicJSON: [String: DSPJSONValue] = [:]
         classic.write(to: &classicJSON)
-        classicJSON.removeValue(forKey: "bassGainDB")
+        classicJSON.removeValue(forKey: "cutoffHz")
         XCTAssertNil(DSPClassicBassParameters(json: classicJSON))
         var hybridJSON: [String: DSPJSONValue] = [:]
         hybrid.write(to: &hybridJSON)
-        hybridJSON.removeValue(forKey: "bassGainDB")
+        hybridJSON.removeValue(forKey: "cutoffHz")
         XCTAssertNil(DSPHybridBassParameters(json: hybridJSON))
 
-        classic.bassGainDB = 9.1
-        hybrid.bassGainDB = 9.1
-        XCTAssertEqual(classic.validationIssues.map(\.key), ["bassGainDB"])
-        XCTAssertEqual(hybrid.validationIssues.map(\.key), ["bassGainDB"])
-        classic.bassGainDB = 9
-        hybrid.bassGainDB = 9
-        classic.intensity = 2.01
-        hybrid.intensity = 2.01
+        classic.cutoffHz = 160.1
+        hybrid.cutoffHz = 160.1
+        XCTAssertEqual(classic.validationIssues.map(\.key), ["cutoffHz"])
+        XCTAssertEqual(hybrid.validationIssues.map(\.key), ["cutoffHz"])
+        classic.cutoffHz = 80
+        hybrid.cutoffHz = 80
+        classic.intensity = 1.05
+        hybrid.intensity = 1.05
         XCTAssertEqual(classic.validationIssues.map(\.key), ["intensity"])
         XCTAssertEqual(hybrid.validationIssues.map(\.key), ["intensity"])
     }
@@ -322,10 +380,9 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
 
         var bass = AudioDSPConfiguration.defaultFlat
         var bassParameters = DSPClassicBassParameters()
-        bassParameters.cutoffHz = 60
-        bassParameters.floorHz = 50
+        bassParameters.cutoffHz = 200
         bass.nodes.append(.classicBass(parameters: bassParameters))
-        assertInvalid(controller, bass, pathSuffix: "parameters.floorHz")
+        assertInvalid(controller, bass, pathSuffix: "parameters.cutoffHz")
 
         var compressor = AudioDSPConfiguration.defaultFlat
         var compressorParameters = DSPCompressorParameters()

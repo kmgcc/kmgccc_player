@@ -1,100 +1,140 @@
 import Foundation
 
-/// 工业级效果拔群混合虚拟低音 (具备独立的“动态/瞬态 Transient”打击雕琢与稳态倍频发生器)
+/// 工业级无破音混合虚拟低音 (4阶 LR 双边滤波 + 光滑无除法 NLD + 动态瞬态打击塑形)
+/// 专为底鼓节奏设计：稳态温润饱满，鼓点瞬间爆发紧凑凝聚的冲击感，同时绝无马达颤音与破音
 public struct FixedHybridBass: Sendable {
     private struct ChannelState: Sendable {
-        var preLowPass: FourthOrderButterworth?
-        var floorHighPass: DSPBiquad = DSPBiquad()
-        var postHighPass: FourthOrderButterworth?
-        var postLowPass: DSPBiquad = DSPBiquad()
+        var preLp1: DSPBiquad = DSPBiquad()
+        var preLp2: DSPBiquad = DSPBiquad()
+
+        // 慢速双包络瞬态/稳态分析器 (不跟随 15Hz 拍频，只检测大动态突发音符)
+        var fastEnvelope: Double = 0.0
+        var slowEnvelope: Double = 0.0
+
+        var dcPrevInput: Double = 0.0
+        var dcPrevOutput: Double = 0.0
+
+        var postHp1: DSPBiquad = DSPBiquad()
+        var postHp2: DSPBiquad = DSPBiquad()
+        var postLp: DSPBiquad = DSPBiquad()
+
         var dryHighPass: DSPBiquad = DSPBiquad()
         var dryBassShelf: DSPBiquad = DSPBiquad()
 
-        // 瞬态/稳态双包络检测
-        var fastEnvelope = 0.0
-        var slowEnvelope = 0.0
-
-        // 直流隔离状态
-        var dcBlockerPrevInput = 0.0
-        var dcBlockerPrevOutput = 0.0
-
         mutating func reset() {
-            preLowPass?.reset()
-            floorHighPass.reset()
-            postHighPass?.reset()
-            postLowPass.reset()
-            dryHighPass.reset()
-            dryBassShelf.reset()
+            preLp1.reset()
+            preLp2.reset()
             fastEnvelope = 0.0
             slowEnvelope = 0.0
-            dcBlockerPrevInput = 0.0
-            dcBlockerPrevOutput = 0.0
+            dcPrevInput = 0.0
+            dcPrevOutput = 0.0
+            postHp1.reset()
+            postHp2.reset()
+            postLp.reset()
+            dryHighPass.reset()
+            dryBassShelf.reset()
         }
     }
 
-    private let wetGain: Double
-    private let transientGain: Double
-    private let tightensDryBass: Bool
-    private let characterRound: Double
-    private let wetSolo: Bool
-    private let outputGain: Double
-    private let dcAlpha: Double
-    private let fastAttackAlpha: Double
-    private let fastReleaseAlpha: Double
-    private let slowAttackAlpha: Double
-    private let slowReleaseAlpha: Double
+    private var wetGain: Double
+    private var transientGain: Double
+    private var tightensDryBass: Bool
+    private var characterRound: Double
+    private var wetSolo: Bool
+    private var outputGain: Double
+    private var sampleRate: Double
+    private var dcAlpha: Double
+    private var fastAttackAlpha: Double
+    private var fastReleaseAlpha: Double
+    private var slowAttackAlpha: Double
+    private var slowReleaseAlpha: Double
     private var states: [ChannelState]
+    private var currentCutoff: Double
+    private var currentBassGainDB: Double
 
-    public init?(sampleRate: Double, channels: Int, cutoffHz: Double = 100, floorHz: Double = 35,
+    public init?(sampleRate: Double, channels: Int, cutoffHz: Double = 100, floorHz: Double = 25,
                  intensity: Double = 1.0, transient: Double = 1.0, bassGainDB: Double = 0.0,
                  tightenDryBass: Bool = false, character: Double = 0.7, wetSolo: Bool = false,
                  outputTrimDB: Double = 0.0) {
         guard sampleRate > 0, channels > 0 else { return nil }
-        let sourceCutoff = min(cutoffHz, 150.0)
+        self.sampleRate = sampleRate
+        self.currentCutoff = cutoffHz
+        self.currentBassGainDB = bassGainDB
 
-        guard let preLp = FourthOrderButterworth.lowPass(frequency: sourceCutoff, sampleRate: sampleRate),
-              let fHp = DSPBiquadCoefficients.highPass(frequency: floorHz, sampleRate: sampleRate),
-              let postHp = FourthOrderButterworth.highPass(frequency: sourceCutoff * 0.85, sampleRate: sampleRate),
-              let postLp = DSPBiquadCoefficients.lowPass(frequency: 400.0, sampleRate: sampleRate),
-              let dhp = DSPBiquadCoefficients.highPass(frequency: cutoffHz * 0.8, sampleRate: sampleRate),
-              let shelf = DSPBiquadCoefficients.lowShelf(frequency: cutoffHz, sampleRate: sampleRate, gainDB: bassGainDB) else {
+        let sourceCutoff = min(cutoffHz, 130.0)
+        let postHpFreq = max(55.0, sourceCutoff * 0.85)
+
+        guard let preLpCoeff = DSPBiquadCoefficients.lowPass(frequency: sourceCutoff, sampleRate: sampleRate, q: 0.7071067811865476),
+              let postHpCoeff = DSPBiquadCoefficients.highPass(frequency: postHpFreq, sampleRate: sampleRate, q: 0.7071067811865476),
+              let postLpCoeff = DSPBiquadCoefficients.lowPass(frequency: 380.0, sampleRate: sampleRate, q: 0.7071067811865476),
+              let dhpCoeff = DSPBiquadCoefficients.highPass(frequency: cutoffHz * 0.85, sampleRate: sampleRate, q: 0.7071067811865476),
+              let shelfCoeff = DSPBiquadCoefficients.lowShelf(frequency: cutoffHz, sampleRate: sampleRate, gainDB: bassGainDB) else {
             return nil
         }
 
-        self.wetGain = 0.85 * intensity
+        self.wetGain = 1.25 * intensity
         self.transientGain = max(0.0, transient)
         self.tightensDryBass = tightenDryBass
         self.characterRound = max(0.0, min(1.0, character))
         self.wetSolo = wetSolo
         self.outputGain = pow(10, outputTrimDB / 20)
-        self.dcAlpha = exp(-2 * Double.pi * 15 / sampleRate)
+        self.dcAlpha = exp(-2.0 * Double.pi * 15.0 / sampleRate)
 
-        // 快速包络 (捕捉鼓点敲击瞬态): 1.5ms / 20ms
-        fastAttackAlpha = 1 - exp(-1 / (0.0015 * sampleRate))
-        fastReleaseAlpha = 1 - exp(-1 / (0.020 * sampleRate))
-
-        // 慢速包络 (捕捉稳态延音): 25ms / 150ms
-        slowAttackAlpha = 1 - exp(-1 / (0.025 * sampleRate))
-        slowReleaseAlpha = 1 - exp(-1 / (0.150 * sampleRate))
+        // 双包络时间常数：平缓释放，杜绝跟随拍频颤音
+        fastAttackAlpha = 1.0 - exp(-1.0 / (0.005 * sampleRate))
+        fastReleaseAlpha = 1.0 - exp(-1.0 / (0.080 * sampleRate))
+        slowAttackAlpha = 1.0 - exp(-1.0 / (0.040 * sampleRate))
+        slowReleaseAlpha = 1.0 - exp(-1.0 / (0.300 * sampleRate))
 
         var channel = ChannelState()
-        channel.preLowPass = preLp
-        channel.floorHighPass = DSPBiquad(fHp)
-        channel.postHighPass = postHp
-        channel.postLowPass = DSPBiquad(postLp)
-        channel.dryHighPass = DSPBiquad(dhp)
-        channel.dryBassShelf = DSPBiquad(shelf)
+        channel.preLp1 = DSPBiquad(preLpCoeff)
+        channel.preLp2 = DSPBiquad(preLpCoeff)
+        channel.postHp1 = DSPBiquad(postHpCoeff)
+        channel.postHp2 = DSPBiquad(postHpCoeff)
+        channel.postLp = DSPBiquad(postLpCoeff)
+        channel.dryHighPass = DSPBiquad(dhpCoeff)
+        channel.dryBassShelf = DSPBiquad(shelfCoeff)
 
         states = Array(repeating: channel, count: channels)
+    }
+
+    public mutating func update(params: VirtualBassParams) {
+        self.wetGain = 1.25 * params.intensity
+        self.transientGain = max(0.0, params.transient)
+        self.tightensDryBass = params.tightenDryBass
+        self.characterRound = max(0.0, min(1.0, params.character))
+        self.wetSolo = params.wetSolo
+        self.outputGain = pow(10, params.outputTrimDB / 20)
+
+        if abs(params.cutoffHz - currentCutoff) > 0.5 || abs(params.bassGainDB - currentBassGainDB) > 0.1 {
+            currentCutoff = params.cutoffHz
+            currentBassGainDB = params.bassGainDB
+            let sourceCutoff = min(currentCutoff, 130.0)
+            let postHpFreq = max(55.0, sourceCutoff * 0.85)
+            if let preLpCoeff = DSPBiquadCoefficients.lowPass(frequency: sourceCutoff, sampleRate: sampleRate, q: 0.7071067811865476),
+               let postHpCoeff = DSPBiquadCoefficients.highPass(frequency: postHpFreq, sampleRate: sampleRate, q: 0.7071067811865476),
+               let dhpCoeff = DSPBiquadCoefficients.highPass(frequency: currentCutoff * 0.85, sampleRate: sampleRate, q: 0.7071067811865476),
+               let shelfCoeff = DSPBiquadCoefficients.lowShelf(frequency: currentCutoff, sampleRate: sampleRate, gainDB: currentBassGainDB) {
+                for ch in 0..<states.count {
+                    states[ch].preLp1.c = preLpCoeff
+                    states[ch].preLp2.c = preLpCoeff
+                    states[ch].postHp1.c = postHpCoeff
+                    states[ch].postHp2.c = postHpCoeff
+                    states[ch].dryHighPass.c = dhpCoeff
+                    states[ch].dryBassShelf.c = shelfCoeff
+                }
+            }
+        }
     }
 
     public mutating func process(channel: Int, sample: Double) -> Double {
         guard channel < states.count else { return sample }
 
-        let bandPre = states[channel].preLowPass?.process(sample) ?? sample
-        let band = states[channel].floorHighPass.process(bandPre)
+        // 1. 前级 4 阶 LR 低通
+        let l1 = states[channel].preLp1.process(sample)
+        let band = states[channel].preLp2.process(l1)
 
-        // 双包络瞬态/稳态检测
+        // 2. 宏观瞬态检测 (只检测整体乐句中的底鼓敲击，平缓释放)
         let absBand = abs(band)
         var fast = states[channel].fastEnvelope
         fast += (absBand > fast ? fastAttackAlpha : fastReleaseAlpha) * (absBand - fast)
@@ -104,53 +144,54 @@ public struct FixedHybridBass: Sendable {
         slow += (absBand > slow ? slowAttackAlpha : slowReleaseAlpha) * (absBand - slow)
         states[channel].slowEnvelope = slow
 
-        // 瞬态打击强度：快速包络突增的部分
-        let delta = max(0, fast - slow)
-        let transientRatio = min(1.0, (delta / (slow + 1e-4)) * 2.0)
-        let tonalRatio = max(0.0, 1.0 - transientRatio)
+        let delta = max(0.0, fast - slow)
+        let transientRatio = min(1.0, 2.5 * (delta / (slow + 0.010)))
 
-        // 1. 【音调稳态分支】纯净倍频发生器
-        let doubler = 2.2 * band * band
+        // 3. 光滑无除法非线性发生器
+        let driven = band * 2.2
+        let deltaK = 0.08
+        let h2 = (sqrt(driven * driven + deltaK * deltaK) - deltaK) * 2.2
+        let h3 = tanh(1.5 * driven)
 
-        // 2. 【瞬态打击分支】受“动态/瞬态 (Transient)”参数专控的冲击饱和
-        // 当 transientGain 拉大时，底鼓瞬间爆发出紧凑清脆的冲击波
-        let transientPunch = tanh(3.0 * band) * (fast + 1e-3) * (1.0 + 1.2 * transientGain)
+        // 稳态主打圆润 2 次谐波；鼓点瞬态发生时，根据 transient 动态增厚 3 次谐波打击质感
+        let baseW3 = 0.55 - 0.35 * characterRound // 0.20 ~ 0.55
+        let dynamicW3 = min(0.75, baseW3 + 0.30 * transientRatio * min(1.6, transientGain))
+        let dynamicW2 = 1.0 - dynamicW3
+        let rawHarmonics = dynamicW2 * h2 + dynamicW3 * h3
 
-        // 模糊融合加权
-        let rawHarmonics = tonalRatio * doubler + transientRatio * transientPunch
+        // 4. DC Blocker
+        let dcBlocked = rawHarmonics - states[channel].dcPrevInput + dcAlpha * states[channel].dcPrevOutput
+        states[channel].dcPrevInput = rawHarmonics
+        states[channel].dcPrevOutput = dcBlocked
 
-        let dcBlocked = rawHarmonics - states[channel].dcBlockerPrevInput + dcAlpha * states[channel].dcBlockerPrevOutput
-        states[channel].dcBlockerPrevInput = rawHarmonics
-        states[channel].dcBlockerPrevOutput = dcBlocked
+        // 5. 后级 4 阶 LR 高通 (彻底阻断差频次声波与基频残留)
+        let hp1 = states[channel].postHp1.process(dcBlocked)
+        let hpFinal = states[channel].postHp2.process(hp1)
 
-        let postHp = states[channel].postHighPass?.process(dcBlocked) ?? dcBlocked
-        let wet = states[channel].postLowPass.process(postHp)
+        // 6. 后级 2 阶低通 (380Hz)
+        let wetFiltered = states[channel].postLp.process(hpFinal)
+
+        // 7. 瞬态打击动态驱动增益 (Punch)
+        let dynamicDrive = 1.0 + 0.35 * transientRatio * min(1.6, transientGain)
+        let wet = DSPSafeSaturation.process(wetFiltered * wetGain * dynamicDrive, ceiling: 0.45)
 
         if wetSolo {
-            return Self.safeCeiling(wet * wetGain * 1.5) * outputGain
+            return wet * outputGain
         }
 
         var dry = sample
         if tightensDryBass {
             dry = states[channel].dryHighPass.process(dry)
         }
-        if states[channel].dryBassShelf.coefficients != .identity {
+        if states[channel].dryBassShelf.c != .identity {
             dry = states[channel].dryBassShelf.process(dry)
         }
 
-        let dryWeight = tightensDryBass ? 0.68 : max(0.50, 1.0 - 0.22 * (wetGain / 0.85))
-        let combined = dryWeight * dry + wetGain * wet
+        // 8. 自适应裕量避让与总输出安全限幅
+        let dryDuck = tightensDryBass ? 0.75 : (1.0 / (1.0 + 0.28 * min(wetGain, 2.5)))
+        let combined = dry * dryDuck + wet
+        let limited = DSPSafeSaturation.safeLimit(combined, ceiling: 0.98)
 
-        return Self.safeCeiling(combined) * outputGain
-    }
-
-    @inline(__always)
-    private static func safeCeiling(_ x: Double, ceiling: Double = 0.98, knee: Double = 0.80) -> Double {
-        let absX = abs(x)
-        guard absX > knee else { return x }
-        let span = ceiling - knee
-        let delta = absX - knee
-        let compressed = knee + span * tanh(delta / span)
-        return x < 0 ? -compressed : compressed
+        return limited * outputGain
     }
 }
