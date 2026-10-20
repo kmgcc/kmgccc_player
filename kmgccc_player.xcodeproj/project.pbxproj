@@ -70,6 +70,7 @@
 		C2D000000000000000000004 /* AudioDSPProcessorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2D000000000000000000104 /* AudioDSPProcessorTests.swift */; };
 		C2D000000000000000000005 /* AudioDSPControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2D000000000000000000105 /* AudioDSPControllerTests.swift */; };
 		C31000000000000000000001 /* kmgccc_playerTests/SeamlessMarqueeTimingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C31000000000000000000002 /* kmgccc_playerTests/SeamlessMarqueeTimingTests.swift */; };
+		C3A000000000000000000201 /* LocalLyricsFormatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A000000000000000000202 /* LocalLyricsFormatTests.swift */; };
 		C3F000000000000000000001 /* PlaybackOutputGainControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F000000000000000000101 /* PlaybackOutputGainControllerTests.swift */; };
 		C3F000000000000000000002 /* AudioProcessingGlobalsControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F000000000000000000102 /* AudioProcessingGlobalsControllerTests.swift */; };
 		C3F000000000000000000003 /* AudioLoudnessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F000000000000000000103 /* AudioLoudnessTests.swift */; };
@@ -195,6 +196,7 @@
 		C2D000000000000000000104 /* AudioDSPProcessorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioDSPProcessorTests.swift; path = kmgccc_playerTests/AudioDSPProcessorTests.swift; sourceTree = "<group>"; };
 		C2D000000000000000000105 /* AudioDSPControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioDSPControllerTests.swift; path = kmgccc_playerTests/AudioDSPControllerTests.swift; sourceTree = "<group>"; };
 		C31000000000000000000002 /* kmgccc_playerTests/SeamlessMarqueeTimingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/SeamlessMarqueeTimingTests.swift; sourceTree = "<group>"; };
+		C3A000000000000000000202 /* LocalLyricsFormatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LocalLyricsFormatTests.swift; path = kmgccc_playerTests/LocalLyricsFormatTests.swift; sourceTree = "<group>"; };
 		C3F000000000000000000101 /* PlaybackOutputGainControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackOutputGainControllerTests.swift; path = kmgccc_playerTests/PlaybackOutputGainControllerTests.swift; sourceTree = "<group>"; };
 		C3F000000000000000000102 /* AudioProcessingGlobalsControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioProcessingGlobalsControllerTests.swift; path = kmgccc_playerTests/AudioProcessingGlobalsControllerTests.swift; sourceTree = "<group>"; };
 		C3F000000000000000000103 /* AudioLoudnessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioLoudnessTests.swift; path = kmgccc_playerTests/AudioLoudnessTests.swift; sourceTree = "<group>"; };
@@ -454,6 +456,7 @@
 				D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */,
 				D40000000000000000000011 /* kmgccc_playerTests/DisplayHDRCapabilityTests.swift */,
 				C31000000000000000000002 /* kmgccc_playerTests/SeamlessMarqueeTimingTests.swift */,
+				C3A000000000000000000202 /* LocalLyricsFormatTests.swift */,
 				C22000000000000000000011 /* kmgccc_playerTests/ReferencedSourceStoreTests.swift */,
 				C23000000000000000000011 /* kmgccc_playerTests/ReferencedSourceScopeTests.swift */,
 				C24000000000000000000011 /* kmgccc_playerTests/CoverGradientBlurRenderStoreTests.swift */,
@@ -814,6 +817,7 @@
 				D30000000000000000000001 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift in Sources */,
 				D40000000000000000000001 /* kmgccc_playerTests/DisplayHDRCapabilityTests.swift in Sources */,
 				C31000000000000000000001 /* kmgccc_playerTests/SeamlessMarqueeTimingTests.swift in Sources */,
+				C3A000000000000000000201 /* LocalLyricsFormatTests.swift in Sources */,
 				C22000000000000000000001 /* kmgccc_playerTests/ReferencedSourceStoreTests.swift in Sources */,
 				C23000000000000000000001 /* kmgccc_playerTests/ReferencedSourceScopeTests.swift in Sources */,
 				C24000000000000000000001 /* kmgccc_playerTests/CoverGradientBlurRenderStoreTests.swift in Sources */,
@@ -976,7 +980,7 @@
 				ARCHS = "$(ARCHS_STANDARD)";
 				ASSETCATALOG_COMPILER_APPICON_NAME = kmgccc;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
-				AUTOMATION_APPLE_EVENTS = NO;
+				AUTOMATION_APPLE_EVENTS = YES;
 				CODE_SIGN_ENTITLEMENTS = kmgccc_player/kmgccc_player.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
@@ -1029,7 +1033,7 @@
 				ARCHS = "$(ARCHS_STANDARD)";
 				ASSETCATALOG_COMPILER_APPICON_NAME = kmgccc;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
-				AUTOMATION_APPLE_EVENTS = NO;
+				AUTOMATION_APPLE_EVENTS = YES;
 				CODE_SIGN_ENTITLEMENTS = kmgccc_player/kmgccc_player.release.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";

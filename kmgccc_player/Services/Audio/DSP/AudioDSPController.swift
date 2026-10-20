@@ -79,12 +79,12 @@ final class AudioDSPController {
 
     init(store: DSPPresetStore? = nil) {
         let initialRevision = UUID().uuidString
-        let initialConfiguration = AudioDSPConfiguration.defaultFlat
+        let initialConfiguration = AudioDSPConfiguration.defaultEffects
         self.store = store ?? DSPPresetStore.shared
         configuration = initialConfiguration
         revisionString = initialRevision
-        presets = [.flat]
-        selectedPresetID = DSPPresetDocument.flatPresetID
+        presets = DSPPresetDocument.builtInPresets
+        selectedPresetID = DSPPresetDocument.defaultPresetID
         status = DSPApplyStatus(revisionString: initialRevision)
         bootstrapTask = Task { [weak self] in
             guard let self else { return }
@@ -533,7 +533,7 @@ final class AudioDSPController {
     }
 
     func preset(id: UUID) async throws -> DSPPresetDocument {
-        if id == DSPPresetDocument.flatPresetID { return .flat }
+        if let builtIn = DSPPresetDocument.builtInPresets.first(where: { $0.presetID == id }) { return builtIn }
         if let document = presets.first(where: { $0.presetID == id }) {
             return document
         }
@@ -605,7 +605,7 @@ final class AudioDSPController {
         name: String,
         expectedPresetRevision: String? = nil
     ) async throws -> DSPPresetDocument {
-        guard id != DSPPresetDocument.flatPresetID else {
+        guard !DSPPresetDocument.isBuiltIn(id) else {
             throw DSPPresetStoreError.immutableBuiltIn
         }
         let resolvedExpectedRevision = await flushPresetEdits(id: id, expectedRevision: expectedPresetRevision)
@@ -805,7 +805,7 @@ final class AudioDSPController {
     }
 
     private func merge(_ result: DSPPresetStoreLoadResult) {
-        presets = [.flat] + result.presets
+        presets = DSPPresetDocument.builtInPresets + result.presets
         for document in pendingPresetEdits.values where !presets.contains(where: { $0.presetID == document.presetID }) {
             upsertPreset(document)
         }
@@ -1310,7 +1310,7 @@ final class AudioDSPController {
             guard let bands = node.parametricEQBands else {
                 add(
                     "dsp.invalidParameter",
-                    "均衡器需要完整的九段参数。",
+                    "均衡器需要完整的十段参数。",
                     "\(prefix).parameters.bands",
                     nodeID: node.nodeID
                 )
@@ -1409,8 +1409,7 @@ final class AudioDSPController {
         case DSPNodeConfiguration.tubeTypeID:
             return node.tubeParameters.map { $0.isDry ? 0 : 64 } ?? 0
         case DSPNodeConfiguration.hybridBassTypeID:
-            if node.effectParameters(DSPHybridBassParameters.self)?.intensity == 0 { return 0 }
-            return DSPHybridBassEngine.latencyFrames(sampleRate: sampleRate)
+            return 0
         case DSPNodeConfiguration.spatialAudioTypeID:
             return DSPConvolutionSpectra.headBlockSize
         case DSPNodeConfiguration.compressorTypeID:

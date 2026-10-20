@@ -1449,8 +1449,10 @@ func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
         #expect(requiredKeys.count == required.count)
         #expect(Set(requiredKeys) == Set(properties.keys).subtracting(optionalKeys))
         if isBass {
-            #expect(defaults["bassGainDB"] == .number(3))
-            guard case .object(let gain) = properties["bassGainDB"],
+            #expect(defaults["intensity"] == .number(0.5))
+            #expect(defaults["cutoffHz"] == .number(80))
+            #expect(defaults["retainsRealBass"] == .boolean(true))
+            guard case .object(let cutoff) = properties["cutoffHz"],
                   case .object(let amount) = properties["intensity"],
                   case .object(let saved) = properties["targetSettings"],
                   case .object(let targets) = saved["properties"],
@@ -1458,9 +1460,9 @@ func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
                 Issue.record("Incomplete bass controls or per-target settings")
                 continue
             }
-            #expect(gain["minimum"] == .number(0))
-            #expect(gain["maximum"] == .number(9))
-            #expect(amount["maximum"] == .number(2))
+            #expect(cutoff["minimum"] == .number(40))
+            #expect(cutoff["maximum"] == .number(160))
+            #expect(amount["maximum"] == .number(1))
             #expect(Set(targets.keys) == Set(["auto", "headphones", "speakers"]))
             #expect(Set(targetDefaults.keys) == Set(targets.keys))
         }

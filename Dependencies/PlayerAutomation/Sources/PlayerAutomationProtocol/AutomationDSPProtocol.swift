@@ -128,30 +128,19 @@ public enum AutomationDSPToolCatalog {
 
     public static let classicBassParametersSchema = bassParametersSchema([
         "target": bassTarget,
-        "intensity": number(0, 2, unit: "Virtual harmonic amount; 1 is 100%, 2 is 200%. Independent of bassGainDB."),
-        "bassGainDB": number(0, 9, unit: "dB; original bass shelf gain, independent of the virtual harmonic amount."),
-        "cutoffHz": number(0, 250, unit: "Hz; virtual source cutoff and bass shelf turnover, 0 follows the target (headphones 80, speakers 140), otherwise 30–250. Harmonic output rolls off between 300 and 800 Hz according to the cutoff."),
-        "character": described(enumeration(["round", "tight"]),
-            "round favours the 2nd harmonic; tight gives the 3rd more weight."),
-        "floorHz": number(0, 80, unit: "Hz; lowest analysed bass, 0 follows the target, otherwise 15–80 and below two thirds of the cutoff."),
-        "tightenDryBass": described(switchSetting, "on high-passes the dry bass at 0.7·cutoff; auto and off retain the original bass."),
-        "outputTrimDB": number(-24, 6, unit: "dB")
-    ], required: ["target", "intensity", "bassGainDB", "cutoffHz", "character", "floorHz", "tightenDryBass", "outputTrimDB"])
+        "intensity": number(0, 1, unit: "Virtual bass amount; 0 to 1 (0% to 100%, mapped internally to -12 to +12 dB)."),
+        "cutoffHz": number(40, 160, unit: "Hz; cutoff frequency."),
+        "retainsRealBass": described(boolean, "Keep physical low-end frequencies below the cutoff."),
+        "impactDB": number(-20, -8, unit: "dB; harmonic decay slope.")
+    ], required: ["target", "intensity", "cutoffHz", "retainsRealBass", "impactDB"])
 
     public static let hybridBassParametersSchema = bassParametersSchema([
         "target": bassTarget,
-        "intensity": number(0, 2, unit: "Virtual harmonic amount; 1 is 100%, 2 is 200%. Independent of bassGainDB. Zero bypasses FFT and its latency."),
-        "bassGainDB": number(0, 9, unit: "dB; original bass shelf gain, independent of the virtual harmonic amount."),
-        "cutoffHz": number(0, 200, unit: "Hz; virtual source cutoff and bass shelf turnover, 0 follows the target (headphones 80, speakers 140), otherwise 40–200. Tonal source has a 10% transition above the cutoff; output rolls off between 300 and 800 Hz."),
-        "transient": number(0, 1, unit: "Level-normalized transient harmonic amount; 0 disables it. Does not increase further when intensity exceeds 1."),
-        "harmonicCount": number(2, 8, unit: "Integer K of processed harmonics."),
-        "harmonicTolerance": number(0.01, 0.2, unit: "τ: a peak within τ·k·f0 counts as the k-th harmonic."),
-        "timbreLowDBPerOctave": number(0, 24, unit: "α_low, lower weighting limit slope per octave above the first audible generated partial."),
-        "timbreHighDBPerOctave": number(0, 24, unit: "α_high, upper weighting limit slope per octave above the first audible generated partial."),
-        "tightenDryBass": described(switchSetting, "on high-passes the dry bass at 0.7·cutoff; auto and off retain the original bass."),
-        "outputTrimDB": number(-24, 6, unit: "dB")
-    ], required: ["target", "intensity", "bassGainDB", "cutoffHz", "transient", "harmonicCount", "harmonicTolerance",
-                  "timbreLowDBPerOctave", "timbreHighDBPerOctave", "tightenDryBass", "outputTrimDB"])
+        "intensity": number(0, 1, unit: "Virtual bass amount; 0 to 1 (0% to 100%, mapped internally to -12 to +12 dB)."),
+        "cutoffHz": number(40, 160, unit: "Hz; cutoff frequency."),
+        "retainsRealBass": described(boolean, "Keep physical low-end frequencies below the cutoff."),
+        "impact": number(0, 1, unit: "Punch / drive; 0 to 1.")
+    ], required: ["target", "intensity", "cutoffHz", "retainsRealBass", "impact"])
 
     public static let stereoWidthParametersSchema = object([
         "width": number(0, 3, unit: "Mid/side width above the crossover; 1 with zero trim is an exact bypass."),
@@ -210,24 +199,42 @@ public enum AutomationDSPToolCatalog {
 
     private static let compressorBandSchema = object([
         "thresholdDB": number(-60, 0, unit: "dBFS at program level."),
-        "ratio": number(1, 20), "gainDB": number(-12, 12, unit: "dB makeup.")
+        "ratio": number(1, 20), "gainDB": number(-12, 12, unit: "dB makeup."),
+        "attackMs": number(0.1, 100, unit: "ms"), "releaseMs": number(1, 2_000, unit: "ms")
     ], required: ["thresholdDB", "ratio", "gainDB"])
+
+    private static let compressorBandsSchema = object([
+        "low": compressorBandSchema, "mid": compressorBandSchema,
+        "high": compressorBandSchema, "master": compressorBandSchema
+    ], required: ["low", "mid", "high", "master"])
+
+    private static let defaultCompressorBands: AutomationJSONValue = .object([
+        "low": .object(["thresholdDB": .number(-32), "ratio": .number(3), "gainDB": .number(0),
+                        "attackMs": .number(40), "releaseMs": .number(1)]),
+        "mid": .object(["thresholdDB": .number(-25), "ratio": .number(2), "gainDB": .number(0),
+                        "attackMs": .number(1), "releaseMs": .number(200)]),
+        "high": .object(["thresholdDB": .number(-32), "ratio": .number(3), "gainDB": .number(1.3),
+                         "attackMs": .number(0.1), "releaseMs": .number(25)]),
+        "master": .object(["thresholdDB": .number(-16), "ratio": .number(5), "gainDB": .number(0),
+                           "attackMs": .number(10), "releaseMs": .number(150)])
+    ])
 
     public static let compressorParametersSchema = object([
         "style": described(enumeration(["gentle", "night", "custom"]),
-            "The preset the bands were last taken from; editing a band makes it custom."),
+            "The preset the bands and crossovers were last taken from; editing either makes it custom."),
         "speed": described(enumeration(["fast", "medium", "slow"]),
-            "Attack/release 3/60, 10/150 or 30/400 ms; the full-band stage runs twice as slow."),
+            "Legacy fallback for bands without timing: attack/release 0.5/25, 10/150 or 50/800 ms."),
         "lowCrossoverHz": number(40, 1_000, unit: "Hz"),
         "highCrossoverHz": number(1_000, 12_000, unit: "Hz; at least an octave above lowCrossoverHz."),
-        "bands": object(["low": compressorBandSchema, "mid": compressorBandSchema,
-                         "high": compressorBandSchema, "master": compressorBandSchema],
-                        required: ["low", "mid", "high", "master"]),
+        "bands": compressorBandsSchema,
+        "customBands": compressorBandsSchema,
+        "customLowCrossoverHz": number(40, 1_000, unit: "Hz"),
+        "customHighCrossoverHz": number(1_000, 12_000, unit: "Hz"),
         "kneeDB": number(0, 24, unit: "dB"),
         "lookaheadMs": number(0, 10, unit: "ms; adds latency."),
         "loudnessMatchEnabled": described(boolean, "Holds long-term K-weighted loudness at the input's within ±6 dB."),
         "outputTrimDB": number(-24, 6, unit: "dB")
-    ], required: ["style", "speed", "lowCrossoverHz", "highCrossoverHz", "bands", "kneeDB", "lookaheadMs",
+    ], required: ["style", "lowCrossoverHz", "highCrossoverHz", "bands", "kneeDB", "lookaheadMs",
                   "loudnessMatchEnabled", "outputTrimDB"])
 
     /// One catalog shared by App IPC, CLI and MCP schema reads. Actual source
@@ -283,11 +290,10 @@ public enum AutomationDSPToolCatalog {
             "quality": .array([.string("standard")]), "parameters": classicBassParametersSchema,
             "defaultChannelPolicy": .string("fullRange"), "defaultQuality": .string("standard"),
             "parameterDefaults": bassParameterDefaults([
-                "target": .string("auto"), "intensity": .number(0.5), "bassGainDB": .number(3), "cutoffHz": .number(0),
-                "character": .string("round"), "floorHz": .number(0), "tightenDryBass": .string("auto"),
-                "outputTrimDB": .number(0)
+                "target": .string("auto"), "intensity": .number(0.5), "cutoffHz": .number(80),
+                "retainsRealBass": .boolean(true), "impactDB": .number(-12)
             ]),
-            "algorithm": .string("Independent bass shelf plus harmonics 2–6 from the selected analytic bass band, level-normalized by a slow peak follower. The added series rejects DC and sub-bass residue and rolls off at a cutoff-dependent limit up to 800 Hz. Added bass has a smooth peak knee when the safety limiter is enabled."),
+            "algorithm": .string("90° quadrature analytic harmonic series from Hilbert allpass network, level-normalized by peak follower with ISO 226 equal loudness matching and crest-factor normalization. Rejects sub-bass leakage via 36 dB/oct highpass and caps peaks with smooth soft saturation."),
             "levelReference": .string("Program level; chain gain staging does not change the effect."),
             "sourceApplicability": .string("Confirmed mono/stereo, or explicit frontPair for multichannel."),
             "declaredLatencyFramesWhenActive": .number(0), "peakGuarantee": .string("unavailable")
@@ -298,16 +304,13 @@ public enum AutomationDSPToolCatalog {
             "quality": .array([.string("standard")]), "parameters": hybridBassParametersSchema,
             "defaultChannelPolicy": .string("fullRange"), "defaultQuality": .string("standard"),
             "parameterDefaults": bassParameterDefaults([
-                "target": .string("auto"), "intensity": .number(0.5), "bassGainDB": .number(3), "cutoffHz": .number(0),
-                "transient": .number(0.5), "harmonicCount": .number(5), "harmonicTolerance": .number(0.05),
-                "timbreLowDBPerOctave": .number(10), "timbreHighDBPerOctave": .number(3),
-                "tightenDryBass": .string("auto"), "outputTrimDB": .number(0)
+                "target": .string("auto"), "intensity": .number(0.5), "cutoffHz": .number(80),
+                "retainsRealBass": .boolean(true), "impact": .number(0.5)
             ]),
-            "algorithm": .string("Independent bass shelf plus tonal/transient separation based on Moliner, Rämö & Välimäki (DAFx 2020) at 4096 Hz. Level-normalized transient harmonics and phase-coherent consecutive tonal partials follow the selected source cutoff. Timbre matching is anchored at the first audible generated partial; output rolls off below 800 Hz. Added bass has a smooth peak knee when the safety limiter is enabled."),
+            "algorithm": .string("Dual-envelope level-normalized nonlinear distortion (NLD) with smooth C-infinity triode saturation and adaptive cutoff-drive linking. Uses 36 dB/oct excursion protection filter and post-LP tracking with soft saturation ceiling."),
             "levelReference": .string("Program level; chain gain staging does not change the effect."),
             "sourceApplicability": .string("Confirmed mono/stereo, or explicit frontPair for multichannel."),
-            "declaredLatencySeconds": .number(0.22),
-            "latencyCondition": .string("Virtual amount above zero; bass-gain-only mode has zero latency."),
+            "declaredLatencyFramesWhenActive": .number(0),
             "peakGuarantee": .string("unavailable")
         ]),
         .object([
@@ -316,7 +319,7 @@ public enum AutomationDSPToolCatalog {
             "quality": .array([.string("standard")]), "parameters": stereoWidthParametersSchema,
             "defaultChannelPolicy": .string("frontPair"), "defaultQuality": .string("standard"),
             "parameterDefaults": .object([
-                "width": .number(1.4), "crossoverHz": .number(150), "lowWidthRatio": .number(0.2),
+                "width": .number(2), "crossoverHz": .number(150), "lowWidthRatio": .number(0.2),
                 "maximumSideRatio": .number(1), "loudnessMatchEnabled": .boolean(true), "outputTrimDB": .number(0)
             ]),
             "sourceApplicability": .string("Confirmed front L/R pair; mono and unknown layouts bypass."),
@@ -328,7 +331,7 @@ public enum AutomationDSPToolCatalog {
             "quality": .array([.string("standard")]), "parameters": crossfeedParametersSchema,
             "defaultChannelPolicy": .string("frontPair"), "defaultQuality": .string("standard"),
             "parameterDefaults": .object([
-                "strength": .string("medium"), "cutoffHz": .number(700), "feedDB": .number(6)
+                "strength": .string("light"), "cutoffHz": .number(650), "feedDB": .number(9.5)
             ]),
             "algorithm": .string("Bauer stereophonic-to-binaural crossfeed after libbs2b."),
             "sourceApplicability": .string("Confirmed front L/R pair; mono and unknown layouts bypass."),
@@ -341,8 +344,8 @@ public enum AutomationDSPToolCatalog {
             "defaultChannelPolicy": .string("frontPair"), "defaultQuality": .string("standard"),
             "parameterDefaults": .object([
                 "source": .string("room"), "room": .string("none"), "distanceM": .number(2),
-                "speakerAngleDeg": .number(30), "impulseResponseID": .string(""), "impulseResponseName": .string(""),
-                "mix": .number(1), "loudnessMatchEnabled": .boolean(true), "outputTrimDB": .number(0)
+                "speakerAngleDeg": .number(36), "impulseResponseID": .string(""), "impulseResponseName": .string(""),
+                "mix": .number(0.5), "loudnessMatchEnabled": .boolean(true), "outputTrimDB": .number(0)
             ]),
             "algorithm": .string("Partitioned convolution of energy-windowed system HRTFs (spherical-head fallback), direct-speaker centre equalization and an optional listening room, or an imported response; disables system spatialization while active."),
             "sourceApplicability": .string("Confirmed front L/R pair; mono and unknown layouts bypass."),
@@ -356,9 +359,9 @@ public enum AutomationDSPToolCatalog {
             "quality": .array([.string("standard")]), "parameters": reverbParametersSchema,
             "defaultChannelPolicy": .string("fullRange"), "defaultQuality": .string("standard"),
             "parameterDefaults": .object([
-                "space": .string("room"), "size": .number(0.5), "mix": .number(0.15), "tone": .number(0),
-                "preDelayMs": .number(8), "lowCutHz": .number(150), "width": .number(1),
-                "lowDecayRatio": .number(1.15), "highDecayRatio": .number(0.55)
+                "space": .string("hall"), "size": .number(0.5), "mix": .number(0.3), "tone": .number(0),
+                "preDelayMs": .number(24), "lowCutHz": .number(150), "width": .number(1),
+                "lowDecayRatio": .number(1.3), "highDecayRatio": .number(0.5)
             ]),
             "algorithm": .string("Diffused Householder FDN with three-band absorption, or Dattorro plate; wet calibrated to pink-noise power."),
             "sourceApplicability": .string("Confirmed mono/stereo, or explicit frontPair for multichannel."),
@@ -371,8 +374,8 @@ public enum AutomationDSPToolCatalog {
             "parameters": tubeParametersSchema,
             "defaultChannelPolicy": .string("fullRange"), "defaultQuality": .string("oversampling2x"),
             "parameterDefaults": .object([
-                "mode": .string("classic"), "driveDB": .number(6), "bias": .number(0.15), "mix": .number(0.5),
-                "hifiAmount": .number(0.4), "inputTrimDB": .number(0), "outputTrimDB": .number(0),
+                "mode": .string("hifi"), "driveDB": .number(8), "bias": .number(0.25), "mix": .number(0.75),
+                "hifiAmount": .number(1), "inputTrimDB": .number(0), "outputTrimDB": .number(0),
                 "dcRemovalEnabled": .boolean(true), "dcBlockHz": .number(10)
             ]),
             "levelReference": .string("Program level; chain gain staging does not change the saturation."),
@@ -385,14 +388,10 @@ public enum AutomationDSPToolCatalog {
             "quality": .array([.string("standard")]), "parameters": compressorParametersSchema,
             "defaultChannelPolicy": .string("fullRange"), "defaultQuality": .string("standard"),
             "parameterDefaults": .object([
-                "style": .string("gentle"), "speed": .string("medium"),
-                "lowCrossoverHz": .number(200), "highCrossoverHz": .number(2_500),
-                "bands": .object([
-                    "low": .object(["thresholdDB": .number(-24), "ratio": .number(2), "gainDB": .number(0)]),
-                    "mid": .object(["thresholdDB": .number(-22), "ratio": .number(1.8), "gainDB": .number(0)]),
-                    "high": .object(["thresholdDB": .number(-26), "ratio": .number(2), "gainDB": .number(0)]),
-                    "master": .object(["thresholdDB": .number(-14), "ratio": .number(1.5), "gainDB": .number(0)])
-                ]),
+                "style": .string("night"),
+                "lowCrossoverHz": .number(180), "highCrossoverHz": .number(4_000),
+                "bands": defaultCompressorBands, "customBands": defaultCompressorBands,
+                "customLowCrossoverHz": .number(180), "customHighCrossoverHz": .number(4_000),
                 "kneeDB": .number(6), "lookaheadMs": .number(0), "loudnessMatchEnabled": .boolean(true),
                 "outputTrimDB": .number(0)
             ]),

@@ -45,6 +45,7 @@ struct AutomationDSPHandler {
                     ]),
                     "scope": .string("app"), "renderer": .string("AVSampleBufferAudioRenderer"),
                     "builtInPresetID": .string(DSPPresetDocument.flatPresetID.uuidString),
+                    "defaultPresetID": .string(DSPPresetDocument.defaultPresetID.uuidString),
                     "globalsExcluded": .array([.string("playPauseFade"), .string("loudnessNormalization"), .string("deviceListeningReferences")])
                 ]), for: request)
             case AutomationMethod.dspState:
@@ -86,7 +87,7 @@ struct AutomationDSPHandler {
                 return result(.object([
                     "presets": try value(Array(controller.presets.dropFirst(offset).prefix(limit))),
                     "total": .number(Double(controller.presets.count)),
-                    "builtInPresetIDs": .array([.string(DSPPresetDocument.flatPresetID.uuidString)]),
+                    "builtInPresetIDs": .array(DSPPresetDocument.builtInPresets.map { .string($0.presetID.uuidString) }),
                     "selectedPresetID": controller.selectedPresetID.map { .string($0.uuidString) } ?? .null,
                     "isModified": .boolean(controller.isModified),
                     "deviceProfiles": deviceProfiles()
@@ -332,7 +333,7 @@ struct AutomationDSPHandler {
     }
 
     private func mutablePreset(_ id: UUID, parameters: AutomationParameters, controller: AudioDSPController) async throws -> DSPPresetDocument {
-        guard id != DSPPresetDocument.flatPresetID else { throw DSPPresetStoreError.immutableBuiltIn }
+        guard !DSPPresetDocument.isBuiltIn(id) else { throw DSPPresetStoreError.immutableBuiltIn }
         return try await checkedPreset(id, parameters: parameters, controller: controller)
     }
 

@@ -339,6 +339,17 @@ nonisolated enum EqualLoudnessCalibrationGuide {
     nonisolated static let snapCapture = 0.02
     nonisolated static let snapRelease = 0.03
 
+    /// Smooth in log volume so the quiet-to-loud step does not front-load
+    /// most of the perceived increase. Exact endpoints include silence.
+    nonisolated static func rampScalar(from start: Double, to target: Double, progress: Double) -> Double {
+        let t = min(1, max(0, progress))
+        if t == 0 { return start }
+        if t == 1 { return target }
+        let eased = t * t * (3 - 2 * t)
+        let floor = 0.0001
+        return exp(log(max(start, floor)) * (1 - eased) + log(max(target, floor)) * eased)
+    }
+
     /// Suggested slider position for `step`, given the scalars recorded for
     /// the steps before it.
     nonisolated static func suggestedScalar(step: Int, recorded: [Double]) -> Double {

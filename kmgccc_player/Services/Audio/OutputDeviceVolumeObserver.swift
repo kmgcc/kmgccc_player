@@ -17,6 +17,7 @@ import Observation
 @MainActor
 final class OutputDeviceVolumeObserver {
     private(set) var state: OutputDeviceVolumeState = .unknown
+    private(set) var isRampingVolume = false
 
     @ObservationIgnored var onChange: (@MainActor (OutputDeviceVolumeState) -> Void)?
     @ObservationIgnored private var deviceUID: String?
@@ -24,6 +25,8 @@ final class OutputDeviceVolumeObserver {
     @ObservationIgnored private var listener: AudioObjectPropertyListenerBlock?
     @ObservationIgnored private var listenedAddresses: [AudioObjectPropertyAddress] = []
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var volumeRampTask: Task<Void, Never>?
+    @ObservationIgnored private var isWritingRampVolume = false
 
     /// Volume-key presses arrive as bursts; one refresh covers a burst.
     private static let coalescingInterval: Duration = .milliseconds(40)
@@ -39,6 +42,7 @@ final class OutputDeviceVolumeObserver {
             refreshNow()
             return
         }
+        cancelVolumeRamp()
         removeListeners()
         deviceUID = uid
         deviceID = device?.deviceID
@@ -50,6 +54,57 @@ final class OutputDeviceVolumeObserver {
     /// unmuted, as the system volume keys do.
     @discardableResult
     func setScalar(_ value: Double) -> Bool {
+        cancelVolumeRamp()
+        return writeScalar(value)
+    }
+
+    /// Automatic increases glide; decreases and explicit slider edits remain immediate.
+    func rampScalar(to target: Double, completion: @escaping @MainActor () -> Void) {
+        cancelVolumeRamp()
+        guard let reading = state.reading, reading.isWritable else { return }
+        let target = min(1, max(0, target))
+        let start = reading.isMuted ? 0 : reading.scalar
+        guard target > start else {
+            if writeScalar(target) { completion() }
+            return
+        }
+        isRampingVolume = true
+        volumeRampTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for step in 0...80 {
+                guard !Task.isCancelled else { return }
+                // Read before writing so volume keys can interrupt even while
+                // ramp writes keep coalescing the property-listener callbacks.
+                self.refreshNow()
+                guard !Task.isCancelled else { return }
+                let progress = Double(step) / 80
+                let value = EqualLoudnessCalibrationGuide.rampScalar(from: start, to: target, progress: progress)
+                self.isWritingRampVolume = true
+                let wrote = self.writeScalar(value)
+                self.isWritingRampVolume = false
+                guard wrote else {
+                    self.cancelVolumeRamp()
+                    return
+                }
+                if progress >= 1 {
+                    self.volumeRampTask = nil
+                    self.isRampingVolume = false
+                    completion()
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(20)) }
+                catch { return }
+            }
+        }
+    }
+
+    func cancelVolumeRamp() {
+        volumeRampTask?.cancel()
+        volumeRampTask = nil
+        isRampingVolume = false
+    }
+
+    private func writeScalar(_ value: Double) -> Bool {
         guard let deviceID else { return false }
         let clamped = Float32(min(1, max(0, value)))
         var wrote = false
@@ -95,6 +150,8 @@ final class OutputDeviceVolumeObserver {
             next = .unavailable(deviceUID: deviceUID, deviceName: nil)
         }
         guard next != state else { return }
+        // A hardware key or another app takes precedence over an automatic rise.
+        if isRampingVolume, !isWritingRampVolume { cancelVolumeRamp() }
         state = next
         onChange?(next)
     }

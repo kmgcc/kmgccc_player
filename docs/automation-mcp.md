@@ -217,7 +217,7 @@ manifest `tracks[].audioPath`，先相对 bundle 根目录解析；metadata 导�
 ## DSP 与完整预设
 
 P1–P2 的 `dsp.*` 工具通过 App 唯一 `AudioDSPController` 操作 renderer 前的音效。
-`dsp.schema` 返回当前支持的九段 EQ 参数合同，`dsp.state` 返回完整配置、当前格式、
+`dsp.schema` 返回当前支持的十段 EQ 参数合同，`dsp.state` 返回完整配置、当前格式、
 `desiredRevision`／`preparedRevision`／`effectiveRevision`／`audibleRevision` 和诊断。
 `dsp.validate` 无副作用；`dsp.patch` 接受完整 `configuration` 或有序 `operations`，
 在全部参数通过后原子提交。`expectedRevision` 使用 `dsp.state.desiredRevision`。
