@@ -586,6 +586,7 @@ private struct HomePreferenceRankingView: View {
 }
 
 private struct HomeRankRow: View {
+    @Environment(LibraryViewModel.self) private var libraryVM
     let rank: Int
     let item: HomeViewModel.PreferenceRankItem
     var dense: Bool = false
@@ -674,7 +675,10 @@ private struct HomeRankRow: View {
         .onTapGesture {
             play()
         }
-        .contextMenu {
+        .libraryTrackDrag(title: item.title) {
+            LibraryTrackDragPayload(sessionID: libraryVM.trackDragSessionID, trackIDs: [item.track.id])
+        }
+        .contextMenuWithVisibleIcons {
             TrackActionMenuContent(
                 track: item.track,
                 selectedPlaylistID: nil,

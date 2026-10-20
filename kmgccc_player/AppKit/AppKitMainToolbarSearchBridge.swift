@@ -203,6 +203,21 @@ final class AppKitMainToolbarSearchBridge: NSObject, NSSearchFieldDelegate {
         }
     }
 
+    func editingSelection(in window: NSWindow) -> NSRange? {
+        guard let searchField, let editor = searchField.currentEditor() as? NSTextView,
+              window.firstResponder === editor else { return nil }
+        return editor.selectedRange()
+    }
+
+    func restoreEditingSelection(_ range: NSRange, in window: NSWindow) {
+        guard window.isKeyWindow, let searchField else { return }
+        window.makeFirstResponder(searchField)
+        guard let editor = searchField.currentEditor() as? NSTextView else { return }
+        let length = (searchField.stringValue as NSString).length
+        let location = min(range.location, length)
+        editor.setSelectedRange(NSRange(location: location, length: min(range.length, length - location)))
+    }
+
     @objc
     private func handleSearchChange(_ sender: NSSearchField) {
         delegate?.toolbarSearchBridge(

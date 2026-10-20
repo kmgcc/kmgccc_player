@@ -23,7 +23,7 @@ struct FullscreenSkinArtworkArea: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .offset(x: -groupLeftShift)
         .contentShape(Rectangle())
-        .contextMenu {
+        .contextMenuWithVisibleIcons {
             FullscreenSkinContextMenu(
                 onShowDetails: onShowDetails,
                 onRefreshLyricsColors: onRefreshLyricsColors

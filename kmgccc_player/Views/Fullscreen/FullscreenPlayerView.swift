@@ -288,7 +288,7 @@ struct FullscreenPlayerView: View {
             )
         )
         .contentShape(Rectangle())
-        .contextMenu(menuItems: fullscreenContextMenu)
+        .contextMenuWithVisibleIcons(menuItems: fullscreenContextMenu)
         .sheet(item: $trackToEdit, content: trackEditSheet)
         .sheet(isPresented: $isShowingExternalMatchEditor, content: externalMatchEditorSheet)
         .onAppear(perform: handleFullscreenAppear)
@@ -1201,6 +1201,13 @@ struct FullscreenPlayerView: View {
             }
         }()
 
+        let volumeOverlayForeground = panoramicArtworkVolumeForegroundProfile
+        let volumeOverlayGlassStyle = FullscreenControlsGlassStyle(
+            colorScheme: volumeOverlayForeground.complementaryGlassColorScheme,
+            accentColor: fullscreenControlsGlassStyle.accentColor,
+            materialStyle: fullscreenControlsGlassStyle.materialStyle
+        )
+
         ZStack {
             ZStack {
                 PanoramicArtworkVolumeScrollArea(
@@ -1210,7 +1217,11 @@ struct FullscreenPlayerView: View {
                 )
 
                 if isPanoramicVolumeHUDVisible {
-                    panoramicVolumeHUD(scale: artworkBounds.scale)
+                    panoramicVolumeHUD(
+                        scale: artworkBounds.scale,
+                        foregroundProfile: volumeOverlayForeground,
+                        glassStyle: volumeOverlayGlassStyle
+                    )
                         .transition(
                             motionPolicy != .full
                                 ? .opacity
@@ -1222,9 +1233,9 @@ struct FullscreenPlayerView: View {
                     ScrollWheelVolumeTipView(
                         onClose: dismissScrollWheelVolumeTip,
                         scale: artworkBounds.scale,
-                        glassStyle: fullscreenControlsGlassStyle,
-                        foregroundColor: fullscreenMiniPlayerPrimaryColor,
-                        blendMode: fullscreenMiniPlayerIconBlendMode
+                        glassStyle: volumeOverlayGlassStyle,
+                        foregroundColor: volumeOverlayForeground.primaryColor.opacity(0.96),
+                        blendMode: volumeOverlayForeground.iconBlendMode
                     )
                     .transition(
                         motionPolicy != .full
@@ -1241,7 +1252,11 @@ struct FullscreenPlayerView: View {
         .motionAnimation(.microInteraction, value: isPanoramicVolumeHUDVisible)
     }
 
-    private func panoramicVolumeHUD(scale: CGFloat) -> some View {
+    private func panoramicVolumeHUD(
+        scale: CGFloat,
+        foregroundProfile: FullscreenMiniPlayerForegroundProfile,
+        glassStyle: FullscreenControlsGlassStyle
+    ) -> some View {
         let percentage = Int((panoramicVolumeHUDValue * 100).rounded())
 
         return HStack(spacing: 12 * scale) {
@@ -1257,19 +1272,19 @@ struct FullscreenPlayerView: View {
                 .motionAnimation(.contentReplacement, value: percentage)
                 .frame(width: 86 * scale)
         }
-        .foregroundStyle(fullscreenMiniPlayerPrimaryColor)
+        .foregroundStyle(foregroundProfile.primaryColor.opacity(0.96))
         .compositingGroup()
-        .blendMode(fullscreenMiniPlayerIconBlendMode)
+        .blendMode(foregroundProfile.iconBlendMode)
         .frame(width: 184 * scale, height: 58 * scale)
         .contentShape(Capsule())
         .liquidGlassPill(
-            colorScheme: fullscreenControlsGlassStyle.colorScheme,
+            colorScheme: glassStyle.colorScheme,
             accentColor: nil as Color?,
             prominence: .standard,
-            materialStyle: fullscreenControlsGlassStyle.materialStyle,
+            materialStyle: glassStyle.materialStyle,
             isFloating: true
         )
-        .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
+        .environment(\.colorScheme, glassStyle.colorScheme)
         .allowsHitTesting(false)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Volume")
@@ -1837,6 +1852,29 @@ struct FullscreenPlayerView: View {
             localArtworkPolarity: fullscreenLocalArtworkPolarity,
             hasArtworkThemeColor: themeStore.hasArtworkThemeColor,
             controlForeground: fullscreenSkinDescriptor.presentation.controlForeground,
+            colorScheme: colorScheme,
+            materialStyle: materialStyle,
+            fullscreenArtBackgroundEnabled: settings.fullscreenArtBackgroundEnabled
+        )
+    }
+
+    /// The volume HUD and its first-use tip sit directly over the artwork, so
+    /// the Classic, Rotating Cover, and Cassette chrome plus Apple Style's
+    /// fixed-light palette follow the shared whole-cover polarity. Other skin
+    /// foreground policies keep their existing profile.
+    private var panoramicArtworkVolumeForegroundProfile: FullscreenMiniPlayerForegroundProfile {
+        let controlForeground = fullscreenSkinDescriptor.presentation.controlForeground
+        guard controlForeground == .chrome || controlForeground == .fixedLight else {
+            return fullscreenMiniPlayerForegroundProfile
+        }
+
+        let materialStyle: LiquidGlassPillMaterialStyle =
+            settings.fullscreenMiniPlayerGlassMaterial == .normal ? .normal : .clear
+        return FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: themeStore.semanticPalette,
+            localArtworkPolarity: nil,
+            hasArtworkThemeColor: themeStore.hasArtworkThemeColor,
+            controlForeground: .artworkAdaptive,
             colorScheme: colorScheme,
             materialStyle: materialStyle,
             fullscreenArtBackgroundEnabled: settings.fullscreenArtBackgroundEnabled

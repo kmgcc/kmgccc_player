@@ -233,7 +233,7 @@ struct HomePlaylistsSection: View {
                 )
                 .frame(width: featuredW)
                 .onTapGesture { navigate(to: featured) }
-                .contextMenu { playlistContextMenu(for: featured) }
+                .contextMenuWithVisibleIcons { playlistContextMenu(for: featured) }
 
                 VStack(spacing: gridSpacing) {
                     HomePlaylistCard(
@@ -244,7 +244,7 @@ struct HomePlaylistsSection: View {
                         subtitleColor: subtitleColor
                     )
                     .onTapGesture { navigate(to: sideA) }
-                    .contextMenu { playlistContextMenu(for: sideA) }
+                    .contextMenuWithVisibleIcons { playlistContextMenu(for: sideA) }
                     HomePlaylistCard(
                         playlist: sideB,
                         mode: mode,
@@ -253,7 +253,7 @@ struct HomePlaylistsSection: View {
                         subtitleColor: subtitleColor
                     )
                     .onTapGesture { navigate(to: sideB) }
-                    .contextMenu { playlistContextMenu(for: sideB) }
+                    .contextMenuWithVisibleIcons { playlistContextMenu(for: sideB) }
                 }
                 .frame(width: sideW, height: featuredH)
             }
@@ -303,7 +303,7 @@ struct HomePlaylistsSection: View {
                     titleColor: titleColor, subtitleColor: subtitleColor
                 )
                 .onTapGesture { navigate(to: playlist) }
-                .contextMenu { playlistContextMenu(for: playlist) }
+                .contextMenuWithVisibleIcons { playlistContextMenu(for: playlist) }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -379,7 +379,7 @@ struct HomePlaylistsSection: View {
             )
                 .frame(width: leftCardWidth)
                 .onTapGesture { navigate(to: items[leftIndex]) }
-                .contextMenu { playlistContextMenu(for: items[leftIndex]) }
+                .contextMenuWithVisibleIcons { playlistContextMenu(for: items[leftIndex]) }
 
             if rightIndex < items.count {
                 HomePlaylistCard(
@@ -388,7 +388,7 @@ struct HomePlaylistsSection: View {
                 )
                 .frame(width: rightColumnWidth)
                 .onTapGesture { navigate(to: items[rightIndex]) }
-                .contextMenu { playlistContextMenu(for: items[rightIndex]) }
+                .contextMenuWithVisibleIcons { playlistContextMenu(for: items[rightIndex]) }
             } else if shouldExpandTrailingItem {
                 EmptyView()
             } else {
@@ -441,6 +441,7 @@ struct HomePlaylistsSection: View {
             deletionRequest = HomePlaylistDeletionRequest(playlist: playlist)
         } label: {
             Label(NSLocalizedString("edit.playlist.delete", comment: ""), systemImage: "trash")
+                .labelStyle(.titleOnly)
         }
     }
 

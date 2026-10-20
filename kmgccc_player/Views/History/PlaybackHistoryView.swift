@@ -33,6 +33,7 @@ struct PlaybackHistoryView: View {
     @State private var toolbarTopInset: CGFloat = 0
     @State private var trackToEdit: Track?
     @State private var deletionRequest: PlaybackHistoryDeletionRequest?
+    @State private var isNativeTrackDragActive = false
 
     var body: some View {
         let filterDate = uiState.playbackHistoryDate
@@ -104,6 +105,7 @@ struct PlaybackHistoryView: View {
             historyVM.clearMultiselectState()
         }
         .onDisappear {
+            isNativeTrackDragActive = false
             historyVM.clearMultiselectState()
             historyVM.toolbarSectionTitle = nil
         }
@@ -112,7 +114,7 @@ struct PlaybackHistoryView: View {
         }
         .background(
             MultiselectExitKeyMonitor(
-                isEnabled: historyVM.isMultiselectMode,
+                isEnabled: historyVM.isMultiselectMode && !isNativeTrackDragActive,
                 onEscape: {
                     historyVM.clearMultiselectState()
                 },
@@ -122,6 +124,7 @@ struct PlaybackHistoryView: View {
             )
         )
         .onExitCommand {
+            guard !isNativeTrackDragActive else { return }
             if historyVM.isMultiselectMode {
                 historyVM.clearMultiselectState()
             }
@@ -248,6 +251,7 @@ struct PlaybackHistoryView: View {
             hasSelectedEvents: historyVM.hasSelectedEvents,
             playbackCoordinator: playbackCoordinator,
             onTap: { isShiftPressed in
+                if LibraryRowInput.selectionModifiersHeld { historyVM.updateSelectionModifiers(held: true) }
                 // Read the shared model at event time. The row can outlive the
                 // render pass that created its gesture closure, especially
                 // across an AppKit toolbar action that enables multiselect.
@@ -271,6 +275,23 @@ struct PlaybackHistoryView: View {
             rowTertiaryColor: themeStore.appForegroundPalette.tertiaryColor,
             artworkTintMode: settings.artworkTintMode
         )
+        .libraryTrackDrag(
+            isEnabled: tracksByID[item.trackID] != nil,
+            title: tracksByID[item.trackID]?.title ?? item.title,
+            onSessionChanged: { active in
+                if isNativeTrackDragActive != active { isNativeTrackDragActive = active }
+            },
+            onPlaylistDropCompleted: { historyVM.clearMultiselectState() }
+        ) {
+            let selectedItems = historyVM.selectedEventIDs.contains(item.id)
+                ? historyVM.visibleItems.filter { historyVM.selectedEventIDs.contains($0.id) }
+                : [item]
+            return LibraryTrackDragPayload(
+                sessionID: libraryVM.trackDragSessionID,
+                sourceSelectionIdentity: "playback-history",
+                trackIDs: selectedItems.compactMap { tracksByID[$0.trackID]?.id }
+            )
+        }
     }
 
     @ViewBuilder

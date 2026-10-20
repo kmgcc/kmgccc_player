@@ -14,6 +14,7 @@ import SwiftUI
 
 /// Queue view for fullscreen player with Liquid Glass styling
 struct FullscreenQueueView: View {
+    @Environment(LibraryViewModel.self) private var libraryVM
     let tracks: [Track]
     let currentTrackID: UUID?
     let playbackMode: PlaybackOrderMode
@@ -162,6 +163,9 @@ struct FullscreenQueueView: View {
                         .id(track.id)
                         .onTapGesture {
                             onTrackTap(track)
+                        }
+                        .libraryTrackDrag(title: track.title) {
+                            LibraryTrackDragPayload(sessionID: libraryVM.trackDragSessionID, trackIDs: [track.id])
                         }
                     }
 

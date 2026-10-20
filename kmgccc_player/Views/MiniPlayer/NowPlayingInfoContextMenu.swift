@@ -28,6 +28,16 @@ struct TrackDeletionConfirmationRequest: Identifiable {
 }
 
 extension View {
+    /// Keeps SF Symbol icons visible in SwiftUI context menus on macOS 27.
+    func contextMenuWithVisibleIcons<MenuItems: View>(
+        @ViewBuilder menuItems: @escaping () -> MenuItems
+    ) -> some View {
+        contextMenu {
+            menuItems()
+                .labelStyle(.titleAndIcon)
+        }
+    }
+
     func trackDeletionConfirmation(
         item: Binding<TrackDeletionConfirmationRequest?>,
         onConfirm: @escaping ([Track]) -> Void
@@ -200,6 +210,7 @@ struct TrackActionMenuContent: View {
             playlistSubmenuContent
         } label: {
             Label("添加到播放列表...", systemImage: "plus.circle")
+                .labelStyle(.titleOnly)
         }
         .id("single_add_to_playlist_\(libraryVM.playlists.count)")
 
@@ -210,6 +221,7 @@ struct TrackActionMenuContent: View {
                 }
             } label: {
                 Label("从当前播放列表移除", systemImage: "minus.circle")
+                    .labelStyle(.titleOnly)
             }
         }
 
@@ -276,6 +288,7 @@ struct TrackActionMenuContent: View {
                 ContextMenuDiagnostics.end(token)
             } label: {
                 Label("从资料库删除", systemImage: "trash")
+                    .labelStyle(.titleOnly)
             }
         }
     }
@@ -312,6 +325,7 @@ struct TrackActionMenuContent: View {
                     }
                 } label: {
                     Label(playlist.name, systemImage: "music.note.list")
+                        .labelStyle(.titleOnly)
                 }
             }
         }
@@ -333,6 +347,7 @@ struct TrackActionMenuContent: View {
             }
         } label: {
             Label("新建播放列表", systemImage: "plus")
+                .labelStyle(.titleOnly)
         }
     }
 

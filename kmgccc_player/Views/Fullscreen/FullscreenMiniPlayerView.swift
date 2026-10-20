@@ -226,6 +226,7 @@ struct FullscreenMiniPlayerView: View {
             isFloating: true
         )
         .animation(nil, value: resolvedForegroundProfile)
+        .libraryTrackDropTarget(.playNow, cornerRadius: barHeight / 2)
         .onHover { hovering in
             isMiniPlayerHovering = hovering
             onHoverStateChanged(hovering)
@@ -739,7 +740,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .contextMenu {
+        .contextMenuWithVisibleIcons {
             // Closure is lazy — evaluated only when NSMenu appears, not during body computation.
             nowPlayingInfoContextMenu
         }

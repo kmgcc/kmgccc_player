@@ -301,7 +301,7 @@ private struct HomeAlbumCard: View {
             isFloating: false
         )
         .onTapGesture(perform: onOpen)
-        .contextMenu {
+        .contextMenuWithVisibleIcons {
             Button(action: onPlay) {
                 Label("播放该专辑", systemImage: "play.fill")
             }
@@ -317,6 +317,7 @@ private struct HomeAlbumCard: View {
 
             Button(role: .destructive, action: onDelete) {
                 Label("删除专辑", systemImage: "trash")
+                    .labelStyle(.titleOnly)
             }
         }
         .task {

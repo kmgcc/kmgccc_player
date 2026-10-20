@@ -275,7 +275,7 @@ private struct HomeArtistCircle: View {
             isFloating: false
         )
         .onTapGesture(perform: onOpen)
-        .contextMenu {
+        .contextMenuWithVisibleIcons {
             Button(action: onPlay) {
                 Label("播放该艺人", systemImage: "play.fill")
             }
@@ -291,6 +291,7 @@ private struct HomeArtistCircle: View {
 
             Button(role: .destructive, action: onDelete) {
                 Label("删除艺人", systemImage: "trash")
+                    .labelStyle(.titleOnly)
             }
         }
         .task {

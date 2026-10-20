@@ -5,7 +5,7 @@ import XCTest
 @MainActor
 final class SeamlessMarqueeTimingTests: XCTestCase {
     func testBothTextInitializersUseTheSlowerRateAndReadablePause() {
-        let styled = SeamlessMarqueeText(text: "Title")
+        let styled = SeamlessMarqueeText(text: "Title", style: .body, fontWeight: .regular, color: .primary)
         let scaled = SeamlessMarqueeText(text: "Title", fontSize: 18)
         XCTAssertEqual(styled.speed, 24)
         XCTAssertEqual(scaled.speed, 24)
