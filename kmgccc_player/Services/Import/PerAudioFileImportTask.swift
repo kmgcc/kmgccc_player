@@ -54,7 +54,15 @@ nonisolated enum PerAudioFileImportTask {
             }
             return await ImportMetadataExtractor.extractArtwork(from: candidate.fileURL)
         }()
-        async let embeddedLyricsTask = Self.prepareEmbeddedTTMLLyrics(candidate.metadata.lyrics)
+        // Managed NCM progress IDs retain the encrypted source path;
+        // fileURL points to a temporary decrypted audio product.
+        let originalSourceURL = placement.storageKind == .managed
+            && URL(fileURLWithPath: candidate.progressID).pathExtension.lowercased() == "ncm"
+            ? URL(fileURLWithPath: candidate.progressID) : candidate.fileURL
+        async let localLyricsTask = LocalLyricsImporter.ttmlForImportedAudio(
+            at: originalSourceURL,
+            embeddedLyrics: candidate.metadata.lyrics
+        )
 
         do {
             try await cancellationToken.checkCancellation()
@@ -65,7 +73,7 @@ nonisolated enum PerAudioFileImportTask {
             try await cancellationToken.checkCancellation()
 
             let artworkData = await extractedArtworkTask
-            let ttmlLyricText = await embeddedLyricsTask
+            let ttmlLyricText = await localLyricsTask
             try await cancellationToken.checkCancellation()
 
             // §9.2: technical properties of the physical file. NCM outputs
@@ -76,11 +84,6 @@ nonisolated enum PerAudioFileImportTask {
                     for: candidate.fileURL,
                     durationSeconds: candidate.metadata.duration
                 )
-            // Managed NCM progress IDs retain the encrypted source path;
-            // fileURL points to a temporary decrypted audio product.
-            let originalSourceURL = placement.storageKind == .managed
-                && URL(fileURLWithPath: candidate.progressID).pathExtension.lowercased() == "ncm"
-                ? URL(fileURLWithPath: candidate.progressID) : candidate.fileURL
             let mediaLocator: TrackMediaLocator
             switch placement {
             case .managed(_, let relativePath):
@@ -144,7 +147,7 @@ nonisolated enum PerAudioFileImportTask {
             )
         } catch is CancellationError {
             let _ = await extractedArtworkTask
-            let _ = await embeddedLyricsTask
+            let _ = await localLyricsTask
             return ImportTaskOutput(
                 index: index,
                 trackID: trackId,
@@ -163,7 +166,7 @@ nonisolated enum PerAudioFileImportTask {
             )
         } catch {
             let _ = await extractedArtworkTask
-            let _ = await embeddedLyricsTask
+            let _ = await localLyricsTask
             return ImportTaskOutput(
                 index: index,
                 trackID: trackId,
@@ -180,32 +183,6 @@ nonisolated enum PerAudioFileImportTask {
                 needsAlbumArtworkEnrichment: false,
                 errorDescription: error.localizedDescription
             )
-        }
-    }
-
-    nonisolated private static func prepareEmbeddedTTMLLyrics(_ embeddedLyrics: String?) async -> String? {
-        guard let embeddedLyrics, !embeddedLyrics.isEmpty else { return nil }
-        guard !Task.isCancelled else { return nil }
-        if let ttml = LyricsFormatSupport.normalizedTTMLText(embeddedLyrics) {
-            return ttml
-        }
-        guard LyricsFormatSupport.looksLikeLRC(embeddedLyrics) else {
-            Log.warning("[Import] embedded lyrics skipped: unsupported non-TTML/non-LRC format", category: .lyrics)
-            return nil
-        }
-        do {
-            let converted = try await TTMLConverter.shared.convertToTTML(
-                rawLyrics: embeddedLyrics,
-                stripMetadata: true
-            )
-            guard let ttml = LyricsFormatSupport.normalizedTTMLText(converted) else {
-                Log.warning("[Import] embedded lyrics conversion produced invalid TTML", category: .lyrics)
-                return nil
-            }
-            return ttml
-        } catch {
-            Log.warning("[Import] embedded lyrics conversion failed: \(error.localizedDescription)", category: .lyrics)
-            return nil
         }
     }
 

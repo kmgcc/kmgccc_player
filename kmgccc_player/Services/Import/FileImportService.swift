@@ -122,6 +122,10 @@ final class FileImportService: FileImportServiceProtocol {
 
     static let supportedUTTypes: [UTType] = AudioFormatSupport.openPanelContentTypes
 
+    // macOS 27 derives directory selection from allowedContentTypes. Mixed
+    // import pickers need folders; file-only relinking keeps supportedUTTypes.
+    static let importSelectionContentTypes: [UTType] = supportedUTTypes + [.folder]
+
     private let repository: LibraryRepositoryProtocol
     private let libraryService: LocalLibraryService
     nonisolated let paths: LibraryPaths
@@ -254,7 +258,7 @@ final class FileImportService: FileImportServiceProtocol {
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = Self.supportedUTTypes
+        panel.allowedContentTypes = Self.importSelectionContentTypes
         panel.resolvesAliases = true
         panel.treatsFilePackagesAsDirectories = false
 

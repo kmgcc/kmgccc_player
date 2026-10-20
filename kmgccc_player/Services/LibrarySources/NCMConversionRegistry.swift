@@ -274,7 +274,8 @@ actor NCMConversionRegistry {
         // forever.
         let recovered = Self.retireStalePendingRecords(&decoded, fileManager: fileManager)
         stalePendingRecoveryIDs = recovered
-        if recovered.isEmpty {
+        let droppedCommittedCovers = Self.stripCoverDataForCommittedRecords(&decoded)
+        if recovered.isEmpty && !droppedCommittedCovers {
             journal = decoded
         } else {
             // Best effort: an unwritable journal must not brick every
@@ -283,6 +284,24 @@ actor NCMConversionRegistry {
             try? persist(decoded)
         }
         return decoded
+    }
+
+    /// Covers are only needed until a conversion is committed and its artwork
+    /// has reached the track. Keeping them in the journal makes every later
+    /// launch decode and retain history that can no longer use them: the
+    /// base64 blobs are the largest part of the journal on libraries that have
+    /// imported many NCM files.
+    nonisolated private static func stripCoverDataForCommittedRecords(
+        _ journal: inout NCMConversionJournal
+    ) -> Bool {
+        var changed = false
+        for index in journal.records.indices
+        where journal.records[index].state == .committed
+            && journal.records[index].outputCoverData != nil {
+            journal.records[index].outputCoverData = nil
+            changed = true
+        }
+        return changed
     }
 
     /// Retires reservations left `.pending` by a previous process and returns
@@ -460,6 +479,7 @@ actor NCMConversionRegistry {
             }
             record.trackID = trackID
             record.state = .committed
+            record.outputCoverData = nil
             record.errorSummary = nil
             record.updatedAt = Date()
         }

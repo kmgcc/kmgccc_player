@@ -373,6 +373,7 @@ struct LyricsPanelView: View {
 // MARK: - Window Playback Queue
 
 struct WindowPlaybackQueuePanelView: View {
+    @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(UIStateViewModel.self) private var uiState
@@ -473,6 +474,9 @@ struct WindowPlaybackQueuePanelView: View {
                         .id(track.id)
                         .onTapGesture {
                             playbackCoordinator.playTrackFromQueue(track)
+                        }
+                        .libraryTrackDrag(title: track.title) {
+                            LibraryTrackDragPayload(sessionID: libraryVM.trackDragSessionID, trackIDs: [track.id])
                         }
                     }
 

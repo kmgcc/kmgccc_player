@@ -135,6 +135,7 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
     let mediaLocator: TrackMediaLocator
     let availability: TrackAvailability
     let embeddedMetadataSnapshot: EmbeddedMetadataSnapshot?
+    let userMetadataOverride: UserMetadataOverride?
     let importProvenance: ImportProvenance?
     let audioProperties: TrackAudioProperties?
     let enrichmentSuggestions: [EnrichmentSuggestion]?
@@ -170,6 +171,7 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
         mediaLocator = track.mediaLocator
         availability = track.availability
         embeddedMetadataSnapshot = track.embeddedMetadataSnapshot
+        userMetadataOverride = track.userMetadataOverride
         importProvenance = track.importProvenance
         audioProperties = track.audioProperties
         enrichmentSuggestions = track.enrichmentSuggestions
@@ -800,6 +802,7 @@ final class LocalLibraryService {
             mediaLocator: effectiveLocator,
             availability: availability ?? track.availability,
             embeddedMetadataSnapshot: track.embeddedMetadataSnapshot,
+            userMetadataOverride: track.userMetadataOverride,
             enrichmentSuggestions: track.enrichmentSuggestions,
             importProvenance: track.importProvenance,
             audioProperties: track.audioProperties
@@ -866,6 +869,7 @@ final class LocalLibraryService {
             mediaLocator: snapshot.mediaLocator,
             availability: snapshot.availability,
             embeddedMetadataSnapshot: snapshot.embeddedMetadataSnapshot,
+            userMetadataOverride: snapshot.userMetadataOverride,
             enrichmentSuggestions: snapshot.enrichmentSuggestions,
             importProvenance: snapshot.importProvenance,
             audioProperties: snapshot.audioProperties

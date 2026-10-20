@@ -495,6 +495,40 @@ nonisolated enum LibraryNormalization {
         preferredArtistCanonicalName: String?,
         memberArtistCanonicalNames: [String]
     )] {
+        guard tracks.contains(where: { $0.userMetadataOverride?.albumGroupKey != nil }) else {
+            return splitAutomaticAlbumBucket(tracks)
+        }
+        func assignedKey(_ track: Track) -> String? {
+            track.userMetadataOverride?.albumGroupKey.flatMap {
+                parseAlbumKey($0).normalizedAlbumTitle == normalizedAlbumKey(album: track.album) ? $0 : nil
+            }
+        }
+        // Explicit members must not alter the heuristics that identify their
+        // destination (for example by adding a third artist to a same-title bucket).
+        let automaticGroups = splitAutomaticAlbumBucket(tracks.filter { assignedKey($0) == nil })
+        var assignments: [String: [Track]] = [:]
+        for group in automaticGroups {
+            assignments[group.key, default: []].append(contentsOf: group.tracks)
+        }
+        for track in tracks {
+            if let key = assignedKey(track) { assignments[key, default: []].append(track) }
+        }
+        return assignments.sorted { $0.key < $1.key }.map { key, members in
+            (
+                key: key,
+                tracks: members,
+                preferredArtistCanonicalName: automaticGroups.first { $0.key == key }?.preferredArtistCanonicalName,
+                memberArtistCanonicalNames: memberArtistCanonicalNames(for: members)
+            )
+        }
+    }
+
+    private static func splitAutomaticAlbumBucket(_ tracks: [Track]) -> [(
+        key: String,
+        tracks: [Track],
+        preferredArtistCanonicalName: String?,
+        memberArtistCanonicalNames: [String]
+    )] {
         guard let firstTrack = tracks.first else { return [] }
         let baseKey = normalizedAlbumKey(album: firstTrack.album)
 
