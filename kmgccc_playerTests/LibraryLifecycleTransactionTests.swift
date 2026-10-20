@@ -3,7 +3,7 @@ import XCTest
 
 @MainActor
 final class LibraryLifecycleTransactionTests: XCTestCase {
-    func testCreationBuildsFixedRootAndActivatesProductionTransaction() async throws {
+    func testCreationBuildsNamedRootAndActivatesProductionTransaction() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         let service = fixture.creationService()
@@ -14,7 +14,7 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
             displayName: "Music"
         )
         guard case .created(let context, _) = result else { return XCTFail("Expected creation") }
-        XCTAssertEqual(context.rootURL.lastPathComponent, LibraryPaths.rootDirectoryName)
+        XCTAssertEqual(context.rootURL.lastPathComponent, "kmgccc_player Library - Music")
         XCTAssertTrue(FileManager.default.fileExists(atPath: context.paths.librarySettingsURL.path))
         XCTAssertEqual(fixture.controller.activeLibraryContext?.id, context.id)
         let registry = await fixture.registry.snapshot()
@@ -25,7 +25,7 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         let parent = fixture.root.appendingPathComponent("parent")
-        let destination = parent.appendingPathComponent(LibraryPaths.rootDirectoryName)
+        let destination = parent.appendingPathComponent("kmgccc_player Library - Music")
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         try Data("foreign".utf8).write(to: destination.appendingPathComponent("keep.txt"))
 
@@ -49,7 +49,7 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         let result = try await fixture.creationService().create(
             mode: .managed,
             parentURL: parent,
-            displayName: "Replacement"
+            displayName: "Reference"
         )
         guard case .existingLibraryModeMismatch(let opened, let requested) = result else { return XCTFail() }
         XCTAssertEqual(opened.id, original.id)
@@ -80,13 +80,146 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         XCTAssertEqual(opened.id, original.id)
         XCTAssertFalse(
             FileManager.default.fileExists(
-                atPath: selectedRoot.appendingPathComponent(LibraryPaths.rootDirectoryName).path
+                atPath: selectedRoot.appendingPathComponent("kmgccc_player Library - Should Not Nest").path
             )
         )
         XCTAssertEqual(
             try MusicLibraryManifest.read(from: original.paths.manifestURL).displayName,
             "Reference"
         )
+    }
+
+    func testCreationInLegacyDefaultParentKeepsExistingLibraryUnchanged() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let parent = fixture.root.appendingPathComponent("Music")
+        let legacyRoot = parent.appendingPathComponent(LibraryPaths.rootDirectoryName)
+        let legacy = try fixture.makeLibrary(at: legacyRoot, mode: .referenced, displayName: "旧资料库")
+        let legacyPaths = LibraryPaths(rootURL: legacyRoot)
+        let manifestBefore = try Data(contentsOf: legacyPaths.manifestURL)
+        let settingsBefore = try Data(contentsOf: legacyPaths.librarySettingsURL)
+        _ = try await fixture.openService.open(selectedURL: parent)
+
+        var createdIDs: [UUID] = []
+        for (name, mode) in [("古典", MusicLibraryMode.managed), ("爵士", .referenced)] {
+            let result = try await fixture.creationService().create(
+                mode: mode,
+                parentURL: parent,
+                displayName: name,
+                allowAlternateDestinationWhenOccupied: true
+            )
+            guard case .created(let context, _) = result else { return XCTFail("Expected a new sibling") }
+            XCTAssertEqual(context.rootURL.lastPathComponent, "kmgccc_player Library - \(name)")
+            XCTAssertEqual(context.rootURL.deletingLastPathComponent().path, parent.standardizedFileURL.path)
+            createdIDs.append(context.id)
+        }
+
+        XCTAssertEqual(Set(createdIDs).count, 2)
+        XCTAssertFalse(createdIDs.contains(legacy.libraryID))
+        XCTAssertEqual(try Data(contentsOf: legacyPaths.manifestURL), manifestBefore)
+        XCTAssertEqual(try Data(contentsOf: legacyPaths.librarySettingsURL), settingsBefore)
+        let reopened = try await fixture.openService.open(selectedURL: parent)
+        XCTAssertEqual(reopened.context.id, legacy.libraryID)
+        XCTAssertEqual(reopened.context.rootURL.path, legacyRoot.standardizedFileURL.path)
+        let registry = await fixture.registry.snapshot()
+        XCTAssertEqual(registry.libraries.count, 3)
+    }
+
+    func testFirstRunCreationCanReuseDefaultParentAndNameInEitherMode() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let parent = fixture.root.appendingPathComponent("Music")
+        let service = fixture.creationService()
+        let defaultResult = try await service.create(
+            mode: .referenced,
+            parentURL: parent,
+            displayName: "音乐资料库",
+            allowAlternateDestinationWhenOccupied: true
+        )
+        guard case .created(let original, _) = defaultResult else { return XCTFail() }
+        let manifestBefore = try Data(contentsOf: original.paths.manifestURL)
+        let settingsBefore = try Data(contentsOf: original.paths.librarySettingsURL)
+
+        for (index, mode) in [MusicLibraryMode.managed, .referenced].enumerated() {
+            let result = try await service.create(
+                mode: mode,
+                parentURL: parent,
+                displayName: "音乐资料库",
+                allowAlternateDestinationWhenOccupied: true
+            )
+            guard case .created(let context, _) = result else { return XCTFail("Expected a numbered sibling") }
+            XCTAssertEqual(context.rootURL.lastPathComponent, "kmgccc_player Library - 音乐资料库 \(index + 2)")
+            XCTAssertNotEqual(context.id, original.id)
+            XCTAssertEqual(context.mode, mode)
+            XCTAssertEqual(fixture.controller.activeLibraryContext?.id, context.id)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: original.paths.manifestURL), manifestBefore)
+        XCTAssertEqual(try Data(contentsOf: original.paths.librarySettingsURL), settingsBefore)
+        let registry = await fixture.registry.snapshot()
+        XCTAssertEqual(registry.libraries.count, 3)
+    }
+
+    func testNumberedCreationSkipsOccupiedFoldersWithoutRepairingOrRemovingThem() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let parent = fixture.root.appendingPathComponent("parent")
+        let occupied = parent.appendingPathComponent("kmgccc_player Library - Music")
+        try FileManager.default.createDirectory(at: occupied, withIntermediateDirectories: true)
+        let manifest = kmgccc_player.MusicLibraryManifest(displayName: "Existing", mode: .referenced)
+        try manifest.write(to: LibraryPaths(rootURL: occupied).manifestURL)
+        let manifestBefore = try Data(contentsOf: LibraryPaths(rootURL: occupied).manifestURL)
+        let unknown = parent.appendingPathComponent("kmgccc_player Library - Music 2")
+        try FileManager.default.createDirectory(at: unknown, withIntermediateDirectories: true)
+        let sentinel = unknown.appendingPathComponent("keep.txt")
+        try Data("foreign".utf8).write(to: sentinel)
+
+        let result = try await fixture.creationService().create(
+            mode: .managed,
+            parentURL: parent,
+            displayName: "Music",
+            allowAlternateDestinationWhenOccupied: true
+        )
+        guard case .created(let context, _) = result else { return XCTFail("Expected an available sibling") }
+        XCTAssertEqual(context.rootURL.lastPathComponent, "kmgccc_player Library - Music 3")
+        XCTAssertEqual(try Data(contentsOf: LibraryPaths(rootURL: occupied).manifestURL), manifestBefore)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: LibraryPaths(rootURL: occupied).settingsRootURL.path))
+        XCTAssertEqual(try Data(contentsOf: sentinel), Data("foreign".utf8))
+    }
+
+    func testCreationSanitizesOnlyDirectoryNameAndKeepsFullDisplayName() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let parent = fixture.root.appendingPathComponent("parent")
+        let displayName = "  古典/现场:精选\\收藏\n终版  "
+        let result = try await fixture.creationService().create(
+            mode: .managed,
+            parentURL: parent,
+            displayName: displayName
+        )
+        guard case .created(let context, _) = result else { return XCTFail() }
+        XCTAssertEqual(context.rootURL.lastPathComponent, "kmgccc_player Library - 古典-现场-精选-收藏-终版")
+        XCTAssertEqual(context.rootURL.deletingLastPathComponent().path, parent.standardizedFileURL.path)
+        XCTAssertEqual(
+            try MusicLibraryManifest.read(from: context.paths.manifestURL).displayName,
+            displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        let reopened = try await fixture.openService.open(selectedURL: context.rootURL)
+        XCTAssertEqual(reopened.context.id, context.id)
+    }
+
+    func testCreationWithLongUnicodeNameKeepsFullNameInManifest() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let displayName = String(repeating: "音乐🎵", count: 40)
+        let result = try await fixture.creationService().create(
+            mode: .referenced,
+            parentURL: fixture.root.appendingPathComponent("parent"),
+            displayName: displayName
+        )
+        guard case .created(let context, _) = result else { return XCTFail() }
+        XCTAssertLessThan(context.rootURL.lastPathComponent.utf8.count, 240)
+        XCTAssertEqual(try MusicLibraryManifest.read(from: context.paths.manifestURL).displayName, displayName)
     }
 
     func testOpenDeduplicatesIDRefreshesMovedPathAndRejectsPathConflict() async throws {
@@ -369,7 +502,7 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         _ = try await fixture.openService.open(selectedURL: root, activate: false)
         var registry = await fixture.registry.snapshot()
         XCTAssertTrue(registry.libraries.isEmpty)
-        _ = try await fixture.creationService().create(mode: .managed, parentURL: parent, displayName: "Ignored")
+        _ = try await fixture.creationService().create(mode: .managed, parentURL: root, displayName: "Ignored")
         registry = await fixture.registry.snapshot()
         XCTAssertTrue(registry.libraries.isEmpty)
     }
@@ -433,7 +566,7 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(
             try await fixture.creationService().create(mode: .managed, parentURL: parent, displayName: "New")
         ) { XCTAssertEqual($0 as? LibraryCreationError, .sessionActivationFailed) }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: parent.appendingPathComponent(LibraryPaths.rootDirectoryName).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parent.appendingPathComponent("kmgccc_player Library - New").path))
         let registry = await fixture.registry.snapshot()
         XCTAssertTrue(registry.libraries.isEmpty)
         XCTAssertNil(fixture.controller.activeLibraryContext)

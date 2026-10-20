@@ -320,7 +320,7 @@ struct TrackRowView<MenuContent: View>: View {
             },
             including: .gesture
         )
-        .contextMenu {
+        .contextMenuWithVisibleIcons {
             if enableSecondaryInteractions {
                 menuContent()
             }

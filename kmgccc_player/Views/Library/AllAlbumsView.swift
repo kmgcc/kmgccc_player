@@ -171,6 +171,7 @@ struct AllAlbumsView: View {
                         onEdit: { editingAlbum = album },
                         onDelete: { requestDelete(album) }
                     )
+                    .libraryTrackDropTarget(.album(album.canonicalKey), cornerRadius: 12)
                 },
                 floatingContent: { album in
                     AlbumListRow(
@@ -258,6 +259,7 @@ struct AllAlbumsView: View {
     }
 
     private func handleRowTap(_ album: AlbumEntry) {
+        if LibraryRowInput.selectionModifiersHeld { pageController.updateSelectionModifiers(held: true) }
         if pageController.isMultiselectMode {
             pageController.handleMultiselectItemTap(
                 itemID: album.id,
@@ -344,7 +346,7 @@ private struct AlbumListRow: View {
             onOpen()
         }
         .onHover { isHovering = enableSecondaryInteractions && $0 }
-        .contextMenu {
+        .contextMenuWithVisibleIcons {
             if enableSecondaryInteractions {
                 Button(action: onOpen) {
                     Label("打开专辑", systemImage: "square.stack")
@@ -355,6 +357,7 @@ private struct AlbumListRow: View {
                 Divider()
                 Button(role: .destructive, action: onDelete) {
                     Label("删除专辑", systemImage: "trash")
+                        .labelStyle(.titleOnly)
                 }
             }
         }

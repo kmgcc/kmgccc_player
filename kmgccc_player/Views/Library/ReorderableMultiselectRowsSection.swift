@@ -15,6 +15,7 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
     let isMultiselectMode: Bool
     let selectedIDs: Set<UUID>
     let canReorder: Bool
+    var trackDragPayload: (([UUID]) -> LibraryTrackDragPayload)? = nil
     let isSearchFiltering: Bool
     let coordinateSpaceName: String
     let rowCornerRadius: CGFloat
@@ -32,6 +33,7 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var configuredMotionPolicy
+    @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var visualOrderIDs: [UUID]?
     @State private var rowFrames: [UUID: CGRect] = [:]
@@ -53,6 +55,12 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
     @State private var reorderCoordinateView: NSView?
     @State private var autoScrollTask: Task<Void, Never>?
     @State private var autoScrollVelocity: CGFloat = 0
+    @State private var dragWindowSession: LibraryTrackDragWindowSession?
+    @State private var dragOverlaySessionID: UUID?
+    @State private var isDroppingOutside = false
+    @State private var cancelledUntilMouseUp = false
+    @State private var dragStartRowFrames: [UUID: CGRect] = [:]
+    @GestureState private var isPointerDragging = false
 
     private let dragHorizontalDamping: CGFloat = 0.45
     private let dragHorizontalLimit: CGFloat = 28
@@ -155,7 +163,7 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
                     .zIndex(5)
             }
 
-            if draggingID != nil {
+            if draggingID != nil && dragOverlaySessionID == nil {
                 floatingDragGroup
                     .frame(width: dragContainerWidth, alignment: .topLeading)
                     .offset(x: dragFloatingX, y: dragFloatingY)
@@ -165,7 +173,7 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
         }
         .background(
             MultiselectExitKeyMonitor(
-                isEnabled: isMultiselectMode,
+                isEnabled: isMultiselectMode && dragOverlaySessionID == nil,
                 onEscape: {
                     if draggingID != nil {
                         cancelDrag()
@@ -180,6 +188,7 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
             )
         )
         .onExitCommand {
+            guard dragOverlaySessionID == nil else { return }
             if draggingID != nil {
                 cancelDrag()
             } else if isMultiselectMode {
@@ -187,7 +196,15 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
             }
         }
         .onDisappear {
-            cancelDrag()
+            if let dragOverlaySessionID, dragWindowSession?.isFinishingDrop(dragOverlaySessionID) == true {
+                stopAutoScroll()
+                return
+            }
+            if trackDragPayload != nil {
+                clearDragState(keepVisualOrder: false)
+            } else {
+                cancelDrag()
+            }
             stopAutoScroll()
         }
         .onChange(of: isMultiselectMode ? rows.map(\.id) : []) { _, newIDs in
@@ -201,7 +218,7 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
             rowFrames = rowFrames.filter { validIDs.contains($0.key) }
             if draggingID == nil {
                 visualOrderIDs = nil
-            } else if !isFinishingDrag {
+            } else if !isFinishingDrag && !isDroppingOutside {
                 cancelDrag()
             }
         }
@@ -214,6 +231,9 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
             if isFiltering {
                 cancelDrag()
             }
+        }
+        .onChange(of: isPointerDragging) { _, dragging in
+            if !dragging { cancelledUntilMouseUp = false }
         }
     }
 
@@ -410,17 +430,11 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
                 height: rowHeight(row),
                 alignment: .topLeading
             )
-            .background(
-                shape
-                    .fill(Color(nsColor: .windowBackgroundColor).opacity(0.72))
-                    .glassEffect(.regular, in: shape)
-                    .opacity(dragGlassOpacity)
-            )
+            .modifier(LibraryTrackDragCardSurface(cornerRadius: rowCornerRadius, glassOpacity: dragGlassOpacity))
             .overlay(
                 shape
                     .strokeBorder(Color.white.opacity(0.16 * dragGlassOpacity), lineWidth: 0.8)
             )
-            .clipShape(shape)
     }
 
     @ViewBuilder
@@ -442,7 +456,7 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
             }
             .contentShape(Rectangle())
             .reorderableMultiselectGesture(
-                isReorderEnabled,
+                isReorderEnabled || (isMultiselectMode && trackDragPayload != nil),
                 reorderGesture(for: row)
             )
         }
@@ -468,28 +482,55 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
 
     private func reorderGesture(for row: Row) -> some Gesture {
         DragGesture(minimumDistance: 2, coordinateSpace: .named(coordinateSpaceName))
+            .updating($isPointerDragging) { _, dragging, _ in dragging = true }
             .onChanged { value in
-                if draggingID != row.id {
+                guard !cancelledUntilMouseUp, !isFinishingDrag, !isDroppingOutside else { return }
+                let isBeginning = draggingID != row.id
+                if isBeginning {
                     beginDrag(from: row.id, initialLocationY: value.location.y)
                 }
                 guard draggingID == row.id else { return }
 
                 dragFloatingY = floatingTopY(for: value)
-                dragFloatingX = max(
-                    -dragHorizontalLimit,
-                    min(dragHorizontalLimit, value.translation.width * dragHorizontalDamping)
-                )
+                if trackDragPayload != nil {
+                    dragFloatingX = value.translation.width
+                } else {
+                    dragFloatingX = max(
+                        -dragHorizontalLimit,
+                        min(dragHorizontalLimit, value.translation.width * dragHorizontalDamping)
+                    )
+                }
 
+                let hasExternalTarget = publishFloatingDrag(animation: isBeginning ? dragReorderAnimation : nil)
+                guard isReorderEnabled, isPointerWithinSourceColumns, !hasExternalTarget else {
+                    stopAutoScroll()
+                    return
+                }
                 let centerY = dragFloatingY + dragGroupHeight / 2
                 updateAutoScroll(forCenterY: centerY)
                 updateDragTarget(forCenterY: centerY)
             }
             .onEnded { value in
+                defer { cancelledUntilMouseUp = false }
+                guard !cancelledUntilMouseUp, !isFinishingDrag, !isDroppingOutside else { return }
+                if let dragOverlaySessionID, dragWindowSession?.finish(dragOverlaySessionID) == true {
+                    isDroppingOutside = true
+                    stopAutoScroll()
+                    // A provisional reorder must never persist when the same
+                    // gesture is released onto a different collection.
+                    withAnimation(dragReorderAnimation) { visualOrderIDs = dragStartOrderedIDs }
+                    return
+                }
+                if trackDragPayload != nil && !isPointerWithinSourceColumns {
+                    cancelDrag()
+                    return
+                }
                 endDrag(releaseVelocity: value.velocity.height)
             }
     }
 
     private func beginDrag(from id: UUID, initialLocationY: CGFloat?) {
+        if trackDragPayload != nil, reorderCoordinateView?.window?.libraryTrackDragSession.hasActiveDrag == true { return }
         let startOrder = displayedOrderIDs
         guard startOrder.contains(id) else { return }
 
@@ -506,6 +547,7 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
         draggingID = id
         draggedIDs = groupIDs
         dragStartOrderedIDs = startOrder
+        dragStartRowFrames = rowFrames
         dragStartAnchorY = rowFrames[id]?.minY ?? 0
         let fallbackHeight = rowLookup[id].map(rowHeight) ?? 0
         let initialPointerY = currentMouseYInReorderSpace()
@@ -535,10 +577,60 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
             gatherOffsets[itemID] = sourceY - dragStartAnchorY - pileYOffset(pileDepth)
         }
         dragCardYOffsetByID = gatherOffsets
+        beginWindowDrag(groupIDs: groupIDs)
         withAnimation(dragReorderAnimation) {
             dragCardYOffsetByID = [:]
             dragGlassOpacity = 1
         }
+        publishFloatingDrag(animation: dragReorderAnimation)
+    }
+
+    private var isPointerWithinSourceColumns: Bool {
+        guard trackDragPayload != nil, let view = reorderCoordinateView, let window = view.window else { return true }
+        guard window.frame.contains(NSEvent.mouseLocation) else { return false }
+        let x = view.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil).x
+        guard let viewport = visibleViewportInReorderSpace() else { return true }
+        return x >= viewport.minX && x <= viewport.maxX
+    }
+
+    private var windowDragContent: AnyView {
+        AnyView(floatingDragGroup
+            .environmentObject(themeStore)
+            .tint(themeStore.accentColor)
+            .environment(\.colorScheme, colorScheme)
+            .environment(\.motionTokens, motionTokens)
+            .environment(\.motionPolicy, configuredMotionPolicy))
+    }
+
+    private var windowDragFrame: CGRect {
+        CGRect(x: dragFloatingX, y: dragFloatingY, width: dragContainerWidth, height: dragGroupHeight)
+    }
+
+    private func beginWindowDrag(groupIDs: [UUID]) {
+        guard let trackDragPayload, let view = reorderCoordinateView, let window = view.window else { return }
+        let session = window.libraryTrackDragSession
+        dragOverlaySessionID = session.begin(
+            from: view, payload: trackDragPayload(groupIDs), content: windowDragContent, frame: windowDragFrame,
+            animation: dragSettleAnimation(),
+            completionDelay: motionPolicy.visualCompletionDelay(for: motionTokens[.gestureSettle]),
+            onCancel: {
+                isDroppingOutside = false
+                cancelDrag()
+            },
+            onComplete: { target in
+                clearDragState(keepVisualOrder: false)
+                if let target, case .playlist = target { onClearSelection() }
+            }
+        )
+        dragWindowSession = dragOverlaySessionID == nil ? nil : session
+    }
+
+    @discardableResult
+    private func publishFloatingDrag(animation: Animation? = nil) -> Bool {
+        guard let dragOverlaySessionID, let view = reorderCoordinateView else { return false }
+        return dragWindowSession?.update(
+            dragOverlaySessionID, from: view, content: windowDragContent, frame: windowDragFrame, animation: animation
+        ) ?? false
     }
 
     private func moveDraggedRows(to targetIndex: Int) {
@@ -589,6 +681,8 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
             dragCardYOffsetByID = settleOffsets
             dragGlassOpacity = 0
         }
+        publishFloatingDrag(animation: dragSettleAnimation(initialVelocity: initialVelocity))
+        if let dragOverlaySessionID { dragWindowSession?.settleInSource(dragOverlaySessionID) }
 
         let cleanupDelay = motionPolicy.visualCompletionDelay(
             for: motionTokens[.gestureSettle],
@@ -612,19 +706,26 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
     }
 
     private func cancelDrag() {
-        guard draggingID != nil else { return }
+        guard let cancelledID = draggingID, !isFinishingDrag else { return }
+        cancelledUntilMouseUp = true
         stopAutoScroll()
         withAnimation(dragSettleAnimation()) {
+            isFinishingDrag = true
             visualOrderIDs = dragStartOrderedIDs.isEmpty ? nil : dragStartOrderedIDs
             dragFloatingX = 0
             dragFloatingY = dragStartAnchorY
+            dragCardYOffsetByID = Dictionary(uniqueKeysWithValues: draggedIDs.map { id in
+                (id, (dragStartRowFrames[id]?.minY ?? dragStartAnchorY) - dragStartAnchorY)
+            })
             dragGlassOpacity = 0
         }
+        publishFloatingDrag(animation: dragSettleAnimation())
+        if let dragOverlaySessionID { dragWindowSession?.settleInSource(dragOverlaySessionID) }
         let cleanupDelay = motionPolicy.visualCompletionDelay(
             for: motionTokens[.gestureSettle]
         )
         let clearDrag: @MainActor @Sendable () -> Void = {
-            guard !isFinishingDrag else { return }
+            guard self.draggingID == cancelledID, isFinishingDrag else { return }
             clearDragState(keepVisualOrder: false)
         }
         if cleanupDelay <= .leastNonzeroMagnitude {
@@ -638,6 +739,12 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
     }
 
     private func clearDragState(keepVisualOrder: Bool) {
+        guard draggingID != nil else { return }
+        if let dragOverlaySessionID { dragWindowSession?.end(dragOverlaySessionID) }
+        dragOverlaySessionID = nil
+        dragWindowSession = nil
+        isDroppingOutside = false
+        dragStartRowFrames = [:]
         if !keepVisualOrder {
             visualOrderIDs = nil
         }
@@ -800,6 +907,7 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
         let centerY = dragFloatingY + dragGroupHeight / 2
         updateDragTarget(forCenterY: centerY)
         updateAutoScroll(forCenterY: centerY)
+        publishFloatingDrag()
     }
 
     @discardableResult

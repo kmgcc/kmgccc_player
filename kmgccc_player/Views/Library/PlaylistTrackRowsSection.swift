@@ -11,6 +11,7 @@ import MotionKit
 
 struct PlaylistTrackRowsSection: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
@@ -55,6 +56,13 @@ struct PlaylistTrackRowsSection: View {
             isMultiselectMode: pageController.isMultiselectMode,
             selectedIDs: pageController.selectedTrackIDs,
             canReorder: pageController.canManuallyReorderCurrentTracks,
+            trackDragPayload: { ids in
+                LibraryTrackDragPayload(
+                    sessionID: libraryVM.trackDragSessionID,
+                    sourceSelectionIdentity: selectionIdentity,
+                    trackIDs: ids
+                )
+            },
             isSearchFiltering: pageController.isSearchFilteringTracks,
             coordinateSpaceName: "playlistTrackReorderSpace",
             rowCornerRadius: Constants.Layout.TrackRow.cornerRadius,
@@ -62,13 +70,15 @@ struct PlaylistTrackRowsSection: View {
             badgeText: { "\($0)" },
             rowHeight: rowHeight(for:),
             onClearSelection: {
+                guard libraryVM.currentSelection == selection,
+                      pageController.toolbarSelectionIdentity == selectionIdentity else { return }
                 pageController.clearMultiselectState()
             },
             onBeginReorder: {
-                pageController.beginManualTrackReorderInteraction()
+                pageController.setNativeTrackDragActive(true)
             },
             onEndReorder: {
-                pageController.endManualTrackReorderInteraction()
+                pageController.setNativeTrackDragActive(false)
             },
             onCommitOrder: { orderedIDs in
                 pageController.commitManualTrackOrder(
@@ -106,6 +116,7 @@ struct PlaylistTrackRowsSection: View {
             revealHighlightTrackID: pageController.revealHighlightTrackID,
             interactionsEnabled: pageController.areRowSecondaryInteractionsEnabled,
             artworkLoadingEnabled: pageController.areRowArtworkLoadsEnabled,
+            trackDragActive: pageController.isNativeTrackDragActive,
             colorScheme: colorScheme,
             primaryColor: rowPrimaryColor,
             secondaryColor: rowSecondaryColor,
@@ -162,6 +173,7 @@ struct PlaylistTrackRowsSection: View {
             enableArtworkLoading: pageController.areRowArtworkLoadsEnabled,
             revealHighlight: pageController.revealHighlightTrackID == row.id,
             onTap: { isShiftPressed in
+                if LibraryRowInput.selectionModifiersHeld { pageController.updateSelectionModifiers(held: true) }
                 if pageController.isMultiselectMode {
                     pageController.handleMultiselectRowTap(
                         trackID: row.id,
@@ -222,10 +234,32 @@ struct PlaylistTrackRowsSection: View {
             menuBuilder(row.id)
         }
         .equatable()
+        .libraryTrackDrag(
+            isEnabled: !pageController.isMultiselectMode,
+            title: row.trackRowModel.title,
+            onSessionChanged: { pageController.setNativeTrackDragActive($0) },
+            onPlaylistDropCompleted: {
+                guard libraryVM.currentSelection == selection,
+                      pageController.toolbarSelectionIdentity == selectionIdentity else { return }
+                pageController.clearMultiselectState()
+            }
+        ) {
+            LibraryTrackDragPayload(
+                sessionID: libraryVM.trackDragSessionID,
+                sourceSelectionIdentity: selectionIdentity,
+                trackIDs: LibraryTrackDragPayload.draggedIDs(
+                    startingAt: row.id,
+                    selectedIDs: pageController.selectedTrackIDs,
+                    orderedIDs: rows.map(\.id)
+                )
+            )
+        }
         // NSHostingView does not inherit SwiftUI environment values from the
         // view that created its rootView. Keep the hosted AppKit table cells
         // in the same presentation and service environment as native rows.
         .environment(playbackCoordinator)
+        .environment(libraryVM)
+        .environment(settings)
         .environment(cacheServices)
         .environmentObject(themeStore)
         .environment(\.colorScheme, colorScheme)
@@ -249,6 +283,11 @@ struct PlaylistTrackRowsSection: View {
             EmptyView()
         }
         .equatable()
+        .environment(cacheServices)
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, colorScheme)
+        .environment(\.motionTokens, motionTokens)
+        .environment(\.motionPolicy, motionPolicy)
     }
 
     private func rowHeight(for row: PlaylistPageRowModel) -> CGFloat {
@@ -271,6 +310,7 @@ private struct AppKitPlaylistRowsPresentation: Equatable {
     let revealHighlightTrackID: UUID?
     let interactionsEnabled: Bool
     let artworkLoadingEnabled: Bool
+    let trackDragActive: Bool
     let colorScheme: ColorScheme
     let primaryColor: Color
     let secondaryColor: Color
@@ -349,6 +389,10 @@ private struct AppKitPlaylistTrackRowsTable<RowContent: View>: NSViewRepresentab
             rowHeight: @escaping (PlaylistPageRowModel) -> CGFloat,
             rowContent: @escaping (PlaylistPageRowModel) -> RowContent
         ) {
+            // Reloading a hosting cell destroys its active SwiftUI gesture.
+            // Apply playback/library presentation changes after mouse-up and
+            // the drop animation, using the latest inputs from SwiftUI.
+            if presentation.trackDragActive, self.dataRevision != nil { return }
             let dataChanged = self.dataRevision != dataRevision
             let presentationChanged = self.presentation != presentation
 

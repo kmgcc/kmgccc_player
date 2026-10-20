@@ -676,6 +676,8 @@ final class LibraryViewModel {
     nonisolated let libraryPaths: LibraryPaths
     private let libraryID: UUID
     private let sessionGeneration: UInt64
+    /// A fresh identity for every view-model lifetime, including reopening the same library.
+    let trackDragSessionID = UUID()
     private let metadataDetailCoordinator: MetadataDetailCoordinator
     private let artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
     private var importService: FileImportServiceProtocol?
@@ -1842,6 +1844,74 @@ final class LibraryViewModel {
             selectionIdentities: selectionIdentityVariants(for: .playlist(playlist.id))
         )
         markRefreshTrigger(affectsHome: true)
+    }
+
+    func tracks(forDragPayload payload: LibraryTrackDragPayload) -> [Track] {
+        guard payload.sessionID == trackDragSessionID, !rejectsUnownedMutations else { return [] }
+        let byID = Dictionary(uniqueKeysWithValues: allTracks.map { ($0.id, $0) })
+        return payload.trackIDs.compactMap { byID[$0] }
+    }
+
+    func applyTrackDrop(
+        _ payload: LibraryTrackDragPayload,
+        to target: LibraryTrackDropTarget
+    ) async -> LibraryTrackDropOutcome? {
+        await performOwnedLibraryMutation(rejectingWith: nil as LibraryTrackDropOutcome?) {
+            let tracks = self.tracks(forDragPayload: payload)
+            guard !tracks.isEmpty else { return nil }
+            var outcome = LibraryTrackDropOutcome(failedCount: payload.trackIDs.count - tracks.count)
+            if case let .playlist(id) = target {
+                guard let playlist = self.playlists.first(where: { $0.id == id }) else { return nil }
+                let existing = Set(playlist.tracks.map(\.id))
+                let additions = tracks.filter { !existing.contains($0.id) }
+                if !additions.isEmpty {
+                    try await self.addTracksToPlaylistWithoutOwnership(additions, playlist: playlist)
+                }
+                outcome.changedCount = additions.count
+                outcome.unchangedCount = tracks.count - additions.count
+                return outcome
+            }
+
+            let edit: LibraryTrackDropMetadataEdit
+            switch target {
+            case let .artist(key):
+                guard let artist = self.artistEntries.first(where: { $0.canonicalName == key }) else { return nil }
+                edit = .artist(name: artist.displayName, canonicalName: key)
+            case let .album(key):
+                guard let album = self.albumEntries.first(where: { $0.canonicalKey == key }) else { return nil }
+                edit = .album(
+                    title: album.displayTitle,
+                    artist: album.primaryArtistDisplayName,
+                    key: key,
+                    musicBrainzReleaseID: self.firstTrack(forAlbumGroupKey: key)?.musicBrainzReleaseID
+                )
+            case .playlist, .playNow:
+                return nil
+            }
+
+            var previous: [UUID: LibraryTrackDropMetadataSnapshot] = [:]
+            var changedTracks: [Track] = []
+            for track in tracks {
+                let snapshot = LibraryTrackDropMetadataSnapshot(track)
+                edit.apply(to: track)
+                if snapshot.matches(track) {
+                    outcome.unchangedCount += 1
+                } else {
+                    previous[track.id] = snapshot
+                    changedTracks.append(track)
+                }
+            }
+            guard !changedTracks.isEmpty else { return outcome }
+            let result = await self.repository.persistTrackMetaOnly(changedTracks, reason: "trackDropAssignment")
+            let persistedIDs = Set(result.persistedTrackIDs)
+            for track in changedTracks where !persistedIDs.contains(track.id) {
+                previous[track.id]?.restore(to: track)
+            }
+            outcome.changedCount = result.persistedTrackIDs.count
+            outcome.failedCount += changedTracks.count - persistedIDs.count
+            await self.refresh()
+            return outcome
+        }
     }
 
     func addTracksToPlaylist(_ tracks: [Track], playlist: Playlist) async {

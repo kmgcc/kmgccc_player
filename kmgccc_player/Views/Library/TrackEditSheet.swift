@@ -354,11 +354,24 @@ struct TrackEditSheet: View {
         let changeSet = trackEditChangeSet
         guard changeSet.hasChanges else { return }
 
+        let previousArtist = track.artist
         track.title =
             title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : title
         track.artist =
             artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : artist
+        if track.artist != previousArtist {
+            track.artistCredits = TrackCredit.fallback(for: track.artist)
+                + track.artistCredits.filter { !$0.role.isArtistContributor }
+        }
         track.album = album.trimmingCharacters(in: .whitespacesAndNewlines)
+        if var correction = track.userMetadataOverride {
+            correction.title = track.title
+            correction.artistDisplay = track.artist
+            if correction.album != track.album { correction.albumGroupKey = nil }
+            correction.album = track.album
+            correction.editedAt = Date()
+            track.userMetadataOverride = correction
+        }
         track.userDescription = trackDescription
         track.genreTags = parsedGenreTags(from: genreTagsText)
         track.language = language.trimmingCharacters(in: .whitespacesAndNewlines)

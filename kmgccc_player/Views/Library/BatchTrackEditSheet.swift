@@ -70,6 +70,7 @@ struct BatchTrackEditSheet: View {
     @State private var artworkData: Data?
     @State private var lyricsTimeOffsetMs: Double = 0
     @State private var batchPreviewRefreshTask: Task<Void, Never>?
+    @State private var lyricsConversionTask: Task<Void, Never>?
     @State private var batchPreviewReloadToken = 0
     @State private var restoreWindowLyricsAfterDismiss = false
     @State private var didSuspendWindowLyricsSurface = false
@@ -192,6 +193,8 @@ struct BatchTrackEditSheet: View {
             metadataFetchTask = nil
             batchPreviewRefreshTask?.cancel()
             batchPreviewRefreshTask = nil
+            lyricsConversionTask?.cancel()
+            lyricsConversionTask = nil
             leaveBatchPreviewSession()
             LyricsSurfaceManager.shared.deactivate(role: .batchPreview)
             coverCoordinator?.cancelSearch()
@@ -217,6 +220,7 @@ struct BatchTrackEditSheet: View {
         .onChange(of: releaseDateText) { _, _ in draftDidChange() }
         .onChange(of: lyricsText) { _, _ in
             draftDidChange()
+            scheduleLyricsDraftConversion()
             scheduleBatchPreviewRefresh(reason: "lyrics draft changed", debounceMilliseconds: 350)
         }
         .onChange(of: artworkData) { _, _ in draftDidChange() }
@@ -252,9 +256,7 @@ struct BatchTrackEditSheet: View {
         }
         .fileImporter(
             isPresented: $showingLyricsPicker,
-            allowedContentTypes: [
-                UTType(filenameExtension: "ttml") ?? .xml,
-            ],
+            allowedContentTypes: LocalLyricsImporter.pickerContentTypes,
             allowsMultipleSelection: false
         ) { result in
             handleLyricsImport(result)
@@ -915,7 +917,7 @@ struct BatchTrackEditSheet: View {
             return false
         }
 
-        if let message = LyricsFormatSupport.validateManualTTML(lyricsText) {
+        if let message = LyricsEditorInput.saveIssue(in: lyricsText) {
             if showFailureMessage {
                 statusMessage = message
             }
@@ -1367,28 +1369,46 @@ struct BatchTrackEditSheet: View {
 
     private func handleLyricsImport(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, let url = urls.first else { return }
+        let trackID = currentTrack?.id
 
-        let didStart = url.startAccessingSecurityScopedResource()
-        defer {
-            if didStart {
-                url.stopAccessingSecurityScopedResource()
+        Task { @MainActor in
+            let outcome = await LocalLyricsImporter.loadTTML(fromFileAt: url)
+            guard currentTrack?.id == trackID else { return }
+            switch outcome {
+            case .success(let ttml):
+                lyricsText = ttml
+                _ = saveCurrentTrack(
+                    showFailureMessage: true,
+                    markProcessedIfUnchanged: false,
+                    reason: "导入歌词后保存"
+                )
+            case .failure(let error):
+                statusMessage = "导入歌词失败：\(error.localizedDescription)"
             }
         }
+    }
 
-        do {
-            let text = try String(contentsOf: url, encoding: .utf8)
-            guard let ttml = LyricsFormatSupport.normalizedTTMLText(text) else {
-                statusMessage = "仅支持有效 TTML 歌词文件"
-                return
+    /// Pasted lyrics in another format are converted to TTML in place; saving
+    /// refuses the draft until then.
+    private func scheduleLyricsDraftConversion() {
+        lyricsConversionTask?.cancel()
+        let text = lyricsText
+        guard LyricsEditorInput.needsConversion(text) else { return }
+
+        lyricsConversionTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            let review = await LyricsEditorInput.review(text)
+            guard !Task.isCancelled, text == lyricsText else { return }
+            switch review {
+            case .converted(let ttml):
+                lyricsText = ttml
+                statusMessage = "歌词已转换为 TTML"
+            case .rejected(let reason):
+                statusMessage = reason
+            case .accepted:
+                break
             }
-            lyricsText = ttml
-            _ = saveCurrentTrack(
-                showFailureMessage: true,
-                markProcessedIfUnchanged: false,
-                reason: "导入歌词后保存"
-            )
-        } catch {
-            statusMessage = "导入歌词失败：\(error.localizedDescription)"
         }
     }
 
@@ -1579,7 +1599,7 @@ private struct BatchNativeLyricsPreviewPanel: View, Equatable {
     private var previewState: PreviewState {
         guard trackSnapshot != nil else { return .noTrack }
         guard !trimmedLyricsText.isEmpty else { return .noLyrics }
-        if let message = LyricsFormatSupport.validateManualTTML(lyricsText) {
+        if let message = LyricsEditorInput.saveIssue(in: lyricsText) {
             return .invalidLyrics(message)
         }
         guard let normalized = LyricsFormatSupport.normalizedTTMLText(lyricsText) else {

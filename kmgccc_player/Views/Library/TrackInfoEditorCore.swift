@@ -674,9 +674,7 @@ struct TrackInfoEditorCore: View {
         }
         .fileImporter(
             isPresented: $showingLyricsPicker,
-            allowedContentTypes: [
-                UTType(filenameExtension: "ttml") ?? .xml,
-            ],
+            allowedContentTypes: LocalLyricsImporter.pickerContentTypes,
             allowsMultipleSelection: false
         ) { result in
             handleLyricsImport(result)
@@ -749,7 +747,7 @@ struct TrackInfoEditorCore: View {
 
 
             Button(saveTitle) {
-                if let message = LyricsFormatSupport.validateManualTTML(lyricsText) {
+                if let message = LyricsEditorInput.saveIssue(in: lyricsText) {
                     lyricsValidationMessage = message
                     return
                 }
@@ -777,11 +775,20 @@ struct TrackInfoEditorCore: View {
                 try? await Task.sleep(nanoseconds: debounceNanoseconds)
             }
             guard !Task.isCancelled else { return }
-            let message = await Task.detached(priority: .utility) { @Sendable in
-                LyricsFormatSupport.validateManualTTML(text)
-            }.value
+            let review = await LyricsEditorInput.review(text)
             guard !Task.isCancelled else { return }
             guard text == self.lyricsText else { return }
+            let message: String?
+            switch review {
+            case .accepted:
+                message = nil
+            case .rejected(let reason):
+                message = reason
+            case .converted(let ttml):
+                // Pasted lyrics in another format; the replaced text is validated again.
+                self.lyricsText = ttml
+                return
+            }
             self.cachedLyricsValidationError = message
             if message == nil, self.lyricsValidationMessage != nil {
                 self.lyricsValidationMessage = nil
@@ -870,20 +877,12 @@ struct TrackInfoEditorCore: View {
         guard case .success(let urls) = result, let url = urls.first else { return }
 
         Task { @MainActor in
-            let text = await Task.detached(priority: .userInitiated) { @Sendable in
-                let didStart = url.startAccessingSecurityScopedResource()
-                defer {
-                    if didStart {
-                        url.stopAccessingSecurityScopedResource()
-                    }
-                }
-                return try? String(contentsOf: url, encoding: .utf8)
-            }.value
-            if let text, let ttml = LyricsFormatSupport.normalizedTTMLText(text) {
+            switch await LocalLyricsImporter.loadTTML(fromFileAt: url) {
+            case .success(let ttml):
                 lyricsValidationMessage = nil
                 lyricsText = ttml
-            } else if text != nil {
-                lyricsValidationMessage = "仅支持有效 TTML 歌词文件。"
+            case .failure(let error):
+                lyricsValidationMessage = error.localizedDescription
             }
         }
     }

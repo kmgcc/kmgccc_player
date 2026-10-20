@@ -122,15 +122,24 @@ final class PlaylistPageController {
 
     var searchText = ""
     var listScrollPositionID: UUID?
-    var isMultiselectMode = false
+    private var multiselectState = ListMultiselectState()
+    var isMultiselectMode: Bool { multiselectState.isActive }
     var selectedTrackIDs: Set<UUID> = []
     var selectionAnchorTrackID: UUID?
+    private struct RegisteredTrackList {
+        let selection: LibrarySelection
+        let identity: String
+        let tracks: [Track]
+        let isFiltering: Bool
+    }
+    private var registeredTrackList: RegisteredTrackList?
     private(set) var collectionListSelection: LibrarySelection?
     private(set) var collectionVisibleItemIDs: [UUID] = []
     private(set) var collectionCustomOrderSourceItemIDs: [UUID] = []
     private(set) var isCollectionListFiltering = false
     var rendersHeaderBackgroundInWindowLayer = false
     private(set) var isManualTrackReorderActive = false
+    private(set) var isNativeTrackDragActive = false
 
     /// Track ID that should show a brief reveal-highlight pulse.
     /// Set after the scroll-to-now-playing animation lands, cleared automatically.
@@ -270,6 +279,7 @@ final class PlaylistPageController {
 
     func handleSelectionChange(_ selection: LibrarySelection) {
         clearMultiselectState()
+        registeredTrackList = nil
         if collectionListSelection != selection {
             collectionListSelection = nil
             collectionVisibleItemIDs = []
@@ -344,10 +354,39 @@ final class PlaylistPageController {
 
     func clearMultiselectState() {
         uiState?.lyricsPanelSuppressedByModal = false
-        isMultiselectMode = false
+        multiselectState.clear()
         selectedTrackIDs.removeAll()
         selectionAnchorTrackID = nil
         isManualTrackReorderActive = false
+        isNativeTrackDragActive = false
+    }
+
+    func registerTrackList(selection: LibrarySelection, identity: String, tracks: [Track], isFiltering: Bool) {
+        if registeredTrackList?.identity != identity { clearMultiselectState() }
+        registeredTrackList = RegisteredTrackList(
+            selection: selection, identity: identity, tracks: tracks, isFiltering: isFiltering
+        )
+        let visibleIDs = Set(tracks.map(\.id))
+        selectedTrackIDs.formIntersection(visibleIDs)
+        multiselectState.reconcileSelection(hasSelection: !selectedTrackIDs.isEmpty)
+        if !isMultiselectMode { selectionAnchorTrackID = nil }
+        if let selectionAnchorTrackID, !visibleIDs.contains(selectionAnchorTrackID) {
+            self.selectionAnchorTrackID = nil
+        }
+    }
+
+    func unregisterTrackList(identity: String) {
+        guard registeredTrackList?.identity == identity else { return }
+        clearMultiselectState()
+        registeredTrackList = nil
+    }
+
+    var toolbarQueueTracks: [Track] { activeRegisteredTrackList?.tracks ?? page?.queueTracks ?? [] }
+    var toolbarSelectionIdentity: String? { activeRegisteredTrackList?.identity ?? page?.selectionIdentity }
+
+    private var activeRegisteredTrackList: RegisteredTrackList? {
+        guard registeredTrackList?.selection == libraryVM?.currentSelection else { return nil }
+        return registeredTrackList
     }
 
     func registerCollectionList(
@@ -367,9 +406,11 @@ final class PlaylistPageController {
         let visibleSet = Set(visibleItemIDs)
         if !selectedTrackIDs.isSubset(of: visibleSet) {
             selectedTrackIDs.formIntersection(visibleSet)
+            multiselectState.reconcileSelection(hasSelection: !selectedTrackIDs.isEmpty)
             if let anchor = selectionAnchorTrackID, !visibleSet.contains(anchor) {
-                selectionAnchorTrackID = selectedTrackIDs.first
+                selectionAnchorTrackID = collectionVisibleItemIDs.first { selectedTrackIDs.contains($0) }
             }
+            if !isMultiselectMode { selectionAnchorTrackID = nil }
         }
     }
 
@@ -392,7 +433,8 @@ final class PlaylistPageController {
     /// never renders again. Use `releaseForSessionTeardown()` when the hosting
     /// window or library session is going away for real.
     func releaseSelectionStateForTeardown() {
-        isMultiselectMode = false
+        multiselectState.clear()
+        registeredTrackList = nil
         selectedTrackIDs.removeAll()
         selectionAnchorTrackID = nil
         collectionListSelection = nil
@@ -402,6 +444,7 @@ final class PlaylistPageController {
         listScrollPositionID = nil
         lastPrefetchBucket = nil
         isManualTrackReorderActive = false
+        isNativeTrackDragActive = false
     }
 
     /// Full teardown for the end of a view/session lifetime (library switch,
@@ -420,43 +463,48 @@ final class PlaylistPageController {
 
     @discardableResult
     func toggleMultiselectModeIfAllowed() -> Bool {
-        if isSearchFilteringCurrentList || !hasMultiselectRowsForCurrentSelection {
+        if !hasMultiselectRowsForCurrentSelection {
             clearMultiselectState()
             return false
         }
 
-        if isMultiselectMode {
+        if !multiselectState.toggleManually() {
             clearMultiselectState()
             return false
         }
 
-        isMultiselectMode = true
         return true
     }
 
+    func updateSelectionModifiers(held: Bool) {
+        guard !isNativeTrackDragActive else { return }
+        multiselectState.updateModifiers(
+            held: held,
+            hasSelection: !selectedTrackIDs.isEmpty,
+            isAllowed: hasMultiselectRowsForCurrentSelection
+        )
+        if !isMultiselectMode { selectionAnchorTrackID = nil }
+    }
+
     func beginMultiselectSelection(at trackID: UUID) {
-        guard !isSearchFilteringTracks else { return }
-        isMultiselectMode = true
+        multiselectState.beginPersistentSelection()
         selectedTrackIDs.insert(trackID)
         selectionAnchorTrackID = trackID
     }
 
     func handleMultiselectItemTap(itemID: UUID, extendingRange: Bool) {
         guard isMultiselectMode else { return }
-        guard !isSearchFilteringCurrentList else {
-            clearMultiselectState()
-            return
-        }
 
         if extendingRange,
-           let anchorID = selectionAnchorTrackID,
-           let anchorIndex = collectionVisibleItemIDs.firstIndex(of: anchorID),
-           let currentIndex = collectionVisibleItemIDs.firstIndex(of: itemID)
+           let range = ListMultiselectState.range(
+               from: selectionAnchorTrackID, to: itemID, in: collectionVisibleItemIDs
+           )
         {
-            let bounds = anchorIndex <= currentIndex
-                ? anchorIndex...currentIndex
-                : currentIndex...anchorIndex
-            selectedTrackIDs.formUnion(collectionVisibleItemIDs[bounds])
+            if LibraryRowInput.isCommandPressed {
+                selectedTrackIDs.formUnion(range)
+            } else {
+                selectedTrackIDs = range
+            }
             return
         }
 
@@ -466,25 +514,24 @@ final class PlaylistPageController {
             selectedTrackIDs.insert(itemID)
         }
         selectionAnchorTrackID = itemID
+        multiselectState.reconcileSelection(hasSelection: !selectedTrackIDs.isEmpty)
+        if !isMultiselectMode { selectionAnchorTrackID = nil }
     }
 
     func handleMultiselectRowTap(trackID: UUID, extendingRange: Bool) {
         guard isMultiselectMode else { return }
-        guard !isSearchFilteringTracks else {
-            clearMultiselectState()
-            return
-        }
 
         if extendingRange,
-           let anchorTrackID = selectionAnchorTrackID,
-           let visibleRows = page?.rows,
-           let anchorIndex = visibleRows.firstIndex(where: { $0.id == anchorTrackID }),
-           let currentIndex = visibleRows.firstIndex(where: { $0.id == trackID })
+           let range = ListMultiselectState.range(
+               from: selectionAnchorTrackID, to: trackID,
+               in: activeRegisteredTrackList?.tracks.map(\.id) ?? page?.rows.map(\.id) ?? []
+           )
         {
-            let bounds = anchorIndex <= currentIndex
-                ? anchorIndex...currentIndex
-                : currentIndex...anchorIndex
-            selectedTrackIDs.formUnion(visibleRows[bounds].map(\.id))
+            if LibraryRowInput.isCommandPressed {
+                selectedTrackIDs.formUnion(range)
+            } else {
+                selectedTrackIDs = range
+            }
             return
         }
 
@@ -494,6 +541,8 @@ final class PlaylistPageController {
             selectedTrackIDs.insert(trackID)
         }
         selectionAnchorTrackID = trackID
+        multiselectState.reconcileSelection(hasSelection: !selectedTrackIDs.isEmpty)
+        if !isMultiselectMode { selectionAnchorTrackID = nil }
     }
 
     func updateHeaderArtworkBounds(_ bounds: CGRect, selectionIdentity: String) {
@@ -609,6 +658,7 @@ final class PlaylistPageController {
     }
 
     var hasMultiselectRowsForCurrentSelection: Bool {
+        if let list = activeRegisteredTrackList { return !list.tracks.isEmpty }
         if isCurrentSelectionCollectionList {
             return !collectionVisibleItemIDs.isEmpty
         }
@@ -616,6 +666,7 @@ final class PlaylistPageController {
     }
 
     var isSearchFilteringCurrentList: Bool {
+        if let list = activeRegisteredTrackList { return list.isFiltering }
         if isCurrentSelectionCollectionList {
             return isCollectionListFiltering
         }
@@ -641,6 +692,17 @@ final class PlaylistPageController {
     func endManualTrackReorderInteraction() {
         isManualTrackReorderActive = false
         listScrollPositionID = nil
+    }
+
+    func setNativeTrackDragActive(_ active: Bool) {
+        guard isNativeTrackDragActive != active else { return }
+        isNativeTrackDragActive = active
+        if active {
+            beginManualTrackReorderInteraction()
+        } else {
+            endManualTrackReorderInteraction()
+            updateSelectionModifiers(held: !NSEvent.modifierFlags.intersection([.command, .shift]).isEmpty)
+        }
     }
 
     func activateCustomSortFromCurrentDisplay(reason: String) {
@@ -1031,6 +1093,8 @@ final class PlaylistPageController {
         )
         LyricsRuntimeProfile.setMetadata("page.queue.count", value: "\(pageModel.queueTracks.count)")
         selectedTrackIDs.formIntersection(Set(pageModel.rows.map(\.id)))
+        multiselectState.reconcileSelection(hasSelection: !selectedTrackIDs.isEmpty)
+        if !isMultiselectMode { selectionAnchorTrackID = nil }
         if let selectionAnchorTrackID,
            !pageModel.rows.contains(where: { $0.id == selectionAnchorTrackID })
         {
