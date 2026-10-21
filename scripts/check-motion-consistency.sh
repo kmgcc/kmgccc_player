@@ -91,6 +91,12 @@ is_allowlisted() {
   fi
 
   case "$path" in
+    kmgccc_player/Views/Settings/AudioDSP/AudioDSPLinearNodeRack.swift)
+      if [[ "$text" == *'.animation(.easeOut(duration: 0.12), value: normalizedLevel)'* ]]; then
+        printf 'continuous limiter level meter smoothing, like the LED brightness follower'
+        return 0
+      fi
+      ;;
     kmgccc_player/Views/Controls/SeamlessMarqueeText.swift)
       if [[ "$text" == *'CAKeyframeAnimation'* || "$text" == *'CAMediaTimingFunction(name: .linear)'* ]]; then
         printf 'continuous linear marquee loop and synchronized edge mask'
