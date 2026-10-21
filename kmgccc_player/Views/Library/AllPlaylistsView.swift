@@ -337,10 +337,9 @@ private struct PlaylistListRow: View {
                     .foregroundStyle(subtitleColor)
                     .lineLimit(1)
             }
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Text("\(playlist.trackCount) 首歌曲")
                 if playlist.totalDuration > 0 {
-                    Text("·")
                     Text(formattedDuration(playlist.totalDuration))
                 }
             }

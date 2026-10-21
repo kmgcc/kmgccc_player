@@ -411,7 +411,7 @@ struct LibraryDetailHeaderView: View {
             let n = data.tracks.count
             return n == 1 ? "1 首歌曲" : "\(n) 首歌曲"
         case .artist(_, let stats):
-            return "\(stats.trackCount) 首歌曲 · \(stats.albumCount) 张专辑"
+            return "\(stats.trackCount) 首歌曲，\(stats.albumCount) 张专辑"
         case .album(_, let stats):
             return stats.artistName
         }
@@ -428,13 +428,13 @@ struct LibraryDetailHeaderView: View {
         case .artist(let entry, _):
             let parts = buildArtistMetaParts(entry: entry)
             if !parts.isEmpty {
-                Text(parts.joined(separator: " · "))
+                Text(parts.joined(separator: "   "))
                     .font(.caption)
                     .foregroundStyle(headerTertiaryTextColor)
             }
         case .album(let entry, let stats):
             let parts = buildAlbumMetaParts(entry: entry, stats: stats)
-            Text(parts.joined(separator: " · "))
+            Text(parts.joined(separator: "   "))
                 .font(.caption)
                 .foregroundStyle(headerTertiaryTextColor)
         }
@@ -461,7 +461,6 @@ struct LibraryDetailHeaderView: View {
         parts.append(contentsOf: entry.genreTags.prefix(3))
         let n = stats.trackCount
         parts.append(n == 1 ? "1 首歌曲" : "\(n) 首歌曲")
-        parts.append(formatDuration(stats.totalDuration))
         return parts
     }
 

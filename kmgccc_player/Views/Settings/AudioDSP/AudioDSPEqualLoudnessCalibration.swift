@@ -113,8 +113,8 @@ struct AudioDSPEqualLoudnessStatus: View {
     private var volumeText: String {
         guard let reading = controller.volumeState.reading else { return "音量不可读取" }
         let percent = "\(Int((reading.scalar * 100).rounded()))%"
-        let level = reading.decibelsBelowMaximum.map { " · \($0.formatted(.number.precision(.fractionLength(1)))) dB" } ?? ""
-        return reading.isMuted ? "已静音 · \(percent)" : percent + level
+        let level = reading.decibelsBelowMaximum.map { " (\($0.formatted(.number.precision(.fractionLength(1)))) dB)" } ?? ""
+        return reading.isMuted ? "已静音 (\(percent))" : percent + level
     }
 
     private var bassCompensationText: String {

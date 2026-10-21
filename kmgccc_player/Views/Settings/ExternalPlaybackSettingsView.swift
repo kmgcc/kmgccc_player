@@ -454,7 +454,7 @@ struct ExternalPlaybackSettingsView: View {
             for: motionTokens[.microInteraction],
             initialVelocity: initialVelocity
         )
-        let clearDrag = {
+        let clearDrag: @MainActor @Sendable () -> Void = {
             guard isFinishingDrag, draggingSourceID == id else { return }
             draggingSourceID = nil
             isFinishingDrag = false

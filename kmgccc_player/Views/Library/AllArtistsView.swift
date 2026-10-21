@@ -399,15 +399,10 @@ private struct ArtistListRow: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(titleColor)
                 .lineLimit(1)
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Text("\(trackCount) 首歌曲")
                 if albumCount > 0 {
-                    Text("·")
                     Text("\(albumCount) 张专辑")
-                }
-                if artist.totalDuration > 0 {
-                    Text("·")
-                    Text(formattedDuration(artist.totalDuration))
                 }
             }
             .font(.system(size: 12))

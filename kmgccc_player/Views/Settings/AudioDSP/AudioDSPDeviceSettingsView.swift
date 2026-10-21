@@ -73,7 +73,7 @@ struct AudioDSPDevicePicker: View {
     }
 
     private func subtitle(for device: DSPOutputDevice) -> String {
-        device.id == currentID ? "正在播放 · \(presetName(device))" : presetName(device)
+        device.id == currentID ? "正在播放：\(presetName(device))" : presetName(device)
     }
 }
 

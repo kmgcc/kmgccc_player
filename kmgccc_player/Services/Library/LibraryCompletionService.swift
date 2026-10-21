@@ -708,7 +708,7 @@ final class LibraryCompletionService {
                     await libraryVM.saveArtistEntry(entry)
                     await recordProgressEvent(
                         title: "艺人",
-                        detail: "\(entry.displayName) · \(metadataEventDetail(filledCount: filled))",
+                        detail: "\(entry.displayName)  \(metadataEventDetail(filledCount: filled))",
                         phase: .metadata,
                         index: index,
                         totalCount: totalCount,
@@ -791,7 +791,7 @@ final class LibraryCompletionService {
                     await libraryVM.saveAlbumEntry(entry)
                     await recordProgressEvent(
                         title: "专辑",
-                        detail: "\(entry.displayTitle) · \(metadataEventDetail(filledCount: filled))",
+                        detail: "\(entry.displayTitle)  \(metadataEventDetail(filledCount: filled))",
                         phase: .metadata,
                         index: index,
                         totalCount: totalCount,

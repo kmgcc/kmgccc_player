@@ -269,7 +269,7 @@ struct AudioDSPSettingsView: View {
                     }
                 } label: {
                     let title = presetMenuTitle(for: preset, compatibility: compatibility)
-                        + (owner.map { " · \($0.name)" } ?? "")
+                        + (owner.map { " (\($0.name))" } ?? "")
                     if preset.presetID == shownPreset?.presetID {
                         Label(title, systemImage: "checkmark")
                     } else {

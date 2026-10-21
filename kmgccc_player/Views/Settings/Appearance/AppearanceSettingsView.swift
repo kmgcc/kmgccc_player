@@ -433,7 +433,7 @@ struct AppearanceSettingsView: View {
                     for: motionTokens[.gestureSettle],
                     initialVelocity: initialVelocity
                 )
-                let clearDrag = {
+                let clearDrag: @MainActor @Sendable () -> Void = {
                     guard isFinishingDrag, draggingSection == section else { return }
                     draggingSection = nil
                     isFinishingDrag = false

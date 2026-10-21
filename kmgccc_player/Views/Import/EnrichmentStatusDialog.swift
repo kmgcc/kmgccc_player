@@ -93,7 +93,7 @@ private struct EnrichmentStatusDialogView: View {
     private var progressSubtitle: String {
         guard progress.totalEnqueued > 0 else { return "后台补全" }
         if progress.failedCount > 0 {
-            return "已补全 \(progress.completedCount)/\(progress.totalEnqueued) · 失败 \(progress.failedCount)"
+            return "已补全 \(progress.completedCount)/\(progress.totalEnqueued)，失败 \(progress.failedCount)"
         }
         return "已补全 \(progress.completedCount)/\(progress.totalEnqueued)"
     }
@@ -155,7 +155,7 @@ private struct EnrichmentStatusRowView: View {
                 }
 
                 if row.status == .running, row.activePartLabels.isEmpty == false {
-                    Text("正在补全：\(row.activePartLabels.joined(separator: "・"))")
+                    Text("正在补全：\(row.activePartLabels.joined(separator: "、"))")
                         .font(.caption)
                         .foregroundStyle(themeStore.accentColor)
                         .lineLimit(1)
@@ -166,7 +166,7 @@ private struct EnrichmentStatusRowView: View {
 
             HStack(spacing: 6) {
                 if row.status == .failed, row.failedPartLabels.isEmpty == false {
-                    Text(row.failedPartLabels.joined(separator: "·"))
+                    Text(row.failedPartLabels.joined(separator: "、"))
                         .font(.caption)
                         .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                         .lineLimit(1)

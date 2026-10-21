@@ -678,7 +678,6 @@ struct AudioDSPLinearNodeRack: View {
             AudioDSPNativeEffectEditor(
                 node: node,
                 isProcessing: node.enabled && isProcessingEnabled,
-                outputKind: appSession.equalLoudnessController.routedOutputKind,
                 onUpdateNode: onUpdateNode,
                 onCommit: onCommit
             )
@@ -1204,17 +1203,17 @@ enum DSPNodeDescriptor {
                 case .impulseResponse:
                     parameters.impulseResponseName.isEmpty ? "脉冲响应" : parameters.impulseResponseName
                 case .room:
-                    "虚拟音箱 · \(format(parameters.distanceM, digits: 1)) m"
+                    "虚拟音箱，距离 \(format(parameters.distanceM, digits: 1)) m"
                 }
             } ?? ""
         case DSPNodeConfiguration.reverbTypeID:
             return node.effectParameters(DSPReverbParameters.self).map {
-                "\(spaceTitle($0.space)) · 混合 \(format($0.mix, digits: 2))"
+                "\(spaceTitle($0.space))，混合 \(format($0.mix, digits: 2))"
             } ?? ""
         case DSPNodeConfiguration.tubeTypeID:
             return node.tubeParameters.map {
                 $0.mode == .hifi
-                    ? "高保真 · 强度 \(format($0.hifiAmount, digits: 2))"
+                    ? "高保真，强度 \(format($0.hifiAmount, digits: 2))"
                     : "驱动 \(format($0.driveDB, digits: 1)) dB"
             } ?? ""
         case DSPNodeConfiguration.compressorTypeID:
@@ -1259,9 +1258,8 @@ enum DSPNodeDescriptor {
 
     private static func targetTitle(_ target: DSPBassTarget) -> String {
         switch target {
-        case .automatic: "自动"
         case .headphones: "耳机"
-        case .speakers: "扬声器"
+        case .speakers: "音箱"
         }
     }
 

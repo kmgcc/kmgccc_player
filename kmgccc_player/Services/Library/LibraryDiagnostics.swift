@@ -174,7 +174,7 @@ nonisolated enum LibraryDiagnosticsAnalyzer {
             let codec = track.codec?.trimmingCharacters(in: .whitespacesAndNewlines)
             let displayFormat: String
             if let codec, !codec.isEmpty, codec.caseInsensitiveCompare(format) != .orderedSame {
-                displayFormat = "\(format) · \(codec)"
+                displayFormat = "\(format) / \(codec)"
             } else {
                 displayFormat = format
             }

@@ -643,7 +643,7 @@ struct HomeHeroView: View {
                 .blendMode(heroPlusBlendTextProfile.blendMode)
             let albumTitle = LibraryNormalization.displayAlbum(track.album)
             if !LibraryNormalization.isUnknownAlbum(track.album), !albumTitle.isEmpty {
-                Text(" \u{00B7} ")
+                Text(" - ")
                     .foregroundStyle(heroPlusBlendTextProfile.tertiaryColor)
                     .blendMode(heroPlusBlendTextProfile.blendMode)
                 Text(albumTitle)
@@ -687,11 +687,10 @@ struct HomeHeroView: View {
 
     @ViewBuilder
     private var statsLine: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 8) {
             Text(formattedDuration)
             let stats = libraryVM.preferenceStats(for: track.id)
             if stats.playCount > 0 {
-                Text(" \u{00B7} ")
                 Text("\(stats.playCount) 次播放")
             }
         }

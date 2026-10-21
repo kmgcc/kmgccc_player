@@ -102,8 +102,8 @@ private final class MusicPreferenceResetDialogViewModel {
             let result = await libraryVM.resetMusicPreferences(
                 tracks: tracks,
                 options: selectedOptions
-            ) { [weak self] progress in
-                self?.progress = progress
+            ) { progress in
+                self.progress = progress
             }
 
             guard !Task.isCancelled else { return }

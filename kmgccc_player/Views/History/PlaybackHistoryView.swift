@@ -311,7 +311,7 @@ struct PlaybackHistoryView: View {
                         .font(.system(size: 11, weight: .semibold))
                     Text(historyVM.olderItemsLoaded ? "收起更早记录" : "加载更早记录")
                     if !historyVM.olderItemsLoaded {
-                        Text("· \(historyVM.olderItemCount) 条")
+                        Text("（\(historyVM.olderItemCount) 条）")
                             .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
                     }
                     Spacer()

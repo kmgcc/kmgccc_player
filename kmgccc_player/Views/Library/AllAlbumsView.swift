@@ -400,14 +400,9 @@ private struct AlbumListRow: View {
                 .font(.system(size: 12))
                 .foregroundStyle(subtitleColor)
                 .lineLimit(1)
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Text("\(trackCount) 首歌曲")
-                if album.totalDuration > 0 {
-                    Text("·")
-                    Text(formattedDuration(album.totalDuration))
-                }
                 if let year = album.year, year > 0 {
-                    Text("·")
                     Text(String(year))
                 }
             }

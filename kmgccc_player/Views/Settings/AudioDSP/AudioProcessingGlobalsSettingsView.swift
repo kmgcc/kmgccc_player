@@ -161,7 +161,7 @@ struct AudioProcessingGlobalsSettingsView: View {
                     .settingsRowLabelStyle()
                     .lineLimit(1)
                 Text([track?.artist, session.loudnessService.failureMessage(for: trackID)]
-                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "："))
                     .settingsDescriptionStyle()
                     .lineLimit(1)
             }

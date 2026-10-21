@@ -199,7 +199,6 @@ final class AppKitMainToolbarController: NSObject,
 
         let queueTracks = currentPageController?.toolbarQueueTracks ?? []
         let hasSelection = (currentPageController?.selectedTrackIDs.isEmpty == false)
-        let isSearching = currentPageController?.isSearchFilteringCurrentList == true
         let isCollectionSelection = currentLibraryVM.map {
             $0.supportsCustomCollectionOrder(for: $0.currentSelection)
         } ?? false

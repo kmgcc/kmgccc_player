@@ -15,7 +15,6 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
     let node: DSPNodeConfiguration
     /// The node is enabled and the chain is processing live audio.
     let isProcessing: Bool
-    let outputKind: DSPOutputKind?
     let onUpdateNode: (UUID, (inout DSPNodeConfiguration) -> Void) -> Void
     let onCommit: () -> Void
 
@@ -30,7 +29,7 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
     /// and always reach the same controller. Unrelated rack updates then skip
     /// this body, and the palette engine it calls.
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.node == rhs.node && lhs.isProcessing == rhs.isProcessing && lhs.outputKind == rhs.outputKind
+        lhs.node == rhs.node && lhs.isProcessing == rhs.isProcessing
     }
 
     var body: some View {
@@ -182,12 +181,11 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
             ),
             displayName: { target in
                 switch target {
-                case .automatic: "自动"
                 case .headphones: "耳机"
-                case .speakers: "扬声器"
+                case .speakers: "音箱"
                 }
             },
-            info: "按照你正在使用的设备选择，并重新调整到合适的参数。"
+            info: "根据正在使用的耳机或音箱选择。"
         )
     }
 

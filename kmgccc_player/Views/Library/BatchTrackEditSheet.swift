@@ -288,7 +288,7 @@ struct BatchTrackEditSheet: View {
         AppDialogHeader(
             title: "批量编辑歌曲信息",
             subtitle: currentTrack.map {
-                "当前：\(currentIndex + 1)/\(tracks.count) · \($0.title) · \(displayArtist($0.artist)) · \(displayAlbum($0.album))"
+                "当前第 \(currentIndex + 1)/\(tracks.count) 首：\($0.title)"
             }, systemImage: "music.note.list", iconColor: themeStore.accentColor
         ) {
             HStack(spacing: AppPopupStyle().buttonSpacing) {
