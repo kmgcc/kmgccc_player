@@ -1097,6 +1097,7 @@ final class AppKitMainToolbarController: NSObject,
                 isOn: isOn,
                 isEnabled: currentHistoryVM?.hasVisibleItems == true
             )
+            syncMultiselectSegmentImage()
             return
         }
         let pageController = currentPageController
@@ -1107,6 +1108,21 @@ final class AppKitMainToolbarController: NSObject,
             isEnabled: !isHomeLandingSelection
                 && pageController?.hasMultiselectRowsForCurrentSelection == true
         )
+        syncMultiselectSegmentImage()
+    }
+
+    /// The expanded group draws its own segmented control and does not always
+    /// pick up a subitem's new image, so the segment is updated as well.
+    private func syncMultiselectSegmentImage() {
+        guard let image = multiselectItem?.image,
+              let rootView = window?.contentView?.superview ?? window?.contentView,
+              let control = firstSubview(in: rootView, matching: { view in
+                  (view as? NSSegmentedControl)?.segmentCount == 4
+              }) as? NSSegmentedControl
+        else { return }
+        if control.image(forSegment: 0) !== image {
+            control.setImage(image, forSegment: 0)
+        }
     }
 
     private func syncHistoryDeleteItemPresentation() {

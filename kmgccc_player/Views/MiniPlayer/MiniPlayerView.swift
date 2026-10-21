@@ -168,7 +168,7 @@ struct MiniPlayerView: View {
             )
             .contentShape(Capsule())
             .onTapGesture {}
-            .libraryTrackDropTarget(.playNow, cornerRadius: GlassStyleTokens.miniPlayerHeight / 2)
+            .libraryTrackDropTarget(.playNow, cornerRadius: GlassStyleTokens.miniPlayerHeight / 2, highlight: .overlay)
         }
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)

@@ -238,11 +238,13 @@ struct PlaylistTrackRowsSection: View {
             isEnabled: !pageController.isMultiselectMode,
             title: row.trackRowModel.title,
             onSessionChanged: { pageController.setNativeTrackDragActive($0) },
-            onPlaylistDropCompleted: {
+            onSinkDropCompleted: {
                 guard libraryVM.currentSelection == selection,
                       pageController.toolbarSelectionIdentity == selectionIdentity else { return }
                 pageController.clearMultiselectState()
-            }
+            },
+            previewContent: AnyView(floatingTrackCard(row)),
+            previewHeight: rowHeight(for: row)
         ) {
             LibraryTrackDragPayload(
                 sessionID: libraryVM.trackDragSessionID,
@@ -262,6 +264,9 @@ struct PlaylistTrackRowsSection: View {
         .environment(settings)
         .environment(cacheServices)
         .environmentObject(themeStore)
+        .environment(\.libraryPresentedAccentColor, themeStore.accentColor)
+        .tint(themeStore.accentColor)
+        .accentColor(themeStore.accentColor)
         .environment(\.colorScheme, colorScheme)
         .environment(\.motionTokens, motionTokens)
         .environment(\.motionPolicy, motionPolicy)
@@ -285,6 +290,9 @@ struct PlaylistTrackRowsSection: View {
         .equatable()
         .environment(cacheServices)
         .environmentObject(themeStore)
+        .environment(\.libraryPresentedAccentColor, themeStore.accentColor)
+        .tint(themeStore.accentColor)
+        .accentColor(themeStore.accentColor)
         .environment(\.colorScheme, colorScheme)
         .environment(\.motionTokens, motionTokens)
         .environment(\.motionPolicy, motionPolicy)

@@ -146,7 +146,7 @@ struct AllPlaylistsView: View {
                         onPlay: { play(playlist) },
                         onDelete: { deletionRequest = PlaylistDeletionRequest(playlist: playlist) }
                     )
-                    .libraryTrackDropTarget(.playlist(playlist.id), cornerRadius: 12)
+                    .libraryTrackDropTarget(.playlist(playlist.id), cornerRadius: 12, sinkAnchor: .center)
                 },
                 floatingContent: { playlist in
                     PlaylistListRow(

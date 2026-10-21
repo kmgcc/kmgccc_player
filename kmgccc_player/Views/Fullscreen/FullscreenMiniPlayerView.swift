@@ -226,7 +226,7 @@ struct FullscreenMiniPlayerView: View {
             isFloating: true
         )
         .animation(nil, value: resolvedForegroundProfile)
-        .libraryTrackDropTarget(.playNow, cornerRadius: barHeight / 2)
+        .libraryTrackDropTarget(.playNow, cornerRadius: barHeight / 2, highlight: .overlay)
         .onHover { hovering in
             isMiniPlayerHovering = hovering
             onHoverStateChanged(hovering)

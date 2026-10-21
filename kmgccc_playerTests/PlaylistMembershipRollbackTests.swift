@@ -133,6 +133,55 @@ final class ListMultiselectStateTests: XCTestCase {
 
 @MainActor
 final class LibraryTrackDragTests: XCTestCase {
+    func testDropHitIsLimitedToTargetBoundsWhenVisibleRectExtendsAcrossPane() {
+        let bounds = CGRect(x: 0, y: 0, width: 500, height: 64)
+        let pane = CGRect(x: -100, y: -600, width: 800, height: 800)
+        XCTAssertFalse(LibraryTrackDragGeometry.containsDropPoint(
+            CGPoint(x: 250, y: -200), bounds: bounds, visibleRect: pane, cornerRadius: 32
+        ))
+        XCTAssertFalse(LibraryTrackDragGeometry.containsDropPoint(
+            CGPoint(x: 550, y: 32), bounds: bounds, visibleRect: pane, cornerRadius: 32
+        ))
+        XCTAssertTrue(LibraryTrackDragGeometry.containsDropPoint(
+            CGPoint(x: 250, y: 32), bounds: bounds, visibleRect: pane, cornerRadius: 32
+        ))
+    }
+
+    func testMiniPlayerRoundedCornersAndClippedRowsRejectDrops() {
+        let bounds = CGRect(x: 0, y: 0, width: 500, height: 64)
+        XCTAssertFalse(LibraryTrackDragGeometry.containsDropPoint(
+            CGPoint(x: 1, y: 1), bounds: bounds, visibleRect: bounds, cornerRadius: 32
+        ))
+        XCTAssertFalse(LibraryTrackDragGeometry.containsDropPoint(
+            CGPoint(x: 250, y: 50), bounds: bounds,
+            visibleRect: CGRect(x: 0, y: 0, width: 500, height: 30), cornerRadius: 0
+        ))
+    }
+
+    func testFlippedAndUnflippedHostsMapCardAndPointerToSameTopLeftSpace() {
+        let bounds = CGRect(x: 10, y: 20, width: 800, height: 600)
+        let topLeftCard = CGRect(x: 40, y: 80, width: 500, height: 60)
+        for isFlipped in [true, false] {
+            let rect = CGRect(
+                x: 50, y: isFlipped ? 100 : 480, width: 500, height: 60
+            )
+            let point = CGPoint(x: 300, y: rect.midY)
+            let mappedRect = LibraryTrackDragGeometry.topLeftRect(rect, in: bounds, isFlipped: isFlipped)
+            let mappedPoint = LibraryTrackDragGeometry.topLeftPoint(point, in: bounds, isFlipped: isFlipped)
+            XCTAssertEqual(mappedRect, topLeftCard)
+            XCTAssertEqual(mappedPoint.y, mappedRect.midY)
+        }
+    }
+
+    func testSinkPivotRemainsAtDestinationOutsideTheCard() {
+        let card = CGRect(x: 300, y: 120, width: 600, height: 100)
+        for target in [CGPoint(x: 40, y: 360), CGPoint(x: 500, y: 700)] {
+            let pivot = LibraryTrackDragGeometry.sinkAnchor(at: target, in: card)
+            XCTAssertEqual(card.minX + pivot.x * card.width, target.x, accuracy: 0.001)
+            XCTAssertEqual(card.minY + pivot.y * card.height, target.y, accuracy: 0.001)
+        }
+    }
+
     func testPlaylistDropAppendsInDragOrderAndSkipsExistingMembership() async throws {
         let repository = StubLibraryRepository()
         let viewModel = LibraryViewModel.preview(repository: repository)
@@ -215,7 +264,14 @@ final class LibraryTrackDragTests: XCTestCase {
         playlist.isHidden = false
         playlist.removeFromSuperview()
         XCTAssertTrue(session.destination(atWindowPoint: point) === group)
+        let miniPlayer = LibraryTrackDropAnchorView(frame: NSRect(x: 240, y: 10, width: 340, height: 64))
+        miniPlayer.target = .playNow
+        miniPlayer.cornerRadius = 32
+        miniPlayer.performDrop = { _ in true }
+        container.addSubview(miniPlayer)
+        session.register(miniPlayer)
         XCTAssertNil(session.destination(atWindowPoint: container.convert(NSPoint(x: 400, y: 118), to: nil)))
+        XCTAssertTrue(session.destination(atWindowPoint: container.convert(NSPoint(x: 400, y: 42), to: nil)) === miniPlayer)
     }
 
     func testDropRoutingUsesVisiblePartOfClippedPlaylistRow() {

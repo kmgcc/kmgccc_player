@@ -281,7 +281,7 @@ struct PlaybackHistoryView: View {
             onSessionChanged: { active in
                 if isNativeTrackDragActive != active { isNativeTrackDragActive = active }
             },
-            onPlaylistDropCompleted: { historyVM.clearMultiselectState() }
+            onSinkDropCompleted: { historyVM.clearMultiselectState() }
         ) {
             let selectedItems = historyVM.selectedEventIDs.contains(item.id)
                 ? historyVM.visibleItems.filter { historyVM.selectedEventIDs.contains($0.id) }

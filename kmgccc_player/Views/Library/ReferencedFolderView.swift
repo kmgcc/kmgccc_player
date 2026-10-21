@@ -636,7 +636,7 @@ struct ReferencedFolderView: View {
                             .libraryTrackDrag(
                                 title: track.title,
                                 onSessionChanged: { pageController.setNativeTrackDragActive($0) },
-                                onPlaylistDropCompleted: {
+                                onSinkDropCompleted: {
                                     guard libraryVM.currentSelection == .folders,
                                           pageController.toolbarSelectionIdentity == listIdentity else { return }
                                     pageController.clearMultiselectState()
