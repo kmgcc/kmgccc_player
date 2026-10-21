@@ -124,6 +124,16 @@ final class AudioLoudnessTests: XCTestCase {
         XCTAssertTrue(judgement.unifies)
     }
 
+    func testUnknownCollaboratorsDoNotChangeArtistGrouping() {
+        for credit in ["A & 未知歌手", "Unknown Artist ＆ A", "A、未知艺人"] {
+            XCTAssertTrue(LoudnessAlbumPolicy.containsUnknownArtist(credit), credit)
+        }
+        for credit in ["Simon & Garfunkel", "Earth, Wind & Fire", "Unknown Mortal Orchestra"] {
+            XCTAssertFalse(LoudnessAlbumPolicy.containsUnknownArtist(credit), credit)
+        }
+        XCTAssertEqual(LibraryNormalization.artistDisplayNameParts("Simon & Garfunkel"), ["Simon & Garfunkel"])
+    }
+
     func testShortAndSilentInputsDoNotProduceArtificialLoudness() {
         let short = analyzeMonoSine(
             frequency: 997,

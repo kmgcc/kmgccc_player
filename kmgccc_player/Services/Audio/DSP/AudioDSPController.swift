@@ -927,7 +927,9 @@ final class AudioDSPController {
         )
         if let selectedPresetID,
            var document = presets.first(where: { $0.presetID == selectedPresetID }),
-           !document.isBuiltIn {
+           !document.isBuiltIn,
+           document.configuration != configuration || pendingPresetEdits[selectedPresetID] != nil
+            || pendingNewPresetIDs.contains(selectedPresetID) {
             document.configuration = configuration
             pendingPresetEdits[selectedPresetID] = document
         }

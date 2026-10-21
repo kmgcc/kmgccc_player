@@ -104,8 +104,8 @@ public enum AutomationDSPToolCatalog {
         return .object(fields)
     }
 
-    private static let bassTarget = described(enumeration(["auto", "headphones", "speakers"]),
-        "auto follows the routed output; each target retains its own bass settings.")
+    private static let bassTarget = described(enumeration(["headphones", "speakers"]),
+        "Each target retains its own bass settings.")
     private static let switchSetting = enumeration(["auto", "on", "off"])
 
     private static func bassParametersSchema(
@@ -116,16 +116,22 @@ public enum AutomationDSPToolCatalog {
         let settingsSchema = object(settingsProperties, required: required.filter { $0 != "target" })
         var result = properties
         result["targetSettings"] = object(Dictionary(uniqueKeysWithValues:
-            ["auto", "headphones", "speakers"].map { ($0, settingsSchema) }))
+            ["headphones", "speakers"].map { ($0, settingsSchema) }))
         return object(result, required: required)
     }
 
     private static func bassParameterDefaults(_ values: [String: AutomationJSONValue]) -> AutomationJSONValue {
-        var settings = values
-        settings.removeValue(forKey: "target")
+        var speakerSettings = values
+        speakerSettings.removeValue(forKey: "target")
+        var headphoneSettings = speakerSettings
+        headphoneSettings["cutoffHz"] = .number(50)
+        headphoneSettings["retainsRealBass"] = .boolean(true)
         var result = values
+        result["target"] = .string("speakers")
         result["targetSettings"] = .object(Dictionary(uniqueKeysWithValues:
-            ["auto", "headphones", "speakers"].map { ($0, .object(settings)) }))
+            ["headphones", "speakers"].map {
+                ($0, .object($0 == "headphones" ? headphoneSettings : speakerSettings))
+            }))
         return .object(result)
     }
 
@@ -293,8 +299,8 @@ public enum AutomationDSPToolCatalog {
             "quality": .array([.string("standard")]), "parameters": classicBassParametersSchema,
             "defaultChannelPolicy": .string("fullRange"), "defaultQuality": .string("standard"),
             "parameterDefaults": bassParameterDefaults([
-                "target": .string("auto"), "intensity": .number(0.5), "cutoffHz": .number(80),
-                "retainsRealBass": .boolean(true), "impactDB": .number(-12)
+                "target": .string("speakers"), "intensity": .number(0.5), "cutoffHz": .number(80),
+                "retainsRealBass": .boolean(false), "impactDB": .number(-12)
             ]),
             "algorithm": .string("90° quadrature analytic harmonic series from Hilbert allpass network, level-normalized by peak follower with ISO 226 equal loudness matching and crest-factor normalization. Rejects sub-bass leakage via 36 dB/oct highpass and caps peaks with smooth soft saturation."),
             "levelReference": .string("Program level; chain gain staging does not change the effect."),
@@ -307,8 +313,8 @@ public enum AutomationDSPToolCatalog {
             "quality": .array([.string("standard")]), "parameters": hybridBassParametersSchema,
             "defaultChannelPolicy": .string("fullRange"), "defaultQuality": .string("standard"),
             "parameterDefaults": bassParameterDefaults([
-                "target": .string("auto"), "intensity": .number(0.5), "cutoffHz": .number(80),
-                "retainsRealBass": .boolean(true), "impact": .number(0.5)
+                "target": .string("speakers"), "intensity": .number(0.5), "cutoffHz": .number(80),
+                "retainsRealBass": .boolean(false), "impact": .number(0.5)
             ]),
             "algorithm": .string("Dual-envelope level-normalized nonlinear distortion (NLD) with smooth C-infinity triode saturation and adaptive cutoff-drive linking. Uses 36 dB/oct excursion protection filter and post-LP tracking with soft saturation ceiling."),
             "levelReference": .string("Program level; chain gain staging does not change the effect."),

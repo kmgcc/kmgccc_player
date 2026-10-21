@@ -1472,9 +1472,19 @@ func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
             Issue.record("Incomplete native DSP node schema")
             continue
         }
-        #expect(Set(defaults.keys) == Set(properties.keys))
         let isBass = typeID == "virtualBassClassic" || typeID == "virtualBassHybrid"
-        let optionalKeys: Set<String> = isBass ? ["targetSettings"] : []
+        // Compressor speed is accepted only as a legacy timing fallback; new
+        // nodes publish explicit band timings and optional saved custom values.
+        let legacyKeys: Set<String> = typeID == "compressor" ? ["speed"] : []
+        #expect(Set(defaults.keys) == Set(properties.keys).subtracting(legacyKeys))
+        let optionalKeys: Set<String>
+        if isBass {
+            optionalKeys = ["targetSettings"]
+        } else if typeID == "compressor" {
+            optionalKeys = ["speed", "customBands", "customLowCrossoverHz", "customHighCrossoverHz"]
+        } else {
+            optionalKeys = []
+        }
         #expect(required.count == properties.count - optionalKeys.count)
         let requiredKeys = required.compactMap { value -> String? in
             guard case .string(let key) = value else { return nil }
@@ -1485,7 +1495,8 @@ func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
         if isBass {
             #expect(defaults["intensity"] == .number(0.5))
             #expect(defaults["cutoffHz"] == .number(80))
-            #expect(defaults["retainsRealBass"] == .boolean(true))
+            #expect(defaults["target"] == .string("speakers"))
+            #expect(defaults["retainsRealBass"] == .boolean(false))
             guard case .object(let cutoff) = properties["cutoffHz"],
                   case .object(let amount) = properties["intensity"],
                   case .object(let saved) = properties["targetSettings"],
@@ -1497,7 +1508,7 @@ func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
             #expect(cutoff["minimum"] == .number(40))
             #expect(cutoff["maximum"] == .number(160))
             #expect(amount["maximum"] == .number(1))
-            #expect(Set(targets.keys) == Set(["auto", "headphones", "speakers"]))
+            #expect(Set(targets.keys) == Set(["headphones", "speakers"]))
             #expect(Set(targetDefaults.keys) == Set(targets.keys))
         }
         // Every effect is audible as added: no zero strength or mix default.

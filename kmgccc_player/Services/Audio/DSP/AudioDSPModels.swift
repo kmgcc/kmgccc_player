@@ -476,19 +476,6 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
         }
     }
 
-    /// True for an enabled node whose tuning follows the routed transducer.
-    nonisolated var followsOutputKind: Bool {
-        guard enabled else { return false }
-        switch typeID {
-        case Self.classicBassTypeID:
-            return effectParameters(DSPClassicBassParameters.self)?.target == .automatic
-        case Self.hybridBassTypeID:
-            return effectParameters(DSPHybridBassParameters.self)?.target == .automatic
-        default:
-            return false
-        }
-    }
-
     nonisolated static func parametricEQ(
         nodeID: UUID = UUID(),
         enabled: Bool = true,
@@ -758,11 +745,6 @@ nonisolated struct AudioDSPConfiguration: Codable, Equatable, Sendable {
 
     nonisolated func hasSameStructure(as other: AudioDSPConfiguration) -> Bool {
         structureSignature == other.structureSignature
-    }
-
-    /// True when an active effect retunes itself for headphones or speakers.
-    nonisolated var followsOutputKind: Bool {
-        enabled && nodes.contains(where: \.followsOutputKind)
     }
 
     /// True when an active effect renders its own spatial image, which the

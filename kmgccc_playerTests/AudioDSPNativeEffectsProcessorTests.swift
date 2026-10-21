@@ -11,9 +11,9 @@ final class AudioDSPNativeEffectsProcessorTests: XCTestCase {
             channelLabels: [UInt32(kAudioChannelLabel_Mono)],
             layoutIsKnown: true
         )
-        let widthNode = DSPNodeConfiguration.stereoWidth(
-            parameters: DSPStereoWidthParameters(width: 0)
-        )
+        var widthParameters = DSPStereoWidthParameters(width: 0)
+        widthParameters.loudnessMatchEnabled = false
+        let widthNode = DSPNodeConfiguration.stereoWidth(parameters: widthParameters)
         let monoProcessor = processor(nodes: [widthNode], format: monoFormat)
         let monoInput = CanonicalPCM(
             frames: 2,
@@ -1197,7 +1197,7 @@ final class AudioDSPEffectsV2KernelTests: XCTestCase {
             0.58 * sin(2 * Double.pi * 1_000 * time) + 0.28 * sin(2 * Double.pi * 40 * time)
         }
         for node in bassTestNodes(intensity: 1.0, cutoff: 80, retainsRealBass: true) {
-            let runtime = bassTestProcessor(node, automaticHeadroom: true, limiterEnabled: true)
+            let runtime = bassTestProcessor(node, automaticHeadroom: true, limiterEnabled: true, ceilingDB: -1)
             let output = runtime.process(input).data.map(Double.init)
             XCTAssertTrue(output.allSatisfy(\.isFinite))
             XCTAssertLessThanOrEqual(output.map { abs($0) }.max() ?? 0, pow(10, -1.0 / 20) + 1e-4)
@@ -1391,11 +1391,11 @@ final class AudioDSPEffectsV2KernelTests: XCTestCase {
     }
 
     private func bassTestProcessor(_ node: DSPNodeConfiguration, automaticHeadroom: Bool = false,
-                                   limiterEnabled: Bool = false) -> AudioDSPProcessor {
+                                   limiterEnabled: Bool = false, ceilingDB: Double = 0) -> AudioDSPProcessor {
         AudioDSPProcessor(
             configuration: AudioDSPConfiguration(enabled: true,
                                                  headroom: DSPHeadroomConfiguration(mode: automaticHeadroom ? .automatic : .off),
-                                                 nodes: [node], limiter: DSPLimiterConfiguration(enabled: limiterEnabled)),
+                                                 nodes: [node], limiter: DSPLimiterConfiguration(enabled: limiterEnabled, ceilingDB: ceilingDB)),
             format: DSPAudioFormat(sampleRate: sampleRate, channelCount: 1, rawLayoutData: nil,
                                    channelLabels: [UInt32(kAudioChannelLabel_Mono)], layoutIsKnown: true)
         )

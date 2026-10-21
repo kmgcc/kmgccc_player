@@ -197,6 +197,10 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
     // Envelope followers
     private var f1: DSPPeakHoldFollower
     private var f2: DSPPeakHoldFollower
+    private let fundamentalGains: [Double]
+    private let powerSmoothing: Double
+    private var bassPower = 0.0
+    private var smoothedBassPower = 0.0
 
     // Delay line for g1
     private var g1Delay: DSPIntegerDelay
@@ -207,7 +211,6 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
         format: DSPAudioFormat,
         selectedChannels mask: [Bool],
         parameters: DSPHybridBassParameters,
-        outputKind: DSPOutputKind?,
         outputCeiling: Double? = nil
     ) {
         let fs = format.sampleRate
@@ -216,7 +219,7 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
         guard !selectedChannels.isEmpty else { return nil }
         self.sampleRate = fs
 
-        let settings = parameters.resolved(for: outputKind)
+        let settings = parameters.resolved()
         let fc = max(40.0, min(160.0, settings.cutoffHz))
         self.retainsRealBass = settings.retainsRealBass
 
@@ -232,17 +235,21 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
         let baseDrive = 0.2 + 0.8 * settings.impact
         let driveScale = pow(60.0 / fc, 1.05)
         self.drive_eff = max(0.05, min(2.5, baseDrive * driveScale))
+        self.fundamentalGains = Self.makeFundamentalGains(drive: drive_eff)
+        self.powerSmoothing = 1 - exp(-1 / (0.05 * fs))
 
         // Floor highpass: 4th-order Butterworth at 45 Hz
         guard let fhp1 = DSPFilterDesign.section(.highPass, frequencyHz: 45.0, sampleRate: fs, q: DSPFilterDesign.fourthOrderQs[0]),
               let fhp2 = DSPFilterDesign.section(.highPass, frequencyHz: 45.0, sampleRate: fs, q: DSPFilterDesign.fourthOrderQs[1]) else { return nil }
         self.floorHP = DSPBiquadCascade([fhp1, fhp2])
 
-        // Source lowpass: 4th-order Linkwitz-Riley at min(fc, 95 Hz)
+        // Sixth-order source lowpass: stop out-of-band notes before the
+        // nonlinear generator and its harmonic recovery gain.
         let srcFc = min(fc, 95.0)
         guard let slp1 = DSPFilterDesign.section(.lowPass, frequencyHz: srcFc, sampleRate: fs, q: DSPFilterDesign.butterworthQ),
-              let slp2 = DSPFilterDesign.section(.lowPass, frequencyHz: srcFc, sampleRate: fs, q: DSPFilterDesign.butterworthQ) else { return nil }
-        self.srcLP = DSPBiquadCascade([slp1, slp2])
+              let slp2 = DSPFilterDesign.section(.lowPass, frequencyHz: srcFc, sampleRate: fs, q: DSPFilterDesign.butterworthQ),
+              let slp3 = DSPFilterDesign.section(.lowPass, frequencyHz: srcFc, sampleRate: fs, q: DSPFilterDesign.butterworthQ) else { return nil }
+        self.srcLP = DSPBiquadCascade([slp1, slp2, slp3])
 
         // Dry crossover highpass per channel (if not retaining real bass, 4th-order LR at 0.85 fc)
         var dryHPList: [DSPBiquadCascade] = []
@@ -294,6 +301,7 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
 
         self.peakCeiling = outputCeiling
         self.stateBytes = MemoryLayout<Self>.stride + delayLine.storageBytes
+            + fundamentalGains.count * MemoryLayout<Double>.stride
     }
 
     mutating func process(_ samples: UnsafeMutablePointer<Double>, frames: Int, channels: Int) {
@@ -318,8 +326,21 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
             let g1 = f1.process(x)
 
             // 3. Normalized NLD with smooth C-infinity triode saturation
-            let u = tanh((x / g1) * drive_eff)
-            let yRaw = tanh(u) + 0.42 * (u * u)
+            let normalized = x / g1
+            let u = tanh(normalized * drive_eff)
+            // The NLD contains a strong linear component. Remove its
+            // fundamental before recovery gain; a high-pass alone leaks it
+            // back into the original bass, especially near the crossover.
+            // Two power poles reject note-cycle ripple without adding delay
+            // to the dry signal. The table is prepared once, off the render path.
+            bassPower += (x * x - bassPower) * powerSmoothing
+            smoothedBassPower += (bassPower - smoothedBassPower) * powerSmoothing
+            let amplitude = sqrt(2 * max(0, smoothedBassPower)) / g1
+            let position = min(256, max(0, amplitude * 256))
+            let index = min(255, Int(position))
+            let fundamentalGain = fundamentalGains[index]
+                + (fundamentalGains[index + 1] - fundamentalGains[index]) * (position - Double(index))
+            let yRaw = tanh(u) + 0.42 * (u * u) - fundamentalGain * normalized
             let y = dcBlock.process(yRaw)
 
             // 4. Bandpass
@@ -330,9 +351,9 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
             let g2 = f2.process(hb)
             let gainRatio = min(4.0, g1d / max(1e-6, g2))
 
-            // 6. Output harmonic with soft saturation ceiling
-            let rawH = hb * gainRatio * baseGain
-            let h = (tanh(rawH * 0.9) / 0.9) * amountGain
+            // 6. Avoid another nonlinear mix of the generated harmonics;
+            // output protection applies only to the added bass below.
+            let h = hb * gainRatio * baseGain * amountGain
 
             // 7. Channel mixing with peak control
             for i in 0..<count {
@@ -362,6 +383,8 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
         postLP.copyState(from: source.postLP)
         f1.copyState(from: source.f1)
         f2.copyState(from: source.f2)
+        bassPower = source.bassPower
+        smoothedBassPower = source.smoothedBassPower
         g1Delay.copyState(from: source.g1Delay)
     }
 
@@ -374,6 +397,8 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
         postLP.reset()
         f1.reset()
         f2.reset()
+        bassPower = 0
+        smoothedBassPower = 0
         g1Delay.reset()
     }
 
@@ -383,5 +408,20 @@ nonisolated struct DSPHybridBassKernel: DSPBlockKernel {
 
     static func staticPeakResponseDB(parameters: DSPHybridBassParameters) -> Double {
         0.0
+    }
+
+    /// First sine coefficient of tanh(tanh(drive * a * sin(phase))),
+    /// divided by a. The even triode term has no fundamental.
+    private static func makeFundamentalGains(drive: Double) -> [Double] {
+        (0...256).map { index in
+            guard index > 0 else { return drive }
+            let amplitude = Double(index) / 256
+            var gain = 0.0
+            for phaseIndex in 0..<128 {
+                let sine = sin(2 * Double.pi * (Double(phaseIndex) + 0.5) / 128)
+                gain += 2 * tanh(tanh(drive * amplitude * sine)) * sine / (128 * amplitude)
+            }
+            return gain
+        }
     }
 }

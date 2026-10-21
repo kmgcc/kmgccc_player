@@ -96,17 +96,8 @@ nonisolated struct DSPParameterChecker {
 
 /// Who the bass extension is tuned for.
 nonisolated enum DSPBassTarget: String, Codable, CaseIterable, Equatable, Sendable {
-    case automatic = "auto"
     case headphones
     case speakers
-
-    func resolved(for outputKind: DSPOutputKind?) -> DSPOutputKind {
-        switch self {
-        case .headphones: .headphones
-        case .speakers: .speakers
-        case .automatic: outputKind ?? .speakers
-        }
-    }
 }
 
 nonisolated enum DSPSwitchSetting: String, Codable, CaseIterable, Equatable, Sendable {
@@ -165,16 +156,15 @@ nonisolated struct DSPClassicBassParameters: DSPEffectParameterSet {
         }
     }
 
-    var target: DSPBassTarget = .automatic
+    var target: DSPBassTarget = .speakers
     var intensity = 0.5
     var cutoffHz = 80.0
-    var retainsRealBass = true
+    var retainsRealBass = false
     var impactDB = -12.0
     var targetSettings: [String: TargetSettings] = [:]
 
     init() {
         var settings: [String: TargetSettings] = [:]
-        settings[DSPBassTarget.automatic.rawValue] = TargetSettings(intensity: 0.5, cutoffHz: 80.0, retainsRealBass: true, impactDB: -12.0)
         settings[DSPBassTarget.headphones.rawValue] = TargetSettings(intensity: 0.5, cutoffHz: 50.0, retainsRealBass: true, impactDB: -12.0)
         settings[DSPBassTarget.speakers.rawValue] = TargetSettings(intensity: 0.5, cutoffHz: 80.0, retainsRealBass: false, impactDB: -12.0)
         self.targetSettings = settings
@@ -194,13 +184,14 @@ nonisolated struct DSPClassicBassParameters: DSPEffectParameterSet {
         self.impactDB = impactDB
 
         var settings: [String: TargetSettings] = [:]
-        settings[DSPBassTarget.automatic.rawValue] = TargetSettings(intensity: 0.5, cutoffHz: 80.0, retainsRealBass: true, impactDB: -12.0)
         settings[DSPBassTarget.headphones.rawValue] = TargetSettings(intensity: 0.5, cutoffHz: 50.0, retainsRealBass: true, impactDB: -12.0)
         settings[DSPBassTarget.speakers.rawValue] = TargetSettings(intensity: 0.5, cutoffHz: 80.0, retainsRealBass: false, impactDB: -12.0)
 
         if let settingsObject = reader.object("targetSettings") {
             for (key, val) in settingsObject {
-                if case .object(let dict) = val, let item = TargetSettings(json: dict) {
+                if DSPBassTarget(rawValue: key) != nil,
+                   case .object(let dict) = val,
+                   let item = TargetSettings(json: dict) {
                     settings[key] = item
                 }
             }
@@ -235,7 +226,6 @@ nonisolated struct DSPClassicBassParameters: DSPEffectParameterSet {
         } else {
             let initial: TargetSettings
             switch newTarget {
-            case .automatic: initial = TargetSettings(intensity: 0.5, cutoffHz: 80.0, retainsRealBass: true, impactDB: -12.0)
             case .headphones: initial = TargetSettings(intensity: 0.5, cutoffHz: 50.0, retainsRealBass: true, impactDB: -12.0)
             case .speakers: initial = TargetSettings(intensity: 0.5, cutoffHz: 80.0, retainsRealBass: false, impactDB: -12.0)
             }
@@ -286,16 +276,8 @@ nonisolated struct DSPClassicBassParameters: DSPEffectParameterSet {
         return checker.issues
     }
 
-    func resolved(for outputKind: DSPOutputKind?) -> TargetSettings {
-        switch target {
-        case .headphones:
-            return targetSettings[DSPBassTarget.headphones.rawValue] ?? currentSettings
-        case .speakers:
-            return targetSettings[DSPBassTarget.speakers.rawValue] ?? currentSettings
-        case .automatic:
-            let key = (outputKind == .headphones) ? DSPBassTarget.headphones.rawValue : DSPBassTarget.speakers.rawValue
-            return targetSettings[key] ?? currentSettings
-        }
+    func resolved() -> TargetSettings {
+        targetSettings[target.rawValue] ?? currentSettings
     }
 }
 
@@ -349,16 +331,15 @@ nonisolated struct DSPHybridBassParameters: DSPEffectParameterSet {
         }
     }
 
-    var target: DSPBassTarget = .automatic
+    var target: DSPBassTarget = .speakers
     var intensity = 0.5
     var cutoffHz = 80.0
-    var retainsRealBass = true
+    var retainsRealBass = false
     var impact = 0.5
     var targetSettings: [String: TargetSettings] = [:]
 
     init() {
         var settings: [String: TargetSettings] = [:]
-        settings[DSPBassTarget.automatic.rawValue] = TargetSettings(intensity: 0.5, cutoffHz: 80.0, retainsRealBass: true, impact: 0.5)
         settings[DSPBassTarget.headphones.rawValue] = TargetSettings(intensity: 0.5, cutoffHz: 50.0, retainsRealBass: true, impact: 0.5)
         settings[DSPBassTarget.speakers.rawValue] = TargetSettings(intensity: 0.5, cutoffHz: 80.0, retainsRealBass: false, impact: 0.5)
         self.targetSettings = settings
@@ -378,13 +359,14 @@ nonisolated struct DSPHybridBassParameters: DSPEffectParameterSet {
         self.impact = impact
 
         var settings: [String: TargetSettings] = [:]
-        settings[DSPBassTarget.automatic.rawValue] = TargetSettings(intensity: 0.5, cutoffHz: 80.0, retainsRealBass: true, impact: 0.5)
         settings[DSPBassTarget.headphones.rawValue] = TargetSettings(intensity: 0.5, cutoffHz: 50.0, retainsRealBass: true, impact: 0.5)
         settings[DSPBassTarget.speakers.rawValue] = TargetSettings(intensity: 0.5, cutoffHz: 80.0, retainsRealBass: false, impact: 0.5)
 
         if let settingsObject = reader.object("targetSettings") {
             for (key, val) in settingsObject {
-                if case .object(let dict) = val, let item = TargetSettings(json: dict) {
+                if DSPBassTarget(rawValue: key) != nil,
+                   case .object(let dict) = val,
+                   let item = TargetSettings(json: dict) {
                     settings[key] = item
                 }
             }
@@ -419,7 +401,6 @@ nonisolated struct DSPHybridBassParameters: DSPEffectParameterSet {
         } else {
             let initial: TargetSettings
             switch newTarget {
-            case .automatic: initial = TargetSettings(intensity: 0.5, cutoffHz: 80.0, retainsRealBass: true, impact: 0.5)
             case .headphones: initial = TargetSettings(intensity: 0.5, cutoffHz: 50.0, retainsRealBass: true, impact: 0.5)
             case .speakers: initial = TargetSettings(intensity: 0.5, cutoffHz: 80.0, retainsRealBass: false, impact: 0.5)
             }
@@ -470,16 +451,8 @@ nonisolated struct DSPHybridBassParameters: DSPEffectParameterSet {
         return checker.issues
     }
 
-    func resolved(for outputKind: DSPOutputKind?) -> TargetSettings {
-        switch target {
-        case .headphones:
-            return targetSettings[DSPBassTarget.headphones.rawValue] ?? currentSettings
-        case .speakers:
-            return targetSettings[DSPBassTarget.speakers.rawValue] ?? currentSettings
-        case .automatic:
-            let key = (outputKind == .headphones) ? DSPBassTarget.headphones.rawValue : DSPBassTarget.speakers.rawValue
-            return targetSettings[key] ?? currentSettings
-        }
+    func resolved() -> TargetSettings {
+        targetSettings[target.rawValue] ?? currentSettings
     }
 }
 

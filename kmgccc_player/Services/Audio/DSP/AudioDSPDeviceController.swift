@@ -65,7 +65,7 @@ nonisolated struct DSPOutputDevice: Identifiable, Equatable, Sendable {
         let switchable = source?.isSwitchable == true
         var name = descriptor.name
         if switchable, let sourceName = source?.name, !sourceName.isEmpty, sourceName != name {
-            name += " · " + sourceName
+            name += " (\(sourceName))"
         }
         return DSPOutputDevice(
             key: DSPOutputDeviceKey(uid: descriptor.uniqueID, dataSource: switchable ? source?.id : nil),
@@ -220,7 +220,7 @@ final class AudioDSPDeviceController {
             guard copyIfOwned else { throw occupiedPreset(owner.name) }
             let source = try await dsp.preset(id: id)
             target = try await dsp.duplicatePreset(
-                id: id, name: "\(source.name) · \(device.name)", expectedPresetRevision: source.revisionString
+                id: id, name: "\(source.name) (\(device.name))", expectedPresetRevision: source.revisionString
             ).presetID
         }
         guard currentDevice?.id == device.id else { return }

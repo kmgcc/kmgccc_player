@@ -4,8 +4,7 @@ import Foundation
 /// system volume drives it; App volume, transport fades and normalization
 /// gain never do. The curve itself comes from the preset's calibration when
 /// it was recorded on the routed device.
-/// What kind of transducer the routed output drives. Effects with an
-/// automatic target tune themselves to it; an unknown route counts as speakers.
+/// What kind of transducer the routed output drives.
 nonisolated enum DSPOutputKind: String, Codable, Equatable, Sendable {
     case headphones
     case speakers

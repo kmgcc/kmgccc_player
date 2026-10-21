@@ -371,7 +371,12 @@ final class AudioDSPControllerTests: XCTestCase {
         await controller.ensureLoaded()
         _ = try controller.selectPreset(id: saved.presetID)
         XCTAssertFalse(controller.isModified)
-        try await Task.sleep(for: .milliseconds(300))
+        await controller.flushPendingPersistence()
+        XCTAssertFalse(controller.isModified)
+        let afterSelection = try await store.preset(id: saved.presetID)
+        XCTAssertEqual(afterSelection, saved, "Selection must not rewrite the preset or its revision.")
+        await controller.reloadPresets()
+        XCTAssertFalse(controller.isModified)
     }
 
     func testEnabledUnknownNodeFailsValidationAndDisabledNodeIsPreserved() async throws {

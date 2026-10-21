@@ -109,7 +109,9 @@ nonisolated struct EqualLoudnessCalibration: Codable, Equatable, Sendable {
         self.axis = axis
         self.points = points
         self.algorithmVersion = algorithmVersion
-        self.createdAt = createdAt
+        // Match the Unix-seconds wire precision at creation. Converting a
+        // finer Date only when saving can change equality after a reload.
+        self.createdAt = Date(timeIntervalSince1970: createdAt.timeIntervalSince1970)
     }
 
     nonisolated var curve: EqualLoudnessCurve? { EqualLoudnessCurve(points: points) }

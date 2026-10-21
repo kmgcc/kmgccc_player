@@ -330,29 +330,33 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
 
     func testBassControlsSaveIndependentlyForEachTargetAndRoundTrip() throws {
         var classic = DSPClassicBassParameters()
+        XCTAssertEqual(classic.target, .speakers)
+        XCTAssertFalse(classic.retainsRealBass)
+        classic.cutoffHz = 60
+        classic.intensity = 0.3
+        classic.switchTarget(to: .headphones)
+        XCTAssertEqual(classic.cutoffHz, 50)
+        XCTAssertEqual(classic.intensity, 0.5)
         classic.cutoffHz = 120
         classic.intensity = 0.8
         classic.switchTarget(to: .speakers)
-        XCTAssertEqual(classic.cutoffHz, 80)
-        XCTAssertEqual(classic.intensity, 0.5)
-        classic.cutoffHz = 60
-        classic.intensity = 0.3
-        classic.switchTarget(to: .automatic)
-        XCTAssertEqual(classic.cutoffHz, 120)
-        XCTAssertEqual(classic.intensity, 0.8)
+        XCTAssertEqual(classic.cutoffHz, 60)
+        XCTAssertEqual(classic.intensity, 0.3)
         XCTAssertTrue(classic.validationIssues.isEmpty)
 
         var hybrid = DSPHybridBassParameters()
-        hybrid.cutoffHz = 120
-        hybrid.intensity = 0.8
+        XCTAssertEqual(hybrid.target, .speakers)
+        XCTAssertFalse(hybrid.retainsRealBass)
+        hybrid.cutoffHz = 60
+        hybrid.intensity = 0.3
         hybrid.switchTarget(to: .headphones)
         XCTAssertEqual(hybrid.cutoffHz, 50)
         XCTAssertEqual(hybrid.intensity, 0.5)
-        hybrid.cutoffHz = 60
-        hybrid.intensity = 0.3
-        hybrid.switchTarget(to: .automatic)
-        XCTAssertEqual(hybrid.cutoffHz, 120)
-        XCTAssertEqual(hybrid.intensity, 0.8)
+        hybrid.cutoffHz = 120
+        hybrid.intensity = 0.8
+        hybrid.switchTarget(to: .speakers)
+        XCTAssertEqual(hybrid.cutoffHz, 60)
+        XCTAssertEqual(hybrid.intensity, 0.3)
         XCTAssertTrue(hybrid.validationIssues.isEmpty)
 
         var classicJSON: [String: DSPJSONValue] = [:]

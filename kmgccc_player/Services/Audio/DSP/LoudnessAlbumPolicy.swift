@@ -130,7 +130,10 @@ nonisolated enum LoudnessAlbumPolicy {
     nonisolated static func containsUnknownArtist(_ credit: String) -> Bool {
         let trimmed = credit.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return true }
+        // Reliability may inspect collaborators without changing the library's
+        // grouping contract, which preserves names such as "Simon & Garfunkel".
         let parts = LibraryNormalization.artistDisplayNameParts(trimmed)
+            .flatMap { $0.components(separatedBy: CharacterSet(charactersIn: "&＆")) }
         guard !parts.isEmpty else { return true }
         return parts.contains { unknownArtistNames.contains($0.trimmingCharacters(in: .whitespaces).lowercased()) }
     }

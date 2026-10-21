@@ -247,14 +247,12 @@ nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
     // Analytic generator weights and follower
     private let weights: [Double]
     private let K: Int
-    private let releaseCoeff: Double
-    private var followerG: Double = 1e-9
+    private var follower: DSPPeakHoldFollower
 
     init?(
         format: DSPAudioFormat,
         selectedChannels mask: [Bool],
         parameters: DSPClassicBassParameters,
-        outputKind: DSPOutputKind?,
         outputCeiling: Double? = nil
     ) {
         let fs = format.sampleRate
@@ -263,7 +261,7 @@ nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
         guard !selectedChannels.isEmpty else { return nil }
         self.sampleRate = fs
 
-        let settings = parameters.resolved(for: outputKind)
+        let settings = parameters.resolved()
         let fc = max(40.0, min(160.0, settings.cutoffHz))
         let floorHz = max(20.0, min(45.0, fc * 0.7))
         self.retainsRealBass = settings.retainsRealBass
@@ -377,8 +375,10 @@ nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
         self.eq = DSPBiquadCascade(fit.sections)
         self.outGain = pow(10.0, fit.offsetDB / 20.0)
 
-        // Follower release: 120 ms
-        self.releaseCoeff = exp(-1.0 / (0.12 * fs))
+        // Hold across bass-note beating so normalization does not modulate
+        // the analytic harmonics into difference tones.
+        self.follower = DSPPeakHoldFollower(sampleRate: fs, holdMs: 80,
+            releaseMs: 120, smoothMs: 15, nearPeak: 0.9, floor: 1e-9)
 
         self.peakCeiling = outputCeiling
     }
@@ -407,10 +407,9 @@ nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
             let zr = quad.re
             let zi = quad.im
             let a = sqrt(zr * zr + zi * zi)
-            followerG = max(a, followerG * releaseCoeff, 1e-9)
+            let g = follower.process(a)
 
             // 3. Polynomial harmonic generation
-            let g = followerG
             let ur = zr / g
             let ui = zi / g
             var pr = ur
@@ -424,9 +423,10 @@ nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
                 acc += weights[k] * pr
             }
 
-            // 4. Bandpass and soft saturation ceiling
-            let rawH = postLP.process(postHP.process(g * acc)) * outGain
-            let h = (tanh(rawH * 0.9) / 0.9) * amountGain
+            // 4. Keep the harmonic sum linear: saturating it again creates
+            // difference tones, including the fundamental. The added-bass
+            // peak control below supplies the output ceiling.
+            let h = postLP.process(postHP.process(g * acc)) * outGain * amountGain
 
             // 5. Channel mixing with peak control
             for i in 0..<count {
@@ -455,7 +455,7 @@ nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
         eq.copyState(from: source.eq)
         postHP.copyState(from: source.postHP)
         postLP.copyState(from: source.postLP)
-        followerG = source.followerG
+        follower.copyState(from: source.follower)
     }
 
     mutating func reset() {
@@ -466,14 +466,14 @@ nonisolated struct DSPClassicBassKernel: DSPBlockKernel {
         eq.reset()
         postHP.reset()
         postLP.reset()
-        followerG = 1e-9
+        follower.reset()
     }
 
     mutating func setProgramLevelOffset(dB offsetDB: Double) {
         // Analytic follower dynamically tracks level
     }
 
-    static func staticPeakResponseDB(parameters: DSPClassicBassParameters, outputKind: DSPOutputKind?) -> Double {
+    static func staticPeakResponseDB(parameters: DSPClassicBassParameters) -> Double {
         0.0
     }
 }

@@ -1217,22 +1217,20 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         switch node.typeID {
         case DSPNodeConfiguration.classicBassTypeID:
             guard let parameters = node.effectParameters(DSPClassicBassParameters.self) else { return nil }
-            let kind = context.outputKind
-            let resolved = parameters.resolved(for: kind)
+            let resolved = parameters.resolved()
             if resolved.intensity == 0 && resolved.retainsRealBass { return nil }
             let kernel = DSPClassicBassKernel(format: format, selectedChannels: channelMask,
-                                              parameters: parameters, outputKind: kind, outputCeiling: bassOutputCeiling)
+                                              parameters: parameters, outputCeiling: bassOutputCeiling)
             return blockNode(kernel.map(DSPEffectKernel.classicBass),
-                             peakDB: DSPClassicBassKernel.staticPeakResponseDB(parameters: parameters, outputKind: kind),
+                             peakDB: DSPClassicBassKernel.staticPeakResponseDB(parameters: parameters),
                              trimDB: 0, nonlinear: true)
 
         case DSPNodeConfiguration.hybridBassTypeID:
             guard let parameters = node.effectParameters(DSPHybridBassParameters.self) else { return nil }
-            let kind = context.outputKind
-            let resolved = parameters.resolved(for: kind)
+            let resolved = parameters.resolved()
             if resolved.intensity == 0 && resolved.retainsRealBass { return nil }
             let kernel = DSPHybridBassKernel(format: format, selectedChannels: channelMask,
-                                             parameters: parameters, outputKind: kind, outputCeiling: bassOutputCeiling)
+                                             parameters: parameters, outputCeiling: bassOutputCeiling)
             return blockNode(kernel.map(DSPEffectKernel.hybridBass),
                              peakDB: DSPHybridBassKernel.staticPeakResponseDB(parameters: parameters),
                              trimDB: 0, nonlinear: true)

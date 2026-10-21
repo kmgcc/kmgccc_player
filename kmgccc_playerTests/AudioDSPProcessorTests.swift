@@ -654,6 +654,28 @@ final class AudioDSPProcessorTests: XCTestCase {
         XCTAssertEqual(roundTrip, calibrated)
     }
 
+    func testCalibrationRoundTripIsStableAcrossUnixDatePrecisionBoundaries() throws {
+        var seconds = Double(800_000_000)
+        for _ in 0..<32 {
+            seconds = seconds.nextUp
+            let recordedAt = Date(timeIntervalSinceReferenceDate: seconds)
+            let calibration = EqualLoudnessCalibration(
+                deviceKey: "test-output", deviceName: "Test", axis: .decibels,
+                points: [EqualLoudnessCalibrationPoint(coordinate: -20, bassDB: 0, trebleDB: 0)],
+                createdAt: recordedAt
+            )
+            let stage = calibratedStage(calibration)
+            for strategy in [JSONEncoder.DateEncodingStrategy.deferredToDate, .iso8601, .millisecondsSince1970] {
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = strategy
+                let restored = try JSONDecoder().decode(DSPEqualLoudnessStage.self, from: encoder.encode(stage))
+                XCTAssertEqual(restored, stage)
+                XCTAssertEqual(restored.calibration?.createdAt.timeIntervalSince1970,
+                               recordedAt.timeIntervalSince1970)
+            }
+        }
+    }
+
     func testEqualLoudnessIsAFixedStageAfterTheNodes() throws {
         var configuration = AudioDSPConfiguration(enabled: true, nodes: [.parametricEQ(), .tube()])
         configuration.equalLoudness.enabled = true
