@@ -1,12 +1,12 @@
 {
-  "latestVersion": "2.3.4",
-  "build_number": 15,
-  "releaseURL": "https://github.com/kmgcc/kmgccc_player/releases/tag/v2.3.4",
-  "notes": "## [v2.3.4] - 2026-10-04\n\n- **边缘模糊修复**：修复皮肤边缘与封面边缘的模糊问题。\n- **自动化与 MCP 导入升级**：升级本机自动化与 MCP 的导入功能，扩展曲库导入、元数据与标签能力。",
-  "version": "2.3.4",
-  "build": "15",
+  "latestVersion": "2.4.1",
+  "build_number": 16,
+  "releaseURL": "https://github.com/kmgcc/kmgccc_player/releases/tag/v2.4.1",
+  "notes": "## [v2.4.1] - 2026-10-21\n\n### Added\n\n- **音效✨**：新增均衡器、低音增强、混响等音效，可以调整顺序，并为不同设备保存设置。\n- **音量均衡**：统一不同歌曲间的音量，采用统一放缩，不会引入压缩失真。\n- **拖动歌曲**：可把多首歌曲拖进歌单或播放队列，也可拖到专辑、艺人页面整理。\n- **歌词导入（beta）**：可手动为歌曲导入更多格式的歌词；导入歌曲时，也会自动寻找同名歌词文件。\n- **后台任务与存储空间**：可查看后台任务的进度、资料库占用的空间，并分类清理缓存。\n\n### Changed\n\n- **界面**：配色改为三种选择；主页卡片可以用鼠标拖动浏览，全屏和弹窗的布局也作了调整。\n- **切歌**：提前准备下一首歌的封面和歌词，并调整声音与频谱画面的同步。\n- **MCP**：已连接的 agent 可以调整音效，查看和管理后台任务。\n\n### Fixed\n\n- 修复资料库读取出错时，可能误删歌曲信息的问题；拖动整理歌曲保存失败时，也会恢复原来的内容。\n- 修复导入时无法选择文件夹，以及在输入框里按方向键却触发快进的问题。\n- 修复编辑其他播放器的歌曲信息时，保存失败却仍关闭窗口的问题，以及部分背景切换异常。\n\n### 安装与校验\n\n支持 macOS 26.0 及以上，仅支持 Apple Silicon。打开 DMG，将 kmgccc_player 拖入 Applications 后启动。App 与 DMG 已使用 Developer ID 签名并通过 Apple 公证。\n\nDMG 为安装包；`.symbols.zip` 用于崩溃报告符号化，日常使用无需下载；`.sha256` 为安装包和符号包的校验文件。将待校验文件放在同一目录后运行：\n\n```sh\nshasum -a 256 -c kmgccc_player_2.4.1_16.sha256\n```",
+  "version": "2.4.1",
+  "build": "16",
   "channel": "production",
-  "release_notes_url": "https://kmgcc.github.io/kmgccc_player/release-notes/v2.3.4.md",
-  "dmg_url": "https://github.com/kmgcc/kmgccc_player/releases/download/v2.3.4/kmgccc_player_2.3.4_15.dmg",
-  "generated_at": "2026-10-04T00:00:00Z"
+  "release_notes_url": "https://kmgcc.github.io/kmgccc_player/release-notes/v2.4.1.md",
+  "dmg_url": "https://github.com/kmgcc/kmgccc_player/releases/download/v2.4.1/kmgccc_player_2.4.1_16.dmg",
+  "generated_at": "2026-10-21T00:00:00Z"
 }
