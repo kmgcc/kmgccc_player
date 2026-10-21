@@ -144,11 +144,16 @@ nonisolated final class DSPProcessingLoadAccumulator {
 @MainActor
 final class DSPProcessingLoadPresentation {
     private(set) var snapshot: DSPProcessingLoadSnapshot?
+    /// Read by automation to wait for a fresh measurement; views never observe it.
+    @ObservationIgnored private(set) var publishedCount = 0
+    @ObservationIgnored private(set) var publishedAt: Date?
 
     /// An interrupted measurement leaves the last result on screen. Merge by
     /// node ID so a temporarily disabled node recovers its color immediately.
     func update(_ snapshot: DSPProcessingLoadSnapshot?, retainingNodeIDs: Set<UUID>? = nil) {
         guard let snapshot else { return }
+        publishedCount += 1
+        publishedAt = Date()
         var loads = self.snapshot?.nodes ?? [:]
         if let retainingNodeIDs {
             loads = loads.filter { retainingNodeIDs.contains($0.key) }

@@ -46,6 +46,35 @@ assert_jq "job annotations" "$tools_result" '(.result.tools[] | select(.name == 
 
 assert_jq "audio import contract" "$tools_result" '(.result.tools[] | select(.name == "library.import") | .annotations["x-kmgccc-supports-jobs"] == true and .inputSchema.required == ["filePaths"] and .inputSchema.properties.targetPlaylistID.type == "string")'
 
+dsp_tools='["dsp.schema","dsp.state","dsp.load","dsp.validate","dsp.patch","dsp.wait",
+  "dsp.presets.list","dsp.presets.get","dsp.presets.save","dsp.presets.select","dsp.presets.rename",
+  "dsp.presets.delete","dsp.presets.duplicate","dsp.presets.import","dsp.presets.export",
+  "dsp.impulseResponses.list","dsp.impulseResponses.import",
+  "dsp.scripts.get","dsp.scripts.update","dsp.scripts.compile","dsp.scripts.test",
+  "dsp.nodes.retry","dsp.errors.get","dsp.errors.clear"]'
+assert_jq "DSP tool set" "$tools_result" "($dsp_tools - [.result.tools[].name]) == []"
+assert_jq "DSP order and parameter operations" "$tools_result" '(.result.tools[] | select(.name == "dsp.patch") | [.inputSchema.properties.operations.items.oneOf[].properties.op.enum[0]]) as $ops | (["setMaster","setParameter","setEnabled","setOrder","addNode","removeNode","setLimiter","setEqualLoudness"] - $ops) == []'
+assert_jq "DSP limiter contract" "$tools_result" '(.result.tools[] | select(.name == "dsp.patch") | .inputSchema.properties.configuration.properties.limiter.properties | keys) == ["ceilingDB","enabled"]'
+assert_jq "audio loudness range" "$tools_result" '(.result.tools[] | select(.name == "audio.patch") | .inputSchema.properties.values.properties.loudness.properties.targetLUFS | .minimum == -20 and .maximum == -8)'
+assert_jq "DSP load is read-only" "$tools_result" '(.result.tools[] | select(.name == "dsp.load") | .annotations.readOnlyHint) == true'
+assert_jq "impulse response import contract" "$tools_result" '(.result.tools[] | select(.name == "dsp.impulseResponses.import") | .inputSchema.required == ["path"] and .annotations.readOnlyHint == false)'
+assert_jq "script apply contract" "$tools_result" '(.result.tools[] | select(.name == "dsp.scripts.update") | .inputSchema.properties.apply.type == "boolean")'
+
+# Live DSP calls need the running App with MCP enabled; they never change audio.
+if [[ "${PLAYER_AUTOMATION_SMOKE_DSP_LIVE:-0}" == "1" ]]; then
+    dsp_call() {
+        printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"},"name":"%s","arguments":%s}}' "$1" "$2" "$3"
+    }
+    state_result="$(request "$(dsp_call 20 dsp.state '{}')")"
+    assert_jq "live dsp.state" "$state_result" '.result.isError != true and (.result.structuredContent.desiredRevision | type) == "string"'
+    load_result="$(request "$(dsp_call 21 dsp.load '{"sampleMs":0}')")"
+    assert_jq "live dsp.load" "$load_result" '.result.isError != true and (.result.structuredContent.overload | has("chainRuntimeBypassed"))'
+    patch_result="$(request "$(dsp_call 22 dsp.patch '{"operations":[{"op":"setMaster","value":true}],"dryRun":true}')")"
+    assert_jq "live dsp.patch dry-run" "$patch_result" '.result.isError != true and .result.structuredContent.applied == false'
+    ir_result="$(request "$(dsp_call 23 dsp.impulseResponses.list '{}')")"
+    assert_jq "live dsp.impulseResponses.list" "$ir_result" '.result.isError != true and (.result.structuredContent.impulseResponses | type) == "array"'
+fi
+
 resources_result="$(request "$modern_resources")"
 assert_jq "modern resources/list" "$resources_result" '.result.resources | length >= 2'
 

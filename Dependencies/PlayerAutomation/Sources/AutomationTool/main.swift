@@ -104,6 +104,15 @@ enum AutomationToolDefaults {
             }
             budget = max(budget, waitSeconds + 5)
         }
+        if request.method == AutomationMethod.dspLoad, !timeoutWasSet {
+            var sampleSeconds: TimeInterval = 1.5
+            if case .object(let parameters) = request.params,
+               case .number(let sampleMs) = parameters["sampleMs"],
+               sampleMs.isFinite, sampleMs >= 0 {
+                sampleSeconds = sampleMs / 1_000
+            }
+            budget = max(budget, sampleSeconds + 5)
+        }
 
         return min(max(budget, 0.000_001), maximumTimeout)
     }
@@ -1231,11 +1240,11 @@ private struct AutomationCLI {
             }
         case "dsp":
             guard let action = args.first else {
-                writeDiagnostic("usage error: dsp requires schema, state, validate, patch, wait, presets, scripts, nodes or errors")
+                writeDiagnostic("usage error: dsp requires schema, state, load, validate, patch, wait, presets, impulseResponses, scripts, nodes or errors")
                 return .usage
             }
             args.removeFirst()
-            if ["presets", "errors", "scripts", "nodes"].contains(action) {
+            if ["presets", "impulseResponses", "errors", "scripts", "nodes"].contains(action) {
                 guard let operation = args.first else {
                     writeDiagnostic("usage error: dsp \(action) requires an operation")
                     return .usage
@@ -1963,7 +1972,10 @@ private struct AutomationCLI {
                                    Collect paginated health evidence or start a background Job
           settings schema|get|patch|validate|reset
                                    Inspect, validate, update or reset persistent settings
-          dsp schema|state|validate|patch|wait|presets|errors  Control DSP and complete presets.
+          dsp schema|state|load|validate|patch|wait
+                                   Read, measure and edit the DSP chain
+          dsp presets|impulseResponses|scripts|nodes|errors <operation>
+                                   Manage presets, impulse responses, scripts and diagnostics
           audio get|patch          Read audio state or update scheduling and App output routing
           storage inspect         Inspect Library storage layout and schema
           storage validate [--params-json <object>]

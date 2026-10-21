@@ -463,8 +463,8 @@ nonisolated struct DSPNodeConfiguration: Codable, Equatable, Sendable {
     nonisolated static func displayTitle(forTypeID typeID: String) -> String {
         switch typeID {
         case parametricEQTypeID: "均衡器"
-        case classicBassTypeID: "经典虚拟低音"
-        case hybridBassTypeID: "虚拟低音"
+        case classicBassTypeID: "经典低音增强"
+        case hybridBassTypeID: "低音增强"
         case stereoWidthTypeID: "立体声扩展"
         case crossfeedTypeID: "交叉馈送"
         case spatialAudioTypeID: "空间音频"

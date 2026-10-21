@@ -217,14 +217,14 @@ manifest `tracks[].audioPath`，先相对 bundle 根目录解析；metadata 导�
 ## DSP 与完整预设
 
 P1–P2 的 `dsp.*` 工具通过 App 唯一 `AudioDSPController` 操作 renderer 前的音效。
-`dsp.schema` 返回当前支持的十段 EQ 参数合同，`dsp.state` 返回完整配置、当前格式、
+`dsp.schema` 返回全部节点的参数合同（EQ 为九段），`dsp.state` 返回完整配置、当前格式、
 `desiredRevision`／`preparedRevision`／`effectiveRevision`／`audibleRevision` 和诊断。
 `dsp.validate` 无副作用；`dsp.patch` 接受完整 `configuration` 或有序 `operations`，
 在全部参数通过后原子提交。`expectedRevision` 使用 `dsp.state.desiredRevision`。
 操作类型是 `setMaster`、`setTrim`、`setHeadroom`、`setLimiter`、`setEqualLoudness`、`setParameter`、`setEnabled`、
-`addNode`、`removeNode`、`setOrder`；`setParameter.path` 相对节点参数，例如 `bands.0.gainDB`。
+`setQuality`、`setChannelPolicy`、`addNode`、`removeNode`、`setOrder`；`setParameter.path` 相对节点参数，例如 `bands.0.gainDB`。
 
-自动余量只按 EQ、等响补偿和效果节点自身增加的峰值压低链路输入，不超过 `headroom.maximumAttenuationDB`（0–12 dB，默认 6）；
+自动余量只按 EQ、等响补偿和效果节点自身增加的峰值压低链路输入，不超过 `headroom.maximumAttenuationDB`（0–12 dB，默认 10）；
 调低的输入增益计入已留出的余量，调高的输入增益与输出增益保持原样。`limiter` 是等响补偿之后的固定限幅器：
 5 ms 前瞻把每次压缩展开成同样长的渐变，压缩后保持 20 ms，再按 dB 刻度释放；释放时间固定为 250 ms。`ceilingDB`（−6–0 dBFS，默认 0）是最终输出的样本峰值上限；
 `setLimiter` 可修改启用状态和上限。链路无处理时限幅器不启用。
@@ -251,11 +251,25 @@ CLI 使用 `--idempotency-key`；每次调参沿用 audio 授权，不弹额外�
 
 非线性与动态节点（电子管、两种低音、动态压缩）以节目电平为参考：输入增益、自动余量和上游节点的静态增益不会改变饱和程度或压缩阈值。空间音频启用时，App 暂停系统对该路输出的空间化，节点关闭后恢复。`spatialAudio` 的 `impulseResponseID` 是导入文件的内容哈希；文件缺失时节点旁路并给出 `dsp.impulseResponseMissing`。
 
-`dsp.state.processing` 及 apply status 包含 `processingLatencyFrames`、`mediaMappingLatencyFrames`、`peakGuarantee`。处理器以预读方式运行，提前处理到整链的算法延迟，App 时间映射延迟为 0；整链延迟上限为 300 ms。电子管固定 64 源帧，空间音频 256 帧，混合型虚拟低音约 220 ms，压缩的前瞻按参数计算，限幅器为 5 ms 对应的源帧数（48 kHz 时 240 帧）；尚未准备时返回 null。限幅器生效时峰值保证为 `samplePeakLimited`；关闭限幅器后，非线性链为 `unavailable`，不能将余量估计当作真实峰值保证。参数、质量、策略与链顺序均随完整预设保存。
+`dsp.impulseResponses.import` 读取本机绝对路径（展开 `~`）上的单声道、立体声或四声道音频，长度不超过 10 秒，按内容哈希只存一份；App 无法读取时返回 `permissionDenied`，文件不合格时返回 `dsp.impulseResponseInvalid`。传入空间音频节点的 `nodeID` 时，同一次调用把该节点切到 `source: impulseResponse` 并写入 ID 与名称，经与 `dsp.patch` 相同的实时事务生效，返回 `status.requestID`；`expectedRevision` 与 `dryRun` 照常适用，dry-run 只检查路径与节点。`dsp.impulseResponses.list` 列出已导入的响应、声道、采样率、时长，以及当前配置中使用它的节点和引用它的预设。
+
+`dsp.state.processing` 及 apply status 包含 `processingLatencyFrames`、`mediaMappingLatencyFrames`、`peakGuarantee`。处理器以预读方式运行，提前处理到整链的算法延迟，App 时间映射延迟为 0；整链延迟上限为 300 ms。电子管固定 64 源帧，空间音频 256 帧，两种低音均为零延迟，压缩的前瞻按参数计算，限幅器为 5 ms 对应的源帧数（48 kHz 时 240 帧）；尚未准备时返回 null。限幅器生效时峰值保证为 `samplePeakLimited`；关闭限幅器后，非线性链为 `unavailable`，不能将余量估计当作真实峰值保证。参数、质量、策略与链顺序均随完整预设保存。
+
+### 处理负载与过载
+
+`dsp.load` 读取实时处理负载，口径与设置页一致：处理耗时除以对应源音频时长，见 [DSP 处理负载](audio-dsp-processing-load.md)。负载只在有人观察时测量，调用会在 `sampleMs`（0–10000，默认 1500）内自行开启测量，结束后撤回，不影响设置页正在进行的测量；`sampleMs: 0` 只读上一次结果。结果包括：
+
+- `chain` 与 `nodes[].load`：`averageRatio`（约一秒平滑）、`sampledPeakRatio` 与 `budgetLevel`（`low`／`moderate`／`high`／`critical`，整链参考线 25%／50%／80%，单节点 5%／15%／30%）。`nodes` 按链顺序列出效果节点，末尾是等响阶段与限幅器；未测到的节点 `load` 为 null。
+- `overload`：`realtimeExceeded` 表示整链平均处理已慢于播放，`peakRealtimeExceeded` 表示抽样中有音频块慢于实时，另有 `chainRuntimeBypassed` 与运行时故障旁路的 `faultedNodeIDs`。
+- `fresh` 表示本次窗口内是否得到新结果；`available` 为 false 时 `reason` 为 `dspDisabled`、`externalSource` 或 `noProcessedAudio`（未在播放本地音频）。`measuredRevision` 与 `desiredRevision` 不同时，结果属于切换前的链。
+
+参考线用于呈现，不是实测的断续门槛；判断过载以 `realtimeExceeded` 为准。
 
 ### P6 可编程 DSP
 
 `dsp.scripts.get/update/compile/test` 开放有效源码、持久草稿、参数反射、编译/运行错误和有界 fixture。`update` 默认只保存草稿，`apply=true` 才编译并进入既有实时应用事务；`expectedDraftRevision` 与 `expectedRevision` 分别检查草稿和配置。编译失败保留当前声音，用 `dsp.wait` 区分 scheduled 与 audible。排序/参数/预设继续使用既有正式方法。
+
+新增脚本节点：`dsp.schema.nodes` 中 `script` 的 `parameterDefaults` 是一段可编译的增益脚本；以它作为 `parameters` 调用 `dsp.patch` 的 `addNode`，再用 `dsp.scripts.update`（`apply: true`）写入源码并生效，最后 `dsp.wait` 等待 `status.requestID`。每条链最多 4 个脚本节点。
 
 `dsp.scripts.test` 要求 audio.write/library.read，返回可取消的资料库 Job，现代 MCP Tasks 包装同一 Job。可传 silence/impulse/sine/sweep/pinkNoise 或有界 custom interleaved PCM；合成信号重试要求原 revision 未变，自定义 PCM 不持久化且不支持自动 retry。测试按所有合成声道执行，不代表真实输出布局验收。
 
@@ -267,8 +281,8 @@ CLI 使用 `--idempotency-key`；每次调参沿用 audio 授权，不弹额外�
 
 ### P3–P4 全局处理与等响
 
-`audio.get/patch` 开放全局 fade 与音量均衡（开关和目标响度）。`audio.loudness.get` 使用 audio.read/library.read 读取派生缓存；`audio.loudness.analyze` 使用 audio.write/library.read 创建支持取消、重试和 MCP Tasks 的 Job，不占用资料库写入队列。测量结果不改变当前曲目的增益，唯一例外是专辑增益首次就绪时的缓慢过渡。
+`audio.get/patch` 开放全局 fade 与音量均衡（开关和目标响度，−20 至 −8 LUFS，默认 −14）。`audio.loudness.get` 使用 audio.read/library.read 读取派生缓存；`audio.loudness.analyze` 使用 audio.write/library.read 创建支持取消、重试和 MCP Tasks 的 Job，不占用资料库写入队列。测量结果不改变当前曲目的增益，唯一例外是专辑增益首次就绪时的缓慢过渡。
 
 `dsp.schema.equalLoudness` 描述预设中的固定等响阶段：位于效果节点之后、输出增益之前，不可排序或移除，经 `setEqualLoudness` 编辑；参数只调节补偿强度与架式滤波器形状，补偿量来自实际输出设备的系统音量与预设内的标定曲线（标定只在记录它的输出路线上生效，否则使用默认曲线）。`dsp.state.equalLoudness` 报告设备、音量、曲线来源与预期 shelf 增益。
 
-每条输出路线（设备 UID，设备可切换 data source 时再加上当前 data source，例如同一台 Mac 的扬声器与耳机孔）记住自己的预设，未设置时播放平直；`dsp.state` 与 `dsp.presets.list` 的 `deviceProfiles` 用哈希后的 `deviceID` 列出各路线及其预设。一个预设只属于一条路线：`dsp.presets.select` 为当前路线选用并记住预设，选用其他路线的预设时须传 `copyForCurrentDevice`，得到不带原标定的独立副本，否则请求失败。`kmgccc://audio/state` 可读取和订阅全局与实际 transport 状态，沿用现有订阅 worker。
+每条输出路线（设备 UID，设备可切换 data source 时再加上当前 data source，例如同一台 Mac 的扬声器与耳机孔）记住自己的预设，未设置时播放平直；`dsp.state` 与 `dsp.presets.list` 的 `deviceProfiles` 用哈希后的 `deviceID` 列出各路线及其预设。一个预设只属于一条路线：`dsp.presets.select` 为当前路线选用并记住预设，选用其他路线的预设时须传 `copyForCurrentDevice`，得到不带原标定的独立副本，否则请求失败。切换输出设备使用 `audio.patch` 的 `values.outputDeviceID`（取自 `audio.get.availableOutputDevices`，null 跟随系统默认），路线变化后自动换用该路线的预设。`kmgccc://audio/state` 可读取和订阅全局与实际 transport 状态，沿用现有订阅 worker。

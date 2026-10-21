@@ -1369,8 +1369,11 @@ func libraryTrackPreferenceQuerySchemaIsAdvertised() {
 
 @Test
 func dspCatalogUsesAudioScopesAndCompleteVersionedSchemas() throws {
-    let descriptors = AutomationDSPToolCatalog.descriptors.filter { $0.name.hasPrefix("dsp.") }
-    #expect(descriptors.count == 16)
+    // dsp.scripts.test runs as a library Job; its scopes are covered below.
+    let descriptors = AutomationDSPToolCatalog.descriptors.filter {
+        $0.name.hasPrefix("dsp.") && $0.name != AutomationMethod.dspScriptsTest
+    }
+    #expect(descriptors.count == 23)
     #expect(Set(descriptors.map(\.name)).count == descriptors.count)
     for descriptor in descriptors {
         #expect(AutomationToolCatalog.descriptor(for: descriptor.name) != nil)
@@ -1391,6 +1394,37 @@ func dspCatalogUsesAudioScopesAndCompleteVersionedSchemas() throws {
     let encoded = try AutomationWireCoding.encoder().encode(descriptors)
     let decoded = try AutomationWireCoding.decoder().decode([AutomationToolDescriptor].self, from: encoded)
     #expect(decoded == descriptors)
+}
+
+@Test
+func dspLoadAndImpulseResponseToolsAreExposed() throws {
+    let load = try #require(AutomationToolCatalog.descriptor(for: AutomationMethod.dspLoad))
+    #expect(load.readOnly)
+    #expect(!load.supportsDryRun)
+    #expect(AutomationToolCatalog.unknownParameterKeys(for: AutomationMethod.dspLoad,
+        params: .object(["sampleMs": .number(1_500)])).isEmpty)
+    let list = try #require(AutomationToolCatalog.descriptor(for: AutomationMethod.dspImpulseResponsesList))
+    #expect(list.readOnly)
+    let importer = try #require(AutomationToolCatalog.descriptor(for: AutomationMethod.dspImpulseResponsesImport))
+    #expect(!importer.readOnly)
+    #expect(importer.supportsDryRun)
+    #expect(importer.scopes == [.audioWrite])
+    #expect(AutomationToolCatalog.unknownParameterKeys(for: AutomationMethod.dspImpulseResponsesImport,
+        params: .object(["path": .string("/tmp/ir.wav"), "nodeID": .string("id"),
+                         "expectedRevision": .string("r"), "dryRun": .boolean(true)])).isEmpty)
+
+    // Release is fixed; the published limiter and loudness contracts match the App model.
+    guard case .object(let limiter) = AutomationDSPToolCatalog.limiterSchema,
+          case .object(let limiterProperties) = limiter["properties"],
+          case .object(let loudness) = AutomationDSPToolCatalog.loudnessSchema,
+          case .object(let loudnessProperties) = loudness["properties"],
+          case .object(let target) = loudnessProperties["targetLUFS"] else {
+        Issue.record("Missing limiter or loudness schema")
+        return
+    }
+    #expect(Set(limiterProperties.keys) == ["enabled", "ceilingDB"])
+    #expect(target["minimum"] == .number(-20))
+    #expect(target["maximum"] == .number(-8))
 }
 
 @Test

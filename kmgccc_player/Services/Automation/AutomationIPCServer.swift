@@ -422,6 +422,8 @@ final class AutomationIPCServer {
 
         case AutomationMethod.dspSchema, AutomationMethod.dspState,
              AutomationMethod.dspValidate, AutomationMethod.dspPatch, AutomationMethod.dspWait,
+             AutomationMethod.dspLoad, AutomationMethod.dspImpulseResponsesList,
+             AutomationMethod.dspImpulseResponsesImport,
              AutomationMethod.dspPresetsList, AutomationMethod.dspPresetsGet,
              AutomationMethod.dspPresetsSave, AutomationMethod.dspPresetsSelect,
              AutomationMethod.dspPresetsRename, AutomationMethod.dspPresetsDelete,

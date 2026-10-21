@@ -40,6 +40,7 @@ _player-automation() {
         'diagnostics:Inspect library health' \
         'settings:Read or update persistent settings' \
         'audio:Read or update audio scheduling settings' \
+        'dsp:Control the DSP chain, presets and scripts' \
         'storage:Inspect and validate app-owned storage' \
         'mcp-stdio:Serve the MCP endpoint over stdio'
       ;;
@@ -61,10 +62,21 @@ _player-automation() {
         diagnostics) _values 'action' 'health' ;;
         settings) _values 'action' 'schema' 'get' 'patch' 'validate' 'reset' ;;
         audio) _values 'action' 'get' 'patch' ;;
+        dsp) _values 'action' 'schema' 'state' 'load' 'validate' 'patch' 'wait' 'presets' 'impulseResponses' 'scripts' 'nodes' 'errors' ;;
         storage) _values 'action' 'inspect' 'validate' 'orphans' 'backup' 'diff' 'reload' 'repair' ;;
       esac
       ;;
     argument)
+      if [[ $words[2] == dsp && CURRENT -eq 4 ]]; then
+        case $words[3] in
+          presets) _values 'operation' 'list' 'get' 'save' 'select' 'rename' 'delete' 'duplicate' 'import' 'export' ;;
+          impulseResponses) _values 'operation' 'list' 'import' ;;
+          scripts) _values 'operation' 'get' 'update' 'compile' 'test' ;;
+          nodes) _values 'operation' 'retry' ;;
+          errors) _values 'operation' 'get' 'clear' ;;
+        esac
+        return
+      fi
       case $words[2] in
         library|playlist|source|files|playback|queue|history|metadata|artwork|lyrics|jobs|settings|audio|storage)
           _files

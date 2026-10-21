@@ -8,6 +8,9 @@ public extension AutomationMethod {
     static let dspValidate = "dsp.validate"
     static let dspPatch = "dsp.patch"
     static let dspWait = "dsp.wait"
+    static let dspLoad = "dsp.load"
+    static let dspImpulseResponsesList = "dsp.impulseResponses.list"
+    static let dspImpulseResponsesImport = "dsp.impulseResponses.import"
     static let dspPresetsList = "dsp.presets.list"
     static let dspPresetsGet = "dsp.presets.get"
     static let dspPresetsSave = "dsp.presets.save"
@@ -165,7 +168,7 @@ public enum AutomationDSPToolCatalog {
             "studio is a quiet listening room with a light reflection pattern and a short tail; none is the speakers alone."),
         "distanceM": number(1, 8, unit: "m; fitted inside the room."),
         "speakerAngleDeg": number(20, 45, unit: "Degrees each side of centre."),
-        "impulseResponseID": described(string, "SHA-256 of an imported response, or empty; import happens in the App."),
+        "impulseResponseID": described(string, "SHA-256 of an imported response, or empty; import with dsp.impulseResponses.import."),
         "impulseResponseName": string,
         "mix": number(0, 1, unit: "Equal-power dry/wet balance."),
         "loudnessMatchEnabled": boolean,
@@ -405,6 +408,12 @@ public enum AutomationDSPToolCatalog {
             "channelPolicies": .array([.string("fullRange"), .string("allChannels")]),
             "quality": .array([.string("standard")]), "parameters": scriptParametersSchema,
             "defaultChannelPolicy": .string("fullRange"), "defaultQuality": .string("standard"),
+            "parameterDefaults": .object([
+                "languageVersion": .number(1),
+                "source": .string("param gainDB(-24, 12) = 0;\nprepare { let gain = dbToGain(gainDB); }\nprocess { output = input * gain; }"),
+                "values": .object([:])
+            ]),
+            "addNodeWorkflow": .string("addNode with these defaults, then dsp.scripts.update apply=true with the new source, then dsp.wait on status.requestID."),
             "latencyFrames": integer(0, 2048), "peakGuarantee": .string("unavailable"),
             "language": scriptLanguageCapabilities
         ])
@@ -418,7 +427,7 @@ public enum AutomationDSPToolCatalog {
     /// album-wide gain follows each album's automatic judgement and its
     /// `loudnessUnified` override in album metadata.
     public static let loudnessSchema = object([
-        "enabled": boolean, "targetLUFS": number(-23, -14)
+        "enabled": boolean, "targetLUFS": number(-20, -8, unit: "LUFS; default -14.")
     ])
 
     public static let nodeSchema: AutomationJSONValue = object([
@@ -442,15 +451,15 @@ public enum AutomationDSPToolCatalog {
     ], required: ["enabled", "inputTrimDB", "outputTrimDB", "headroom", "nodes", "equalLoudness", "limiter"])
 
     /// Fixed 5 ms lookahead peak limiter after the equal-loudness stage,
-    /// holding the final output's sample peak under its ceiling; it is not a node.
+    /// holding the final output's sample peak under its ceiling; it is not a
+    /// node. Release is fixed at 250 ms and is not a parameter.
     public static let limiterSchema = object([
         "enabled": boolean,
-        "ceilingDB": number(-6, 0, unit: "dBFS sample peak of the final output"),
-        "releaseMilliseconds": number(20, 1_000, unit: "ms; decibel-scale recovery time constant after a 20 ms hold")
-    ], required: ["enabled", "ceilingDB", "releaseMilliseconds"])
+        "ceilingDB": number(-6, 0, unit: "dBFS sample peak of the final output; release is fixed at 250 ms.")
+    ], required: ["enabled", "ceilingDB"])
 
     private static let limiterPatchSchema = object([
-        "enabled": boolean, "ceilingDB": number(-6, 0), "releaseMilliseconds": number(20, 1_000)
+        "enabled": boolean, "ceilingDB": number(-6, 0)
     ])
 
     public static let presetSchema: AutomationJSONValue = object([
@@ -547,6 +556,14 @@ public enum AutomationDSPToolCatalog {
         descriptor(AutomationMethod.dspWait, title: "Wait for DSP", description: "Wait for one DSP application request to become audible, ready, superseded or failed. A timeout is reported separately from success.", readOnly: true, schema: object([
             "requestID": uuid, "timeoutMs": integer(0, 30_000)
         ], required: ["requestID"])),
+        descriptor(AutomationMethod.dspLoad, title: "DSP Processing Load", description: "Measure live processing load for sampleMs (default 1500; 0 reads the last result without measuring): elapsed processing time divided by source audio duration, for the whole chain and each node, the equal-loudness stage and the limiter. overload reports realtime exceedance, budget level, chain runtime bypass and faulted nodes. Requires local playback; never changes audio.", readOnly: true, schema: object([
+            "sampleMs": integer(0, 10_000)
+        ])),
+        descriptor(AutomationMethod.dspImpulseResponsesList, title: "List Impulse Responses", description: "List imported impulse responses for spatialAudio source=impulseResponse, with channel count, sample rate, duration and the current nodes using each.", readOnly: true, schema: object([:])),
+        descriptor(AutomationMethod.dspImpulseResponsesImport, title: "Import Impulse Response", description: "Import a readable local mono, stereo or four-channel audio file of at most 10 seconds, stored once by content hash. With nodeID, also switches that spatialAudio node to the response through the same live transaction as dsp.patch. dry-run checks the path and node only.", readOnly: false, schema: mutation([
+            "path": .object(["type": .string("string"), "description": .string("Absolute local file path; ~ is expanded.")]),
+            "nodeID": uuid
+        ], required: ["path"]), dryRun: true),
         descriptor(AutomationMethod.dspPresetsList, title: "List DSP Presets", description: "List App-wide presets with stable UUIDs and revisions, and deviceProfiles: each output route with the preset it plays (flat when it has none). A preset belongs to at most one route; the active working draft is separate.", readOnly: true, schema: object([
             "offset": integer(0, 100_000), "limit": integer(1, 200)
         ])),

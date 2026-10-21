@@ -343,6 +343,8 @@ final class AudioDSPController {
         refreshProcessingLoadMonitoring()
     }
 
+    var isSourceLocal: Bool { sourceIsLocal }
+
     private func refreshProcessingLoadMonitoring() {
         processingLoadGeneration = UUID()
         monitorProcessingLoad?(!processingLoadObservers.isEmpty && sourceIsLocal, processingLoadGeneration)

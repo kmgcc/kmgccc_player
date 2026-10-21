@@ -42,6 +42,53 @@ final class AudioDSPNativeEffectsConfigurationTests: XCTestCase {
         XCTAssertThrowsError(try handler.candidateConfiguration(malformed, current: current))
     }
 
+    func testPublishedSchemasMatchTheWireConfiguration() throws {
+        let handler = AutomationDSPHandler(appSession: nil)
+        var current = AudioDSPConfiguration.defaultEffects
+        current.limiter.ceilingDB = -1
+        let wire = try handler.value(current)
+        let parameters = try AutomationParameters(AutomationRequest(method: AutomationMethod.dspPatch,
+            params: .object(["configuration": wire])))
+        XCTAssertEqual(try handler.candidateConfiguration(parameters, current: .defaultFlat), current)
+
+        guard case .object(let limiterSchema) = AutomationDSPToolCatalog.limiterSchema,
+              case .object(let properties) = limiterSchema["properties"],
+              case .object(let fields) = try handler.value(current.limiter) else {
+            return XCTFail("Missing limiter schema")
+        }
+        XCTAssertEqual(Set(properties.keys), Set(fields.keys))
+
+        guard case .object(let loudness) = AutomationDSPToolCatalog.loudnessSchema,
+              case .object(let loudnessProperties) = loudness["properties"],
+              case .object(let target) = loudnessProperties["targetLUFS"] else {
+            return XCTFail("Missing loudness schema")
+        }
+        XCTAssertEqual(target["minimum"], .number(AudioLoudnessConfiguration.targetRange.lowerBound))
+        XCTAssertEqual(target["maximum"], .number(AudioLoudnessConfiguration.targetRange.upperBound))
+    }
+
+    func testScriptNodeDefaultsAddAnEditableNode() throws {
+        let handler = AutomationDSPHandler(appSession: nil)
+        let script = try XCTUnwrap(AutomationDSPToolCatalog.builtInNodeSchemas.first {
+            guard case .object(let fields) = $0 else { return false }
+            return fields["typeID"] == .string("script")
+        })
+        guard case .object(let fields) = script, let defaults = fields["parameterDefaults"] else {
+            return XCTFail("Missing script defaults")
+        }
+        let nodeID = UUID()
+        let parameters = try AutomationParameters(AutomationRequest(method: AutomationMethod.dspPatch,
+            params: .object(["operations": .array([.object(["op": .string("addNode"), "node": .object([
+                "nodeID": .string(nodeID.uuidString), "typeID": .string("script"),
+                "algorithmVersion": .number(1), "enabled": .boolean(true),
+                "channelPolicy": .string("fullRange"), "quality": .string("standard"),
+                "parameters": defaults,
+            ])])])])))
+        let candidate = try handler.candidateConfiguration(parameters, current: .defaultFlat)
+        XCTAssertEqual(candidate.nodes.last?.scriptParameters, DSPScriptNodeParameters())
+        XCTAssertEqual(candidate.nodes.last?.nodeID, nodeID)
+    }
+
     func testAutomationEditsTheFixedEqualLoudnessStage() throws {
         var current = AudioDSPConfiguration.defaultFlat
         current.equalLoudness.calibration = EqualLoudnessCalibration(
