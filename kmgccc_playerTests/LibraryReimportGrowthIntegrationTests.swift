@@ -370,12 +370,16 @@ final class LibraryReimportGrowthIntegrationTests: XCTestCase {
         let schema = Schema([TrackIndexEntry.self])
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [configuration])
-        return AppSessionHost(
+        let host = AppSessionHost(
             modelContainer: container,
             initialLibraryContext: nil,
             registryStore: try kmgccc_player.MusicLibraryRegistryStore(fileURL: registryURL),
             sessionFactory: LibrarySessionFactory()
         )
+        // Session-bound source scans borrow slots from the App scheduler.
+        // These fixtures bypass setupDependencies(), which starts it in the App.
+        host.backgroundWorkScheduler.start()
+        return host
     }
 
     private func writeWAV(to url: URL, sampleValue: Float = 0) throws {

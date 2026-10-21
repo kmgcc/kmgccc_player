@@ -168,6 +168,7 @@ struct MiniPlayerView: View {
             )
             .contentShape(Capsule())
             .onTapGesture {}
+            .libraryTrackDropTarget(.playNow, cornerRadius: GlassStyleTokens.miniPlayerHeight / 2, highlight: .overlay)
         }
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
@@ -745,7 +746,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
         }
         .contentShape(Rectangle())
         .offset(x: 4, y: 0)
-        .contextMenu {
+        .contextMenuWithVisibleIcons {
             // Closure is lazy — evaluated only when NSMenu appears, not during body computation.
             nowPlayingInfoContextMenu
         }

@@ -11,6 +11,7 @@ struct ReferencedFolderView: View {
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(AppSettings.self) private var appSettings
     @ObservedObject var appSession: AppSessionHost
+    let pageController: PlaylistPageController
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -343,7 +344,7 @@ struct ReferencedFolderView: View {
         .buttonStyle(.plain)
         .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
         .listRowBackground(Color.clear)
-        .contextMenu {
+        .contextMenuWithVisibleIcons {
             if case let .folder(path) = selection,
                !path.isEmpty,
                let source = selectedSource {
@@ -554,6 +555,8 @@ struct ReferencedFolderView: View {
 
     private func trackSection(_ source: ReferencedSourceDescriptor?) -> some View {
         let tracks = memoized.visibleTracks
+        let listIdentity = "folders/\(selectedSourceID?.uuidString ?? "standalone")/\(folderSelection)"
+        let registrationRevision = "\(listIdentity)/\(libraryVM.tracksRevision)/\(sourcesRevision)/\(normalizedFolderSearchText)"
         return VStack(alignment: .leading, spacing: 9) {
             HStack {
                 Text(folderSelectionTitle)
@@ -612,16 +615,61 @@ struct ReferencedFolderView: View {
                             .padding(.vertical, 2)
                             .frame(minHeight: 44)
                             .background(
-                                Color.primary.opacity(0.035),
+                                pageController.selectedTrackIDs.contains(track.id)
+                                    ? themeStore.selectionFill
+                                    : themeStore.appForegroundPalette.primaryColor.opacity(0.035),
                                 in: RoundedRectangle(cornerRadius: 11, style: .continuous)
                             )
                             .contentShape(Rectangle())
-                            .contextMenu { trackRowMenu(track, source: source) }
+                            .onTapGesture {
+                                if LibraryRowInput.selectionModifiersHeld { pageController.updateSelectionModifiers(held: true) }
+                                if pageController.isMultiselectMode {
+                                    pageController.handleMultiselectRowTap(
+                                        trackID: track.id, extendingRange: LibraryRowInput.isShiftPressed
+                                    )
+                                } else if track.availability.isPlayable {
+                                    playbackCoordinator.playTrack(
+                                        track, inQueueFrom: tracks, libraryQueueSource: .librarySelection(listIdentity)
+                                    )
+                                }
+                            }
+                            .libraryTrackDrag(
+                                title: track.title,
+                                onSessionChanged: { pageController.setNativeTrackDragActive($0) },
+                                onSinkDropCompleted: {
+                                    guard libraryVM.currentSelection == .folders,
+                                          pageController.toolbarSelectionIdentity == listIdentity else { return }
+                                    pageController.clearMultiselectState()
+                                }
+                            ) {
+                                LibraryTrackDragPayload(
+                                    sessionID: libraryVM.trackDragSessionID,
+                                    sourceSelectionIdentity: listIdentity,
+                                    trackIDs: LibraryTrackDragPayload.draggedIDs(
+                                        startingAt: track.id, selectedIDs: pageController.selectedTrackIDs,
+                                        orderedIDs: tracks.map(\.id)
+                                    )
+                                )
+                            }
+                            .contextMenuWithVisibleIcons { trackRowMenu(track, source: source) }
                         }
                     }
                 }
             }
         }
+        .task(id: registrationRevision) {
+            pageController.bindCollectionList(libraryVM: libraryVM, uiState: appSession.uiState)
+            pageController.registerTrackList(
+                selection: .folders, identity: listIdentity, tracks: tracks,
+                isFiltering: !normalizedFolderSearchText.isEmpty
+            )
+        }
+        .onDisappear { pageController.unregisterTrackList(identity: listIdentity) }
+        .background(MultiselectExitKeyMonitor(
+            isEnabled: pageController.isMultiselectMode && !pageController.isNativeTrackDragActive,
+            onEscape: { pageController.clearMultiselectState() },
+            onReturn: { pageController.clearMultiselectState() }
+        ))
     }
 
     @ViewBuilder

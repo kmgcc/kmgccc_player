@@ -931,6 +931,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
 
         let relatedAlbums = albumEntries.filter { $0.primaryArtistCanonicalName == original.canonicalName }
+        var renamedAlbumKeys: [String: String] = [:]
         for album in relatedAlbums {
             var migratedAlbum = album
             migratedAlbum.primaryArtistCanonicalName = newCanonicalName
@@ -952,6 +953,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 primaryArtistCanonicalName: newCanonicalName,
                 primaryArtistDisplayName: resolvedName
             ))
+            renamedAlbumKeys[album.canonicalKey] = albumToPersist.canonicalKey
             if let targetAlbum {
                 try libraryService.deleteAlbumEntry(id: album.id)
                 albumEntries.removeAll { $0.id == album.id }
@@ -965,6 +967,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
         let affectedTracks = allTracks.filter {
             LibraryNormalization.containsArtist(original.canonicalName, in: $0)
+                || $0.userMetadataOverride?.albumGroupKey.flatMap { renamedAlbumKeys[$0] } != nil
         }
         for track in affectedTracks {
             track.artist = LibraryNormalization.replacingArtistComponent(
@@ -979,6 +982,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                     displayName: resolvedName,
                     role: credit.role
                 )
+            }
+            if var correction = track.userMetadataOverride {
+                correction.artistDisplay = track.artist
+                if let key = correction.albumGroupKey, let renamedKey = renamedAlbumKeys[key] {
+                    correction.albumGroupKey = renamedKey
+                }
+                correction.editedAt = Date()
+                track.userMetadataOverride = correction
             }
         }
         _ = await persistTrackMetaOnly(affectedTracks, reason: "artistRename")
@@ -1033,6 +1044,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
         for track in affectedTracks {
             track.album = resolvedTitle
+            if var correction = track.userMetadataOverride {
+                correction.album = resolvedTitle
+                if correction.albumGroupKey == original.canonicalKey {
+                    correction.albumGroupKey = entryToPersist.canonicalKey
+                }
+                correction.editedAt = Date()
+                track.userMetadataOverride = correction
+            }
         }
         _ = await persistTrackMetaOnly(affectedTracks, reason: "albumRename")
     }
@@ -1348,6 +1367,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             enrichmentSuggestions: meta.enrichmentSuggestions
         )
 
+        track.userMetadataOverride = meta.userMetadataOverride
         return track
     }
 

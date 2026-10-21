@@ -77,6 +77,7 @@ final class PlaybackCoordinator {
     private var sidecarHydrationTask: Task<Void, Never>?
     private var sidecarHydratingTrackID: UUID?
     private var deferredNowPlayingUpdateTask: Task<Void, Never>?
+    private var trackMemoryTrimTask: Task<Void, Never>?
     private let artworkWarmer: PlaybackArtworkWarmer
     private let nextSongLyricsPreloader: NextSongLyricsPreloader
     private let lyricSnippetSeekLeadInSeconds: Double = 0.8
@@ -169,6 +170,8 @@ final class PlaybackCoordinator {
         )
 
         let previousSource = activeSource
+        trackMemoryTrimTask?.cancel()
+        trackMemoryTrimTask = nil
         if previousSource.isExternal, previousSource != source {
             externalProvider(for: previousSource)?.pause()
             externalProvider(for: previousSource)?.stop()
@@ -248,6 +251,8 @@ final class PlaybackCoordinator {
     func close() {
         presentationTimer?.invalidate()
         presentationTimer = nil
+        trackMemoryTrimTask?.cancel()
+        trackMemoryTrimTask = nil
         sidecarHydrationTask?.cancel()
         sidecarHydrationTask = nil
         deferredNowPlayingUpdateTask?.cancel()
@@ -498,6 +503,20 @@ final class PlaybackCoordinator {
             startPolicy: startPolicy
         )
         scheduleSeekAfterLocalTrackLoad(trackID: tracks[index].id, seconds: seconds)
+    }
+
+    @discardableResult
+    func playDroppedTracks(_ tracks: [Track]) -> Int {
+        guard localPlayback != nil else { return 0 }
+        let plan = LibraryTrackPlaybackDropPlan(
+            tracks: tracks,
+            currentTrackID: activeSource == .local ? localPlayback?.currentTrack?.id : nil,
+            existingQueue: activeSource == .local ? localPlayback?.currentQueueTracks ?? [] : []
+        )
+        guard !plan.initialQueue.isEmpty else { return 0 }
+        playTracks(plan.initialQueue, startPolicy: .forceSequentialTemporary)
+        if !plan.playNext.isEmpty { insertTracksAfterCurrent(plan.playNext) }
+        return 1 + plan.playNext.count
     }
 
     @discardableResult
@@ -756,13 +775,11 @@ final class PlaybackCoordinator {
 
     private func makeLocalPresentation() -> NowPlayingPresentation {
         guard let playback = localPlayback else {
-            presentation.localTrack?.releaseFileBackedResources()
-            CacheManager.trimRoutinePlaybackMemory()
+            releaseEmptyLocalPresentationResources()
             return .emptyLocal
         }
         guard let track = playback.currentTrack else {
-            presentation.localTrack?.releaseFileBackedResources()
-            CacheManager.trimRoutinePlaybackMemory()
+            releaseEmptyLocalPresentationResources()
             var empty = NowPlayingPresentation.emptyLocal
             empty.isControlEnabled = libraryTracksProvider().contains { $0.availability != .missing }
             empty.volume = settings.volumeControlTarget == .system
@@ -774,10 +791,7 @@ final class PlaybackCoordinator {
         if let previousTrack = presentation.localTrack,
            previousTrack.id != track.id {
             previousTrack.releaseFileBackedResources()
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(500))
-                CacheManager.trimRoutinePlaybackMemory()
-            }
+            scheduleTrackMemoryTrim(for: track.id)
         }
 
         let artworkData = track.artworkData
@@ -828,6 +842,32 @@ final class PlaybackCoordinator {
             isPlaybackModeControlEnabled: true,
             emptyTitleKey: "mini.not_playing"
         )
+    }
+
+    private func releaseEmptyLocalPresentationResources() {
+        trackMemoryTrimTask?.cancel()
+        trackMemoryTrimTask = nil
+        // The paused presentation timer also polls an empty queue. Reclaim
+        // once when the previous track leaves, rather than on every poll.
+        guard let previousTrack = presentation.localTrack else { return }
+        previousTrack.releaseFileBackedResources()
+        CacheManager.trimRoutinePlaybackMemory()
+    }
+
+    private func scheduleTrackMemoryTrim(for trackID: UUID) {
+        trackMemoryTrimTask?.cancel()
+        trackMemoryTrimTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(500))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self,
+                  self.activeSource == .local,
+                  self.localPlayback?.currentTrack?.id == trackID else { return }
+            self.trackMemoryTrimTask = nil
+            CacheManager.trimRoutinePlaybackMemory()
+        }
     }
 
     private func preferredLyricsTextSnapshot(for track: Track) -> String? {

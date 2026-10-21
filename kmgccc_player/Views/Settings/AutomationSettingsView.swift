@@ -30,11 +30,9 @@ struct AutomationSettingsView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     SettingsSwitchRow(
                         title: "启用本机自动化",
-                        isOn: automationBinding
+                        isOn: automationBinding,
+                        detail: "让本机上的 MCP、CLI 和脚本访问播放器。"
                     )
-
-                    Text("让本机上的 MCP、CLI 和脚本访问播放器。")
-                        .settingsDescriptionStyle()
                 }
             }
 
@@ -48,7 +46,7 @@ struct AutomationSettingsView: View {
                         action: copyMCPConfiguration
                     )
 
-                    Text("配置可直接粘贴到 MCP 客户端的配置文件。")
+                    Text("配置可直接粘贴到 agent 工具的配置文件。")
                         .settingsDescriptionStyle()
 
                     Divider()
@@ -129,10 +127,12 @@ struct AutomationSettingsView: View {
         command: String,
         buttonTitle: String,
         buttonSystemImage: String,
+        info: String? = nil,
         action: @escaping () -> Void
     ) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
+                .settingsInfoHint(info)
                 .settingsSectionTitleStyle()
 
             HStack(spacing: 10) {

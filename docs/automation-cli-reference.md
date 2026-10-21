@@ -371,6 +371,15 @@ player-automation dsp scripts update --params-json '{"nodeID":"<UUID>","source":
 player-automation dsp scripts compile --params-json '{"nodeID":"<UUID>"}'
 player-automation dsp scripts test --params-json '{"nodeID":"<UUID>","fixtures":[{"kind":"impulse","durationSeconds":0.1,"amplitude":0.5}]}'
 player-automation dsp nodes retry --params-json '{"nodeID":"<UUID>"}'
+player-automation dsp patch --params-json '{"operations":[{"op":"setOrder","nodeIDs":["<UUID>","<UUID>"]}]}'
+player-automation dsp load --params-json '{"sampleMs":2000}'
+player-automation dsp impulseResponses list
+player-automation dsp impulseResponses import --params-json '{"path":"~/Music/IR/room.wav","nodeID":"<UUID>"}'
+player-automation dsp presets export --params-json '{"presetID":"<UUID>"}'
+player-automation dsp presets import --dry-run --params-json '{"document":<presets export 的完整结果>}'
+player-automation dsp presets rename --params-json '{"presetID":"<UUID>","name":"夜间"}'
+player-automation dsp presets delete --params-json '{"presetID":"<UUID>"}'
+player-automation audio patch --params-json '{"values":{"outputDeviceID":"<设备 ID>"}}'
 ```
 
 `dsp validate` 和 `dsp patch --dry-run` 可预览完整配置或有序编辑。

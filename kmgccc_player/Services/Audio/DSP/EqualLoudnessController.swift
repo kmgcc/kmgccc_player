@@ -17,6 +17,7 @@ final class EqualLoudnessController {
 
     @ObservationIgnored var onContextChange: (@MainActor (DSPEqualLoudnessContext) -> Void)?
     @ObservationIgnored private var lastPublished: DSPEqualLoudnessContext?
+    @ObservationIgnored private var calibrationSwitches: (chain: Bool, stage: Bool)?
 
     init(volumeObserver: OutputDeviceVolumeObserver = OutputDeviceVolumeObserver()) {
         self.volumeObserver = volumeObserver
@@ -33,6 +34,7 @@ final class EqualLoudnessController {
     /// The player's confirmed route; the default device when it follows the
     /// system output, the chosen device when the App selects one.
     func setRoutedDevice(_ device: DSPOutputDevice?) {
+        if routedDeviceKey != device?.id { volumeObserver.cancelVolumeRamp() }
         routedDeviceUID = device?.uid
         routedDeviceKey = device?.id
         routedOutputKind = device?.outputKind
@@ -50,6 +52,32 @@ final class EqualLoudnessController {
         guard previewGains != gains else { return }
         previewGains = gains
         publish()
+    }
+
+    /// Calibration must be audible even when either processing switch was off.
+    /// Only the switches are borrowed; cancelling preserves the preset's data.
+    func beginCalibration(using dsp: AudioDSPController) {
+        guard calibrationSwitches == nil else { return }
+        calibrationSwitches = (dsp.configuration.enabled, dsp.configuration.equalLoudness.enabled)
+        setPreview(.zero)
+        dsp.updateConfiguration(commit: true, recordsUndo: false) {
+            $0.enabled = true
+            $0.equalLoudness.enabled = true
+        }
+    }
+
+    func endCalibration(using dsp: AudioDSPController, keepingEnabled: Bool = false) {
+        volumeObserver.cancelVolumeRamp()
+        if let switches = calibrationSwitches {
+            calibrationSwitches = nil
+            if !keepingEnabled {
+                dsp.updateConfiguration(commit: true, recordsUndo: false) {
+                    $0.enabled = switches.chain
+                    $0.equalLoudness.enabled = switches.stage
+                }
+            }
+        }
+        setPreview(nil)
     }
 
     func republish() {

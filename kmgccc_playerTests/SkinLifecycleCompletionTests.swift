@@ -139,6 +139,38 @@ final class SkinLifecycleCompletionTests: XCTestCase {
         wait(for: [receivedRendererPCM], timeout: 2)
     }
 
+    @MainActor
+    func testSkinResourceActivityKeepsSkinUntilLastHostLeaves() {
+        let skinID = "skin.memory.\(UUID().uuidString)"
+        let first = SkinSession()
+        let second = SkinSession()
+        first.activate(skinID)
+        second.activate(skinID)
+        XCTAssertTrue(SkinSession.activeSkinIDs.contains(skinID))
+
+        first.deactivate()
+        XCTAssertTrue(SkinSession.activeSkinIDs.contains(skinID))
+        second.deactivate()
+        XCTAssertFalse(SkinSession.activeSkinIDs.contains(skinID))
+    }
+
+    @MainActor
+    func testSkinResourceActivityFollowsSwitchAndDoesNotRetainHost() {
+        let firstID = "skin.memory.first.\(UUID().uuidString)"
+        let secondID = "skin.memory.second.\(UUID().uuidString)"
+        weak var weakSession: SkinSession?
+        autoreleasepool {
+            let session = SkinSession()
+            weakSession = session
+            session.activate(firstID)
+            session.activate(secondID)
+            XCTAssertFalse(SkinSession.activeSkinIDs.contains(firstID))
+            XCTAssertTrue(SkinSession.activeSkinIDs.contains(secondID))
+        }
+        XCTAssertNil(weakSession)
+        XCTAssertFalse(SkinSession.activeSkinIDs.contains(secondID))
+    }
+
     func testRendererSourceSpectrumIsIndependentOfMasterVolume() {
         func render(volume: Float) -> [[Float]] {
             let processor = SpectrumProcessor()

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>虚拟低音算法原型 (Virtual Bass Prototype)</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --ink: #1d1d1f; --muted: #6e6e73; --line: rgba(0,0,0,.08);
+    --accent: #0a7c66; --accent-2: #c2410c; --dim: #8e8e93; --meter: #e9e9e6; --warn: #b42318;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141416; --panel: #1d1d20; --ink: #f2f2f4; --muted: #9a9aa2; --line: rgba(255,255,255,.08);
+      --accent: #38c7a6; --accent-2: #fb923c; --dim: #6b6b73; --meter: #2a2a2e; --warn: #f97066;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141416; --panel: #1d1d20; --ink: #f2f2f4; --muted: #9a9aa2; --line: rgba(255,255,255,.08);
+    --accent: #38c7a6; --accent-2: #fb923c; --dim: #6b6b73; --meter: #2a2a2e; --warn: #f97066;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.45 var(--sans); }
+  main { max-width: 1280px; margin: 0 auto; padding: 20px 16px 40px; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  h1 { font-size: 18px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+  header p { margin: 0; color: var(--muted); }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: var(--panel);
+         border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; }
+  button, select, .file { font: inherit; color: var(--ink); background: var(--meter); border: 0;
+         border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+  button:hover, select:hover, .file:hover { filter: brightness(.96); }
+  button.primary { background: var(--accent); color: #fff; }
+  button.on { background: var(--accent); color: #fff; }
+  .file input { display: none; }
+  .grow { flex: 1 1 200px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .time { font-family: var(--mono); color: var(--muted); min-width: 92px; text-align: right; }
+  .ab { display: flex; gap: 0; border-radius: 999px; background: var(--meter); padding: 2px; }
+  .ab button { background: transparent; padding: 6px 14px; }
+  .ab button.on { background: var(--accent); color: #fff; }
+  .ab button.on.orig { background: var(--accent-2); }
+  .modes { display: flex; flex-wrap: wrap; gap: 6px; }
+  .modes button small { color: inherit; opacity: .7; margin-left: 4px; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 10px; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  .panels { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; align-content: start; }
+  .panel { background: var(--panel); border-radius: 12px; padding: 12px 14px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+  .ctl { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin: 8px 0; }
+  .ctl label { color: var(--ink); }
+  .ctl .val { font-family: var(--mono); color: var(--muted); font-size: 12px; text-align: right; }
+  .ctl input[type=range], .ctl select { grid-column: 1 / -1; }
+  .ctl.toggle { grid-template-columns: 1fr auto; align-items: center; }
+  .hint { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+  .side { display: grid; gap: 10px; align-content: start; }
+  canvas { width: 100%; height: 240px; display: block; border-radius: 8px; background: var(--meter); }
+  .legend { display: flex; gap: 12px; color: var(--muted); font-size: 12px; margin-top: 6px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+  .meters { display: grid; gap: 6px; }
+  .m { display: grid; grid-template-columns: 96px 1fr 58px; gap: 8px; align-items: center; }
+  .m span { color: var(--muted); }
+  .m b { font: 12px var(--mono); text-align: right; font-weight: 500; }
+  .track { height: 6px; background: var(--meter); border-radius: 3px; overflow: hidden; }
+  .track > div { height: 100%; width: 0; background: var(--accent); border-radius: 3px; transition: width .05s linear; }
+  .track.gr > div { background: var(--accent-2); }
+  .warn { color: var(--warn) !important; }
+  pre { font: 11px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap; margin: 0; }
+  .hidden { display: none !important; }
+  kbd { font: 11px var(--mono); background: var(--meter); border-radius: 4px; padding: 1px 5px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>虚拟低音算法原型 (Virtual Bass Prototype)</h1>
+    <p>独立测试台 · 不对主 App 进行任何修改与影响</p>
+  </header>
+
+  <div class="bar">
+    <label class="file">打开音频…<input id="file" type="file" accept="audio/*"></label>
+    <select id="library" class="hidden" title="使用 --media 参数挂载的音频文件"></select>
+    <select id="signal" title="内置测试信号"><option value="">测试信号…</option></select>
+    <button id="play" class="primary">播放</button>
+    <input id="seek" class="grow" type="range" min="0" max="1" step="0.001" value="0">
+    <span id="time" class="time">0:00 / 0:00</span>
+    <label title="循环播放"><input id="loop" type="checkbox" checked> 循环</label>
+    <span>音量</span><input id="volume" type="range" min="0" max="1" step="0.01" value="0.8" style="width:90px">
+  </div>
+
+  <div class="bar">
+    <div class="ab" title="A/B 对比 (快捷键 B)">
+      <button id="abProc" class="on">处理后</button><button id="abOrig" class="orig">原声</button>
+    </div>
+    <div class="modes" id="modes"></div>
+    <span class="grow"></span>
+    <span style="color:var(--muted)">预设</span>
+    <select id="preset"></select>
+  </div>
+
+  <div class="layout">
+    <div class="panels" id="panels"></div>
+    <div class="side">
+      <div class="panel">
+        <h2>频谱监测</h2>
+        <canvas id="spectrum" width="640" height="300"></canvas>
+        <div class="legend">
+          <span><i style="background:var(--dim)"></i>输入</span>
+          <span><i style="background:var(--accent)"></i>输出</span>
+          <span><i style="background:var(--accent-2)"></i>生成的泛音</span>
+          <span>虚线：截止频率</span>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>电平表</h2>
+        <div class="meters" id="meters"></div>
+      </div>
+      <div class="panel">
+        <h2>引擎状态</h2>
+        <pre id="info">—</pre>
+        <p class="hint"><kbd>空格</kbd> 播放/暂停 · <kbd>B</kbd> 原声/处理后 · <kbd>H</kbd> 泛音独奏 · <kbd>S</kbd> 扬声器模拟</p>
+      </div>
+    </div>
+  </div>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

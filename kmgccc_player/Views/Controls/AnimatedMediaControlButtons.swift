@@ -328,7 +328,7 @@ struct AnimatedPlayPauseButton: View {
             for: motionTokens.phaseSpec(
                 for: .emphasis,
                 duration: motionTokens[.emphasis].duration,
-                bounce: 0.32
+                bounce: 0.40
             )
         )
     }
@@ -511,7 +511,7 @@ struct AnimatedSkipButton: View {
             for: motionTokens.phaseSpec(
                 for: .emphasis,
                 duration: motionTokens[.emphasis].duration,
-                bounce: 0.32
+                bounce: 0.40
             )
         )
     }
@@ -522,7 +522,7 @@ struct AnimatedSkipButton: View {
         let relaySpec = motionTokens.phaseSpec(
             for: .emphasis,
             duration: 0.58,
-            bounce: 0.32
+            bounce: 0.40
         )
         return motionPolicy.animation(for: relaySpec)
     }

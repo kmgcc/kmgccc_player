@@ -270,6 +270,11 @@ struct HomeHeroView: View {
                 .allowsHitTesting(false)
             heroContent
                 .zIndex(1)
+            HomeHeroCoverPreview(
+                image: heroBackdropImage == nil ? nil : coverImage,
+                side: artworkLeadingWidth
+            )
+            .zIndex(2)
         }
         .frame(height: heroHeight)
         .frame(maxWidth: .infinity)
@@ -638,7 +643,7 @@ struct HomeHeroView: View {
                 .blendMode(heroPlusBlendTextProfile.blendMode)
             let albumTitle = LibraryNormalization.displayAlbum(track.album)
             if !LibraryNormalization.isUnknownAlbum(track.album), !albumTitle.isEmpty {
-                Text(" \u{00B7} ")
+                Text(" - ")
                     .foregroundStyle(heroPlusBlendTextProfile.tertiaryColor)
                     .blendMode(heroPlusBlendTextProfile.blendMode)
                 Text(albumTitle)
@@ -682,11 +687,10 @@ struct HomeHeroView: View {
 
     @ViewBuilder
     private var statsLine: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 8) {
             Text(formattedDuration)
             let stats = libraryVM.preferenceStats(for: track.id)
             if stats.playCount > 0 {
-                Text(" \u{00B7} ")
                 Text("\(stats.playCount) 次播放")
             }
         }
@@ -759,6 +763,7 @@ struct HomeHeroView: View {
             .contentShape(Circle())
             .homeHeroHeaderGlassCircle(colorScheme: colorScheme)
         }
+        .labelStyle(.titleAndIcon)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .frame(width: heroButtonHeight, height: heroButtonHeight)
@@ -1027,6 +1032,42 @@ struct HomeHeroView: View {
             HomeHeroBackdropCache.shared.setArtifact(rendered, for: cacheKey)
         }
         return rendered
+    }
+}
+
+/// Keep cover hover updates local and reuse the already-loaded artwork.
+/// The clear image exists only during hover and its opacity transition.
+private struct HomeHeroCoverPreview: View {
+    let image: NSImage?
+    let side: CGFloat
+
+    @State private var isHovering = false
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.clear
+            if isHovering, let image {
+                // Match the backdrop renderer's height fit and leading alignment.
+                let aspect = image.size.width / max(1, image.size.height)
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: side * aspect, height: side)
+                    .frame(width: side, height: side, alignment: .leading)
+                    .clipped()
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
+        .frame(width: side, height: side)
+        .contentShape(Rectangle())
+        .motionAnimation(.contentReplacement, value: isHovering)
+        .onHover { hovering in
+            guard isHovering != hovering else { return }
+            isHovering = hovering
+        }
+        .onDisappear { isHovering = false }
+        .accessibilityHidden(true)
     }
 }
 

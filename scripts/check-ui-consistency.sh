@@ -114,6 +114,30 @@ report_matches() {
   matches="$(printf '%s\n' "$content" | grep -nE "$pattern" || true)"
   [[ -n "$matches" ]] || return 0
 
+  # These lifted drag surfaces have documented UI exceptions in their source.
+  # Keep the exemption tied to the existing shadow token and exact hairline;
+  # other shadows, strokes and glows still fail the gate.
+  case "$path" in
+    kmgccc_player/AppKit/LibraryTrackDragWindowSession.swift|\
+    kmgccc_player/Views/Library/ReorderableMultiselectRowsSection.swift)
+      if [[ "$label" == "shadow or glow is not allowed on app-owned UI" ]]; then
+        matches="$(printf '%s\n' "$matches" | while IFS= read -r match; do
+          local_line="${match%%:*}"
+          if [[ "${match#*:}" =~ ^[[:space:]]*\.shadow\($ ]] \
+            && printf '%s\n' "$content" | sed -n "$((local_line + 1))p" \
+              | grep -qE '^[[:space:]]*color: GlassStyleTokens\.subtleShadowColor\.opacity\((glassOpacity|pose\.glassOpacity)\),$'; then
+            continue
+          fi
+          printf '%s\n' "$match"
+        done)"
+      elif [[ "$path" == kmgccc_player/AppKit/LibraryTrackDragWindowSession.swift \
+        && "$label" == "stroke is not a default hierarchy treatment" ]]; then
+        matches="$(printf '%s\n' "$matches" | grep -vF '.strokeBorder(Color.white.opacity(0.16 * glassOpacity), lineWidth: 0.8)' || true)"
+      fi
+      ;;
+  esac
+  [[ -n "$matches" ]] || return 0
+
   printf '[FAIL] %s: %s\n' "$path" "$label"
   printf '%s\n' "$matches" | sed 's/^/  /'
   violations=$((violations + 1))

@@ -669,14 +669,6 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             guard let self, self.desiredDSPContext != context else { return }
             let previous = self.desiredDSPContext
             self.desiredDSPContext = context
-            // Effects with an automatic target retune when the route changes
-            // between headphones and speakers.
-            if let request = self.latestAcceptedDSPRequest,
-               previous.outputKind != context.outputKind,
-               request.configuration.followsOutputKind {
-                self.applyDSP(request.configuration, revision: request.revision, requestID: request.requestID)
-                return
-            }
             guard let request = self.latestAcceptedDSPRequest,
                   let before = DSPEqualLoudnessMath.chainGains(configuration: request.configuration, context: previous),
                   let after = DSPEqualLoudnessMath.chainGains(configuration: request.configuration, context: context)

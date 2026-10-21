@@ -9,7 +9,7 @@ struct PlaybackTransportControls: View {
     let color: Color
     let disabledColor: Color
     var blendMode: BlendMode = .normal
-    var spacing: CGFloat = 14
+    var spacing: CGFloat = 12
     let previous: () -> Void
     let playPause: () -> Void
     let next: () -> Void

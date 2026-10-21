@@ -32,7 +32,8 @@ struct AudioProcessingGlobalsSettingsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 SettingsSwitchRow(
                     title: "音量均衡",
-                    isOn: loudnessBinding(\.enabled)
+                    isOn: loudnessBinding(\.enabled),
+                    info: "测量歌曲的响度并整体调整电平，使歌曲之间响度一致，曲中的强弱起伏完全保留。"
                 )
 
                 LoudnessTargetSliderRow(
@@ -41,10 +42,6 @@ struct AudioProcessingGlobalsSettingsView: View {
                     tickColor: themeStore.appForegroundPalette.primaryColor
                 )
                 .disabled(!controller.configuration.loudness.enabled)
-
-                Text("依靠响度测量和整体电平调整，在不改变歌曲内部相对响度的前提下，统一不同歌曲间的响度差异。")
-                    .settingsDescriptionStyle()
-                    .fixedSize(horizontal: false, vertical: true)
 
                 if controller.configuration.loudness.enabled {
                     Divider()
@@ -164,7 +161,7 @@ struct AudioProcessingGlobalsSettingsView: View {
                     .settingsRowLabelStyle()
                     .lineLimit(1)
                 Text([track?.artist, session.loudnessService.failureMessage(for: trackID)]
-                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "："))
                     .settingsDescriptionStyle()
                     .lineLimit(1)
             }
@@ -351,6 +348,7 @@ private struct LoudnessTargetSliderRow: View {
         HStack(alignment: .top, spacing: 12) {
             Text("目标响度")
                 .settingsRowLabelStyle()
+                .settingsInfoHint("均衡后每首歌的平均响度。推荐值 −14 LUFS，与多数流媒体平台相当。")
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 2)
 

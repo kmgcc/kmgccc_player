@@ -55,6 +55,7 @@ final class AppKitMainToolbarController: NSObject,
     private weak var homeNavPillItem: NSToolbarItemGroup?
 
     private var fullscreenModeCancellable: AnyCancellable?
+    private var selectionModifierMonitor: ListSelectionModifierMonitor?
     private var featureTipPopover: NSPopover?
     private var lyricsFlashTicket = 0
     private var lyricsFlashFilled = false
@@ -85,6 +86,11 @@ final class AppKitMainToolbarController: NSObject,
 
     private var isPlaybackHistoryMode: Bool {
         appSession?.uiState.contentMode == .playbackHistory
+    }
+
+    private var isHomeLandingSelection: Bool {
+        currentLibraryVM?.currentSelection == .home
+            && currentPageController?.isSearchFilteringCurrentList != true
     }
 
     private var toolbar: NSToolbar?
@@ -131,6 +137,10 @@ final class AppKitMainToolbarController: NSObject,
         isDetachingFromWindow = false
         isAttachedToWindow = true
         attachmentGeneration += 1
+        selectionModifierMonitor?.stop()
+        selectionModifierMonitor = ListSelectionModifierMonitor(window: window) { [weak self] held in
+            self?.updateSelectionModifiers(held: held)
+        }
         // Start one-shot observation loops after the toolbar is installed in a live window.
         observeSearchText()
         observeMultiselectState()
@@ -155,6 +165,8 @@ final class AppKitMainToolbarController: NSObject,
         isDetachingFromWindow = true
         isAttachedToWindow = false
         attachmentGeneration += 1
+        selectionModifierMonitor?.stop()
+        selectionModifierMonitor = nil
         closeFeatureTipPopover()
         fullscreenModeCancellable?.cancel()
         fullscreenModeCancellable = nil
@@ -183,11 +195,10 @@ final class AppKitMainToolbarController: NSObject,
         let isHistoryMode = (appSession.uiState.contentMode == .playbackHistory)
         let hasLibrary = (appSession.libraryVM != nil)
         let hasPlayback = (appSession.playbackCoordinator != nil)
-        let isHomeSelection = currentLibraryVM?.currentSelection == .home
+        let isHomeSelection = isHomeLandingSelection
 
-        let queueTracks = currentPageController?.page?.queueTracks ?? []
+        let queueTracks = currentPageController?.toolbarQueueTracks ?? []
         let hasSelection = (currentPageController?.selectedTrackIDs.isEmpty == false)
-        let isSearching = currentPageController?.isSearchFilteringCurrentList == true
         let isCollectionSelection = currentLibraryVM.map {
             $0.supportsCustomCollectionOrder(for: $0.currentSelection)
         } ?? false
@@ -210,7 +221,6 @@ final class AppKitMainToolbarController: NSObject,
                 && hasLibrary
                 && !isHomeSelection
                 && currentPageController?.hasMultiselectRowsForCurrentSelection == true
-                && !isSearching
         case Identifier.play:
             if isHistoryMode {
                 return hasLibrary && hasPlayback && canPlayHistory
@@ -528,6 +538,22 @@ final class AppKitMainToolbarController: NSObject,
         }
     }
 
+    private func updateSelectionModifiers(held: Bool) {
+        guard isAttachedToWindow else { return }
+        if isPlaybackHistoryMode {
+            currentHistoryVM?.updateSelectionModifiers(held: held)
+        } else if appSession?.uiState.contentMode == .library,
+                  !isHomeLandingSelection,
+                  splitViewController != nil {
+            currentPageController?.updateSelectionModifiers(held: held)
+        } else {
+            currentPageController?.updateSelectionModifiers(held: false)
+            currentHistoryVM?.updateSelectionModifiers(held: false)
+        }
+        syncMultiselectItemPresentation()
+        syncHistoryDeleteItemPresentation()
+    }
+
     private func showShiftRangeSelectionTipIfNeeded() {
         let key = FeatureTipCatalog.ShiftRangeSelection.key
         FeatureTipPresentationCoordinator.shared.requestPresentation(key: key) { [weak self] in
@@ -548,7 +574,7 @@ final class AppKitMainToolbarController: NSObject,
         let popover = NSPopover()
         popover.behavior = .semitransient
         popover.animates = true
-        popover.contentSize = NSSize(width: 288, height: 118)
+        popover.contentSize = NSSize(width: 320, height: 160)
         popover.contentViewController = NSHostingController(
             rootView: ShiftRangeSelectionTipView { [weak self] in
                 AppVersionGate.shared.markFeatureTipDismissed(
@@ -694,13 +720,13 @@ final class AppKitMainToolbarController: NSObject,
         else { return }
 
         let toolbarSelectionIdentity: String = {
-            if let identity = pageController.page?.selectionIdentity {
+            if let identity = pageController.toolbarSelectionIdentity {
                 return identity
             }
             return libraryVM.currentSelection.selectionIdentity(in: libraryVM)
         }()
 
-        if libraryVM.currentSelection == .home {
+        if isHomeLandingSelection {
             let tracks = libraryVM.allTracks.filter { $0.availability != .missing }
             guard !tracks.isEmpty else { return }
             playbackCoordinator.playRandomTracks(
@@ -734,7 +760,7 @@ final class AppKitMainToolbarController: NSObject,
             return
         }
 
-        let queueTracks = pageController.page?.queueTracks ?? []
+        let queueTracks = pageController.toolbarQueueTracks
         guard !queueTracks.isEmpty else { return }
         if case .album = libraryVM.currentSelection {
             playbackCoordinator.playTracks(
@@ -938,10 +964,9 @@ final class AppKitMainToolbarController: NSObject,
     }
 
     private func selectedTracksForToolbar(pageController: PlaylistPageController) -> [Track] {
-        guard let rows = pageController.page?.rows else { return [] }
-        return rows.compactMap { row in
-            guard pageController.selectedTrackIDs.contains(row.id) else { return nil }
-            return pageController.latestTrackFromLibrary(trackID: row.id)
+        pageController.toolbarQueueTracks.compactMap { track in
+            guard pageController.selectedTrackIDs.contains(track.id) else { return nil }
+            return pageController.latestTrackFromLibrary(trackID: track.id)
         }
     }
 
@@ -1071,6 +1096,7 @@ final class AppKitMainToolbarController: NSObject,
                 isOn: isOn,
                 isEnabled: currentHistoryVM?.hasVisibleItems == true
             )
+            syncMultiselectSegmentImage()
             return
         }
         let pageController = currentPageController
@@ -1078,10 +1104,24 @@ final class AppKitMainToolbarController: NSObject,
         AppKitMainToolbarPresentation.syncMultiselect(
             item: multiselectItem,
             isOn: isOn,
-            isEnabled: currentLibraryVM?.currentSelection != .home
+            isEnabled: !isHomeLandingSelection
                 && pageController?.hasMultiselectRowsForCurrentSelection == true
-                && pageController?.isSearchFilteringCurrentList != true
         )
+        syncMultiselectSegmentImage()
+    }
+
+    /// The expanded group draws its own segmented control and does not always
+    /// pick up a subitem's new image, so the segment is updated as well.
+    private func syncMultiselectSegmentImage() {
+        guard let image = multiselectItem?.image,
+              let rootView = window?.contentView?.superview ?? window?.contentView,
+              let control = firstSubview(in: rootView, matching: { view in
+                  (view as? NSSegmentedControl)?.segmentCount == 4
+              }) as? NSSegmentedControl
+        else { return }
+        if control.image(forSegment: 0) !== image {
+            control.setImage(image, forSegment: 0)
+        }
     }
 
     private func syncHistoryDeleteItemPresentation() {
@@ -1222,6 +1262,9 @@ final class AppKitMainToolbarController: NSObject,
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentAttachment(generation) else { return }
                 self.syncSearchFieldFromModel()
+                if self.currentLibraryVM?.currentSelection == .home {
+                    self.applyToolbarLayoutForCurrentState()
+                }
                 self.validateCurrentToolbarVisibleItems()
                 self.observeSearchText()
             }
@@ -1335,6 +1378,7 @@ final class AppKitMainToolbarController: NSObject,
             return
         }
 
+        let searchSelection = searchBridge.editingSelection(in: window)
         closeFeatureTipPopover()
         clearToolbarItemTargets(currentToolbar)
         currentToolbar.delegate = nil
@@ -1347,6 +1391,7 @@ final class AppKitMainToolbarController: NSObject,
         reattachVisibleToolbarItemReferences()
         validateCurrentToolbarVisibleItems()
         syncVisibleToolbarItemPresentation()
+        if let searchSelection { searchBridge.restoreEditingSelection(searchSelection, in: window) }
     }
 
     private func resetToolbarItemReferences() {
@@ -1498,7 +1543,7 @@ final class AppKitMainToolbarController: NSObject,
         if !shouldShowHomeNavPill() {
             ids.removeAll { $0 == Identifier.homeNavPill }
         }
-        if currentLibraryVM?.currentSelection == .home {
+        if isHomeLandingSelection {
             ids.removeAll { $0 == Identifier.sort || $0 == Identifier.pillGroup }
             if let flexibleIndex = ids.firstIndex(of: .flexibleSpace) {
                 ids.insert(Identifier.homePillGroup, at: flexibleIndex)
@@ -1600,8 +1645,8 @@ final class AppKitMainToolbarController: NSObject,
         let generation = attachmentGeneration
         withObservationTracking {
             _ = pageController.page?.rows.count
-            _ = pageController.page?.queueTracks.count
-            _ = pageController.page?.selectionIdentity
+            _ = pageController.toolbarQueueTracks.count
+            _ = pageController.toolbarSelectionIdentity
             _ = pageController.phase
             _ = pageController.hasMultiselectRowsForCurrentSelection
             _ = pageController.isSearchFilteringCurrentList
@@ -1649,16 +1694,16 @@ private struct ShiftRangeSelectionTipView: View {
 
     var body: some View {
         AppPopupFrame(
-            title: "多选排序", onClose: onClose, showsFooter: false,
+            title: "多选与拖拽", onClose: onClose, showsFooter: false,
             rendersSurface: false, style: .appTip
         ) {
-            Text("多选歌曲后，按住歌曲条目并拖动，可以对歌曲进行排序。")
+            Text("按住 Command 即可直接选择多首歌曲，按住 Shift 即可选择连续区间的歌曲。拖动歌曲条目到左侧栏中即可加入播放列表，拖动到底部 mini player 即可加入播放队列。")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         } footer: {
             EmptyView()
         }
-        .frame(width: 288, alignment: .leading)
+        .frame(width: 320, alignment: .leading)
         .environmentObject(ThemeStore.shared)
     }
 }

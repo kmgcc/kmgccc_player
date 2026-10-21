@@ -44,9 +44,11 @@ flowchart LR
 
 [applemusic-like-lyrics](https://github.com/amll-dev/applemusic-like-lyrics) 的资源目前只用于 Now Playing 的网格背景。歌词已经完全由原生 Swift/MelismaKit 组件渲染，不再构建或加载 AMLL 的歌词 DOM、TTML parser、bridge 或歌词 WebView fallback。
 
+本地歌词导入支持的 LRC A2、YRC、QRC 与 Lyricify 系列格式，解析逻辑移植自 AMLL `packages/lyric`，以 Swift 实现在 `kmgccc_player/Services/Lyrics/Formats/`，运行时不加载 AMLL 代码。
+
 AMLL 集成层只从固定 submodule 版本构建 `amll-background.js`，由 bundle 内的 `background.html` 加载；Inter 字体仍作为 App 资源注册。生成 JavaScript 不作为手工编辑入口。
 
-许可证：AGPL-3.0-only。宿主调度边界和时间算法见 [歌词渲染系统](lyric-rendering.md)。
+许可证：AGPL-3.0-only。网格背景在 AppKit / SwiftUI 宿主中的分工见 [应用架构](architecture.md)；原生歌词系统的调度生命周期与时间算法见 [歌词渲染系统](lyric-rendering.md) 与 [原生 Swift 歌词系统](native-lyrics.md)。
 
 ## LDDC Fetch Core
 

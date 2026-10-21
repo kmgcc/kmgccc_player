@@ -66,11 +66,10 @@ struct NowPlayingLyricsTabView: View {
                 )
 
                 SettingsSwitchRow(
-                    title: "减弱高亮(beta)",
+                    title: "减弱高亮",
                     isOn: $amllDiscreteWordHighlightEnabled,
-                    detail: "开启后可能减少高亮移动干扰",
                     titleFont: presentationStyle.rowLabelFont,
-                    detailFont: presentationStyle.captionFont
+                    info: "开启后歌词逐字亮起而不是扫光。"
                 )
             }
         }

@@ -229,7 +229,7 @@ nonisolated struct ImportEnrichmentRowSnapshot: Identifiable, Sendable, Equatabl
     let status: ImportEnrichmentRowStatus
     /// Parts currently being fetched, e.g. ["歌词", "封面"].
     let activePartLabels: [String]
-    /// Labels of parts that failed or found no results, e.g. "歌词·封面".
+    /// Labels of parts that failed or found no results, e.g. ["歌词", "封面"].
     let failedPartLabels: [String]
 }
 

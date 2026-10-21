@@ -143,7 +143,7 @@ struct MusicSettingsContent: View {
     }
 }
 
-#Preview("音乐设置 · 500pt · 浅色") {
+#Preview("音乐设置 - 500pt 浅色") {
     MusicSettingsContent(model: MusicSettingsContent.longPathFixture)
         .frame(width: 500)
         .padding()
@@ -151,7 +151,7 @@ struct MusicSettingsContent: View {
         .preferredColorScheme(.light)
 }
 
-#Preview("音乐设置 · 500pt · 深色") {
+#Preview("音乐设置 - 500pt 深色") {
     MusicSettingsContent(model: MusicSettingsContent.longPathFixture)
         .frame(width: 500)
         .padding()
@@ -159,7 +159,7 @@ struct MusicSettingsContent: View {
         .preferredColorScheme(.dark)
 }
 
-#Preview("音乐设置 · 减少动态") {
+#Preview("音乐设置 - 减少动态") {
     MusicSettingsContent(model: MusicSettingsContent.longPathFixture)
         .frame(width: 500)
         .padding()

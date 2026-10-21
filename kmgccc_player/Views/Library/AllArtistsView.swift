@@ -167,6 +167,7 @@ struct AllArtistsView: View {
                         onEdit: { editingArtist = artist },
                         onDelete: { requestDelete(artist) }
                     )
+                    .libraryTrackDropTarget(.artist(artist.canonicalName), cornerRadius: 12)
                 },
                 floatingContent: { artist in
                     ArtistListRow(
@@ -260,6 +261,7 @@ struct AllArtistsView: View {
     }
 
     private func handleRowTap(_ artist: ArtistEntry) {
+        if LibraryRowInput.selectionModifiersHeld { pageController.updateSelectionModifiers(held: true) }
         if pageController.isMultiselectMode {
             pageController.handleMultiselectItemTap(
                 itemID: artist.id,
@@ -345,7 +347,7 @@ private struct ArtistListRow: View {
             onOpen()
         }
         .onHover { isHovering = enableSecondaryInteractions && $0 }
-        .contextMenu {
+        .contextMenuWithVisibleIcons {
             if enableSecondaryInteractions {
                 Button(action: onOpen) {
                     Label("打开艺人", systemImage: "person.crop.circle")
@@ -356,6 +358,7 @@ private struct ArtistListRow: View {
                 Divider()
                 Button(role: .destructive, action: onDelete) {
                     Label("删除艺人", systemImage: "trash")
+                        .labelStyle(.titleOnly)
                 }
             }
         }
@@ -396,15 +399,10 @@ private struct ArtistListRow: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(titleColor)
                 .lineLimit(1)
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Text("\(trackCount) 首歌曲")
                 if albumCount > 0 {
-                    Text("·")
                     Text("\(albumCount) 张专辑")
-                }
-                if artist.totalDuration > 0 {
-                    Text("·")
-                    Text(formattedDuration(artist.totalDuration))
                 }
             }
             .font(.system(size: 12))

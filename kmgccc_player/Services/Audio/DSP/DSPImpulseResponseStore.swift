@@ -31,7 +31,26 @@ nonisolated enum DSPImpulseResponseStore {
         }
     }
 
+    struct Stored: Equatable, Sendable {
+        let id: String
+        let channelCount: Int
+        let sampleRate: Double
+        let durationSeconds: Double
+    }
+
     static let maximumSeconds = 10.0
+
+    /// Every stored response, read from file headers only.
+    static func storedResponses() -> [Stored] {
+        let urls = (try? FileManager.default.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)) ?? []
+        return urls.filter { $0.pathExtension == "caf" }.compactMap { url in
+            guard let file = try? AVAudioFile(forReading: url) else { return nil }
+            let format = file.fileFormat
+            return Stored(id: url.deletingPathExtension().lastPathComponent,
+                          channelCount: Int(format.channelCount), sampleRate: format.sampleRate,
+                          durationSeconds: Double(file.length) / format.sampleRate)
+        }.sorted { $0.id < $1.id }
+    }
 
     static var directoryURL: URL {
         DSPPresetStore.defaultRootURL.appendingPathComponent("ImpulseResponses", isDirectory: true)

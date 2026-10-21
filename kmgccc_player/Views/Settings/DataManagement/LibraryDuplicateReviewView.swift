@@ -54,7 +54,7 @@ struct LibraryDuplicateReviewView: View {
                     .font(.headline)
                     .lineLimit(1)
                 if !group.artist.isEmpty {
-                    Text("· \(group.artist)")
+                    Text(group.artist)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

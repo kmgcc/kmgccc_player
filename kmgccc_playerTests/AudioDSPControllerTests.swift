@@ -4,6 +4,107 @@ import XCTest
 
 @MainActor
 final class AudioDSPControllerTests: XCTestCase {
+    func testDefaultPresetStartsDisabledAndAnEditCreatesAPersistentIndependentCopy() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DSPPresetStore(rootURL: root)
+        let controller = AudioDSPController(store: store)
+        await controller.ensureLoaded()
+        XCTAssertEqual(controller.selectedPresetID, DSPPresetDocument.defaultPresetID)
+        XCTAssertEqual(controller.configuration, AudioDSPConfiguration.defaultEffects)
+        XCTAssertFalse(controller.configuration.enabled)
+        XCTAssertFalse(controller.isModified)
+
+        controller.updateConfiguration(commit: true) { $0.enabled = true }
+        let editedID = try XCTUnwrap(controller.selectedPresetID)
+        XCTAssertFalse(DSPPresetDocument.isBuiltIn(editedID))
+        await controller.flushPendingPersistence()
+        let builtIn = try await store.preset(id: DSPPresetDocument.defaultPresetID)
+        XCTAssertEqual(builtIn, DSPPresetDocument.defaultEffects)
+        do {
+            _ = try await store.save(builtIn)
+            XCTFail("The default preset must remain immutable")
+        } catch let error as DSPPresetStoreError {
+            XCTAssertEqual(error, .immutableBuiltIn)
+        }
+
+        let restored = AudioDSPController(store: store)
+        await restored.ensureLoaded()
+        XCTAssertEqual(restored.selectedPresetID, editedID)
+        XCTAssertEqual(restored.configuration, controller.configuration)
+        XCTAssertFalse(restored.isModified)
+    }
+
+    func testCalibrationPreviewEnablesProcessingAndCancellationRestoresBothSwitches() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dsp = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        await dsp.ensureLoaded()
+        let controller = EqualLoudnessController()
+        let calibration = EqualLoudnessCalibration(
+            deviceKey: "test-output", deviceName: "Test", axis: .percent,
+            points: [EqualLoudnessCalibrationPoint(coordinate: 20, bassDB: 4, trebleDB: 2)]
+        )
+        for chainEnabled in [false, true] {
+            for stageEnabled in [false, true] {
+                dsp.updateConfiguration(commit: true) {
+                    $0.enabled = chainEnabled
+                    $0.equalLoudness.enabled = stageEnabled
+                    $0.equalLoudness.calibration = calibration
+                }
+                controller.beginCalibration(using: dsp)
+                // Re-entering a step must retain the original switch snapshot.
+                controller.beginCalibration(using: dsp)
+                let preview = DSPEqualLoudnessGains(bassDB: 5, trebleDB: 2.5)
+                controller.setPreview(preview)
+                XCTAssertEqual(DSPEqualLoudnessMath.chainGains(configuration: dsp.configuration,
+                                                              context: controller.context), preview)
+                controller.endCalibration(using: dsp)
+                XCTAssertEqual(dsp.configuration.enabled, chainEnabled)
+                XCTAssertEqual(dsp.configuration.equalLoudness.enabled, stageEnabled)
+                XCTAssertEqual(dsp.configuration.equalLoudness.calibration, calibration)
+                XCTAssertNil(controller.previewGains)
+            }
+        }
+        await dsp.flushPendingPersistence()
+    }
+
+    func testSavingCalibrationKeepsCompensationEnabledAfterDialogCloses() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dsp = AudioDSPController(store: DSPPresetStore(rootURL: root))
+        await dsp.ensureLoaded()
+        dsp.updateConfiguration(commit: true) {
+            $0.enabled = false
+            $0.equalLoudness.enabled = false
+        }
+        let controller = EqualLoudnessController()
+        controller.beginCalibration(using: dsp)
+        let calibration = EqualLoudnessCalibration(
+            deviceKey: "test-output", deviceName: "Test", axis: .percent,
+            points: [
+                EqualLoudnessCalibrationPoint(coordinate: 12.5, bassDB: 7, trebleDB: 3),
+                EqualLoudnessCalibrationPoint(coordinate: 31.25, bassDB: 0, trebleDB: 0),
+                EqualLoudnessCalibrationPoint(coordinate: 50, bassDB: -2, trebleDB: -1),
+            ]
+        )
+        dsp.updateConfiguration(commit: true) { $0.equalLoudness.calibration = calibration }
+        controller.endCalibration(using: dsp, keepingEnabled: true)
+        controller.endCalibration(using: dsp) // onDisappear after the completed screen
+        XCTAssertTrue(dsp.configuration.enabled)
+        XCTAssertTrue(dsp.configuration.equalLoudness.enabled)
+        XCTAssertNil(controller.previewGains)
+        let context = DSPEqualLoudnessContext(
+            volume: .available(OutputDeviceVolumeReading(
+                deviceUID: "test-output", deviceName: "Test", scalar: 0.125,
+                decibelsBelowMaximum: nil, isMuted: false, isWritable: true
+            )), deviceKey: "test-output"
+        )
+        XCTAssertEqual(DSPEqualLoudnessMath.chainGains(configuration: dsp.configuration, context: context),
+                       DSPEqualLoudnessGains(bassDB: 7, trebleDB: 3))
+        await dsp.flushPendingPersistence()
+    }
+
     func testLoadMonitoringKeepsMultipleWindowsAndRejectsRetiredVisibilityGeneration() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -270,7 +371,12 @@ final class AudioDSPControllerTests: XCTestCase {
         await controller.ensureLoaded()
         _ = try controller.selectPreset(id: saved.presetID)
         XCTAssertFalse(controller.isModified)
-        try await Task.sleep(for: .milliseconds(300))
+        await controller.flushPendingPersistence()
+        XCTAssertFalse(controller.isModified)
+        let afterSelection = try await store.preset(id: saved.presetID)
+        XCTAssertEqual(afterSelection, saved, "Selection must not rewrite the preset or its revision.")
+        await controller.reloadPresets()
+        XCTAssertFalse(controller.isModified)
     }
 
     func testEnabledUnknownNodeFailsValidationAndDisabledNodeIsPreserved() async throws {
@@ -693,6 +799,7 @@ final class AudioDSPControllerTests: XCTestCase {
         let store = DSPPresetStore(rootURL: root)
         let controller = AudioDSPController(store: store)
         await controller.ensureLoaded()
+        _ = try controller.selectPreset(id: DSPPresetDocument.flatPresetID)
         controller.updateConfiguration { $0.inputTrimDB = -3 }
         let editedID = try XCTUnwrap(controller.selectedPresetID)
         XCTAssertNotEqual(editedID, DSPPresetDocument.flatPresetID)
@@ -746,7 +853,42 @@ final class AudioDSPControllerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("\(renamed.presetID.uuidString).json").path))
     }
 
-    func testEachDeviceRemembersItsOwnPresetAndOtherwisePlaysFlat() async throws {
+    func testDevicesCanShareFlatAndReturnIndependentlyToTheDefaultChain() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (defaults, suite) = deviceDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = DSPPresetStore(rootURL: root)
+        let dsp = AudioDSPController(store: store)
+        let list = TestDeviceList([testDevice("first"), testDevice("second")])
+        let devices = AudioDSPDeviceController(dsp: dsp, userDefaults: defaults, deviceProvider: list.provider)
+        await devices.ensureLoaded()
+        for uid in ["first", "second"] {
+            devices.receiveOutputDeviceUID(uid)
+            try await devices.selectPresetForCurrentDevice(DSPPresetDocument.flatPresetID)
+            XCTAssertEqual(dsp.configuration, .defaultFlat)
+        }
+        XCTAssertEqual(devices.profiles["first"]?.presetID, DSPPresetDocument.flatPresetID)
+        XCTAssertEqual(devices.profiles["second"]?.presetID, DSPPresetDocument.flatPresetID)
+        XCTAssertNil(devices.presetOwner(DSPPresetDocument.flatPresetID, excluding: devices.currentDevice))
+        devices.receiveOutputDeviceUID("first")
+        try await devices.selectPresetForCurrentDevice(DSPPresetDocument.defaultPresetID)
+        XCTAssertNil(devices.profiles["first"])
+        XCTAssertEqual(devices.profiles["second"]?.presetID, DSPPresetDocument.flatPresetID)
+        XCTAssertEqual(dsp.configuration, .defaultEffects)
+        await dsp.flushPendingPersistence()
+
+        let restoredDSP = AudioDSPController(store: store)
+        let restoredDevices = AudioDSPDeviceController(dsp: restoredDSP, userDefaults: defaults, deviceProvider: list.provider)
+        await restoredDevices.ensureLoaded()
+        restoredDevices.receiveOutputDeviceUID("second")
+        XCTAssertEqual(restoredDSP.configuration, .defaultFlat)
+        restoredDevices.receiveOutputDeviceUID("first")
+        XCTAssertEqual(restoredDSP.configuration, .defaultEffects)
+        await restoredDSP.flushPendingPersistence()
+    }
+
+    func testEachDeviceRemembersItsOwnPresetAndOtherwiseUsesTheDefaultChain() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let (defaults, suite) = deviceDefaults()
@@ -761,14 +903,14 @@ final class AudioDSPControllerTests: XCTestCase {
         await devices.ensureLoaded()
 
         devices.receiveOutputDeviceUID("headphones")
-        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.flatPresetID)
+        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.defaultPresetID)
         try await devices.selectPresetForCurrentDevice(headphonesSound.presetID)
         dsp.updateConfiguration(commit: true) { $0.inputTrimDB = -3 }
         devices.receiveOutputDeviceUID("headphones") // Repeated report / unchanged wake.
         XCTAssertEqual(dsp.selectedPresetID, headphonesSound.presetID)
 
         devices.receiveOutputDeviceUID("speakers")
-        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.flatPresetID)
+        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.defaultPresetID)
         XCTAssertFalse(dsp.configuration.enabled)
         // A selection made by hand is remembered for the device.
         try await devices.selectPresetForCurrentDevice(speakerSound.presetID)
@@ -811,7 +953,7 @@ final class AudioDSPControllerTests: XCTestCase {
             try await devices.selectPresetForCurrentDevice(preset.presetID)
             XCTFail("A preset cannot belong to two devices")
         } catch is DSPConfigurationValidationError { }
-        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.flatPresetID)
+        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.defaultPresetID)
 
         try await devices.selectPresetForCurrentDevice(preset.presetID, copyIfOwned: true)
         let copyID = try XCTUnwrap(dsp.selectedPresetID)
@@ -824,7 +966,7 @@ final class AudioDSPControllerTests: XCTestCase {
         await dsp.flushPendingPersistence()
     }
 
-    func testDeletingTheCurrentDevicesPresetReturnsItToFlat() async throws {
+    func testDeletingTheCurrentDevicesPresetReturnsItToTheDefaultChain() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let (defaults, suite) = deviceDefaults()
@@ -840,7 +982,7 @@ final class AudioDSPControllerTests: XCTestCase {
         XCTAssertEqual(dsp.configuration.inputTrimDB, -4)
         try await dsp.deletePreset(id: bound.presetID)
         XCTAssertNil(devices.profiles["current"])
-        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.flatPresetID)
+        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.defaultPresetID)
         XCTAssertFalse(dsp.configuration.enabled)
         await dsp.flushPendingPersistence()
     }
@@ -888,6 +1030,7 @@ final class AudioDSPControllerTests: XCTestCase {
         let devices = AudioDSPDeviceController(dsp: dsp, userDefaults: defaults, deviceProvider: list.provider)
         await devices.ensureLoaded()
         devices.receiveOutputDeviceUID("headphones")
+        try await devices.selectPresetForCurrentDevice(DSPPresetDocument.flatPresetID)
         XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.flatPresetID)
         dsp.updateConfiguration(commit: true) { $0.inputTrimDB = -5 }
         let ownID = try XCTUnwrap(devices.profiles["headphones"]?.presetID)
@@ -895,7 +1038,7 @@ final class AudioDSPControllerTests: XCTestCase {
         XCTAssertEqual(dsp.selectedPresetID, ownID)
 
         devices.receiveOutputDeviceUID("speakers")
-        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.flatPresetID)
+        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.defaultPresetID)
         XCTAssertNil(devices.profiles["speakers"])
         devices.receiveOutputDeviceUID("headphones")
         XCTAssertEqual(dsp.selectedPresetID, ownID)
@@ -927,7 +1070,7 @@ final class AudioDSPControllerTests: XCTestCase {
         list.devices = [speaker]
         devices.refreshDevices()
         XCTAssertEqual(devices.currentDevice?.id, speaker.id)
-        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.flatPresetID)
+        XCTAssertEqual(dsp.selectedPresetID, DSPPresetDocument.defaultPresetID)
         list.devices = [jack]
         devices.refreshDevices()
         XCTAssertEqual(dsp.selectedPresetID, jackSound.presetID)

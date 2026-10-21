@@ -526,7 +526,7 @@ private struct HomePreferenceRankingView: View {
                             .frame(width: 28)
                         Spacer()
                             .frame(width: rankArtworkSpacing + artworkSide + artworkTitleSpacing)
-                        Text("歌曲 \u{00B7} 艺人")
+                        Text("曲目")
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Text("爱听")
                             .frame(width: scoreWidth, alignment: .leading)
@@ -586,6 +586,7 @@ private struct HomePreferenceRankingView: View {
 }
 
 private struct HomeRankRow: View {
+    @Environment(LibraryViewModel.self) private var libraryVM
     let rank: Int
     let item: HomeViewModel.PreferenceRankItem
     var dense: Bool = false
@@ -674,7 +675,10 @@ private struct HomeRankRow: View {
         .onTapGesture {
             play()
         }
-        .contextMenu {
+        .libraryTrackDrag(title: item.title) {
+            LibraryTrackDragPayload(sessionID: libraryVM.trackDragSessionID, trackIDs: [item.track.id])
+        }
+        .contextMenuWithVisibleIcons {
             TrackActionMenuContent(
                 track: item.track,
                 selectedPlaylistID: nil,

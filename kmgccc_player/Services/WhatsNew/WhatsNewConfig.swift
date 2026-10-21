@@ -10,19 +10,31 @@ import WhatsNewKit
 
 enum WhatsNewConfig {
 
-    static let targetBuild = AppBuild(15)
-    static let whatsNewVersion = WhatsNew.Version(major: 2, minor: 3, patch: 4)
+    static let targetBuild = AppBuild(16)
+    static let whatsNewVersion = WhatsNew.Version(major: 2, minor: 4, patch: 1)
     
     static var lastSeenBuild: AppBuild? {
         get { AppVersionGate.shared.lastSeenWhatsNewBuild }
         set { AppVersionGate.shared.lastSeenWhatsNewBuild = newValue }
     }
+
+    static var shouldShowWelcome: Bool {
+        AppVersionGate.shared.shouldShowWelcome
+    }
     
     static func shouldShowWhatsNew() -> Bool {
         AppVersionGate.shared.shouldShowWhatsNew(targetBuild: targetBuild)
     }
+
+    static func shouldShowAnnouncement() -> Bool {
+        shouldShowWelcome || shouldShowWhatsNew()
+    }
     
     static func markAsSeen() {
-        AppVersionGate.shared.markWhatsNewSeen(targetBuild: targetBuild)
+        if shouldShowWelcome {
+            AppVersionGate.shared.markWelcomeSeen(targetBuild: targetBuild)
+        } else {
+            AppVersionGate.shared.markWhatsNewSeen(targetBuild: targetBuild)
+        }
     }
 }

@@ -180,6 +180,8 @@ final class SkinPackageStore {
             let errors = Pipe()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
             process.arguments = arguments
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
             process.standardError = errors
             try process.run()
             let output = errors.fileHandleForReading.readDataToEndOfFile()

@@ -270,7 +270,7 @@ struct LibraryReconnectView: View {
         // File sources reconnect by selecting the file itself; directory
         // sources keep selecting folders.
         panel.canChooseFiles = true
-        panel.allowedContentTypes = FileImportService.supportedUTTypes
+        panel.allowedContentTypes = FileImportService.importSelectionContentTypes
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         panel.prompt = "选择"

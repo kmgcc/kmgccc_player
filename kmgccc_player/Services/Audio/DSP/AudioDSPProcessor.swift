@@ -395,10 +395,10 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
                 switch node.typeID {
                 case DSPNodeConfiguration.parametricEQTypeID:
                     guard let eqBands = node.parametricEQBands,
-                          eqBands.count == 9 else {
+                          eqBands.count == DSPParametricEQBand.defaultBands.count else {
                         warnings.append(DSPDiagnostic(
                             code: "invalidEQBandCount",
-                            message: "A 9-band EQ node must contain exactly nine bands.",
+                            message: "An EQ node must contain exactly \(DSPParametricEQBand.defaultBands.count) bands.",
                             fieldPath: "nodes[\(node.nodeID.uuidString)].parameters.bands",
                             nodeID: node.nodeID,
                             retryable: false
@@ -1217,25 +1217,23 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
         switch node.typeID {
         case DSPNodeConfiguration.classicBassTypeID:
             guard let parameters = node.effectParameters(DSPClassicBassParameters.self) else { return nil }
-            let kind = context.outputKind
-            let tightens = parameters.tightenDryBass == .on
-                || (parameters.tightenDryBass == .automatic && parameters.resolved(for: kind).profile.tightensDryBass)
-            if parameters.intensity == 0, parameters.bassGainDB == 0, !tightens { return trimOnly(parameters.outputTrimDB) }
+            let resolved = parameters.resolved()
+            if resolved.intensity == 0 && resolved.retainsRealBass { return nil }
             let kernel = DSPClassicBassKernel(format: format, selectedChannels: channelMask,
-                                              parameters: parameters, outputKind: kind, outputCeiling: bassOutputCeiling)
+                                              parameters: parameters, outputCeiling: bassOutputCeiling)
             return blockNode(kernel.map(DSPEffectKernel.classicBass),
-                             peakDB: DSPClassicBassKernel.staticPeakResponseDB(parameters: parameters, outputKind: kind),
-                             trimDB: parameters.outputTrimDB, nonlinear: true)
+                             peakDB: DSPClassicBassKernel.staticPeakResponseDB(parameters: parameters),
+                             trimDB: 0, nonlinear: true)
 
         case DSPNodeConfiguration.hybridBassTypeID:
             guard let parameters = node.effectParameters(DSPHybridBassParameters.self) else { return nil }
-            let tightens = parameters.tightenDryBass == .on
-            if parameters.intensity == 0, parameters.bassGainDB == 0, !tightens { return trimOnly(parameters.outputTrimDB) }
+            let resolved = parameters.resolved()
+            if resolved.intensity == 0 && resolved.retainsRealBass { return nil }
             let kernel = DSPHybridBassKernel(format: format, selectedChannels: channelMask,
-                                             parameters: parameters, outputKind: context.outputKind, outputCeiling: bassOutputCeiling)
+                                             parameters: parameters, outputCeiling: bassOutputCeiling)
             return blockNode(kernel.map(DSPEffectKernel.hybridBass),
                              peakDB: DSPHybridBassKernel.staticPeakResponseDB(parameters: parameters),
-                             trimDB: parameters.outputTrimDB, nonlinear: true)
+                             trimDB: 0, nonlinear: true)
 
         case DSPNodeConfiguration.stereoWidthTypeID:
             guard let parameters = node.stereoWidthParameters else { return nil }
@@ -1321,15 +1319,7 @@ nonisolated final class AudioDSPProcessor: @unchecked Sendable {
             var runtimeNode = emptyNode
             runtimeNode.effect = .tube
             runtimeNode.tubeKernel = kernel
-            // The classic shaper is normalized to unity small-signal gain, so
-            // the wet path follows its input trim; saturation only lowers the
-            // peak. Hi-fi adds harmonics a few percent of the band level. The
-            // rare excess is left to the safety limiter.
-            let wetLevel = pow(10, parameters.inputTrimDB / 20)
-            let peak = parameters.mode == .classic
-                ? (1 - parameters.mix) + parameters.mix * wetLevel
-                : 1 + 0.1 * parameters.hifiAmount * wetLevel
-            runtimeNode.staticPeakResponseDB = 20 * log10(max(1, peak)) + parameters.outputTrimDB
+            runtimeNode.staticPeakResponseDB = DSPTubeKernel.staticPeakResponseDB(parameters: parameters)
             runtimeNode.levelOffsetDB = parameters.outputTrimDB
             warn(
                 "nonlinearPeakGuaranteeUnavailable",

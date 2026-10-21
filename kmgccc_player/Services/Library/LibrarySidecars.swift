@@ -92,6 +92,8 @@ nonisolated struct UserMetadataOverride: Codable, Equatable, Sendable {
     var artistDisplay: String?
     var album: String?
     var albumArtist: String?
+    /// Explicit drag assignment wins over automatic same-title album grouping.
+    var albumGroupKey: String?
     var releaseYear: Int?
     var editedAt: Date
 
@@ -100,6 +102,7 @@ nonisolated struct UserMetadataOverride: Codable, Equatable, Sendable {
         artistDisplay: String? = nil,
         album: String? = nil,
         albumArtist: String? = nil,
+        albumGroupKey: String? = nil,
         releaseYear: Int? = nil,
         editedAt: Date
     ) {
@@ -107,6 +110,7 @@ nonisolated struct UserMetadataOverride: Codable, Equatable, Sendable {
         self.artistDisplay = artistDisplay
         self.album = album
         self.albumArtist = albumArtist
+        self.albumGroupKey = albumGroupKey
         self.releaseYear = releaseYear
         self.editedAt = editedAt
     }

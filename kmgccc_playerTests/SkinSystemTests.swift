@@ -207,6 +207,9 @@ final class SkinSystemTests: XCTestCase {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         process.arguments = ["-c", "-k", source.path, archive.path]
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
         try process.run()
         process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0)

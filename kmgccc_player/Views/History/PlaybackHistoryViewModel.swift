@@ -68,7 +68,8 @@ final class PlaybackHistoryViewModel {
 
     var searchText = ""
     var searchRange: PlaybackHistorySearchRange = .all
-    var isMultiselectMode = false
+    private var multiselectState = ListMultiselectState()
+    var isMultiselectMode: Bool { multiselectState.isActive }
     var selectedEventIDs: Set<UUID> = []
 
     /// Shift-range anchor. Event ID, never a track ID — mirrors
@@ -156,15 +157,20 @@ final class PlaybackHistoryViewModel {
     }
 
     func toggleMultiselectMode() {
-        isMultiselectMode.toggle()
-        if !isMultiselectMode {
-            selectedEventIDs.removeAll()
-            selectionAnchorEventID = nil
-        }
+        if !multiselectState.toggleManually() { clearMultiselectState() }
+    }
+
+    func updateSelectionModifiers(held: Bool) {
+        multiselectState.updateModifiers(
+            held: held,
+            hasSelection: !selectedEventIDs.isEmpty,
+            isAllowed: hasVisibleItems
+        )
+        if !isMultiselectMode { selectionAnchorEventID = nil }
     }
 
     func clearMultiselectState() {
-        isMultiselectMode = false
+        multiselectState.clear()
         selectedEventIDs.removeAll()
         selectionAnchorEventID = nil
     }
@@ -173,16 +179,15 @@ final class PlaybackHistoryViewModel {
         guard isMultiselectMode else { return }
 
         if extendingRange,
-           let anchorID = selectionAnchorEventID {
-            let ordered = visibleItems.map(\.id)
-            if let anchorIndex = ordered.firstIndex(of: anchorID),
-               let currentIndex = ordered.firstIndex(of: eventID) {
-                let bounds = anchorIndex <= currentIndex
-                    ? anchorIndex...currentIndex
-                    : currentIndex...anchorIndex
-                selectedEventIDs.formUnion(ordered[bounds])
-                return
+           let range = ListMultiselectState.range(
+               from: selectionAnchorEventID, to: eventID, in: visibleItems.map(\.id)
+           ) {
+            if LibraryRowInput.isCommandPressed {
+                selectedEventIDs.formUnion(range)
+            } else {
+                selectedEventIDs = range
             }
+            return
         }
 
         if selectedEventIDs.contains(eventID) {
@@ -191,6 +196,8 @@ final class PlaybackHistoryViewModel {
             selectedEventIDs.insert(eventID)
         }
         selectionAnchorEventID = eventID
+        multiselectState.reconcileSelection(hasSelection: !selectedEventIDs.isEmpty)
+        if !isMultiselectMode { selectionAnchorEventID = nil }
     }
 
     func setActiveEvent(_ eventID: UUID) {
@@ -218,7 +225,7 @@ final class PlaybackHistoryViewModel {
             self.selectionAnchorEventID = nil
         }
         if selectedEventIDs.isEmpty {
-            isMultiselectMode = false
+            clearMultiselectState()
         }
         return true
     }
@@ -250,7 +257,7 @@ final class PlaybackHistoryViewModel {
         }
         selectionAnchorEventID = nil
         selectedEventIDs.removeAll()
-        isMultiselectMode = false
+        multiselectState.clear()
         return true
     }
 

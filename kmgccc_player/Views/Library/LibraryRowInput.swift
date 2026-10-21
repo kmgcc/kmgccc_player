@@ -8,6 +8,14 @@
 import AppKit
 
 enum LibraryRowInput {
+    static var selectionModifiersHeld: Bool {
+        !(NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).intersection([.command, .shift]).isEmpty
+    }
+
+    static var isCommandPressed: Bool {
+        (NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.command)
+    }
+
     static var isShiftPressed: Bool {
         if let currentEvent = NSApp.currentEvent {
             return currentEvent.modifierFlags.contains(.shift)

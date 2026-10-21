@@ -42,11 +42,9 @@ struct BackgroundTasksSettingsView: View {
                     label: "处理节奏",
                     options: BackgroundPacingMode.allCases,
                     selection: pacingBinding,
-                    displayName: { Self.pacingTitle($0) }
+                    displayName: { Self.pacingTitle($0) },
+                    info: "轻缓计算更放松，且每项工作之间稍作停歇，电脑更安静、更凉爽。"
                 )
-
-                Text("轻缓计算更放松，且每项工作之间稍作停歇，电脑更安静、更凉爽。")
-                    .settingsDescriptionStyle()
             }
         }
     }
@@ -271,16 +269,18 @@ struct BackgroundTasksSettingsView: View {
         let scanning = appSession.referencedSourceScanStatesSnapshot.values.contains(.scanning)
         let failed = appSession.referencedSourceScanStatesSnapshot.values.filter { $0 == .failed }.count
         let status: String
+        var note: String? = nil
         if scanning || scheduler.activity(of: .sourceSync).running > 0 {
             status = "正在同步"
         } else if failed > 0 {
-            status = "已同步 · \(failed) 个来源未能读取"
+            status = "已同步"
+            note = "\(failed) 个来源未能读取"
         } else {
             status = "已与文件夹保持一致"
         }
         return BackgroundTaskCard(
             id: "source-sync", title: "来源同步", systemImage: "folder",
-            status: status, note: nil, controlledDomains: nil
+            status: status, note: note, controlledDomains: nil
         )
     }
 

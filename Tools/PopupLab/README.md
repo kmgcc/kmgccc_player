@@ -45,8 +45,8 @@ PopupLab；主播放器的 Xcode 工程和资料库不参与。需要 macOS 26 �
 36 项界面调节与 37 项可导出的样式参数（预设保留按钮原有内部左右留白）；外观、强调色、背景和样例状态另行调节。旧版 JSON 预设仍可导入，新参数采用
 默认值。旧版的内容边距与悬浮内缩会转换成外边距。新会话先展示长文阅读样例，便于直接检查滚动与悬浮按钮。
 
-标题图标按首行实际字形中心对齐，多行标题保持首行对齐。关闭按钮在可关闭的样例
-中显示，进行中和取消中的任务由状态控制。实验室自身工具按钮保持固定样式。
+标题图标与大标题、副标题第一行的实际字形中心对齐，副标题续行不改变图标位置。底部已有取消或关闭时，
+隐藏右上角叉，避免重复退出入口。进行中和取消中的任务由状态控制。实验室自身工具按钮保持固定样式。
 
 普通页脚的上外边距控制与正文的间隔；悬浮时上边距限制按钮进入内容区顶部。左、右
 外边距界定按钮可用区域；靠左按左边距定位，靠右按右边距定位，居中在区域内居中。
@@ -65,7 +65,7 @@ PopupLab；主播放器的 Xcode 工程和资料库不参与。需要 macOS 26 �
 | `Sources/PopupKit/PopupSurface.swift` | 单层 Liquid Glass / 磨砂 / 实色；减少透明度时使用实色 |
 | `Sources/PopupKit/PopupFrame.swift` | 页眉、内容、页脚；分隔线由骨架唯一管理 |
 | `Sources/PopupKit/PopupHeader.swift` | 可复用标题、accessory 与玻璃关闭按钮 |
-| `Sources/PopupKit/PopupHeaderLayout.swift` | 标题首行字形测量、图标对齐与关闭按钮外侧位置 |
+| `Sources/PopupKit/PopupHeaderLayout.swift` | 标题与副标题首行字形测量、图标对齐与关闭按钮外侧位置 |
 | `Sources/PopupKit/PopupAction.swift` | 胶囊按钮与显式键盘策略 |
 | `Sources/PopupKit/PopupScrollRegion.swift` | 滚动距离、边缘淡出、按钮局部遮罩与紧凑悬浮操作区 |
 | `Sources/PopupLab/Support/LabPanelPresenter.swift` | demo 的 NSPanel 生命周期 |

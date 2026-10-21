@@ -12,6 +12,7 @@ struct AppPopupFrame<Content: View, Footer: View>: View {
     let systemImage: String?
     let onClose: (() -> Void)?
     let showsFooter: Bool
+    let showsCloseButton: Bool?
     let rendersSurface: Bool
     let foregroundBlendMode: BlendMode
     let style: PopupStyle
@@ -25,6 +26,7 @@ struct AppPopupFrame<Content: View, Footer: View>: View {
     init(
         title: String, subtitle: String? = nil, systemImage: String? = nil,
         onClose: (() -> Void)? = nil, showsFooter: Bool = true,
+        showsCloseButton: Bool? = nil,
         rendersSurface: Bool = true,
         foregroundBlendMode: BlendMode = .normal,
         style: PopupStyle = PopupStyle(), foreground: AppForegroundPalette? = nil, accent: Color? = nil,
@@ -36,6 +38,7 @@ struct AppPopupFrame<Content: View, Footer: View>: View {
         self.systemImage = systemImage
         self.onClose = onClose
         self.showsFooter = showsFooter
+        self.showsCloseButton = showsCloseButton
         self.rendersSurface = rendersSurface
         self.foregroundBlendMode = foregroundBlendMode
         self.style = style
@@ -63,7 +66,8 @@ struct AppPopupFrame<Content: View, Footer: View>: View {
     private var popup: some View {
         PopupFrame(
             title: title, subtitle: subtitle, systemImage: systemImage,
-            onClose: onClose, showsFooter: showsFooter, rendersSurface: rendersSurface,
+            onClose: onClose, showsFooter: showsFooter, showsCloseButton: showsCloseButton,
+            rendersSurface: rendersSurface,
             foregroundBlendMode: foregroundBlendMode
         ) {
             content

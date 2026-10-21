@@ -1369,8 +1369,11 @@ func libraryTrackPreferenceQuerySchemaIsAdvertised() {
 
 @Test
 func dspCatalogUsesAudioScopesAndCompleteVersionedSchemas() throws {
-    let descriptors = AutomationDSPToolCatalog.descriptors.filter { $0.name.hasPrefix("dsp.") }
-    #expect(descriptors.count == 16)
+    // dsp.scripts.test runs as a library Job; its scopes are covered below.
+    let descriptors = AutomationDSPToolCatalog.descriptors.filter {
+        $0.name.hasPrefix("dsp.") && $0.name != AutomationMethod.dspScriptsTest
+    }
+    #expect(descriptors.count == 23)
     #expect(Set(descriptors.map(\.name)).count == descriptors.count)
     for descriptor in descriptors {
         #expect(AutomationToolCatalog.descriptor(for: descriptor.name) != nil)
@@ -1391,6 +1394,37 @@ func dspCatalogUsesAudioScopesAndCompleteVersionedSchemas() throws {
     let encoded = try AutomationWireCoding.encoder().encode(descriptors)
     let decoded = try AutomationWireCoding.decoder().decode([AutomationToolDescriptor].self, from: encoded)
     #expect(decoded == descriptors)
+}
+
+@Test
+func dspLoadAndImpulseResponseToolsAreExposed() throws {
+    let load = try #require(AutomationToolCatalog.descriptor(for: AutomationMethod.dspLoad))
+    #expect(load.readOnly)
+    #expect(!load.supportsDryRun)
+    #expect(AutomationToolCatalog.unknownParameterKeys(for: AutomationMethod.dspLoad,
+        params: .object(["sampleMs": .number(1_500)])).isEmpty)
+    let list = try #require(AutomationToolCatalog.descriptor(for: AutomationMethod.dspImpulseResponsesList))
+    #expect(list.readOnly)
+    let importer = try #require(AutomationToolCatalog.descriptor(for: AutomationMethod.dspImpulseResponsesImport))
+    #expect(!importer.readOnly)
+    #expect(importer.supportsDryRun)
+    #expect(importer.scopes == [.audioWrite])
+    #expect(AutomationToolCatalog.unknownParameterKeys(for: AutomationMethod.dspImpulseResponsesImport,
+        params: .object(["path": .string("/tmp/ir.wav"), "nodeID": .string("id"),
+                         "expectedRevision": .string("r"), "dryRun": .boolean(true)])).isEmpty)
+
+    // Release is fixed; the published limiter and loudness contracts match the App model.
+    guard case .object(let limiter) = AutomationDSPToolCatalog.limiterSchema,
+          case .object(let limiterProperties) = limiter["properties"],
+          case .object(let loudness) = AutomationDSPToolCatalog.loudnessSchema,
+          case .object(let loudnessProperties) = loudness["properties"],
+          case .object(let target) = loudnessProperties["targetLUFS"] else {
+        Issue.record("Missing limiter or loudness schema")
+        return
+    }
+    #expect(Set(limiterProperties.keys) == ["enabled", "ceilingDB"])
+    #expect(target["minimum"] == .number(-20))
+    #expect(target["maximum"] == .number(-8))
 }
 
 @Test
@@ -1438,9 +1472,19 @@ func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
             Issue.record("Incomplete native DSP node schema")
             continue
         }
-        #expect(Set(defaults.keys) == Set(properties.keys))
         let isBass = typeID == "virtualBassClassic" || typeID == "virtualBassHybrid"
-        let optionalKeys: Set<String> = isBass ? ["targetSettings"] : []
+        // Compressor speed is accepted only as a legacy timing fallback; new
+        // nodes publish explicit band timings and optional saved custom values.
+        let legacyKeys: Set<String> = typeID == "compressor" ? ["speed"] : []
+        #expect(Set(defaults.keys) == Set(properties.keys).subtracting(legacyKeys))
+        let optionalKeys: Set<String>
+        if isBass {
+            optionalKeys = ["targetSettings"]
+        } else if typeID == "compressor" {
+            optionalKeys = ["speed", "customBands", "customLowCrossoverHz", "customHighCrossoverHz"]
+        } else {
+            optionalKeys = []
+        }
         #expect(required.count == properties.count - optionalKeys.count)
         let requiredKeys = required.compactMap { value -> String? in
             guard case .string(let key) = value else { return nil }
@@ -1449,8 +1493,11 @@ func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
         #expect(requiredKeys.count == required.count)
         #expect(Set(requiredKeys) == Set(properties.keys).subtracting(optionalKeys))
         if isBass {
-            #expect(defaults["bassGainDB"] == .number(3))
-            guard case .object(let gain) = properties["bassGainDB"],
+            #expect(defaults["intensity"] == .number(0.5))
+            #expect(defaults["cutoffHz"] == .number(80))
+            #expect(defaults["target"] == .string("speakers"))
+            #expect(defaults["retainsRealBass"] == .boolean(false))
+            guard case .object(let cutoff) = properties["cutoffHz"],
                   case .object(let amount) = properties["intensity"],
                   case .object(let saved) = properties["targetSettings"],
                   case .object(let targets) = saved["properties"],
@@ -1458,10 +1505,10 @@ func nativeDSPNodesExposeEveryParameterAndExplicitQuality() throws {
                 Issue.record("Incomplete bass controls or per-target settings")
                 continue
             }
-            #expect(gain["minimum"] == .number(0))
-            #expect(gain["maximum"] == .number(9))
-            #expect(amount["maximum"] == .number(2))
-            #expect(Set(targets.keys) == Set(["auto", "headphones", "speakers"]))
+            #expect(cutoff["minimum"] == .number(40))
+            #expect(cutoff["maximum"] == .number(160))
+            #expect(amount["maximum"] == .number(1))
+            #expect(Set(targets.keys) == Set(["headphones", "speakers"]))
             #expect(Set(targetDefaults.keys) == Set(targets.keys))
         }
         // Every effect is audible as added: no zero strength or mix default.

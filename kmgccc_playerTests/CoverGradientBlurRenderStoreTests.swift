@@ -6,6 +6,7 @@ import XCTest
 @testable import kmgccc_player
 
 final class CoverGradientBlurRenderStoreTests: XCTestCase {
+    @MainActor
     func testRetinaRenderKeepsFineLinesInClearCoverForBothPlacements() throws {
         let artwork = try stripedArtwork(width: 320, height: 160)
         for placement in [CoverGradientBlurArtworkPlacement.leading, .centeredSymmetric] {
@@ -98,7 +99,7 @@ final class CoverGradientBlurRenderStoreTests: XCTestCase {
         return data as Data
     }
 
-    func testClearingDuringRenderDoesNotReuseStaleInFlightResult() async throws {
+    func testClearingDuringRenderFinishesLiveRequestWithoutReusingItsGeneration() async throws {
         let store = CoverGradientBlurRenderStore()
         let gate = CoverGradientBlurRenderGate()
         let context = try XCTUnwrap(CGContext(
@@ -134,10 +135,156 @@ final class CoverGradientBlurRenderStoreTests: XCTestCase {
         let currentResult = await currentRequest.value
         let cachedResult = await store.image(for: "cover") { nil }
 
-        XCTAssertNil(staleResult)
+        XCTAssertTrue(staleResult === staleImage)
         XCTAssertTrue(currentResult === currentImage)
         XCTAssertTrue(cachedResult === currentImage)
     }
+
+    func testCancellingOneConsumerKeepsSharedRenderAlive() async throws {
+        let store = CoverGradientBlurRenderStore()
+        let gate = CoverGradientBlurRenderGate()
+        let image = try renderedImageBox()
+        let duplicate = try renderedImageBox()
+        let first = Task {
+            await store.image(for: "shared") {
+                await gate.waitUntilReleased()
+                return image
+            }
+        }
+        await gate.waitUntilStarted()
+        let second = Task {
+            await store.image(for: "shared") { duplicate }
+        }
+        defer {
+            first.cancel()
+            second.cancel()
+            Task { await gate.release() }
+        }
+        try await waitForConsumers(2, in: store)
+
+        first.cancel()
+        try await waitForConsumers(1, in: store)
+        let cancelledResult = await first.value
+        XCTAssertNil(cancelledResult)
+        await gate.release()
+        let remainingResult = await second.value
+        XCTAssertTrue(remainingResult === image)
+    }
+
+    func testCancelledRunningRenderFinishesBeforeSameKeyReplacementStarts() async throws {
+        let store = CoverGradientBlurRenderStore()
+        let gate = CoverGradientBlurRenderGate()
+        let starts = CoverGradientBlurRenderCounter()
+        let oldImage = try renderedImageBox()
+        let newImage = try renderedImageBox()
+        let retiring = Task {
+            await store.image(for: "cover") {
+                // Model a Core Image call that cannot stop until it returns.
+                await gate.waitUntilReleased()
+                return oldImage
+            }
+        }
+        defer {
+            retiring.cancel()
+            Task { await gate.release() }
+        }
+        await gate.waitUntilStarted()
+        retiring.cancel()
+        try await waitForConsumers(0, in: store)
+        let retiredResult = await retiring.value
+        XCTAssertNil(retiredResult)
+
+        let replacement = Task {
+            await store.image(for: "cover") {
+                await starts.record()
+                return newImage
+            }
+        }
+        defer {
+            replacement.cancel()
+        }
+        try await waitForConsumers(1, in: store)
+        let earlyStarts = await starts.count
+        XCTAssertEqual(earlyStarts, 0)
+
+        await gate.release()
+        let result = await replacement.value
+        let cached = await store.image(for: "cover") { nil }
+        let completedStarts = await starts.count
+        XCTAssertTrue(result === newImage)
+        XCTAssertTrue(cached === newImage)
+        XCTAssertEqual(completedStarts, 1)
+    }
+
+    func testCancellingQueuedRenderSkipsItsProducer() async throws {
+        let store = CoverGradientBlurRenderStore()
+        let gate = CoverGradientBlurRenderGate()
+        let obsoleteStarts = CoverGradientBlurRenderCounter()
+        let image = try renderedImageBox()
+        let running = Task {
+            await store.image(for: "running") {
+                await gate.waitUntilReleased()
+                return image
+            }
+        }
+        await gate.waitUntilStarted()
+        let queued = Task {
+            await store.image(for: "obsolete") {
+                await obsoleteStarts.record()
+                return image
+            }
+        }
+        defer {
+            running.cancel()
+            queued.cancel()
+            Task { await gate.release() }
+        }
+        try await waitForConsumers(2, in: store)
+        queued.cancel()
+        try await waitForConsumers(1, in: store)
+        let cancelledResult = await queued.value
+        XCTAssertNil(cancelledResult)
+
+        await gate.release()
+        let runningResult = await running.value
+        // Drain a later request before checking that obsolete work never ran.
+        let barrier = await store.image(for: "barrier") { image }
+        let startCount = await obsoleteStarts.count
+        XCTAssertTrue(runningResult === image)
+        XCTAssertTrue(barrier === image)
+        XCTAssertEqual(startCount, 0)
+    }
+
+    private func renderedImageBox() throws -> CoverGradientBlurRenderedImageBox {
+        CoverGradientBlurRenderedImageBox(
+            image: try stripedArtwork(width: 2, height: 2),
+            readabilityMap: nil
+        )
+    }
+
+    private func waitForConsumers(_ expected: Int, in store: CoverGradientBlurRenderStore) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while true {
+            let count = await store.waitingConsumerCountForTesting
+            if count == expected { return }
+            guard clock.now < deadline else {
+                XCTFail("Timed out waiting for \(expected) render consumers; found \(count)")
+                throw RenderWaitError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+
+    private enum RenderWaitError: Error {
+        case timedOut
+    }
+}
+
+private actor CoverGradientBlurRenderCounter {
+    private(set) var count = 0
+
+    func record() { count += 1 }
 }
 
 private actor CoverGradientBlurRenderGate {

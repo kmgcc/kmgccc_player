@@ -98,7 +98,7 @@ struct SkinSceneHost: View {
             lyricsConfiguration = configuration
         }
         .contentShape(Rectangle())
-        .contextMenu {
+        .contextMenuWithVisibleIcons {
             Button("刷新皮肤", action: reload)
             Button("恢复外观", action: onRestore)
         }

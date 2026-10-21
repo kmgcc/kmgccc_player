@@ -30,7 +30,7 @@ struct LyricsTimingConfigSection: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                Text("参数仅供调试，正常使用无需调整")
+                Text("参数仅供调试，日常聆听保持默认即可。")
                     .settingsDescriptionStyle()
 
                 leadInSection
@@ -124,7 +124,7 @@ struct LyricsTimingConfigSection: View {
             }
             Slider(value: $globalAdvanceMs, in: -1000...1000, step: 10)
                 .frame(height: presentationStyle.tabHeight)
-            Text("全曲统一提前（正值=更早显示，负值=更晚显示）。会与单曲时间偏移共同作用。")
+            Text("全曲歌词统一提前显示：正值更早，负值更晚，与单曲时间偏移叠加生效。")
                 .settingsDescriptionStyle()
         }
     }

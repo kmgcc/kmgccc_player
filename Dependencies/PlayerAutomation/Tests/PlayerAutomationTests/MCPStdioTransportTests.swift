@@ -127,6 +127,9 @@ private final class MCPProcessOutput: @unchecked Sendable {
     init(handle: FileHandle) {
         handle.readabilityHandler = { [weak self] readableHandle in
             let data = readableHandle.availableData
+            if data.isEmpty {
+                readableHandle.readabilityHandler = nil
+            }
             self?.append(data)
         }
     }
@@ -169,16 +172,43 @@ private final class MCPProcessOutput: @unchecked Sendable {
     }
 }
 
+/// Await the exit notification without spinning a Foundation run loop on a
+/// Swift Testing worker. waitUntilExit can stall there after the child exits.
+private final class MCPProcessExit: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var status: Int32?
+
+    init(process: Process) {
+        process.terminationHandler = { [self] exited in
+            condition.lock()
+            status = exited.terminationStatus
+            condition.broadcast()
+            condition.unlock()
+        }
+    }
+
+    func wait(until deadline: Date) -> Int32? {
+        condition.lock()
+        defer { condition.unlock() }
+        while status == nil {
+            guard condition.wait(until: deadline) else { return nil }
+        }
+        return status
+    }
+}
+
 private final class MCPStdioSubprocess: @unchecked Sendable {
     private let process: Process
     private let input: Pipe
     private let output: Pipe
     private let errors: Pipe
     private let outputReader: MCPProcessOutput
+    private let exitStatus: MCPProcessExit
 
     init(socketPath: String, timeout: TimeInterval = 2, disconnectOutput: Bool = false) throws {
         let executable = try Self.executableURL()
         let process = Process()
+        let exitStatus = MCPProcessExit(process: process)
         let input = Pipe()
         let output = Pipe()
         let errors = Pipe()
@@ -194,13 +224,16 @@ private final class MCPStdioSubprocess: @unchecked Sendable {
         process.standardError = errors
         let outputReader = MCPProcessOutput(handle: output.fileHandleForReading)
         errors.fileHandleForReading.readabilityHandler = { handle in
-            _ = handle.availableData
+            if handle.availableData.isEmpty {
+                handle.readabilityHandler = nil
+            }
         }
         self.process = process
         self.input = input
         self.output = output
         self.errors = errors
         self.outputReader = outputReader
+        self.exitStatus = exitStatus
         try process.run()
         if disconnectOutput {
             outputReader.stop(handle: output.fileHandleForReading)
@@ -286,15 +319,14 @@ private final class MCPStdioSubprocess: @unchecked Sendable {
                     while let line = outputReader.nextLine(timeout: 0.01) {
                         responseLines.append(line)
                     }
-                    process.waitUntilExit()
+                    guard let status = exitStatus.wait(until: deadline) else {
+                        throw MCPSubprocessError.responseTimedOut
+                    }
                     outputReader.stop(handle: output.fileHandleForReading)
                     errors.fileHandleForReading.readabilityHandler = nil
-                    continuation.resume(returning: (process.terminationStatus, responseLines))
+                    continuation.resume(returning: (status, responseLines))
                 } catch {
-                    if process.isRunning {
-                        process.terminate()
-                        process.waitUntilExit()
-                    }
+                    terminateIfRunning()
                     outputReader.stop(handle: output.fileHandleForReading)
                     errors.fileHandleForReading.readabilityHandler = nil
                     continuation.resume(throwing: error)
@@ -325,22 +357,13 @@ private final class MCPStdioSubprocess: @unchecked Sendable {
                     try input.fileHandleForWriting.write(contentsOf: inputPayload)
                     try input.fileHandleForWriting.close()
                     let deadline = Date().addingTimeInterval(timeout)
-                    while process.isRunning && Date() < deadline {
-                        Thread.sleep(forTimeInterval: 0.01)
-                    }
-                    guard !process.isRunning else {
-                        process.terminate()
-                        process.waitUntilExit()
+                    guard let status = exitStatus.wait(until: deadline) else {
                         throw MCPSubprocessError.responseTimedOut
                     }
-                    process.waitUntilExit()
                     errors.fileHandleForReading.readabilityHandler = nil
-                    continuation.resume(returning: process.terminationStatus)
+                    continuation.resume(returning: status)
                 } catch {
-                    if process.isRunning {
-                        process.terminate()
-                        process.waitUntilExit()
-                    }
+                    terminateIfRunning()
                     errors.fileHandleForReading.readabilityHandler = nil
                     continuation.resume(throwing: error)
                 }
@@ -359,16 +382,21 @@ private final class MCPStdioSubprocess: @unchecked Sendable {
 
     private func finishBlocking() -> Int32 {
         try? input.fileHandleForWriting.close()
-        let deadline = Date().addingTimeInterval(5)
-        while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.01)
-        }
-        if process.isRunning { process.terminate() }
-        process.waitUntilExit()
+        let status = exitStatus.wait(until: Date().addingTimeInterval(5))
+        if status == nil { terminateIfRunning() }
         outputReader.stop(handle: output.fileHandleForReading)
         output.fileHandleForReading.readabilityHandler = nil
         errors.fileHandleForReading.readabilityHandler = nil
-        return process.terminationStatus
+        return status ?? exitStatus.wait(until: Date().addingTimeInterval(1)) ?? -1
+    }
+
+    private func terminateIfRunning() {
+        guard process.isRunning else { return }
+        process.terminate()
+        if exitStatus.wait(until: Date().addingTimeInterval(2)) == nil, process.isRunning {
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            _ = exitStatus.wait(until: Date().addingTimeInterval(2))
+        }
     }
 
     var processIsRunning: Bool { process.isRunning }
@@ -436,6 +464,7 @@ private func runAutomationCLI(arguments: [String]) async throws -> AutomationCLI
         DispatchQueue.global().async {
             do {
                 let process = Process()
+                let exitStatus = MCPProcessExit(process: process)
                 let output = Pipe()
                 process.executableURL = executable
                 process.arguments = arguments
@@ -443,9 +472,12 @@ private func runAutomationCLI(arguments: [String]) async throws -> AutomationCLI
                 process.standardError = output
                 try process.run()
                 let data = output.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
+                guard let status = exitStatus.wait(until: Date().addingTimeInterval(5)) else {
+                    if process.isRunning { process.terminate() }
+                    throw MCPSubprocessError.responseTimedOut
+                }
                 continuation.resume(
-                    returning: AutomationCLIRun(status: process.terminationStatus, output: data)
+                    returning: AutomationCLIRun(status: status, output: data)
                 )
             } catch {
                 continuation.resume(throwing: error)

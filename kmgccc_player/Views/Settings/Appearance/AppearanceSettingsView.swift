@@ -89,7 +89,7 @@ struct AppearanceSettingsView: View {
                         SettingsSwitchRow(
                             title: "HDR 效果",
                             isOn: $audioVisualizationHDREnabled,
-                            detail: "开启后部分视觉元素会使用 HDR 来增强可读性与视觉效果"
+                            info: "开启后部分视觉元素会使用 HDR 来增强可读性与视觉效果。需要支持的显示器。"
                         )
                         .frame(maxWidth: .infinity)
                     }
@@ -157,6 +157,7 @@ struct AppearanceSettingsView: View {
             HStack(spacing: 8) {
                 Text("动态取色")
                     .settingsRowLabelStyle()
+                    .settingsInfoHint("简洁使用默认色，动态跟随播放封面，丰富为列表歌曲分别取色。")
 
                 Spacer(minLength: 6)
 
@@ -189,10 +190,6 @@ struct AppearanceSettingsView: View {
                 )
                 .fixedSize(horizontal: true, vertical: false)
             }
-
-            Text("简洁使用默认色，动态跟随播放封面，丰富为列表歌曲分别取色")
-                .font(.system(size: 11))
-                .foregroundStyle(appColors?.secondary ?? .secondary)
         }
     }
 
@@ -436,7 +433,7 @@ struct AppearanceSettingsView: View {
                     for: motionTokens[.gestureSettle],
                     initialVelocity: initialVelocity
                 )
-                let clearDrag = {
+                let clearDrag: @MainActor @Sendable () -> Void = {
                     guard isFinishingDrag, draggingSection == section else { return }
                     draggingSection = nil
                     isFinishingDrag = false

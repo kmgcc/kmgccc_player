@@ -387,17 +387,20 @@ nonisolated enum LyricPerceptualPolicy {
         let foreground = foregroundRoles(context: context, seed: seed)
         let background = backgroundRoles(context: context, seed: seed, foreground: foreground)
         let glow = glowRoles(context: context, seed: seed, foreground: foreground)
+        // Cover Gradient Blur uses plus-lighter. Lift its ultra-dark inactive
+        // text after deriving the background and glow roles from the base palette.
+        let renderedForeground = foregroundRolesForRendering(foreground, context: context)
 
         return FullscreenLyricSemanticPalette(
             context: context,
             alpha: alpha,
-            mainActive: foreground.mainActive,
-            mainInactive: foreground.mainInactive,
-            lineTimingMainInactive: foreground.lineTimingMainInactive,
-            subActive: foreground.subActive,
-            subInactive: foreground.subInactive,
-            lineTimingSubInactive: foreground.lineTimingSubInactive,
-            subColor: foreground.subInactive,
+            mainActive: renderedForeground.mainActive,
+            mainInactive: renderedForeground.mainInactive,
+            lineTimingMainInactive: renderedForeground.lineTimingMainInactive,
+            subActive: renderedForeground.subActive,
+            subInactive: renderedForeground.subInactive,
+            lineTimingSubInactive: renderedForeground.lineTimingSubInactive,
+            subColor: renderedForeground.subInactive,
             backgroundInactive: background.inactive,
             backgroundActive: background.active,
             backgroundKaraokeActive: background.karaokeActive,
@@ -426,6 +429,43 @@ nonisolated enum LyricPerceptualPolicy {
         let emphasis: LyricSemanticRoleColor
         let coverBlurMain: LyricSemanticRoleColor
         let coverBlurSub: LyricSemanticRoleColor
+    }
+
+    private static func foregroundRolesForRendering(
+        _ foreground: ForegroundRoles,
+        context: LyricSurfaceContext
+    ) -> ForegroundRoles {
+        guard context.mode == .coverBlur,
+              context.skinID == "fullscreen.coverGradientBlur",
+              context.coverBlurProfile == .lighter,
+              context.isUltraDark else {
+            return foreground
+        }
+
+        return ForegroundRoles(
+            mainActive: foreground.mainActive,
+            mainInactive: lightnessFloor(0.44, for: foreground.mainInactive),
+            lineTimingMainInactive: lightnessFloor(0.39, for: foreground.lineTimingMainInactive),
+            subActive: foreground.subActive,
+            subInactive: lightnessFloor(0.365, for: foreground.subInactive),
+            lineTimingSubInactive: lightnessFloor(0.335, for: foreground.lineTimingSubInactive)
+        )
+    }
+
+    private static func lightnessFloor(
+        _ floor: CGFloat,
+        for color: LyricSemanticRoleColor
+    ) -> LyricSemanticRoleColor {
+        let current = color.oklch
+        guard current.lightness < Double(floor) else { return color }
+        return LyricSemanticRoleColor(
+            oklch: OKLCHColor(
+                lightness: Double(floor),
+                chroma: current.chroma,
+                hue: current.hue,
+                alpha: current.alpha
+            )
+        )
     }
 
     private static func foregroundRoles(

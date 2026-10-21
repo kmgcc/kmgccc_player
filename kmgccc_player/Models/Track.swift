@@ -160,6 +160,7 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
 
     private struct TrackAuxiliaryMetadata: Equatable {
         var embeddedMetadataSnapshot: EmbeddedMetadataSnapshot?
+        var userMetadataOverride: UserMetadataOverride?
         var importProvenance: ImportProvenance?
         var audioProperties: TrackAudioProperties?
         var enrichmentSuggestions: [EnrichmentSuggestion]?
@@ -167,6 +168,7 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
 
         var isEmpty: Bool {
             embeddedMetadataSnapshot == nil &&
+            userMetadataOverride == nil &&
             importProvenance == nil &&
             audioProperties == nil &&
             (enrichmentSuggestions?.isEmpty ?? true) &&
@@ -178,6 +180,16 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
 
     private func ensureAuxiliary() -> TrackAuxiliaryMetadata {
         auxiliary ?? TrackAuxiliaryMetadata()
+    }
+
+    var userMetadataOverride: UserMetadataOverride? {
+        get { auxiliary?.userMetadataOverride }
+        set {
+            if newValue == nil && auxiliary == nil { return }
+            var aux = ensureAuxiliary()
+            aux.userMetadataOverride = newValue
+            auxiliary = aux.isEmpty ? nil : aux
+        }
     }
 
     var ncmConversionAssociation: NCMConversionAssociation? {

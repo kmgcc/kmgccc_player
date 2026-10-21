@@ -127,14 +127,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// shortcut can fire.
     private func installKeyboardPlaybackMonitor() {
         keyboardPlaybackMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            if Self.routePlaybackKeyToTextInput(event, in: event.window ?? NSApp.keyWindow) {
+                self.resetKeyboardSeekState()
+                return nil
+            }
+
             let dominated = event.modifierFlags.intersection([.command, .option, .control, .shift])
             guard dominated.isEmpty else { return event }
-
-            // Don't intercept when a text input is the first responder — the
-            // user is typing or moving the caret in a text field.
-            guard let self, !self.isTextInputFirstResponder(in: event.window) else {
-                return event
-            }
 
             switch event.keyCode {
             case 49: // Space
@@ -230,12 +230,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         seekPresentationIdentity = nil
     }
 
-    private func isTextInputFirstResponder(in window: NSWindow?) -> Bool {
-        guard let responder = window?.firstResponder else { return false }
-        if responder is NSTextView || responder is NSTextField {
-            return true
+    /// Menu key equivalents run before the responder's normal key handling.
+    /// Deliver editing keys directly so the playback menu cannot claim them.
+    static func routePlaybackKeyToTextInput(_ event: NSEvent, in window: NSWindow?) -> Bool {
+        guard [49, 123, 124].contains(event.keyCode),
+              let responder = window?.firstResponder else { return false }
+        guard responder is NSTextView || responder is NSTextField
+                || String(describing: type(of: responder)).contains("FieldEditor") else {
+            return false
         }
-        return String(describing: type(of: responder)).contains("FieldEditor")
+        responder.keyDown(with: event)
+        return true
     }
 
     private func configureMainMenu() {

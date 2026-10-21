@@ -129,7 +129,7 @@ actor DSPPresetStore {
                     guard document.schemaVersion == DSPPresetDocument.schemaVersion else {
                         throw DSPPresetStoreError.unsupportedSchema(document.schemaVersion)
                     }
-                    guard document.presetID != DSPPresetDocument.flatPresetID,
+                    guard !document.isBuiltIn,
                           url.deletingPathExtension().lastPathComponent == document.presetID.uuidString
                     else {
                         throw DSPPresetStoreError.corruptExistingFile
@@ -168,7 +168,7 @@ actor DSPPresetStore {
         _ document: DSPPresetDocument,
         expectedRevision: String? = nil
     ) throws -> DSPPresetDocument {
-        guard document.presetID != DSPPresetDocument.flatPresetID else {
+        guard !document.isBuiltIn else {
             throw DSPPresetStoreError.immutableBuiltIn
         }
         let name = document.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -199,12 +199,12 @@ actor DSPPresetStore {
     }
 
     func preset(id: UUID) throws -> DSPPresetDocument {
-        guard id != DSPPresetDocument.flatPresetID else { return .flat }
+        if let builtIn = DSPPresetDocument.builtInPresets.first(where: { $0.presetID == id }) { return builtIn }
         return try readExistingPreset(at: presetURL(for: id))
     }
 
     func delete(id: UUID, expectedRevision: String? = nil) throws {
-        guard id != DSPPresetDocument.flatPresetID else {
+        guard !DSPPresetDocument.isBuiltIn(id) else {
             throw DSPPresetStoreError.immutableBuiltIn
         }
         let url = presetURL(for: id)
@@ -299,7 +299,7 @@ actor DSPPresetStore {
         do {
             let document = try decoder.decode(DSPPresetDocument.self, from: Data(contentsOf: url))
             guard document.schemaVersion == DSPPresetDocument.schemaVersion,
-                  document.presetID != DSPPresetDocument.flatPresetID,
+                  !document.isBuiltIn,
                   url.deletingPathExtension().lastPathComponent == document.presetID.uuidString
             else {
                 throw DSPPresetStoreError.corruptExistingFile

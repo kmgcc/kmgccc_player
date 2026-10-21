@@ -61,10 +61,11 @@ struct AudioSettingsView: View {
 
                     Divider()
 
-                    SettingsSwitchRow(title: "音频延迟补偿", isOn: $lookaheadEnabled)
-
-                    Text("延迟音频输出以对齐频谱与可视化动效。")
-                        .settingsDescriptionStyle()
+                    SettingsSwitchRow(
+                        title: "音频延迟补偿",
+                        isOn: $lookaheadEnabled,
+                        detail: "延迟音频输出以对齐频谱与可视化动效。"
+                    )
                 }
             }
 

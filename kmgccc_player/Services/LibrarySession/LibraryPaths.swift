@@ -12,6 +12,23 @@ nonisolated struct LibraryPaths: Sendable, Equatable {
     static let preferredTrackArtworkFileName = "artwork.jpg"
     static let legacyTrackArtworkFileName = "artwork.png"
 
+    /// Naming applies only when creating a library. Existing roots keep their
+    /// captured path, independently of their manifest's display name.
+    static func newLibraryDirectoryName(for displayName: String) -> String {
+        let separators = CharacterSet(charactersIn: "/\\:").union(.controlCharacters)
+        let sanitizedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: separators)
+            .joined(separator: "-")
+        // Leave room for the fixed prefix and collision suffix, including for
+        // names whose characters occupy multiple UTF-8 bytes.
+        var nameComponent = ""
+        for character in sanitizedName {
+            guard nameComponent.utf8.count + String(character).utf8.count <= 180 else { break }
+            nameComponent.append(character)
+        }
+        return "\(rootDirectoryName) - \(nameComponent)"
+    }
+
     let rootURL: URL
 
     init(rootURL: URL) {

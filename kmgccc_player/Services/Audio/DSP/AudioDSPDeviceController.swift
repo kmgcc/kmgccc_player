@@ -65,7 +65,7 @@ nonisolated struct DSPOutputDevice: Identifiable, Equatable, Sendable {
         let switchable = source?.isSwitchable == true
         var name = descriptor.name
         if switchable, let sourceName = source?.name, !sourceName.isEmpty, sourceName != name {
-            name += " · " + sourceName
+            name += " (\(sourceName))"
         }
         return DSPOutputDevice(
             key: DSPOutputDeviceKey(uid: descriptor.uniqueID, dataSource: switchable ? source?.id : nil),
@@ -192,16 +192,16 @@ final class AudioDSPDeviceController {
         resolveCurrentDevice()
     }
 
-    /// The preset a route plays: its own, or flat.
+    /// The preset a route plays: its own, or the default effect chain.
     func presetID(for device: DSPOutputDevice) -> UUID {
         guard let id = profiles[device.id]?.presetID,
-              dsp.presets.contains(where: { $0.presetID == id }) else { return DSPPresetDocument.flatPresetID }
+              dsp.presets.contains(where: { $0.presetID == id }) else { return DSPPresetDocument.defaultPresetID }
         return id
     }
 
     /// The other route a preset belongs to. The built-in preset belongs to none.
     func presetOwner(_ id: UUID, excluding device: DSPOutputDevice?) -> DSPDeviceProfile? {
-        guard id != DSPPresetDocument.flatPresetID else { return nil }
+        guard !DSPPresetDocument.isBuiltIn(id) else { return nil }
         return profiles.values.first { $0.presetID == id && $0.deviceKey != device?.id }
     }
 
@@ -220,7 +220,7 @@ final class AudioDSPDeviceController {
             guard copyIfOwned else { throw occupiedPreset(owner.name) }
             let source = try await dsp.preset(id: id)
             target = try await dsp.duplicatePreset(
-                id: id, name: "\(source.name) · \(device.name)", expectedPresetRevision: source.revisionString
+                id: id, name: "\(source.name) (\(device.name))", expectedPresetRevision: source.revisionString
             ).presetID
         }
         guard currentDevice?.id == device.id else { return }
@@ -266,10 +266,12 @@ final class AudioDSPDeviceController {
     private func recordSelection(_ id: UUID?) {
         guard isLoaded, let device = currentDevice, let id else { return }
         var next = profiles
-        if id == DSPPresetDocument.flatPresetID {
+        if id == DSPPresetDocument.defaultPresetID {
             next[device.id] = nil
         } else {
-            next = next.filter { $0.value.presetID != id || $0.key == device.id }
+            if !DSPPresetDocument.isBuiltIn(id) {
+                next = next.filter { $0.value.presetID != id || $0.key == device.id }
+            }
             next[device.id] = DSPDeviceProfile(
                 deviceKey: device.id, name: device.name, transportType: device.transportType, presetID: id
             )

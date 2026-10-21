@@ -30,9 +30,7 @@ struct NowPlayingGeneralTabView: View {
                     VStack(alignment: .leading, spacing: presentationStyle.rowSpacing) {
                         SettingsSwitchRow(
                             title: "启用艺术背景",
-                            isOn: $nowPlayingArtBackgroundEnabled,
-                            detail: "遇到性能问题时，可以关闭此选项",
-                            detailFont: presentationStyle.captionFont
+                            isOn: $nowPlayingArtBackgroundEnabled
                         )
                     }
                 }

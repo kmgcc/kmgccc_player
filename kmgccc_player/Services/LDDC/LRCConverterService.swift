@@ -113,11 +113,13 @@ actor LRCConverterService {
     
     // MARK: - Public Methods
     
-    /// Convert LRC content to TTML format
+    /// Convert LRC content to TTML format.
+    /// `applyOffsetTag` honors `[offset:]`; LDDC output already has its offset applied to every timestamp.
     func convertToTTML(
         lrcContent: String,
         stripMetadata: Bool = true,
-        fixTimingIssues: Bool = true
+        fixTimingIssues: Bool = true,
+        applyOffsetTag: Bool = false
     ) throws -> String {
         let lines = lrcContent.components(separatedBy: .newlines)
         
@@ -143,7 +145,10 @@ actor LRCConverterService {
         guard !lyricsData.isEmpty else {
             throw LRCConversionError.noValidLyricsData
         }
-        
+        if applyOffsetTag {
+            lyricsData = applyingOffset(metadata["offset"], to: lyricsData)
+        }
+
         var processedLyricsData = lyricsData
         if stripMetadata {
             processedLyricsData = filterSongInfoLines(processedLyricsData)
@@ -179,7 +184,8 @@ actor LRCConverterService {
         origContent: String,
         transContent: String,
         stripMetadata: Bool = true,
-        fixTimingIssues: Bool = true
+        fixTimingIssues: Bool = true,
+        applyOffsetTag: Bool = false
     ) throws -> String {
         // Parse original
         let origLines = origContent.components(separatedBy: .newlines)
@@ -206,7 +212,10 @@ actor LRCConverterService {
         guard !lyricsData.isEmpty else {
             throw LRCConversionError.noValidLyricsData
         }
-        
+        if applyOffsetTag {
+            lyricsData = applyingOffset(metadata["offset"], to: lyricsData)
+        }
+
         if stripMetadata {
             lyricsData = filterSongInfoLines(lyricsData)
         }
@@ -220,7 +229,11 @@ actor LRCConverterService {
         }
         
         // Parse translation
-        let translations = try parseTranslationLRC(transContent, stripMetadata: stripMetadata)
+        let translations = try parseTranslationLRC(
+            transContent,
+            stripMetadata: stripMetadata,
+            applyOffsetTag: applyOffsetTag
+        )
         
         // Calculate end times
         let lyricType = detectLyricType(lyricsData)
@@ -594,19 +607,27 @@ actor LRCConverterService {
         return segments.isEmpty ? [] : [LyricLine(segments: segments)]
     }
     
-    private func parseTranslationLRC(_ content: String, stripMetadata: Bool) throws -> [TranslationLine] {
+    private func parseTranslationLRC(
+        _ content: String,
+        stripMetadata: Bool,
+        applyOffsetTag: Bool
+    ) throws -> [TranslationLine] {
         var translations: [TranslationLine] = []
+        var rawOffset: String?
         let lines = content.components(separatedBy: .newlines)
         let timestampPattern = "\\[(\\d+:\\d{1,2}(?:[\\.,]\\d{1,3})?)\\]"
-        
+
         for (sourceLineIndex, line) in lines.enumerated() {
             let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmedLine.isEmpty { continue }
-            
+
             let isMetadataLine = metadataPatterns.keys.contains { tag in
                 trimmedLine.contains("[\(tag):")
             }
-            if isMetadataLine { continue }
+            if isMetadataLine {
+                rawOffset = parseLRCMetadata(trimmedLine)["offset"] ?? rawOffset
+                continue
+            }
             
             guard let regex = try? NSRegularExpression(pattern: timestampPattern, options: []) else {
                 continue
@@ -640,8 +661,29 @@ actor LRCConverterService {
                 translations.append(TranslationLine(time: startTime, text: text))
             }
         }
-        
-        return translations
+
+        guard applyOffsetTag else { return translations }
+        let offset = offsetSeconds(from: rawOffset)
+        return translations.map { TranslationLine(time: max(0, $0.time - offset), text: $0.text) }
+    }
+
+    /// `[offset:±ms]` in seconds. A positive offset shows lyrics earlier.
+    private func offsetSeconds(from rawOffset: String?) -> Double {
+        guard let rawOffset, let milliseconds = Double(rawOffset) else { return 0 }
+        return milliseconds / 1000
+    }
+
+    private func applyingOffset(_ rawOffset: String?, to lyricsData: [LyricLine]) -> [LyricLine] {
+        let offset = offsetSeconds(from: rawOffset)
+        guard offset != 0 else { return lyricsData }
+        return lyricsData.map { line in
+            LyricLine(segments: line.segments.map { segment in
+                var shifted = segment
+                shifted.time = max(0, segment.time - offset)
+                shifted.nextLineStart = segment.nextLineStart.map { max(0, $0 - offset) }
+                return shifted
+            })
+        }
     }
     
     private func matchTranslationsToLines(

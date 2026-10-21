@@ -721,7 +721,7 @@ struct LDDCSearchSection: View {
                             .lineLimit(1)
 
                         if let album = candidate.album, !album.isEmpty {
-                            Text("·")
+                            Text("-")
                                 .font(.caption)
                                 .foregroundStyle(appFgSecondary)
                             Text(album)

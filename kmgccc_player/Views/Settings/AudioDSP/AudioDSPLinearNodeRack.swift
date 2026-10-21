@@ -193,7 +193,11 @@ struct AudioDSPLinearNodeRack: View {
                 onCommit: onCommit
             )
 
-            SettingsSwitchRow(title: "余量保护", isOn: $isHeadroomEnabled)
+            SettingsSwitchRow(
+                title: "余量保护",
+                isOn: $isHeadroomEnabled,
+                info: "效果提升电平时，相应自动降低输入，为峰值留出余地。"
+            )
 
             if isHeadroomEnabled {
                 DSPRangeSliderRow(
@@ -201,6 +205,7 @@ struct AudioDSPLinearNodeRack: View {
                     value: $maximumAttenuationDB,
                     range: DSPHeadroomConfiguration.maximumAttenuationRange,
                     step: 0.1,
+                    info: "余量保护降低的电平上限，超出部分由安全限幅处理。",
                     onCommit: onCommit
                 )
             }
@@ -276,6 +281,7 @@ struct AudioDSPLinearNodeRack: View {
                         value: $limiterCeilingDB,
                         range: DSPLimiterConfiguration.ceilingRange,
                         step: 0.1,
+                        info: "输出峰值始终保持在此电平以下。",
                         onCommit: onCommit
                     )
                 }
@@ -672,7 +678,6 @@ struct AudioDSPLinearNodeRack: View {
             AudioDSPNativeEffectEditor(
                 node: node,
                 isProcessing: node.enabled && isProcessingEnabled,
-                outputKind: appSession.equalLoudnessController.routedOutputKind,
                 onUpdateNode: onUpdateNode,
                 onCommit: onCommit
             )
@@ -729,6 +734,7 @@ struct AudioDSPLinearNodeRack: View {
                 step: 0.01,
                 unit: "",
                 fractionDigits: 2,
+                info: "补偿曲线的施加比例，1.00 为完整补偿。",
                 onCommit: onCommit
             )
         }
@@ -1175,11 +1181,11 @@ enum DSPNodeDescriptor {
             return "\(count) 个频段"
         case DSPNodeConfiguration.classicBassTypeID:
             return node.effectParameters(DSPClassicBassParameters.self).map {
-                "\(targetTitle($0.target))，低音 \(format($0.bassGainDB, digits: 1)) dB，虚拟 \(format($0.intensity * 100, digits: 0))%"
+                "\(targetTitle($0.target))，强度 \(format($0.intensity * 100, digits: 0))%，截止 \(format($0.cutoffHz, digits: 0)) Hz"
             } ?? ""
         case DSPNodeConfiguration.hybridBassTypeID:
             return node.effectParameters(DSPHybridBassParameters.self).map {
-                "\(targetTitle($0.target))，低音 \(format($0.bassGainDB, digits: 1)) dB，虚拟 \(format($0.intensity * 100, digits: 0))%"
+                "\(targetTitle($0.target))，强度 \(format($0.intensity * 100, digits: 0))%，截止 \(format($0.cutoffHz, digits: 0)) Hz"
             } ?? ""
         case DSPNodeConfiguration.stereoWidthTypeID:
             return node.stereoWidthParameters.map { "宽度 \(format($0.width, digits: 2))×" } ?? ""
@@ -1197,17 +1203,17 @@ enum DSPNodeDescriptor {
                 case .impulseResponse:
                     parameters.impulseResponseName.isEmpty ? "脉冲响应" : parameters.impulseResponseName
                 case .room:
-                    "虚拟音箱 · \(format(parameters.distanceM, digits: 1)) m"
+                    "虚拟音箱，距离 \(format(parameters.distanceM, digits: 1)) m"
                 }
             } ?? ""
         case DSPNodeConfiguration.reverbTypeID:
             return node.effectParameters(DSPReverbParameters.self).map {
-                "\(spaceTitle($0.space)) · 混合 \(format($0.mix, digits: 2))"
+                "\(spaceTitle($0.space))，混合 \(format($0.mix, digits: 2))"
             } ?? ""
         case DSPNodeConfiguration.tubeTypeID:
             return node.tubeParameters.map {
                 $0.mode == .hifi
-                    ? "高保真 · 强度 \(format($0.hifiAmount, digits: 2))"
+                    ? "高保真，强度 \(format($0.hifiAmount, digits: 2))"
                     : "驱动 \(format($0.driveDB, digits: 1)) dB"
             } ?? ""
         case DSPNodeConfiguration.compressorTypeID:
@@ -1252,9 +1258,8 @@ enum DSPNodeDescriptor {
 
     private static func targetTitle(_ target: DSPBassTarget) -> String {
         switch target {
-        case .automatic: "自动"
         case .headphones: "耳机"
-        case .speakers: "扬声器"
+        case .speakers: "音箱"
         }
     }
 
@@ -1554,20 +1559,27 @@ private struct DSPRackScrollViewResolver: NSViewRepresentable {
 }
 
 private struct DSPLimiterWarningIndicator: View {
+    private static let recommendationUpdateInterval: TimeInterval = 3
+
     let reductionDB: Float
 
     @State private var isPopoverPresented = false
     @State private var isAnchorHovered = false
     @State private var isPopoverHovered = false
     @State private var dismissTask: Task<Void, Never>?
+    @State private var displayedRecommendationDB: Double?
+    @State private var pendingRecommendationDB: Double?
+    @State private var lastRecommendationUpdateUptime: TimeInterval?
+    @State private var recommendationUpdateTask: Task<Void, Never>?
 
-    private var measuredReduction: String {
-        max(0, reductionDB).formatted(.number.precision(.fractionLength(1)))
+    private var latestRecommendationDB: Double {
+        let roundedUp = (max(0.05, Double(reductionDB)) * 2).rounded(.up) / 2
+        return max(0.5, roundedUp)
     }
 
-    private var recommendedReduction: String {
-        let roundedUp = (max(0.05, Double(reductionDB)) * 2).rounded(.up) / 2
-        return max(0.5, roundedUp).formatted(.number.precision(.fractionLength(1)))
+    private var displayedRecommendation: String {
+        (displayedRecommendationDB ?? latestRecommendationDB)
+            .formatted(.number.precision(.fractionLength(1)))
     }
 
     var body: some View {
@@ -1582,21 +1594,85 @@ private struct DSPLimiterWarningIndicator: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("安全限幅提示")
-        .accessibilityValue("建议将输入增益降低约 \(recommendedReduction) dB")
+        .accessibilityValue("建议将输入增益降低约 \(displayedRecommendation) dB")
         .onHover(perform: anchorHoverChanged)
         .popover(isPresented: $isPopoverPresented, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("安全限幅")
                     .font(.system(size: 14, weight: .semibold))
-                Text("最近限幅约 \(measuredReduction) dB")
-                    .font(.system(size: 13))
-                Text("建议将输入增益降低约 \(recommendedReduction) dB")
+                HStack(spacing: 10) {
+                    Text("限幅电平")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    DSPLimiterLevelMeter(reductionDB: reductionDB)
+                        .frame(maxWidth: .infinity)
+                }
+                Text("建议将输入增益降低约 \(displayedRecommendation) dB")
                     .font(.system(size: 13, weight: .medium))
             }
             .padding(14)
             .frame(width: 288, alignment: .leading)
             .appPopupAppearance(style: .appTip)
             .onHover(perform: popoverHoverChanged)
+        }
+        .onAppear(perform: synchronizeRecommendation)
+        .onChange(of: latestRecommendationDB) { _, nextValue in
+            updateRecommendation(to: nextValue)
+        }
+        .onDisappear {
+            recommendationUpdateTask?.cancel()
+            recommendationUpdateTask = nil
+            pendingRecommendationDB = nil
+        }
+    }
+
+    private func synchronizeRecommendation() {
+        if displayedRecommendationDB == nil {
+            displayedRecommendationDB = latestRecommendationDB
+            lastRecommendationUpdateUptime = ProcessInfo.processInfo.systemUptime
+        } else {
+            updateRecommendation(to: latestRecommendationDB)
+        }
+    }
+
+    private func updateRecommendation(to nextValue: Double) {
+        guard let currentRecommendationDB = displayedRecommendationDB else {
+            displayedRecommendationDB = nextValue
+            lastRecommendationUpdateUptime = ProcessInfo.processInfo.systemUptime
+            return
+        }
+        guard nextValue != currentRecommendationDB else {
+            recommendationUpdateTask?.cancel()
+            recommendationUpdateTask = nil
+            pendingRecommendationDB = nil
+            return
+        }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let elapsed = now - (lastRecommendationUpdateUptime ?? now)
+        let wait = Self.recommendationUpdateInterval - elapsed
+        guard wait > 0 else {
+            displayedRecommendationDB = nextValue
+            lastRecommendationUpdateUptime = now
+            pendingRecommendationDB = nil
+            recommendationUpdateTask?.cancel()
+            recommendationUpdateTask = nil
+            return
+        }
+
+        pendingRecommendationDB = nextValue
+        guard recommendationUpdateTask == nil else { return }
+        recommendationUpdateTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(wait))
+            guard !Task.isCancelled else { return }
+            if let pendingRecommendationDB,
+               pendingRecommendationDB != displayedRecommendationDB {
+                self.displayedRecommendationDB = pendingRecommendationDB
+                self.lastRecommendationUpdateUptime = ProcessInfo.processInfo.systemUptime
+            }
+            self.pendingRecommendationDB = nil
+            self.recommendationUpdateTask = nil
         }
     }
 
@@ -1627,6 +1703,62 @@ private struct DSPLimiterWarningIndicator: View {
             if !isAnchorHovered && !isPopoverHovered {
                 isPopoverPresented = false
             }
+        }
+    }
+}
+
+private struct DSPLimiterLevelMeter: View {
+    private static let segmentCount = 11
+    private static let maximumOverloadDB = 6.0
+
+    let reductionDB: Float
+
+    private var normalizedLevel: Double {
+        // The existing limiter reading is derived from its applied sample gain.
+        // Convert it back to a peak-amplitude ratio above the configured ceiling.
+        let peakToCeiling = pow(10, max(0, Double(reductionDB)) / 20)
+        let maximumPeakToCeiling = pow(10, Self.maximumOverloadDB / 20)
+        return min(1, max(0, (peakToCeiling - 1) / (maximumPeakToCeiling - 1)))
+    }
+
+    private var accessibilityValue: String {
+        "\(max(0, reductionDB).formatted(.number.precision(.fractionLength(1)))) dB"
+    }
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<Self.segmentCount, id: \.self) { index in
+                let segmentLevel = min(1, max(0, normalizedLevel * Double(Self.segmentCount) - Double(index)))
+
+                ZStack {
+                    Capsule()
+                        .fill(Color.primary.opacity(0.12))
+                    Capsule()
+                        .fill(color(for: index).opacity(segmentLevel))
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 7)
+                .accessibilityHidden(true)
+            }
+        }
+        .frame(height: 12)
+        .animation(.easeOut(duration: 0.12), value: normalizedLevel)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("限幅电平")
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private func color(for index: Int) -> Color {
+        let segmentPeakToCeiling = 1 + (Double(index) + 0.5) / Double(Self.segmentCount)
+            * (pow(10, Self.maximumOverloadDB / 20) - 1)
+        let segmentOverloadDB = 20 * log10(segmentPeakToCeiling)
+
+        if segmentOverloadDB < 0.75 {
+            return .green
+        } else if segmentOverloadDB < 3 {
+            return .orange
+        } else {
+            return .red
         }
     }
 }

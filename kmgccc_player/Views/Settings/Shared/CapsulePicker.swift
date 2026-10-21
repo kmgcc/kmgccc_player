@@ -17,6 +17,8 @@ struct CapsulePicker<Option: Hashable, Value: Hashable>: View {
     let displayName: (Option) -> String
     @Binding var selection: Value
     var accentColor: Color? = nil
+    /// Supplementary note shown from an info mark beside the label.
+    var info: String? = nil
 
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.settingsAppForegroundColors) private var appColors
@@ -27,7 +29,8 @@ struct CapsulePicker<Option: Hashable, Value: Hashable>: View {
         options: [Option],
         displayName: @escaping (Option) -> String,
         selection: Binding<Value>,
-        accentColor: Color? = nil
+        accentColor: Color? = nil,
+        info: String? = nil
     ) where Option: Identifiable, Option.ID == Value {
         self.label = label
         self.options = options
@@ -35,6 +38,7 @@ struct CapsulePicker<Option: Hashable, Value: Hashable>: View {
         self.displayName = displayName
         self._selection = selection
         self.accentColor = accentColor
+        self.info = info
     }
 
     /// Initializer for self-identified options where Option == Value (e.g. Enums, Strings)
@@ -43,7 +47,8 @@ struct CapsulePicker<Option: Hashable, Value: Hashable>: View {
         options: [Option],
         selection: Binding<Value>,
         displayName: @escaping (Option) -> String = { "\($0)" },
-        accentColor: Color? = nil
+        accentColor: Color? = nil,
+        info: String? = nil
     ) where Option == Value {
         self.label = label
         self.options = options
@@ -51,6 +56,7 @@ struct CapsulePicker<Option: Hashable, Value: Hashable>: View {
         self.displayName = displayName
         self._selection = selection
         self.accentColor = accentColor
+        self.info = info
     }
 
     private var resolvedAccentColor: Color {
@@ -61,6 +67,7 @@ struct CapsulePicker<Option: Hashable, Value: Hashable>: View {
         HStack(spacing: 8) {
             Text(label)
                 .settingsRowLabelStyle()
+                .settingsInfoHint(info)
 
             Spacer()
 

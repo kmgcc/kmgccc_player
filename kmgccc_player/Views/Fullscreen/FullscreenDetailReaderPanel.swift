@@ -42,7 +42,7 @@ struct FullscreenDetailReaderPanel: View {
     var body: some View {
         AppPopupFrame(
             title: title, subtitle: attributionNote, systemImage: "text.quote",
-            onClose: onDismiss, showsFooter: false, style: popupStyle,
+            onClose: onDismiss, showsFooter: false, showsCloseButton: false, style: popupStyle,
             primaryColor: presentationStyle.primaryTextColor,
             secondaryColor: presentationStyle.secondaryTextColor
         ) {

@@ -121,13 +121,14 @@ struct SidebarView: View {
                             .overlay {
                                 if dropTargetPlaylistID == playlist.id {
                                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                        .stroke(themeStore.accentColor, lineWidth: 1.5)
-                                        .opacity(0.9)
+                                        .fill(themeStore.accentColor.opacity(0.16))
+                                        .allowsHitTesting(false)
                                 }
                             }
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .libraryTrackDropTarget(.playlist(playlist.id))
                         .onDrop(
                             of: [UTType.fileURL.identifier, UTType.url.identifier],
                             isTargeted: dropTargetBinding(for: playlist.id)
@@ -136,7 +137,7 @@ struct SidebarView: View {
                         }
                         .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                         .listRowBackground(Color.clear)
-                        .contextMenu {
+                        .contextMenuWithVisibleIcons {
                             Button {
                                 play(playlist)
                             } label: {
@@ -151,6 +152,7 @@ struct SidebarView: View {
                                 }
                             } label: {
                                 Label("导入到当前播放列表", systemImage: "square.and.arrow.down")
+                                    .labelStyle(.titleOnly)
                             }
 
                             Divider()
@@ -162,6 +164,7 @@ struct SidebarView: View {
                                     NSLocalizedString("edit.playlist.delete", comment: ""),
                                     systemImage: "trash"
                                 )
+                                .labelStyle(.titleOnly)
                             }
                         }
                         }
@@ -205,6 +208,7 @@ struct SidebarView: View {
                     .padding(.horizontal, 4)
                     .padding(.bottom, 4)
                     .contentShape(Rectangle())
+                    .libraryTrackDropGroup(isExpanded: $isPlaylistsExpanded, notice: "请将歌曲拖到具体的播放列表")
                     .onDrop(
                         of: [UTType.fileURL.identifier, UTType.url.identifier],
                         isTargeted: playlistHeaderDropTarget
@@ -257,9 +261,10 @@ struct SidebarView: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .libraryTrackDropTarget(.artist(artist.key))
                             .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                             .listRowBackground(Color.clear)
-                            .contextMenu {
+                            .contextMenuWithVisibleIcons {
                                 if let entry = libraryVM.artistEntry(for: artist) {
                                     Button {
                                         editingArtistEntry = entry
@@ -277,6 +282,7 @@ struct SidebarView: View {
                                             "sidebar.delete_artist",
                                             systemImage: "trash"
                                         )
+                                        .labelStyle(.titleOnly)
                                     }
                                 }
                             }
@@ -305,6 +311,7 @@ struct SidebarView: View {
                     }
                     .buttonStyle(.plain)
                     .onHover { isHoveringArtists = $0 }
+                    .libraryTrackDropGroup(isExpanded: $isArtistsExpanded, notice: "请将歌曲拖到具体的艺人")
                 }
 
                 // Albums Section
@@ -351,9 +358,10 @@ struct SidebarView: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .libraryTrackDropTarget(.album(album.key))
                             .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                             .listRowBackground(Color.clear)
-                            .contextMenu {
+                            .contextMenuWithVisibleIcons {
                                 if let entry = libraryVM.albumEntry(for: album) {
                                     Button {
                                         editingAlbumEntry = entry
@@ -371,6 +379,7 @@ struct SidebarView: View {
                                             "sidebar.delete_album",
                                             systemImage: "trash"
                                         )
+                                        .labelStyle(.titleOnly)
                                     }
                                 }
                             }
@@ -399,6 +408,7 @@ struct SidebarView: View {
                     }
                     .buttonStyle(.plain)
                     .onHover { isHoveringAlbums = $0 }
+                    .libraryTrackDropGroup(isExpanded: $isAlbumsExpanded, notice: "请将歌曲拖到具体的专辑")
                 }
             }
             .listStyle(.sidebar)
@@ -1730,7 +1740,7 @@ private struct SidebarUpdateReleaseNotesView: View {
     var body: some View {
         AppPopupFrame(
             title: "更新日志", subtitle: "版本 \(notice.version)", systemImage: "doc.text.magnifyingglass",
-            onClose: { dismiss() }, showsFooter: false
+            onClose: { dismiss() }, showsFooter: false, showsCloseButton: false
         ) {
             AppPopupScrollRegion(height: AppPopupStyle().readerHeight) {
                 VStack(alignment: .leading, spacing: AppPopupStyle().rowSpacing) {

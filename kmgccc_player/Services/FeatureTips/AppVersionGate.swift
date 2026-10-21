@@ -18,7 +18,7 @@ enum FeatureTipCatalog {
 
     enum ShiftRangeSelection {
         static let key = "playlist.shiftRangeSelection"
-        static let introducedBuild = AppBuild(7)
+        static let introducedBuild = AppBuild(16)
         static let maxDisplayCount = 2
     }
 
@@ -58,6 +58,7 @@ final class AppVersionGate {
         static let legacyPreviousInstalledVersion = "kmgccc_player.previousInstalledVersion"
         static let legacyLatestInstalledVersion = "kmgccc_player.latestInstalledVersion"
         static let legacyLastSeenWhatsNewVersion = "kmgccc_player.lastSeenWhatsNewVersion"
+        static let hasSeenWelcome = "kmgccc_player.hasSeenWelcome"
         static let dismissedFeatureTipPrefix = "kmgccc_player.dismissedFeatureTip."
         static let featureTipDisplayCountPrefix = "kmgccc_player.featureTipDisplayCount."
         static let featureTipReadyForNextLaunchPrefix = "kmgccc_player.featureTipReadyForNextLaunch."
@@ -102,8 +103,24 @@ final class AppVersionGate {
         set { setBuild(newValue, forKey: Keys.lastSeenWhatsNewBuild) }
     }
 
+    var hasSeenWelcome: Bool {
+        get { defaults.bool(forKey: Keys.hasSeenWelcome) }
+        set { defaults.set(newValue, forKey: Keys.hasSeenWelcome) }
+    }
+
     func recordCurrentAppLaunch(currentBuild: AppBuild = AppBuild.current) {
         let storedLatest = latestInstalledBuild
+        let hasPriorInstallRecord = storedLatest != nil
+            || defaults.object(forKey: Keys.previousInstalledBuild) != nil
+            || defaults.object(forKey: Keys.lastSeenWhatsNewBuild) != nil
+            || defaults.object(forKey: Keys.legacyLatestInstalledVersion) != nil
+            || defaults.object(forKey: Keys.legacyPreviousInstalledVersion) != nil
+            || defaults.object(forKey: Keys.legacyLastSeenWhatsNewVersion) != nil
+
+        if hasPriorInstallRecord && defaults.object(forKey: Keys.hasSeenWelcome) == nil {
+            hasSeenWelcome = true
+        }
+
         migratePlaybackModeRetapTipIfNeeded(currentBuild: currentBuild)
 
         if storedLatest == currentBuild {
@@ -120,10 +137,10 @@ final class AppVersionGate {
         previousInstalledBuild = previous
         latestInstalledBuild = currentBuild
 
-        // If upgrading from a build below 7, reset the shiftRangeSelection key's state
-        // because we are changing this feature tip from "Shift select" to "Drag to sort"
+        // If upgrading from a build below 16, reset the shiftRangeSelection key's state
+        // because we updated this feature tip with the new Command/Shift selection and drag capabilities
         // and want all upgrading users to see it up to 2 times.
-        if previous < AppBuild(7) && currentBuild >= AppBuild(7) {
+        if previous < AppBuild(16) && currentBuild >= AppBuild(16) {
             defaults.removeObject(forKey: dismissedFeatureTipKey("playlist.shiftRangeSelection"))
             defaults.removeObject(forKey: featureTipDisplayCountKey("playlist.shiftRangeSelection"))
             Log.debug("[AppVersionGate] Reset playlist.shiftRangeSelection state for upgrade from Build \(previous.rawValue) to Build \(currentBuild.rawValue)", category: .ui)
@@ -147,7 +164,17 @@ final class AppVersionGate {
         return previous < build && latest >= build
     }
 
+    var shouldShowWelcome: Bool {
+        !hasSeenWelcome
+    }
+
+    func markWelcomeSeen(targetBuild: AppBuild) {
+        hasSeenWelcome = true
+        markWhatsNewSeen(targetBuild: targetBuild)
+    }
+
     func shouldShowWhatsNew(targetBuild: AppBuild) -> Bool {
+        guard hasSeenWelcome else { return false }
         guard let lastSeen = lastSeenWhatsNewBuild else { return true }
         return lastSeen < targetBuild
     }
@@ -249,6 +276,7 @@ final class AppVersionGate {
         defaults.removeObject(forKey: Keys.previousInstalledBuild)
         defaults.removeObject(forKey: Keys.latestInstalledBuild)
         defaults.removeObject(forKey: Keys.lastSeenWhatsNewBuild)
+        defaults.removeObject(forKey: Keys.hasSeenWelcome)
         defaults.removeObject(forKey: Keys.legacyPreviousInstalledVersion)
         defaults.removeObject(forKey: Keys.legacyLatestInstalledVersion)
         defaults.removeObject(forKey: Keys.legacyLastSeenWhatsNewVersion)

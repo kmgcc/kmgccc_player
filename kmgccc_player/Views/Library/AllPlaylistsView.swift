@@ -146,6 +146,7 @@ struct AllPlaylistsView: View {
                         onPlay: { play(playlist) },
                         onDelete: { deletionRequest = PlaylistDeletionRequest(playlist: playlist) }
                     )
+                    .libraryTrackDropTarget(.playlist(playlist.id), cornerRadius: 12, sinkAnchor: .center)
                 },
                 floatingContent: { playlist in
                     PlaylistListRow(
@@ -207,6 +208,7 @@ struct AllPlaylistsView: View {
     }
 
     private func handleRowTap(_ playlist: Playlist) {
+        if LibraryRowInput.selectionModifiersHeld { pageController.updateSelectionModifiers(held: true) }
         if pageController.isMultiselectMode {
             pageController.handleMultiselectItemTap(
                 itemID: playlist.id,
@@ -277,7 +279,7 @@ private struct PlaylistListRow: View {
             onOpen()
         }
         .onHover { isHovering = enableSecondaryInteractions && $0 }
-        .contextMenu {
+        .contextMenuWithVisibleIcons {
             if enableSecondaryInteractions {
                 Button(action: onOpen) {
                     Label("打开播放列表", systemImage: "music.note.list")
@@ -288,6 +290,7 @@ private struct PlaylistListRow: View {
                 Divider()
                 Button(role: .destructive, action: onDelete) {
                     Label(NSLocalizedString("edit.playlist.delete", comment: ""), systemImage: "trash")
+                        .labelStyle(.titleOnly)
                 }
             }
         }
@@ -334,10 +337,9 @@ private struct PlaylistListRow: View {
                     .foregroundStyle(subtitleColor)
                     .lineLimit(1)
             }
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Text("\(playlist.trackCount) 首歌曲")
                 if playlist.totalDuration > 0 {
-                    Text("·")
                     Text(formattedDuration(playlist.totalDuration))
                 }
             }

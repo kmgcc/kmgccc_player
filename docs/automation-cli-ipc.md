@@ -10,15 +10,14 @@ History、Metadata、Lyrics Job、Diagnostics、scope policy 和 MCP stdio。完
 在仓库根目录执行：
 
 ~~~sh
-cd Dependencies/PlayerAutomation
-swift run player-automation cli system info --json
-swift run player-automation cli library list --json
-swift run player-automation cli library tracks --query "artist" --json
-swift run player-automation cli library tracks --source <source-id> --json
-swift run player-automation cli playlist list --json
-swift run player-automation cli source refresh <source-id> --json
-swift run player-automation cli automation capabilities --json
-swift run player-automation cli automation call library.tracks \
+swift run --package-path Dependencies/PlayerAutomation player-automation cli system info --json
+swift run --package-path Dependencies/PlayerAutomation player-automation cli library list --json
+swift run --package-path Dependencies/PlayerAutomation player-automation cli library tracks --query "artist" --json
+swift run --package-path Dependencies/PlayerAutomation player-automation cli library tracks --source <source-id> --json
+swift run --package-path Dependencies/PlayerAutomation player-automation cli playlist list --json
+swift run --package-path Dependencies/PlayerAutomation player-automation cli source refresh <source-id> --json
+swift run --package-path Dependencies/PlayerAutomation player-automation cli automation capabilities --json
+swift run --package-path Dependencies/PlayerAutomation player-automation cli automation call library.tracks \
   --params-json '{"filter":{"all":[{"hasLyrics":true}]},"limit":20}' --json
 ~~~
 

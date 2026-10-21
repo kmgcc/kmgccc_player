@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Reusable first-line optical alignment for dialogs and larger editing workspaces.
+/// Centers the icon beside the title and the subtitle's first line.
 public struct PopupHeader<Accessory: View>: View {
     private let title: String
     private let subtitle: String?
@@ -37,7 +37,9 @@ public struct PopupHeader<Accessory: View>: View {
 
     public var body: some View {
         PopupHeaderLayout(
-            title: title, titleSize: style.titleSize, spacing: style.headerSpacing,
+            title: title, titleSize: style.titleSize,
+            subtitle: subtitle, subtitleSize: style.bodySize,
+            titleBodySpacing: style.titleBodySpacing, spacing: style.headerSpacing,
             hasIcon: style.showsIcon && systemImage != nil,
             hasClose: hasAccessory || (style.showsCloseButton && onClose != nil),
             contentInset: style.padding,
@@ -49,18 +51,16 @@ public struct PopupHeader<Accessory: View>: View {
                     .foregroundStyle(palette.accent)
                     .accessibilityHidden(true)
             }
-            VStack(alignment: .leading, spacing: style.titleBodySpacing) {
-                Text(title)
-                    .font(.system(size: style.titleSize, weight: .semibold))
-                    .accessibilityAddTraits(.isHeader)
-                if let subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.system(size: style.bodySize))
-                        .foregroundStyle(palette.secondary)
-                }
+            Text(title)
+                .font(.system(size: style.titleSize, weight: .semibold))
+                .accessibilityAddTraits(.isHeader)
+                .fixedSize(horizontal: false, vertical: true)
+            if let subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.system(size: style.bodySize))
+                    .foregroundStyle(palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
             if hasAccessory {
                 accessory
             } else if style.showsCloseButton, let onClose {

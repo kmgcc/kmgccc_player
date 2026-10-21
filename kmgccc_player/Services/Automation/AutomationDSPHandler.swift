@@ -45,6 +45,7 @@ struct AutomationDSPHandler {
                     ]),
                     "scope": .string("app"), "renderer": .string("AVSampleBufferAudioRenderer"),
                     "builtInPresetID": .string(DSPPresetDocument.flatPresetID.uuidString),
+                    "defaultPresetID": .string(DSPPresetDocument.defaultPresetID.uuidString),
                     "globalsExcluded": .array([.string("playPauseFade"), .string("loudnessNormalization"), .string("deviceListeningReferences")])
                 ]), for: request)
             case AutomationMethod.dspState:
@@ -86,7 +87,7 @@ struct AutomationDSPHandler {
                 return result(.object([
                     "presets": try value(Array(controller.presets.dropFirst(offset).prefix(limit))),
                     "total": .number(Double(controller.presets.count)),
-                    "builtInPresetIDs": .array([.string(DSPPresetDocument.flatPresetID.uuidString)]),
+                    "builtInPresetIDs": .array(DSPPresetDocument.builtInPresets.map { .string($0.presetID.uuidString) }),
                     "selectedPresetID": controller.selectedPresetID.map { .string($0.uuidString) } ?? .null,
                     "isModified": .boolean(controller.isModified),
                     "deviceProfiles": deviceProfiles()
@@ -192,6 +193,14 @@ struct AutomationDSPHandler {
                 controller.clearErrors()
                 appSession?.audioDSPScriptController.clearDiagnostics()
                 return result(.object(["cleared": .boolean(true)]), for: request)
+            case AutomationMethod.dspLoad:
+                let load = try await processingLoad(parameters, request: request, controller: controller)
+                return result(load, for: request)
+            case AutomationMethod.dspImpulseResponsesList:
+                return result(await impulseResponses(controller), for: request)
+            case AutomationMethod.dspImpulseResponsesImport:
+                return try await importImpulseResponse(parameters, expectedRevision: expectedRevision,
+                    dryRun: dryRun, request: request, controller: controller)
             default:
                 return AutomationResponseSupport.unsupportedMethod(for: request)
             }
@@ -332,7 +341,7 @@ struct AutomationDSPHandler {
     }
 
     private func mutablePreset(_ id: UUID, parameters: AutomationParameters, controller: AudioDSPController) async throws -> DSPPresetDocument {
-        guard id != DSPPresetDocument.flatPresetID else { throw DSPPresetStoreError.immutableBuiltIn }
+        guard !DSPPresetDocument.isBuiltIn(id) else { throw DSPPresetStoreError.immutableBuiltIn }
         return try await checkedPreset(id, parameters: parameters, controller: controller)
     }
 
@@ -504,11 +513,11 @@ struct AutomationDSPHandler {
         try JSONDecoder().decode(T.self, from: AutomationWireCoding.encoder().encode(raw))
     }
 
-    private func value<T: Encodable>(_ value: T) throws -> AutomationJSONValue {
+    func value<T: Encodable>(_ value: T) throws -> AutomationJSONValue {
         try AutomationWireCoding.decoder().decode(AutomationJSONValue.self, from: JSONEncoder().encode(value))
     }
 
-    private func result(_ value: AutomationJSONValue, for request: AutomationRequest) -> AutomationResponse {
+    func result(_ value: AutomationJSONValue, for request: AutomationRequest) -> AutomationResponse {
         AutomationResponseSupport.encodeResult(value, for: request)
     }
 }

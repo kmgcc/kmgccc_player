@@ -239,6 +239,8 @@ nonisolated enum DiskCacheRetention {
 nonisolated enum CacheManager {
     static let staleImportStagingAge: TimeInterval = 24 * 60 * 60
 
+    @MainActor private static var routineTrimTask: Task<Void, Never>?
+
     @MainActor
     static func purgeRebuildableMemoryCaches(
         reason: String,
@@ -329,28 +331,35 @@ nonisolated enum CacheManager {
 
     @MainActor
     static func trimRoutinePlaybackMemory() {
-        NativeLyricsSurfaceManager.shared.purgeInactiveRenderingResources()
-        NativeLyricsSurfaceManager.shared.trimRoutineMemory()
-        FastArtworkMemoryCache.shared.removeAll()
-        DSPMeterBus.shared.clear()
-        ArtistArtworkGenerator.clearMemory()
-        if !HomeWindowLayoutState.shared.isHomeMode {
-            clearHomeHeroArtworkMemoryCaches()
-        }
-        BKThemeAssets.shared.purgeTransientCaches()
-        HomeAmbientShapesBackground.purgeCaches()
-        Task {
-            await ArtworkLoader.clearMemoryCache()
+        guard routineTrimTask == nil else { return }
+        routineTrimTask = Task { @MainActor in
+            defer { routineTrimTask = nil }
+            NativeLyricsSurfaceManager.shared.purgeInactiveRenderingResources()
+            NativeLyricsSurfaceManager.shared.trimRoutineMemory()
+            FastArtworkMemoryCache.shared.removeAll()
+            DSPMeterBus.shared.clear()
+            ArtistArtworkGenerator.clearMemory()
+
             if !HomeWindowLayoutState.shared.isHomeMode {
+                HomeArtworkPreheater.shared.cancel()
+                HomeArtworkMemoryStore.shared.clearMemory()
+                clearHomeHeroArtworkMemoryCaches()
+                HomePlaylistCardCoverStore.shared.clearMemory()
+                HomePlaylistPreviewArtworkStore.shared.clearMemory()
+                HomeAmbientShapesBackground.purgeCaches()
+
                 await CoverGradientBlurMemory.clear()
+                await SkinRegistry.releaseInactiveCachedResources()
             }
+
+            BKThemeAssets.shared.purgeTransientCaches()
+            await ArtworkLoader.clearMemoryCache()
             await ArtworkAssetStore.shared.trimCachedImages()
+            CATransaction.begin()
+            CATransaction.flush()
+            CATransaction.commit()
             trimProcessMemory()
         }
-        CATransaction.begin()
-        CATransaction.flush()
-        CATransaction.commit()
-        trimProcessMemory()
     }
 
     nonisolated static func trimProcessMemory() {

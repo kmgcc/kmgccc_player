@@ -60,7 +60,7 @@ private struct ApplicationDataSettingsView: View {
                             get: { settings.deferImportEnrichment },
                             set: { settings.deferImportEnrichment = $0 }
                         ),
-                        detail: "导入时先完成文件复制，在后台补全歌词和封面"
+                        info: "导入时先完成文件复制，在后台补全歌词和封面。"
                     )
 
                     Divider()
@@ -77,7 +77,7 @@ private struct ApplicationDataSettingsView: View {
                         .buttonStyle(.borderedProminent)
                         .clipShape(Capsule())
 
-                        Text("自动联网补全本地曲库中缺失的歌曲信息、封面和歌词")
+                        Text("在此处批量联网补全所有本地曲库中缺失的歌曲信息、封面和歌词。")
                             .settingsDescriptionStyle()
                     }
                 }
@@ -92,7 +92,7 @@ private struct ApplicationDataSettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .clipShape(Capsule())
 
-                    Text("清除 app 设置项，恢复默认值")
+                    Text("清除 App 设置项，恢复默认值。")
                         .settingsDescriptionStyle()
                 }
             }
@@ -131,12 +131,12 @@ private struct ApplicationDataSettingsView: View {
                     SettingsSwitchRow(
                         title: "帮助改进 kmgccc_player",
                         isOn: telemetryEnabledBinding,
-                        detail: "开启后会发送匿名使用统计，帮助了解用户数量、播放来源、皮肤使用情况、性能指标等信息。不会上传播放记录、本地文件路径等敏感数据。"
+                        detail: "发送匿名使用统计，如用户数量、播放来源、皮肤使用与性能指标；统计中不含播放记录、本地文件路径等敏感数据。"
                     )
                     SettingsSwitchRow(
                         title: "自动发送崩溃报告",
                         isOn: automaticCrashReportUploadBinding,
-                        detail: "App 意外退出后自动发送经过脱敏的技术报告，来帮助我们定位错误。意外退出后再次打开 App 时会询问你是否愿意补充当时的操作。"
+                        detail: "App 意外退出后，自动发送经过脱敏的技术报告，帮助定位错误。再次打开时会询问你是否愿意补充当时的操作。"
                     )
                 }
             }
@@ -192,7 +192,7 @@ private struct ApplicationDataSettingsView: View {
             .buttonStyle(.borderedProminent)
             .clipShape(Capsule())
 
-            Text("清除音乐播放记录，包括歌曲聆听计数、播放时长等")
+            Text("清除音乐播放记录，包括歌曲聆听计数、播放时长等。")
                 .settingsDescriptionStyle()
         }
     }

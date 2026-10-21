@@ -490,6 +490,6 @@ private struct LibraryCompletionDialogView: View {
             let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed?.isEmpty == false ? trimmed : nil
         }
-        .joined(separator: " · ")
+        .joined(separator: " - ")
     }
 }

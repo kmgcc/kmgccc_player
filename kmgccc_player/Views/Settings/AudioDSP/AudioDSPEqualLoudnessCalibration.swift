@@ -113,8 +113,8 @@ struct AudioDSPEqualLoudnessStatus: View {
     private var volumeText: String {
         guard let reading = controller.volumeState.reading else { return "音量不可读取" }
         let percent = "\(Int((reading.scalar * 100).rounded()))%"
-        let level = reading.decibelsBelowMaximum.map { " · \($0.formatted(.number.precision(.fractionLength(1)))) dB" } ?? ""
-        return reading.isMuted ? "已静音 · \(percent)" : percent + level
+        let level = reading.decibelsBelowMaximum.map { " (\($0.formatted(.number.precision(.fractionLength(1)))) dB)" } ?? ""
+        return reading.isMuted ? "已静音 (\(percent))" : percent + level
     }
 
     private var bassCompensationText: String {
@@ -160,6 +160,9 @@ struct EqualLoudnessCurveChart: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Canvas { canvas, size in
+                // This chart describes the configured curve, including while bypassed.
+                var plottedStage = stage
+                plottedStage.enabled = true
                 let plot = CGRect(x: 2, y: 4, width: max(1, size.width - 4), height: max(1, size.height - 8))
                 let axis = stage.calibration?.axis ?? context.volume.reading?.axis ?? .percent
                 let range: ClosedRange<Double> = axis == .decibels ? -60...0 : 0...100
@@ -177,7 +180,7 @@ struct EqualLoudnessCurveChart: View {
                 let steps = max(180, Int(plot.width * 2))
                 for index in 0...steps {
                     let value = range.lowerBound + (range.upperBound - range.lowerBound) * Double(index) / Double(steps)
-                    let gains = DSPEqualLoudnessMath.gains(stage: stage, context: sampleContext(at: value, axis: axis))
+                    let gains = DSPEqualLoudnessMath.gains(stage: plottedStage, context: sampleContext(at: value, axis: axis))
                     let bassPoint = CGPoint(x: x(value), y: y(gains.bassDB))
                     let treblePoint = CGPoint(x: x(value), y: y(gains.trebleDB))
                     if index == 0 { bass.move(to: bassPoint); treble.move(to: treblePoint) }
@@ -466,7 +469,7 @@ struct EqualLoudnessCalibrationDialog: View {
         .onDisappear(perform: restore)
         .onChange(of: controller.routedDeviceKey) { _, key in
             guard phase != .intro, phase != .finished, key != startDeviceKey else { return }
-            controller.setPreview(nil)
+            controller.endCalibration(using: appSession.audioDSPController)
             phase = .deviceChanged(controller.volumeState.deviceName ?? "新设备")
         }
         .task(id: query) { await search() }
@@ -506,7 +509,7 @@ struct EqualLoudnessCalibrationDialog: View {
     private static let stepNotes = [
         "若这个音量过响或过轻，可移到平时最常用的位置。接下来音量可能会自动变化，请注意。",
         "补偿到接近之前的参照水平即可，过多会沉闷或刺耳。拖回参照刻度，可以随时对照。",
-        "补到刚好不觉单薄即可。拖回参照刻度，可以随时对照。下一步音量将变大，请注意。",
+        "补到刚好不觉单薄即可。拖回参照刻度，可以随时对照。",
         "若听来已经合适，保持为 0 即可。",
     ]
 
@@ -686,7 +689,13 @@ struct EqualLoudnessCalibrationDialog: View {
                     .foregroundStyle(palette.tertiaryColor)
                     .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
-                if let message = stepBlocker(index) {
+                if index + 1 < Guide.stepCount, Guide.directions[index + 1] == .louder {
+                    Text("下一步音量将变大，请注意")
+                        .font(.system(size: 12, weight: .medium))
+                        // Explicit green cue requested for the upcoming volume increase.
+                        .foregroundStyle(.green)
+                }
+                if !controller.volumeObserver.isRampingVolume, let message = stepBlocker(index) {
                     Text(message)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(themeStore.accentColor)
@@ -745,7 +754,9 @@ struct EqualLoudnessCalibrationDialog: View {
                 SettingsTaskDialogButton("放弃", kind: .secondary, action: onClose)
                 SettingsTaskDialogButton("上一步", kind: .secondary) { goBack(from: index) }
                 SettingsTaskDialogButton(index == Guide.stepCount - 1 ? "完成" : "下一步", kind: .primary,
-                                         disabled: stepBlocker(index) != nil) { advance(from: index) }
+                                         disabled: controller.volumeObserver.isRampingVolume || stepBlocker(index) != nil) {
+                    advance(from: index)
+                }
             case .finished:
                 SettingsTaskDialogButton("重新标定", kind: .secondary) {
                     points = []
@@ -934,9 +945,11 @@ struct EqualLoudnessCalibrationDialog: View {
     }
 
     private func enterStep(_ index: Int) {
+        controller.volumeObserver.cancelVolumeRamp()
+        controller.beginCalibration(using: appSession.audioDSPController)
         let direction = Guide.directions[index]
         let isNewDraft = drafts[index] == nil
-        var target: Double
+        let target: Double
         if let draft = drafts[index] {
             bass = draft.bass
             treble = draft.treble
@@ -953,38 +966,39 @@ struct EqualLoudnessCalibrationDialog: View {
         }
         let axis = calibrationAxis ?? controller.volumeState.reading?.axis
         if calibrationAxis == nil { calibrationAxis = axis }
-        let wroteTarget = controller.volumeObserver.setScalar(target)
-        if isNewDraft, wroteTarget, direction != .reference, let axis {
-            let previous = points.prefix(index).map(\.coordinate)
-            while let reading = controller.volumeState.reading,
-                  Guide.blocker(step: index, reading: reading,
-                                recordedCoordinates: previous,
-                                recordedScalars: recordedScalars,
-                                axis: axis) != nil {
-                let next: Double?
-                switch direction {
-                case .quieter:
-                    next = max(Guide.lowestSuggestedScalar, target - Guide.volumeStep)
-                case .louder:
-                    next = min(Guide.highestSuggestedScalar, target + Guide.volumeStep)
-                case .reference:
-                    next = nil
-                }
-                guard let next, next != target, controller.volumeObserver.setScalar(next) else { break }
-                target = next
-            }
-        }
         drafts[index] = StepDraft(bass: bass, treble: treble, scalar: target)
         heldMark = Guide.marks(recorded: recordedScalars, drafted: drafts.mapValues(\.scalar))
             .contains { abs($0 - target) < 1e-6 } ? target : nil
         phase = .step(index)
         updatePreview()
+        applyStepVolume(target, at: index, adjustingSpacing: isNewDraft, axis: axis)
+    }
+
+    private func applyStepVolume(_ target: Double, at index: Int, adjustingSpacing: Bool,
+                                 axis: OutputDeviceVolumeReading.Axis?) {
+        controller.volumeObserver.rampScalar(to: target) {
+            guard phase == .step(index) else { return }
+            saveCurrentDraft()
+            guard adjustingSpacing, Guide.directions[index] != .reference, let axis,
+                  let reading = controller.volumeState.reading,
+                  Guide.blocker(step: index, reading: reading,
+                                recordedCoordinates: points.prefix(index).map(\.coordinate),
+                                recordedScalars: recordedScalars, axis: axis) != nil else { return }
+            let next = Guide.directions[index] == .quieter
+                ? max(Guide.lowestSuggestedScalar, target - Guide.volumeStep)
+                : min(Guide.highestSuggestedScalar, target + Guide.volumeStep)
+            guard next != target else { return }
+            drafts[index]?.scalar = next
+            heldMark = next
+            applyStepVolume(next, at: index, adjustingSpacing: true, axis: axis)
+        }
     }
 
     private func goBack(from index: Int) {
+        controller.volumeObserver.cancelVolumeRamp()
         saveCurrentDraft()
         if index == 0 {
-            controller.setPreview(nil)
+            controller.endCalibration(using: appSession.audioDSPController)
             phase = .segment
         } else {
             enterStep(index - 1)
@@ -992,7 +1006,8 @@ struct EqualLoudnessCalibrationDialog: View {
     }
 
     private func advance(from index: Int) {
-        guard let reading = controller.volumeState.reading else { return }
+        guard !controller.volumeObserver.isRampingVolume, stepBlocker(index) == nil,
+              let reading = controller.volumeState.reading else { return }
         saveCurrentDraft()
         let isReference = Guide.directions[index] == .reference
         let currentAxis = calibrationAxis ?? reading.axis
@@ -1040,8 +1055,8 @@ struct EqualLoudnessCalibrationDialog: View {
             axis: calibrationAxis ?? reading.axis,
             points: Array(points.prefix(Guide.stepCount))
         )
-        controller.setPreview(nil)
         onSave(calibration)
+        controller.endCalibration(using: appSession.audioDSPController, keepingEnabled: true)
         phase = .finished
     }
 
@@ -1064,7 +1079,8 @@ struct EqualLoudnessCalibrationDialog: View {
 
     private func saveCurrentDraft() {
         guard case .step(let index) = phase else { return }
-        let scalar = controller.volumeState.reading?.scalar ?? drafts[index]?.scalar
+        let scalar = (controller.volumeObserver.isRampingVolume ? drafts[index]?.scalar : controller.volumeState.reading?.scalar)
+            ?? drafts[index]?.scalar
             ?? Guide.suggestedScalar(step: index, recorded: recordedScalars)
         drafts[index] = StepDraft(bass: bass, treble: treble, scalar: scalar)
     }
@@ -1079,7 +1095,7 @@ struct EqualLoudnessCalibrationDialog: View {
     }
 
     private func restore() {
-        controller.setPreview(nil)
+        controller.endCalibration(using: appSession.audioDSPController)
         if let startScalar, controller.routedDeviceKey == startDeviceKey {
             controller.volumeObserver.setScalar(startScalar)
         }

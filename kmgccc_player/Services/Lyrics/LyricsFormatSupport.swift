@@ -15,20 +15,13 @@ nonisolated enum LyricsFormatSupport {
         return trimmed
     }
 
-    static func validateManualTTML(_ text: String) -> String? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        let result = validateTTML(trimmed)
-        return result.isValid ? nil : result.message
-    }
-
     static func validateTTML(_ text: String) -> TTMLValidationResult {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             return .invalid("歌词为空")
         }
         guard looksLikeTTML(trimmed) else {
-            return .invalid("仅支持 TTML 歌词，请通过歌词搜索或自动导入流程转换 LRC/TXT。")
+            return .invalid("歌词不是 TTML 格式")
         }
 
         guard trimmed.range(of: #"<(?:\w+:)?tt(?:\s|>|/)"#, options: [.regularExpression, .caseInsensitive]) != nil,

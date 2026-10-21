@@ -29,7 +29,16 @@ nonisolated enum DSPStateCopy {
 /// Immutable polyphase coefficients shared by the live and preview states of
 /// one native nonlinear node. Each FIR is symmetric with 32 source-frame delay;
 /// interpolation and reconstruction therefore contribute 64 source frames.
+///
+/// The sinc cuts at the source Nyquist, so at 44.1 kHz the transition band
+/// sits between 20 and 24.1 kHz: the passband stays flat to 20 kHz and only
+/// frequencies that fold back above 20 kHz see the transition. A Kaiser
+/// window (beta 9) at this fixed length keeps the 0–20 kHz cascade within
+/// 0.001 dB and holds images and aliases landing below 20 kHz under −89 dB,
+/// about 14 dB lower than the former Blackman window.
 nonisolated struct DSPPolyphaseFIRPlan {
+    static let kaiserBeta = 9.0
+
     let factor: Int
     let tapCount: Int
     let historyCount: Int
@@ -46,6 +55,7 @@ nonisolated struct DSPPolyphaseFIRPlan {
         self.historyCount = historyCount
 
         let center = Double(tapCount - 1) / 2
+        let windowScale = 1 / Self.besselI0(Self.kaiserBeta)
         var impulse = [Double](repeating: 0, count: tapCount)
         var sum = 0.0
         for index in impulse.indices {
@@ -55,9 +65,9 @@ nonisolated struct DSPPolyphaseFIRPlan {
                 ? 1
                 : sin(Double.pi * normalizedOffset) / (Double.pi * normalizedOffset)
             let windowPosition = offset / center
-            let window = 0.42
-                + 0.5 * cos(Double.pi * windowPosition)
-                + 0.08 * cos(2 * Double.pi * windowPosition)
+            let window = Self.besselI0(
+                Self.kaiserBeta * sqrt(max(0, 1 - windowPosition * windowPosition))
+            ) * windowScale
             let coefficient = sinc * window / Double(factor)
             impulse[index] = coefficient
             sum += coefficient
@@ -92,6 +102,21 @@ nonisolated struct DSPPolyphaseFIRPlan {
 
     func decimate(history: DSPMirroredFIRHistory) -> Double {
         history.dot(decimationPlan)
+    }
+
+    /// Zeroth-order modified Bessel function of the first kind, by its power
+    /// series; converges in a few dozen terms for the window's arguments.
+    private static func besselI0(_ x: Double) -> Double {
+        var sum = 1.0
+        var term = 1.0
+        var k = 1.0
+        let halfX = x / 2
+        while term > 1e-17 * sum {
+            term *= (halfX / k) * (halfX / k)
+            sum += term
+            k += 1
+        }
+        return sum
     }
 }
 
@@ -266,17 +291,47 @@ nonisolated struct DSPFixedDelay64 {
 ///
 /// Classic drives the whole signal through a biased hyperbolic tangent and
 /// mixes it with the dry path. Hi-fi leaves the dry path untouched and adds
-/// only low-order harmonics generated separately in three bands below
+/// predominantly low-order harmonics generated separately in three bands below
 /// 5 kHz (80–300 Hz, 300 Hz–1.2 kHz, 1.2–5 kHz); intermodulation stays
 /// inside each band, so a bass note never modulates the cymbals. The
 /// band-split harmonic idea follows JamesDSP's analog modelling; the
 /// implementation and tuning are our own.
 nonisolated struct DSPTubeKernel {
+    /// Digital peaks need room above the tube's nominal operating level.
+    /// The wet-path normalization cancels this scale at small amplitudes.
+    private static let workingLevel = 0.1
     /// Hi-fi generator bands at the oversampled rate.
     static let hifiBands: [(low: Double, high: Double)] = [(80, 300), (300, 1_200), (1_200, 5_000)]
-    /// Second-harmonic coefficient at hi-fi amount 1. At a band peak of
-    /// −20 dBFS and amount 0.4 the second harmonic sits near −36 dB.
+    /// At a full-scale band peak and amount 0.4, the second harmonic is
+    /// about −36 dB relative to the original, before band filtering.
     static let hifiSecondOrderScale = 0.79
+
+    /// Smoothly bound the generator input. A hard clamp here introduces
+    /// high-order harmonics before the reconstruction filter can remove them.
+    @inline(__always)
+    private static func hifiBandSample(_ input: Double) -> Double {
+        input / sqrt(1 + 0.25 * input * input)
+    }
+
+    /// Static allowance for a unit program peak; filters and DC-block
+    /// transients still leave the final peak guarantee to the chain limiter.
+    static func staticPeakResponseDB(parameters: DSPTubeParameters) -> Double {
+        let inputGain = pow(10, parameters.inputTrimDB / 20)
+        let peak: Double
+        switch parameters.mode {
+        case .classic:
+            let biasOutput = tanh(parameters.bias)
+            let maximumSlope = 1 / (1 - biasOutput * biasOutput)
+            peak = (1 - parameters.mix) + parameters.mix * inputGain * maximumSlope
+        case .hifi:
+            let bandPeak = hifiBandSample(inputGain * workingLevel)
+            let secondOrder = hifiSecondOrderScale * parameters.hifiAmount
+            let thirdOrder = secondOrder / 4
+            let squared = bandPeak * bandPeak
+            peak = 1 + Double(hifiBands.count) * (secondOrder * squared + thirdOrder * squared * bandPeak) / workingLevel
+        }
+        return 20 * log10(max(1, peak)) + parameters.outputTrimDB
+    }
 
     private struct ChannelState {
         var wetInput: DSPMirroredFIRHistory
@@ -343,7 +398,7 @@ nonisolated struct DSPTubeKernel {
     /// Hi-fi generator input gain (input trim at program level) and the
     /// scale that returns its output to signal level.
     private var harmonicInputGain: Double
-    private var harmonicOutputScale = 1.0
+    private var harmonicOutputScale: Double
     private var states: [ChannelState]
 
     init?(
@@ -367,10 +422,11 @@ nonisolated struct DSPTubeKernel {
         mode = parameters.mode
         secondOrder = Self.hifiSecondOrderScale * parameters.hifiAmount
         thirdOrder = secondOrder / 4
-        harmonicInputGain = pow(10, parameters.inputTrimDB / 20)
+        harmonicInputGain = pow(10, parameters.inputTrimDB / 20) * Self.workingLevel
+        harmonicOutputScale = 1 / Self.workingLevel
         self.plan = plan
         self.selectedChannels = selectedChannels
-        drive = pow(10, parameters.driveDB / 20)
+        drive = pow(10, parameters.driveDB / 20) * Self.workingLevel
         bias = parameters.bias
         biasOutput = tanh(parameters.bias)
         smallSignalNormalization = max(
@@ -423,8 +479,8 @@ nonisolated struct DSPTubeKernel {
         let reference = pow(10, -offsetDB / 20)
         shaperGain = inputGain * drive * reference
         wetNormalization = 1 / (smallSignalNormalization * reference)
-        harmonicInputGain = inputGain * reference
-        harmonicOutputScale = 1 / reference
+        harmonicInputGain = inputGain * reference * Self.workingLevel
+        harmonicOutputScale = 1 / (reference * Self.workingLevel)
     }
 
     func makeFreshState() -> DSPTubeKernel {
@@ -454,7 +510,7 @@ nonisolated struct DSPTubeKernel {
                     var generated = 0.0
                     for band in 0..<(states[channel].bandFilters.count / 2) {
                         let highPassed = states[channel].bandFilters[band * 2].process(x)
-                        let banded = min(2, max(-2, states[channel].bandFilters[band * 2 + 1].process(highPassed)))
+                        let banded = Self.hifiBandSample(states[channel].bandFilters[band * 2 + 1].process(highPassed))
                         let squared = banded * banded
                         generated += secondOrder * squared + thirdOrder * squared * banded
                     }

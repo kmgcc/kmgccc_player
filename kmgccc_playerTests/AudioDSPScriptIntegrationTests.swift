@@ -59,7 +59,9 @@ final class AudioDSPScriptIntegrationTests: XCTestCase {
     func testRuntimeFaultIsAttachedToNodeAndLaterEffectsContinue() {
         let script = DSPNodeConfiguration.script(parameters: DSPScriptNodeParameters(source:
             "process { output = sqrt(input); }"))
-        let width = DSPNodeConfiguration.stereoWidth(parameters: DSPStereoWidthParameters(width: 0))
+        var widthParameters = DSPStereoWidthParameters(width: 0)
+        widthParameters.loudnessMatchEnabled = false
+        let width = DSPNodeConfiguration.stereoWidth(parameters: widthParameters)
         let runtime = processor(nodes: [script, width])
         let input = pcm(Array(repeating: [Float(-0.5), Float(0.25)], count: 256).flatMap { $0 })
         let output = runtime.process(input)

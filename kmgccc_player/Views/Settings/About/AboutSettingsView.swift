@@ -134,7 +134,7 @@ struct AboutSettingsView: View {
             SettingsSwitchRow(
                 title: "自动更新",
                 isOn: $automaticUpdatesEnabled,
-                detail: "开启后会自动检查并在后台下载；退出 App 或点击“重启更新”时安装。"
+                info: "自动检查并在后台下载更新；退出 App 或点击侧边栏“重启更新”时安装。"
             )
         }
         .onChange(of: automaticUpdatesEnabled) { _, enabled in

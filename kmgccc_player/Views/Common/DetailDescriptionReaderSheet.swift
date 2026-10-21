@@ -50,6 +50,7 @@ struct DetailDescriptionReaderSheet: View {
     var body: some View {
         AppPopupFrame(
             title: title, systemImage: systemImage, onClose: { dismiss() }, showsFooter: false,
+            showsCloseButton: false,
             foreground: foregroundPalette, accent: accentColor
         ) {
             AppPopupScrollRegion(height: AppPopupStyle().readerHeight) {

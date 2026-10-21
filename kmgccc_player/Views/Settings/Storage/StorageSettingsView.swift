@@ -65,7 +65,7 @@ struct StorageSettingsView: View {
                         ) {
                             clean(StorageCategory.cacheCategories)
                         }
-                        Text("App 会在空闲时整理缓存，让它们保持在各自的上限以内；清理后，需要的内容会在使用时重新生成。")
+                        Text("App 会在空闲时也会整理缓存，让它们保持在各自的上限以内；清理后，需要的内容会在使用时重新生成。")
                             .settingsDescriptionStyle()
                     }
                 }

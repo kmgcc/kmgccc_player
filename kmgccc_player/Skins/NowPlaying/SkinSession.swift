@@ -5,6 +5,16 @@ import Observation
 @Observable
 @MainActor
 final class SkinSession {
+    private static let activeSessions = NSHashTable<SkinSession>.weakObjects()
+
+    /// Shared caches stay warm while any host still presents the skin. The
+    /// weak index does not extend a host's lifetime.
+    static var activeSkinIDs: Set<String> {
+        autoreleasepool {
+            Set(activeSessions.allObjects.compactMap(\.activeSkinID))
+        }
+    }
+
     private(set) var generation: UInt64 = 0
     @ObservationIgnored private var activeSkinID: String?
     @ObservationIgnored private var activeRevision: UInt64 = 0
@@ -19,10 +29,12 @@ final class SkinSession {
         }
         activeSkinID = skinID
         activeRevision = revision
+        Self.activeSessions.add(self)
     }
 
     func deactivate() {
         cancelWork()
+        Self.activeSessions.remove(self)
         activeSkinID = nil
         generation &+= 1
     }

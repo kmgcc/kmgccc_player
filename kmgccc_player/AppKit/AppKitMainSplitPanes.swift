@@ -302,7 +302,7 @@ struct AppKitMainContentPaneRoot: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-all-artists")
                     case .folders:
-                        ReferencedFolderView(appSession: appSession)
+                        ReferencedFolderView(appSession: appSession, pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-referenced-folders")
                     case .allSongs, .playlist, .artist, .album:
