@@ -31,7 +31,7 @@ struct AutomationSettingsView: View {
                     SettingsSwitchRow(
                         title: "启用本机自动化",
                         isOn: automationBinding,
-                        info: "让本机上的 MCP、CLI 和脚本访问播放器。"
+                        detail: "让本机上的 MCP、CLI 和脚本访问播放器。"
                     )
                 }
             }
@@ -43,9 +43,11 @@ struct AutomationSettingsView: View {
                         command: "player-automation mcp-stdio",
                         buttonTitle: didCopyMCPConfiguration ? "已复制" : "复制 MCP 配置",
                         buttonSystemImage: didCopyMCPConfiguration ? "checkmark" : "doc.on.doc",
-                        info: "配置可直接粘贴到 MCP 客户端的配置文件。",
                         action: copyMCPConfiguration
                     )
+
+                    Text("配置可直接粘贴到 agent 工具的配置文件。")
+                        .settingsDescriptionStyle()
 
                     Divider()
 

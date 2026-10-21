@@ -89,7 +89,7 @@ struct AppearanceSettingsView: View {
                         SettingsSwitchRow(
                             title: "HDR 效果",
                             isOn: $audioVisualizationHDREnabled,
-                            info: "开启后部分视觉元素会使用 HDR 来增强可读性与视觉效果。"
+                            info: "开启后部分视觉元素会使用 HDR 来增强可读性与视觉效果。需要支持的显示器。"
                         )
                         .frame(maxWidth: .infinity)
                     }
@@ -112,7 +112,7 @@ struct AppearanceSettingsView: View {
                 }
             }
 
-            SettingsSection("主页板块顺序", info: "拖动调整主页中各个板块的显示顺序。") {
+            SettingsSection("主页板块顺序") {
                 homeSectionOrderEditor
             }
         }
@@ -307,6 +307,9 @@ struct AppearanceSettingsView: View {
             }
 
             HStack {
+                Text("拖动调整主页中各个板块的显示顺序")
+                    .settingsDescriptionStyle()
+
                 Spacer(minLength: 0)
 
                 Button("恢复默认排序") {

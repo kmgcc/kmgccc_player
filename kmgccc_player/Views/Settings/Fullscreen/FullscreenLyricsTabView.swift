@@ -89,7 +89,7 @@ struct FullscreenLyricsTabView: View {
                     isOn: $amllDiscreteWordHighlightEnabled,
                     titleFont: presentationStyle.rowLabelFont,
                     titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors),
-                    info: "开启后可能减少高亮移动干扰。"
+                    info: "开启后歌词逐字亮起而不是扫光。"
                 )
             }
         }

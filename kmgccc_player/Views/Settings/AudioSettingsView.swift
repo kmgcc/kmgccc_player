@@ -64,7 +64,7 @@ struct AudioSettingsView: View {
                     SettingsSwitchRow(
                         title: "音频延迟补偿",
                         isOn: $lookaheadEnabled,
-                        info: "延迟音频输出以对齐频谱与可视化动效。"
+                        detail: "延迟音频输出以对齐频谱与可视化动效。"
                     )
                 }
             }

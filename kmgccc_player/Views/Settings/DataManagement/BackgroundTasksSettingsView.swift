@@ -33,7 +33,7 @@ struct BackgroundTasksSettingsView: View {
                 SettingsSwitchRow(
                     title: "空闲时提前准备",
                     isOn: preparationBinding,
-                    info: "接通电源且空闲时提前分析响度、整理封面与歌词；使用电池时，仅准备即将播放的歌曲。"
+                    detail: "接通电源且空闲时提前分析响度、整理封面与歌词；使用电池时，仅准备即将播放的歌曲。"
                 )
 
                 Divider()

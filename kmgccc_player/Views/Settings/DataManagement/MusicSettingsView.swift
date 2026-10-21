@@ -208,8 +208,11 @@ struct MusicSettingsView: View {
     }
 
     private var trustedAudioRootSection: some View {
-        SettingsSection("受信任的音频目录", info: "目录内的自动化文件操作无需重复确认。") {
+        SettingsSection("受信任的音频目录") {
             VStack(alignment: .leading, spacing: 12) {
+                Text("受信任目录内的自动化和文件操作可直接执行。")
+                    .settingsDescriptionStyle()
+
                 if let path = settings.trustedAudioRootPath {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: "checkmark.circle.fill")

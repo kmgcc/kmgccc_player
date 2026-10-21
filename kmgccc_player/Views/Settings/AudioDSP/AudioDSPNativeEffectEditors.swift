@@ -119,7 +119,7 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                 step: 0.5,
                 unit: "dB",
                 fractionDigits: 1,
-                info: "高次谐波的衰减程度。数值越高，泛音越丰富，低音轮廓越清晰。",
+                info: "高次谐波的衰减程度。数值越高，泛音越丰富，低音轮廓越清晰，但可能引入杂讯。",
                 onCommit: onCommit
             )
         }
@@ -157,7 +157,7 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                 step: 1,
                 unit: "%",
                 fractionDigits: 0,
-                info: "生成谐波时的驱动力度。数值越高，低音越饱满有力。",
+                info: "生成谐波时的驱动力度。数值越高，低音越饱满有力，但可能引入杂讯。",
                 onCommit: onCommit
             )
         }
@@ -187,7 +187,7 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                 case .speakers: "扬声器"
                 }
             },
-            info: "耳机与扬声器各自保存一套参数。自动时跟随当前输出设备。"
+            info: "按照你正在使用的设备选择，并重新调整到合适的参数。"
         )
     }
 
@@ -227,7 +227,7 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                     case .strong: "重"
                     }
                 },
-                info: "让一侧的低频稍稍传入另一侧耳朵，耳机听感更接近音箱，久听也更从容。"
+                info: "让两个声道产生一些混合，模拟音箱听感。"
             )
         }
     }
@@ -391,11 +391,11 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                 }
             )
             amountSlider("大小", DSPReverbParameters.self, \.size, range: DSPReverbParameters.sizeRange,
-                         info: "空间越大，余响越悠长。")
+                         info: "空间越大，混响越悠长。")
             amountSlider("混合", DSPReverbParameters.self, \.mix, range: DSPReverbParameters.mixRange,
                          info: Self.mixInfo)
             amountSlider("明暗", DSPReverbParameters.self, \.tone, range: DSPReverbParameters.toneRange,
-                         info: "向负值偏暗，高频余响收得更快；向正值偏亮，余响更通透。")
+                         info: "调节混响中高频的比例。")
         }
     }
 
@@ -487,7 +487,7 @@ struct AudioDSPNativeEffectEditor: View, Equatable {
                     case .custom: "自定义"
                     }
                 },
-                info: "轻柔使整体动态更平稳；夜间更明显地收住响亮的段落，适合低音量聆听。调整任一数值即转为自定义。"
+                info: "轻柔使整体动态更平稳；夜间更明显地收住响亮的段落，适合低音量聆听细节。调整任一数值即转为自定义。"
             )
             HStack(spacing: 6) {
                 ForEach(Array(DSPCompressorBandKey.allCases.enumerated()), id: \.offset) { index, key in

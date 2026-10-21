@@ -30,6 +30,9 @@ struct LyricsTimingConfigSection: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
+                Text("参数仅供调试，日常聆听保持默认即可。")
+                    .settingsDescriptionStyle()
+
                 leadInSection
                 Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
                 nearSwitchGapSection
@@ -46,7 +49,6 @@ struct LyricsTimingConfigSection: View {
                 Text("settings.lyrics.timing")
                     .font(presentationStyle.sectionTitleFont)
                     .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
-                    .settingsInfoHint("参数仅供调试，日常聆听保持默认即可。")
                 Spacer()
                 Button("恢复默认值") {
                     resetToDefaults()
@@ -72,7 +74,6 @@ struct LyricsTimingConfigSection: View {
                     Text("settings.lyrics.leadin")
                         .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
                         .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
-                        .settingsInfoHint(String(localized: "settings.lyrics.leadin_desc"))
                 Spacer()
                 Text("\(Int(leadInMs)) ms")
                     .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
@@ -80,6 +81,8 @@ struct LyricsTimingConfigSection: View {
             }
             Slider(value: $leadInMs, in: 0...1200, step: 20)
                 .frame(height: presentationStyle.tabHeight)
+            Text("settings.lyrics.leadin_desc")
+                .settingsDescriptionStyle()
         }
     }
 
@@ -96,7 +99,6 @@ struct LyricsTimingConfigSection: View {
                     Text("settings.lyrics.near_switch_gap")
                         .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
                         .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
-                        .settingsInfoHint(String(localized: "settings.lyrics.near_switch_gap_desc"))
                 Spacer()
                 Text("\(Int(nearSwitchGapMs)) ms")
                     .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
@@ -104,6 +106,8 @@ struct LyricsTimingConfigSection: View {
             }
             Slider(value: $nearSwitchGapMs, in: 0...500, step: 5)
                 .frame(height: presentationStyle.tabHeight)
+            Text("settings.lyrics.near_switch_gap_desc")
+                .settingsDescriptionStyle()
         }
     }
 
@@ -113,7 +117,6 @@ struct LyricsTimingConfigSection: View {
                     Text("歌词整体提前量")
                         .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
                         .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
-                        .settingsInfoHint("全曲歌词统一提前显示：正值更早，负值更晚，与单曲时间偏移叠加生效。")
                 Spacer()
                 Text("\(Int(globalAdvanceMs)) ms")
                     .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
@@ -121,6 +124,8 @@ struct LyricsTimingConfigSection: View {
             }
             Slider(value: $globalAdvanceMs, in: -1000...1000, step: 10)
                 .frame(height: presentationStyle.tabHeight)
+            Text("全曲歌词统一提前显示：正值更早，负值更晚，与单曲时间偏移叠加生效。")
+                .settingsDescriptionStyle()
         }
     }
 

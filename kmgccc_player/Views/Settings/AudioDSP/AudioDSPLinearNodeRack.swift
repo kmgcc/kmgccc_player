@@ -196,7 +196,7 @@ struct AudioDSPLinearNodeRack: View {
             SettingsSwitchRow(
                 title: "余量保护",
                 isOn: $isHeadroomEnabled,
-                info: "效果提升电平时，相应降低输入，为峰值留出余地。"
+                info: "效果提升电平时，相应自动降低输入，为峰值留出余地。"
             )
 
             if isHeadroomEnabled {
@@ -205,7 +205,7 @@ struct AudioDSPLinearNodeRack: View {
                     value: $maximumAttenuationDB,
                     range: DSPHeadroomConfiguration.maximumAttenuationRange,
                     step: 0.1,
-                    info: "余量保护最多降低的电平，超出部分由安全限幅处理。",
+                    info: "余量保护降低的电平上限，超出部分由安全限幅处理。",
                     onCommit: onCommit
                 )
             }
@@ -735,7 +735,7 @@ struct AudioDSPLinearNodeRack: View {
                 step: 0.01,
                 unit: "",
                 fractionDigits: 2,
-                info: "补偿曲线的施加比例，1.00 为完整补偿。音量越低，补偿越多。",
+                info: "补偿曲线的施加比例，1.00 为完整补偿。",
                 onCommit: onCommit
             )
         }

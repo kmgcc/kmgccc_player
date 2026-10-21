@@ -69,7 +69,7 @@ struct NowPlayingLyricsTabView: View {
                     title: "减弱高亮",
                     isOn: $amllDiscreteWordHighlightEnabled,
                     titleFont: presentationStyle.rowLabelFont,
-                    info: "开启后可能减少高亮移动干扰。"
+                    info: "开启后歌词逐字亮起而不是扫光。"
                 )
             }
         }

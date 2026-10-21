@@ -76,7 +76,9 @@ private struct ApplicationDataSettingsView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .clipShape(Capsule())
-                        .settingsInfoHint("自动联网补全本地曲库中缺失的歌曲信息、封面和歌词。")
+
+                        Text("在此处批量联网补全所有本地曲库中缺失的歌曲信息、封面和歌词。")
+                            .settingsDescriptionStyle()
                     }
                 }
             }
@@ -89,7 +91,9 @@ private struct ApplicationDataSettingsView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .clipShape(Capsule())
-                    .settingsInfoHint("清除 App 设置项，恢复默认值。")
+
+                    Text("清除 App 设置项，恢复默认值。")
+                        .settingsDescriptionStyle()
                 }
             }
 
@@ -187,7 +191,9 @@ private struct ApplicationDataSettingsView: View {
             }
             .buttonStyle(.borderedProminent)
             .clipShape(Capsule())
-            .settingsInfoHint("清除音乐播放记录，包括歌曲聆听计数、播放时长等。")
+
+            Text("清除音乐播放记录，包括歌曲聆听计数、播放时长等。")
+                .settingsDescriptionStyle()
         }
     }
 }
