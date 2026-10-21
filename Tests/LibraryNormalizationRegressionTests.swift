@@ -22,6 +22,10 @@ struct AlbumSection {
     let trackCount: Int
 }
 
+struct UserMetadataOverride {
+    var albumGroupKey: String?
+}
+
 final class Track {
     let id = UUID()
     var title = ""
@@ -32,6 +36,7 @@ final class Track {
     var musicBrainzReleaseID: String?
     var embeddedReleaseYear: Int?
     var embeddedCompilation: Bool?
+    var userMetadataOverride: UserMetadataOverride?
 }
 
 // Logging shim so LibraryNormalization.swift compiles outside the app target.

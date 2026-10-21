@@ -2963,6 +2963,10 @@ final class LibraryViewModel {
     }
 
     func deleteTracks(_ tracks: [Track]) async {
+        guard !rejectsUnownedMutations else { return }
+        // Workers can already be queued for a durable enrichment commit.
+        // Drain them before acquiring the same serial mutation owner.
+        await importService?.cancelEnrichment(for: Set(tracks.map(\.id)))
         await performOwnedLibraryMutation(rejectingWith: ()) {
             try await self.deleteTracksWithoutOwnership(tracks)
         }
@@ -2987,7 +2991,6 @@ final class LibraryViewModel {
             deletedTrackIDs
         )
 
-        await importService?.cancelEnrichment(for: deletedTrackIDs)
         cleanupPlaybackAfterDeletingTracks(deletedTrackIDs)
         releaseTransientResources(for: uniqueTracks)
 
@@ -3467,6 +3470,10 @@ final class LibraryViewModel {
     }
 
     func deleteArtist(_ entry: ArtistEntry) async {
+        guard !rejectsUnownedMutations else { return }
+        await importService?.cancelEnrichment(for: Set(allTracks.filter {
+            LibraryNormalization.containsArtist(entry.canonicalName, in: $0)
+        }.map(\.id)))
         await performOwnedLibraryMutation(rejectingWith: ()) {
             try await self.deleteArtistWithoutOwnership(entry)
         }
@@ -3492,7 +3499,6 @@ final class LibraryViewModel {
         }
 
         cleanupPlaybackAfterDeletingTracks(affectedTrackIDs)
-        await importService?.cancelEnrichment(for: affectedTrackIDs)
         releaseTransientResources(for: allTracks.filter { affectedTrackIDs.contains($0.id) })
         removeDeletedTracksFromVisibleState(affectedTrackIDs)
         let invalidatedSelectionIdentities = selectionIdentitiesAffectedByDeletedTracks(
@@ -3521,6 +3527,10 @@ final class LibraryViewModel {
     }
 
     func deleteAlbum(_ entry: AlbumEntry) async {
+        guard !rejectsUnownedMutations else { return }
+        await importService?.cancelEnrichment(for: Set(allTracks.filter {
+            $0.albumGroupKey == entry.canonicalKey
+        }.map(\.id)))
         await performOwnedLibraryMutation(rejectingWith: ()) {
             try await self.deleteAlbumWithoutOwnership(entry)
         }
@@ -3539,7 +3549,6 @@ final class LibraryViewModel {
         }
 
         cleanupPlaybackAfterDeletingTracks(affectedTrackIDs)
-        await importService?.cancelEnrichment(for: affectedTrackIDs)
         releaseTransientResources(for: allTracks.filter { affectedTrackIDs.contains($0.id) })
         removeDeletedTracksFromVisibleState(affectedTrackIDs)
         let invalidatedSelectionIdentities = selectionIdentitiesAffectedByDeletedTracks(

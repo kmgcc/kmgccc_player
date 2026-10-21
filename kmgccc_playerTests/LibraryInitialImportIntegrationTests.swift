@@ -293,21 +293,24 @@ final class LibraryInitialImportIntegrationTests: XCTestCase {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let host = try makeHost(registryURL: fixture.registryURL)
-        _ = try await host.createMusicLibrary(
+        let first = try await host.createMusicLibrary(
             mode: .referenced,
             parentURL: fixture.libraryParent,
             displayName: "First",
             initialImportSelection: nil
         )
+        guard case .created(let firstContext, _) = first else { return XCTFail("Expected first library") }
         let result = try await host.createMusicLibrary(
             mode: .managed,
-            parentURL: fixture.libraryParent,
+            parentURL: firstContext.rootURL,
             displayName: "Second",
             initialImportSelection: LibraryInitialImportSelection(urls: [fixture.sourceRoot])
         )
         guard case .existingLibraryModeMismatch(let context, requestedMode: .managed) = result else {
             return XCTFail("Expected mode mismatch")
         }
+        XCTAssertEqual(context.id, firstContext.id)
+        XCTAssertEqual(host.activeLibraryBinding.context?.id, firstContext.id)
         XCTAssertEqual(context.mode, .referenced)
         let existingTracks = await host.activeLibraryBinding.activeSession?.repository.fetchTracks(in: nil)
         XCTAssertTrue(existingTracks?.isEmpty ?? false)
@@ -455,7 +458,22 @@ final class LibraryInitialImportIntegrationTests: XCTestCase {
         )
         let recycledURL = fixture.sourceRoot.appendingPathComponent(recycledRelativePath)
 
+        let originalOwner = try XCTUnwrap(session.libraryViewModel.runOwnedLibraryMutation)
+        var ownerIsHeld = false
+        session.libraryViewModel.runOwnedLibraryMutation = { work in
+            ownerIsHeld = true
+            defer { ownerIsHeld = false }
+            try await originalOwner(work)
+        }
+        let cancellationProbe = DeletionCancellationProbe(base: session.fileImportService) {
+            // A worker may need this same owner to finish its durable commit.
+            // Fail immediately on a lock-order regression instead of hanging XCTest.
+            XCTAssertFalse(ownerIsHeld)
+            return !ownerIsHeld
+        }
+        session.libraryViewModel.setImportService(cancellationProbe)
         await session.libraryViewModel.deleteTracks(tracks)
+        XCTAssertEqual(cancellationProbe.cancelledIDs, Set(tracks.map(\.id)))
 
         let remaining = await session.repository.fetchTracks(in: nil)
         XCTAssertEqual(remaining.map(\.id), [retainedTrack.id])
@@ -554,12 +572,16 @@ final class LibraryInitialImportIntegrationTests: XCTestCase {
         let schema = Schema([TrackIndexEntry.self])
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [configuration])
-        return AppSessionHost(
+        let host = AppSessionHost(
             modelContainer: container,
             initialLibraryContext: nil,
             registryStore: try kmgccc_player.MusicLibraryRegistryStore(fileURL: registryURL),
             sessionFactory: LibrarySessionFactory()
         )
+        // Session-bound source scans borrow slots from the App scheduler.
+        // These fixtures bypass setupDependencies(), which starts it in the App.
+        host.backgroundWorkScheduler.start()
+        return host
     }
 
     private func trackPackageContainsAudio(_ packageURL: URL) throws -> Bool {
@@ -586,6 +608,37 @@ final class LibraryInitialImportIntegrationTests: XCTestCase {
     private struct FailingTrackRecycler: LibraryRecycling {
         struct Failure: Error {}
         func recycle(_ url: URL) async throws { throw Failure() }
+    }
+
+    @MainActor
+    private final class DeletionCancellationProbe: FileImportServiceProtocol {
+        let base: any FileImportServiceProtocol
+        let onCancel: () -> Bool
+        private(set) var cancelledIDs: Set<UUID> = []
+
+        init(base: any FileImportServiceProtocol, onCancel: @escaping () -> Bool) {
+            self.base = base
+            self.onCancel = onCancel
+        }
+
+        func pickImportURLs(triggeredAt: Date) async -> [URL]? {
+            await base.pickImportURLs(triggeredAt: triggeredAt)
+        }
+
+        func importSelectedURLs(_ urls: [URL], context: LibraryImportContext) async -> LibraryImportResult {
+            await base.importSelectedURLs(urls, context: context)
+        }
+
+        func importSelectedURLs(_ urls: [URL], to playlist: Playlist,
+                                metadataOverride: ImportMetadataOverride?) async -> Int {
+            await base.importSelectedURLs(urls, to: playlist, metadataOverride: metadataOverride)
+        }
+
+        func cancelEnrichment(for trackIDs: Set<UUID>) async {
+            guard onCancel() else { return }
+            cancelledIDs.formUnion(trackIDs)
+            await base.cancelEnrichment(for: trackIDs)
+        }
     }
 
     private struct SelectiveTrackRecycler: LibraryRecycling {
