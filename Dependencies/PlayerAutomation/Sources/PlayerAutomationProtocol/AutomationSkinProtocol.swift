@@ -3,7 +3,7 @@ import Foundation
 /// Release gate shared by the App and its automation tools. Set it to false to ship a build
 /// without custom skin entry points.
 public enum SkinCustomizationAvailability {
-    public static let isEnabled = true
+    public static let isEnabled = false
 }
 
 public extension AutomationMethod {
