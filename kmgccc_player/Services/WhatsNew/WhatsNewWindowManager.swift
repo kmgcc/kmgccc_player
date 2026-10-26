@@ -40,6 +40,13 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
 
     /// Show the What's New window with specific content.
     private func show(whatsNew: WhatsNew) {
+        var whatsNew = whatsNew
+        whatsNew.primaryAction.onDismiss = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.dismiss()
+            }
+        }
+
         FeatureTipPresentationCoordinator.shared.setSuspended(true, reason: .whatsNew)
         let whatsNewView = WhatsNewView(whatsNew: whatsNew)
 
