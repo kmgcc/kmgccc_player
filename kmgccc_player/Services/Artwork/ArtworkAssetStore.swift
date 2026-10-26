@@ -62,16 +62,17 @@ actor ArtworkAssetStore {
 
     private let cache: NSCache<NSString, ArtworkAssetSnapshot> = {
         let cache = NSCache<NSString, ArtworkAssetSnapshot>()
-        cache.countLimit = 32
-        cache.totalCostLimit = 4 * 1024 * 1024
+        cache.countLimit = 16
+        cache.totalCostLimit = 2 * 1024 * 1024
         return cache
     }()
     private let fullImageCache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
         // Keep the current playback window warm without retaining a second
-        // screenful of decoded full-size artwork after a track switch.
-        cache.countLimit = 2
-        cache.totalCostLimit = 8 * 1024 * 1024
+        // screenful of decoded full-size artwork after a track switch. The
+        // budget covers one 2048 px cover (~16.8 MB) plus smaller skins.
+        cache.countLimit = 1
+        cache.totalCostLimit = 24 * 1024 * 1024
         return cache
     }()
     private let accentColorCache: NSCache<NSString, CachedArtworkAccent> = {
@@ -533,6 +534,27 @@ actor ArtworkAssetStore {
             averageColor: averageColor,
             analysis: analysis
         )
+    }
+
+    /// The accent `resolveAccentColor` would pick, taken from a row cover
+    /// instead of the original artwork. The analysis samples 72 px either way,
+    /// so the colour matches while the cost drops from decoding a full-size
+    /// picture to redrawing an 88 px thumbnail.
+    nonisolated static func rowAccentColor(fromThumbnail image: NSImage) -> NSColor? {
+        var rect = CGRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil),
+              let sample = ArtworkColorExtractor.sampledBitmap(from: cgImage, side: 72)
+        else { return nil }
+        let analysis = ArtworkColorExtractor.analyzeSyntheticSample(
+            pixels: sample.pixels,
+            side: sample.side
+        )
+        let palette = analysis?.displayPalette.isEmpty == false
+            ? (analysis?.displayPalette ?? [])
+            : ArtworkColorExtractor.uiThemePalette(from: sample, targetCount: 4)
+        return palette.first
+            ?? analysis?.primaryHueSourceColor
+            ?? ArtworkColorExtractor.averageColor(from: sample)
     }
 
     private nonisolated static func accentColorCacheKey(for sourceIdentity: String) -> String {

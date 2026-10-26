@@ -17,6 +17,7 @@ enum ExternalPlaybackConnectionState: String, Sendable {
 }
 
 struct NowPlayingPresentation {
+    var metadataSources: [String: String] = [:]
     var source: PlaybackSource
     var localTrack: Track?
     var localPlaybackOrderMode: PlaybackOrderMode? = nil
@@ -24,7 +25,12 @@ struct NowPlayingPresentation {
     var artist: String
     var album: String?
     var artworkData: Data?
+    var artworkDataChecksum: UInt64? = nil
     var artworkIdentity: String?
+    /// Precomputed for local playback so view task keys do not stat artwork files.
+    var localArtworkSourceKey: String? = nil
+    /// Validated once by the playback owner and reused by rendering surfaces.
+    var localArtworkFileURL: URL? = nil
     var artworkDisplayTrackID: UUID?
     var isArtworkLoading: Bool
     var duration: Double
@@ -54,6 +60,15 @@ struct NowPlayingPresentation {
     var isVolumeControlEnabled: Bool
     var isPlaybackModeControlEnabled: Bool
     var emptyTitleKey: String
+    var musicEnrichment: MusicEnrichmentSnapshot? = nil
+    var externalMusicAttributes: [String: MusicMetadataValue]? = nil
+
+    var motionArtwork: MotionArtworkResource? {
+        musicEnrichment?.squareArtwork ?? (source == .local ? localTrack?.storedMotionArtworkResource : nil)
+    }
+    var tallMotionArtwork: MotionArtworkResource? {
+        musicEnrichment?.tallArtwork ?? (source == .local ? localTrack?.tallStoredMotionArtworkResource : nil)
+    }
 
     static let emptyLocal = NowPlayingPresentation(
         source: .local,
@@ -206,8 +221,15 @@ extension NowPlayingPresentation {
             title == other.title &&
             artist == other.artist &&
             album == other.album &&
+            artworkDataChecksum == other.artworkDataChecksum &&
+            musicEnrichment?.record.updatedAt == other.musicEnrichment?.record.updatedAt &&
+            musicEnrichment?.record.query.key == other.musicEnrichment?.record.query.key &&
+            externalMusicAttributes == other.externalMusicAttributes &&
+            metadataSources == other.metadataSources &&
             localPlaybackOrderMode == other.localPlaybackOrderMode &&
             artworkIdentity == other.artworkIdentity &&
+            localArtworkSourceKey == other.localArtworkSourceKey &&
+            localArtworkFileURL == other.localArtworkFileURL &&
             artworkDisplayTrackID == other.artworkDisplayTrackID &&
             isArtworkLoading == other.isArtworkLoading &&
             duration == other.duration &&

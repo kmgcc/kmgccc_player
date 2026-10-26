@@ -9,7 +9,7 @@ QQMUSIC_PYINSTALLER_VERSION="6.21.0"
 
 qqmusic_stamp_value() {
   printf 'source=%s\nqqmusic-api-python=%s\npython=%s\npyinstaller=%s\narch=arm64' \
-    "$(hash_inputs "$QQMUSIC_SOURCE/main.py" "$QQMUSIC_SOURCE/requirements.txt" "$QQMUSIC_SOURCE/build-universal.sh")" \
+    "$(hash_inputs "$QQMUSIC_SOURCE"/*.py "$QQMUSIC_SOURCE/requirements.txt" "$QQMUSIC_SOURCE/build-universal.sh")" \
     "$QQMUSIC_API_VERSION" \
     "$($PYTHON_BIN --version 2>&1)" \
     "$QQMUSIC_PYINSTALLER_VERSION"

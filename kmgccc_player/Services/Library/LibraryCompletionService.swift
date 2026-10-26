@@ -11,9 +11,10 @@ import Observation
 struct LibraryCompletionOptions: Equatable, Sendable {
     var fillMetadata = true
     var fillLyrics = true
+    var fillMotionArtwork = true
 
     var hasSelection: Bool {
-        fillMetadata || fillLyrics
+        fillMetadata || fillLyrics || fillMotionArtwork
     }
 
     var selectedItemTitles: [String] {
@@ -24,6 +25,7 @@ struct LibraryCompletionOptions: Equatable, Sendable {
         if fillLyrics {
             titles.append("缺失歌词")
         }
+        if fillMotionArtwork { titles.append("动态封面") }
         return titles
     }
 }
@@ -39,6 +41,7 @@ enum LibraryCompletionPhase: String, Sendable {
     case scanning
     case metadata
     case lyrics
+    case motionArtwork
     case cancelled
     case completed
 
@@ -48,6 +51,7 @@ enum LibraryCompletionPhase: String, Sendable {
         case .scanning: return "正在扫描本地曲库"
         case .metadata: return "正在补全缺失元数据"
         case .lyrics: return "正在补全缺失歌词"
+        case .motionArtwork: return "正在按专辑补全动态封面"
         case .cancelled: return "已取消"
         case .completed: return "已完成"
         }
@@ -116,6 +120,8 @@ struct LibraryCompletionResult: Sendable {
     let processedTrackCount: Int
     let metadataItemsFilledCount: Int
     let lyricsFilledTrackCount: Int
+    var motionArtworkAlbumCount = 0
+    var motionArtworkTrackCount = 0
     let skippedExistingDataCount: Int
     let failureCount: Int
     let failures: [LibraryCompletionFailure]
@@ -318,6 +324,7 @@ final class LibraryCompletionService {
     @ObservationIgnored private let qqMusicCoverService: QQMusicCoverService
     @ObservationIgnored private let lyricsSearchCoordinator: LyricsSearchCoordinator
     @ObservationIgnored private let amllDBService: AMLLDBService
+    @ObservationIgnored private let musicEnrichmentService: MusicEnrichmentService?
     @ObservationIgnored private var processedArtistKeys: Set<String> = []
     @ObservationIgnored private var processedAlbumKeys: Set<String> = []
     @ObservationIgnored private var artistEntryCache: [String: ArtistEntry] = [:]
@@ -325,17 +332,25 @@ final class LibraryCompletionService {
     @ObservationIgnored private var trackCoverCache: [String: LibraryCompletionCachedCover] = [:]
     @ObservationIgnored private var trackCoverCacheBytes = 0
     @ObservationIgnored private var progressEvents: [LibraryCompletionProgressEvent] = []
+    @ObservationIgnored private var stopRequested = false
+
+    /// Stops after the songs in flight are saved, so nothing found is lost.
+    func requestStop() { stopRequested = true }
+
+    private var shouldStop: Bool { stopRequested || Task.isCancelled }
 
     init(
         libraryVM: LibraryViewModel,
         qqMusicCoverService: QQMusicCoverService,
         lyricsSearchCoordinator: LyricsSearchCoordinator,
-        amllDBService: AMLLDBService
+        amllDBService: AMLLDBService,
+        musicEnrichmentService: MusicEnrichmentService? = nil
     ) {
         self.libraryVM = libraryVM
         self.qqMusicCoverService = qqMusicCoverService
         self.lyricsSearchCoordinator = lyricsSearchCoordinator
         self.amllDBService = amllDBService
+        self.musicEnrichmentService = musicEnrichmentService
     }
 
     func completeLibrary(
@@ -343,6 +358,7 @@ final class LibraryCompletionService {
         progress progressHandler: @escaping @MainActor (LibraryCompletionProgress) -> Void
     ) async -> LibraryCompletionResult {
         clearCompletionCaches()
+        stopRequested = false
         defer { clearCompletionCaches() }
         artistEntryCache = Dictionary(uniqueKeysWithValues: libraryVM.artistEntries.map { ($0.canonicalName, $0) })
         albumEntryCache = Dictionary(uniqueKeysWithValues: libraryVM.albumEntries.map { ($0.canonicalKey, $0) })
@@ -359,6 +375,8 @@ final class LibraryCompletionService {
         var skippedExistingDataCount = 0
         var failures: [LibraryCompletionFailure] = []
         var updatedTrackIDs: Set<UUID> = []
+        var processedTrackCount = 0
+        var motion = EnrichmentOutcome()
 
         await report(
             LibraryCompletionProgress(
@@ -374,19 +392,10 @@ final class LibraryCompletionService {
             progressHandler
         )
 
-        for (index, track) in tracks.enumerated() {
-            if Task.isCancelled {
-                await reportCancelled(processedCount: index, totalCount: tracks.count, progressHandler)
-                return makeResult(
-                    processedTrackCount: index,
-                    metadataItemsFilledCount: metadataItemsFilledCount,
-                    lyricsFilledTrackCount: lyricsFilledTrackCount,
-                    skippedExistingDataCount: skippedExistingDataCount,
-                    failures: failures,
-                    updatedTrackIDs: updatedTrackIDs,
-                    cancelled: true
-                )
-            }
+        // Song information and lyrics come from per-song searches; motion
+        // artwork alone needs no pass over every song.
+        for (index, track) in tracks.enumerated() where options.fillMetadata || options.fillLyrics {
+            if shouldStop { break }
 
             let currentTrack = libraryVM.allTracks.first { $0.id == track.id } ?? track
             var trackUpdated = false
@@ -417,20 +426,7 @@ final class LibraryCompletionService {
                 trackUpdated = trackUpdated || outcome.trackUpdated
             }
 
-            if Task.isCancelled {
-                await reportCancelled(processedCount: index, totalCount: tracks.count, progressHandler)
-                return makeResult(
-                    processedTrackCount: index,
-                    metadataItemsFilledCount: metadataItemsFilledCount,
-                    lyricsFilledTrackCount: lyricsFilledTrackCount,
-                    skippedExistingDataCount: skippedExistingDataCount,
-                    failures: failures,
-                    updatedTrackIDs: updatedTrackIDs,
-                    cancelled: true
-                )
-            }
-
-            if options.fillLyrics {
+            if options.fillLyrics, !shouldStop {
                 await report(
                     LibraryCompletionProgress(
                         phase: .lyrics,
@@ -459,6 +455,7 @@ final class LibraryCompletionService {
             if trackUpdated {
                 updatedTrackIDs.insert(currentTrack.id)
             }
+            processedTrackCount = index + 1
 
             await report(
                 LibraryCompletionProgress(
@@ -475,34 +472,52 @@ final class LibraryCompletionService {
             )
         }
 
+        if !(options.fillMetadata || options.fillLyrics) { processedTrackCount = tracks.count }
+        if let musicEnrichmentService, options.fillMetadata || options.fillMotionArtwork, !shouldStop {
+            motion = await completeEnrichment(
+                tracks: tracks, options: options, service: musicEnrichmentService, progressHandler: progressHandler
+            )
+            updatedTrackIDs.formUnion(motion.filledTrackIDs)
+            failures.append(contentsOf: motion.failures)
+        }
+
+        // Whatever was found before a stop is already saved; show it.
         if !updatedTrackIDs.isEmpty {
             libraryVM.notifyTrackAuxiliaryDataChanged(trackIDs: Array(updatedTrackIDs))
         }
         await libraryVM.refresh()
 
-        await report(
-            LibraryCompletionProgress(
-                phase: .completed,
-                processedCount: tracks.count,
-                totalCount: tracks.count,
-                currentTrackTitle: nil,
-                currentArtist: nil,
-                currentAlbum: nil,
-                currentTaskLabel: nil,
-                detail: "全库补全任务完成"
-            ),
-            progressHandler
-        )
+        let stopped = shouldStop
+        if stopped {
+            await reportCancelled(processedCount: processedTrackCount, totalCount: tracks.count, progressHandler)
+        } else {
+            await report(
+                LibraryCompletionProgress(
+                    phase: .completed,
+                    processedCount: tracks.count,
+                    totalCount: tracks.count,
+                    currentTrackTitle: nil,
+                    currentArtist: nil,
+                    currentAlbum: nil,
+                    currentTaskLabel: nil,
+                    detail: "全库补全任务完成"
+                ),
+                progressHandler
+            )
+        }
 
-        return makeResult(
-            processedTrackCount: tracks.count,
+        var result = makeResult(
+            processedTrackCount: processedTrackCount,
             metadataItemsFilledCount: metadataItemsFilledCount,
             lyricsFilledTrackCount: lyricsFilledTrackCount,
             skippedExistingDataCount: skippedExistingDataCount,
             failures: failures,
             updatedTrackIDs: updatedTrackIDs,
-            cancelled: false
+            cancelled: stopped
         )
+        result.motionArtworkAlbumCount = motion.motionAlbumCount
+        result.motionArtworkTrackCount = motion.motionTrackCount
+        return result
     }
 
     private struct MetadataOutcome {
@@ -516,6 +531,116 @@ final class LibraryCompletionService {
         var filled = false
         var skippedExisting = false
         var failure: LibraryCompletionFailure?
+    }
+
+    private struct EnrichmentOutcome {
+        var filledTrackIDs: Set<UUID> = []
+        var failures: [LibraryCompletionFailure] = []
+        var motionAlbumCount = 0
+        var motionTrackCount = 0
+    }
+
+    /// One song, or one album for motion artwork.
+    nonisolated private struct EnrichmentItem: Sendable {
+        var trackID: UUID
+        var queries: [MusicEnrichmentQuery]
+        var title: String
+        var artist: String
+        var album: String
+    }
+
+    /// A pass the user started runs several items at once; the idle queue stays serial.
+    private static let parallelLimit = 4
+
+    /// Catalog details for every song, then motion artwork once per album.
+    private func completeEnrichment(
+        tracks: [Track],
+        options: LibraryCompletionOptions,
+        service: MusicEnrichmentService,
+        progressHandler: @escaping @MainActor (LibraryCompletionProgress) -> Void
+    ) async -> EnrichmentOutcome {
+        var outcome = EnrichmentOutcome()
+        let motionBefore = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0.motionArtwork) })
+        if options.fillMetadata {
+            let items = tracks.map { track in
+                EnrichmentItem(trackID: track.id, queries: [MusicEnrichmentWorkSource.query(track)],
+                    title: track.title, artist: track.artist, album: track.album)
+            }
+            outcome.failures += await runParallel(items, phase: .metadata, label: "歌曲资料", progressHandler: progressHandler) { item in
+                _ = try await service.completeIndependently(query: item.queries[0], includeMotion: false)
+            }
+        }
+        if options.fillMotionArtwork, !shouldStop {
+            var order: [String] = []
+            var albums: [String: [Track]] = [:]
+            for track in tracks {
+                let key = MusicEnrichmentWorkSource.albumKey(track) ?? "track:\(track.id.uuidString)"
+                if albums[key] == nil { order.append(key) }
+                albums[key, default: []].append(track)
+            }
+            let items = order.compactMap { albums[$0] }.compactMap { songs -> EnrichmentItem? in
+                guard let first = songs.first else { return nil }
+                return EnrichmentItem(trackID: first.id, queries: songs.map(MusicEnrichmentWorkSource.query),
+                    title: first.album.isEmpty ? first.title : first.album, artist: first.albumArtist ?? first.artist, album: first.album)
+            }
+            outcome.failures += await runParallel(items, phase: .motionArtwork, label: "动态封面", progressHandler: progressHandler) { item in
+                _ = try await service.completeAlbumMotion(queries: item.queries)
+            }
+        }
+        let current = Dictionary(libraryVM.allTracks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let changed = tracks.compactMap { current[$0.id] }.filter { $0.motionArtwork != motionBefore[$0.id] ?? nil }
+        let gained = changed.filter { $0.motionArtwork != nil && motionBefore[$0.id] ?? nil == nil }
+        outcome.filledTrackIDs = Set(changed.map(\.id))
+        outcome.motionTrackCount = gained.count
+        outcome.motionAlbumCount = Set(gained.map { MusicEnrichmentWorkSource.albumKey($0) ?? $0.id.uuidString }).count
+        return outcome
+    }
+
+    private func runParallel(
+        _ items: [EnrichmentItem],
+        phase: LibraryCompletionPhase,
+        label: String,
+        progressHandler: @escaping @MainActor (LibraryCompletionProgress) -> Void,
+        work: @escaping @Sendable @MainActor (EnrichmentItem) async throws -> Void
+    ) async -> [LibraryCompletionFailure] {
+        var failures: [LibraryCompletionFailure] = []
+        var finished = 0
+        await withTaskGroup(of: (EnrichmentItem, String?).self) { group in
+            var pending = items.makeIterator()
+            for _ in 0..<Self.parallelLimit {
+                guard let item = pending.next() else { break }
+                group.addTask { await Self.attempt(item, label: label, work) }
+            }
+            for await (item, error) in group {
+                finished += 1
+                if let error {
+                    failures.append(LibraryCompletionFailure(trackID: item.trackID, title: item.title, reason: error))
+                }
+                await report(LibraryCompletionProgress(
+                    phase: phase, processedCount: finished, totalCount: items.count,
+                    currentTrackTitle: item.title, currentArtist: item.artist, currentAlbum: item.album,
+                    currentTaskLabel: label, detail: "已处理 \(finished) / \(items.count)"
+                ), progressHandler)
+                if !shouldStop, let next = pending.next() {
+                    group.addTask { await Self.attempt(next, label: label, work) }
+                }
+            }
+        }
+        return failures
+    }
+
+    /// Nothing found is not a failure; only trouble the user can act on is listed.
+    private static func attempt(
+        _ item: EnrichmentItem, label: String, _ work: @Sendable @MainActor (EnrichmentItem) async throws -> Void
+    ) async -> (EnrichmentItem, String?) {
+        do {
+            try await work(item)
+            return (item, nil)
+        } catch is CancellationError {
+            return (item, nil)
+        } catch {
+            return (item, MusicEnrichmentHelperError.isRetryable(error) ? "\(label)联网失败，稍后再试" : "暂未补全\(label)")
+        }
     }
 
     private func metadataEventDetail(filledCount: Int) -> String {
@@ -569,7 +694,7 @@ final class LibraryCompletionService {
             }
         }
 
-        if !artworkAlreadyPresent {
+        if !artworkAlreadyPresent && track.artworkIsUserSelected != true {
             await reportTrackProgress(
                 phase: .metadata,
                 index: index,
@@ -581,8 +706,10 @@ final class LibraryCompletionService {
             switch await coverData(for: track) {
             case .found(let data):
                 guard !Task.isCancelled else { return outcome }
-                if !(await trackHasArtwork(track)) {
+                let hasArtwork = await trackHasArtwork(track)
+                if track.artworkIsUserSelected != true && !hasArtwork {
                     track.artworkData = data
+                    track.artworkIsUserSelected = false
                     outcome.filledCount += 1
                     outcome.trackUpdated = true
                     await libraryVM.saveTrackEdits(track, mode: .metaAndArtwork, reason: "manualLibraryCompletionArtwork")
@@ -633,7 +760,7 @@ final class LibraryCompletionService {
         totalCount: Int,
         progressHandler: @escaping @MainActor (LibraryCompletionProgress) -> Void
     ) async -> LyricsOutcome {
-        if trackHasLyrics(track) {
+        if !track.allowsAutomaticLyrics || trackHasLyrics(track) {
             return LyricsOutcome(filled: false, skippedExisting: true, failure: nil)
         }
 
@@ -647,7 +774,7 @@ final class LibraryCompletionService {
         ) {
         case .completed(let ttml):
             guard !Task.isCancelled else { return LyricsOutcome() }
-            if !trackHasLyrics(track) {
+            if track.allowsAutomaticLyrics && !trackHasLyrics(track) {
                 track.ttmlLyricText = ttml
                 await libraryVM.saveTrackEdits(track, mode: .metaAndLyrics, reason: "manualLibraryCompletionLyrics")
                 await recordProgressEvent(
@@ -699,6 +826,7 @@ final class LibraryCompletionService {
             switch await MetadataEnrichmentWorker.fetchArtistMetadata(name: entry.displayName) {
             case .completed(let detail):
                 guard !Task.isCancelled else { return outcome }
+                entry = libraryVM.artistEntries.first { $0.canonicalName == canonical } ?? entry
                 let result = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: entry)
                 if result.changed {
                     let filled = before.filledMetadataCount(comparedWith: ArtistMetadataFieldSnapshot(result.value))
@@ -782,6 +910,7 @@ final class LibraryCompletionService {
             switch await MetadataEnrichmentWorker.fetchAlbumMetadata(album: entry.displayTitle, artist: entry.primaryArtistDisplayName) {
             case .completed(let detail):
                 guard !Task.isCancelled else { return outcome }
+                entry = libraryVM.albumEntries.first { $0.canonicalKey == key } ?? entry
                 let result = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: entry)
                 if result.changed {
                     let filled = before.filledMetadataCount(comparedWith: AlbumMetadataFieldSnapshot(result.value))

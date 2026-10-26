@@ -36,7 +36,21 @@ final class LyricsViewModel {
     /// presentation's `externalLyricsTimeOffsetMs` (override ?? matched-track
     /// offset). Local playback reads `currentTrack.lyricsTimeOffsetMs` instead.
     private var externalLyricsTimeOffsetMs: Double = 0
-    private var legacyLyricsMigrationTasks: [UUID: Task<Void, Never>] = [:]
+    private enum LyricsContentIdentity: Equatable {
+        case empty
+        case local(UUID)
+        case external(trackID: UUID?, identity: String, signature: String)
+    }
+
+    private struct LegacyLyricsMigrationWork {
+        let id: UUID
+        let revision: UInt64
+        let task: Task<Void, Never>
+    }
+
+    private var lyricsContentIdentity: LyricsContentIdentity = .empty
+    private var lyricsContentRevision: UInt64 = 0
+    private var legacyLyricsMigrationTasks: [UUID: LegacyLyricsMigrationWork] = [:]
     private var pendingTrackContentTask: Task<Void, Never>?
     private var pendingTrackContentID: UUID?
 
@@ -65,6 +79,27 @@ final class LyricsViewModel {
         refreshConfigFromSettings()
     }
 
+    @discardableResult
+    private func updateLyricsContentIdentity(
+        _ identity: LyricsContentIdentity,
+        force: Bool = false
+    ) -> Bool {
+        guard force || lyricsContentIdentity != identity else { return false }
+        lyricsContentIdentity = identity
+        lyricsContentRevision &+= 1
+        cancelPendingTrackContentLoad()
+        for work in legacyLyricsMigrationTasks.values where work.revision != lyricsContentRevision {
+            work.task.cancel()
+        }
+        return true
+    }
+
+    private func cancelPendingTrackContentLoad() {
+        pendingTrackContentTask?.cancel()
+        pendingTrackContentTask = nil
+        pendingTrackContentID = nil
+    }
+
     /// Bind a runtime playback source provider so config can apply source-specific overlays.
     /// Must not persist any overlay back to settings.
     func setPlaybackSourceProvider(_ provider: @escaping () -> PlaybackSource) {
@@ -81,9 +116,11 @@ final class LyricsViewModel {
         isPlaying: Bool = false,
         forceLyricsReload: Bool = false
     ) {
-        pendingTrackContentTask?.cancel()
-        pendingTrackContentTask = nil
-        pendingTrackContentID = nil
+        _ = updateLyricsContentIdentity(
+            track.map { .local($0.id) } ?? .empty,
+            force: forceLyricsReload
+        )
+        cancelPendingTrackContentLoad()
         rebindSeekCallback()
         currentTrack = track
         lastAppliedTrackId = track?.id
@@ -91,7 +128,7 @@ final class LyricsViewModel {
         expectedPaletteArtworkIdentity = track?.id.uuidString
         expectedPaletteArtworkChecksum = track?.artworkData.map(ColorMath.fnv1a) ?? 0
 
-        let lyricsText = getContentForTrack(track, currentTime: currentTime, isPlaying: isPlaying)
+        let lyricsText = getContentForTrack(track)
         let snapshotTTML = track == nil ? "" : lyricsText
 
         // Configuration is part of the document-install contract. Apply its
@@ -119,8 +156,14 @@ final class LyricsViewModel {
         reason: String,
         forceLyricsReload: Bool = false
     ) {
+        let contentIdentity = track.map { LyricsContentIdentity.local($0.id) } ?? .empty
+        let contentIdentityChanged = updateLyricsContentIdentity(
+            contentIdentity,
+            force: forceLyricsReload
+        )
+
         // 短路：如果 track 为 nil 且已经处理过 nil，避免重复空转
-        if track == nil && lastAppliedTrackId == nil && !forceLyricsReload {
+        if track == nil && lastAppliedTrackId == nil && !forceLyricsReload && !contentIdentityChanged {
             rebindSeekCallback()
             // 仅同步必要的播放状态，不做重复歌词应用
             LyricsSurfaceManager.shared.updatePlayingState(isPlaying)
@@ -141,7 +184,7 @@ final class LyricsViewModel {
         }
         rebindSeekCallback()
 
-        if shouldApplyTrack(track, forceLyricsReload: forceLyricsReload) {
+        if contentIdentityChanged || shouldApplyTrack(track, forceLyricsReload: forceLyricsReload) {
             if let track, shouldLoadTrackContent(track) {
                 if forceLyricsReload || pendingTrackContentID != track.id {
                     scheduleTrackContentLoad(
@@ -150,6 +193,9 @@ final class LyricsViewModel {
                         isPlaying: isPlaying,
                         reason: reason
                     )
+                } else {
+                    LyricsSurfaceManager.shared.updatePlayingState(isPlaying)
+                    LyricsSurfaceManager.shared.updatePlaybackTime(currentTime)
                 }
             } else {
                 applyTrack(
@@ -176,6 +222,15 @@ final class LyricsViewModel {
         reason: String,
         forceLyricsReload: Bool = false
     ) {
+        let identity = presentation.lyricsIdentity ?? "external.empty"
+        let lyricsText = LyricsFormatSupport.normalizedTTMLText(presentation.lyricsText) ?? ""
+        let lyricsSignature = "\(identity):\(lyricsText.count):\(lyricsText.hashValue)"
+        let trackID = presentation.localTrack?.id
+        _ = updateLyricsContentIdentity(
+            .external(trackID: trackID, identity: identity, signature: lyricsSignature),
+            force: forceLyricsReload
+        )
+        cancelPendingTrackContentLoad()
         rebindSeekCallback()
         currentTrack = presentation.localTrack
         externalLyricsTimeOffsetMs = presentation.externalLyricsTimeOffsetMs ?? 0
@@ -184,10 +239,6 @@ final class LyricsViewModel {
             ?? presentation.externalStableKey
             ?? presentation.lyricsIdentity
         expectedPaletteArtworkChecksum = presentation.artworkData.map(ColorMath.fnv1a) ?? 0
-        let identity = presentation.lyricsIdentity ?? "external.empty"
-        let lyricsText = LyricsFormatSupport.normalizedTTMLText(presentation.lyricsText) ?? ""
-        let lyricsSignature = "\(identity):\(lyricsText.count):\(lyricsText.hashValue)"
-        let trackID = presentation.localTrack?.id
         // Use the lyrics-adjusted time/play state (respects audioOutputDelay and
         // the transitioning pause) so this reload path agrees with the per-tick
         // sync path in LyricsPlaybackPipeline instead of fighting it.
@@ -259,11 +310,18 @@ final class LyricsViewModel {
         pendingTrackContentID = track.id
         currentTrack = track
         let trackID = track.id
+        let contentRevision = lyricsContentRevision
+
+        LyricsSurfaceManager.shared.updatePlayingState(isPlaying)
+        LyricsSurfaceManager.shared.updatePlaybackTime(currentTime, force: true)
 
         pendingTrackContentTask = Task { @MainActor [weak self, weak track] in
-            guard let track else { return }
+            guard !Task.isCancelled, let track else { return }
 
             _ = await track.loadTTMLLyricsOffMainIfNeeded()
+            // The detached read itself may finish after cancellation. Do not
+            // start the legacy sidecar read for a track that is already stale.
+            guard !Task.isCancelled else { return }
             _ = await track.loadLyricsOffMainIfNeeded()
 
             // Give the control release transaction a render opportunity before
@@ -271,6 +329,7 @@ final class LyricsViewModel {
             try? await Task.sleep(for: .milliseconds(40))
             guard !Task.isCancelled,
                   let self,
+                  self.lyricsContentRevision == contentRevision,
                   self.currentTrack?.id == trackID
             else { return }
 
@@ -278,8 +337,8 @@ final class LyricsViewModel {
             self.pendingTrackContentID = nil
             self.applyTrack(
                 track,
-                currentTime: currentTime,
-                isPlaying: isPlaying,
+                currentTime: LyricsSurfaceManager.shared.currentPlaybackTime,
+                isPlaying: LyricsSurfaceManager.shared.currentPlaybackIsPlaying,
                 forceLyricsReload: true
             )
             Log.debug(
@@ -289,7 +348,7 @@ final class LyricsViewModel {
         }
     }
 
-    private func getContentForTrack(_ track: Track?, currentTime: TimeInterval = 0, isPlaying: Bool = false) -> String {
+    private func getContentForTrack(_ track: Track?) -> String {
         guard let track = track else { return "" }
         let opToken = FirstUseHitchDiagnostics.begin("LyricsVM.getContent", detail: "track=\(FirstUseHitchDiagnostics.trackIDPrefix(track.id))")
         defer { FirstUseHitchDiagnostics.end(opToken) }
@@ -311,9 +370,7 @@ final class LyricsViewModel {
             if LyricsFormatSupport.looksLikeLRC(legacy) {
                 scheduleLegacyLyricsMigration(
                     for: track,
-                    legacyText: legacy,
-                    currentTime: currentTime,
-                    isPlaying: isPlaying
+                    legacyText: legacy
                 )
             }
         }
@@ -323,15 +380,20 @@ final class LyricsViewModel {
 
     private func scheduleLegacyLyricsMigration(
         for track: Track,
-        legacyText: String,
-        currentTime: TimeInterval,
-        isPlaying: Bool
+        legacyText: String
     ) {
-        guard legacyLyricsMigrationTasks[track.id] == nil else { return }
         let trackID = track.id
-        legacyLyricsMigrationTasks[trackID] = Task { @MainActor [weak self, weak track] in
+        let contentRevision = lyricsContentRevision
+        if let existing = legacyLyricsMigrationTasks[trackID] {
+            guard existing.revision != contentRevision else { return }
+            existing.task.cancel()
+        }
+        let workID = UUID()
+        let task = Task { @MainActor [weak self, weak track] in
             defer {
-                self?.legacyLyricsMigrationTasks[trackID] = nil
+                if self?.legacyLyricsMigrationTasks[trackID]?.id == workID {
+                    self?.legacyLyricsMigrationTasks[trackID] = nil
+                }
             }
             do {
                 let converted = try await TTMLConverter.shared.convertToTTML(rawLyrics: legacyText, stripMetadata: true)
@@ -339,15 +401,19 @@ final class LyricsViewModel {
                     Log.warning("[LyricsVM] Legacy LRC conversion produced invalid TTML", category: .lyrics)
                     return
                 }
-                guard let self, let track, track.id == trackID else { return }
+                guard !Task.isCancelled,
+                      let self,
+                      self.lyricsContentRevision == contentRevision,
+                      let track,
+                      track.id == trackID else { return }
                 track.ttmlLyricText = ttml
                 track.lyricsText = nil
                 track.lyricsFileName = nil
                 if self.currentTrack?.id == trackID {
                     self.applyTrack(
                         track,
-                        currentTime: currentTime,
-                        isPlaying: isPlaying,
+                        currentTime: LyricsSurfaceManager.shared.currentPlaybackTime,
+                        isPlaying: LyricsSurfaceManager.shared.currentPlaybackIsPlaying,
                         forceLyricsReload: true
                     )
                 }
@@ -355,6 +421,11 @@ final class LyricsViewModel {
                 Log.warning("[LyricsVM] Legacy LRC conversion failed: \(error.localizedDescription)", category: .lyrics)
             }
         }
+        legacyLyricsMigrationTasks[trackID] = LegacyLyricsMigrationWork(
+            id: workID,
+            revision: contentRevision,
+            task: task
+        )
     }
 
     private func nonEmptyLyricsText(_ text: String?) -> String? {
@@ -365,6 +436,8 @@ final class LyricsViewModel {
 
     /// Clear current lyrics.
     func clearLyrics() {
+        _ = updateLyricsContentIdentity(.empty, force: true)
+        cancelPendingTrackContentLoad()
         rebindSeekCallback()
         currentTrack = nil
         lastAppliedTrackId = nil

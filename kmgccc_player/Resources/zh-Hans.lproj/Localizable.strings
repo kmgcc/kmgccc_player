@@ -4,6 +4,9 @@
 
 // MARK: - Common
 "common.app_name" = "kmgccc_player";
+"menu.settings" = "设置…";
+"menu.about_app" = "关于 %@";
+"menu.about_window_title" = "关于";
 
 "sidebar.all_songs" = "所有歌曲";
 "sidebar.playlists" = "播放列表";
@@ -116,6 +119,7 @@
 
 // MARK: - Settings About
 "settings.about.version" = "版本 %@";
+"settings.about.description" = "为音乐播放器添加一份随性与独特的美感。感谢你的使用和喜欢！如果有建议或问题，欢迎通过任何方式分享。";
 "settings.about.quote" = "“Where words fail, music speaks.”";
 "settings.about.compliance" = "开源与鸣谢";
 "settings.about.compliance_desc" = "本程序包含或修改了以下开源软件。";
@@ -298,3 +302,6 @@
 "skin.cover_gradient_blur.edge_fill_mirror" = "镜像";
 "skin.cover_gradient_blur.edge_fill_mode" = "右侧填充";
 "dsp.preset.flat" = "平直";
+
+"cover.no_results" = "未找到封面";
+"artwork.renovation.decline" = "我不需要";

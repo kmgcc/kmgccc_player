@@ -125,6 +125,9 @@ enum NativeLyricsConfigurationMapper {
     }
 
     static func apply(_ values: [String: Any], to configuration: inout LyricsConfiguration, role: LyricsSurfaceRole) {
+        if let allowed = allowedUserSettings(values["userSettings"]) {
+            resetUserSettings(except: allowed, in: &configuration, role: role)
+        }
         if let value = double(values["fontSize"]) { configuration.fontSize = max(10, value) }
         if let value = double(values["fontWeight"]) { configuration.fontWeight = cssWeight(value) }
         var mainFamilies: [String] = []
@@ -152,6 +155,10 @@ enum NativeLyricsConfigurationMapper {
         if let value = double(values["overscanPx"]) { configuration.overscan = max(0, value) }
         if let value = double(values["wordFadeWidth"]) { configuration.wordFadeWidth = max(0.05, value) }
         if let value = string(values["wordHighlightMode"]) { configuration.highlightMode = value == "discrete" ? .discrete : .smooth }
+        if let value = string(values["highlight"]) {
+            configuration.highlightMode = value == "discrete" ? .discrete : .smooth
+            if value == "line" { configuration.lineTimingOnly = true }
+        }
         if let value = double(values["leadInMs"]) { configuration.timing.leadIn = max(0, value) / 1000 }
         if let value = double(values["nearSwitchGapMs"]) { configuration.timing.nearSwitchGap = max(0, value) / 1000 }
         if let value = double(values["timeOffsetMs"]) { configuration.timing.trackOffset = value / 1000 }
@@ -279,7 +286,105 @@ enum NativeLyricsConfigurationMapper {
                     && (configuration.surface == .coverBlurLight || configuration.surface == .coverBlurDark) {
             configuration.coverBlurRenderLayer = .base
         }
+        if let value = string(values["surface"]), let surface = LyricsSurfaceStyle(rawValue: value) { configuration.surface = surface }
+        if values["backdropColor"] != nil { configuration.backdropColor = color(values["backdropColor"], fallback: .black) }
+        if let value = double(values["interludeDotScale"]) { configuration.interludeDotScale = max(0.1, value) }
+        if let value = double(values["glowRadiusScale"]) { configuration.glowRadiusScale = max(0, value) }
+        if let value = bool(values["hoverBackground"]) { configuration.hoverBackground = value }
+        if let value = bool(values["alwaysPostpositionBackground"]) { configuration.alwaysPostpositionBackground = value }
+        if let value = string(values["bottomText"]) { configuration.bottomText = value }
+        if let value = string(values["translationLanguage"]) { configuration.translationLanguage = value }
+        if let value = string(values["romanizationLanguage"]) { configuration.romanizationLanguage = value }
+        if let value = string(values["obscenity"]), let mode = ObscenityMode(rawValue: value) { configuration.obscenity = mode }
+        if let value = string(values["maskCharacter"]), !value.isEmpty { configuration.maskCharacter = value }
+        if let value = string(values["coverBlurRenderLayer"]), let layer = LyricsRenderLayer(rawValue: value) { configuration.coverBlurRenderLayer = layer }
+        if let motion = values["motion"] as? [String: Any] {
+            let fields: [(String, WritableKeyPath<LyricsMotionConfiguration, Double>)] = [
+                ("blurRadius", \.blurRadius), ("maximumBlurRadius", \.maximumBlurRadius), ("blurTransition", \.blurTransition),
+                ("pointerExitDelay", \.pointerExitDelay), ("clickStagger", \.clickStagger), ("backgroundTransition", \.backgroundTransition),
+                ("exitFade", \.exitFade), ("catchUpMinimum", \.catchUpMinimum), ("catchUpMaximum", \.catchUpMaximum), ("highlightAnticipation", \.highlightAnticipation)
+            ]
+            for (name, keyPath) in fields { if let value = double(motion[name]) { configuration.motion[keyPath: keyPath] = max(0, value) } }
+        }
+        applyHierarchy(values, to: &configuration)
+        if let palette = values["palette"] as? [String: Any] {
+            let fields: [(String, WritableKeyPath<LyricsPalette, LyricsColor>)] = [
+                ("mainActive", \.mainActive), ("mainInactive", \.mainInactive), ("lineTimingInactive", \.lineTimingInactive),
+                ("translation", \.translation), ("lineTimingSubInactive", \.lineTimingSubInactive),
+                ("backgroundActive", \.backgroundActive), ("backgroundInactive", \.backgroundInactive),
+                ("backgroundKaraoke", \.backgroundKaraoke), ("emphasisGlow", \.emphasisGlow)
+            ]
+            for (name, keyPath) in fields { configuration.palette[keyPath: keyPath] = color(palette[name], fallback: configuration.palette[keyPath: keyPath]) }
+            if let value = double(palette["backgroundBaseOpacity"]) { configuration.palette.backgroundBaseOpacity = value }
+            if let value = double(palette["backgroundKaraokeOpacity"]) { configuration.palette.backgroundKaraokeOpacity = value }
+        }
         configuration.cacheBudgetBytes = min(configuration.cacheBudgetBytes, role.glyphCacheBudgetBytes)
+    }
+
+    /// Skin `userSettings`: the App lyrics settings groups a skin leaves to the user —
+    /// "all" (default), "none", or a list of `font`, `highlight`, `spring`.
+    static let userSettingGroups: Set<String> = ["font", "highlight", "spring"]
+
+    static func allowedUserSettings(_ value: Any?) -> Set<String>? {
+        if let text = value as? String { return text == "all" ? nil : text == "none" ? [] : [text] }
+        if let list = value as? [Any] { return Set(list.compactMap { $0 as? String }) }
+        return nil
+    }
+
+    /// Groups the skin keeps return to the App defaults before its own values apply,
+    /// so the result never depends on what the user chose. Timing offsets always stay with the App.
+    private static func resetUserSettings(except allowed: Set<String>, in configuration: inout LyricsConfiguration, role: LyricsSurfaceRole) {
+        if !allowed.contains("font") {
+            // AppSettings' declared defaults.
+            let isDark = ThemeStore.shared.colorScheme == .dark
+            configuration.fontName = LyricsFontDefaults.english
+            configuration.fontNameCJK = LyricsFontDefaults.chinese
+            configuration.fontSize = 32
+            configuration.fontWeight = cssWeight(isDark ? 100 : 600)
+            configuration.translationFontName = LyricsFontDefaults.translation
+            configuration.translationFontSize = 18
+            configuration.translationFontWeight = cssWeight(isDark ? 100 : 500)
+        }
+        if !allowed.contains("highlight") { configuration.highlightMode = .smooth }
+        if !allowed.contains("spring") {
+            configuration.spring = role.enableSpring
+            configuration.positionSpring = NativeLyricsSurfaceManager.springParameters(
+                from: LyricSpringUserSettings(enabled: true, duration: AppSettings.defaultLyricSpringDuration,
+                                              bounce: AppSettings.defaultLyricSpringBounce)
+            )
+        }
+    }
+
+    /// `hierarchy` derives the receding tones from the active colour: by alpha ("opacity")
+    /// or opaquely toward the backdrop ("brightness"). An explicit `palette` still wins.
+    private static func applyHierarchy(_ values: [String: Any], to configuration: inout LyricsConfiguration) {
+        if values["activeColor"] != nil {
+            configuration.palette.mainActive = color(values["activeColor"], fallback: configuration.palette.mainActive)
+            configuration.palette.emphasisGlow = configuration.palette.mainActive
+            configuration.palette.backgroundKaraoke = configuration.palette.mainActive
+        }
+        guard let mode = string(values["hierarchy"]), mode == "opacity" || mode == "brightness" else { return }
+        let active = configuration.palette.mainActive
+        let level = max(0, min(1, double(values["inactiveLevel"]) ?? 0.45))
+        let subLevel = max(0, min(1, double(values["translationLevel"]) ?? 0.62))
+        let isLight = 0.2126 * active.red + 0.7152 * active.green + 0.0722 * active.blue > 0.5
+        let base = values["hierarchyBase"] == nil ? (isLight ? LyricsColor.black : .white)
+            : color(values["hierarchyBase"], fallback: isLight ? .black : .white)
+        func tone(_ amount: Double) -> LyricsColor {
+            if mode == "opacity" {
+                var result = active
+                result.alpha = active.alpha * amount
+                return result
+            }
+            return LyricsColor(base.red + (active.red - base.red) * amount, base.green + (active.green - base.green) * amount,
+                               base.blue + (active.blue - base.blue) * amount, alpha: active.alpha, displayP3: active.displayP3)
+        }
+        configuration.palette.mainInactive = tone(level)
+        configuration.palette.lineTimingInactive = tone(level)
+        configuration.palette.translation = tone(subLevel)
+        configuration.palette.lineTimingSubInactive = tone(subLevel)
+        configuration.palette.backgroundActive = tone(subLevel)
+        configuration.palette.backgroundInactive = tone(level * subLevel)
     }
 
     static func paletteForWindow(_ palette: ThemePalette) -> LyricsPalette {

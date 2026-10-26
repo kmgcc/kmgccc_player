@@ -803,6 +803,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         track.ttmlLyricText = ttml
         track.lyricsText = nil
         track.lyricsFileName = nil
+        track.markMetadataFieldsAsManual(["lyrics"])
         let persistence = await libraryViewModel.saveTrackEdits(
             track,
             mode: .metaAndLyrics,
@@ -870,6 +871,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         track.ttmlLyricText = normalizedTTML
         track.lyricsText = nil
         track.lyricsFileName = nil
+        track.markMetadataFieldsAsManual(["lyrics"])
         let persistence = await libraryViewModel.saveTrackEdits(
             track,
             mode: .metaAndLyrics,

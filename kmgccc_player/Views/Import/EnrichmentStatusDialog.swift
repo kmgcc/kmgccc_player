@@ -28,10 +28,7 @@ final class EnrichmentStatusDialogPresenter: NSObject, NSWindowDelegate {
         Self.activePresenter = presenter
 
         let windowSize = NSSize(width: 560, height: 520)
-        let (panel, visualEffect) = AppDialogTokens.makePanel(
-            width: windowSize.width,
-            height: windowSize.height
-        )
+        let (panel, visualEffect) = AppDialogTokens.makeInsetPanel(contentSize: windowSize)
         panel.delegate = presenter
         presenter.panel = panel
 
@@ -40,9 +37,10 @@ final class EnrichmentStatusDialogPresenter: NSObject, NSWindowDelegate {
         }
         .environmentObject(ThemeStore.shared)
         .frame(width: windowSize.width, height: windowSize.height)
+        .padding(AppDialogTokens.panelShadowInset)
 
-        let hostingView = NSHostingView(rootView: rootView)
-        hostingView.frame = NSRect(origin: .zero, size: windowSize)
+        let hostingView = AppDialogTokens.makeHostingView(rootView: rootView)
+        hostingView.frame = visualEffect.bounds
         hostingView.autoresizingMask = [.width, .height]
         visualEffect.addSubview(hostingView)
 

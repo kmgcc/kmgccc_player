@@ -127,6 +127,8 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
     let metadataFetchedAt: Date?
     let metadataConfidence: Double?
     let musicBrainzReleaseID: String?
+    let motionArtwork: TrackMotionArtwork?
+    let artworkIsUserSelected: Bool?
     let duration: Double
     let addedAt: Date
     let importedAt: Date?
@@ -163,6 +165,8 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
         metadataFetchedAt = track.metadataFetchedAt
         metadataConfidence = track.metadataConfidence
         musicBrainzReleaseID = track.musicBrainzReleaseID
+        motionArtwork = track.motionArtwork
+        artworkIsUserSelected = track.artworkIsUserSelected
         duration = track.duration
         addedAt = track.addedAt
         importedAt = track.importedAt
@@ -785,6 +789,8 @@ final class LocalLibraryService {
             metadataFetchedAt: track.metadataFetchedAt,
             metadataConfidence: track.metadataConfidence,
             musicBrainzReleaseID: track.musicBrainzReleaseID,
+            motionArtwork: track.motionArtwork,
+            artworkIsUserSelected: track.artworkIsUserSelected,
             duration: track.duration,
             addedAt: track.addedAt,
             importedAt: track.importedAt ?? track.addedAt,
@@ -852,6 +858,8 @@ final class LocalLibraryService {
             metadataFetchedAt: snapshot.metadataFetchedAt,
             metadataConfidence: snapshot.metadataConfidence,
             musicBrainzReleaseID: snapshot.musicBrainzReleaseID,
+            motionArtwork: snapshot.motionArtwork,
+            artworkIsUserSelected: snapshot.artworkIsUserSelected,
             duration: snapshot.duration,
             addedAt: snapshot.addedAt,
             importedAt: snapshot.importedAt ?? snapshot.addedAt,
@@ -892,7 +900,8 @@ final class LocalLibraryService {
         )
         let existingArtworkURL = existingArtworkFileName.map { trackFolder.appendingPathComponent($0) }
         let existingArtworkData = existingArtworkURL.flatMap { try? Data(contentsOf: $0) }
-        let targetArtworkFileName = LibraryPaths.preferredTrackArtworkFileName
+        let targetArtworkFileName = track.artworkData.flatMap(ArtworkDataNormalizer.fileExtension(for:))
+            .map { "artwork.\($0)" } ?? LibraryPaths.preferredTrackArtworkFileName
         guard let targetArtworkURL = paths.trackArtworkURL(
             for: track.id,
             fileName: targetArtworkFileName
@@ -937,9 +946,12 @@ final class LocalLibraryService {
             return nil
         }
 
-        if dataMatches(data, existingArtworkData), existingArtworkFileName == targetArtworkFileName {
+        if dataMatches(data, existingArtworkData) {
+            // The incoming cover is already the file on disk. Keep the existing
+            // bytes (and file name) untouched: re-encoding here would turn a
+            // stored PNG into a lossy JPEG on an unrelated metadata save.
             logTrackPersistence(track: track, reason: reason, action: "artwork-skip", artwork: "raw-unchanged")
-            return existingArtworkFileName
+            return existingArtworkFileName ?? targetArtworkFileName
         }
 
         guard
@@ -952,7 +964,7 @@ final class LocalLibraryService {
             throw NSError(
                 domain: "LocalLibraryService.TrackPersistence",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Artwork could not be downsampled and encoded"]
+                userInfo: [NSLocalizedDescriptionKey: "Artwork is not a readable image"]
             )
         }
 
@@ -971,7 +983,7 @@ final class LocalLibraryService {
             track: track,
             reason: reason,
             action: "artwork-write",
-            artwork: "changed encoding=jpeg-downsampled maxPixel=\(ArtworkDataNormalizer.storedMaxPixelSize)"
+            artwork: "changed encoding=original"
         )
         return targetArtworkFileName
     }
@@ -994,7 +1006,8 @@ final class LocalLibraryService {
         )
         let existingArtworkURL = existingArtworkFileName.map { trackFolder.appendingPathComponent($0) }
         let existingArtworkData = existingArtworkURL.flatMap { try? Data(contentsOf: $0) }
-        let targetArtworkFileName = LibraryPaths.preferredTrackArtworkFileName
+        let targetArtworkFileName = snapshot.artworkData.flatMap(ArtworkDataNormalizer.fileExtension(for:))
+            .map { "artwork.\($0)" } ?? LibraryPaths.preferredTrackArtworkFileName
         guard let targetArtworkURL = paths.trackArtworkURL(
             for: snapshot.id,
             fileName: targetArtworkFileName
@@ -1036,15 +1049,16 @@ final class LocalLibraryService {
             return nil
         }
 
-        if dataMatchesOnBackground(data, existingArtworkData),
-           existingArtworkFileName == targetArtworkFileName {
+        if dataMatchesOnBackground(data, existingArtworkData) {
+            // Same guard as the synchronous writer: identical bytes are never
+            // re-encoded, even when the stored cover uses a legacy file name.
             logTrackPersistenceOnBackground(
                 snapshot: snapshot,
                 reason: reason,
                 action: "artwork-skip",
                 artwork: "raw-unchanged"
             )
-            return existingArtworkFileName
+            return existingArtworkFileName ?? targetArtworkFileName
         }
 
         guard
@@ -1062,7 +1076,7 @@ final class LocalLibraryService {
             throw NSError(
                 domain: "LocalLibraryService.TrackPersistence",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Artwork could not be downsampled and encoded"]
+                userInfo: [NSLocalizedDescriptionKey: "Artwork is not a readable image"]
             )
         }
 
@@ -1087,7 +1101,7 @@ final class LocalLibraryService {
             snapshot: snapshot,
             reason: reason,
             action: "artwork-write",
-            artwork: "changed encoding=jpeg-downsampled maxPixel=\(ArtworkDataNormalizer.storedMaxPixelSize)"
+            artwork: "changed encoding=original"
         )
         return targetArtworkFileName
     }
@@ -2137,7 +2151,11 @@ final class LocalLibraryService {
             }
             if let artworkData, let fileName = persistedSidecar.artworkFileName {
                 let artworkURL = folder.appendingPathComponent(fileName)
-                try artworkData.write(to: artworkURL, options: .atomic)
+                // Artist pages save the whole sidecar on edits; keep the
+                // existing PNG bytes when the cover itself did not change.
+                if (try? Data(contentsOf: artworkURL)) != artworkData {
+                    try artworkData.write(to: artworkURL, options: .atomic)
+                }
             }
         } catch {
             throw LibraryMetadataPersistenceError.writeArtistFailed(
@@ -2171,7 +2189,11 @@ final class LocalLibraryService {
             }
             if let artworkData, let fileName = persistedSidecar.artworkFileName {
                 let artworkURL = folder.appendingPathComponent(fileName)
-                try artworkData.write(to: artworkURL, options: .atomic)
+                // Album pages save the whole sidecar on edits; keep the
+                // existing PNG bytes when the cover itself did not change.
+                if (try? Data(contentsOf: artworkURL)) != artworkData {
+                    try artworkData.write(to: artworkURL, options: .atomic)
+                }
             }
         } catch {
             throw LibraryMetadataPersistenceError.writeAlbumFailed(
@@ -2539,6 +2561,8 @@ final class LocalLibraryService {
                 metadataSource: sidecar.metadataSource,
                 metadataFetchedAt: sidecar.metadataFetchedAt,
                 metadataConfidence: sidecar.metadataConfidence,
+                motionArtwork: sidecar.motionArtwork,
+                artworkIsUserSelected: sidecar.artworkIsUserSelected,
                 duration: sidecar.duration,
                 addedAt: sidecar.addedAt,
                 importedAt: sidecar.importedAt ?? sidecar.addedAt,

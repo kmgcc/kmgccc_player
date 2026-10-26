@@ -141,6 +141,11 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         sharedController?.refreshPaneGlassBlendingModes()
     }
 
+    static func toggleLyricsVisibility(animated: Bool = true) {
+        sharedController?.splitViewController.toggleLyricsVisibility(animated: animated)
+        sharedController?.refreshPaneGlassBlendingModes()
+    }
+
     func refreshPaneGlassBlendingModes() {
         (window?.contentViewController as? AppKitMainRootViewController)?.applyWithinWindowBlendingModeToPaneGlass()
     }

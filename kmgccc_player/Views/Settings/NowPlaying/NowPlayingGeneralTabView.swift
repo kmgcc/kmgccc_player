@@ -24,22 +24,15 @@ struct NowPlayingGeneralTabView: View {
 
     var body: some View {
         let selectedSkin = SkinRegistry.skin(for: nowPlayingSkin)
+        let hasSkinOptions = selectedSkin.settingsView != nil
+            || (SkinRegistry.customizationEnabled && selectedSkin.parameterDefinitions.contains(where: { $0.isUserVisible && $0.surfaces.contains(.window) }))
+        let showsArtBackgroundOption = selectedSkin.scene == nil || selectedSkin.sceneComponents.contains("background.host")
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
-            if selectedSkin.scene == nil {
-                SettingsSection {
-                    VStack(alignment: .leading, spacing: presentationStyle.rowSpacing) {
-                        SettingsSwitchRow(
-                            title: "启用艺术背景",
-                            isOn: $nowPlayingArtBackgroundEnabled
-                        )
-                    }
-                }
-            }
-
             SettingsSection("settings.now_playing.select_skin") {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                    // 自定义皮肤包管理入口（导入/导出/重载/删除）暂未开放，待功能完善后恢复
-                    // SkinPackageSettingsActions(skin: SkinRegistry.skin(for: nowPlayingSkin))
+                    if SkinRegistry.customizationEnabled {
+                        SkinPackageSettingsActions(skin: SkinRegistry.skin(for: nowPlayingSkin))
+                    }
                     SkinSelectorRow(
                         skins: SkinRegistry.nowPlayingOptions,
                         selectedSkinID: $nowPlayingSkin,
@@ -48,12 +41,20 @@ struct NowPlayingGeneralTabView: View {
                 }
             }
 
-            if selectedSkin.settingsView != nil || selectedSkin.parameterDefinitions.contains(where: { $0.isUserVisible && $0.surfaces.contains(.window) }) {
+            if showsArtBackgroundOption || hasSkinOptions {
                 SettingsSection(String(format: NSLocalizedString("settings.now_playing.skin_options", comment: ""), selectedSkin.name)) {
                     VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
+                        if showsArtBackgroundOption {
+                            SettingsSwitchRow(
+                                title: "启用艺术背景",
+                                isOn: $nowPlayingArtBackgroundEnabled
+                            )
+                        }
                         if let optionsView = selectedSkin.settingsView { optionsView }
-                        SkinParameterSettingsView(skinID: selectedSkin.id, surface: .window,
-                                                  definitions: selectedSkin.parameterDefinitions, store: SkinRegistry.catalog.parameters)
+                        if SkinRegistry.customizationEnabled {
+                            SkinParameterSettingsView(skinID: selectedSkin.id, surface: .window,
+                                                      definitions: selectedSkin.parameterDefinitions, store: SkinRegistry.catalog.parameters)
+                        }
                     }
                 }
             }

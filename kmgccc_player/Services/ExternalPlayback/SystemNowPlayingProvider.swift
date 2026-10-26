@@ -9,6 +9,39 @@ import AppKit
 import Darwin
 import Foundation
 
+nonisolated struct SystemNowPlayingArtworkPayloadCache {
+    struct Snapshot: Equatable, Sendable {
+        let encoded: String
+        let data: Data?
+        let checksum: UInt64?
+    }
+
+    private var snapshot: Snapshot?
+
+    mutating func resolve(encoded: String?) -> Snapshot? {
+        guard let encoded, !encoded.isEmpty else {
+            snapshot = nil
+            return nil
+        }
+        if let snapshot, snapshot.encoded == encoded {
+            return snapshot
+        }
+
+        let data = Data(base64Encoded: encoded)
+        let next = Snapshot(
+            encoded: encoded,
+            data: data,
+            checksum: data.map { ArtworkAssetStore.checksum(for: $0) }
+        )
+        snapshot = next
+        return next
+    }
+
+    mutating func clear() {
+        snapshot = nil
+    }
+}
+
 @Observable
 @MainActor
 final class SystemNowPlayingProvider: ExternalPlaybackProvider {
@@ -279,8 +312,8 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             ArtworkAssetStore.checksum(for: data)
         }
 
-        var presentationIdentity: String? {
-            guard let identity, let data, !data.isEmpty else { return nil }
+        func presentationIdentity(checksum: UInt64?) -> String? {
+            guard let identity, let data, !data.isEmpty, let checksum else { return nil }
             return "\(identity):\(source.rawValue):\(checksum)"
         }
     }
@@ -312,6 +345,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private var healthState: HealthState = .unknown
     private var healthTask: Task<Void, Never>?
     private var lastPayload: Payload?
+    private var providerArtworkPayloadCache = SystemNowPlayingArtworkPayloadCache()
     private var latestStableMetadataKey: StableMetadataKey?
     private var progressBaseline: ProgressBaseline?
     private var latestIdentity: String?
@@ -1032,8 +1066,9 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             pendingArtworkIdentity = identity
         }
 
-        let providerArtwork = currentProviderArtworkData()
-        let providerArtworkChecksum = ArtworkAssetStore.checksum(for: providerArtwork)
+        let providerArtworkPayload = currentProviderArtworkPayload()
+        let providerArtwork = providerArtworkPayload?.data
+        let providerArtworkChecksum = providerArtworkPayload?.checksum ?? 0
         let artworkChecksumChanged = providerArtwork != nil && providerArtworkChecksum != displayedArtwork.checksum
 
         latestRawMetadata = raw
@@ -1697,6 +1732,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
     private func clearTemporarilyUnavailable() {
         lastPayload = nil
+        providerArtworkPayloadCache.clear()
         latestStableMetadataKey = nil
         lastCommittedCore = nil
         recentRetiredCores.removeAll()
@@ -2105,6 +2141,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
         let computedCurrentTime = displayCurrentTimeFromBaseline()
 
+        let artworkDataChecksum = artwork.data?.isEmpty == false ? artwork.checksum : nil
         let newPresentation = NowPlayingPresentation(
             source: source,
             localTrack: latestMatchedTrack,
@@ -2112,7 +2149,8 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             artist: displayArtist,
             album: displayAlbum,
             artworkData: artwork.data,
-            artworkIdentity: artwork.presentationIdentity,
+            artworkDataChecksum: artworkDataChecksum,
+            artworkIdentity: artwork.presentationIdentity(checksum: artworkDataChecksum),
             artworkDisplayTrackID: artwork.displayTrackID,
             isArtworkLoading: pendingArtworkIdentity == identity,
             duration: progressBaseline?.duration ?? payload.duration ?? 0,
@@ -2273,6 +2311,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             sourceStore.setCurrentSourceID(nil)
         }
         lastPayload = nil
+        providerArtworkPayloadCache.clear()
         latestStableMetadataKey = nil
         lastCommittedCore = nil
         recentRetiredCores.removeAll()
@@ -2330,6 +2369,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         pendingUnidentifiedKey = nil
         isCommittingUnidentifiedCandidate = false
         lastPayload = nil
+        providerArtworkPayloadCache.clear()
         latestStableMetadataKey = nil
         progressBaseline = nil
         clearReliabilityTracking(to: .unavailable)
@@ -3421,8 +3461,11 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     }
 
     private func currentProviderArtworkData() -> Data? {
-        guard let encoded = lastPayload?.artworkData, !encoded.isEmpty else { return nil }
-        return Data(base64Encoded: encoded)
+        currentProviderArtworkPayload()?.data
+    }
+
+    private func currentProviderArtworkPayload() -> SystemNowPlayingArtworkPayloadCache.Snapshot? {
+        providerArtworkPayloadCache.resolve(encoded: lastPayload?.artworkData)
     }
 
     private func estimatedCurrentTime(from payload: Payload) -> Double {
@@ -3543,6 +3586,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         pendingUnidentifiedKey = nil
         isCommittingUnidentifiedCandidate = false
         lastPayload = nil
+        providerArtworkPayloadCache.clear()
         latestStableMetadataKey = nil
         progressBaseline = nil
         clearReliabilityTracking(to: .unavailable)

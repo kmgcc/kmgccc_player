@@ -7,89 +7,29 @@
 
 import SwiftUI
 
-/// LED meter settings: live preview, visual config, and tuning parameters.
+/// LED meter rows shown under an audio visualization selector while LED is
+/// selected. The configuration is global, so every surface shares it.
 struct LEDMeterSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
-    @Environment(PlayerViewModel.self) private var playerVM
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
     @Environment(\.settingsAppForegroundColors) private var appColors
 
-    /// Hide the embedded "LED Meter" header when this view is rendered as a tab
-    /// inside another settings container that already shows a title.
-    let showTitle: Bool
-
     @State private var ledCount: Int = AppSettings.shared.ledCount
     @State private var brightnessLevels: Int = AppSettings.shared.ledBrightnessLevels
-    @State private var hasActiveSession: Bool = false
-
-    init(showTitle: Bool = true) {
-        self.showTitle = showTitle
-    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: presentationStyle.scaled(20)) {
-            if showTitle {
-                SettingsHeaderLabel("settings.section.led", systemImage: "waveform.path.ecg")
-            }
-
-            // Live Preview
-            VStack(alignment: .leading, spacing: presentationStyle.scaled(12)) {
-                SettingsSectionTitle("settings.led.live_preview")
-
-                LedMeterView(
-                    level: Double(ledMeterProvider.normalizedLevel),
-                    ledValues: ledMeterProvider.metrics.leds,
-                    dotSize: presentationStyle.scaled(14),
-                    spacing: presentationStyle.scaled(7),
-                    contentScale: presentationStyle.fullscreenScale,
-                    isPlaying: playerVM.isPlaying
-                )
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, presentationStyle.scaled(40))
-                .background(
-                    .ultraThinMaterial,
-                    in: RoundedRectangle(cornerRadius: presentationStyle.scaled(16))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: presentationStyle.scaled(16))
-                        .strokeBorder(
-                            presentationStyle.settingsPrimaryTextColor(appColors: appColors).opacity(0.05),
-                            lineWidth: presentationStyle.scaledHairlineWidth
-                        )
-                )
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Visual Config
-            visualConfigSection
+        VStack(spacing: presentationStyle.scaled(16)) {
+            ledCountPicker
+            brightnessLevelsPicker
         }
         .onAppear {
             ledCount = settings.ledCount
             brightnessLevels = settings.ledBrightnessLevels
-            if !hasActiveSession {
-                ledMeterProvider.acquireSession()
-                hasActiveSession = true
-            }
-        }
-        .onDisappear {
-            if hasActiveSession {
-                ledMeterProvider.releaseSession()
-                hasActiveSession = false
-            }
         }
         .onChange(of: ledCount) { _, _ in applyLedConfig() }
         .onChange(of: brightnessLevels) { _, _ in applyLedConfig() }
-    }
-
-    private var visualConfigSection: some View {
-        SettingsSection("settings.led.config") {
-            VStack(spacing: presentationStyle.scaled(16)) {
-                ledCountPicker
-                brightnessLevelsPicker
-            }
-        }
     }
 
     private var ledCountPicker: some View {

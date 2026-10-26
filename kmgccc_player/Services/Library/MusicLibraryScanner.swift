@@ -45,6 +45,8 @@ nonisolated struct ScannedTrackMeta: Sendable {
     let playCount: Int?
     let preferenceStats: TrackPreferenceStats?
     let folderURL: URL
+    var motionArtwork: TrackMotionArtwork? = nil
+    var artworkIsUserSelected: Bool? = nil
 
     var libraryRelativePath: String {
         mediaLocator.managedLibraryRelativePath ?? ""
@@ -138,7 +140,9 @@ nonisolated struct MusicLibraryScanner: Sendable {
             ncmConversionAssociation: sidecar.ncmConversionAssociation,
             playCount: sidecar.playCount,
             preferenceStats: sidecar.preferenceStats,
-            folderURL: folderURL
+            folderURL: folderURL,
+            motionArtwork: sidecar.motionArtwork,
+            artworkIsUserSelected: sidecar.artworkIsUserSelected
         )
     }
 

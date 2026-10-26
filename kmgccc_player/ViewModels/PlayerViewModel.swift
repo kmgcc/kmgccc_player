@@ -29,7 +29,7 @@ final class PlayerViewModel {
     private let settings: AppSettings
     private let nowPlayingService: NowPlayingService
     private var isLevelMeterRunning = false
-    private var queueRevision = 0
+    private(set) var queueRevision = 0
     private(set) var activeLibraryQueueSource: LibraryQueueSource?
 
     // MARK: - Computed Properties (from playbackService)
@@ -150,6 +150,9 @@ final class PlayerViewModel {
 
     func refreshTracks(_ tracks: [Track]) {
         playbackService.refreshTracks(tracks)
+        // Newly attached motion assets must refresh the upcoming artwork work
+        // even when the current song and queue order have not changed.
+        queueRevision += 1
         nowPlayingService.updateNowPlaying(force: true)
     }
 

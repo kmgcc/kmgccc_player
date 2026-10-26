@@ -159,7 +159,6 @@ final class AutomationArtworkHandler {
                 }
 
                 var resolvedValues: [String: AutomationJSONValue] = [
-                    "imageBase64": .string(cached.candidate.imageBase64),
                     "expectedRevision": .string(cached.revision),
                     "dryRun": .boolean(dryRun),
                     "confirm": .boolean(confirm)
@@ -203,10 +202,33 @@ final class AutomationArtworkHandler {
                         )
                     )
                 }
+                // Apply the provider's original image, never the bounded inline
+                // preview: the preview is only for Agent review and would write
+                // a visibly smaller cover into the library.
+                var originalData: Data?
+                if !dryRun {
+                    guard let resolved = await resolveOriginalCandidateData(
+                        cached,
+                        session: session
+                    ) else {
+                        return .failure(
+                            for: request,
+                            error: AutomationError(
+                                code: .internalError,
+                                message: "The original artwork for this candidate is unavailable. Search artwork again and retry.",
+                                retryable: true,
+                                details: .object(["candidateID": .string(candidateID)])
+                            )
+                        )
+                    }
+                    originalData = resolved
+                }
                 return try await applyArtworkToSingleTarget(
                     parameters: applyParameters,
                     request: request,
-                    session: session
+                    session: session,
+                    imageDataOverride: originalData,
+                    inputKindOverride: "candidate"
                 )
             } catch {
                 return AutomationResponseSupport.invalidParameters(for: request, error: error)
@@ -648,10 +670,22 @@ final class AutomationArtworkHandler {
     private func resolveArtworkInput(
         clear: Bool,
         imagePath: String?,
-        imageBase64: String?
+        imageBase64: String?,
+        imageDataOverride: Data? = nil
     ) async throws -> ResolvedArtworkInput? {
         if clear {
             return ResolvedArtworkInput(kind: "clear", data: nil)
+        }
+        if let imageDataOverride {
+            guard imageDataOverride.count <= 16 * 1024 * 1024,
+                  ArtworkDataNormalizer.isDecodableImage(imageDataOverride) else {
+                throw AutomationParameterError.invalidValue("candidate")
+            }
+            return ResolvedArtworkInput(
+                kind: "candidate",
+                data: ArtworkDataNormalizer.normalizedJPEGData(from: imageDataOverride)
+                    ?? imageDataOverride
+            )
         }
         if let imageBase64 {
             let encoded = imageBase64.hasPrefix("data:")
@@ -705,7 +739,9 @@ final class AutomationArtworkHandler {
     private func applyArtworkToSingleTarget(
         parameters: AutomationParameters,
         request: AutomationRequest,
-        session: LibrarySession
+        session: LibrarySession,
+        imageDataOverride: Data? = nil,
+        inputKindOverride: String? = nil
     ) async throws -> AutomationResponse {
         guard try hasArtworkTargetParameters(parameters) else {
             throw AutomationParameterError.missing("artwork target")
@@ -764,7 +800,8 @@ final class AutomationArtworkHandler {
         let targetAlbumIDs = ifCaseAlbumID(target)
         let targetPlaylistIDs = ifCasePlaylistID(target).map { [$0] } ?? []
         let changed = !isConflict && (clear ? info.available : true)
-        let inputKind = clear ? "clear" : imageBase64 != nil ? "imageBase64" : imagePath != nil ? "imagePath" : "picker"
+        let inputKind = inputKindOverride
+            ?? (clear ? "clear" : imageBase64 != nil ? "imageBase64" : imagePath != nil ? "imagePath" : "picker")
 
         func result(
             applied: Bool,
@@ -869,7 +906,8 @@ final class AutomationArtworkHandler {
         let resolvedInput = try await resolveArtworkInput(
             clear: clear,
             imagePath: imagePath,
-            imageBase64: imageBase64
+            imageBase64: imageBase64,
+            imageDataOverride: imageDataOverride
         )
         guard let resolvedInput else {
             return AutomationResponseSupport.interactionCancelled(for: request)
@@ -1123,7 +1161,61 @@ final class AutomationArtworkHandler {
         case .sacad: return "sacad"
         case .netease: return "netease"
         case .qqmusic: return "qqmusic"
+        case .appleMusic: return "appleMusic"
         }
+    }
+
+    /// Re-fetch the provider's original image for a cached search candidate.
+    /// The inline candidate payload is downsampled for IPC review, so applying
+    /// it would persist a smaller cover than the provider actually offers.
+    private func resolveOriginalCandidateData(
+        _ cached: CachedArtworkCandidate,
+        session: LibrarySession
+    ) async -> Data? {
+        let candidates: [CoverCandidate]
+        if let trackID = cached.trackID {
+            candidates = await session.searchArtworkCandidatesForAutomation(
+                trackID: trackID,
+                limit: 5
+            )
+        } else if let artistID = cached.artistID {
+            candidates = await session.searchArtistArtworkCandidatesForAutomation(
+                artistID: artistID,
+                limit: 5
+            )
+        } else if let albumKey = cached.albumKey {
+            candidates = await session.searchAlbumArtworkCandidatesForAutomation(
+                albumKey: albumKey,
+                limit: 5
+            )
+        } else {
+            return nil
+        }
+
+        let expectedSource = cached.candidate.source
+        let expectedItemID = cached.candidate.sourceItemID
+        if let expectedItemID, !expectedItemID.isEmpty,
+           let match = candidates.first(where: {
+               $0.sourceItemId == expectedItemID
+                   && artworkSourceName($0.source) == expectedSource
+           }) {
+            return match.imageData
+        }
+
+        // Provider without a stable item ID at fetch time: fall back to the
+        // direct artwork URL captured by the search.
+        if let urlString = cached.candidate.imageURL,
+           let url = URL(string: urlString) {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 20
+            if let (data, response) = try? await URLSession.shared.data(for: request),
+               ((response as? HTTPURLResponse)?.statusCode ?? 500) < 400,
+               data.count <= 16 * 1024 * 1024,
+               ArtworkDataNormalizer.isDecodableImage(data) {
+                return data
+            }
+        }
+        return nil
     }
 
     private func artworkMIMEType(for data: Data) -> String? {

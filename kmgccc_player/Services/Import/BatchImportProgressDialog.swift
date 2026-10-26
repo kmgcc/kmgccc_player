@@ -194,8 +194,7 @@ final class BatchImportProgressDialogController: NSObject, NSWindowDelegate {
         guard presentsWindow else { return }
 
         let windowSize = NSSize(width: 600, height: 560)
-        let (panel, visualEffect) = AppDialogTokens.makePanel(
-            width: windowSize.width, height: windowSize.height, closable: false)
+        let (panel, visualEffect) = AppDialogTokens.makeInsetPanel(contentSize: windowSize, closable: false)
 
         panel.title = ""
         panel.titlebarAppearsTransparent = true
@@ -223,8 +222,9 @@ final class BatchImportProgressDialogController: NSObject, NSWindowDelegate {
         )
         .environmentObject(ThemeStore.shared)
             .frame(width: windowSize.width, height: windowSize.height)
-        let hostingView = NSHostingView(rootView: rootView)
-        hostingView.frame = NSRect(origin: .zero, size: windowSize)
+            .padding(AppDialogTokens.panelShadowInset)
+        let hostingView = AppDialogTokens.makeHostingView(rootView: rootView)
+        hostingView.frame = visualEffect.bounds
         hostingView.autoresizingMask = [.width, .height]
         visualEffect.addSubview(hostingView)
 

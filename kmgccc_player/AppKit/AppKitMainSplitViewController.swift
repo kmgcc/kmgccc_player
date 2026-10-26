@@ -175,6 +175,13 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         !lyricsItem.isCollapsed
     }
 
+    func toggleLyricsVisibility(animated: Bool = true) {
+        let isVisible = appSession.uiState.usesSkinScene
+            ? appSession.uiState.skinSceneLyricsVisible
+            : isLyricsVisible
+        setLyricsVisible(!isVisible, animated: animated)
+    }
+
     func setSidebarVisible(
         _ visible: Bool,
         animated: Bool = true,

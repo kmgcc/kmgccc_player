@@ -174,16 +174,22 @@ final class CoverDownloadService: CoverDownloadServiceProtocol {
             throw CoverDownloadError.cancelled
         }
 
-        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("temp_\(UUID().uuidString).jpg")
+        let tempFolder = fileManager.temporaryDirectory.appendingPathComponent("cover-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: tempFolder, withIntermediateDirectories: true)
+        let tempURL = tempFolder.appendingPathComponent("artwork.jpg")
 
         defer {
-            try? fileManager.removeItem(at: tempURL)
+            try? fileManager.removeItem(at: tempFolder)
         }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = [artist, album, String(size), tempURL.path]
+        // SACAD 3 has no no-resize switch: its size is both a search target
+        // and an output resize limit. A broad range keeps provider-native
+        // covers in its byte-copy branch; provider URLs use fixed native sizes.
+        // 1,000,000 × 100 stays within the helper's u32 arithmetic.
+        process.arguments = ["--preserve-format", "--size-tolerance", "100",
+                             artist, album, String(max(size, 1_000_000)), tempURL.path]
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -221,13 +227,15 @@ final class CoverDownloadService: CoverDownloadServiceProtocol {
             )
         }
 
-        guard fileManager.fileExists(atPath: tempURL.path) else {
+        // --preserve-format changes the output extension for PNG sources.
+        guard let outputURL = [tempURL, tempFolder.appendingPathComponent("artwork.png")]
+            .first(where: { fileManager.fileExists(atPath: $0.path) }) else {
             throw CoverDownloadError.outputMissing
         }
 
         let imageData: Data
         do {
-            imageData = try Data(contentsOf: tempURL)
+            imageData = try Data(contentsOf: outputURL)
         } catch {
             throw CoverDownloadError.outputMissing
         }

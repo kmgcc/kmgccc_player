@@ -95,6 +95,8 @@ nonisolated struct UserMetadataOverride: Codable, Equatable, Sendable {
     /// Explicit drag assignment wins over automatic same-title album grouping.
     var albumGroupKey: String?
     var releaseYear: Int?
+    /// Field names explicitly edited by the user, including intentional empty values.
+    var manuallyEditedFields: Set<String>?
     var editedAt: Date
 
     init(
@@ -104,6 +106,7 @@ nonisolated struct UserMetadataOverride: Codable, Equatable, Sendable {
         albumArtist: String? = nil,
         albumGroupKey: String? = nil,
         releaseYear: Int? = nil,
+        manuallyEditedFields: Set<String>? = nil,
         editedAt: Date
     ) {
         self.title = title
@@ -112,6 +115,7 @@ nonisolated struct UserMetadataOverride: Codable, Equatable, Sendable {
         self.albumArtist = albumArtist
         self.albumGroupKey = albumGroupKey
         self.releaseYear = releaseYear
+        self.manuallyEditedFields = manuallyEditedFields
         self.editedAt = editedAt
     }
 }
@@ -245,36 +249,38 @@ extension EffectiveMetadata {
         fileNameFallback: String? = nil
     ) -> EffectiveMetadata {
         let override = sidecar.userMetadataOverride
+        let fields = override?.protectedFields ?? []
         let embedded = sidecar.embeddedMetadataSnapshot
         let suggestion = sidecar.enrichmentSuggestions?.bestByConfidence
 
         return EffectiveMetadata(
-            title: firstNonEmpty(
+            title: fields.contains("title") ? (override?.title ?? sidecar.title) : firstNonEmpty(
                 override?.title,
                 embedded?.title,
                 suggestion?.title,
                 fileNameFallback
             ) ?? "",
-            artistDisplay: firstNonEmpty(
+            artistDisplay: fields.contains("artist") ? (override?.artistDisplay ?? sidecar.artist) : firstNonEmpty(
                 override?.artistDisplay,
                 embedded?.artistDisplay,
                 suggestion?.artistDisplay
             ),
-            album: firstNonEmpty(
+            album: fields.contains("album") ? (override?.album ?? sidecar.album) : firstNonEmpty(
                 override?.album,
                 embedded?.album,
                 suggestion?.album
             ),
-            albumArtist: firstNonEmpty(
+            albumArtist: fields.contains("albumArtist") ? (override?.albumArtist ?? sidecar.albumArtist) : firstNonEmpty(
                 override?.albumArtist,
                 embedded?.albumArtist,
                 suggestion?.albumArtist
             ),
-            releaseYear: override?.releaseYear ?? embedded?.releaseYear ?? suggestion?.releaseYear,
+            releaseYear: fields.contains("releaseYear")
+                ? override?.releaseYear : (override?.releaseYear ?? embedded?.releaseYear ?? suggestion?.releaseYear),
             compilation: embedded?.compilation ?? suggestion?.compilation,
-            musicBrainzReleaseID: sidecar.musicBrainzReleaseID
-                ?? embedded?.musicBrainzReleaseID
-                ?? suggestion?.musicBrainzReleaseID
+            musicBrainzReleaseID: fields.contains("musicBrainzReleaseID")
+                ? sidecar.musicBrainzReleaseID
+                : (sidecar.musicBrainzReleaseID ?? embedded?.musicBrainzReleaseID ?? suggestion?.musicBrainzReleaseID)
         )
     }
 
@@ -327,6 +333,9 @@ nonisolated struct TrackSidecar: Codable, Sendable {
     /// MusicBrainz release identifier for the recording (schema 9). Storage
     /// only until the enrichment wave populates it.
     let musicBrainzReleaseID: String?
+    /// Optional schema-nine extension; files live alongside the track's assets.
+    let motionArtwork: TrackMotionArtwork?
+    let artworkIsUserSelected: Bool?
     let duration: Double
     let addedAt: Date
     let importedAt: Date?
@@ -359,6 +368,8 @@ nonisolated struct TrackSidecar: Codable, Sendable {
         case schemaVersion, id, title, artist, artistCredits, album, albumArtist, description, genreTags
         case language, labelOrCompany, releaseDate, qqMusicSongMid, metadataSource
         case metadataFetchedAt, metadataConfidence, musicBrainzReleaseID, duration, addedAt, importedAt
+        case motionArtwork
+        case artworkIsUserSelected
         case lyricsTimeOffsetMs, originalFilePath, audioFileName, artworkFileName
         case lyricsFileName, lyricsType, ttmlLyricsFileName, ncmSourcePath
         case ncmSourceIdentity, ncmConversionAssociation, playCount, preferenceStats, mediaLocator, availability
@@ -385,6 +396,8 @@ nonisolated struct TrackSidecar: Codable, Sendable {
         metadataFetchedAt: Date? = nil,
         metadataConfidence: Double? = nil,
         musicBrainzReleaseID: String? = nil,
+        motionArtwork: TrackMotionArtwork? = nil,
+        artworkIsUserSelected: Bool? = nil,
         duration: Double,
         addedAt: Date,
         importedAt: Date?,
@@ -425,6 +438,8 @@ nonisolated struct TrackSidecar: Codable, Sendable {
         self.metadataFetchedAt = metadataFetchedAt
         self.metadataConfidence = metadataConfidence
         self.musicBrainzReleaseID = musicBrainzReleaseID
+        self.motionArtwork = motionArtwork
+        self.artworkIsUserSelected = artworkIsUserSelected
         self.duration = duration
         self.addedAt = addedAt
         self.importedAt = importedAt
@@ -485,6 +500,8 @@ nonisolated struct TrackSidecar: Codable, Sendable {
         metadataFetchedAt = try c.decodeIfPresent(Date.self, forKey: .metadataFetchedAt)
         metadataConfidence = try c.decodeIfPresent(Double.self, forKey: .metadataConfidence)
         musicBrainzReleaseID = try c.decodeIfPresent(String.self, forKey: .musicBrainzReleaseID)
+        motionArtwork = try c.decodeIfPresent(TrackMotionArtwork.self, forKey: .motionArtwork)
+        artworkIsUserSelected = try c.decodeIfPresent(Bool.self, forKey: .artworkIsUserSelected)
         duration = try c.decode(Double.self, forKey: .duration)
         addedAt = try c.decode(Date.self, forKey: .addedAt)
         importedAt = try c.decodeIfPresent(Date.self, forKey: .importedAt)
@@ -553,6 +570,8 @@ nonisolated struct TrackSidecar: Codable, Sendable {
         try c.encodeIfPresent(metadataFetchedAt, forKey: .metadataFetchedAt)
         try c.encodeIfPresent(metadataConfidence, forKey: .metadataConfidence)
         try c.encodeIfPresent(musicBrainzReleaseID, forKey: .musicBrainzReleaseID)
+        try c.encodeIfPresent(motionArtwork, forKey: .motionArtwork)
+        try c.encodeIfPresent(artworkIsUserSelected, forKey: .artworkIsUserSelected)
         try c.encode(duration, forKey: .duration)
         try c.encode(addedAt, forKey: .addedAt)
         try c.encodeIfPresent(importedAt, forKey: .importedAt)
@@ -836,6 +855,7 @@ nonisolated struct ArtistSidecar: Codable, Sendable {
     var metadataSource: String?
     var metadataFetchedAt: Date?
     var metadataConfidence: Double?
+    var manuallyEditedFields: Set<String>
     var createdAt: Date
     var updatedAt: Date
     var trackSortKey: String?
@@ -856,6 +876,7 @@ nonisolated struct ArtistSidecar: Codable, Sendable {
         case metadataSource
         case metadataFetchedAt
         case metadataConfidence
+        case manuallyEditedFields
         case createdAt
         case updatedAt
         case trackSortKey
@@ -877,6 +898,7 @@ nonisolated struct ArtistSidecar: Codable, Sendable {
         metadataSource: String? = nil,
         metadataFetchedAt: Date? = nil,
         metadataConfidence: Double? = nil,
+        manuallyEditedFields: Set<String> = [],
         createdAt: Date,
         updatedAt: Date,
         trackSortKey: String? = nil,
@@ -896,6 +918,7 @@ nonisolated struct ArtistSidecar: Codable, Sendable {
         self.metadataSource = metadataSource
         self.metadataFetchedAt = metadataFetchedAt
         self.metadataConfidence = metadataConfidence
+        self.manuallyEditedFields = manuallyEditedFields
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.trackSortKey = trackSortKey
@@ -927,6 +950,7 @@ nonisolated struct ArtistSidecar: Codable, Sendable {
         metadataSource = try c.decodeIfPresent(String.self, forKey: .metadataSource)
         metadataFetchedAt = try c.decodeIfPresent(Date.self, forKey: .metadataFetchedAt)
         metadataConfidence = try c.decodeIfPresent(Double.self, forKey: .metadataConfidence)
+        manuallyEditedFields = try c.decodeIfPresent(Set<String>.self, forKey: .manuallyEditedFields) ?? []
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
         trackSortKey = try c.decodeIfPresent(String.self, forKey: .trackSortKey)
@@ -951,6 +975,9 @@ nonisolated struct ArtistSidecar: Codable, Sendable {
         try c.encodeIfPresent(metadataSource, forKey: .metadataSource)
         try c.encodeIfPresent(metadataFetchedAt, forKey: .metadataFetchedAt)
         try c.encodeIfPresent(metadataConfidence, forKey: .metadataConfidence)
+        if !manuallyEditedFields.isEmpty {
+            try c.encode(manuallyEditedFields.sorted(), forKey: .manuallyEditedFields)
+        }
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
         try c.encodeIfPresent(trackSortKey, forKey: .trackSortKey)
@@ -979,6 +1006,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
     var metadataSource: String?
     var metadataFetchedAt: Date?
     var metadataConfidence: Double?
+    var manuallyEditedFields: Set<String>
     var createdAt: Date
     var updatedAt: Date
     var trackSortKey: String?
@@ -1008,6 +1036,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         case metadataSource
         case metadataFetchedAt
         case metadataConfidence
+        case manuallyEditedFields
         case createdAt
         case updatedAt
         case trackSortKey
@@ -1036,6 +1065,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         metadataSource: String? = nil,
         metadataFetchedAt: Date? = nil,
         metadataConfidence: Double? = nil,
+        manuallyEditedFields: Set<String> = [],
         createdAt: Date,
         updatedAt: Date,
         trackSortKey: String? = nil,
@@ -1053,7 +1083,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         self.artworkFileName = artworkFileName
         self.description = description
         self.year = year
-        self.releaseYear = releaseYear ?? year
+        self.releaseYear = manuallyEditedFields.contains("releaseYear") ? releaseYear : (releaseYear ?? year)
         self.releaseDate = releaseDate
         self.albumType = albumType
         self.genreTags = genreTags
@@ -1063,6 +1093,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         self.metadataSource = metadataSource
         self.metadataFetchedAt = metadataFetchedAt
         self.metadataConfidence = metadataConfidence
+        self.manuallyEditedFields = manuallyEditedFields
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.trackSortKey = trackSortKey
@@ -1100,6 +1131,10 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         metadataSource = try c.decodeIfPresent(String.self, forKey: .metadataSource)
         metadataFetchedAt = try c.decodeIfPresent(Date.self, forKey: .metadataFetchedAt)
         metadataConfidence = try c.decodeIfPresent(Double.self, forKey: .metadataConfidence)
+        manuallyEditedFields = try c.decodeIfPresent(Set<String>.self, forKey: .manuallyEditedFields) ?? []
+        if manuallyEditedFields.contains("releaseYear") {
+            releaseYear = try c.decodeIfPresent(Int.self, forKey: .releaseYear)
+        }
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
         trackSortKey = try c.decodeIfPresent(String.self, forKey: .trackSortKey)
@@ -1119,7 +1154,11 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         try c.encodeIfPresent(artworkFileName, forKey: .artworkFileName)
         try c.encodeIfPresent(description, forKey: .description)
         try c.encodeIfPresent(year, forKey: .year)
-        try c.encodeIfPresent(releaseYear ?? year, forKey: .releaseYear)
+        if manuallyEditedFields.contains("releaseYear") {
+            try c.encodeIfPresent(releaseYear, forKey: .releaseYear)
+        } else {
+            try c.encodeIfPresent(releaseYear ?? year, forKey: .releaseYear)
+        }
         try c.encodeIfPresent(releaseDate, forKey: .releaseDate)
         try c.encodeIfPresent(albumType, forKey: .albumType)
         if !genreTags.isEmpty {
@@ -1131,6 +1170,9 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         try c.encodeIfPresent(metadataSource, forKey: .metadataSource)
         try c.encodeIfPresent(metadataFetchedAt, forKey: .metadataFetchedAt)
         try c.encodeIfPresent(metadataConfidence, forKey: .metadataConfidence)
+        if !manuallyEditedFields.isEmpty {
+            try c.encode(manuallyEditedFields.sorted(), forKey: .manuallyEditedFields)
+        }
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
         try c.encodeIfPresent(trackSortKey, forKey: .trackSortKey)

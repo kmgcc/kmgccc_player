@@ -3460,6 +3460,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             &nameSize,
             &name
         ) == noErr else { return "device#\(deviceID)" }
-        return name?.takeUnretainedValue() as String? ?? "device#\(deviceID)"
+        // kAudioObjectPropertyName returns a CFString owned by the caller.
+        return name?.takeRetainedValue() as String? ?? "device#\(deviceID)"
     }
 }

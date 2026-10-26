@@ -286,7 +286,10 @@ struct AutomationPlaybackHandler {
             position: max(0, presentation.currentTime),
             duration: max(0, presentation.duration),
             volume: min(max(presentation.volume, 0), 1),
-            playbackMode: playbackMode
+            playbackMode: playbackMode,
+            externalStableKey: presentation.externalStableKey,
+            enrichmentKey: presentation.musicEnrichment?.record.query.key,
+            metadataSources: presentation.metadataSources
         )
     }
 

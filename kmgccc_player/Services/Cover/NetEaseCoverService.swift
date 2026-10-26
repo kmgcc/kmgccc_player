@@ -32,12 +32,16 @@ final class NetEaseCoverService: NetEaseCoverServiceProtocol {
             throw NetEaseCoverError.noResults
         }
 
-        return try await downloadCandidate(for: albumResult)
+        return try await downloadCandidate(for: albumResult, artist: artist, album: album)
     }
 
     /// Searches NetEase for album covers and returns all candidates with metadata.
     /// Downloads covers for all matching albums (up to limit), sorted by resolution descending.
     func searchCoverCandidates(artist: String, album: String, limit: Int = 5) async throws -> [CoverCandidate] {
+        try await searchCoverCandidates(artist: artist, album: album, limit: limit, stopAtTarget: false)
+    }
+
+    func searchCoverCandidates(artist: String, album: String, limit: Int = 5, stopAtTarget: Bool) async throws -> [CoverCandidate] {
         let albumResults = try await searchAlbumResults(artist: artist, album: album, limit: limit)
 
         // Download covers for all albums concurrently
@@ -46,7 +50,7 @@ final class NetEaseCoverService: NetEaseCoverServiceProtocol {
             for albumResult in albumResults {
                 group.addTask {
                     do {
-                        return try await self.downloadCandidate(for: albumResult)
+                        return try await self.downloadCandidate(for: albumResult, artist: artist, album: album)
                     } catch {
                         return nil
                     }
@@ -55,6 +59,11 @@ final class NetEaseCoverService: NetEaseCoverServiceProtocol {
             for await candidate in group {
                 if let candidate = candidate {
                     candidates.append(candidate)
+                    if stopAtTarget,
+                       CoverCandidateSorter.bestAutomaticCandidate(from: candidates.filter(\.meetsAutomaticTarget)) != nil {
+                        group.cancelAll()
+                        break
+                    }
                 }
             }
         }
@@ -72,6 +81,8 @@ private extension NetEaseCoverService {
     struct AlbumSearchResult: Sendable {
         let id: Int
         let picURL: String
+        let name: String?
+        let artist: String?
     }
 
     func searchAlbumResults(artist: String, album: String, limit: Int) async throws -> [AlbumSearchResult] {
@@ -111,14 +122,16 @@ private extension NetEaseCoverService {
             throw NetEaseCoverError.decodingFailed(underlying: error)
         }
 
-        let albums = result.result.albums.map { AlbumSearchResult(id: $0.id, picURL: $0.picURL) }
+        let albums = result.result.albums.map {
+            AlbumSearchResult(id: $0.id, picURL: $0.picURL, name: $0.name, artist: $0.artist?.name ?? $0.artists?.first?.name)
+        }
         guard !albums.isEmpty else {
             throw NetEaseCoverError.noResults
         }
         return albums
     }
 
-    func downloadCandidate(for albumResult: AlbumSearchResult) async throws -> CoverCandidate {
+    func downloadCandidate(for albumResult: AlbumSearchResult, artist: String, album: String) async throws -> CoverCandidate {
         guard let coverURL = URL(string: Self.makeLargeCoverURLString(from: albumResult.picURL)) else {
             throw NetEaseCoverError.badURL
         }
@@ -134,7 +147,11 @@ private extension NetEaseCoverService {
             return CoverCandidate(
                 imageData: imageData,
                 source: .netease,
-                sourceItemId: String(albumResult.id)
+                sourceItemId: String(albumResult.id),
+                confidence: Self.matchConfidence(artist: artist, album: album, result: albumResult),
+                matchedArtist: albumResult.artist,
+                matchedAlbum: albumResult.name,
+                imageURL: coverURL.absoluteString
             )
         } catch let error as NetEaseCoverError {
             throw error
@@ -153,19 +170,28 @@ private extension NetEaseCoverService {
         struct Album: Decodable {
             let id: Int
             let picURL: String
+            let name: String?
+            let artist: Artist?
+            let artists: [Artist]?
+
+            struct Artist: Decodable { let name: String? }
 
             enum CodingKeys: String, CodingKey {
                 case id
                 case picURL = "picUrl"
+                case name, artist, artists
             }
         }
     }
 
-    nonisolated static func makeLargeCoverURLString(from picURLString: String) -> String {
-        if picURLString.contains("?") {
-            return "\(picURLString)&param=1200y1200"
-        }
-        return "\(picURLString)?param=1200y1200"
+    nonisolated static func matchConfidence(artist: String, album: String, result: AlbumSearchResult) -> Double {
+        let albumScore = ExternalPlaybackTextNormalizer.stringSimilarity(
+            ExternalPlaybackTextNormalizer.normalize(album), ExternalPlaybackTextNormalizer.normalize(result.name))
+        guard !artist.isEmpty, !LibraryNormalization.isUnknownArtist(artist) else { return albumScore }
+        let artistScore = ExternalPlaybackTextNormalizer.artistSimilarity(
+            ExternalPlaybackTextNormalizer.normalizeArtist(artist), ExternalPlaybackTextNormalizer.normalizeArtist(result.artist))
+        guard artistScore >= 0.45 else { return 0 }
+        return albumScore * 0.65 + artistScore * 0.35
     }
 
     nonisolated static func makeDefaultSession() -> URLSession {
@@ -186,5 +212,15 @@ private extension NetEaseCoverService {
             )
             throw NetEaseCoverError.requestFailed(underlying: error)
         }
+    }
+}
+
+extension NetEaseCoverService {
+    nonisolated static func makeLargeCoverURLString(from picURLString: String) -> String {
+        guard var url = URLComponents(string: picURLString) else { return picURLString }
+        // The catalog URL is the original; `param` asks the CDN to resize it.
+        let query = url.queryItems?.filter { $0.name != "param" }
+        url.queryItems = query?.isEmpty == false ? query : nil
+        return url.string ?? picURLString
     }
 }

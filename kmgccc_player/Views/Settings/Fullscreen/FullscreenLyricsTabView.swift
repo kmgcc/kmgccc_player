@@ -42,6 +42,7 @@ struct FullscreenLyricsTabView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
             appearanceSection
+            springSection
             fontsSection
 
             if !presentationStyle.usesMaterialSectionCards {
@@ -79,11 +80,6 @@ struct FullscreenLyricsTabView: View {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                 AMLLLyricsRenderQualitySlider(quality: $amllLyricsRenderQuality)
 
-                AMLLLyricSpringSettingsControls(
-                    duration: $amllLyricsSpringDuration,
-                    bounce: $amllLyricsSpringBounce
-                )
-
                 SettingsSwitchRow(
                     title: "减弱高亮",
                     isOn: $amllDiscreteWordHighlightEnabled,
@@ -92,6 +88,15 @@ struct FullscreenLyricsTabView: View {
                     info: "开启后歌词逐字亮起而不是扫光。"
                 )
             }
+        }
+    }
+
+    private var springSection: some View {
+        SettingsSection("滚动弹性") {
+            AMLLLyricSpringSettingsControls(
+                duration: $amllLyricsSpringDuration,
+                bounce: $amllLyricsSpringBounce
+            )
         }
     }
 

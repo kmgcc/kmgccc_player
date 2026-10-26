@@ -4,6 +4,8 @@ import SwiftUI
 /// Only recovery operations missing from a fullscreen scene receive host affordances.
 enum SkinSceneControl: String, Hashable {
     case playPause, previous, next, lyricsToggle, fullscreen, quickPanel
+    /// The scene draws the queue from `queue.items`, so the host keeps its own panel closed.
+    case queue
 }
 
 struct SkinSceneControlsKey: PreferenceKey {

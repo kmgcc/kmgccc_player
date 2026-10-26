@@ -136,8 +136,8 @@ final class AppleMusicPlaybackAdapter {
             ArtworkAssetStore.checksum(for: data)
         }
 
-        var presentationIdentity: String? {
-            guard let identity, let data, !data.isEmpty else { return nil }
+        func presentationIdentity(checksum: UInt64?) -> String? {
+            guard let identity, let data, !data.isEmpty, let checksum else { return nil }
             return "\(identity):\(source):\(checksum)"
         }
 
@@ -180,6 +180,7 @@ final class AppleMusicPlaybackAdapter {
     private var latestEffectiveMetadata: ExternalPlaybackEffectiveMetadata?
     private var latestMatchResult: ExternalPlaybackMatchResult?
     private var latestMatchedTrack: Track?
+    private var resolvedLyricsSource: String?
     private var resolvedLyricsText: String?
     private var autoLyricsLookupState: AutoLyricsLookupState = .idle
     private var displayedArtwork: ResolvedArtwork = .none
@@ -560,6 +561,7 @@ final class AppleMusicPlaybackAdapter {
             cancelPerTrackTasks()
             resolutionTask?.cancel()
             resolutionTask = nil
+            Log.info("[AMAdapter] event=track identity=\(identity) title=\(raw.title) artist=\(raw.artist) album=\(raw.album ?? "") duration=\(raw.duration)", category: .playback)
             latestIdentity = identity
             // Do NOT immediately clear resolvedRawMetadata and resolvedLyricsText
             latestEffectiveMetadata = nil
@@ -622,7 +624,7 @@ final class AppleMusicPlaybackAdapter {
             source: localLyricsText == nil ? nil : "ttmlLyricsFile"
         )
         let hasManualDecision = metadataStore.hasManualLyricsDecision(for: identity)
-        let autoLyrics = (!hasManualDecision && localLyrics.text == nil)
+        let autoLyrics = (!hasManualDecision && localLyrics.text == nil && resolution.cacheRecord.lyricsSource == "networkOriginalV2")
             ? metadataStore.cachedAutoLyrics(for: identity)
             : nil
         let newLyricsText = hasManualDecision
@@ -631,6 +633,7 @@ final class AppleMusicPlaybackAdapter {
 
         if hasManualDecision || localLyrics.text != nil || autoLyrics != nil {
             resolvedRawMetadata = resolution.raw
+            resolvedLyricsSource = hasManualDecision ? "userLyrics" : (localLyrics.text != nil ? "localLibrary" : "automaticLyricsCache")
             resolvedLyricsText = newLyricsText
             autoLyricsLookupState = .idle
             updatePresentationFromLatestInfo()
@@ -724,7 +727,7 @@ final class AppleMusicPlaybackAdapter {
             && resolvedTrackIdentity != nil
             && latestIdentity != resolvedTrackIdentity
 
-        let finalLyricsText = isTransitioning ? resolvedLyricsText : resolvedLyricsText
+        let finalLyricsText = isTransitioning ? nil : resolvedLyricsText
         let finalLyricsIdentity = isTransitioning ? resolvedTrackIdentity : (resolvedTrackIdentity ?? identity)
         // While the new track's lyrics/offset are still resolving, keep the
         // renderer paused so stale (previous-track) lyrics don't animate - but do
@@ -763,16 +766,20 @@ final class AppleMusicPlaybackAdapter {
             ?? info.album
         let displayedArtworkForPresentation = displayedArtwork
         let isArtworkLoading = pendingArtworkIdentity == identity
+        let artworkDataChecksum = displayedArtworkForPresentation.data?.isEmpty == false
+            ? displayedArtworkForPresentation.checksum
+            : nil
 
         let externalLyricsTimeOffsetMs = override?.lyricsTimeOffsetMs ?? matchedTrack?.lyricsTimeOffsetMs
-        let newPresentation = NowPlayingPresentation(
+        var newPresentation = NowPlayingPresentation(
             source: .appleMusic,
             localTrack: matchedTrack,
             title: displayTitle,
             artist: displayArtist,
             album: displayAlbum,
             artworkData: displayedArtworkForPresentation.data,
-            artworkIdentity: displayedArtworkForPresentation.presentationIdentity,
+            artworkDataChecksum: artworkDataChecksum,
+            artworkIdentity: displayedArtworkForPresentation.presentationIdentity(checksum: artworkDataChecksum),
             artworkDisplayTrackID: displayedArtworkForPresentation.displayTrackID,
             isArtworkLoading: isArtworkLoading,
             duration: info.duration,
@@ -803,6 +810,22 @@ final class AppleMusicPlaybackAdapter {
             emptyTitleKey: "apple_music.not_playing"
         )
 
+        var musicAttributes: [String: MusicMetadataValue] = [:]
+        if let value = info.albumArtist, !value.isEmpty { musicAttributes["albumArtistName"] = .string(value) }
+        if let value = info.genre, !value.isEmpty { musicAttributes["genreNames"] = .array([.string(value)]) }
+        if let value = info.composer, !value.isEmpty { musicAttributes["composerName"] = .string(value) }
+        if info.trackNumber > 0 { musicAttributes["trackNumber"] = .number(Double(info.trackNumber)) }
+        if info.year > 0 { musicAttributes["releaseYear"] = .number(Double(info.year)) }
+        if let value = info.discNumber, value > 0 { musicAttributes["discNumber"] = .number(Double(value)) }
+        newPresentation.metadataSources = [
+            "title": nonEmpty(override?.title) != nil ? "userMetadata" : (matchedTrack != nil ? "localLibrary" : "appleMusicBridge"),
+            "artist": nonEmpty(override?.artist) != nil ? "userMetadata" : (matchedTrack != nil ? "localLibrary" : "appleMusicBridge"),
+            "album": nonEmpty(override?.album) != nil ? "userMetadata" : (matchedTrack != nil ? "localLibrary" : "appleMusicBridge"),
+            "artwork": displayedArtworkForPresentation.logSource,
+            "lyrics": metadataStore.hasManualLyricsDecision(for: identity) ? "userLyrics" : (isTransitioning || finalLyricsText == nil ? "none" : (resolvedLyricsSource ?? "automaticLyrics")),
+            "metadata": "appleMusicBridge"
+        ]
+        newPresentation.externalMusicAttributes = musicAttributes
         updatePresentationIfNeeded(newPresentation)
     }
 
@@ -861,7 +884,8 @@ final class AppleMusicPlaybackAdapter {
         let matchedTrackID = matchedTrack?.id
         let localMatchedTrackID = matchedTrack?.id
 
-        if displayedArtwork.identity == identity,
+        if manualOverrideArtwork == nil,
+           displayedArtwork.identity == identity,
            displayedArtwork.source == .appleMusic,
            displayedArtwork.data?.isEmpty == false {
             pendingArtworkIdentity = nil
@@ -879,6 +903,22 @@ final class AppleMusicPlaybackAdapter {
         artworkTask?.cancel()
         artworkTask = Task { [weak self] in
             guard let self else { return }
+
+            if let manualOverrideArtwork, !manualOverrideArtwork.isEmpty {
+                let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
+                let didCommit = await self.prepareAndCommitArtwork(
+                    manualOverrideArtwork,
+                    source: .manualOverride,
+                    identity: identity,
+                    displayTrackID: displayTrackID
+                )
+                if didCommit {
+                    await MainActor.run {
+                        metadataStore.updateArtworkSource("manualOverride", for: identity)
+                    }
+                }
+                return
+            }
 
             let directSnapshot = await Task.detached(priority: .utility) {
                 bridge.fetchCurrentArtworkSnapshot()
@@ -944,23 +984,8 @@ final class AppleMusicPlaybackAdapter {
                 )
             }
 
-            if let manualOverrideArtwork, !manualOverrideArtwork.isEmpty {
-                let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
-                let didCommit = await self.prepareAndCommitArtwork(
-                    manualOverrideArtwork,
-                    source: .manualOverride,
-                    identity: identity,
-                    displayTrackID: displayTrackID
-                )
-                if didCommit {
-                    await MainActor.run {
-                        metadataStore.updateArtworkSource("manualOverride", for: identity)
-                    }
-                }
-                return
-            }
-
-            if let cachedNetworkArtwork, !cachedNetworkArtwork.isEmpty {
+            if let cachedNetworkArtwork, !cachedNetworkArtwork.isEmpty,
+               metadataStore.cachedArtwork(for: identity, source: "onlineFallbackV2") != nil {
                 let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
                 let didCommit = await self.prepareAndCommitArtwork(
                     cachedNetworkArtwork,
@@ -970,7 +995,7 @@ final class AppleMusicPlaybackAdapter {
                 )
                 if didCommit {
                     await MainActor.run {
-                        metadataStore.updateArtworkSource("onlineFallback", for: identity)
+                        metadataStore.updateArtworkSource("onlineFallbackV2", for: identity)
                     }
                 }
                 return
@@ -978,9 +1003,9 @@ final class AppleMusicPlaybackAdapter {
 
             let networkArtwork = await resolver.resolveNetworkArtwork(
                 identity: identity,
-                title: effective.title,
-                artist: effective.artist,
-                album: effective.album
+                title: info.title ?? effective.title,
+                artist: info.artist ?? effective.artist,
+                album: info.album ?? effective.album
             )
             guard !Task.isCancelled else { return }
             if let networkArtwork, !networkArtwork.isEmpty {
@@ -993,7 +1018,7 @@ final class AppleMusicPlaybackAdapter {
                 )
                 if didCommit {
                     await MainActor.run {
-                        _ = metadataStore.storeNetworkArtwork(networkArtwork, for: identity, source: "onlineFallback")
+                        _ = metadataStore.storeNetworkArtwork(networkArtwork, for: identity, source: "onlineFallbackV2")
                     }
                 }
                 return
@@ -1018,12 +1043,7 @@ final class AppleMusicPlaybackAdapter {
             artist: actual.artist ?? "",
             duration: actual.duration
         )
-        if actualStableKey == identity { return true }
-
-        if let expectedPID = expected.persistentID, !expectedPID.isEmpty,
-           let actualPID = actual.persistentID, !actualPID.isEmpty {
-            return expectedPID == actualPID
-        }
+        guard actualStableKey == identity else { return false }
 
         let expectedTitle = ExternalPlaybackTextNormalizer.normalizedKey(expected.title ?? "")
         let actualTitleKey = ExternalPlaybackTextNormalizer.normalizedKey(actualTitle)
@@ -1163,9 +1183,9 @@ final class AppleMusicPlaybackAdapter {
         let amllDBService = self.amllDBService
         lyricsTask = Task { [weak self] in
             let result = await LyricsSearchHelper.searchAndFetchAutomaticallyMatchedLyrics(
-                title: effective.title,
-                artist: effective.artist,
-                album: effective.album,
+                title: info.title ?? effective.title,
+                artist: info.artist ?? effective.artist,
+                album: info.album ?? effective.album,
                 duration: info.duration > 0 ? info.duration : nil,
                 searchCoordinator: lyricsSearchCoordinator,
                 amllDBService: amllDBService
@@ -1182,7 +1202,8 @@ final class AppleMusicPlaybackAdapter {
                 self.resolvedRawMetadata = self.latestRawMetadata
 
                 if let ttml = result.ttml, !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    metadataStore.storeNetworkLyrics(ttml, for: identity, source: "network")
+                    metadataStore.storeNetworkLyrics(ttml, for: identity, source: "networkOriginalV2")
+                    self.resolvedLyricsSource = result.fetchedCandidate?.source ?? "automaticLyrics"
                     self.resolvedLyricsText = ttml
                     self.autoLyricsLookupState = .idle
                     Log.info(

@@ -643,6 +643,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             metadataFetchedAt: source.metadataFetchedAt,
             metadataConfidence: source.metadataConfidence,
             musicBrainzReleaseID: source.musicBrainzReleaseID,
+            motionArtwork: source.motionArtwork,
+            artworkIsUserSelected: source.artworkIsUserSelected,
             embeddedMetadataSnapshot: source.embeddedMetadataSnapshot,
             duration: source.duration,
             addedAt: source.addedAt,
@@ -970,6 +972,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 || $0.userMetadataOverride?.albumGroupKey.flatMap { renamedAlbumKeys[$0] } != nil
         }
         for track in affectedTracks {
+            let originalMetadata = LibraryMetadataEditSnapshot(track)
             track.artist = LibraryNormalization.replacingArtistComponent(
                 in: track.artist,
                 matching: original.canonicalName,
@@ -989,6 +992,12 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                     correction.albumGroupKey = renamedKey
                 }
                 correction.editedAt = Date()
+                track.userMetadataOverride = correction
+            }
+            let groupKey = track.userMetadataOverride?.albumGroupKey
+            track.recordManualMetadataEdits(since: originalMetadata)
+            if var correction = track.userMetadataOverride {
+                correction.albumGroupKey = groupKey
                 track.userMetadataOverride = correction
             }
         }
@@ -1043,6 +1052,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             $0.albumGroupKey == original.canonicalKey
         }
         for track in affectedTracks {
+            let originalMetadata = LibraryMetadataEditSnapshot(track)
             track.album = resolvedTitle
             if var correction = track.userMetadataOverride {
                 correction.album = resolvedTitle
@@ -1050,6 +1060,12 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                     correction.albumGroupKey = entryToPersist.canonicalKey
                 }
                 correction.editedAt = Date()
+                track.userMetadataOverride = correction
+            }
+            let groupKey = track.userMetadataOverride?.albumGroupKey
+            track.recordManualMetadataEdits(since: originalMetadata)
+            if var correction = track.userMetadataOverride {
+                correction.albumGroupKey = groupKey
                 track.userMetadataOverride = correction
             }
         }
@@ -1346,6 +1362,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             metadataFetchedAt: meta.metadataFetchedAt,
             metadataConfidence: meta.metadataConfidence,
             musicBrainzReleaseID: meta.musicBrainzReleaseID,
+            motionArtwork: meta.motionArtwork,
+            artworkIsUserSelected: meta.artworkIsUserSelected,
             embeddedMetadataSnapshot: meta.embeddedMetadataSnapshot,
             duration: meta.duration,
             addedAt: meta.addedAt,
@@ -1536,6 +1554,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             metadataSource: entry.metadataSource,
             metadataFetchedAt: entry.metadataFetchedAt,
             metadataConfidence: entry.metadataConfidence,
+            manuallyEditedFields: entry.manuallyEditedFields,
             createdAt: entry.createdAt,
             updatedAt: entry.updatedAt
         )
@@ -1572,7 +1591,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             artworkFileName: entry.artworkFileName,
             description: entry.description.isEmpty ? nil : entry.description,
             year: entry.year,
-            releaseYear: entry.releaseYear ?? entry.year,
+            releaseYear: entry.manuallyEditedFields.contains("releaseYear")
+                ? entry.releaseYear : (entry.releaseYear ?? entry.year),
             releaseDate: entry.releaseDate,
             albumType: entry.albumType.isEmpty ? nil : entry.albumType,
             genreTags: entry.genreTags,
@@ -1582,6 +1602,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             metadataSource: entry.metadataSource,
             metadataFetchedAt: entry.metadataFetchedAt,
             metadataConfidence: entry.metadataConfidence,
+            manuallyEditedFields: entry.manuallyEditedFields,
             createdAt: entry.createdAt,
             updatedAt: entry.updatedAt,
             loudnessUnified: entry.loudnessUnifiedOverride
@@ -1646,7 +1667,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             albumCount: max(preferred.albumCount, fallback.albumCount),
             totalDuration: max(preferred.totalDuration, fallback.totalDuration),
             isOrphaned: false
-        )
+        ).preservingManualMetadata(from: [fallback, preferred])
     }
 
     private func mergedAlbumEntry(
@@ -1693,7 +1714,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             totalDuration: max(preferred.totalDuration, fallback.totalDuration),
             isOrphaned: false,
             loudnessUnifiedOverride: preferred.loudnessUnifiedOverride ?? fallback.loudnessUnifiedOverride
-        )
+        ).preservingManualMetadata(from: [fallback, preferred])
     }
 
     private func deleteTracksAndMetadata(
@@ -2277,7 +2298,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                     if let references = result.references {
                         track.artworkFileName = references.artworkFileName
                     }
-                    track.releaseFileBackedArtworkData()
+                    // A manual edit can change the live model while the disk
+                    // snapshot is being written. Release only the bytes that
+                    // this write actually saved, retaining a newer draft.
+                    if let snapshot = snapshots.first(where: { $0.id == track.id }),
+                       track.artworkData == snapshot.artworkData {
+                        track.releaseFileBackedArtworkData()
+                    }
                 }
             }
         }
@@ -2289,11 +2316,6 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
         if !persistedResults.isEmpty {
             applyPersistenceReferences(persistedResults, to: uniqueTracks)
-            if mode == .metaAndArtwork || mode == .metaLyricsAndArtwork {
-                for track in uniqueTracks where persistedTrackIDSet.contains(track.id) {
-                    track.releaseFileBackedArtworkData()
-                }
-            }
             rebuildRuntimeDerivedState()
             let persistedTracks = allTracks.filter { persistedTrackIDSet.contains($0.id) }
             upsertTrackIndexEntries(for: persistedTracks)

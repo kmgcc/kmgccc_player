@@ -4,6 +4,11 @@ BUILD_EXTENSION_MODE = auto
 BUILD_EXTENSION_HOOK =
 BUILD_EXTENSION_STRICT = NO
 
+// Debug keeps DEBUG code paths and incremental builds, but optimizes Swift:
+// the per-sample DSP kernels cannot keep up with real time at -Onone.
+// For step-through debugging, override with -Onone in LocalOverrides.xcconfig.
+SWIFT_OPTIMIZATION_LEVEL[config=Debug] = -O
+
 // Production is the compatibility default. Local test builds must override the
 // complete group below; UpdateEnvironment rejects missing or malformed values.
 UPDATE_RELEASE_CHANNEL = production

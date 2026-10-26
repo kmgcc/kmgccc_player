@@ -67,6 +67,32 @@ final class FullscreenLyricsCoordinator {
 
     @ObservationIgnored private var scheduledWork: [ScheduledWork: DispatchWorkItem] = [:]
 
+    private struct ResolvedLyrics {
+        let trackID: UUID?
+        let rawText: String?
+        let normalizedText: String?
+    }
+
+    @ObservationIgnored private var resolvedLyrics: ResolvedLyrics?
+
+    /// Keep validation out of repeated fullscreen presentation evaluations.
+    /// Exact text comparison also catches edits that retain the track identity;
+    /// the single entry retains rejected/absent results without growing a cache.
+    func normalizedLyricsText(trackID: UUID?, rawText: String?) -> String? {
+        if let resolvedLyrics,
+           resolvedLyrics.trackID == trackID,
+           resolvedLyrics.rawText == rawText {
+            return resolvedLyrics.normalizedText
+        }
+        let normalizedText = LyricsFormatSupport.normalizedTTMLText(rawText)
+        resolvedLyrics = ResolvedLyrics(
+            trackID: trackID,
+            rawText: rawText,
+            normalizedText: normalizedText
+        )
+        return normalizedText
+    }
+
     /// Replacing work for the same purpose cancels the previous callback.
     /// Zero-delay work remains queued unless the caller requires the existing
     /// synchronous track-refresh behavior.
@@ -142,6 +168,7 @@ final class FullscreenLyricsCoordinator {
 
     func resetForDisappear() {
         cancelAllScheduledWork()
+        resolvedLyrics = nil
         suppressViewport = false
         hostMounted = false
         autoHiddenAfterEnding = false

@@ -45,11 +45,20 @@ struct AppleStyleSkin: NowPlayingSkin {
     }
 }
 
+struct SkinAppleMeshPart: View {
+    let snapshot: SkinSceneSnapshot
+    let configuration: SkinComponentConfiguration
+    var body: some View {
+        AppleMeshBackground(context: snapshot.context).environment(\.skinComponentConfiguration, configuration)
+    }
+}
+
 private struct AppleMeshBackground: View {
     let context: SkinContext
 
     @AppStorage("skin.appleStyle.dynamicBackgroundEnabled") private var dynamicBackgroundEnabled: Bool = true
     @AppStorage("skin.appleStyle.flowSpeed") private var flowSpeed: String = AppleMeshBackgroundSpeed.standard.rawValue
+    @Environment(\.skinComponentConfiguration) private var componentConfiguration
 
     var body: some View {
         ZStack {
@@ -59,8 +68,8 @@ private struct AppleMeshBackground: View {
                 artworkFileURL: context.track?.artworkFileURL,
                 artworkChecksum: context.track?.artworkChecksum ?? 0,
                 isPlaying: context.playback.isPlaying,
-                dynamicBackgroundEnabled: dynamicBackgroundEnabled && context.motionPolicy == .full,
-                speed: AppleMeshBackgroundSpeed(rawValue: flowSpeed) ?? .standard
+                dynamicBackgroundEnabled: componentConfiguration.boolean("dynamicBackgroundEnabled", fallback: dynamicBackgroundEnabled) && context.motionPolicy == .full,
+                speed: AppleMeshBackgroundSpeed(rawValue: componentConfiguration.text("flowSpeed", fallback: flowSpeed)) ?? .standard
             ))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

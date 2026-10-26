@@ -61,6 +61,8 @@ struct AutomationSettingsView: View {
                 }
             }
 
+            TrustedAudioRootSettingsSection()
+
             SettingsSection("运行状态") {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack(spacing: 10) {
@@ -204,5 +206,119 @@ struct AutomationSettingsView: View {
     private func copyToPasteboard(_ value: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
+    }
+}
+
+/// The active referenced library's trusted folder, where automation file
+/// operations run without confirmation.
+@MainActor
+private struct TrustedAudioRootSettingsSection: View {
+    @EnvironmentObject private var appSession: AppSessionHost
+
+    @State private var trustedAudioRootPath: String?
+    @State private var errorMessage: String?
+
+    private var activeContext: LibraryContext? { appSession.activeLibraryBinding.context }
+    private var isWorking: Bool { appSession.librarySetupFlow.operation == .working }
+
+    var body: some View {
+        Group {
+            if activeContext?.mode == .referenced {
+                section
+            }
+        }
+        .task(id: appSession.activeLibraryBinding.generation) {
+            await reload()
+        }
+        .alert("操作失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+            Button("确定", role: .cancel) { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    private var section: some View {
+        SettingsSection("受信任的音频目录") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("受信任目录内的自动化和文件操作可直接执行。")
+                    .settingsDescriptionStyle()
+
+                if let path = trustedAudioRootPath {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text(path)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                    }
+
+                    HStack(spacing: 10) {
+                        Button("更换目录…") { chooseTrustedAudioRoot() }
+                            .buttonStyle(AppPanelButtonStyle())
+                            .controlSize(.small)
+                        Button("移除", role: .destructive) { clearTrustedAudioRoot() }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                    }
+                } else {
+                    Button("选择目录…") { chooseTrustedAudioRoot() }
+                        .buttonStyle(AppPanelButtonStyle())
+                        .controlSize(.small)
+                }
+            }
+            .disabled(isWorking)
+            .opacity(isWorking ? 0.72 : 1)
+        }
+    }
+
+    private func reload() async {
+        let targetLibraryID = activeContext?.id
+        guard let settings = try? await appSession.libraryScopedSettings(),
+              activeContext?.id == targetLibraryID else { return }
+        trustedAudioRootPath = settings.trustedAudioRootPath
+    }
+
+    private func chooseTrustedAudioRoot() {
+        guard let libraryID = activeContext?.id else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择"
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }
+            let access = LibraryInitialImportSelection(urls: [url])
+            Task { @MainActor in
+                defer { access.release() }
+                do {
+                    try await appSession.setTrustedAudioRoot(
+                        url: url,
+                        selection: access,
+                        libraryID: libraryID
+                    )
+                    await reload()
+                } catch {
+                    guard activeContext?.id == libraryID else { return }
+                    errorMessage = "无法保存受信任目录。"
+                }
+            }
+        }
+    }
+
+    private func clearTrustedAudioRoot() {
+        guard let libraryID = activeContext?.id else { return }
+        Task { @MainActor in
+            do {
+                try await appSession.clearTrustedAudioRoot(libraryID: libraryID)
+                await reload()
+            } catch {
+                guard activeContext?.id == libraryID else { return }
+                errorMessage = "无法移除受信任目录。"
+            }
+        }
     }
 }

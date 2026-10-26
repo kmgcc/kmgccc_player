@@ -13,7 +13,7 @@ import SwiftUI
 final class SystemFontFamilyProvider: ObservableObject {
     static let shared = SystemFontFamilyProvider()
 
-    @Published private(set) var families: [String] = []
+    @Published private(set) var families: [SystemFontFamily] = []
     @Published private(set) var isLoading = false
     @Published private(set) var hasLoaded = false
 
@@ -27,14 +27,55 @@ final class SystemFontFamilyProvider: ObservableObject {
 
         loadTask = Task {
             let loadedFamilies = await Task.detached(priority: .userInitiated) {
-                let names = CTFontManagerCopyAvailableFontFamilyNames() as NSArray
-                return names.compactMap { $0 as? String }.sorted()
+                Self.loadFamilies()
             }.value
 
             families = loadedFamilies
             hasLoaded = true
             isLoading = false
             loadTask = nil
+        }
+    }
+
+    nonisolated private static func loadFamilies() -> [SystemFontFamily] {
+        autoreleasepool {
+            let names = (CTFontManagerCopyAvailableFontFamilyNames() as NSArray)
+                .compactMap { $0 as? String }
+                .sorted()
+            var aliases = Dictionary(uniqueKeysWithValues: names.map { ($0, Set([$0])) })
+            var displayNames: [String: String] = [:]
+
+            // Read descriptors, never instantiate the catalog's fonts. Only
+            // strings leave this scope; selecting a font remains the sole path
+            // that asks the lyrics renderer to load a different family.
+            let collection = CTFontCollectionCreateFromAvailableFonts(nil)
+            let descriptors = CTFontCollectionCreateMatchingFontDescriptors(collection) as? [CTFontDescriptor] ?? []
+            for descriptor in descriptors {
+                guard let family = CTFontDescriptorCopyAttribute(descriptor, kCTFontFamilyNameAttribute) as? String,
+                      aliases[family] != nil
+                else { continue }
+
+                for attribute in [kCTFontFamilyNameAttribute, kCTFontDisplayNameAttribute, kCTFontNameAttribute] {
+                    if let name = CTFontDescriptorCopyAttribute(descriptor, attribute) as? String {
+                        aliases[family, default: []].insert(name)
+                    }
+                }
+                if let name = CTFontDescriptorCopyLocalizedAttribute(descriptor, kCTFontFamilyNameAttribute, nil) as? String {
+                    aliases[family, default: []].insert(name)
+                    displayNames[family] = name
+                }
+                if let name = CTFontDescriptorCopyLocalizedAttribute(descriptor, kCTFontDisplayNameAttribute, nil) as? String {
+                    aliases[family, default: []].insert(name)
+                }
+            }
+
+            return names.map { family in
+                SystemFontFamily(
+                    name: family,
+                    displayName: displayNames[family],
+                    aliases: (aliases[family] ?? []).sorted()
+                )
+            }
         }
     }
 }
@@ -56,11 +97,11 @@ struct DeferredLyricsFontPickerRows: View {
         Group {
             if fontProvider.hasLoaded {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                    fontPickerRow(title: zhTitle, selection: $mainFontNameZh)
-                    fontPickerRow(title: enTitle, selection: $mainFontNameEn)
-                    fontPickerRow(title: translationTitle, selection: $translationFontName)
+                    fontSearchRow(title: zhTitle, selection: $mainFontNameZh)
+                    fontSearchRow(title: enTitle, selection: $mainFontNameEn)
+                    fontSearchRow(title: translationTitle, selection: $translationFontName)
                 }
-            } else if fontProvider.isLoading {
+            } else {
                 HStack(spacing: presentationStyle.scaled(8)) {
                     ProgressView()
                     Text("正在加载字体…")
@@ -68,25 +109,16 @@ struct DeferredLyricsFontPickerRows: View {
                         .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                HStack(spacing: presentationStyle.scaled(10)) {
-                    Text("字体列表尚未加载")
-                        .font(presentationStyle.captionFont)
-                        .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
-                    Spacer()
-                    Button {
-                        fontProvider.loadIfNeeded()
-                    } label: {
-                        Label("加载字体", systemImage: "textformat")
-                            .font(presentationStyle.captionFont)
-                            .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
-                    }
-                }
             }
+        }
+        // Opening the lyrics settings is the signal to read the catalog once.
+        // Only names are cached; no font instance is created for the picker.
+        .onAppear {
+            fontProvider.loadIfNeeded()
         }
     }
 
-    private func fontPickerRow(
+    private func fontSearchRow(
         title: LocalizedStringKey,
         selection: Binding<String>
     ) -> some View {
@@ -95,26 +127,15 @@ struct DeferredLyricsFontPickerRows: View {
                 .font(presentationStyle.rowLabelFont)
                 .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
             Spacer()
-            Picker("", selection: selection) {
-                ForEach(families(including: selection.wrappedValue), id: \.self) { family in
-                    Text(family)
-                        .font(.custom(family, size: presentationStyle.scaled(12)))
-                        .tag(family)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .font(presentationStyle.rowLabelFont)
+            LyricsFontSearchField(
+                selection: selection,
+                families: fontProvider.families,
+                fontSize: presentationStyle.rowFontSize,
+                textColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors)
+            )
+            .accessibilityLabel(Text(title))
             .frame(width: presentationStyle.pickerWidth)
+            .fixedSize(horizontal: false, vertical: true)
         }
-    }
-
-    private func families(including selectedFamily: String) -> [String] {
-        guard !selectedFamily.isEmpty,
-              !fontProvider.families.contains(selectedFamily)
-        else {
-            return fontProvider.families
-        }
-        return ([selectedFamily] + fontProvider.families).sorted()
     }
 }

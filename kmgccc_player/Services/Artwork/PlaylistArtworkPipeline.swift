@@ -28,10 +28,28 @@ struct PlaylistArtworkRequest: Sendable {
 }
 
 actor PlaylistArtworkPipeline {
-    private let memoryCache = NSCache<NSString, CachedArtworkImage>()
-    private let decodeGate = ArtworkDecodeGate(maxConcurrent: 4)
+    private final class MemoryEntry {
+        let image: NSImage
+        let fastCacheGeneration: UInt64
+
+        init(_ image: NSImage, fastCacheGeneration: UInt64) {
+            self.image = image
+            self.fastCacheGeneration = fastCacheGeneration
+        }
+    }
+    private let memoryCache = NSCache<NSString, MemoryEntry>()
+    private let decodeGate = ArtworkDecodeGate(maxConcurrent: 10)
     private let derivativeStore: ArtworkDerivativeCacheStore
     private var memoryGeneration: UInt64 = 0
+    /// One decode per cover, shared by the row that mounted and the prefetch
+    /// walking ahead of it. Without this a fling decodes the same cover twice.
+    private struct InFlightLoad: Sendable {
+        let id: UUID
+        let fastCacheGeneration: UInt64
+        let task: Task<NSImage?, Never>
+        var consumers: Set<UUID>
+    }
+    private var inFlightLoads: [String: InFlightLoad] = [:]
 
     init(derivativeStore: ArtworkDerivativeCacheStore) {
         self.derivativeStore = derivativeStore
@@ -48,42 +66,122 @@ actor PlaylistArtworkPipeline {
     }
 
     func cachedImage(for request: PlaylistArtworkRequest) -> NSImage? {
+        cachedImage(for: request, fastCacheGeneration: FastArtworkMemoryCache.shared.currentGeneration())
+    }
+
+    private func cachedImage(for request: PlaylistArtworkRequest, fastCacheGeneration: UInt64) -> NSImage? {
         if let fast = FastArtworkMemoryCache.shared.image(forKey: request.cacheKey) {
             return fast
         }
-        if let image = memoryCache.object(forKey: request.cacheKey as NSString)?.image {
-            FastArtworkMemoryCache.shared.store(image, forKey: request.cacheKey)
-            return image
+        if let entry = memoryCache.object(forKey: request.cacheKey as NSString) {
+            guard entry.fastCacheGeneration == fastCacheGeneration else {
+                memoryCache.removeObject(forKey: request.cacheKey as NSString)
+                return nil
+            }
+            guard FastArtworkMemoryCache.shared.store(
+                entry.image,
+                forKey: request.cacheKey,
+                generation: fastCacheGeneration
+            ) else { return nil }
+            return entry.image
         }
         return nil
     }
 
-    func load(_ request: PlaylistArtworkRequest) async -> NSImage? {
+    func load(
+        _ request: PlaylistArtworkRequest,
+        expectedFastCacheGeneration: UInt64? = nil
+    ) async -> NSImage? {
+        let fastCacheGeneration = FastArtworkMemoryCache.shared.currentGeneration()
+        guard !Task.isCancelled,
+              expectedFastCacheGeneration == nil || expectedFastCacheGeneration == fastCacheGeneration
+        else { return nil }
         let requestGeneration = memoryGeneration
-        if let cached = cachedImage(for: request) {
+        if let cached = cachedImage(for: request, fastCacheGeneration: fastCacheGeneration) {
             return cached
         }
 
         guard !Task.isCancelled else { return nil }
 
+        // A direct fast-cache clear may happen while a shared decode is still
+        // running. A new generation must start its own job rather than adopt it.
+        if let existing = inFlightLoads[request.cacheKey], existing.fastCacheGeneration != fastCacheGeneration {
+            existing.task.cancel()
+            inFlightLoads[request.cacheKey] = nil
+        }
+        let consumerID = UUID()
+        let inFlight: InFlightLoad
+        if var existing = inFlightLoads[request.cacheKey] {
+            existing.consumers.insert(consumerID)
+            inFlightLoads[request.cacheKey] = existing
+            inFlight = existing
+        } else {
+            let task = Task { [weak self] () -> NSImage? in
+                guard let self else { return nil }
+                return await self.performLoad(request, generation: requestGeneration, fastCacheGeneration: fastCacheGeneration)
+            }
+            inFlight = InFlightLoad(id: UUID(), fastCacheGeneration: fastCacheGeneration, task: task, consumers: [consumerID])
+            inFlightLoads[request.cacheKey] = inFlight
+        }
+
+        let image = await withTaskCancellationHandler {
+            await inFlight.task.value
+        } onCancel: {
+            Task {
+                await self.releaseConsumer(consumerID, cacheKey: request.cacheKey, loadID: inFlight.id)
+            }
+        }
+        releaseConsumer(consumerID, cacheKey: request.cacheKey, loadID: inFlight.id)
+        guard !Task.isCancelled, memoryGeneration == requestGeneration,
+              FastArtworkMemoryCache.shared.currentGeneration() == fastCacheGeneration else { return nil }
+        return image
+    }
+
+    private func releaseConsumer(_ consumerID: UUID, cacheKey: String, loadID: UUID) {
+        // A cleared or cancelled job may finish after a new job took its key.
+        guard var load = inFlightLoads[cacheKey], load.id == loadID else { return }
+        load.consumers.remove(consumerID)
+        if load.consumers.isEmpty {
+            load.task.cancel()
+            inFlightLoads[cacheKey] = nil
+        } else {
+            inFlightLoads[cacheKey] = load
+        }
+    }
+
+    private func performLoad(
+        _ request: PlaylistArtworkRequest,
+        generation requestGeneration: UInt64,
+        fastCacheGeneration: UInt64
+    ) async -> NSImage? {
+        guard !Task.isCancelled, memoryGeneration == requestGeneration,
+              FastArtworkMemoryCache.shared.currentGeneration() == fastCacheGeneration else { return nil }
+        if let cached = cachedImage(for: request, fastCacheGeneration: fastCacheGeneration) {
+            return cached
+        }
+
         let maxPixel = max(request.pixelSize.width, request.pixelSize.height)
         
         if maxPixel <= 160, let trackID = parseTrackID(from: request.sourceIdentity) {
             let checksum = request.artworkData.flatMap { ArtworkAssetStore.checksum(for: $0) } ?? 0
-            if let snapshot = await ArtworkAssetStore.shared.get(trackID: trackID, artworkChecksum: checksum),
+            if let snapshot = await ArtworkAssetStore.shared.get(
+                trackID: trackID,
+                artworkChecksum: checksum
+            ),
                let thumbnail = snapshot.thumbnailImage {
-                guard !Task.isCancelled, memoryGeneration == requestGeneration else { return nil }
+                guard !Task.isCancelled, memoryGeneration == requestGeneration,
+                      FastArtworkMemoryCache.shared.currentGeneration() == fastCacheGeneration else { return nil }
                 memoryCache.setObject(
-                    CachedArtworkImage(thumbnail),
+                    MemoryEntry(thumbnail, fastCacheGeneration: fastCacheGeneration),
                     forKey: request.cacheKey as NSString,
                     cost: max(1, Int(request.pixelSize.width * request.pixelSize.height * 4))
                 )
-                FastArtworkMemoryCache.shared.store(thumbnail, forKey: request.cacheKey)
+                FastArtworkMemoryCache.shared.store(thumbnail, forKey: request.cacheKey, generation: fastCacheGeneration)
                 return thumbnail
             }
         }
 
-        guard let sourceData = await sourceData(for: request) else {
+        guard let source = rowSource(for: request) else {
             return nil
         }
 
@@ -96,30 +194,45 @@ actor PlaylistArtworkPipeline {
             return nil
         }
 
-        // Ensure release is called exactly once after successful acquire
-        defer { Task { await decodeGate.release() } }
-
-        // Double-check cancellation after acquiring slot
+        // Release on this call rather than through a new task: while a fling is
+        // running the actor is busy, and deferred releases queued behind the
+        // waiting loads would hand the slots out late.
         guard !Task.isCancelled else {
+            await decodeGate.release()
             return nil
         }
 
-        let image = await derivativeStore.image(
-            for: request.cacheKey,
-            artworkData: sourceData,
-            targetPixelSize: request.pixelSize
-        )
+        let image: NSImage?
+        switch source {
+        case .data(let data):
+            image = await derivativeStore.image(
+                for: request.cacheKey,
+                artworkData: data,
+                targetPixelSize: request.pixelSize
+            )
+        case .file(let fileURL):
+            // Decode straight from the artwork file. The derivative store reads
+            // its own cached copy first, so the original never has to be loaded
+            // into memory just to look a row cover up.
+            image = await derivativeStore.image(
+                for: request.cacheKey,
+                sourceURL: fileURL,
+                targetPixelSize: request.pixelSize
+            )
+        }
+        await decodeGate.release()
 
-        guard !Task.isCancelled, memoryGeneration == requestGeneration, let image else {
+        guard !Task.isCancelled, memoryGeneration == requestGeneration,
+              FastArtworkMemoryCache.shared.currentGeneration() == fastCacheGeneration, let image else {
             return nil
         }
 
         memoryCache.setObject(
-            CachedArtworkImage(image),
+            MemoryEntry(image, fastCacheGeneration: fastCacheGeneration),
             forKey: request.cacheKey as NSString,
             cost: max(1, Int(request.pixelSize.width * request.pixelSize.height * 4))
         )
-        FastArtworkMemoryCache.shared.store(image, forKey: request.cacheKey)
+        FastArtworkMemoryCache.shared.store(image, forKey: request.cacheKey, generation: fastCacheGeneration)
 
         return image
     }
@@ -152,18 +265,27 @@ actor PlaylistArtworkPipeline {
 
     func clearMemory() {
         memoryGeneration &+= 1
+        for load in inFlightLoads.values {
+            load.task.cancel()
+        }
+        inFlightLoads.removeAll()
         memoryCache.removeAllObjects()
         FastArtworkMemoryCache.shared.removeAll()
     }
 
-    private func sourceData(for request: PlaylistArtworkRequest) async -> Data? {
+    private enum RowArtworkSource {
+        case data(Data)
+        case file(URL)
+    }
+
+    /// Picks the cheapest still-usable source for a row cover. File artwork stays
+    /// a URL so the decode runs from disk; only inline artwork is carried as data.
+    private func rowSource(for request: PlaylistArtworkRequest) -> RowArtworkSource? {
         if let artworkData = request.artworkData, !artworkData.isEmpty {
-            return artworkData
+            return .data(artworkData)
         }
         guard let fileURL = request.fileURL else { return nil }
-        return await Task.detached(priority: .utility) {
-            try? Data(contentsOf: fileURL)
-        }.value
+        return .file(fileURL)
     }
 }
 

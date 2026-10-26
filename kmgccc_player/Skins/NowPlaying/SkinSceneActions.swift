@@ -18,6 +18,26 @@ struct SkinSceneActions {
     var openQuickPanel: () -> Void = {}
     var reload: () -> Void = {}
     var restore: () -> Void = {}
+    var stop: () -> Void = {}
+    var playQueueIndex: (Int) -> Void = { _ in }
+    var openTrackDetail: () -> Void = {}
+    var openTrackEdit: () -> Void = {}
+    var openExternalInfo: () -> Void = {}
+    var setParameter: (String, SkinParameterValue) -> Void = { _, _ in }
+    var play: () -> Void = {}
+    var pause: () -> Void = {}
+    var seekAndResume: (Double) -> Void = { _ in }
+    var setLikeState: (ManualLikeState) -> Void = { _ in }
+    var toggleDislike: () -> Void = {}
+    /// A playlist ID, or nil for a new playlist that receives the current track.
+    var addToPlaylist: (UUID?) -> Void = { _ in }
+    /// Asks for confirmation before the current track leaves the library.
+    var deleteTrack: () -> Void = {}
+    var openMusicInfo: () -> Void = {}
+    var showArtist: () -> Void = {}
+    var showAlbum: () -> Void = {}
+    /// A device UID, or nil to follow the system output.
+    var selectOutput: (String?) -> Void = { _ in }
 }
 
 extension EnvironmentValues {
@@ -29,6 +49,7 @@ extension EnvironmentValues {
     @Entry var skinSceneSession: SkinSession?
     @Entry var skinSceneIsActive = true
     @Entry var skinPackageResources: URL?
+    @Entry var skinPackageFonts: [String] = []
 }
 
 struct SkinTransportComponent: View {
@@ -40,8 +61,9 @@ struct SkinTransportComponent: View {
         let presentation = playbackCoordinator.stablePresentation
         PlaybackTransportControls(
             isPlaying: presentation.isPlaying, isEnabled: presentation.isControlEnabled,
-            hasTrack: presentation.hasTrack, metrics: .windowMiniPlayer,
-            color: configuration.color(fallback: .primary), disabledColor: .secondary,
+            hasTrack: presentation.hasTrack, metrics: configuration.mediaControlMetrics(navigation: false),
+            color: configuration.color(fallback: .primary), disabledColor: configuration.color("disabledColor", fallback: .secondary),
+            blendMode: SkinNodeStyle.blendMode(configuration.text("blendMode", fallback: "normal")),
             spacing: configuration.number("spacing", fallback: 14),
             previous: actions.previous, playPause: actions.playPause, next: actions.next
         )

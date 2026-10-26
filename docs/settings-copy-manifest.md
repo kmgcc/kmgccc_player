@@ -29,7 +29,7 @@
 
 | 序号 | 设置项 | 控件类型 | 当前呈现方式 | 当前文案 | 精修建议 / 预留修改 | 源码位置 |
 | :---: | :--- | :--- | :---: | :--- | :--- | :--- |
-| **1** | 自动更新 | 开关 | **Popover 弹窗** | 自动检查并在后台下载更新；退出 App 或点击侧边栏“重启更新”时安装。 | | [AboutSettingsView.swift](../kmgccc_player/Views/Settings/About/AboutSettingsView.swift#L137) |
+| **1** | 自动更新 | 开关 | **Popover 弹窗** | 自动检查并在后台下载更新；退出 App 或点击侧边栏“重启更新”时安装。 | | [GeneralSettingsView.swift](../kmgccc_player/Views/Settings/General/GeneralSettingsView.swift) |
 | **2** | HDR 效果 | 开关 | **Popover 弹窗** | 开启后部分视觉元素会使用 HDR 来增强可读性与视觉效果。需要支持的显示器。 | | [AppearanceSettingsView.swift](../kmgccc_player/Views/Settings/Appearance/AppearanceSettingsView.swift#L92) |
 | **3** | 主页板块顺序 | 排序列表 | **行内直显** | 拖动调整主页中各个板块的显示顺序 | | [AppearanceSettingsView.swift](../kmgccc_player/Views/Settings/Appearance/AppearanceSettingsView.swift#L310) |
 | **4** | 动态取色 | 胶囊选择器 | **Popover 弹窗** | 简洁使用默认色，动态跟随播放封面，丰富为列表歌曲分别取色。 | | [AppearanceSettingsView.swift](../kmgccc_player/Views/Settings/Appearance/AppearanceSettingsView.swift#L160) |
@@ -104,7 +104,7 @@
 | **38** | 补全所有歌曲信息 | 按钮 | **行内直显** | 在此处批量联网补全所有本地曲库中缺失的歌曲信息、封面和歌词。 | | [DataManagementSettingsView.swift](../kmgccc_player/Views/Settings/DataManagement/DataManagementSettingsView.swift#L80) |
 | **39** | 重置应用设置与状态 | 按钮 | **行内直显** | 清除 App 设置项，恢复默认值。 | | [DataManagementSettingsView.swift](../kmgccc_player/Views/Settings/DataManagement/DataManagementSettingsView.swift#L95) |
 | **40** | 重置播放统计数据 | 按钮 | **行内直显** | 清除音乐播放记录，包括歌曲聆听计数、播放时长等。 | | [DataManagementSettingsView.swift](../kmgccc_player/Views/Settings/DataManagement/DataManagementSettingsView.swift#L190) |
-| **41** | 受信任的音频目录 | 区域说明 | **行内直显** | 受信任目录内的自动化和文件操作可直接执行。 | | [MusicSettingsView.swift](../kmgccc_player/Views/Settings/DataManagement/MusicSettingsView.swift#L214) |
+| **41** | 受信任的音频目录 | 区域说明 | **行内直显** | 受信任目录内的自动化和文件操作可直接执行。 | | [AutomationSettingsView.swift](../kmgccc_player/Views/Settings/AutomationSettingsView.swift) |
 | **42** | 清理外部播放匹配与媒体缓存 | 按钮 | **行内直显** | 清除自动匹配结果、自动封面和自动歌词缓存；保留手动匹配、手动歌词和播放源规则。 | | [ExternalPlaybackSettingsView.swift](../kmgccc_player/Views/Settings/ExternalPlaybackSettingsView.swift#L144) |
 
 ---

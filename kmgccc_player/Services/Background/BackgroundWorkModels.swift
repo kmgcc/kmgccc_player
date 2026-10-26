@@ -90,6 +90,9 @@ nonisolated enum BackgroundWorkDomain: String, CaseIterable, Sendable {
     /// Looking up song information and covers online, after an import or on
     /// the listener's request.
     case importEnrichment
+    case metadataCompletion
+    /// One-time replacement of legacy, potentially degraded source covers.
+    case artworkRenovation
     /// Keeping the library in step with its folders.
     case sourceSync
     /// Writing tags into audio files, and other file work the listener asked for.
@@ -102,7 +105,7 @@ nonisolated enum BackgroundWorkDomain: String, CaseIterable, Sendable {
         case .artworkColors, .playbackArtwork, .homeArtwork, .listArtwork, .missingArtwork,
              .pageThumbnails: true
         case .loudness, .cacheMaintenance, .lyricsIndex, .libraryMaintenance, .appUpdate,
-             .importEnrichment, .sourceSync, .fileWork, .nextSongLyrics: false
+             .importEnrichment, .metadataCompletion, .artworkRenovation, .sourceSync, .fileWork, .nextSongLyrics: false
         }
     }
 

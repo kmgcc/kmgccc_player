@@ -54,10 +54,59 @@ final class TrackMediaLocatorTests: XCTestCase {
         let fileBackedSource = try XCTUnwrap(track.trackArtworkSource())
         XCTAssertEqual(fileBackedSource.artworkFileURL, artworkURL)
         XCTAssertNil(fileBackedSource.inlineArtworkData)
+        XCTAssertNil(fileBackedSource.inlineArtworkChecksum)
+        let fileSnapshot = try XCTUnwrap(track.existingArtworkFileSnapshot())
+        let fileResourceValues = try artworkURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        XCTAssertEqual(fileSnapshot.url, artworkURL)
+        XCTAssertEqual(fileSnapshot.fileSize, Int64(fileResourceValues.fileSize ?? 0))
+        XCTAssertEqual(
+            fileSnapshot.modificationTimeNanoseconds,
+            Int64((((fileResourceValues.contentModificationDate?.timeIntervalSince1970) ?? 0) * 1_000_000_000).rounded())
+        )
+        XCTAssertTrue(
+            fileBackedSource.colorCacheIdentity.contains(
+                "|\(fileSnapshot.fileSize)|\(fileSnapshot.modificationTimeNanoseconds)"
+            )
+        )
+        XCTAssertTrue(fileBackedSource.matches(
+            trackID: track.id,
+            artworkFileName: track.artworkFileName,
+            artworkFileSnapshot: fileSnapshot,
+            inlineArtworkData: nil
+        ))
+        XCTAssertFalse(fileBackedSource.matches(
+            trackID: track.id,
+            artworkFileName: track.artworkFileName,
+            artworkFileSnapshot: TrackArtworkFileSnapshot(
+                url: artworkURL,
+                fileSize: fileSnapshot.fileSize + 1,
+                modificationTimeNanoseconds: fileSnapshot.modificationTimeNanoseconds
+            ),
+            inlineArtworkData: nil
+        ))
         let currentArtworkData = Data([5, 6, 7])
         let currentSource = try XCTUnwrap(track.trackArtworkSource(fallbackData: currentArtworkData))
         XCTAssertEqual(currentSource.inlineArtworkData, currentArtworkData)
+        XCTAssertEqual(currentSource.inlineArtworkChecksum, ArtworkAssetStore.checksum(for: currentArtworkData))
+        XCTAssertTrue(currentSource.matches(
+            trackID: track.id,
+            artworkFileName: track.artworkFileName,
+            artworkFileSnapshot: fileSnapshot,
+            inlineArtworkData: currentArtworkData
+        ))
+        XCTAssertFalse(currentSource.matches(
+            trackID: track.id,
+            artworkFileName: track.artworkFileName,
+            artworkFileSnapshot: fileSnapshot,
+            inlineArtworkData: Data([5, 6, 7, 8])
+        ))
         XCTAssertNotEqual(currentSource.sourceKey, fileBackedSource.sourceKey)
+
+        try Data([8, 9, 10, 11, 12]).write(to: artworkURL)
+        let replacedFileSource = try XCTUnwrap(track.trackArtworkSource())
+        XCTAssertEqual(replacedFileSource.artworkFileURL, artworkURL)
+        XCTAssertNotEqual(replacedFileSource.sourceKey, fileBackedSource.sourceKey)
+        XCTAssertNotEqual(fileBackedSource.colorCacheIdentity, replacedFileSource.colorCacheIdentity)
         track.releaseFileBackedArtworkData()
 
         XCTAssertNil(track.artworkData)
@@ -703,6 +752,193 @@ final class TrackMediaLocatorTests: XCTestCase {
         XCTAssertEqual(projected.title, "Suggested Title")
         XCTAssertEqual(projected.album, "Embedded Album")
         XCTAssertNil(projected.artistDisplay)
+    }
+
+
+    // MARK: - Manual metadata ownership
+
+    @MainActor
+    func testFirstManualEditProtectsOnlyChangedFieldsFromAutomaticCompletion() {
+        let track = Track(title: "Original", fileBookmarkData: Data())
+        track.userDescription = "Original description"
+        let snapshot = LibraryMetadataEditSnapshot(track)
+        track.title = "Manual title"
+        track.userDescription = ""
+        track.recordManualMetadataEdits(since: snapshot)
+
+        XCTAssertEqual(track.userMetadataOverride?.protectedFields, ["title", "description"])
+        let detail = TrackMetadataDetail(
+            source: .qqmusic, album: "Online album", description: "Online description",
+            genreTags: ["Rock"], language: "Japanese", labelOrCompany: "Label", confidence: 1
+        )
+        XCTAssertTrue(MetadataDetailApplicator.applyMissingFields(detail, to: track))
+        XCTAssertEqual(track.title, "Manual title")
+        XCTAssertEqual(track.userDescription, "")
+        XCTAssertEqual(track.album, "Online album")
+        XCTAssertEqual(track.genreTags, ["Rock"])
+        XCTAssertFalse(track.isMetadataFieldManual("genreTags"))
+    }
+
+    @MainActor
+    func testUnchangedMetadataAndMediaHydrationDoNotAcquireManualOwnership() {
+        let track = Track(title: "Song", fileBookmarkData: Data())
+        track.artistCredits = [TrackCredit(displayName: "Artist")]
+        let snapshot = LibraryMetadataEditSnapshot(track)
+        track.artworkData = Data([1, 2])
+        track.ttmlLyricText = "Loaded from disk"
+        track.recordManualMetadataEdits(since: snapshot)
+        XCTAssertNil(track.userMetadataOverride)
+    }
+
+    @MainActor
+    func testClearedLyricsStayManualAcrossSerialization() throws {
+        let track = Track(title: "Song", fileBookmarkData: Data(), ttmlLyricText: "Existing lyrics")
+        TrackLyricsDraft.assign(editorText: "", to: track)
+        XCTAssertNil(track.ttmlLyricText)
+        XCTAssertNil(track.ttmlLyricsFileName)
+        XCTAssertFalse(track.allowsAutomaticLyrics)
+        let encoded = try JSONEncoder().encode(makeLayeredSidecar(override: track.userMetadataOverride))
+        let decoded = try JSONDecoder().decode(TrackSidecar.self, from: encoded)
+        let reloaded = Track(title: decoded.title, fileBookmarkData: Data())
+        reloaded.userMetadataOverride = decoded.userMetadataOverride
+        XCTAssertFalse(reloaded.allowsAutomaticLyrics)
+        XCTAssertFalse(reloaded.isMetadataFieldManual("title"))
+    }
+
+    func testManualClearsBeatEmbeddedAndSuggestedMetadata() {
+        let sidecar = makeLayeredSidecar(
+            embedded: EmbeddedMetadataSnapshot(
+                album: "Embedded album", albumArtist: "Embedded artist",
+                musicBrainzReleaseID: "embedded-id", capturedAt: Date()
+            ),
+            override: UserMetadataOverride(
+                album: "", manuallyEditedFields: ["album", "albumArtist", "musicBrainzReleaseID"],
+                editedAt: Date()
+            )
+        )
+        let projected = EffectiveMetadata.project(sidecar: sidecar)
+        XCTAssertEqual(projected.album, "")
+        XCTAssertNil(projected.albumArtist)
+        XCTAssertNil(projected.musicBrainzReleaseID)
+    }
+
+    func testLegacyCorrectionsRemainProtectedWithoutNewFlags() throws {
+        let encoded = Data(#"{"title":"Manual title","editedAt":0}"#.utf8)
+        let correction = try JSONDecoder().decode(UserMetadataOverride.self, from: encoded)
+        XCTAssertNil(correction.manuallyEditedFields)
+        XCTAssertEqual(correction.protectedFields, ["title"])
+        XCTAssertEqual(
+            EffectiveMetadata.project(sidecar: makeLayeredSidecar(override: correction)).title,
+            "Manual title"
+        )
+    }
+
+    @MainActor
+    func testArtistAndAlbumAutomaticCompletionPreserveManualEmptyFields() {
+        let now = Date()
+        let artist = ArtistEntry(
+            id: UUID(), canonicalName: "artist", displayName: "Artist",
+            manuallyEditedFields: ["description", "metadataSource"],
+            createdAt: now, updatedAt: now, trackCount: 1, albumCount: 1,
+            totalDuration: 1, isOrphaned: false
+        )
+        let artistDetail = ArtistMetadataDetail(
+            source: .qqmusic, description: "Automatic biography", genreTags: ["Rock"], confidence: 1
+        )
+        let appliedArtist = MetadataDetailApplicator.applyMissingFields(artistDetail, to: artist).value
+        XCTAssertEqual(appliedArtist.description, "")
+        XCTAssertNil(appliedArtist.metadataSource)
+        XCTAssertEqual(appliedArtist.genreTags, ["Rock"])
+
+        let album = AlbumEntry(
+            id: UUID(), canonicalKey: "album", displayTitle: "Album",
+            primaryArtistCanonicalName: "artist", primaryArtistDisplayName: "Artist",
+            manuallyEditedFields: ["description", "year", "releaseYear", "metadataConfidence"],
+            createdAt: now, updatedAt: now, trackCount: 1, totalDuration: 1, isOrphaned: false
+        )
+        let albumDetail = AlbumMetadataDetail(
+            source: .qqmusic, description: "Automatic description", releaseYear: 2020,
+            genreTags: ["Rock"], language: "Japanese", confidence: 1
+        )
+        let appliedAlbum = MetadataDetailApplicator.applyMissingFields(albumDetail, to: album).value
+        XCTAssertEqual(appliedAlbum.description, "")
+        XCTAssertNil(appliedAlbum.year)
+        XCTAssertNil(appliedAlbum.releaseYear)
+        XCTAssertNil(appliedAlbum.metadataConfidence)
+        XCTAssertEqual(appliedAlbum.language, "Japanese")
+    }
+
+    @MainActor
+    func testAlbumFlagsAndExplicitNilYearSurviveSidecarRoundTripAndMerge() throws {
+        let now = Date()
+        let manual = AlbumSidecar(
+            id: UUID(), canonicalKey: "album", displayTitle: "Album",
+            primaryArtistCanonicalName: "artist", year: 2000,
+            manuallyEditedFields: ["description", "releaseYear"],
+            createdAt: now, updatedAt: now
+        )
+        let decoded = try JSONDecoder().decode(AlbumSidecar.self, from: JSONEncoder().encode(manual))
+        XCTAssertNil(decoded.releaseYear)
+        XCTAssertEqual(decoded.manuallyEditedFields, manual.manuallyEditedFields)
+        let automatic = AlbumSidecar(
+            id: UUID(), canonicalKey: "album", displayTitle: "Album",
+            primaryArtistCanonicalName: "artist", description: "Automatic description", releaseYear: 2020,
+            createdAt: now, updatedAt: now.addingTimeInterval(1)
+        )
+        let merged = automatic.preservingManualMetadata(from: [automatic, decoded])
+        XCTAssertNil(merged.description)
+        XCTAssertNil(merged.releaseYear)
+        XCTAssertEqual(merged.manuallyEditedFields, manual.manuallyEditedFields)
+    }
+
+    func testArtistSidecarRetainsManualFlagsAndReadsOldPayloads() throws {
+        let now = Date()
+        let manual = ArtistSidecar(
+            id: UUID(), canonicalName: "artist", displayName: "Artist",
+            manuallyEditedFields: ["description", "foreignName"], createdAt: now, updatedAt: now
+        )
+        let encoded = try JSONEncoder().encode(manual)
+        let decoded = try JSONDecoder().decode(ArtistSidecar.self, from: encoded)
+        XCTAssertEqual(decoded.manuallyEditedFields, manual.manuallyEditedFields)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacy.removeValue(forKey: "manuallyEditedFields")
+        let old = try JSONDecoder().decode(ArtistSidecar.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertTrue(old.manuallyEditedFields.isEmpty)
+    }
+
+    @MainActor
+    func testFullyManualArtistFieldsAreSkippedByAutomaticQueue() {
+        let canonical = LibraryNormalization.normalizeArtist("Artist")
+        let now = Date()
+        let artist = ArtistEntry(
+            id: UUID(), canonicalName: canonical, displayName: "Artist",
+            manuallyEditedFields: ["description", "genreTags", "region", "foreignName"],
+            createdAt: now, updatedAt: now, trackCount: 1, albumCount: 1,
+            totalDuration: 1, isOrphaned: false
+        )
+        XCTAssertFalse(ImportEnrichmentService.artistMetadataNeedsEnrichment(
+            artist: "Artist", entriesByCanonical: [canonical: artist]
+        ))
+    }
+
+    @MainActor
+    func testAlbumQueueCanFillAnUnprotectedFieldWithoutRefillingManualClears() {
+        let key = LibraryNormalization.normalizedAlbumKey(album: "Album")
+        let now = Date()
+        var album = AlbumEntry(
+            id: UUID(), canonicalKey: key, displayTitle: "Album",
+            primaryArtistCanonicalName: "artist", primaryArtistDisplayName: "Artist",
+            manuallyEditedFields: ["description", "year", "releaseYear", "releaseDate", "albumType",
+                                   "genreTags", "language", "labelOrCompany"],
+            createdAt: now, updatedAt: now, trackCount: 1, totalDuration: 1, isOrphaned: false
+        )
+        XCTAssertFalse(ImportEnrichmentService.albumMetadataNeedsEnrichment(
+            album: "Album", entriesByCanonical: [key: album]
+        ))
+        album.manuallyEditedFields.remove("language")
+        XCTAssertTrue(ImportEnrichmentService.albumMetadataNeedsEnrichment(
+            album: "Album", entriesByCanonical: [key: album]
+        ))
     }
 
     // MARK: - Fixtures

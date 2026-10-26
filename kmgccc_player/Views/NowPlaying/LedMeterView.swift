@@ -252,6 +252,9 @@ struct LiveLedMeterView: View {
     var sdrColorSchemeOverride: ColorScheme? = nil
     var levelToneVariant: PerceptualToneLadder.LEDToneVariant = .retuned
     var ledCountOverride: Int? = nil
+    /// Skin-authored accent and brightness steps; the palette still comes from ThemeStore.
+    var accentColorOverride: Color? = nil
+    var brightnessLevelsOverride: Int? = nil
     var showsStatusLight: Bool = true
     var overlaysStatusLightOnFirstLED: Bool = false
     var fillDirection: FillDirection = .centerOut
@@ -264,7 +267,7 @@ struct LiveLedMeterView: View {
     }
 
     private var brightnessLevels: Int {
-        AppSettings.shared.ledBrightnessLevels
+        max(2, brightnessLevelsOverride ?? AppSettings.shared.ledBrightnessLevels)
     }
 
     private var contentWidth: CGFloat {
@@ -290,7 +293,7 @@ struct LiveLedMeterView: View {
 
     private var resolver: LEDColorResolver {
         LEDColorResolver(
-            accentColor: themeStore.accentColor,
+            accentColor: accentColorOverride ?? themeStore.accentColor,
             colorScheme: resolvedColorScheme,
             brightnessLevels: brightnessLevels,
             palette: themeStore.semanticPalette,

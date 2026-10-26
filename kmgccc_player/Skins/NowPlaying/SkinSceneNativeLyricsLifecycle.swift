@@ -51,6 +51,7 @@ struct SkinSceneNativeLyricsLifecycle: View {
 
     private func applyAuthorConfiguration() {
         var values = configuration?.values ?? [:]
+        for key in ["renderScale", "fpsCap", "cacheBudgetBytes", "overscanPx", "timeOffsetMs", "seekTimeOffsetMs"] { values.removeValue(forKey: key) }
         if reduceMotion { values["enableSpring"] = .boolean(false) }
         guard !values.isEmpty,
               let data = try? JSONEncoder().encode(values),

@@ -2733,3 +2733,25 @@ nonisolated enum SemanticPaletteSelfCheck {
     }
 }
 #endif
+
+
+extension SemanticPalette {
+    /// Provider identity stays stable across artwork themes, with appearance-specific contrast.
+    func lyricsSourceColor(_ source: LDDCSource, colorScheme: ColorScheme) -> Color {
+        let hue: Double = switch source {
+        case .AMLLDB: 305
+        case .QM: 145
+        case .KG: 255
+        case .NE: 25
+        case .LRCLIB: 80
+        }
+        // Light mode sits brighter and more saturated so the hues stay vivid on pale glass.
+        return ColorRenderingAdapter.makeSwiftUIColor(
+            OKLCHColor(
+                lightness: colorScheme == .dark ? 0.77 : 0.60,
+                chroma: colorScheme == .dark ? 0.15 : 0.18,
+                hue: hue / 360
+            )
+        )
+    }
+}

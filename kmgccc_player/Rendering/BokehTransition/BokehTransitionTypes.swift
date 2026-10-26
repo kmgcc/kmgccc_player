@@ -15,18 +15,28 @@ import simd
 /// installation uses the same transition result. Gaussian is only a runtime
 /// fallback when the Metal renderer cannot be used.
 struct BokehTransitionConfig: Equatable, Sendable {
-    static let defaultRadiusAt1080 = 60.0
+    /// Every transition, layout or artwork change, uses this one radius.
+    static let defaultRadiusAt1080 = 48.0
     static let defaultHighlightPower = 5.0
     static let defaultHighlightThreshold = 0.70
     static let defaultApertureBlades: Int32 = 0
     static let defaultApertureRotationRadians = 0.0
     static let defaultApertureRoundness = 0.0
 
-    /// The Metal surface is intentionally low resolution while it is strongly
-    /// blurred. Once the radius is nearly clear, dissolve it into the static
-    /// high-resolution surface instead of exposing the upscaled source.
+    /// The surface fades in with the rising radius and is opaque from this
+    /// radius on; the cover starts moving only once it is.
     static let opticalFadeInvisibleRadiusAt1080 = 0.0
-    static let opticalFadeOpaqueRadiusAt1080 = 8.0
+    static let opticalFadeOpaqueRadiusAt1080 = 4.0
+
+    /// While the radius falls, the surface dissolves into the settled
+    /// high-resolution layer from this radius on: late enough that the
+    /// image already matches it, early enough that the lower resolution
+    /// never shows unblurred.
+    static let handoffRadiusAt1080 = 7.0
+
+    /// The radius advances on its own clock; position and opacity follow
+    /// the display.
+    static let radiusUpdatesPerSecond = 30.0
 
     static func opticalVisibility(forRadiusAt1080 radius: CGFloat) -> CGFloat {
         let lower = CGFloat(opticalFadeInvisibleRadiusAt1080)
@@ -39,30 +49,31 @@ struct BokehTransitionConfig: Equatable, Sendable {
 
 // MARK: - Metal contracts
 
-enum BokehTransitionRenderTier: String, Sendable {
+nonisolated enum BokehTransitionRenderTier: String, Sendable {
     case low
     case balanced
 
+    /// The gather runs at half the panorama's resolution, so it affords
+    /// dense taps: each reads a level only a few pixels wide, and the
+    /// power mean cannot reveal a coarse level's blocks as stair steps.
     nonisolated var sampleBudget: UInt32 {
         switch self {
-        // Keep the gather kernel dense in both tiers. Sparse samples turn a
-        // point highlight into a visible flower/dot pattern; lowering spatial
-        // resolution is much less objectionable for an already-blurred layer.
-        case .low, .balanced: 640
+        case .low: 448
+        case .balanced: 768
         }
     }
 
     nonisolated var pixelBudget: Int {
         switch self {
-        case .low: 180_000
-        case .balanced: 260_000
+        case .low: 380_000
+        case .balanced: 600_000
         }
     }
 
     nonisolated var shortEdgeRange: ClosedRange<Int> {
         switch self {
-        case .low: 280...380
-        case .balanced: 360...480
+        case .low: 360...560
+        case .balanced: 480...720
         }
     }
 }
@@ -78,30 +89,26 @@ enum BokehTransitionMode: Equatable, Sendable {
     }
 }
 
-struct BokehTransitionRenderSize: Hashable, Sendable {
+nonisolated struct BokehTransitionRenderSize: Hashable, Sendable {
     let width: Int
     let height: Int
 
     nonisolated var cgSize: CGSize { CGSize(width: width, height: height) }
     nonisolated var pixelCount: Int { width * height }
 
-    /// Bounds a transition drawable by both short edge and total pixels. The
-    /// returned dimensions are backing pixels and rounded down to Metal's
-    /// 16-pixel threadgroup-friendly alignment.
+    /// Bounds a transition drawable by both short edge and total pixels.
+    /// The result keeps the viewport's aspect to the pixel, so the surface
+    /// scales uniformly onto the view and lines up with the settled layer.
     nonisolated static func make(backingPixelSize source: CGSize, tier: BokehTransitionRenderTier) -> Self? {
         guard source.width >= 2, source.height >= 2 else { return nil }
 
-        var width = source.width * 0.25
-        var height = source.height * 0.25
+        var width = source.width * 0.33
+        var height = source.height * 0.33
         let shortEdge = min(width, height)
-        let targetShortEdge: CGFloat
-        if shortEdge < CGFloat(tier.shortEdgeRange.lowerBound) {
-            targetShortEdge = CGFloat(tier.shortEdgeRange.lowerBound)
-        } else if shortEdge > CGFloat(tier.shortEdgeRange.upperBound) {
-            targetShortEdge = CGFloat(tier.shortEdgeRange.upperBound)
-        } else {
-            targetShortEdge = shortEdge
-        }
+        let targetShortEdge = min(
+            max(shortEdge, CGFloat(tier.shortEdgeRange.lowerBound)),
+            CGFloat(tier.shortEdgeRange.upperBound)
+        )
 
         let edgeScale = targetShortEdge / shortEdge
         width *= edgeScale
@@ -116,36 +123,49 @@ struct BokehTransitionRenderSize: Hashable, Sendable {
 
         width = min(width, source.width)
         height = min(height, source.height)
-        let alignedWidth = max(16, Int(width.rounded(.down) / 16) * 16)
-        let alignedHeight = max(16, Int(height.rounded(.down) / 16) * 16)
-        return Self(width: alignedWidth, height: alignedHeight)
+        return Self(width: max(16, Int(width.rounded())), height: max(16, Int(height.rounded())))
     }
 }
 
-struct BokehTransitionSourceIdentity: Hashable, Sendable {
+nonisolated struct BokehTransitionSourceIdentity: Hashable, Sendable {
     let artworkChecksum: UInt64
-    let leadingRenderKey: String
-    let centeredRenderKey: String
-    let transitionRenderKey: String
+    /// Distinguishes covers of one checksum, such as a video frame.
+    let sourceKey: String
+    let logicalViewportSize: CGSize
+    let displayScale: CGFloat
     let renderSize: BokehTransitionRenderSize
     let tier: BokehTransitionRenderTier
+
+    func matchesViewport(_ viewport: CGSize, tolerance: CGFloat = 12) -> Bool {
+        viewport.width > 1 && viewport.height > 1
+            && abs(logicalViewportSize.width - viewport.width) <= tolerance
+            && abs(logicalViewportSize.height - viewport.height) <= tolerance
+    }
+
+    func matchesViewport(
+        _ viewport: CGSize,
+        displayScale: CGFloat,
+        tolerance: CGFloat = 12
+    ) -> Bool {
+        matchesViewport(viewport, tolerance: tolerance)
+            && abs(self.displayScale - displayScale) < 0.01
+    }
 }
 
 /// This is the only per-frame value written by SwiftUI. It intentionally has
 /// no images, GPU resources, tasks, or timing ownership.
 struct BokehTransitionSnapshot: Equatable, Sendable {
+    /// 0 leading, 1 centered. The renderer springs toward it.
     var transitionPosition: CGFloat
-    var centeredOpacity: CGFloat
-    var transitionOpacity: CGFloat
     var bokehRadius: CGFloat
     var surfaceOpacity: CGFloat
-    var opticalOpacity: CGFloat
-    /// A transition-wide handoff from the low-resolution Metal surfaces to
-    /// the settled high-resolution SwiftUI background. This is separate from
-    /// per-surface opticalOpacity so artwork swaps retain their own crossfade.
+    /// A transition-wide dissolve into the settled background, for an
+    /// artwork change whose replacement source is not ready.
     var handoffOpacity: CGFloat
-    var transitionCanvasSizeRatio: CGSize
-    var transitionCanvasOffsetRatio: CGFloat
+    /// True from the blur-fall start until the surface retires. The surface
+    /// stays opaque while the radius falls and dissolves into the settled
+    /// layer on its own once the radius is small.
+    var keepsSurfaceOpaque: Bool
     var configuration: BokehTransitionConfig
     var tier: BokehTransitionRenderTier
     var motionPolicy: MotionPolicy
@@ -153,14 +173,10 @@ struct BokehTransitionSnapshot: Equatable, Sendable {
 
     static let inactive = Self(
         transitionPosition: 0,
-        centeredOpacity: 0,
-        transitionOpacity: 0,
         bokehRadius: 0,
         surfaceOpacity: 0,
-        opticalOpacity: 0,
         handoffOpacity: 0,
-        transitionCanvasSizeRatio: CGSize(width: 1, height: 1),
-        transitionCanvasOffsetRatio: 0,
+        keepsSurfaceOpaque: false,
         configuration: BokehTransitionConfig(),
         tier: .balanced,
         motionPolicy: .full,
@@ -170,18 +186,8 @@ struct BokehTransitionSnapshot: Equatable, Sendable {
     var isActive: Bool { bokehRadius > 0.01 || surfaceOpacity > 0.01 }
 }
 
-/// Swift and Metal declarations are 40 and 32 bytes respectively. Keep fields in this order;
-/// `BokehTransitionMetalContext` checks the strides before creating pipelines.
-struct TransitionComposeUniforms {
-    var viewportSize: SIMD2<Float>
-    var transitionCanvasSizeRatio: SIMD2<Float>
-    var transitionCanvasOffsetRatio: SIMD2<Float>
-    var transitionPosition: Float
-    var centeredOpacity: Float
-    var transitionOpacity: Float
-    var padding: Float = 0
-}
-
+/// 32 bytes in both Swift and Metal. Keep fields in this order;
+/// `BokehTransitionMetalContext` checks the stride before creating pipelines.
 struct TransitionBokehUniforms {
     var radiusAt1080: Float
     var highlightPower: Float
@@ -191,6 +197,39 @@ struct TransitionBokehUniforms {
     var apertureRotationRadians: Float
     var apertureRoundness: Float
     var padding: Float = 0
+}
+
+/// Latest decoded video frame for the transition surface. The video keeps
+/// playing under the lens; frames reach the renderer without SwiftUI state.
+nonisolated final class BokehLiveCoverFeed: @unchecked Sendable {
+    struct Frame {
+        let image: CGImage
+        let artworkChecksum: UInt64
+        let generation: UInt64
+    }
+
+    private let lock = NSLock()
+    private var frame: Frame?
+    private var generation: UInt64 = 0
+
+    func publish(_ image: CGImage, artworkChecksum: UInt64) {
+        lock.lock()
+        generation &+= 1
+        frame = Frame(image: image, artworkChecksum: artworkChecksum, generation: generation)
+        lock.unlock()
+    }
+
+    func latest() -> Frame? {
+        lock.lock()
+        defer { lock.unlock() }
+        return frame
+    }
+
+    func clear() {
+        lock.lock()
+        frame = nil
+        lock.unlock()
+    }
 }
 
 /// Tracks completed Bokeh transitions without publishing UI state each frame.
@@ -231,6 +270,13 @@ final class BokehTransitionPerformancePolicy {
         activeDroppedFrames += 1
     }
 
+    /// Discard an interrupted transition without changing the last completed decision.
+    func cancel() {
+        activeTier = nil
+        activeGPUFrames.removeAll(keepingCapacity: true)
+        activeDroppedFrames = 0
+    }
+
     func finish() {
         guard let tier = activeTier else { return }
         defer {
@@ -254,7 +300,7 @@ final class BokehTransitionPerformancePolicy {
 
         if tier == .low,
            let p95,
-           p95 < 0.006,
+           p95 < 0.004,
            droppedRatio <= 0.01 {
             consecutiveHealthyLowTransitions += 1
         } else {
@@ -262,9 +308,11 @@ final class BokehTransitionPerformancePolicy {
         }
     }
 
+    /// A 120 Hz display leaves 8.3 ms per frame for everything, so the
+    /// transition's own GPU time stays well below that.
     func nextAutomaticDecision() -> Decision {
-        if let lastP95GPUSeconds, lastP95GPUSeconds > 0.010 {
-            return Decision(tier: .low, reason: "previous GPU P95 exceeded 10 ms")
+        if let lastP95GPUSeconds, lastP95GPUSeconds > 0.006 {
+            return Decision(tier: .low, reason: "previous GPU P95 exceeded 6 ms")
         }
         if let lastDroppedFrameRatio, lastDroppedFrameRatio > 0.01 {
             return Decision(tier: .low, reason: "previous dropped-frame ratio exceeded 1%")

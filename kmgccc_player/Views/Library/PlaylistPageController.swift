@@ -63,6 +63,17 @@ final class PlaylistPageController {
         static let haloSeedPixelSide: Int = 128
     }
 
+    private nonisolated enum RowCoverWarmup {
+        /// Rows either side of the warmup centre kept decoded in memory, about
+        /// 16 MB of row covers in all. A fling covers this many rows in well
+        /// over a second, while the window fills from disk in a fraction of one.
+        static let radius = 256
+        /// How far the table may move from the centre before the window follows.
+        static let recentreDistance = 96
+        static let diskConcurrency = 4
+        static let decodeConcurrency = 3
+    }
+
     private enum RevealScroll {
         /// Aggressive ease-out with a long, gentle tail: the scroll leaps forward
         /// almost immediately (fast acceleration) then creeps the last few percent
@@ -198,13 +209,16 @@ final class PlaylistPageController {
     private var didFadeHeaderIdentity: String?
     private var didFadeHaloIdentity: String?
     @ObservationIgnored
-    private var artworkPrefetchTasks: [String: BackgroundTaskHandle] = [:]
-    @ObservationIgnored
     private var rowArtworkPrefetchTask: BackgroundTaskHandle?
     @ObservationIgnored
     private var rowArtworkPrefetchKey: String?
     @ObservationIgnored
     private var isRowArtworkScrollSuspended = false
+    @ObservationIgnored
+    private var rowCoverWarmupTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var rowCoverWarmupCenter: Int?
+    private var rowCoverWarmupGeneration: UInt64?
     @ObservationIgnored
     private var prefetchedArtworkKeys: Set<String> = []
     @ObservationIgnored
@@ -628,6 +642,176 @@ final class PlaylistPageController {
         )
     }
 
+    // MARK: - Row cover warmup
+
+    /// Keeps the covers of a wide window of rows decoded in memory, so a row
+    /// that scrolls in finds its cover synchronously when it is built. Loading
+    /// each cover when its row mounted could not keep up with a fling: every
+    /// cover took several actor hops and main-thread turns to land, and the
+    /// rows were recycled before most of them arrived.
+    func prepareRowArtwork(at index: Int) {
+        guard let page, page.rows.indices.contains(index) else { return }
+        if let center = rowCoverWarmupCenter,
+           rowCoverWarmupGeneration == FastArtworkMemoryCache.shared.currentGeneration(),
+           abs(center - index) < RowCoverWarmup.recentreDistance {
+            return
+        }
+        startRowCoverWarmup(around: index, rows: page.rows)
+    }
+
+    /// Starts a new warmup window around `center`, nearest rows first. Covers
+    /// whose derivative is on disk decode straight from it, a few at a time and
+    /// outside any actor; the rest go through the pipeline afterwards. This
+    /// runs beside the App scheduler on purpose: these are the covers the
+    /// listener is about to see, not upcoming work.
+    private func startRowCoverWarmup(around center: Int, rows: [PlaylistPageRowModel]) {
+        guard let cacheServices, rows.indices.contains(center) else { return }
+        rowCoverWarmupTask?.cancel()
+        let generation = FastArtworkMemoryCache.shared.currentGeneration()
+        rowCoverWarmupCenter = center
+        rowCoverWarmupGeneration = generation
+
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let wantsAccent = AppSettings.shared.artworkTintMode == .rich
+        let cache = FastArtworkMemoryCache.shared
+        let lower = max(0, center - RowCoverWarmup.radius)
+        let upper = min(rows.count - 1, center + RowCoverWarmup.radius)
+        let order = (lower...upper).sorted { abs($0 - center) < abs($1 - center) }
+        let requests = order.compactMap { index -> PlaylistArtworkRequest? in
+            let row = rows[index]
+            guard row.artworkData?.isEmpty == false || row.artworkFileURL != nil else { return nil }
+            let request = PlaylistArtworkPipeline.rowHighRequest(
+                trackID: row.id,
+                artworkData: row.artworkData,
+                artworkFileURL: row.artworkFileURL,
+                artworkIdentity: row.artworkIdentity,
+                logicalSize: Constants.Layout.artworkSmallSize,
+                scale: scale
+            )
+            let isWarm = cache.image(forKey: request.cacheKey) != nil
+                && (!wantsAccent || cache.accent(forKey: request.cacheKey) != nil)
+            return isWarm ? nil : request
+        }
+        guard !requests.isEmpty else { return }
+
+        let derivativeStore = cacheServices.artworkDerivativeStore
+        let pipeline = cacheServices.playlistArtworkPipeline
+        rowCoverWarmupTask = Task.detached(priority: .userInitiated) {
+            await Self.warmRowCovers(
+                requests,
+                derivativeStore: derivativeStore,
+                pipeline: pipeline,
+                wantsAccent: wantsAccent,
+                generation: generation
+            )
+        }
+    }
+
+    private func cancelRowCoverWarmup() {
+        rowCoverWarmupTask?.cancel()
+        rowCoverWarmupTask = nil
+        rowCoverWarmupCenter = nil
+        rowCoverWarmupGeneration = nil
+    }
+
+    private nonisolated static func warmRowCovers(
+        _ requests: [PlaylistArtworkRequest],
+        derivativeStore: ArtworkDerivativeCacheStore,
+        pipeline: PlaylistArtworkPipeline,
+        wantsAccent: Bool,
+        generation: UInt64
+    ) async {
+        let cache = FastArtworkMemoryCache.shared
+        guard !Task.isCancelled, cache.currentGeneration() == generation else { return }
+        let start = ProcessInfo.processInfo.systemUptime
+        // Pass 1: covers already derived on disk. Each one is a small file, so
+        // the whole window is in memory within a fraction of a second.
+        var coldOffsets: [Int] = []
+        await withTaskGroup(of: (Int, Bool).self) { group in
+            var next = 0
+            func enqueue() {
+                guard !Task.isCancelled, cache.currentGeneration() == generation,
+                      next < requests.count else { return }
+                let offset = next
+                let request = requests[offset]
+                next += 1
+                group.addTask {
+                    (offset, warmRowCoverFromDisk(request, derivativeStore: derivativeStore, wantsAccent: wantsAccent, generation: generation))
+                }
+            }
+            for _ in 0..<RowCoverWarmup.diskConcurrency { enqueue() }
+            while let result = await group.next() {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return
+                }
+                if !result.1 { coldOffsets.append(result.0) }
+                enqueue()
+            }
+        }
+        guard !Task.isCancelled, cache.currentGeneration() == generation else { return }
+        let diskMs = Int((ProcessInfo.processInfo.systemUptime - start) * 1000)
+
+        // Pass 2: covers that still have to be decoded from the original
+        // artwork, nearest first and at background priority.
+        let coldRequests = coldOffsets.sorted().map { requests[$0] }
+        await withTaskGroup(of: Void.self) { group in
+            var next = 0
+            func enqueue() {
+                guard !Task.isCancelled, cache.currentGeneration() == generation,
+                      next < coldRequests.count else { return }
+                let request = coldRequests[next]
+                next += 1
+                group.addTask(priority: .utility) {
+                    guard !Task.isCancelled, cache.currentGeneration() == generation,
+                          let image = await pipeline.load(request, expectedFastCacheGeneration: generation),
+                          !Task.isCancelled else { return }
+                    if wantsAccent { storeRowAccentIfNeeded(for: request.cacheKey, image: image, generation: generation) }
+                }
+            }
+            for _ in 0..<RowCoverWarmup.decodeConcurrency { enqueue() }
+            while await group.next() != nil {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return
+                }
+                enqueue()
+            }
+        }
+        DebugUIHooks.record(
+            "row-cover-warmup count=\(requests.count) cold=\(coldRequests.count) diskMs=\(diskMs) totalMs=\(Int((ProcessInfo.processInfo.systemUptime - start) * 1000))"
+        )
+    }
+
+    /// Returns false when the cover has no derivative on disk yet.
+    private nonisolated static func warmRowCoverFromDisk(
+        _ request: PlaylistArtworkRequest,
+        derivativeStore: ArtworkDerivativeCacheStore,
+        wantsAccent: Bool,
+        generation: UInt64
+    ) -> Bool {
+        let cache = FastArtworkMemoryCache.shared
+        guard !Task.isCancelled, cache.currentGeneration() == generation else { return false }
+        let key = request.cacheKey
+        let cached = cache.image(forKey: key)
+        let maxPixel = Int(max(request.pixelSize.width, request.pixelSize.height))
+        guard let image = cached ?? derivativeStore.cachedDiskImage(for: key, maxPixelSize: maxPixel)
+        else { return false }
+        guard !Task.isCancelled, cache.currentGeneration() == generation else { return false }
+        // The tint goes in first: the row that picks the cover up reads it in
+        // the same pass instead of recolouring a moment later.
+        if wantsAccent { storeRowAccentIfNeeded(for: key, image: image, generation: generation) }
+        if cached == nil { cache.store(image, forKey: key, generation: generation) }
+        return true
+    }
+
+    private nonisolated static func storeRowAccentIfNeeded(for key: String, image: NSImage, generation: UInt64) {
+        let cache = FastArtworkMemoryCache.shared
+        guard !Task.isCancelled, cache.currentGeneration() == generation,
+              cache.accent(forKey: key) == nil else { return }
+        cache.storeAccent(ArtworkAssetStore.rowAccentColor(fromThumbnail: image), forKey: key, generation: generation)
+    }
+
     func applyTargetedTrackRefresh(trackID _: UUID) {
         scheduleRebuild(reason: "track-update")
     }
@@ -796,14 +980,11 @@ final class PlaylistPageController {
         headerFadeTask?.cancel()
         haloFadeTask?.cancel()
         prefetchTask?.cancel()
-        for task in artworkPrefetchTasks.values {
-            task.cancel()
-        }
-        artworkPrefetchTasks.removeAll()
         rowArtworkPrefetchTask?.cancel()
         rowArtworkPrefetchTask = nil
         rowArtworkPrefetchKey = nil
         isRowArtworkScrollSuspended = false
+        cancelRowCoverWarmup()
         prefetchedArtworkKeys.removeAll()
         latestTrackLookup.removeAll()
         snapshotUpdateTask?.cancel()
@@ -1102,6 +1283,9 @@ final class PlaylistPageController {
         }
         latestTrackLookup = Dictionary(uniqueKeysWithValues: pageModel.queueTracks.map { ($0.id, $0) })
         lastPrefetchBucket = nil
+        // The running warmup indexes the previous rows. The initial warmup
+        // below starts a new one for this model.
+        cancelRowCoverWarmup()
 
         if revealPendingTrackIfPossible() {
             // The explicit reveal request owns the scroll target for this rebuild.
@@ -1308,41 +1492,13 @@ final class PlaylistPageController {
         }
     }
 
+    /// Warms the row covers of a freshly published page around the position the
+    /// list opens at. The table moves the window once the listener scrolls.
     private func scheduleInitialArtworkWarmup(for pageModel: PlaylistPageModel) {
-        let playbackActive = playerVM?.isPlaying == true
-        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-        let lowPriorityRowCount = playbackActive ? 24 : 72
-        let highPriorityRowCount = playbackActive ? 10 : 32
-        let rows = Array(pageModel.rows.prefix(lowPriorityRowCount))
-        var requests: [PlaylistArtworkRequest] = []
-        requests.reserveCapacity(rows.count + min(rows.count, highPriorityRowCount))
-
-        requests.append(contentsOf: rows.map {
-            PlaylistArtworkPipeline.rowLowRequest(
-                trackID: $0.id,
-                artworkData: $0.artworkData,
-                artworkFileURL: $0.artworkFileURL,
-                artworkIdentity: $0.artworkIdentity,
-                logicalSize: Constants.Layout.artworkSmallSize,
-                scale: scale
-            )
-        })
-
-        requests.append(contentsOf: rows.prefix(highPriorityRowCount).map {
-            PlaylistArtworkPipeline.rowHighRequest(
-                trackID: $0.id,
-                artworkData: $0.artworkData,
-                artworkFileURL: $0.artworkFileURL,
-                artworkIdentity: $0.artworkIdentity,
-                logicalSize: Constants.Layout.artworkSmallSize,
-                scale: scale
-            )
-        })
-
-        startArtworkPrefetch(
-            key: "\(pageModel.selectionIdentity)-initial-\(pageModel.sourceFingerprint)",
-            requests: requests
-        )
+        let openingRow = listScrollPositionID.flatMap { id in
+            pageModel.rows.firstIndex { $0.id == id }
+        } ?? 0
+        startRowCoverWarmup(around: openingRow, rows: pageModel.rows)
 
         if let currentTrackID = playerVM?.currentTrack?.id {
             prefetchAroundTrackID(currentTrackID)
@@ -1535,27 +1691,6 @@ final class PlaylistPageController {
         guard let pipeline = playlistArtworkPipeline, let cacheServices else { return nil }
         return cacheServices.submitArtworkPrefetch(domain: .listArtwork, resources: [.compute]) { context in
             await pipeline.prefetch(requests, context: context)
-        }
-    }
-
-    private func startArtworkPrefetch(
-        key: String,
-        requests: [PlaylistArtworkRequest]
-    ) {
-        guard !requests.isEmpty, !prefetchedArtworkKeys.contains(key) else { return }
-
-        if artworkPrefetchTasks.count >= 6, let oldestKey = artworkPrefetchTasks.keys.first {
-            artworkPrefetchTasks[oldestKey]?.cancel()
-            artworkPrefetchTasks.removeValue(forKey: oldestKey)
-        }
-
-        guard let task = submitPrefetch(requests: requests) else { return }
-        prefetchedArtworkKeys.insert(key)
-        artworkPrefetchTasks[key] = task
-
-        Task { @MainActor [weak self] in
-            _ = await task.value()
-            self?.artworkPrefetchTasks.removeValue(forKey: key)
         }
     }
 

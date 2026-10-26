@@ -143,6 +143,7 @@ final class ImportCommitter {
                     }
                     importedCount += 1
                     let track = makeTrack(from: payload)
+                    track.markMetadataFieldsAsManual(candidates[output.index].manuallyEditedFields)
                     orderedRecords[output.index] = ImportedTrackRecord(
                         progressID: output.progressID,
                         displayName: output.displayName,
@@ -510,6 +511,9 @@ final class ImportCommitter {
             merged.appendDeduplicatingByIDs(suggestions)
             track.enrichmentSuggestions = merged
         }
+        track.artworkNeedsUpgrade = payload.artworkData.map {
+            ArtworkDataNormalizer.isBelowPreferredResolution($0)
+        } ?? false
         return track
     }
 }

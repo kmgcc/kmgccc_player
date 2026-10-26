@@ -22,6 +22,7 @@ final class AutomationIPCServer {
     private let filesHandler: AutomationFilesHandler
     private let artworkHandler: AutomationArtworkHandler
     private let lyricsHandler: AutomationLyricsHandler
+    private let musicEnrichmentHandler: AutomationMusicEnrichmentHandler
     private let listener: AutomationIPCListener
     private weak var appSession: AppSessionHost?
     private let scopePolicyStore: AutomationScopePolicyStore
@@ -47,6 +48,7 @@ final class AutomationIPCServer {
         filesHandler = AutomationFilesHandler(appSession: appSession)
         lyricsHandler = AutomationLyricsHandler(appSession: appSession)
         artworkHandler = AutomationArtworkHandler(appSession: appSession)
+        musicEnrichmentHandler = AutomationMusicEnrichmentHandler(appSession: appSession)
         let resolvedBundleIdentifier = bundleIdentifier ?? AutomationAppIdentity.bundleIdentifier
         self.automationBundleIdentifier = resolvedBundleIdentifier
         self.appSupportDirectoryURL = appSupportDirectoryURL
@@ -375,6 +377,25 @@ final class AutomationIPCServer {
              AutomationMethod.artworkGet,
              AutomationMethod.artworkApply:
             return await artworkHandler.handle(request)
+
+        case AutomationMethod.skinCapabilities, AutomationMethod.skinCheck, AutomationMethod.skinReload, AutomationMethod.skinRuntime:
+            guard SkinCustomizationAvailability.isEnabled else {
+                return AutomationResponseSupport.unsupportedMethod(for: request)
+            }
+            return AutomationSkinHandler(appSession: appSession).handle(request)
+
+        case AutomationMethod.enrichmentList,
+             AutomationMethod.enrichmentGet,
+             AutomationMethod.enrichmentRefresh,
+             AutomationMethod.enrichmentPatch,
+             AutomationMethod.motionArtworkGet,
+             AutomationMethod.motionArtworkSearch,
+             AutomationMethod.motionArtworkApply,
+             AutomationMethod.motionArtworkImport,
+             AutomationMethod.motionArtworkClear,
+             AutomationMethod.completionStatus,
+             AutomationMethod.completionControl:
+            return await musicEnrichmentHandler.handle(request, grantedScopes: grantedScopes())
 
         case AutomationMethod.metadataGet,
              AutomationMethod.metadataEmbeddedGet,
@@ -936,6 +957,17 @@ final class AutomationIPCServer {
              AutomationMethod.filesRename,
              AutomationMethod.filesMove,
              AutomationMethod.filesDelete: return "files"
+        case AutomationMethod.enrichmentList,
+             AutomationMethod.enrichmentGet,
+             AutomationMethod.enrichmentRefresh,
+             AutomationMethod.enrichmentPatch,
+             AutomationMethod.motionArtworkGet,
+             AutomationMethod.motionArtworkSearch,
+             AutomationMethod.motionArtworkApply,
+             AutomationMethod.motionArtworkImport,
+             AutomationMethod.motionArtworkClear,
+             AutomationMethod.completionStatus,
+             AutomationMethod.completionControl: return "enrichment"
         case AutomationMethod.metadataGet,
              AutomationMethod.metadataEmbeddedGet,
              AutomationMethod.metadataEmbeddedPatch,
@@ -1024,6 +1056,10 @@ final class AutomationIPCServer {
 
     private func isBackgroundJobRequest(_ request: AutomationRequest) -> Bool {
         guard request.method == AutomationMethod.metadataSearch
+                || request.method == AutomationMethod.enrichmentRefresh
+                || request.method == AutomationMethod.motionArtworkSearch
+                || request.method == AutomationMethod.motionArtworkApply
+                || request.method == AutomationMethod.motionArtworkImport
                 || request.method == AutomationMethod.artworkSearch
                 || request.method == AutomationMethod.lyricsSearch
                 || request.method == AutomationMethod.storageValidate
@@ -1311,18 +1347,22 @@ final class AutomationIPCServer {
 
     private static let batchAllowedMethods: Set<String> = [
         AutomationMethod.metadataPatch,
+        AutomationMethod.enrichmentPatch,
         AutomationMethod.metadataApplyCandidate,
         AutomationMethod.artworkApply,
         AutomationMethod.artworkApplyCandidate,
+        AutomationMethod.motionArtworkApply,
+        AutomationMethod.motionArtworkClear,
         AutomationMethod.lyricsApply,
         AutomationMethod.lyricsClean
     ]
 
     private static func batchWriteScope(for method: String) -> AutomationScope? {
         switch method {
-        case AutomationMethod.metadataPatch, AutomationMethod.metadataApplyCandidate:
+        case AutomationMethod.metadataPatch, AutomationMethod.metadataApplyCandidate, AutomationMethod.enrichmentPatch:
             return .metadataWrite
-        case AutomationMethod.artworkApply, AutomationMethod.artworkApplyCandidate:
+        case AutomationMethod.artworkApply, AutomationMethod.artworkApplyCandidate,
+             AutomationMethod.motionArtworkApply, AutomationMethod.motionArtworkClear:
             return .artworkWrite
         case AutomationMethod.lyricsApply, AutomationMethod.lyricsClean:
             return .lyricsWrite

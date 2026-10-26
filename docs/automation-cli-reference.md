@@ -403,3 +403,46 @@ player-automation audio loudness analyze --params-json '{"trackIDs":["TRACK_UUID
 ```
 
 扫描返回 `loudnessAnalysis` Job，使用 `jobs get|wait|cancel|retry` 观察与控制；它不占用资料库写入队列。后台结果供后续播放，当前曲目增益不随扫描更新，唯一例外是专辑增益首次就绪时在当前曲目内缓慢过渡。等响补偿是预设的固定阶段，经 `dsp patch` 的 `setEqualLoudness` 操作配置（`enabled`、部分 `parameters`、`calibration` 为 `null` 时清除）；标定保存在预设的 `equalLoudness.calibration` 中，只在记录它的输出路线上生效；补偿量只跟随实际输出设备的系统音量，`dsp state` 的 `equalLoudness` 报告设备、音量、曲线来源（默认或标定）与预期增益，`deviceProfiles` 列出各输出路线及其预设。
+
+## 扩展资料与动态封面
+
+这些能力通过共享的 `automation call` 入口调用，也在 MCP 目录中开放：
+
+```sh
+player-automation automation call metadata.enrichment.get --params-json '{"trackID":"TRACK_UUID","includeRaw":true}'
+player-automation automation call metadata.enrichment.refresh --params-json '{"trackID":"TRACK_UUID","background":true}'
+player-automation automation call metadata.enrichment.patch --params-json '{"trackID":"TRACK_UUID","fields":{"composerName":"Composer"},"dryRun":true}'
+player-automation automation call artwork.motion.search --params-json '{"trackID":"TRACK_UUID","title":"Song","artist":"Artist","background":true}'
+player-automation automation call artwork.motion.applyCandidate --params-json '{"candidateID":"CANDIDATE_ID","expectedRevision":"REVISION","background":true}'
+player-automation automation call artwork.motion.get --params-json '{"trackID":"TRACK_UUID"}'
+player-automation automation call artwork.motion.import --params-json '{"trackID":"TRACK_UUID","filePath":"/absolute/path/video.mov","background":true}'
+player-automation automation call artwork.motion.clear --params-json '{"trackID":"TRACK_UUID","resumeAutomatic":false}'
+player-automation automation call metadata.completion.status
+player-automation automation call metadata.completion.control --params-json '{"action":"enqueue"}'
+player-automation automation call metadata.completion.control --params-json '{"action":"pause"}'
+```
+
+外部播放目标用 `externalKey`，取自 `playback.state.externalStableKey`；省略目标时使用当前播放。
+
+## 皮肤开发
+
+皮肤方法同样经 `automation call` 调用，并在 MCP 目录中开放。capabilities、check 与 runtime 需 `settings.read`，check 另需 `files.read`；reload 需 `settings.write`。
+
+```sh
+player-automation automation call skin.capabilities
+player-automation automation call skin.check --params-json '{"directory":"/absolute/author/directory"}'
+player-automation automation call skin.reload --params-json '{"skinID":"example.vinyl"}'
+player-automation automation call skin.runtime
+```
+
+`skin.capabilities` 返回 `formatVersion`、`hostAPIVersion`，以及已实现的 `capabilities`、`nodes`、`components`、`actions`、`fields` 与 `functions` 名称表，适合生成补全或比对 `requires`。
+
+`skin.check` 的 `directory` 必须是绝对路径，指向含 `manifest.json` 的作者目录。它完成与导入相同的解析和编译，但不安装、不选用、不启动预览，也不编译 Metal；成功时返回 `skinID` 与各场景（`window`、`fullscreen` 或 `default`）的 `nodeCount` 和 `domains`，失败时错误信息给出文件、JSON 路径和最接近的正确名称。
+
+`skin.reload` 的 `skinID` 必须是已安装或已关联目录的皮肤。重新编译成功后返回新的 `revision`，正在显示的场景随之更新；失败时保留上一版程序。
+
+`skin.runtime` 列出每个活动场景的 `id`、`nodes`、`frameEvaluations` 与 `audioReaders`。它只是运行计数，CPU、内存与帧时间仍需性能工具测量。
+
+离线结构检查不需要 App：`python3 scripts/check-skin-package.py <目录>`。场景写法见[原生皮肤开发](skin-authoring-native.md)。
+详细参数、来源与持久化语义见 [MCP 文档](automation-mcp.md#扩展资料动态封面与后台补齐)。
+自动动态封面复用专辑默认；手动选择、导入或清空只覆盖目标歌曲。

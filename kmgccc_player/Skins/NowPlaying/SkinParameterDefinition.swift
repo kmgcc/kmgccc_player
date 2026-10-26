@@ -10,9 +10,10 @@ struct SkinParameterDefinition: Identifiable, Codable {
         case toggle
         case range(min: Double, max: Double, step: Double)
         case choice([Choice])
+        case color
 
         private enum CodingKeys: String, CodingKey { case type, min, max, step, choices }
-        private enum Kind: String, Codable { case toggle, range, choice }
+        private enum Kind: String, Codable { case toggle, range, choice, color }
 
         init(from decoder: any Decoder) throws {
             let keys = try decoder.container(keyedBy: CodingKeys.self)
@@ -23,6 +24,7 @@ struct SkinParameterDefinition: Identifiable, Codable {
                               max: try keys.decode(Double.self, forKey: .max),
                               step: try keys.decodeIfPresent(Double.self, forKey: .step) ?? 1)
             case .choice: self = .choice(try keys.decode([Choice].self, forKey: .choices))
+            case .color: self = .color
             }
         }
 
@@ -38,6 +40,7 @@ struct SkinParameterDefinition: Identifiable, Codable {
             case .choice(let choices):
                 try keys.encode(Kind.choice, forKey: .type)
                 try keys.encode(choices, forKey: .choices)
+            case .color: try keys.encode(Kind.color, forKey: .type)
             }
         }
     }
@@ -48,8 +51,11 @@ struct SkinParameterDefinition: Identifiable, Codable {
     let control: Control
     var surfaces: Set<SkinSurface> = [.window, .fullscreen]
     var isUserVisible: Bool = false
+    var visibleWhen: String? = nil
+    /// Rows that share a section are grouped under its title in settings and the quick panel.
+    var section: String? = nil
 
-    private enum CodingKeys: String, CodingKey { case id, title, defaultValue, control, surfaces, isUserVisible }
+    private enum CodingKeys: String, CodingKey { case id, title, defaultValue, control, surfaces, isUserVisible, visibleWhen, section }
 }
 
 extension SkinParameterDefinition {
@@ -61,5 +67,7 @@ extension SkinParameterDefinition {
         control = try keys.decode(Control.self, forKey: .control)
         surfaces = try keys.decodeIfPresent(Set<SkinSurface>.self, forKey: .surfaces) ?? [.window, .fullscreen]
         isUserVisible = try keys.decodeIfPresent(Bool.self, forKey: .isUserVisible) ?? false
+        visibleWhen = try keys.decodeIfPresent(String.self, forKey: .visibleWhen)
+        section = try keys.decodeIfPresent(String.self, forKey: .section)
     }
 }

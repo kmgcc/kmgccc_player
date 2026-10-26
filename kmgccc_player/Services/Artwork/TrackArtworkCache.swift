@@ -15,16 +15,34 @@ struct TrackArtworkSource: Sendable, Equatable {
     let artworkFileName: String?
     let artworkFileURL: URL?
     let inlineArtworkData: Data?
+    let inlineArtworkChecksum: UInt64?
     let sourceKey: String
+    let artworkFileSnapshot: TrackArtworkFileSnapshot?
+
+    nonisolated func matches(
+        trackID: UUID,
+        artworkFileName: String?,
+        artworkFileSnapshot: TrackArtworkFileSnapshot?,
+        inlineArtworkData: Data?
+    ) -> Bool {
+        let normalizedInlineArtworkData = inlineArtworkData.flatMap { $0.isEmpty ? nil : $0 }
+        return self.trackID == trackID
+            && self.artworkFileName == artworkFileName
+            && self.artworkFileURL == artworkFileSnapshot?.url
+            && self.artworkFileSnapshot == artworkFileSnapshot
+            && self.inlineArtworkData == normalizedInlineArtworkData
+    }
 
     nonisolated var colorCacheIdentity: String {
         guard let artworkFileURL else { return sourceKey }
-        let values = try? artworkFileURL.resourceValues(
-            forKeys: [.fileSizeKey, .contentModificationDateKey]
+        let snapshot = artworkFileSnapshot
+        let values = snapshot == nil
+            ? try? artworkFileURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            : nil
+        let fileSize = snapshot?.fileSize ?? Int64(values?.fileSize ?? 0)
+        let modifiedNanos = snapshot?.modificationTimeNanoseconds ?? Int64(
+            (((values?.contentModificationDate?.timeIntervalSince1970) ?? 0) * 1_000_000_000).rounded()
         )
-        let fileSize = values?.fileSize ?? 0
-        let modified = values?.contentModificationDate?.timeIntervalSince1970 ?? 0
-        let modifiedNanos = Int64((modified * 1_000_000_000).rounded())
         return [
             ArtworkColorExtractor.cacheVersion,
             trackID.uuidString,
@@ -38,18 +56,31 @@ struct TrackArtworkSource: Sendable, Equatable {
         trackID: UUID,
         artworkFileName: String?,
         artworkFileURL: URL?,
-        inlineArtworkData: Data?
+        inlineArtworkData: Data?,
+        artworkFileSnapshot: TrackArtworkFileSnapshot? = nil
     ) {
         guard artworkFileURL != nil || inlineArtworkData?.isEmpty == false else { return nil }
         self.trackID = trackID
         self.artworkFileName = artworkFileName
         self.artworkFileURL = artworkFileURL
         self.inlineArtworkData = inlineArtworkData
+        let normalizedInlineArtworkData = inlineArtworkData.flatMap { $0.isEmpty ? nil : $0 }
+        let inlineArtworkChecksum = normalizedInlineArtworkData.map {
+            ArtworkAssetStore.checksum(for: $0)
+        }
+        self.inlineArtworkChecksum = inlineArtworkChecksum
+        if let artworkFileURL, let artworkFileSnapshot, artworkFileSnapshot.url == artworkFileURL {
+            self.artworkFileSnapshot = artworkFileSnapshot
+        } else {
+            self.artworkFileSnapshot = nil
+        }
         self.sourceKey = Self.makeSourceKey(
             trackID: trackID,
             artworkFileName: artworkFileName,
             artworkFileURL: artworkFileURL,
-            inlineArtworkData: inlineArtworkData
+            inlineArtworkData: inlineArtworkData,
+            artworkFileSnapshot: self.artworkFileSnapshot,
+            inlineArtworkChecksum: inlineArtworkChecksum
         )
     }
 
@@ -57,11 +88,13 @@ struct TrackArtworkSource: Sendable, Equatable {
         trackID: UUID,
         artworkFileName: String?,
         artworkFileURL: URL?,
-        inlineArtworkData: Data?
+        inlineArtworkData: Data?,
+        artworkFileSnapshot: TrackArtworkFileSnapshot?,
+        inlineArtworkChecksum: UInt64?
     ) -> String {
         let version = "track-artwork-v2"
         if let inlineArtworkData, !inlineArtworkData.isEmpty {
-            let checksum = ArtworkAssetStore.checksum(for: inlineArtworkData)
+            let checksum = inlineArtworkChecksum ?? ArtworkAssetStore.checksum(for: inlineArtworkData)
             return [
                 version,
                 ArtworkColorExtractor.cacheVersion,
@@ -71,13 +104,15 @@ struct TrackArtworkSource: Sendable, Equatable {
                 "\(checksum)",
             ].joined(separator: "|")
         }
-        if let artworkFileURL,
-           let values = try? artworkFileURL.resourceValues(
-                forKeys: [.fileSizeKey, .contentModificationDateKey]
-           ) {
-            let fileSize = values.fileSize ?? 0
-            let modified = values.contentModificationDate?.timeIntervalSince1970 ?? 0
-            let modifiedNanos = Int64((modified * 1_000_000_000).rounded())
+        if let artworkFileURL {
+            let matchingSnapshot = artworkFileSnapshot?.url == artworkFileURL ? artworkFileSnapshot : nil
+            let values = matchingSnapshot == nil
+                ? try? artworkFileURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                : nil
+            let fileSize = matchingSnapshot?.fileSize ?? Int64(values?.fileSize ?? 0)
+            let modifiedNanos = matchingSnapshot?.modificationTimeNanoseconds ?? Int64(
+                (((values?.contentModificationDate?.timeIntervalSince1970) ?? 0) * 1_000_000_000).rounded()
+            )
             let fileName = artworkFileName ?? artworkFileURL.lastPathComponent
             return [
                 version,
@@ -89,7 +124,7 @@ struct TrackArtworkSource: Sendable, Equatable {
             ].joined(separator: "|")
         }
 
-        let checksum = ArtworkAssetStore.checksum(for: inlineArtworkData)
+        let checksum = inlineArtworkChecksum ?? ArtworkAssetStore.checksum(for: inlineArtworkData)
         return [
             version,
             ArtworkColorExtractor.cacheVersion,
@@ -104,14 +139,23 @@ struct TrackArtworkSource: Sendable, Equatable {
 extension Track {
     @MainActor
     func trackArtworkSource(fallbackData: Data? = nil) -> TrackArtworkSource? {
-        let artworkFileURL = existingArtworkURL()
+        trackArtworkSource(fallbackData: fallbackData, fileSnapshot: existingArtworkFileSnapshot())
+    }
+
+    @MainActor
+    func trackArtworkSource(
+        fallbackData: Data?,
+        fileSnapshot artworkFileSnapshot: TrackArtworkFileSnapshot?
+    ) -> TrackArtworkSource? {
+        let artworkFileURL = artworkFileSnapshot?.url
         let inlineArtworkData = fallbackData.flatMap { $0.isEmpty ? nil : $0 }
             ?? (artworkFileURL == nil ? artworkData : nil)
         return TrackArtworkSource(
             trackID: id,
             artworkFileName: artworkFileName,
             artworkFileURL: artworkFileURL,
-            inlineArtworkData: inlineArtworkData
+            inlineArtworkData: inlineArtworkData,
+            artworkFileSnapshot: artworkFileSnapshot
         )
     }
 }
@@ -141,7 +185,9 @@ actor TrackArtworkCache {
         self.originalsRootURL = storage.trackArtworkOriginalsURL
         self.derivativesRootURL = storage.trackArtworkDerivativesURL
         imageCache.countLimit = 16
-        imageCache.totalCostLimit = 4 * 1024 * 1024
+        // One fullscreen cover can be ~17 MB at the 2048 px cap; keep that plus
+        // the smaller row/skin images without letting the cache grow unbounded.
+        imageCache.totalCostLimit = 24 * 1024 * 1024
         sourceDataCache.countLimit = 8
         sourceDataCache.totalCostLimit = 2 * 1024 * 1024
         try? FileManager.default.createDirectory(at: originalsRootURL, withIntermediateDirectories: true)

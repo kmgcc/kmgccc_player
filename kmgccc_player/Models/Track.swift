@@ -12,6 +12,12 @@ import Observation
 
 // TrackAvailability lives in its own value-type model for resolver reuse.
 
+nonisolated struct TrackArtworkFileSnapshot: Equatable, Sendable {
+    let url: URL
+    let fileSize: Int64
+    let modificationTimeNanoseconds: Int64
+}
+
 nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sendable {
     // MARK: - Identifiers
 
@@ -138,6 +144,15 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
     /// Lazily loaded from disk via `loadArtworkDataIfNeeded()`.
     var artworkData: Data?
 
+    /// nil identifies a legacy cover whose selection history is unknown.
+    /// Explicit network selections count as user choices, just like file imports.
+    var artworkIsUserSelected: Bool?
+
+    /// Import-session marker: the saved cover came from the file and is below
+    /// the preferred resolution, so a provider cover may replace it. Never
+    /// persisted; it only coordinates import enrichment.
+    var artworkNeedsUpgrade: Bool = false
+
     // MARK: - Persistence References (lightweight, for lazy loading)
 
     /// Snapshot of the library root URL at the time this track was created/scanned.
@@ -165,6 +180,7 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
         var audioProperties: TrackAudioProperties?
         var enrichmentSuggestions: [EnrichmentSuggestion]?
         var ncmConversionAssociation: NCMConversionAssociation?
+        var motionArtwork: TrackMotionArtwork?
 
         var isEmpty: Bool {
             embeddedMetadataSnapshot == nil &&
@@ -172,7 +188,8 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
             importProvenance == nil &&
             audioProperties == nil &&
             (enrichmentSuggestions?.isEmpty ?? true) &&
-            ncmConversionAssociation == nil
+            ncmConversionAssociation == nil &&
+            motionArtwork == nil
         }
     }
 
@@ -180,6 +197,17 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
 
     private func ensureAuxiliary() -> TrackAuxiliaryMetadata {
         auxiliary ?? TrackAuxiliaryMetadata()
+    }
+
+    /// Library-relative video assets survive ordinary metadata edits and reloads.
+    var motionArtwork: TrackMotionArtwork? {
+        get { auxiliary?.motionArtwork }
+        set {
+            if newValue == nil && auxiliary == nil { return }
+            var aux = ensureAuxiliary()
+            aux.motionArtwork = newValue
+            auxiliary = aux.isEmpty ? nil : aux
+        }
     }
 
     var userMetadataOverride: UserMetadataOverride? {
@@ -362,6 +390,8 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
         metadataFetchedAt: Date? = nil,
         metadataConfidence: Double? = nil,
         musicBrainzReleaseID: String? = nil,
+        motionArtwork: TrackMotionArtwork? = nil,
+        artworkIsUserSelected: Bool? = nil,
         embeddedMetadataSnapshot: EmbeddedMetadataSnapshot? = nil,
         albumGroupKey: String = "",
         duration: Double = 0,
@@ -410,6 +440,7 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
         self.lyricsTimeOffsetMs = lyricsTimeOffsetMs
         self.availability = availability
         self.artworkData = artworkData
+        self.artworkIsUserSelected = artworkIsUserSelected
         self.ttmlLyricText = ttmlLyricText
         self.lyricsText = lyricsText
         self.libraryRootSnapshot = libraryRootSnapshot
@@ -439,13 +470,15 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
             importProvenance != nil ||
             audioProperties != nil ||
             enrichmentSuggestions != nil ||
-            ncmConversionAssociation != nil {
+            ncmConversionAssociation != nil ||
+            motionArtwork != nil {
             self.auxiliary = TrackAuxiliaryMetadata(
                 embeddedMetadataSnapshot: embeddedMetadataSnapshot,
                 importProvenance: importProvenance,
                 audioProperties: audioProperties,
                 enrichmentSuggestions: enrichmentSuggestions,
-                ncmConversionAssociation: ncmConversionAssociation
+                ncmConversionAssociation: ncmConversionAssociation,
+                motionArtwork: motionArtwork
             )
         } else {
             self.auxiliary = nil
@@ -558,6 +591,16 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
         return LibraryPaths(rootURL: URL(fileURLWithPath: libraryRootSnapshot, isDirectory: true))
     }
 
+    var storedMotionArtworkResource: MotionArtworkResource? {
+        guard let paths = capturedLibraryPaths else { return nil }
+        return motionArtwork?.resource(kind: "square", libraryRootURL: paths.rootURL)
+    }
+
+    var tallStoredMotionArtworkResource: MotionArtworkResource? {
+        guard let paths = capturedLibraryPaths else { return nil }
+        return motionArtwork?.resource(kind: "tall", libraryRootURL: paths.rootURL)
+    }
+
     func resolvedAudioURL() -> URL? {
         guard let paths = capturedLibraryPaths else { return nil }
         guard !audioFileName.isEmpty else {
@@ -581,7 +624,7 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
         return paths.trackArtworkURL(for: id, fileName: artworkFileName)
     }
 
-    func existingArtworkURL() -> URL? {
+    func existingArtworkFileSnapshot() -> TrackArtworkFileSnapshot? {
         guard let url = resolvedArtworkURL() else { return nil }
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
               let fileType = attributes[.type] as? FileAttributeType,
@@ -590,7 +633,19 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
               fileSize.int64Value > 0,
               FileManager.default.isReadableFile(atPath: url.path)
         else { return nil }
-        return url
+        let modificationTime = attributes[.modificationDate] as? Date
+        let modificationTimeNanoseconds = Int64(
+            ((modificationTime?.timeIntervalSince1970 ?? 0) * 1_000_000_000).rounded()
+        )
+        return TrackArtworkFileSnapshot(
+            url: url,
+            fileSize: fileSize.int64Value,
+            modificationTimeNanoseconds: modificationTimeNanoseconds
+        )
+    }
+
+    func existingArtworkURL() -> URL? {
+        existingArtworkFileSnapshot()?.url
     }
 
     func resolvedLyricsURL() -> URL? {
@@ -752,6 +807,7 @@ enum TrackLyricsDraft {
 
     static func assign(editorText: String, to track: Track) {
         let draft = storage(from: editorText)
+        track.markMetadataFieldsAsManual(["lyrics"])
         track.ttmlLyricText = draft.ttmlText
         track.lyricsText = nil
         track.lyricsFileName = nil

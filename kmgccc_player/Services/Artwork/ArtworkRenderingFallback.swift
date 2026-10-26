@@ -37,6 +37,11 @@ enum ArtworkRenderingFallback {
         cache.totalCostLimit = 2 * 1024 * 1024
         return cache
     }()
+    private nonisolated(unsafe) static let checksumCache: NSCache<NSString, NSNumber> = {
+        let cache = NSCache<NSString, NSNumber>()
+        cache.countLimit = 4
+        return cache
+    }()
 
     nonisolated static var data: Data? {
         data(for: nil)
@@ -74,7 +79,16 @@ enum ArtworkRenderingFallback {
     }
 
     nonisolated static func checksum(for preferredTrackID: UUID?) -> UInt64 {
-        ArtworkAssetStore.checksum(for: data(for: preferredTrackID))
+        let trackID = resolvedTrackID(preferredTrackID)
+        let assetName = selectedEncryptedFallbackAssetName(for: trackID)
+        let key = "artwork-v2-\(assetName)-\(trackID.uuidString)" as NSString
+        if let cached = checksumCache.object(forKey: key) {
+            return cached.uint64Value
+        }
+
+        let checksum = ArtworkAssetStore.checksum(for: data(for: trackID))
+        checksumCache.setObject(NSNumber(value: checksum), forKey: key)
+        return checksum
     }
 
     nonisolated static func identity(for preferredTrackID: UUID?) -> String {

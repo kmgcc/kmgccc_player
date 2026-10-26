@@ -11,8 +11,9 @@ extension EnvironmentValues {
     @Entry var skinNativeControls: SkinNativeControlsContext?
 }
 
-/// The centre capsule is deliberately not registered separately. This component always
-/// includes both side capsules and measures fonts/controls at the actual drawing size.
+/// The centre capsule is deliberately not registered separately. The component measures
+/// fonts and controls at the actual drawing size. `width` is the whole row's length at 1×
+/// (the fullscreen host's length by default), and each part can be hidden.
 struct SkinMiniPlayerComponent: View {
     let snapshot: SkinSceneSnapshot
     let configuration: SkinComponentConfiguration
@@ -20,25 +21,52 @@ struct SkinMiniPlayerComponent: View {
     @Environment(\.skinSceneIsActive) private var isActive
     @State private var capsuleControls = FullscreenBottomControlsCoordinator()
 
+    private var sections: FullscreenMiniPlayerSections {
+        var result = FullscreenMiniPlayerSections()
+        if configuration.boolean("showsTrackInfo", fallback: true) { result.insert(.trackInfo) }
+        if configuration.boolean("showsTransport", fallback: true) { result.insert(.transport) }
+        if configuration.boolean("showsPlaybackMode", fallback: true) { result.insert(.playbackMode) }
+        if configuration.boolean("showsProgress", fallback: true) { result.insert(.progress) }
+        return result
+    }
+
     var body: some View {
         GeometryReader { proxy in
             if let native {
                 let metrics = FullscreenBottomControlsGeometry.Configuration()
-                let minimumWidth = FullscreenMiniPlayerLayoutMetrics(scale: 1).minimumExpandedContainerWidth
-                    + metrics.leadingExpandedWidth + metrics.volumeExpandedWidth + metrics.spacing * 2
-                let scale = max(0.1, min(configuration.number("scale", fallback: 1), proxy.size.width / minimumWidth,
+                let showsLeading = configuration.boolean("showsLeading", fallback: true)
+                let showsVolume = configuration.boolean("showsVolume", fallback: true)
+                let sections = self.sections
+                let sides = (showsLeading ? metrics.leadingExpandedWidth + metrics.spacing : 0)
+                    + (showsVolume ? metrics.volumeExpandedWidth + metrics.spacing : 0)
+                let pillWidth = FullscreenMiniPlayerLayoutMetrics(scale: 1).containerWidth(for: sections)
+                let hostWidth = FullscreenBottomControlsGeometry.make(isLeftActionsExpanded: false, isVolumeExpanded: false).fullGroupRect.width
+                let stretches = sections.contains(.progress)
+                // The widest the row gets: progress absorbs the side capsules' expansion,
+                // otherwise the row hugs its content and grows with the capsules.
+                let maximumLength = stretches ? max(pillWidth + sides, configuration.number("width", fallback: hostWidth)) : pillWidth + sides
+                let scale = max(0.1, min(configuration.number("scale", fallback: 1), proxy.size.width / maximumLength,
                                          proxy.size.height / metrics.buttonSize))
                 let leadingWidth = (capsuleControls.isLeftActionsExpanded ? metrics.leadingExpandedWidth : metrics.leadingCollapsedWidth) * scale
                 let volumeWidth = (capsuleControls.isVolumeExpanded ? metrics.volumeExpandedWidth : metrics.volumeCollapsedWidth) * scale
+                let rowWidth = stretches ? maximumLength * scale
+                    : pillWidth * scale + (showsLeading ? leadingWidth + metrics.spacing * scale : 0)
+                        + (showsVolume ? volumeWidth + metrics.spacing * scale : 0)
                 GlassEffectContainer(spacing: 0) {
                     MiniPlayerCapsuleRowLayout(
                         leadingWidth: leadingWidth, volumeWidth: volumeWidth,
-                        spacing: metrics.spacing * scale, height: metrics.buttonSize * scale
+                        spacing: metrics.spacing * scale, height: metrics.buttonSize * scale,
+                        showsLeading: showsLeading, showsVolume: showsVolume
                     ) {
-                        SkinLeadingCapsule(
-                            configuration: .init(values: ["scale": .number(scale)]),
-                            controls: capsuleControls, usesContainerWidth: true
-                        )
+                        if showsLeading {
+                            SkinLeadingCapsule(
+                                configuration: .init(values: ["scale": .number(scale),
+                                    "showsLyricsButton": .boolean(configuration.boolean("showsLyricsButton", fallback: true))]),
+                                controls: capsuleControls, usesContainerWidth: true
+                            )
+                        } else {
+                            Color.clear
+                        }
                         FullscreenMiniPlayerView(
                             scale: scale, isSpectrumActive: isActive,
                             glassStyle: native.presentation.glassStyle,
@@ -50,17 +78,31 @@ struct SkinMiniPlayerComponent: View {
                             onEditTrackRequested: native.actions.editTrackRequested,
                             onEditExternalInfoRequested: native.actions.editExternalInfoRequested,
                             onShowDetailRequested: native.actions.showDetailRequested,
-                            foregroundProfile: native.presentation.miniPlayerForegroundProfile
+                            foregroundProfile: native.presentation.miniPlayerForegroundProfile,
+                            sections: sections
                         )
-                        SkinVolumeCapsule(
-                            configuration: .init(values: ["scale": .number(scale)]),
-                            controls: capsuleControls, usesContainerWidth: true
-                        )
+                        if showsVolume {
+                            SkinVolumeCapsule(
+                                configuration: .init(values: ["scale": .number(scale)]),
+                                controls: capsuleControls, usesContainerWidth: true
+                            )
+                        } else {
+                            Color.clear
+                        }
                     }
                 }
-                .frame(width: proxy.size.width, height: proxy.size.height)
+                .frame(width: rowWidth, height: metrics.buttonSize * scale)
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: rowAlignment)
                 .environment(\.colorScheme, native.presentation.glassStyle.colorScheme)
             }
+        }
+    }
+
+    private var rowAlignment: Alignment {
+        switch configuration.text("align") {
+        case "leading": .leading
+        case "trailing": .trailing
+        default: .center
         }
     }
 }

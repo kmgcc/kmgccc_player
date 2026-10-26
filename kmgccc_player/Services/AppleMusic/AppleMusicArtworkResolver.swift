@@ -18,10 +18,13 @@ actor AppleMusicArtworkResolver {
 
         struct Album: Decodable {
             let id: Int
+            let name: String?
+            let artists: [Artist]?
+            struct Artist: Decodable { let name: String? }
             let picURL: String
 
             enum CodingKeys: String, CodingKey {
-                case id
+                case id, name, artists
                 case picURL = "picUrl"
             }
         }
@@ -80,14 +83,18 @@ actor AppleMusicArtworkResolver {
         let queries = makeQueries(title: title, artist: artist, album: album)
         for query in queries {
             guard !Task.isCancelled else { return nil }
-            if let data = await fetchFirstNetEaseCover(query: query) {
+            if let data = await fetchFirstNetEaseCover(query: query, expectedArtist: artist, expectedAlbum: album) {
                 return data
             }
         }
         return nil
     }
 
-    private func fetchFirstNetEaseCover(query: String) async -> Data? {
+    private func fetchFirstNetEaseCover(query: String, expectedArtist: String?, expectedAlbum: String?) async -> Data? {
+        let artistKey = ExternalPlaybackTextNormalizer.normalizedKey(expectedArtist ?? "")
+        let albumKey = ExternalPlaybackTextNormalizer.normalizedKey(expectedAlbum ?? "")
+        guard !artistKey.isEmpty, !albumKey.isEmpty else { return nil }
+        Log.info("[AMArtwork] provider=netease event=attempt artist=\(expectedArtist ?? "") album=\(expectedAlbum ?? "")", category: .playback)
         guard let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
               let searchURL = URL(
                 string: "https://music.163.com/api/search/get/web?type=10&s=\(encodedQuery)&limit=1"
@@ -100,6 +107,8 @@ actor AppleMusicArtworkResolver {
             guard Self.isSuccessfulHTTP(response) else { return nil }
             let decoded = try JSONDecoder().decode(NetEaseSearchResponse.self, from: searchData)
             guard let album = decoded.result?.albums?.first,
+                  ExternalPlaybackTextNormalizer.normalizedKey(album.name ?? "") == albumKey,
+                  album.artists?.contains(where: { ExternalPlaybackTextNormalizer.normalizedKey($0.name ?? "") == artistKey }) == true,
                   let coverURL = URL(string: Self.largeCoverURLString(from: album.picURL)) else {
                 return nil
             }
@@ -109,6 +118,7 @@ actor AppleMusicArtworkResolver {
                   Self.isValidImageData(imageData) else {
                 return nil
             }
+            Log.info("[AMArtwork] provider=netease event=result matchedAlbumID=\(album.id)", category: .playback)
             return imageData
         } catch {
             return nil

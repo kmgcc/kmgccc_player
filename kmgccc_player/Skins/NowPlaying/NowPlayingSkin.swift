@@ -33,6 +33,12 @@ extension NowPlayingSkin {
     var systemImage: String { descriptor.systemImage }
     var isFullscreenCompatible: Bool { descriptor.surfaces.contains(.fullscreen) }
     var isNowPlayingCompatible: Bool { descriptor.surfaces.contains(.window) }
+    var sceneComponents: Set<String> { (self as? PackagedSkin)?.sceneComponents ?? [] }
+    /// Lyrics settings groups this skin keeps for itself (`font`, `highlight`, `spring`).
+    var lyricsSkinOwnedSettings: Set<String> {
+        guard let allowed = (self as? PackagedSkin)?.lyricsUserSettings else { return [] }
+        return NativeLyricsConfigurationMapper.userSettingGroups.subtracting(allowed)
+    }
 
     func releaseCachedResources() async {}
 

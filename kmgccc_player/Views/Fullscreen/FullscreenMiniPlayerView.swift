@@ -57,6 +57,35 @@ nonisolated struct FullscreenMiniPlayerLayoutMetrics: Equatable, Sendable {
                 - playbackModeWidth
         )
     }
+
+    /// Fixed width of one section; progress is the flexible remainder and reports zero.
+    func fixedWidth(of section: FullscreenMiniPlayerSections, playbackModeWidth: CGFloat) -> CGFloat {
+        switch section {
+        case .trackInfo: trackInfoWidth
+        case .transport: controlsWidth
+        case .playbackMode: max(0, playbackModeWidth)
+        default: 0
+        }
+    }
+
+    /// The narrowest pill that still holds the given sections at their full size.
+    func containerWidth(for sections: FullscreenMiniPlayerSections) -> CGFloat {
+        let visible = FullscreenMiniPlayerSections.order.filter { sections.contains($0) }
+        let fixed = visible.reduce(0) { $0 + fixedWidth(of: $1, playbackModeWidth: maximumPlaybackModeWidth) }
+        let progress = sections.contains(.progress) ? minimumProgressAreaWidth : 0
+        return fixed + progress + sectionSpacing * CGFloat(max(0, visible.count - 1)) + horizontalPadding * 2
+    }
+}
+
+/// The pill's sections in reading order.
+nonisolated struct FullscreenMiniPlayerSections: OptionSet, Hashable, Sendable {
+    let rawValue: Int
+    static let trackInfo = Self(rawValue: 1 << 0)
+    static let transport = Self(rawValue: 1 << 1)
+    static let playbackMode = Self(rawValue: 1 << 2)
+    static let progress = Self(rawValue: 1 << 3)
+    static let all: Self = [.trackInfo, .transport, .playbackMode, .progress]
+    static let order: [Self] = [.trackInfo, .transport, .playbackMode, .progress]
 }
 
 /// Enlarged mini player bar for fullscreen mode.
@@ -80,7 +109,9 @@ struct FullscreenMiniPlayerView: View {
     var onEditExternalInfoRequested: () -> Void = {}
     var onShowDetailRequested: ((Track) -> Void)? = nil
     var foregroundProfile: FullscreenMiniPlayerForegroundProfile? = nil
-    
+    /// Scenes may drop sections; the host always shows all of them.
+    var sections: FullscreenMiniPlayerSections = .all
+
     private let fixedBarHeight: CGFloat = 60
 
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
@@ -138,6 +169,9 @@ struct FullscreenMiniPlayerView: View {
     }
 
     var body: some View {
+        let artworkPresentation = playbackCoordinator.stablePresentation
+        let artworkTaskKey = makeArtworkTaskKey(for: artworkPresentation)
+
         let _ = ContextMenuDiagnostics.markBodyUpdate(
             "contextMenu.miniPlayerBodyUpdate",
             detail: "surface=FullscreenMiniPlayerView, track=\(FirstUseHitchDiagnostics.trackIDPrefix(playbackCoordinator.stablePresentation.localTrack?.id)), isPlaying=\(playbackCoordinator.stablePresentation.isPlaying)"
@@ -158,9 +192,10 @@ struct FullscreenMiniPlayerView: View {
 #endif
         MiniPlayerContentLayout(
             metrics: layoutMetrics, playbackModeWidth: playbackModeOccupancyWidth,
-            height: barHeight - vPadding * 2
+            height: barHeight - vPadding * 2, sections: sections
         ) {
             // Left: Cover + Title/Artist
+            if sections.contains(.trackInfo) {
             FullscreenMiniPlayerLeftSection(
                 hasTrack: playbackCoordinator.stablePresentation.hasTrack,
                 isArtworkLoading: playbackCoordinator.stablePresentation.isArtworkLoading,
@@ -196,21 +231,28 @@ struct FullscreenMiniPlayerView: View {
             .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
             .frame(width: trackInfoWidth, alignment: .leading)
             .contentShape(Rectangle())
+            }
 
             // Center: Playback Controls
-            controlsView
-                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
-                .frame(width: controlsWidth)
+            if sections.contains(.transport) {
+                controlsView
+                    .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
+                    .frame(width: controlsWidth)
+            }
 
             // Playback Mode
-            playbackModeView
+            if sections.contains(.playbackMode) {
+                playbackModeView
+            }
 
             // The layout proposes the current remaining width, not the final
             // width of an independently animated outer frame.
-            FullscreenMiniPlayerLivePresentationReader { presentation in
-                progressArea(presentation: presentation)
+            if sections.contains(.progress) {
+                FullscreenMiniPlayerLivePresentationReader { presentation in
+                    progressArea(presentation: presentation)
+                }
+                    .frame(height: barHeight - vPadding * 2, alignment: .center)
             }
-                .frame(height: barHeight - vPadding * 2, alignment: .center)
 
             // Volume removed - now external component
         }
@@ -239,7 +281,7 @@ struct FullscreenMiniPlayerView: View {
                 await libraryVM.deleteTracks(tracks)
             }
         }
-        .task(id: currentArtworkTaskKey) {
+        .task(id: artworkTaskKey) {
             await loadArtworkThumbnail()
         }
     }
@@ -395,21 +437,10 @@ struct FullscreenMiniPlayerView: View {
         max(0, presentation.lyricsCurrentTime + (seekTime - presentation.currentTime))
     }
 
-    private var currentArtworkTaskKey: String {
-        let presentation = playbackCoordinator.stablePresentation
-        if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
-            return "local-\(source.sourceKey)-thumb"
-        }
-        let identity = presentation.artworkIdentity
-            ?? presentation.lyricsIdentity
-            ?? presentation.localTrack?.id.uuidString
-            ?? "none"
-        return "\(identity)-\(ArtworkDataFingerprint.sampledString(for: presentation.artworkData))"
-    }
-    
     private func loadArtworkThumbnail() async {
         let presentation = playbackCoordinator.stablePresentation
-        if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
+        let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData)
+        if let source {
             let image = await cacheServices.trackArtworkCache.thumbnail(for: source)
             guard !Task.isCancelled else { return }
             if let image {
@@ -443,6 +474,23 @@ struct FullscreenMiniPlayerView: View {
         } else if !presentation.isArtworkLoading {
             artworkImage = nil
         }
+    }
+
+    private func makeArtworkTaskKey(
+        for presentation: NowPlayingPresentation
+    ) -> String {
+        if let sourceKey = presentation.localArtworkSourceKey {
+            return "local-\(sourceKey)-thumb"
+        }
+        if presentation.source != .local,
+           let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
+            return "local-\(source.sourceKey)-thumb"
+        }
+        let identity = presentation.artworkIdentity
+            ?? presentation.lyricsIdentity
+            ?? presentation.localTrack?.id.uuidString
+            ?? "none"
+        return "\(identity)-\(ArtworkDataFingerprint.sampledString(for: presentation.artworkData))"
     }
 
     private func progressDisplayTime(for presentation: NowPlayingPresentation) -> Double {

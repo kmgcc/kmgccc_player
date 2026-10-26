@@ -21,9 +21,8 @@ struct MetadataCandidateStripView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("选择元数据候选 (QQ音乐)")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+            Text("候选匹配")
+                .settingsRowLabelStyle()
                 .padding(.horizontal, 4)
 
             HorizontalFadeScrollContainer(

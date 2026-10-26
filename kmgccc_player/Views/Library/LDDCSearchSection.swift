@@ -40,6 +40,7 @@ struct LDDCSearchSection: View {
     let autoSearchOnAppear: Bool
     let onApplyLyrics: (String) -> Void
     
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(LibraryCacheServices.self) private var cacheServices
 
@@ -53,8 +54,8 @@ struct LDDCSearchSection: View {
     @State private var includeTranslation: Bool
     
     // LDDC platforms (separate from AMLLDB)
-    @State private var selectedLDDCSources: Set<LDDCSource> = [.QM, .KG, .NE]
-    // AMLLDB is always enabled
+    @State private var selectedLDDCSources: Set<LDDCSource> = [.QM, .KG, .NE, .LRCLIB]
+    // AMLLDB selection is independent from the LDDC platforms
     @State private var enableAMLLDB = true
     
     @State private var searchRequestID = 0
@@ -97,13 +98,21 @@ struct LDDCSearchSection: View {
     // Shared instance: this struct is re-initialized on every parent body
     // evaluation, so a per-instance LDDCClient would create a URLSession each time.
     private let client = LDDCClient.shared
-    private let panelMaxWidth: CGFloat = 380
-    private let visibleLDDCSources: [LDDCSource] = [.QM, .KG, .NE]
+    private let visibleLDDCSources: [LDDCSource] = [.QM, .KG, .NE, .LRCLIB]
 
     // Phase 4.5: ordinary-text foregrounds tinted from the active palette.
     private var appFgPrimary: Color { themeStore.appForegroundPalette.primaryColor }
     private var appFgSecondary: Color { themeStore.appForegroundPalette.secondaryColor }
     private var appFgTertiary: Color { themeStore.appForegroundPalette.tertiaryColor }
+
+    private var hasSelectedSource: Bool { enableAMLLDB || !selectedLDDCSources.isEmpty }
+
+    private var visibleSearchResults: [LDDCCandidate] {
+        searchResults.filter { candidate in
+            guard let source = candidate.sourceEnum else { return false }
+            return source == .AMLLDB ? enableAMLLDB : selectedLDDCSources.contains(source)
+        }
+    }
 
     private var searchTrigger: SearchTrigger {
         SearchTrigger(
@@ -160,13 +169,16 @@ struct LDDCSearchSection: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // Header
-            sectionHeader
-            
-            // Search Form
-            searchFormSection
-            
+        VStack(alignment: .leading, spacing: SettingsStyleTokens.sectionSpacing) {
+            SettingsSection("歌词搜索", headerTrailing: {
+                if isSearching || isFetchingPreview || isApplying || isUpdatingAMLLDBIndex {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }) {
+                searchFormSection
+            }
+
             // AMLLDB Index Status
             if let status = amlldbIndexStatus {
                 amlldbStatusBanner(status: status)
@@ -261,253 +273,150 @@ struct LDDCSearchSection: View {
     private func amlldbStatusBanner(status: String) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "info.circle")
-                .foregroundStyle(.blue)
+                .foregroundStyle(themeStore.accentColor)
             Text(status)
-                .font(.caption)
+                .font(.system(size: SettingsStyleTokens.descriptionFontSize))
             if isUpdatingAMLLDBIndex {
                 ProgressView()
-                    .scaleEffect(0.6)
+                    .controlSize(.small)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color.blue.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .appPopupContentBackground(tint: themeStore.accentColor)
     }
-    
-    // MARK: - Section Header
-    
-    private var sectionHeader: some View {
-        HStack {
-            Label(
-                "歌词搜索", systemImage: "magnifyingglass"
-            )
-            .font(.headline)
-            
-            Spacer()
-            
-            // Server status indicator
-            if isSearching || isFetchingPreview || isApplying || isUpdatingAMLLDBIndex {
-                ProgressView()
-                    .scaleEffect(0.7)
-            }
-        }
-    }
-    
+
     // MARK: - Search Form
-    
+
     private var searchFormSection: some View {
-        VStack(spacing: 12) {
-            // Title & Artist
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("歌曲名")
-                        .font(.caption)
-                        .foregroundStyle(appFgSecondary)
-                    TextField(
-                        "歌曲名", text: $searchTitle
-                    )
-                    .textFieldStyle(.roundedBorder)
-                }
+        VStack(alignment: .leading, spacing: TrackInfoEditorLayout.rowSpacing) {
+            TrackInfoFieldRow("歌曲名", prompt: "歌曲名", text: $searchTitle)
+            TrackInfoFieldRow("艺人", prompt: "艺人", text: $searchArtist)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("艺人")
-                        .font(.caption)
-                        .foregroundStyle(appFgSecondary)
-                    TextField(
-                        "艺人", text: $searchArtist
-                    )
-                    .textFieldStyle(.roundedBorder)
-                }
-            }
-
-            HStack(spacing: 12) {
-                HStack(spacing: 4) {
-                    Text("模式")
-                        .font(.subheadline)
-                        .foregroundStyle(appFgSecondary)
-
-                    SlidingSelector(
-                        segments: LDDCMode.allCases,
-                        selection: $selectedMode,
-                        hSpacing: 0,
-                        background: {
-                            Color.clear
-                        },
-                        knob: {
-                            Capsule()
-                                .fill(themeStore.accentColor.opacity(0.18))
-                        },
-                        content: { mode, isSelected in
-                            Text(mode.displayName)
-                                .font(.system(size: 11, weight: isSelected ? .medium : .regular))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
-                        }
-                    )
-                    .padding(3)
-                    .background(
-                        Capsule()
-                            .fill(Color.secondary.opacity(0.08))
-                    )
-                    .fixedSize(horizontal: true, vertical: false)
-                }
-
-                HStack(spacing: 4) {
-                    Text("翻译")
-                        .font(.subheadline)
-                        .foregroundStyle(appFgSecondary)
-
-                    SlidingSelector(
-                        segments: [true, false],
-                        selection: $includeTranslation,
-                        hSpacing: 0,
-                        background: {
-                            Color.clear
-                        },
-                        knob: {
-                            Capsule()
-                                .fill(themeStore.accentColor.opacity(0.18))
-                        },
-                        content: { enabled, isSelected in
-                            Text(enabled ? "开" : "关")
-                                .font(.system(size: 11, weight: isSelected ? .medium : .regular))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
-                        }
-                    )
-                    .padding(3)
-                    .background(
-                        Capsule()
-                            .fill(Color.secondary.opacity(0.08))
-                    )
-                    .fixedSize(horizontal: true, vertical: false)
-                }
-
-                Spacer()
-            }
-            
-            // Platform Selection
             HStack(spacing: 12) {
                 Text("平台")
-                    .font(.subheadline)
-                    .foregroundStyle(appFgSecondary)
+                    .settingsRowLabelStyle()
+                    .frame(width: TrackInfoEditorLayout.fieldLabelWidth, alignment: .leading)
 
-                // AMLLDB Toggle (separate from LDDC)
-                Toggle(
-                    "AMLL DB",
-                    isOn: $enableAMLLDB
-                )
-                .toggleStyle(.button)
-                .buttonStyle(.bordered)
-                .tint(enableAMLLDB ? .blue : .secondary)
-                .clipShape(Capsule())
-
-                // LDDC Platforms
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    sourceChip(.AMLLDB, isSelected: enableAMLLDB) {
+                        enableAMLLDB.toggle()
+                    }
                     ForEach(visibleLDDCSources) { source in
-                        let isSelected = selectedLDDCSources.contains(source)
-                        Toggle(
-                            source.displayName,
-                            isOn: Binding(
-                                get: { isSelected },
-                                set: { isOn in
-                                    if isOn {
-                                        selectedLDDCSources.insert(source)
-                                    } else if selectedLDDCSources.count > 1 {
-                                        selectedLDDCSources.remove(source)
-                                    }
-                                }
-                            )
-                        )
-                        .toggleStyle(.button)
-                        .buttonStyle(.bordered)
-                        .tint(isSelected ? platformColor(source) : Color.secondary)
-                        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-                        .clipShape(Capsule())
+                        sourceChip(source, isSelected: selectedLDDCSources.contains(source)) {
+                            if selectedLDDCSources.contains(source) {
+                                selectedLDDCSources.remove(source)
+                            } else {
+                                selectedLDDCSources.insert(source)
+                            }
+                        }
                     }
                 }
-                
-                Spacer()
-                
-                // Search Button
+                .fixedSize()
+            }
+
+            Divider()
+
+            optionPair {
+                CapsulePicker(
+                    label: "模式",
+                    options: LDDCMode.allCases,
+                    selection: $selectedMode,
+                    displayName: { $0.displayName }
+                )
+            } trailing: {
+                SettingsSwitchRow(title: "包含翻译", isOn: $includeTranslation)
+            }
+            optionPair {
+                SettingsSwitchRow(
+                    title: "去除多余信息",
+                    isOn: $stripExtraInfo,
+                    info: "转换时去掉作词、作曲、制作人员等信息行。"
+                )
+            } trailing: {
+                SettingsSwitchRow(
+                    title: "修复时间问题",
+                    isOn: $fixTimingProblems,
+                    info: "测试功能。转换时修正可能存在的时间错误。"
+                )
+            }
+
+            Divider()
+
+            HStack(spacing: 10) {
                 Button {
                     forceRetryUnreliableSourcesForNextSearch = true
                     searchRequestID &+= 1
                 } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "magnifyingglass")
-                        Text("搜索")
-                    }
+                    Label("搜索", systemImage: "magnifyingglass")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(AppPanelButtonStyle())
+                .font(.system(size: SettingsStyleTokens.rowFontSize, weight: .medium))
                 .disabled(
                     searchTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         || isSearching
+                        || !hasSelectedSource
                 )
-                .clipShape(Capsule())
+
+                if !hasSelectedSource {
+                    Text("请选择平台")
+                        .settingsDescriptionStyle()
+                }
             }
         }
-        .disabled(isSearching)
     }
-    
-    // MARK: - Results Section
-    
-    private var resultsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Results Summary - simple count only
-            HStack {
-                Text("搜索结果：\(searchResults.count)")
-                    .font(.subheadline)
-                    .foregroundStyle(appFgSecondary)
-                Spacer()
-            }
 
+    // MARK: - Results Section
+
+    private var resultsSection: some View {
+        SettingsSection("搜索结果", headerTrailing: { resultCountLabel }) {
             ScrollView {
                 LazyVStack(spacing: 4) {
                     // Unified results list (no separate sections)
-                    ForEach(searchResults) { candidate in
+                    ForEach(visibleSearchResults) { candidate in
                         candidateRow(candidate)
                     }
                 }
+                .padding(4)
             }
             .frame(maxHeight: 340)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .appPopupContentBackground()
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            // The free trailing strip keeps scrolling with the page.
+            .trackInfoInnerScrollArea()
         }
-        // Keep this panel narrower and left-aligned so the right side stays free for
-        // scrolling the outer sheet (avoids "mouse trapped inside inner scroll view").
-        .frame(maxWidth: panelMaxWidth, alignment: .leading)
     }
-    
+
+    private var resultCountLabel: some View {
+        Text("\(visibleSearchResults.count) 条")
+            .settingsDescriptionStyle()
+    }
+
     private var splitPanelSection: some View {
-        HSplitView {
-            splitResultsSection
-                .frame(minWidth: 170, idealWidth: 240, maxWidth: 320)
-                .clipped()
-            splitPreviewSection
-                .frame(minWidth: 300, idealWidth: 520, maxWidth: .infinity)
-                .clipped()
+        SettingsSection("搜索结果", headerTrailing: { resultCountLabel }) {
+            HSplitView {
+                splitResultsSection
+                    .frame(minWidth: 170, idealWidth: 240, maxWidth: 320)
+                    .clipped()
+                splitPreviewSection
+                    .padding(.leading, 12)
+                    .frame(minWidth: 300, idealWidth: 520, maxWidth: .infinity)
+                    .clipped()
+            }
+            .frame(minHeight: 640)
+            .clipped()
+            .trackInfoInnerScrollArea()
         }
-        .frame(minHeight: 640)
-        .frame(maxWidth: .infinity)
-        .clipped()
     }
-    
+
     private var splitResultsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("搜索结果：\(searchResults.count)")
-                .font(.subheadline)
-                .foregroundStyle(appFgSecondary)
-
             Group {
-                if !searchResults.isEmpty {
+                if !visibleSearchResults.isEmpty {
                     List {
                         // Unified results list; keep already completed sources
                         // visible while slower providers are still running.
-                        ForEach(searchResults) { candidate in
+                        ForEach(visibleSearchResults) { candidate in
                             candidateRow(candidate)
                         }
                     }
@@ -527,46 +436,33 @@ struct LDDCSearchSection: View {
         VStack(spacing: 12) {
             Spacer()
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 32))
+                .font(.system(size: 28))
                 .foregroundStyle(appFgTertiary)
-            Text("未找到歌词")
-                .foregroundStyle(appFgSecondary)
+            Text(hasSelectedSource ? "未找到歌词" : "请选择平台")
+                .settingsDescriptionStyle()
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.3))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .appPopupContentBackground()
     }
-    
+
     private var splitPreviewSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                if let candidate = selectedCandidate {
-                    Text("预览：\(candidate.title) - \(candidate.artist ?? "未知")")
-                        .font(.subheadline)
-                        .foregroundStyle(appFgSecondary)
-                        .lineLimit(1)
-                } else {
-                    Text("预览")
-                        .font(.subheadline)
-                        .foregroundStyle(appFgSecondary)
-                }
-
-                Spacer()
-
-                // Auto-apply success indicator
-                if autoApplySuccess {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                        Text("已应用")
-                            .font(.caption)
-                            .foregroundStyle(.green)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Group {
+                    if let candidate = selectedCandidate {
+                        Text("\(candidate.title) - \(candidate.artist ?? "未知")")
+                    } else {
+                        Text("预览")
                     }
                 }
-            }
+                .settingsRowLabelStyle()
+                .lineLimit(1)
 
-            previewActionBar
+                Spacer(minLength: 8)
+
+                previewActionBar
+            }
 
             Group {
                 if isFetchingPreview {
@@ -578,7 +474,7 @@ struct LDDCSearchSection: View {
                 } else if selectedCandidate == nil {
                     emptyPreviewPlaceholder
                 } else {
-                    previewEditor
+                    previewEditor(reservesScrollGutter: false)
                 }
             }
         }
@@ -589,193 +485,169 @@ struct LDDCSearchSection: View {
         VStack(spacing: 12) {
             Spacer()
             Image(systemName: "doc.text")
-                .font(.system(size: 32))
+                .font(.system(size: 28))
                 .foregroundStyle(appFgTertiary)
             Text("选择歌词查看预览")
-                .foregroundStyle(appFgSecondary)
+                .settingsDescriptionStyle()
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.3))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .appPopupContentBackground()
     }
-    
-    private var previewSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("歌词预览")
-                    .font(.subheadline)
-                    .foregroundStyle(appFgSecondary)
 
-                Spacer()
-
-                // Auto-apply success indicator
-                if autoApplySuccess {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                        Text("已应用")
-                            .font(.caption)
-                            .foregroundStyle(.green)
-                    }
-                }
-            }
-
-            previewActionBar
-
-            previewEditor
+    /// Two short settings on one line, split like the paired rows in General settings.
+    private func optionPair<Leading: View, Trailing: View>(
+        @ViewBuilder _ leading: () -> Leading,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            leading()
+                .frame(maxWidth: .infinity)
+            Divider()
+                .frame(height: 18)
+                .padding(.top, 2)
+            trailing()
+                .frame(maxWidth: .infinity)
         }
     }
 
+    private var previewSection: some View {
+        SettingsSection("歌词预览", headerTrailing: { previewActionBar }) {
+            previewEditor()
+        }
+    }
+
+    /// Lyrics apply on selection; the button applies edits made in the preview.
     private var previewActionBar: some View {
-        HStack(spacing: 12) {
-            Toggle("去除多余信息", isOn: $stripExtraInfo)
-                .toggleStyle(.switch)
-                .font(.caption)
-
-            Toggle("修复可能存在的时间问题（beta）", isOn: $fixTimingProblems)
-                .toggleStyle(.switch)
-                .font(.caption)
-
-            Spacer()
+        HStack(spacing: 10) {
+            if autoApplySuccess {
+                Label("已应用", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: SettingsStyleTokens.descriptionFontSize, weight: .medium))
+                    .foregroundStyle(.green)
+            }
 
             Button {
                 manualApplyRequestID = UUID()
             } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "checkmark.circle")
-                    Text("应用")
-                }
+                Label("应用", systemImage: "checkmark.circle")
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(AppPanelButtonStyle())
+            .font(.system(size: SettingsStyleTokens.rowFontSize, weight: .medium))
             .disabled(isApplying || editableOrig.isEmpty)
-            .clipShape(Capsule())
         }
     }
-    
-    private var previewEditor: some View {
-        VStack(spacing: 8) {
-            // Original lyrics editor
-            VStack(alignment: .leading, spacing: 4) {
-                Text("原文")
-                    .font(.caption)
-                    .foregroundStyle(appFgSecondary)
 
-                TextEditor(text: $editableOrig)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(height: 120)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                    .padding(.trailing, 18)
+    /// The split layout already keeps its own trailing gutter.
+    private func previewEditor(reservesScrollGutter: Bool = true) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("原文")
+                    .settingsRowLabelStyle()
+                TrackInfoTextEditorBox(
+                    prompt: nil,
+                    text: $editableOrig,
+                    height: 240,
+                    monospaced: true,
+                    reservesScrollGutter: reservesScrollGutter
+                )
             }
 
-            // Translation editor (if available)
             if !editableTrans.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text("翻译")
-                        .font(.caption)
-                        .foregroundStyle(appFgSecondary)
-                    
-                    TextEditor(text: $editableTrans)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(height: 80)
-                        .background(Color(nsColor: .textBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                        .padding(.trailing, 18)
+                        .settingsRowLabelStyle()
+                    TrackInfoTextEditorBox(
+                        prompt: nil,
+                        text: $editableTrans,
+                        height: 140,
+                        monospaced: true,
+                        reservesScrollGutter: reservesScrollGutter
+                    )
                 }
             }
         }
     }
-    
+
     private func candidateRow(_ candidate: LDDCCandidate) -> some View {
         Button {
             pendingCandidate = candidate
             selectionRequestID &+= 1
         } label: {
             let displayScore = candidate.normalizedScore()
+            let sourceColor = platformColor(candidate.sourceEnum ?? .LRCLIB)
 
             HStack(spacing: 8) {
                 // Fixed-width badge area for consistent text alignment
                 Text(candidate.sourceEnum?.displayName ?? candidate.source)
-                    .font(.caption2)
-                    .fontWeight(.semibold)
+                    .font(.system(size: 10, weight: .semibold))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(platformColor(candidate.sourceEnum ?? .LRCLIB).opacity(0.2))
-                    .foregroundStyle(platformColor(candidate.sourceEnum ?? .LRCLIB))
-                    .clipShape(Capsule())
+                    .background(sourceColor.opacity(colorScheme == .dark ? 0.24 : 0.16), in: Capsule())
+                    .foregroundStyle(sourceColor)
                     .frame(width: 64, alignment: .leading)
 
                 // Text content - always starts at same horizontal position
                 VStack(alignment: .leading, spacing: 2) {
                     Text(candidate.title)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
+                        .font(.system(size: SettingsStyleTokens.rowFontSize, weight: .medium))
                         .foregroundStyle(appFgPrimary)
                         .lineLimit(1)
 
-                    HStack(spacing: 4) {
-                        Text(candidate.artist ?? "未知")
-                            .font(.caption)
-                            .foregroundStyle(appFgSecondary)
-                            .lineLimit(1)
-
-                        if let album = candidate.album, !album.isEmpty {
-                            Text("-")
-                                .font(.caption)
-                                .foregroundStyle(appFgSecondary)
-                            Text(album)
-                                .font(.caption)
-                                .foregroundStyle(appFgSecondary)
-                                .lineLimit(1)
-                        }
-                    }
+                    Text(candidateSubtitle(candidate))
+                        .font(.system(size: SettingsStyleTokens.descriptionFontSize))
+                        .foregroundStyle(appFgSecondary)
+                        .lineLimit(1)
                 }
 
-                Spacer()
+                Spacer(minLength: 4)
 
                 // Score badge - properly normalized 0-100%
                 Text(String(format: "%.0f%%", displayScore))
-                    .font(.caption2)
+                    .font(.system(size: 11))
+                    .monospacedDigit()
                     .foregroundStyle(appFgTertiary)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .background(
                 selectedCandidate?.id == candidate.id
-                ? Color.accentColor.opacity(0.15)
-                : Color.clear
+                    ? themeStore.selectionFill
+                    : Color.clear,
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle()) // Make whole row clickable
         }
         .buttonStyle(.plain)
     }
-    
+
+    private func candidateSubtitle(_ candidate: LDDCCandidate) -> String {
+        let artist = candidate.artist ?? "未知"
+        guard let album = candidate.album, !album.isEmpty else { return artist }
+        return "\(artist) - \(album)"
+    }
+
     private func errorBanner(message: String) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             Text(message)
-                .font(.caption)
+                .font(.system(size: SettingsStyleTokens.descriptionFontSize))
             Spacer()
         }
-        .padding(8)
-        .background(Color.orange.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .padding(10)
+        .appPopupContentBackground(tint: .orange)
     }
 
     private func noticeBanner(message: String) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "info.circle.fill")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(appFgSecondary)
             Text(message)
-                .font(.caption)
+                .font(.system(size: SettingsStyleTokens.descriptionFontSize))
             Spacer()
         }
-        .padding(8)
-        .background(Color.secondary.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .padding(10)
+        .appPopupContentBackground()
     }
     
     // MARK: - Actions
@@ -811,7 +683,7 @@ struct LDDCSearchSection: View {
     }
 
     private func performSearch(forceRetryUnreliableSources: Bool = false) async -> Bool {
-        guard !searchTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard hasSelectedSource, !searchTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             isSearching = false
             return true
         }
@@ -1112,14 +984,35 @@ struct LDDCSearchSection: View {
         return (error as? URLError)?.code == .cancelled
     }
     
-    private func platformColor(_ source: LDDCSource) -> Color {
-        switch source {
-        case .QM: return .green
-        case .KG: return .orange
-        case .NE: return .red
-        case .LRCLIB: return .blue
-        case .AMLLDB: return .blue
+    /// Off chips stay neutral gray; a selected chip lights up in its source color.
+    private func sourceChip(
+        _ source: LDDCSource,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        let color = platformColor(source)
+        return Button(action: action) {
+            Text(source.displayName)
+                .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                .foregroundStyle(isSelected ? color : appFgTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .frame(minHeight: 24)
+                .background(
+                    isSelected
+                        ? color.opacity(colorScheme == .dark ? 0.24 : 0.16)
+                        : appFgSecondary.opacity(0.08),
+                    in: Capsule()
+                )
+                .contentShape(Capsule())
         }
+        .buttonStyle(.plain)
+        .accessibilityValue(Text(isSelected ? "已选择" : "未选择"))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func platformColor(_ source: LDDCSource) -> Color {
+        themeStore.semanticPalette.lyricsSourceColor(source, colorScheme: colorScheme)
     }
 }
 

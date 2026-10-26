@@ -3,6 +3,7 @@
 //  myPlayer2
 //
 
+import MotionKit
 import SwiftUI
 
 struct AudioVisualizationSelectorRow: View {
@@ -21,6 +22,19 @@ struct AudioVisualizationSelectorRow: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
+            selectorRow
+
+            // LED rows belong to the LED choice and appear only with it.
+            if selection == .led {
+                LEDMeterSettingsView()
+                    .transition(.opacity)
+            }
+        }
+        .motionAnimation(.microInteraction, value: selection == .led)
+    }
+
+    private var selectorRow: some View {
         HStack(spacing: presentationStyle.compactInlineSpacing) {
             Text(title)
                 .font(presentationStyle.rowLabelFont)

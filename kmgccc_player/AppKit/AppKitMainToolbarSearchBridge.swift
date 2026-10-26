@@ -56,7 +56,7 @@ final class AppKitMainToolbarSearchBridge: NSObject, NSSearchFieldDelegate {
         generation: Int
     ) -> NSToolbarItem {
         let item = NSToolbarItem(itemIdentifier: AppKitMainToolbarController.Identifier.search)
-        item.label = NSLocalizedString("library.search", comment: "Search")
+        item.label = "搜索歌曲"
         item.paletteLabel = item.label
         item.toolTip = item.label
 

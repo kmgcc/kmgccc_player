@@ -12,38 +12,22 @@ import ImageIO
 import UniformTypeIdentifiers
 
 nonisolated enum ArtworkDataNormalizer {
-    // Storage keeps enough detail for a large Retina cover. Playback/list
-    // derivatives retain their own smaller decode budgets.
+    // Legacy call-site budgets, retained until import callers migrate. Source
+    // artwork is never resized or re-encoded; only derivatives have budgets.
     static let importMaxPixelSize = 2_560
     static let storedMaxPixelSize = 2_560
+    /// Imported files below this resolution are treated as an unusable local
+    /// cover; import asks providers for a replacement instead of keeping it.
+    static let preferredArtworkPixelSize = 800
 
     static func normalizedJPEGData(
         from data: Data,
         maxPixelSize: Int = storedMaxPixelSize,
         compressionQuality: CGFloat = 0.86
     ) -> Data? {
-        guard !data.isEmpty else { return nil }
-
-        return autoreleasepool {
-            guard
-                let source = CGImageSourceCreateWithData(
-                    data as CFData,
-                    [kCGImageSourceShouldCache: false] as CFDictionary
-                )
-            else {
-                return nil
-            }
-
-            // Import and persistence can both normalize the same cover. Keep
-            // already-sized JPEG bytes to avoid successive lossy encodes.
-            if canKeepJPEG(source, maxPixelSize: maxPixelSize) { return data }
-
-            return normalizedJPEGData(
-                from: source,
-                maxPixelSize: maxPixelSize,
-                compressionQuality: compressionQuality
-            )
-        }
+        // Compatibility entry point: maxPixelSize and compressionQuality no
+        // longer apply to authoritative artwork, regardless of input format.
+        originalData(from: data)
     }
 
     static func normalizedJPEGData(
@@ -51,26 +35,26 @@ nonisolated enum ArtworkDataNormalizer {
         maxPixelSize: Int = storedMaxPixelSize,
         compressionQuality: CGFloat = 0.86
     ) -> Data? {
-        autoreleasepool {
-            guard
-                let source = CGImageSourceCreateWithURL(
-                    fileURL as CFURL,
-                    [kCGImageSourceShouldCache: false] as CFDictionary
-                )
-            else {
-                return nil
-            }
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        return originalData(from: data)
+    }
 
-            if canKeepJPEG(source, maxPixelSize: maxPixelSize) {
-                return try? Data(contentsOf: fileURL)
-            }
+    /// Authoritative artwork always retains the downloaded/imported bytes.
+    static func originalData(from data: Data) -> Data? {
+        guard fileExtension(for: data) != nil else { return nil }
+        return data
+    }
 
-            return normalizedJPEGData(
-                from: source,
-                maxPixelSize: maxPixelSize,
-                compressionQuality: compressionQuality
-            )
-        }
+    static func fileExtension(for data: Data) -> String? {
+        guard !data.isEmpty,
+              let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              CGImageSourceGetCount(source) > 0,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber, width.intValue > 0,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber, height.intValue > 0,
+              let type = CGImageSourceGetType(source),
+              let ext = UTType(type as String)?.preferredFilenameExtension else { return nil }
+        return ext == "jpeg" ? "jpg" : ext
     }
 
     static func isDecodableImage(_ data: Data) -> Bool {
@@ -83,52 +67,48 @@ nonisolated enum ArtworkDataNormalizer {
         }
     }
 
-    private static func canKeepJPEG(_ source: CGImageSource, maxPixelSize: Int) -> Bool {
-        guard let type = CGImageSourceGetType(source), type as String == UTType.jpeg.identifier,
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
-              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber else { return false }
-        let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
-        return orientation == 1 && width.intValue > 0 && height.intValue > 0
-            && max(width.intValue, height.intValue) <= max(1, maxPixelSize)
+    /// Longest edge of the encoded image, read from the header without decoding it.
+    static func maxPixelSize(of data: Data) -> Int? {
+        pixelDimensions(of: data).map { max($0.width, $0.height) }
     }
 
-    private static func normalizedJPEGData(
-        from source: CGImageSource,
-        maxPixelSize: Int,
-        compressionQuality: CGFloat
-    ) -> Data? {
-        let thumbnailOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixelSize),
-        ]
+    /// The square area available without upscaling or distorting the cover.
+    static func minPixelSize(of data: Data) -> Int? {
+        pixelDimensions(of: data).map { min($0.width, $0.height) }
+    }
 
-        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(
-            source,
-            0,
-            thumbnailOptions as CFDictionary
-        ) else {
-            return nil
+    private static func pixelDimensions(of data: Data) -> (width: Int, height: Int)? {
+        guard !data.isEmpty else { return nil }
+        return autoreleasepool {
+            guard
+                let source = CGImageSourceCreateWithData(
+                    data as CFData,
+                    [kCGImageSourceShouldCache: false] as CFDictionary
+                ),
+                let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+                let height = properties[kCGImagePropertyPixelHeight] as? NSNumber
+            else { return nil }
+            return (width.intValue, height.intValue)
         }
+    }
 
-        let output = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            output,
-            UTType.jpeg.identifier as CFString,
-            1,
-            nil
-        ) else {
-            return nil
+    /// True when the image is decodable and its shorter edge is below the
+    /// preferred import resolution.
+    static func isBelowPreferredResolution(_ data: Data) -> Bool {
+        guard let pixelSize = minPixelSize(of: data) else { return false }
+        return pixelSize < preferredArtworkPixelSize
+    }
+
+    /// Whether a provider cover should replace the current one. A missing
+    /// current cover always qualifies; otherwise the candidate must carry more
+    /// pixels so a low-resolution online result cannot downgrade a local cover.
+    static func isHigherResolution(_ candidate: Data, than current: Data?) -> Bool {
+        guard let candidatePixelSize = minPixelSize(of: candidate) else { return false }
+        guard let current, let currentPixelSize = minPixelSize(of: current) else {
+            return true
         }
-
-        let destinationOptions: [CFString: Any] = [
-            kCGImageDestinationLossyCompressionQuality: min(max(compressionQuality, 0), 1)
-        ]
-        CGImageDestinationAddImage(destination, cgImage, destinationOptions as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return output as Data
+        return candidatePixelSize > currentPixelSize
     }
 
     /// Compresses artwork derivatives: 85% quality JPEG for opaque artwork, PNG for images with alpha.

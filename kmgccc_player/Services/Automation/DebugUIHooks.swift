@@ -172,9 +172,14 @@ enum DebugUIHooks {
             + "lyrics=\(AppKitMainSplitWindowController.isLyricsVisible()) "
             + "track=\(appSession.playerVM?.currentTrack?.title ?? "nil")"
         if action == "state" {
+            let windows = NSApp.windows.filter(\.isVisible).map {
+                "\(Int($0.contentView?.bounds.width ?? 0))x\(Int($0.contentView?.bounds.height ?? 0))"
+                    + ":visible=\($0.occlusionState.contains(.visible))"
+            }
             let playlists = appSession.libraryVM?.sortedPlaylistsForDisplay().prefix(3).map(\.name) ?? []
             line += " | playlists=\(playlists) fullscreenSkins=\(SkinRegistry.fullscreenOptions.map(\.id))"
                 + " windowSkins=\(SkinRegistry.nowPlayingOptions.map(\.id))"
+                + " motionEnabled=\(AppSettings.shared.motionArtworkEnabled) windows=\(windows)"
         }
         logger.notice("\(line, privacy: .public)")
     }

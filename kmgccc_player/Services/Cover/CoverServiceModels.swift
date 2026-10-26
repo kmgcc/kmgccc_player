@@ -17,6 +17,8 @@ nonisolated enum CoverLookupConfiguration {
     static let netEaseCandidateLimit = 5
     static let qqMusicCandidateLimit = 5
     static let automaticCoverConfidenceThreshold = 0.74
+    static let automaticTargetPixelSize = 1_200
+    static let appleMusicTimeout: TimeInterval = 8
 }
 
 nonisolated enum CoverDownloadError: Error {
@@ -36,12 +38,14 @@ nonisolated enum NetEaseCoverError: Error {
 }
 
 nonisolated enum CoverSource: Sendable {
+    case appleMusic
     case sacad
     case netease
     case qqmusic
 
     var shortLabel: String {
         switch self {
+        case .appleMusic: return "AM"
         case .sacad: return "SC"
         case .netease: return "NE"
         case .qqmusic: return "QQ"
@@ -50,11 +54,12 @@ nonisolated enum CoverSource: Sendable {
 
     var defaultConfidence: Double {
         switch self {
-        case .netease: return 0.78
-        case .sacad: return 0.74
-        case .qqmusic: return 0.70
+        case .appleMusic: return 0.96
+        case .netease, .sacad, .qqmusic: return 0.78
         }
     }
+
+    var priority: Int { self == .appleMusic ? 0 : 1 }
 }
 
 nonisolated enum CoverLookupTimeoutError: LocalizedError {
@@ -174,8 +179,13 @@ nonisolated struct CoverCandidate: Identifiable, Equatable, Hashable, Sendable {
     }
 
     var rankingScore: Double {
-        let resolutionScore = min(Double(resolution), 2_000) / 2_000
-        return confidence * 0.82 + resolutionScore * 0.18
+        confidence
+    }
+
+    /// Both edges matter: a 1600×400 banner is not a 1200px cover.
+    var squarePixelSize: Int { min(width, height) }
+    var meetsAutomaticTarget: Bool {
+        squarePixelSize >= CoverLookupConfiguration.automaticTargetPixelSize
     }
 
     private static func computeDimensions(from data: Data) -> (Int, Int) {

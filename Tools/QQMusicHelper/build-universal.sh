@@ -54,6 +54,7 @@ install_and_build_arch() {
     --collect-all pydantic \
     --collect-all httpx \
     --collect-all httpcore \
+    --collect-all jsonpath_ng \
     --hidden-import qqmusic_api.core.client \
     --hidden-import qqmusic_api.modules.search \
     --hidden-import qqmusic_api.models.search \

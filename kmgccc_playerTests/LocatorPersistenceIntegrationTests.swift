@@ -1,4 +1,7 @@
 import Foundation
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 @testable import kmgccc_player
 import XCTest
 
@@ -54,6 +57,118 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
         XCTAssertEqual(persistedLocator.primaryContentDigest, digest)
         XCTAssertEqual(persistedLocator.locations[0].contentDigest, digest)
         XCTAssertTrue(fixture.track.contentDigestPresent)
+    }
+
+    func testMotionArtworkSurvivesMetadataEditsDiskManifestAndRepositoryReload() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let expected = makeMotionArtwork(track: fixture.track)
+        fixture.track.motionArtwork = expected
+        XCTAssertTrue(fixture.service.writeMetaOnly(for: fixture.track, reason: "seedMotionArtwork"))
+        fixture.track.title = "Edited title"
+        XCTAssertTrue(fixture.service.writeMetaOnly(for: fixture.track, reason: "editTitleKeepMotionArtwork"))
+
+        let decoded = try fixture.decoder.decode(
+            kmgccc_player.TrackSidecar.self,
+            from: Data(contentsOf: fixture.paths.trackMetaURL(for: fixture.track.id))
+        )
+        XCTAssertEqual(decoded.motionArtwork, expected)
+        let scanner = kmgccc_player.LibraryDiskScanner(paths: fixture.paths)
+        XCTAssertEqual(scanner.scanIncremental().trackMetas.first?.motionArtwork, expected)
+        // The second pass restores CachedScannedTrackMeta from the manifest.
+        XCTAssertEqual(scanner.scanIncremental().trackMetas.first?.motionArtwork, expected)
+
+        let repository = kmgccc_player.SwiftDataLibraryRepository(
+            libraryService: fixture.service,
+            preferenceStatsService: fixture.preferenceStatsService
+        )
+        await repository.reloadFromLibrary()
+        let restored = await repository.fetchTracks(ids: [fixture.track.id])
+        XCTAssertEqual(restored.first?.motionArtwork, expected)
+    }
+
+    func testBackgroundSnapshotPersistsMotionAndResolvesFromCapturedLibraryRoot() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let expected = makeMotionArtwork(track: fixture.track)
+        fixture.track.motionArtwork = expected
+        let relativePath = try XCTUnwrap(expected.assets.first?.relativePath)
+        let fileURL = fixture.root.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data([0]).write(to: fileURL)
+
+        fixture.service.writeMetaOnlyInBackground(for: fixture.track, reason: "persistDownloadedMotion")
+        await fixture.service.quiesceAndWaitForBackgroundWrites()
+
+        let decoded = try fixture.decoder.decode(
+            kmgccc_player.TrackSidecar.self,
+            from: Data(contentsOf: fixture.paths.trackMetaURL(for: fixture.track.id))
+        )
+        XCTAssertEqual(decoded.motionArtwork, expected)
+        XCTAssertEqual(fixture.track.storedMotionArtworkResource?.url, fileURL)
+        XCTAssertEqual(fixture.track.storedMotionArtworkResource?.startTime, 10)
+        XCTAssertNil(fixture.track.tallStoredMotionArtworkResource)
+        fixture.track.libraryRootSnapshot = fixture.root.appendingPathComponent("OtherLibrary").path
+        XCTAssertNil(fixture.track.storedMotionArtworkResource)
+    }
+
+    func testSchemaNineWithoutMotionArtworkRemainsReadable() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        XCTAssertTrue(fixture.service.writeMetaOnly(for: fixture.track, reason: "legacyNoMotion"))
+        let data = try Data(contentsOf: fixture.paths.trackMetaURL(for: fixture.track.id))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertNil(json["motionArtwork"])
+        let decoded = try fixture.decoder.decode(kmgccc_player.TrackSidecar.self, from: data)
+        XCTAssertEqual(decoded.schemaVersion, 9)
+        XCTAssertNil(decoded.motionArtwork)
+        XCTAssertNil(decoded.artworkIsUserSelected)
+    }
+
+    func testArtworkChoiceSurvivesWritersManifestAndRepositoryReload() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.track.artworkIsUserSelected = true
+        XCTAssertTrue(fixture.service.writeMetaOnly(for: fixture.track, reason: "manualArtworkChoice"))
+        fixture.service.writeMetaOnlyInBackground(for: fixture.track, reason: "keepManualArtworkChoice")
+        await fixture.service.quiesceAndWaitForBackgroundWrites()
+        let decoded = try fixture.decoder.decode(kmgccc_player.TrackSidecar.self,
+            from: Data(contentsOf: fixture.paths.trackMetaURL(for: fixture.track.id)))
+        XCTAssertEqual(decoded.artworkIsUserSelected, true)
+        let scanner = kmgccc_player.LibraryDiskScanner(paths: fixture.paths)
+        XCTAssertEqual(scanner.scanIncremental().trackMetas.first?.artworkIsUserSelected, true)
+        XCTAssertEqual(scanner.scanIncremental().trackMetas.first?.artworkIsUserSelected, true)
+        let repository = kmgccc_player.SwiftDataLibraryRepository(libraryService: fixture.service,
+            preferenceStatsService: fixture.preferenceStatsService)
+        await repository.reloadFromLibrary()
+        let restored = await repository.fetchTracks(ids: [fixture.track.id])
+        XCTAssertEqual(restored.first?.artworkIsUserSelected, true)
+    }
+
+    func testPNGOriginalSurvivesBothArtworkWritersWithoutRewriting() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let context = try XCTUnwrap(CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let image = try XCTUnwrap(context.makeImage())
+        let encoded = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(encoded, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let original = encoded as Data
+        fixture.track.artworkData = original
+        fixture.track.artworkIsUserSelected = true
+        XCTAssertTrue(fixture.service.writeTrackMetaAndArtwork(for: fixture.track, reason: "originalPNG"))
+        let url = fixture.paths.trackFolderURL(for: fixture.track.id).appendingPathComponent("artwork.png")
+        XCTAssertEqual(try Data(contentsOf: url), original)
+        let inode = try FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber] as? NSNumber
+        let snapshot = kmgccc_player.TrackPersistenceSnapshot(track: fixture.track, preferenceStats: kmgccc_player.TrackPreferenceStats())
+        let result = kmgccc_player.LocalLibraryService.persistTrackSnapshotOnBackground(snapshot, paths: fixture.paths,
+            mode: .metaAndArtwork, reason: "sameOriginalPNG")
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(result.references?.artworkFileName, "artwork.png")
+        XCTAssertEqual(try Data(contentsOf: url), original)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber] as? NSNumber, inode)
     }
 
     func testRefreshedLocatorPersistsRuntimeAndSidecarTogether() async throws {
@@ -187,6 +302,23 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
         XCTAssertTrue(sidecar.legacyUserDefaultsMigrationCompleted)
         XCTAssertNil(sidecar.allSongs)
         XCTAssertTrue(FileManager.default.fileExists(atPath: sidecarURL.path))
+    }
+
+    private func makeMotionArtwork(track: kmgccc_player.Track) -> kmgccc_player.TrackMotionArtwork {
+        let query = kmgccc_player.MusicEnrichmentQuery(
+            key: "local:\(track.id.uuidString)", title: track.title, artist: track.artist,
+            album: track.album, duration: track.duration
+        )
+        var record = kmgccc_player.MusicEnrichmentRecord(query: query)
+        record.assets = [kmgccc_player.StoredMotionArtwork(
+            kind: "square", relativePath: "Tracks/\(track.id.uuidString)/motion-square.mp4",
+            sourceURL: "https://mvod.itunes.apple.com/fixture.m3u8", startTime: 10,
+            duration: 20, width: 768, height: 768
+        )]
+        record.manualMotionSelection = kmgccc_player.MusicEnrichmentResult(source: "appleWeb", albumID: "456")
+        return kmgccc_player.TrackMotionArtwork(snapshot: kmgccc_player.MusicEnrichmentSnapshot(
+            record: record, squareArtwork: nil, tallArtwork: nil
+        ))
     }
 
     private func makeFixture() throws -> (

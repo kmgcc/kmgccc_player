@@ -26,9 +26,12 @@ struct SettingsView: View {
 
     // MARK: - Navigation State
 
-    @State private var selection: SettingsCategory = .appearance
+    @State private var selection: SettingsCategory = .general
     @State private var columnVisibility = NavigationSplitViewVisibility.all
     @State private var subpagePath: [SettingsSubpage] = []
+    /// Applied only after the sheet closes: switching the app appearance while
+    /// SwiftUI is still drawing this sheet leaves it in a mixed state.
+    @State private var pendingAppearanceMode: AppSettings.AppearanceMode?
 
     private var currentSubpage: SettingsSubpage? { subpagePath.last }
 
@@ -136,6 +139,15 @@ struct SettingsView: View {
         .onAppear {
             settings.fullscreen.normalizeConfiguration()
         }
+        .onDisappear {
+            guard let mode = pendingAppearanceMode else { return }
+            pendingAppearanceMode = nil
+            let settings = settings
+            Task { @MainActor in
+                guard settings.appearanceMode != mode else { return }
+                settings.appearanceMode = mode
+            }
+        }
     }
 
     // MARK: - Detail View
@@ -152,8 +164,10 @@ struct SettingsView: View {
         return ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 switch selection {
+                case .general:
+                    GeneralSettingsView()
                 case .appearance:
-                    AppearanceSettingsView()
+                    AppearanceSettingsView(pendingAppearanceMode: $pendingAppearanceMode)
                 case .nowPlaying:
                     NowPlayingSettingsContainerView()
                 case .fullscreen:
@@ -163,6 +177,12 @@ struct SettingsView: View {
                 case .externalPlayback:
                     if hasActiveLibrarySession {
                         ExternalPlaybackSettingsView()
+                    } else {
+                        unavailableLibrarySettings
+                    }
+                case .library:
+                    if hasActiveLibrarySession {
+                        LibrarySettingsView()
                     } else {
                         unavailableLibrarySettings
                     }
@@ -259,6 +279,43 @@ struct SettingsView: View {
     }
 }
 
+/// Presents the existing About content as a standalone app window.
+@MainActor
+struct AboutWindowRoot: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    private var appColors: SettingsAppForegroundColors {
+        let palette = themeStore.appForegroundPalette
+        return SettingsAppForegroundColors(
+            primary: palette.primaryColor,
+            secondary: palette.secondaryColor,
+            tertiary: palette.tertiaryColor,
+            quaternary: palette.quaternaryColor,
+            disabled: palette.disabledColor
+        )
+    }
+
+    var body: some View {
+        ScrollView {
+            AboutSettingsView()
+                .padding(.horizontal, 32)
+                .padding(.vertical, 40)
+                .frame(maxWidth: 800, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .groupBoxStyle(SettingsWindowGroupBoxStyle())
+        .scrollContentBackground(.hidden)
+        .background(ThemedBaseBackgroundColorView())
+        .environment(\.fullscreenSettingsPresentationStyle, .settingsWindow)
+        .environment(\.settingsAppForegroundColors, appColors)
+        .foregroundStyle(appColors.primary)
+        .tint(themeStore.accentColor)
+        .accentColor(themeStore.accentColor)
+        .preferredColorScheme(AppSettings.shared.colorScheme)
+        .motionEnvironment()
+    }
+}
+
 // MARK: - Settings Subpage Navigation
 
 enum SettingsSubpage: Hashable, Sendable {
@@ -280,7 +337,8 @@ extension EnvironmentValues {
 
 /// Ensures every GroupBox in the settings detail pane fills the available column width.
 /// Fullscreen/NowPlaying containers override this with their own glass or material style.
-private struct SettingsWindowGroupBoxStyle: GroupBoxStyle {
+/// Popups that edit settings-like forms (track info editor) reuse it for their section cards.
+struct SettingsWindowGroupBoxStyle: GroupBoxStyle {
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
     @Environment(\.colorScheme) private var colorScheme
 

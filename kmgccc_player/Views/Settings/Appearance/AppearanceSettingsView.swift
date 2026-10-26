@@ -11,6 +11,9 @@ import UniformTypeIdentifiers
 
 /// Appearance settings: global tint, system appearance, lyrics background mode.
 struct AppearanceSettingsView: View {
+    /// Owned by SettingsView, which applies it after the sheet closes.
+    @Binding var pendingAppearanceMode: AppSettings.AppearanceMode?
+
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -21,8 +24,7 @@ struct AppearanceSettingsView: View {
 
     @State private var artworkTintMode: AppSettings.ArtworkTintMode = AppSettings.shared.artworkTintMode
     @State private var audioVisualizationHDREnabled: Bool = AppSettings.shared.audioVisualizationHDREnabled
-    @State private var dockProgressVisible: Bool = AppSettings.shared.dockProgressVisible
-    @State private var followSystemAppearance: Bool = AppSettings.shared.followSystemAppearance
+    @State private var motionArtworkEnabled: Bool = AppSettings.shared.motionArtworkEnabled
     @State private var lyricsBackgroundMode: AppSettings.LyricsBackgroundMode = AppSettings.shared.lyricsBackgroundMode
     @State private var homeCardMaterialMode: AppSettings.HomeCardMaterialMode = AppSettings.shared.homeCardMaterialMode
     @State private var homeSectionOrder: [HomeSection] = AppSettings.shared.homeSectionOrder
@@ -95,13 +97,23 @@ struct AppearanceSettingsView: View {
                     }
 
                     SettingsSwitchRow(
-                        title: "托盘播放进度",
-                        isOn: $dockProgressVisible
+                        title: "动态封面",
+                        isOn: $motionArtworkEnabled,
+                        info: "关闭后显示静态封面，已保存的动态封面保留。"
                     )
 
-                    SettingsSwitchRow(
-                        title: "深色/浅色跟随系统",
-                        isOn: $followSystemAppearance
+                    CapsulePicker(
+                        label: "主题明暗",
+                        options: [AppSettings.AppearanceMode.dark, .light, .system],
+                        selection: appearanceModeBinding,
+                        displayName: { mode in
+                            switch mode {
+                            case .dark: return "深色"
+                            case .light: return "浅色"
+                            case .system: return "跟随系统"
+                            }
+                        },
+                        info: "关闭设置面板后生效。"
                     )
 
                     Divider()
@@ -112,6 +124,8 @@ struct AppearanceSettingsView: View {
                 }
             }
 
+            SidebarSetBarSettingsSection()
+
             SettingsSection("主页板块顺序") {
                 homeSectionOrderEditor
             }
@@ -119,8 +133,7 @@ struct AppearanceSettingsView: View {
         .onAppear {
             artworkTintMode = settings.artworkTintMode
             audioVisualizationHDREnabled = settings.audioVisualizationHDREnabled
-            dockProgressVisible = settings.dockProgressVisible
-            followSystemAppearance = settings.followSystemAppearance
+            motionArtworkEnabled = settings.motionArtworkEnabled
             lyricsBackgroundMode = settings.lyricsBackgroundMode
             homeCardMaterialMode = settings.homeCardMaterialMode
             homeSectionOrder = settings.homeSectionOrder
@@ -134,11 +147,8 @@ struct AppearanceSettingsView: View {
         .onChange(of: audioVisualizationHDREnabled) { _, newValue in
             settings.audioVisualizationHDREnabled = newValue
         }
-        .onChange(of: dockProgressVisible) { _, newValue in
-            settings.dockProgressVisible = newValue
-        }
-        .onChange(of: followSystemAppearance) { _, newValue in
-            settings.followSystemAppearance = newValue
+        .onChange(of: motionArtworkEnabled) { _, newValue in
+            settings.motionArtworkEnabled = newValue
         }
         .onChange(of: lyricsBackgroundMode) { _, newValue in
             settings.lyricsBackgroundMode = newValue
@@ -150,6 +160,15 @@ struct AppearanceSettingsView: View {
             guard newValue != homeSectionOrder else { return }
             homeSectionOrder = newValue
         }
+    }
+
+    private var appearanceModeBinding: Binding<AppSettings.AppearanceMode> {
+        Binding(
+            get: { pendingAppearanceMode ?? settings.appearanceMode },
+            set: { mode in
+                pendingAppearanceMode = mode == settings.appearanceMode ? nil : mode
+            }
+        )
     }
 
     private var artworkTintModePicker: some View {
@@ -238,7 +257,11 @@ struct AppearanceSettingsView: View {
             Spacer()
 
             SlidingSelector(
-                segments: AppSettings.HomeCardMaterialMode.allCases,
+                segments: [
+                    .solid,
+                    .liquidGlass,
+                    .frostedGlass
+                ],
                 selection: $homeCardMaterialMode,
                 hSpacing: 0,
                 background: {

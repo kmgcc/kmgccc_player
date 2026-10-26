@@ -13,6 +13,7 @@ final class LibraryCacheServices {
 
     nonisolated let storageLocations: LibraryStorageLocations
     let trackArtworkCache: TrackArtworkCache
+    nonisolated let motionArtworkFirstFrameCache = MotionArtworkFirstFrameCache()
     let headerColorExtractor: HeaderColorExtractor
     /// Shared provider services used by both the interactive cover editor and
     /// App-owned automation artwork search.
@@ -24,6 +25,7 @@ final class LibraryCacheServices {
     let amllDBService: AMLLDBService
     let lyricsSearchCoordinator: LyricsSearchCoordinator
     let externalPlaybackMetadataStore: ExternalPlaybackMetadataStore
+    let musicEnrichmentService: MusicEnrichmentService
     let artworkDerivativeStore: ArtworkDerivativeCacheStore
     let playlistArtworkPipeline: PlaylistArtworkPipeline
 
@@ -37,6 +39,8 @@ final class LibraryCacheServices {
     private(set) var missingPlaylistArtworkSource: MissingPlaylistArtworkWorkSource?
     @ObservationIgnored
     private(set) var pageThumbnailSource: PageThumbnailWorkSource?
+    private(set) var metadataCompletionSource: MusicEnrichmentWorkSource?
+    private(set) var artworkRenovationSource: ArtworkRenovationWorkSource?
 
     init(paths: LibraryPaths) {
         let storage = StorageLocations.scoped(to: paths)
@@ -53,12 +57,17 @@ final class LibraryCacheServices {
         self.amllDBService = AMLLDBService(cache: amllDBRawIndexCache)
         self.lyricsSearchCoordinator = LyricsSearchCoordinator(amlldbService: amllDBService)
         self.externalPlaybackMetadataStore = ExternalPlaybackMetadataStore(storage: storage)
+        self.musicEnrichmentService = MusicEnrichmentService(
+            store: MusicEnrichmentStore(rootURL: paths.musicEnrichmentRootURL)
+        )
         self.artworkDerivativeStore = ArtworkDerivativeCacheStore(diskRootURL: storage.playlistArtworkDerivativesURL)
         self.playlistArtworkPipeline = PlaylistArtworkPipeline(derivativeStore: artworkDerivativeStore)
     }
 
     func close() async {
-        detachBackgroundSources()
+        await detachBackgroundSources()
+        motionArtworkFirstFrameCache.clearMemory()
+        await musicEnrichmentService.close()
         amllDBService.close()
         amllDBRawIndexCache.close()
         await trackArtworkCache.clearMemory()
@@ -174,7 +183,38 @@ final class LibraryCacheServices {
         scheduler.register(source)
     }
 
-    func detachBackgroundSources() {
+    func attachMetadataCompletionSource(
+        scheduler: BackgroundWorkScheduler, owner: BackgroundWorkOwner, libraryID: UUID,
+        tracks: @escaping @MainActor () -> [Track], revision: @escaping @MainActor () -> Int,
+        score: @escaping @MainActor (UUID) -> Double
+    ) {
+        if let existing = metadataCompletionSource {
+            existing.close()
+            scheduler.unregister(sourceID: existing.sourceID)
+        }
+        let source = MusicEnrichmentWorkSource(
+            libraryID: libraryID, owner: owner, rootURL: musicEnrichmentService.store.rootURL,
+            service: musicEnrichmentService, tracks: tracks, revision: revision, score: score,
+            wake: { [weak scheduler] in scheduler?.noteWorkAvailable() }
+        )
+        metadataCompletionSource = source
+        backgroundScheduler = scheduler
+        scheduler.register(source)
+    }
+
+    func detachBackgroundSources() async {
+        if let source = artworkRenovationSource {
+            source.close()
+            backgroundScheduler?.unregister(sourceID: source.sourceID)
+            await source.flush()
+        }
+        artworkRenovationSource = nil
+        if let source = metadataCompletionSource {
+            source.close()
+            backgroundScheduler?.unregister(sourceID: source.sourceID)
+            await source.flush()
+        }
+        metadataCompletionSource = nil
         if let source = artworkColorSource {
             backgroundScheduler?.unregister(sourceID: source.sourceID)
         }
@@ -187,5 +227,36 @@ final class LibraryCacheServices {
             backgroundScheduler?.unregister(sourceID: source.sourceID)
         }
         missingPlaylistArtworkSource = nil
+    }
+
+    func attachArtworkRenovationSource(
+        scheduler: BackgroundWorkScheduler, owner: BackgroundWorkOwner, libraryID: UUID,
+        libraryVM: LibraryViewModel
+    ) {
+        if let existing = artworkRenovationSource {
+            existing.close()
+            scheduler.unregister(sourceID: existing.sourceID)
+        }
+        let qqMusic = qqMusicCoverService
+        let source = ArtworkRenovationWorkSource(
+            libraryID: libraryID, owner: owner,
+            ledgerURL: musicEnrichmentService.store.rootURL.appendingPathComponent("artwork-renovation-v1.json"),
+            tracks: { [weak libraryVM] in libraryVM?.allTracks ?? [] },
+            lookup: { query in
+                try await AutomaticCoverLookup.search(title: query.title, artist: query.artist, album: query.album,
+                                                       duration: query.duration, qqMusic: qqMusic)
+            },
+            apply: { [weak self, weak libraryVM] id, data, file, memory in
+                guard let libraryVM else { throw CancellationError() }
+                return try await libraryVM.applyRenovatedArtwork(trackID: id, data: data, expectedFile: file, expectedMemory: memory) { [weak self] in
+                    guard let source = self?.artworkRenovationSource else { return false }
+                    return !source.isClosed && !source.isPaused && !source.isDeclined
+                }
+            },
+            wake: { [weak scheduler] in scheduler?.noteWorkAvailable() }
+        )
+        artworkRenovationSource = source
+        backgroundScheduler = scheduler
+        scheduler.register(source)
     }
 }

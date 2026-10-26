@@ -7,7 +7,7 @@
 
 import SwiftUI
 
-/// Container view for Now Playing settings with "常规" and "歌词" tabs.
+/// Container view for Now Playing settings with "皮肤" and "歌词" tabs.
 struct NowPlayingSettingsContainerView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(PlayerViewModel.self) private var playerVM
@@ -15,7 +15,7 @@ struct NowPlayingSettingsContainerView: View {
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     @State private var selectedTab = 0
-    private let tabs = ["常规", "歌词", "LED"]
+    private let tabs = ["皮肤", "歌词"]
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.containerSpacing) {
@@ -25,12 +25,8 @@ struct NowPlayingSettingsContainerView: View {
                 .environmentObject(themeStore)
 
             switch selectedTab {
-            case 0:
-                NowPlayingGeneralTabView()
             case 1:
                 NowPlayingLyricsTabView()
-            case 2:
-                LEDMeterSettingsView(showTitle: false)
             default:
                 NowPlayingGeneralTabView()
             }

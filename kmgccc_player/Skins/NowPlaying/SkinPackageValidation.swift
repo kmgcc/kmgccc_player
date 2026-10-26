@@ -7,13 +7,22 @@ extension SkinPackageManifest {
               !descriptor.surfaces.isEmpty else {
             throw SkinPackageError.invalidManifest("需要 ID、名称和支持的显示模式")
         }
-        guard scene != nil || nativePreset != nil else {
+        guard scene != nil || sceneV2 != nil || scenePath != nil || !scenes.isEmpty || nativePreset != nil else {
             throw SkinPackageError.invalidManifest("需要 scene 或 nativePreset")
         }
         guard Set(parameters.map(\.id)).count == parameters.count else {
             throw SkinPackageError.invalidManifest("参数 ID 重复")
         }
         for parameter in parameters { try parameter.validateDefinition() }
+        var environment = SkinCompileEnvironment()
+        environment.params = Dictionary(uniqueKeysWithValues: parameters.map { ($0.id, SkinValue($0.defaultValue).type) })
+        for parameter in parameters {
+            if let condition = parameter.visibleWhen {
+                let expression = try SkinExpressionCompiler.compile(.text(condition.hasPrefix("=") ? condition : "=" + condition), expected: .boolean, environment: environment)
+                guard expression.domains.isSubset(of: [.params]) else { throw SkinPackageError.invalidManifest("参数显隐仅支持皮肤参数") }
+            }
+        }
+        guard fonts.count <= 16 else { throw SkinPackageError.invalidManifest("字体超过 16 个") }
         try scene?.root.validateNode()
         guard scene?.hasPairedStandaloneCapsulesInEveryLayout != false else {
             throw SkinPackageError.invalidManifest("每个自适应布局中的左右胶囊必须成对出现")
@@ -26,6 +35,7 @@ extension SkinParameterDefinition {
         guard !id.isEmpty else { throw SkinPackageError.invalidManifest("参数 ID 为空") }
         switch (control, defaultValue) {
         case (.toggle, .boolean): break
+        case (.color, .text(let value)) where OKLCHColor(named: value) != nil: break
         case (.range(let minimum, let maximum, let step), .number(let value)):
             guard minimum.isFinite, maximum.isFinite, step.isFinite, value.isFinite,
                   minimum < maximum, step > 0, (minimum...maximum).contains(value) else {
@@ -44,6 +54,7 @@ extension SkinParameterDefinition {
         guard let saved else { return defaultValue }
         switch (control, saved) {
         case (.toggle, .boolean): return saved
+        case (.color, .text(let value)) where OKLCHColor(named: value) != nil: return saved
         case (.range(let minimum, let maximum, _), .number(let value)) where value.isFinite:
             return .number(min(maximum, max(minimum, value)))
         case (.choice(let choices), .text(let value)) where choices.contains(where: { $0.id == value }):

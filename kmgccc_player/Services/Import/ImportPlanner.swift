@@ -31,6 +31,7 @@ struct ImportCandidate: Sendable {
     let recoveryTrackID: UUID?
     /// 文件标签 layer captured during candidate preparation (§10.1).
     let embeddedSnapshot: EmbeddedMetadataSnapshot?
+    let manuallyEditedFields: Set<String>
     /// Free-form technical properties known before the import task runs
     /// (NCM metadata); the task reads real file properties otherwise.
     let audioPropertiesOverride: TrackAudioProperties?
@@ -55,6 +56,7 @@ struct ImportCandidate: Sendable {
         ncmLocator: ReferencedFileLocator?,
         recoveryTrackID: UUID?,
         embeddedSnapshot: EmbeddedMetadataSnapshot? = nil,
+        manuallyEditedFields: Set<String> = [],
         audioPropertiesOverride: TrackAudioProperties? = nil,
         enrichmentSuggestions: [EnrichmentSuggestion]? = nil,
         originalInputFilePaths: [String] = []
@@ -72,6 +74,7 @@ struct ImportCandidate: Sendable {
         self.ncmLocator = ncmLocator
         self.recoveryTrackID = recoveryTrackID
         self.embeddedSnapshot = embeddedSnapshot
+        self.manuallyEditedFields = manuallyEditedFields
         self.audioPropertiesOverride = audioPropertiesOverride
         self.enrichmentSuggestions = enrichmentSuggestions
         self.originalInputFilePaths = originalInputFilePaths
@@ -92,6 +95,7 @@ struct ImportCandidate: Sendable {
             ncmLocator: ncmLocator,
             recoveryTrackID: recoveryTrackID,
             embeddedSnapshot: embeddedSnapshot,
+            manuallyEditedFields: manuallyEditedFields,
             audioPropertiesOverride: audioPropertiesOverride,
             enrichmentSuggestions: enrichmentSuggestions,
             originalInputFilePaths: originalInputFilePaths
@@ -1033,6 +1037,7 @@ final class ImportPlanner {
                 ncmLocator: candidate.ncmLocator,
                 recoveryTrackID: candidate.recoveryTrackID,
                 embeddedSnapshot: candidate.embeddedSnapshot,
+                manuallyEditedFields: candidate.manuallyEditedFields,
                 audioPropertiesOverride: candidate.audioPropertiesOverride,
                 enrichmentSuggestions: suggestions,
                 originalInputFilePaths: candidate.originalInputFilePaths
@@ -1171,6 +1176,13 @@ final class ImportPlanner {
         }
 
         let effectivePreview = applyingMetadataOverride(metadataOverride, to: preview)
+        var manuallyEditedFields: Set<String> = []
+        if metadataOverride?.artist?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            manuallyEditedFields.formUnion(["artist", "artistCredits", "albumArtist"])
+        }
+        if metadataOverride?.album?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            manuallyEditedFields.insert("album")
+        }
         let candidate = ImportCandidate(
             progressID: file.progressID,
             displayName: file.displayName,
@@ -1185,6 +1197,7 @@ final class ImportPlanner {
             ncmLocator: file.referencedNCMOutput?.locator,
             recoveryTrackID: file.referencedNCMOutput?.trackID,
             embeddedSnapshot: embeddedSnapshot,
+            manuallyEditedFields: manuallyEditedFields,
             audioPropertiesOverride: audioPropertiesOverride,
             originalInputFilePaths: file.originalInputFilePaths
         )
@@ -1219,6 +1232,7 @@ final class ImportPlanner {
             ncmLocator: candidate.ncmLocator,
             recoveryTrackID: candidate.recoveryTrackID,
             embeddedSnapshot: candidate.embeddedSnapshot,
+            manuallyEditedFields: candidate.manuallyEditedFields,
             audioPropertiesOverride: candidate.audioPropertiesOverride,
             enrichmentSuggestions: candidate.enrichmentSuggestions,
             originalInputFilePaths: candidate.originalInputFilePaths

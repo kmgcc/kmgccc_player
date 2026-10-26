@@ -110,6 +110,8 @@ struct CoverCandidateStripView: View {
 
     private func sourceBadgeColor(_ source: CoverSource) -> Color {
         switch source {
+        case .appleMusic:
+            return .pink
         case .netease:
             return .red
         case .qqmusic:

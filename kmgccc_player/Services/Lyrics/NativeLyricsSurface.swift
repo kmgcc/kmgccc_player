@@ -123,14 +123,25 @@ final class NativeLyricsSurface: NSObject {
         }
 
         do {
+            let installStart = CACurrentMediaTime()
             let data = Data(rawText.utf8)
             let decoded = try TTMLDecoder().decode(data)
+            let decodeEnd = CACurrentMediaTime()
             view.releaseRenderingResources()
+            let releaseEnd = CACurrentMediaTime()
             view.install(
                 document: decoded,
                 time: self.currentTime,
                 playing: isPlaying
             )
+            let installEnd = CACurrentMediaTime()
+            DebugUIHooks.record(String(
+                format: "lyrics-install role=%@ decode=%.1fms release=%.1fms install=%.1fms",
+                role.rawValue,
+                (decodeEnd - installStart) * 1000,
+                (releaseEnd - decodeEnd) * 1000,
+                (installEnd - releaseEnd) * 1000
+            ))
             lastError = nil
             lastTTML = rawText
             lastTrackID = trackID
@@ -258,6 +269,7 @@ final class NativeLyricsSurfaceManager {
     private var surfaces: [LyricsSurfaceRole: NativeLyricsSurface] = [:]
     private var configurations: [LyricsSurfaceRole: LyricsConfiguration] = [:]
     private var baseConfigurations: [LyricsSurfaceRole: LyricsConfiguration] = [:]
+    private var baseThemePalette: ThemePalette?
     private var sceneConfigurationOverrides: [LyricsSurfaceRole: String] = [:]
     private var sceneConfigurationOwners: [LyricsSurfaceRole: UUID] = [:]
     private var seekHandlers: [LyricsSurfaceRole: (Double) -> Void] = [:]
@@ -272,6 +284,9 @@ final class NativeLyricsSurfaceManager {
 
     func surface(for role: LyricsSurfaceRole) -> NativeLyricsSurface {
         if let surface = surfaces[role] { return surface }
+        if configurations[role] == nil, let baseThemePalette {
+            applyPalette(baseThemePalette, for: role)
+        }
         let surface = NativeLyricsSurface(role: role)
         if let configuration = configurations[role], activeRoles.contains(role) {
             surface.apply(configuration: configuration)
@@ -333,7 +348,12 @@ final class NativeLyricsSurfaceManager {
                     trackID: snapshot.trackID,
                     ttml: snapshot.ttml,
                     currentTime: snapshot.time,
-                    isPlaying: snapshot.playing
+                    isPlaying: snapshot.playing,
+                    // Reactivation must replay a paused seek too. Ordinary
+                    // paused transport samples are intentionally ignored by
+                    // NativeLyricsSurface, so mark this snapshot as an explicit
+                    // time reconciliation after the surface was inactive.
+                    forceLyricsReload: true
                 )
             }
             activeRoles.insert(role)
@@ -383,7 +403,16 @@ final class NativeLyricsSurfaceManager {
     func trimRoutineMemory() {
         consumerDocument = nil
         consumerDocumentTTML = nil
-        for surface in surfaces.values {
+        for (role, surface) in surfaces {
+            // Pruning an on-screen surface throws away the glyphs and line
+            // metrics its next frames need, so the entry and scroll animations
+            // rebuild them mid-flight and drop frames. Its glyph cache stays
+            // within the role budget, and installing a new document clears it.
+            if activeRoles.contains(role),
+               surface.view.window != nil,
+               !surface.view.isHiddenOrHasHiddenAncestor {
+                continue
+            }
             surface.trimTransientResources()
         }
     }
@@ -529,11 +558,33 @@ final class NativeLyricsSurfaceManager {
         applyConfiguration(configuration, for: role)
     }
 
-    func applyTheme(_ palette: ThemePalette) {
-        let roles = Set(configurations.keys).union(surfaces.keys)
+    struct ThemeOverride {
+        var palette: ThemePalette?
+        var configJSON: String?
+    }
+
+    func applyTheme(
+        _ palette: ThemePalette,
+        roleOverrides: [LyricsSurfaceRole: ThemeOverride] = [:]
+    ) {
+        baseThemePalette = palette
+        let roles = Set(configurations.keys).union(surfaces.keys).union(roleOverrides.keys)
         for role in roles {
             var configuration = baseConfigurations[role] ?? NativeLyricsConfigurationMapper.base(role: role)
-            configuration.palette = NativeLyricsConfigurationMapper.paletteForWindow(palette)
+            let override = roleOverrides[role]
+            configuration.palette = NativeLyricsConfigurationMapper.paletteForWindow(override?.palette ?? palette)
+            if let json = override?.configJSON {
+                configuration = NativeLyricsConfigurationMapper.fromJSON(
+                    json,
+                    role: role,
+                    fallback: configuration
+                ) ?? configuration
+                // Main-panel snapshots may still contain the previous theme's
+                // textColor; the latest global palette owns these colors.
+                if role == .main {
+                    configuration.palette = NativeLyricsConfigurationMapper.paletteForWindow(palette)
+                }
+            }
             applyConfiguration(configuration, for: role)
         }
     }
@@ -558,6 +609,7 @@ final class NativeLyricsSurfaceManager {
         surfaces.removeAll()
         configurations.removeAll()
         baseConfigurations.removeAll()
+        baseThemePalette = nil
         sceneConfigurationOverrides.removeAll()
         sceneConfigurationOwners.removeAll()
         consumerDocumentTTML = nil

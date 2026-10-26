@@ -394,8 +394,55 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             preferenceStatsService: preferenceStatsService,
             artworkCache: cacheServices.trackArtworkCache,
             meterProvider: ledMeterProvider,
+            artworkWarmer: PlaybackArtworkWarmer(
+                artworkCache: cacheServices.trackArtworkCache,
+                motionArtworkCache: cacheServices.motionArtworkFirstFrameCache
+            ),
+            musicEnrichmentService: cacheServices.musicEnrichmentService,
+            externalMetadataStore: cacheServices.externalPlaybackMetadataStore,
             libraryTracksProvider: { [weak libraryViewModel] in libraryViewModel?.allTracks ?? [] }
         )
+        cacheServices.musicEnrichmentService.onSnapshot = { [weak libraryViewModel, weak libraryService] snapshot in
+            var updatedTrackIDs: [UUID] = []
+            defer {
+                if !updatedTrackIDs.isEmpty { libraryViewModel?.notifyTrackAuxiliaryDataChanged(trackIDs: updatedTrackIDs) }
+            }
+            let trackID = snapshot.record.query.key.hasPrefix("track:")
+                ? UUID(uuidString: String(snapshot.record.query.key.dropFirst(6))) : nil
+            let track = libraryViewModel?.allTracks.first { $0.id == trackID }
+            if let track {
+                guard track.title == snapshot.record.query.title,
+                      track.artist == snapshot.record.query.artist,
+                      track.album == snapshot.record.query.album else { return }
+            }
+            let artwork: TrackMotionArtwork?
+            if snapshot.record.assets.isEmpty && snapshot.record.manualMotionSelection == nil {
+                artwork = nil
+            } else {
+                artwork = TrackMotionArtwork(snapshot: snapshot)
+            }
+            if let track, track.motionArtwork != artwork {
+                track.motionArtwork = artwork
+                updatedTrackIDs.append(track.id)
+                // Commit before the editor's remaining metadata save.
+                _ = libraryService?.writeMetaOnly(for: track, reason: "motionArtwork")
+            }
+            guard snapshot.record.manualMotionSelection == nil,
+                  snapshot.record.albumMotionIdentity != nil,
+                  let identity = snapshot.record.motionAlbumIdentity else { return }
+            // One album arrival supplies every local sibling; a song's own
+            // choice, import or disable always takes precedence.
+            updatedTrackIDs += Self.applyAlbumMotion(artwork, identity: identity, excluding: track?.id,
+                tracks: libraryViewModel?.allTracks ?? [], libraryService: libraryService)
+        }
+        MotionArtworkSongClock.shared.source = { [weak playbackCoordinator] in
+            playbackCoordinator.map { (time: $0.audiblePlaybackTime, duration: $0.presentation.duration) }
+        }
+        cacheServices.musicEnrichmentService.onAlbumMotionChange = { [weak libraryViewModel, weak libraryService] identity, artwork in
+            let updated = Self.applyAlbumMotion(artwork, identity: identity, excluding: nil,
+                tracks: libraryViewModel?.allTracks ?? [], libraryService: libraryService)
+            if !updated.isEmpty { libraryViewModel?.notifyTrackAuxiliaryDataChanged(trackIDs: updated) }
+        }
         let lyricsViewModel = LyricsViewModel(settings: AppSettings.shared)
         lyricsViewModel.setPlaybackSourceProvider { [weak playbackCoordinator] in
             playbackCoordinator?.activeSource ?? .local
@@ -464,5 +511,26 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             url: try TrackIndexStorePaths.prepareStoreURL(in: paths)
         )
         return try ModelContainer(for: schema, configurations: [configuration])
+    }
+
+    /// Gives every local song of an album its artwork (nil: none), except songs
+    /// with their own choice. Returns the songs whose sidecar changed.
+    private static func applyAlbumMotion(
+        _ artwork: TrackMotionArtwork?, identity: MusicAlbumMotionIdentity, excluding: UUID?,
+        tracks: [Track], libraryService: LocalLibraryService?
+    ) -> [UUID] {
+        var updated: [UUID] = []
+        for sibling in tracks where sibling.id != excluding && sibling.motionArtwork?.isUserSelected != true {
+            let siblingRecord = MusicEnrichmentRecord(query: MusicEnrichmentWorkSource.query(sibling))
+            guard let siblingIdentity = siblingRecord.motionAlbumIdentity,
+                  (siblingIdentity.catalogAlbumID != nil && siblingIdentity.catalogAlbumID == identity.catalogAlbumID)
+                    || (identity.fallbackKey != nil && siblingIdentity.fallbackKey == identity.fallbackKey
+                        && (siblingIdentity.catalogAlbumID == nil || identity.catalogAlbumID == nil || siblingIdentity.catalogAlbumID == identity.catalogAlbumID)),
+                  sibling.motionArtwork != artwork else { continue }
+            sibling.motionArtwork = artwork
+            updated.append(sibling.id)
+            _ = libraryService?.writeMetaOnly(for: sibling, reason: "albumMotionArtwork")
+        }
+        return updated
     }
 }

@@ -91,8 +91,12 @@ public struct PopupButtonAppearance<Label: View>: View {
         }
     }
 
+    /// A disabled action drops its tint: inside a glass container opacity
+    /// alone leaves a tinted capsule looking ready to press.
+    private var effectiveKind: PopupActionKind { isEnabled ? kind : .secondary }
+
     private var glassTint: Color? {
-        switch kind {
+        switch effectiveKind {
         case .secondary: nil
         case .primary: palette.accent
         case .destructive: palette.danger
@@ -100,7 +104,8 @@ public struct PopupButtonAppearance<Label: View>: View {
     }
 
     private var foreground: Color {
-        switch kind {
+        guard isEnabled else { return palette.secondary }
+        return switch kind {
         case .secondary: palette.primary
         case .primary: palette.accentForeground
         case .destructive:
@@ -109,7 +114,7 @@ public struct PopupButtonAppearance<Label: View>: View {
     }
 
     private var fill: Color {
-        switch kind {
+        switch effectiveKind {
         case .secondary: palette.secondary.opacity(0.12)
         case .primary: palette.accent
         case .destructive: palette.danger

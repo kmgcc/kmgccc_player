@@ -19,10 +19,15 @@ private final class ArtworkDerivativeImageBox: NSObject {
 }
 
 actor ArtworkDerivativeCacheStore {
+    private static let touchInterval: TimeInterval = 6 * 3600
+
     private let memoryCache = NSCache<NSString, ArtworkDerivativeImageBox>()
     private let fileManager = FileManager.default
     private let maxDiskBytes: Int64 = DiskCacheBudget.playlistDerivatives.maxBytes
-    private let decodeGate = ArtworkDecodeGate(maxConcurrent: 2)
+    /// Covers decode in parallel here. A fling asks for a screenful per second
+    /// and the sources are large JPEGs, so a narrow gate turned every scroll
+    /// into a queue the rows were recycled before.
+    private let decodeGate = ArtworkDecodeGate(maxConcurrent: 8)
     private var writeCounter = 0
     private var didScheduleInitialDiskTrim = false
     private var memoryGeneration: UInt64 = 0
@@ -50,7 +55,8 @@ actor ArtworkDerivativeCacheStore {
 
         let diskURL = fileURL(for: cacheKey)
         let maxPixel = max(1, Int(max(targetPixelSize.width, targetPixelSize.height)))
-        if let diskImage = readImage(at: diskURL, maxPixelSize: maxPixel) {
+        if let diskImage = await readCachedImage(at: diskURL, maxPixelSize: maxPixel) {
+            guard !Task.isCancelled, memoryGeneration == requestGeneration else { return nil }
             setMemoryImage(diskImage, cacheKey: cacheKey)
             touchItem(at: diskURL)
             return diskImage
@@ -101,9 +107,9 @@ actor ArtworkDerivativeCacheStore {
 
         let diskURL = fileURL(for: cacheKey)
         let maxPixel = max(1, Int(max(targetPixelSize.width, targetPixelSize.height)))
-        if let diskImage = readImage(at: diskURL, maxPixelSize: maxPixel) {
+        if let diskImage = await readCachedImage(at: diskURL, maxPixelSize: maxPixel) {
+            guard !Task.isCancelled, memoryGeneration == requestGeneration else { return nil }
             setMemoryImage(diskImage, cacheKey: cacheKey)
-            touchItem(at: diskURL)
             return diskImage
         }
 
@@ -151,7 +157,8 @@ actor ArtworkDerivativeCacheStore {
         }
 
         let diskURL = fileURL(for: cacheKey)
-        if let diskImage = readImage(at: diskURL, maxPixelSize: max(1, maxPixelSize)) {
+        if let diskImage = await readCachedImage(at: diskURL, maxPixelSize: max(1, maxPixelSize)) {
+            guard !Task.isCancelled, memoryGeneration == requestGeneration else { return nil }
             setMemoryImage(diskImage, cacheKey: cacheKey)
             touchItem(at: diskURL)
             return diskImage
@@ -227,7 +234,7 @@ actor ArtworkDerivativeCacheStore {
         try? encoded.write(to: url, options: .atomic)
 
         writeCounter += 1
-        if writeCounter.isMultiple(of: 16) {
+        if writeCounter.isMultiple(of: 64) {
             trimDiskIfNeeded()
         }
     }
@@ -240,25 +247,61 @@ actor ArtworkDerivativeCacheStore {
         }
     }
 
-    private func fileURL(for cacheKey: String) -> URL {
-        let digest = stableDigest(cacheKey)
+    private nonisolated func fileURL(for cacheKey: String) -> URL {
+        // Isolate derivatives produced by the old embedded-preview policy.
+        // Those files remain disposable cache and age out through normal trimming.
+        let digest = stableDigest("source-thumbnail-v2|\(cacheKey)")
         return diskRootURL.appendingPathComponent("\(digest).png")
     }
 
-    private func readImage(at url: URL, maxPixelSize: Int) -> NSImage? {
-        guard fileManager.fileExists(atPath: url.path) else { return nil }
-        guard
-            let source = CGImageSourceCreateWithURL(
-                url as CFURL,
-                [kCGImageSourceShouldCache: false] as CFDictionary
-            )
-        else { return nil }
-        return downsampledImage(source: source, maxPixelSize: maxPixelSize)
+    /// Decodes a derivative already on disk, on the caller's thread and without
+    /// entering the actor. Bulk warmups read hundreds of row covers this way in
+    /// a fraction of a second; the actor path costs a queue hop per cover.
+    nonisolated func cachedDiskImage(for cacheKey: String, maxPixelSize: Int) -> NSImage? {
+        guard !Task.isCancelled else { return nil }
+        let image = Self.decodeCachedImage(at: fileURL(for: cacheKey), maxPixelSize: maxPixelSize)
+        return Task.isCancelled ? nil : image
+    }
+
+    private nonisolated static func decodeCachedImage(at url: URL, maxPixelSize: Int) -> NSImage? {
+        autoreleasepool {
+            guard
+                FileManager.default.fileExists(atPath: url.path),
+                let source = CGImageSourceCreateWithURL(
+                    url as CFURL,
+                    [kCGImageSourceShouldCache: false] as CFDictionary
+                )
+            else { return nil }
+            return downsampledImage(source: source, maxPixelSize: maxPixelSize)
+        }
+    }
+
+    /// Reads a cached derivative off the actor. Reading it here made every
+    /// cache hit wait for the one before it, so a fling through a long list
+    /// spent close to a second queueing on lookups that each take a millisecond.
+    private func readCachedImage(at url: URL, maxPixelSize: Int) async -> NSImage? {
+        let task = Task.detached(priority: .userInitiated) {
+            guard !Task.isCancelled else { return nil as NSImage? }
+            let image = Self.decodeCachedImage(at: url, maxPixelSize: maxPixelSize)
+            return Task.isCancelled ? nil : image
+        }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private func touchItem(at url: URL) {
-        let now = Date()
-        try? fileManager.setAttributes([.modificationDate: now], ofItemAtPath: url.path)
+        // Every hit used to rewrite the modification date, which put one
+        // filesystem write behind each thumbnail during scrolling. Refreshing at
+        // most every few hours keeps the retention order without that cost.
+        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+        if let modified = values?.contentModificationDate,
+           Date().timeIntervalSince(modified) < Self.touchInterval {
+            return
+        }
+        try? fileManager.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
     }
 
     private func trimDiskIfNeeded() {
@@ -292,7 +335,7 @@ actor ArtworkDerivativeCacheStore {
         return Int(image.size.width * image.size.height * 4)
     }
 
-    private func stableDigest(_ value: String) -> String {
+    private nonisolated func stableDigest(_ value: String) -> String {
         var hash: UInt64 = 1_469_598_103_934_665_603
         for byte in value.utf8 {
             hash ^= UInt64(byte)
@@ -331,11 +374,12 @@ private nonisolated func downsampledImage(fileURL: URL, targetPixelSize: CGSize)
 }
 
 private nonisolated func downsampledImage(source: CGImageSource, maxPixelSize: Int) -> NSImage? {
+    let pixelSize = max(1, maxPixelSize)
     let options: [CFString: Any] = [
-        kCGImageSourceCreateThumbnailFromImageAlways: true,
         kCGImageSourceShouldCacheImmediately: true,
         kCGImageSourceCreateThumbnailWithTransform: true,
-        kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixelSize),
+        kCGImageSourceThumbnailMaxPixelSize: pixelSize,
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
     ]
     guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     else { return nil }

@@ -17,6 +17,7 @@ struct AppKitMainToolbarItemFactory {
         let homeNavigation: Selector
         let pillGroup: Selector
         let homePillGroup: Selector
+        let pillItem: Selector
         let lyricsToggle: Selector
     }
 
@@ -24,6 +25,7 @@ struct AppKitMainToolbarItemFactory {
         let isSidebarVisible: Bool
         let isLyricsVisible: Bool
         let isPlaybackHistoryMode: Bool
+        let isHomeLandingSelection: Bool
         let isMultiselectMode: Bool
         let generation: Int
         let splitView: NSSplitView?
@@ -41,7 +43,7 @@ struct AppKitMainToolbarItemFactory {
         case AppKitMainToolbarController.Identifier.historySectionTitle:
             guard let historyVM = context.historyViewModel else { return nil }
             let item = NSToolbarItem(itemIdentifier: identifier)
-            item.label = "日期"
+            item.label = "播放历史日期"
             item.paletteLabel = item.label
             let view = NSHostingView(rootView: PlaybackHistoryToolbarTitleView(historyVM: historyVM))
             view.frame = NSRect(x: 0, y: 0, width: 144, height: 28)
@@ -60,6 +62,22 @@ struct AppKitMainToolbarItemFactory {
         case AppKitMainToolbarController.Identifier.homeNavPill:
             return makeHomeNavigationItem(identifier: identifier, actions: actions)
 
+        case AppKitMainToolbarController.Identifier.homeBack:
+            return makeHomeNavigationActionItem(
+                identifier: identifier,
+                isForward: false,
+                target: actions.target,
+                action: actions.homeNavigation
+            )
+
+        case AppKitMainToolbarController.Identifier.homeForward:
+            return makeHomeNavigationActionItem(
+                identifier: identifier,
+                isForward: true,
+                target: actions.target,
+                action: actions.homeNavigation
+            )
+
         case AppKitMainToolbarController.Identifier.sort:
             return makeSortItem(identifier: identifier, menu: sortMenu)
 
@@ -73,6 +91,17 @@ struct AppKitMainToolbarItemFactory {
 
         case AppKitMainToolbarController.Identifier.homePillGroup:
             return makeHomePillGroupItem(identifier: identifier, actions: actions)
+
+        case AppKitMainToolbarController.Identifier.multiselect,
+             AppKitMainToolbarController.Identifier.play,
+             AppKitMainToolbarController.Identifier.revealNowPlaying,
+             AppKitMainToolbarController.Identifier.import:
+            return makePillActionItem(
+                identifier: identifier,
+                context: context,
+                target: actions.target,
+                action: actions.pillItem
+            )
 
         case AppKitMainToolbarController.Identifier.search:
             return searchBridge.makeToolbarItem(
@@ -115,14 +144,36 @@ struct AppKitMainToolbarItemFactory {
         actions: Actions
     ) -> NSToolbarItem {
         let item = NSToolbarItem(itemIdentifier: identifier)
-        item.label = NSLocalizedString("toolbar.sidebar", comment: "Sidebar")
+        item.label = "侧边栏"
         item.paletteLabel = item.label
-        item.toolTip = isSidebarVisible ? "Hide Sidebar" : "Show Sidebar"
+        item.toolTip = isSidebarVisible ? "隐藏侧边栏" : "显示侧边栏"
         item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: item.label)
         item.target = actions.target
         item.action = actions.sidebarToggle
         item.autovalidates = false
         item.isEnabled = true
+        return item
+    }
+
+    private func makeHomeNavigationActionItem(
+        identifier: NSToolbarItem.Identifier,
+        isForward: Bool,
+        target: AnyObject,
+        action: Selector
+    ) -> NSToolbarItem {
+        let label = isForward ? "前进" : "后退"
+        let item = NSToolbarItem(itemIdentifier: identifier)
+        item.label = label
+        item.paletteLabel = label
+        item.toolTip = label
+        item.image = NSImage(
+            systemSymbolName: isForward ? "chevron.right" : "chevron.left",
+            accessibilityDescription: label
+        )
+        item.target = target
+        item.action = action
+        item.isNavigational = true
+        item.autovalidates = false
         return item
     }
 
@@ -145,7 +196,7 @@ struct AppKitMainToolbarItemFactory {
             target: actions.target,
             action: actions.homeNavigation
         )
-        group.label = "Home Navigation"
+        group.label = "页面导航"
         group.paletteLabel = group.label
         group.controlRepresentation = .expanded
         group.isNavigational = true
@@ -167,7 +218,7 @@ struct AppKitMainToolbarItemFactory {
         menu: NSMenu
     ) -> NSMenuToolbarItem {
         let item = NSMenuToolbarItem(itemIdentifier: identifier)
-        item.label = NSLocalizedString("sort.menu_title", comment: "Sort")
+        item.label = "排序"
         item.paletteLabel = item.label
         item.toolTip = item.label
         item.image = NSImage(
@@ -180,17 +231,53 @@ struct AppKitMainToolbarItemFactory {
         return item
     }
 
+    private func makePillActionItem(
+        identifier: NSToolbarItem.Identifier,
+        context: Context,
+        target: AnyObject,
+        action: Selector
+    ) -> NSToolbarItem {
+        let label: String
+        let symbol: String
+        switch identifier {
+        case AppKitMainToolbarController.Identifier.multiselect:
+            label = "多选"
+            symbol = context.isMultiselectMode ? "checkmark.circle.fill" : "checkmark.circle"
+        case AppKitMainToolbarController.Identifier.play:
+            label = context.isHomeLandingSelection ? "全部播放" : "播放"
+            symbol = "play.fill"
+        case AppKitMainToolbarController.Identifier.revealNowPlaying:
+            label = context.isPlaybackHistoryMode ? "删除所选历史" : "定位正在播放"
+            symbol = context.isPlaybackHistoryMode ? "trash" : "list.bullet.below.rectangle"
+        case AppKitMainToolbarController.Identifier.import:
+            label = "导入音乐"
+            symbol = "plus"
+        default:
+            return NSToolbarItem(itemIdentifier: identifier)
+        }
+
+        let item = NSToolbarItem(itemIdentifier: identifier)
+        item.label = label
+        item.paletteLabel = label
+        item.toolTip = label
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        item.target = target
+        item.action = action
+        item.autovalidates = false
+        return item
+    }
+
     private func makePillGroupItem(
         identifier: NSToolbarItem.Identifier,
         isHistoryMode: Bool,
         isMultiselectMode: Bool,
         actions: Actions
     ) -> NSToolbarItemGroup {
-        let multiselectLabel = NSLocalizedString("context.multiselect", comment: "Select")
-        let playLabel = NSLocalizedString("context.play_all", comment: "Play All")
+        let multiselectLabel = "多选"
+        let playLabel = "播放"
         let revealLabel = "定位正在播放"
-        let deleteHistoryLabel = "删除播放历史"
-        let importLabel = NSLocalizedString("context.import", comment: "Import")
+        let deleteHistoryLabel = "删除所选历史"
+        let importLabel = "导入音乐"
         let multiselectSymbol = isMultiselectMode ? "checkmark.circle.fill" : "checkmark.circle"
 
         let group = NSToolbarItemGroup(
@@ -218,7 +305,7 @@ struct AppKitMainToolbarItemFactory {
             target: actions.target,
             action: actions.pillGroup
         )
-        group.label = "Actions"
+        group.label = "列表操作"
         group.paletteLabel = group.label
         group.controlRepresentation = .expanded
         group.autovalidates = false
@@ -242,9 +329,9 @@ struct AppKitMainToolbarItemFactory {
         identifier: NSToolbarItem.Identifier,
         actions: Actions
     ) -> NSToolbarItemGroup {
-        let playLabel = NSLocalizedString("context.play_all", comment: "Play All")
+        let playLabel = "全部播放"
         let revealLabel = "定位正在播放"
-        let importLabel = NSLocalizedString("context.import", comment: "Import")
+        let importLabel = "导入音乐"
 
         let group = NSToolbarItemGroup(
             itemIdentifier: identifier,
@@ -261,7 +348,7 @@ struct AppKitMainToolbarItemFactory {
             target: actions.target,
             action: actions.homePillGroup
         )
-        group.label = "Home Actions"
+        group.label = "主页操作"
         group.paletteLabel = group.label
         group.controlRepresentation = .expanded
         group.autovalidates = false
@@ -284,9 +371,9 @@ struct AppKitMainToolbarItemFactory {
         actions: Actions
     ) -> NSToolbarItem {
         let item = NSToolbarItem(itemIdentifier: identifier)
-        item.label = NSLocalizedString("lyrics", comment: "Lyrics")
+        item.label = "歌词"
         item.paletteLabel = item.label
-        item.toolTip = isLyricsVisible ? "Hide Lyrics" : "Show Lyrics"
+        item.toolTip = isLyricsVisible ? "隐藏歌词" : "显示歌词"
         item.target = actions.target
         item.action = actions.lyricsToggle
         item.autovalidates = false

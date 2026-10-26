@@ -1195,6 +1195,14 @@ final class AppSessionHost: ObservableObject {
         await audioDSPDeviceController.ensureLoaded()
         equalLoudnessController.setRoutedDevice(audioDSPDeviceController.currentDevice)
 
+        // Compile the optional fullscreen Bokeh pipelines once at launch so the
+        // first lyrics/layout transition never pays that cost mid-animation.
+        _ = BokehTransitionMetalContext.prewarm()
+        Task.detached(priority: .utility) {
+            let available = CoverProgressiveBlurRenderer.isAvailable
+            Log.info("[Lifecycle] cover progressive blur available=\(available)", category: .perf)
+        }
+
         Log.debug("[Lifecycle] AppSessionHost initial setup", category: .ui)
         mainThreadStallMonitor.start()
         startMemoryPressureMonitoring()
@@ -1531,6 +1539,16 @@ final class AppSessionHost: ObservableObject {
             attachArtworkColorSource(to: session, owner: owner)
             attachMissingPlaylistArtworkSource(to: session, owner: owner)
             attachPageThumbnailSource(to: session, owner: owner)
+            session.cacheServices.attachArtworkRenovationSource(
+                scheduler: backgroundWorkScheduler, owner: owner, libraryID: session.context.id,
+                libraryVM: session.libraryViewModel
+            )
+            session.cacheServices.attachMetadataCompletionSource(
+                scheduler: backgroundWorkScheduler, owner: owner, libraryID: session.context.id,
+                tracks: { [weak session] in session?.libraryViewModel.allTracks ?? [] },
+                revision: { [weak session] in session?.libraryViewModel.tracksRevision ?? 0 },
+                score: { [weak session] id in session?.preferenceStatsService.getPreferenceScore(for: id) ?? 0 }
+            )
         }
         session.setEqualLoudnessContext(equalLoudnessController.context)
         activeLibraryBinding.publish(session)
@@ -1670,7 +1688,7 @@ final class AppSessionHost: ObservableObject {
     private func releaseActiveSessionBindings() async {
         audioDSPController.detachPlayback()
         audioProcessingGlobalsController.detachPlayback()
-        cacheServices?.detachBackgroundSources()
+        await cacheServices?.detachBackgroundSources()
         activeLibraryRescanTask?.cancel()
         activeLibraryRescanTask = nil
         playbackMemoryTimer?.invalidate()

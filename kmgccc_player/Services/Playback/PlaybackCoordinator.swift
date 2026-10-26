@@ -5,8 +5,16 @@
 //
 
 import Foundation
-import CryptoKit
 import Observation
+
+// Keep exact inputs so the presentation timer can compare without rebuilding digests.
+nonisolated struct PlaybackLyricsCacheKey: Equatable, Sendable {
+    let trackID: UUID
+    let lyricsText: String?
+    let ttmlLyricText: String?
+    let lyricsFileName: String?
+    let ttmlLyricsFileName: String?
+}
 
 /// Narrow local-playback seam (§16): the coordinator issues transport
 /// commands and reads state through this abstraction instead of holding a
@@ -24,6 +32,8 @@ protocol LocalPlaybackControlling: AnyObject {
     var currentPlaybackOrderMode: PlaybackOrderMode { get }
     var volume: Double { get }
     var currentQueueTracks: [Track] { get }
+    var queueRevision: Int { get }
+    var currentQueueDisplayIndex: Int? { get }
 
     func togglePlayPause()
     func pause()
@@ -65,13 +75,17 @@ final class PlaybackCoordinator {
     private let preferenceStatsService: PreferenceStatsService
     private let libraryTracksProvider: @MainActor () -> [Track]
     private let artworkCache: TrackArtworkCache
+    private let musicEnrichmentService: MusicEnrichmentService?
+    private let externalMetadataStore: ExternalPlaybackMetadataStore?
     private let meterProvider: AudioLevelMeterProtocol?
     private var presentationTimer: Timer?
     private var currentPresentationInterval: TimeInterval = 0
-    private var cachedLyricsTrackID: UUID?
-    private var cachedLyricsSignature: String?
+    private var cachedLyricsKey: PlaybackLyricsCacheKey?
     private var cachedLyricsText: String?
+    // Inline source keys checksum the full payload; reuse while its inputs stay unchanged.
+    private var cachedLocalArtworkSource: TrackArtworkSource?
     private var lastSyncedPlayingState: Bool?
+    private var lastMetadataSourceSignature: String?
     private var lastTelemetrySource: PlaybackSource?
     private var lastTelemetryIsPlaying: Bool?
     private var sidecarHydrationTask: Task<Void, Never>?
@@ -86,6 +100,14 @@ final class PlaybackCoordinator {
     private(set) var activeSource: PlaybackSource
     private(set) var presentation: NowPlayingPresentation = .emptyLocal
     private(set) var stablePresentation: NowPlayingPresentation = .emptyLocal
+
+    /// The audible song position right now, for media that follows the song.
+    var audiblePlaybackTime: Double {
+        if activeSource == .local, let localPlayback {
+            return max(0, localPlayback.currentTime - localPlayback.audioOutputDelay)
+        }
+        return presentation.currentTime
+    }
     /// Monotonic marker for explicit transport seeks. Lyrics use it to
     /// distinguish a deliberate small backward seek from a stale 4 Hz
     /// presentation sample, which the native display clock intentionally
@@ -109,6 +131,8 @@ final class PlaybackCoordinator {
         artworkCache: TrackArtworkCache,
         meterProvider: AudioLevelMeterProtocol? = nil,
         artworkWarmer: PlaybackArtworkWarmer? = nil,
+        musicEnrichmentService: MusicEnrichmentService? = nil,
+        externalMetadataStore: ExternalPlaybackMetadataStore? = nil,
         libraryTracksProvider: @escaping @MainActor () -> [Track] = { [] }
     ) {
         self.localPlayback = localPlayback
@@ -118,6 +142,8 @@ final class PlaybackCoordinator {
         self.preferenceStatsService = preferenceStatsService
         self.libraryTracksProvider = libraryTracksProvider
         self.artworkCache = artworkCache
+        self.musicEnrichmentService = musicEnrichmentService
+        self.externalMetadataStore = externalMetadataStore
         self.meterProvider = meterProvider
         self.artworkWarmer = artworkWarmer ?? PlaybackArtworkWarmer(
             artworkCache: artworkCache
@@ -130,6 +156,9 @@ final class PlaybackCoordinator {
         self.activeSource = PlaybackSource(
             rawValue: UserDefaults.standard.string(forKey: Keys.activeSource) ?? ""
         ) ?? .local
+        musicEnrichmentService?.onChange = { [weak self] in
+            self?.refreshPresentation()
+        }
         if activeSource.isExternal {
             externalProvider(for: activeSource)?.start()
         }
@@ -150,6 +179,9 @@ final class PlaybackCoordinator {
     }
 
     func setActiveSource(_ source: PlaybackSource) {
+        if source != .local {
+            cachedLocalArtworkSource = nil
+        }
         guard activeSource != source else {
             if source.isExternal {
                 externalProvider(for: source)?.start()
@@ -249,6 +281,8 @@ final class PlaybackCoordinator {
     }
 
     func close() {
+        musicEnrichmentService?.onChange = nil
+        cachedLocalArtworkSource = nil
         presentationTimer?.invalidate()
         presentationTimer = nil
         trackMemoryTrimTask?.cancel()
@@ -451,9 +485,8 @@ final class PlaybackCoordinator {
     }
 
     func invalidateCachedLyrics(for trackID: UUID) {
-        if cachedLyricsTrackID == trackID {
-            cachedLyricsTrackID = nil
-            cachedLyricsSignature = nil
+        if cachedLyricsKey?.trackID == trackID {
+            cachedLyricsKey = nil
             cachedLyricsText = nil
         }
     }
@@ -640,11 +673,20 @@ final class PlaybackCoordinator {
         }
 
         var newPresentation = basePresentation
+        enrichPresentation(&newPresentation)
         if settings.volumeControlTarget == .system {
             newPresentation.volume = SystemVolumeService.shared.systemVolume
             newPresentation.isVolumeControlEnabled = true
         }
 
+        if newPresentation.source != .local, let key = newPresentation.externalStableKey {
+            let fields = newPresentation.metadataSources.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+            let signature = "\(key)|\(fields)|\(newPresentation.title)|\(newPresentation.artist)|\(newPresentation.album ?? "")|\(newPresentation.artworkIdentity ?? "")|\(newPresentation.lyricsIdentity ?? "")"
+            if lastMetadataSourceSignature != signature {
+                lastMetadataSourceSignature = signature
+                Log.info("[ExternalMetadata] key=\(key) event=adopted \(fields) titleValue=\(newPresentation.title) artistValue=\(newPresentation.artist) albumValue=\(newPresentation.album ?? "") artworkBytes=\(newPresentation.artworkData?.count ?? 0) lyricsCharacters=\(newPresentation.lyricsText?.count ?? 0)", category: .playback)
+            }
+        }
         let isPlaying = newPresentation.isPlaying
         AudioVisualizationVisibilityRegistry.shared.setPlaying(isPlaying)
         // Propagate play/pause to the meter + FFT chain for ALL sources (local
@@ -661,6 +703,8 @@ final class PlaybackCoordinator {
         artworkWarmer.update(
             activeSource: activeSource,
             presentation: newPresentation,
+            queueRevision: localPlayback?.queueRevision ?? 0,
+            currentQueueIndex: localPlayback?.currentQueueDisplayIndex,
             queue: localPlayback?.currentQueueTracks ?? []
         )
         nextSongLyricsPreloader.update(
@@ -687,6 +731,84 @@ final class PlaybackCoordinator {
         guard !newPresentation.isEffectivelyEqual(to: previousPresentation) else { return }
         presentation = newPresentation
         onPresentationChanged?(previousPresentation, newPresentation)
+    }
+
+    private func enrichPresentation(_ value: inout NowPlayingPresentation) {
+        guard let musicEnrichmentService, value.hasTrack else {
+            musicEnrichmentService?.update(query: nil)
+            return
+        }
+        let key: String
+        if value.source == .local, let track = value.localTrack {
+            key = "track:\(track.id.uuidString)"
+        } else if let stableKey = value.externalStableKey {
+            key = stableKey
+        } else {
+            return
+        }
+        var seed = value.externalMusicAttributes ?? [:]
+        if let track = value.localTrack, value.source == .local {
+            if let artist = track.albumArtist, !artist.isEmpty { seed["albumArtistName"] = .string(artist) }
+            if !track.genreTags.isEmpty { seed["genreNames"] = .array(track.genreTags.map(MusicMetadataValue.string)) }
+            if !track.language.isEmpty { seed["audioLocale"] = .string(track.language) }
+            if !track.labelOrCompany.isEmpty { seed["recordLabel"] = .string(track.labelOrCompany) }
+            if !track.userDescription.isEmpty { seed["description"] = .string(track.userDescription) }
+        }
+        let query = MusicEnrichmentQuery(
+            key: key,
+            title: value.externalRawTitle ?? value.title,
+            artist: value.externalRawArtist ?? value.artist,
+            album: value.externalRawAlbum ?? value.album ?? "",
+            duration: value.duration,
+            appleSongID: seed["appleSongID"]?.text,
+            appleAlbumID: seed["appleAlbumID"]?.text,
+            storefront: seed["storefront"]?.text,
+            isrc: seed["isrc"]?.text,
+            seedAttributes: seed.isEmpty ? nil : seed,
+            storedMotionArtwork: value.source == .local ? value.localTrack?.motionArtwork : nil,
+            albumArtist: value.localTrack?.albumArtist
+        )
+        musicEnrichmentService.update(query: query)
+        guard let snapshot = musicEnrichmentService.snapshot(for: key) else { return }
+        value.musicEnrichment = snapshot
+        if value.artworkData == nil, let artwork = snapshot.artworkData {
+            value.artworkData = artwork
+            let artworkIdentity = "enrichment:\(key):artwork"
+            value.artworkIdentity = artworkIdentity
+            value.isArtworkLoading = false
+            value.metadataSources["artwork"] = snapshot.record.attributeSources["artwork"] ?? "enrichment"
+            if value.source == .local, let track = value.localTrack {
+                let previous = presentation
+                if previous.source == .local,
+                   previous.localTrack?.id == track.id,
+                   previous.artworkIdentity == artworkIdentity,
+                   previous.musicEnrichment?.record.updatedAt == snapshot.record.updatedAt,
+                   let previousSourceKey = previous.localArtworkSourceKey {
+                    value.localArtworkSourceKey = previousSourceKey
+                    value.artworkDataChecksum = previous.artworkDataChecksum
+                } else {
+                    let artworkSource = TrackArtworkSource(
+                        trackID: track.id,
+                        artworkFileName: track.artworkFileName,
+                        artworkFileURL: nil,
+                        inlineArtworkData: artwork
+                    )
+                    value.localArtworkSourceKey = artworkSource?.sourceKey
+                    value.artworkDataChecksum = artworkSource?.inlineArtworkChecksum
+                }
+            }
+        }
+        let hasManualLyrics = value.externalStableKey.map {
+            externalMetadataStore?.hasManualLyricsDecision(for: $0) ?? false
+        } ?? false
+        let hasLocalLyrics = value.localTrack != nil && value.lyricsText?.isEmpty == false
+        if !hasManualLyrics, !hasLocalLyrics, let lyrics = snapshot.lyricsTTML {
+            value.lyricsText = lyrics
+            value.lyricsIdentity = "enrichment:\(key):\(snapshot.lyricsIdentity ?? "lyrics")"
+            value.externalLyricsStatusMessage = nil
+            value.metadataSources["lyrics"] = snapshot.record.lyricsSource ?? "enrichment"
+        }
+        value.metadataSources["metadata"] = snapshot.record.attributeSources.values.sorted().joined(separator: ",")
     }
 
     private var activeExternalProvider: (any ExternalPlaybackProvider)? {
@@ -795,13 +917,31 @@ final class PlaybackCoordinator {
         }
 
         let artworkData = track.artworkData
-        let artworkSource = track.trackArtworkSource(fallbackData: artworkData)
-        let hasDiskArtworkCache = artworkSource.map {
-            artworkCache.hasAnyDiskCache(for: $0)
+        let artworkFileSnapshot = track.existingArtworkFileSnapshot()
+        let artworkSource: TrackArtworkSource?
+        if let cachedSource = cachedLocalArtworkSource,
+           cachedSource.matches(
+               trackID: track.id,
+               artworkFileName: track.artworkFileName,
+               artworkFileSnapshot: artworkFileSnapshot,
+               inlineArtworkData: artworkData
+           ) {
+            artworkSource = cachedSource
+        } else {
+            artworkSource = track.trackArtworkSource(
+                fallbackData: artworkData,
+                fileSnapshot: artworkFileSnapshot
+            )
+            cachedLocalArtworkSource = artworkSource
+        }
+        let hasDiskArtworkCache = artworkSource.map { source in
+            // `trackArtworkSource` just validated this file URL; avoid another
+            // synchronous file-existence probe during the 4 Hz refresh.
+            source.artworkFileURL != nil || artworkCache.hasAnyDiskCache(for: source)
         } ?? false
         let lyricsText = preferredLyricsTextSnapshot(for: track)
         let isArtworkLoading = track.artworkData?.isEmpty != false
-            && track.existingArtworkURL() != nil
+            && artworkSource?.artworkFileURL != nil
             && !hasDiskArtworkCache
         scheduleSidecarHydrationIfNeeded(for: track)
         return NowPlayingPresentation(
@@ -812,7 +952,10 @@ final class PlaybackCoordinator {
             artist: track.artist,
             album: track.album.isEmpty ? nil : track.album,
             artworkData: artworkData,
+            artworkDataChecksum: artworkSource?.inlineArtworkChecksum,
             artworkIdentity: artworkIdentity(for: track, artworkData: artworkData),
+            localArtworkSourceKey: artworkSource?.sourceKey,
+            localArtworkFileURL: artworkSource?.artworkFileURL,
             artworkDisplayTrackID: track.id,
             isArtworkLoading: isArtworkLoading,
             duration: playback.duration,
@@ -847,6 +990,9 @@ final class PlaybackCoordinator {
     private func releaseEmptyLocalPresentationResources() {
         trackMemoryTrimTask?.cancel()
         trackMemoryTrimTask = nil
+        cachedLocalArtworkSource = nil
+        cachedLyricsKey = nil
+        cachedLyricsText = nil
         // The paused presentation timer also polls an empty queue. Reclaim
         // once when the previous track leaves, rather than on every poll.
         guard let previousTrack = presentation.localTrack else { return }
@@ -856,9 +1002,13 @@ final class PlaybackCoordinator {
 
     private func scheduleTrackMemoryTrim(for trackID: UUID) {
         trackMemoryTrimTask?.cancel()
+        // The lyric entrance, cover movement and fullscreen Bokeh of the new
+        // track run for about two seconds; the old 500 ms trim landed in the
+        // middle of them. This trim also stands in for the periodic one.
+        lastRoutineTrimUptime = ProcessInfo.processInfo.systemUptime
         trackMemoryTrimTask = Task { @MainActor [weak self] in
             do {
-                try await Task.sleep(for: .milliseconds(500))
+                try await Task.sleep(for: .seconds(4))
             } catch {
                 return
             }
@@ -871,29 +1021,24 @@ final class PlaybackCoordinator {
     }
 
     private func preferredLyricsTextSnapshot(for track: Track) -> String? {
-        let signature = lyricsCacheSignature(for: track)
-        if cachedLyricsTrackID == track.id, cachedLyricsSignature == signature {
+        let cacheKey = PlaybackLyricsCacheKey(
+            trackID: track.id,
+            lyricsText: track.lyricsText,
+            ttmlLyricText: track.ttmlLyricText,
+            lyricsFileName: track.lyricsFileName,
+            ttmlLyricsFileName: track.ttmlLyricsFileName
+        )
+        if cachedLyricsKey == cacheKey {
             return cachedLyricsText
         }
         if let ttml = LyricsFormatSupport.normalizedTTMLText(track.ttmlLyricText) {
-            cachedLyricsTrackID = track.id
-            cachedLyricsSignature = signature
+            cachedLyricsKey = cacheKey
             cachedLyricsText = ttml
             return ttml
         }
-        cachedLyricsTrackID = track.id
-        cachedLyricsSignature = signature
+        cachedLyricsKey = cacheKey
         cachedLyricsText = nil
         return nil
-    }
-
-    private func lyricsCacheSignature(for track: Track) -> String {
-        [
-            textSignature(track.lyricsText),
-            textSignature(track.ttmlLyricText),
-            track.lyricsFileName ?? "",
-            track.ttmlLyricsFileName ?? "",
-        ].joined(separator: "|lyrics-cache|")
     }
 
     private func artworkIdentity(for track: Track, artworkData: Data?) -> String {
@@ -902,12 +1047,6 @@ final class PlaybackCoordinator {
             track.artworkFileName ?? "no-file",
             ArtworkDataFingerprint.sampledString(for: artworkData),
         ].joined(separator: ":")
-    }
-
-    private func textSignature(_ text: String?) -> String {
-        guard let text, !text.isEmpty else { return "empty" }
-        let digest = SHA256.hash(data: Data(text.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     private func scheduleSidecarHydrationIfNeeded(for track: Track) {
@@ -949,8 +1088,7 @@ final class PlaybackCoordinator {
                 track.ttmlLyricText = ttml
             }
             if self.localPlayback?.currentTrack?.id == trackID {
-                self.cachedLyricsTrackID = nil
-                self.cachedLyricsSignature = nil
+                self.cachedLyricsKey = nil
                 self.refreshPresentation()
             }
         }

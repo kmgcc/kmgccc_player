@@ -481,9 +481,18 @@ struct HomeHeroView: View {
             // pixel-stretched extension.
             blurStartRatioFromEdge: 0.30,
             blurAlphaCoefficients: (0, 0, 1.8, -0.8),
-            extensionFloorStrength: 0.2
+            extensionFloorStrength: 0.2,
+            progressiveProfile: Self.heroProgressiveProfile
         )
     }
+
+    /// Height of the rendered backdrop; the card scales it to fit.
+    private static let backdropRenderHeight: CGFloat = 380
+
+    /// The fullscreen leading curve, shrunk from a typical fullscreen cover
+    /// (about 900 pt tall) to the Hero's rendered cover, so both blur alike.
+    private static let heroProgressiveProfile = CoverProgressiveBlurProfile.leading
+        .scaled(by: Double(backdropRenderHeight / 900))
 
     /// The Hero always reserves a square, full-height artwork column. This is
     /// intentionally independent of image load state and source pixel aspect
@@ -505,7 +514,7 @@ struct HomeHeroView: View {
     /// ratio so the cover area is not cropped by a mismatched fixed size.
     private var heroBackdropTargetSize: CGSize {
         let aspect = heroLayoutWidth / max(1, heroHeight)
-        let targetHeight: CGFloat = 380
+        let targetHeight = Self.backdropRenderHeight
         let targetWidth = round(targetHeight * aspect)
         return CGSize(width: max(1, targetWidth), height: targetHeight)
     }
@@ -1047,13 +1056,12 @@ private struct HomeHeroCoverPreview: View {
         ZStack(alignment: .topLeading) {
             Color.clear
             if isHovering, let image {
-                // Match the backdrop renderer's height fit and leading alignment.
-                let aspect = image.size.width / max(1, image.size.height)
+                // Match the backdrop renderer's center-square crop.
                 Image(nsImage: image)
                     .resizable()
                     .interpolation(.high)
-                    .frame(width: side * aspect, height: side)
-                    .frame(width: side, height: side, alignment: .leading)
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: side, height: side)
                     .clipped()
                     .transition(.opacity)
                     .allowsHitTesting(false)
@@ -1085,9 +1093,9 @@ private func homeHeroBackdropCacheKey(
     checksum: UInt64,
     targetSize: CGSize
 ) -> NSString {
-    // Bumped to v9: the Hero now uses one normal progressive composite;
-    // the old clear-cover hover variant must never be reused.
-    "\(checksum)-\(Int(targetSize.width))x\(Int(targetSize.height))-home-hero-v9" as NSString
+    // Bumped to v10: the Hero now uses the GPU progressive blur on a
+    // center-square cover; older Core Image composites must never be reused.
+    "\(checksum)-\(Int(targetSize.width))x\(Int(targetSize.height))-home-hero-v10" as NSString
 }
 
 private struct HomeHeroArtworkSnapshot {

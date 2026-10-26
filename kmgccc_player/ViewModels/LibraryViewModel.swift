@@ -2141,7 +2141,8 @@ final class LibraryViewModel {
             track.metadataFetchedAt.map(ISO8601DateFormatter().string(from:)) ?? "",
             track.metadataConfidence.map { String($0) } ?? "",
             track.musicBrainzReleaseID ?? "",
-            String(track.lyricsTimeOffsetMs)
+            String(track.lyricsTimeOffsetMs),
+            track.userMetadataOverride?.protectedFields.sorted().joined(separator: ",") ?? ""
         ]
         let creditFingerprint = track.artistCredits.map { credit in
             [
@@ -2183,7 +2184,8 @@ final class LibraryViewModel {
                 entry.qqMusicSingerMid ?? "",
                 entry.metadataSource ?? "",
                 fetchedAt,
-                confidence
+                confidence,
+                entry.manuallyEditedFields.sorted().joined(separator: ",")
             ]
         )
     }
@@ -2218,6 +2220,7 @@ final class LibraryViewModel {
                 entry.metadataSource ?? "",
                 fetchedAt,
                 confidence,
+                entry.manuallyEditedFields.sorted().joined(separator: ","),
                 entry.loudnessUnifiedOverride.map { $0 ? "unified" : "perTrack" } ?? ""
             ]
         )
@@ -2319,6 +2322,7 @@ final class LibraryViewModel {
                     conflictIDs.append(id)
                     continue
                 }
+                let originalMetadata = LibraryMetadataEditSnapshot(track)
                 var changed = false
                 if patch.fields.contains("title"), track.title != (patch.title ?? "") {
                     track.title = patch.title ?? ""
@@ -2326,6 +2330,10 @@ final class LibraryViewModel {
                 }
                 if patch.fields.contains("artist"), track.artist != (patch.artist ?? "") {
                     track.artist = patch.artist ?? ""
+                    if !patch.fields.contains("artistCredits") {
+                        track.artistCredits = TrackCredit.fallback(for: track.artist)
+                            + track.artistCredits.filter { !$0.role.isArtistContributor }
+                    }
                     changed = true
                 }
                 if patch.fields.contains("album"), track.album != (patch.album ?? "") {
@@ -2391,6 +2399,10 @@ final class LibraryViewModel {
                         changed = true
                     }
                 }
+                track.recordManualMetadataEdits(since: originalMetadata)
+                let previousFields = track.userMetadataOverride?.protectedFields ?? []
+                track.markMetadataFieldsAsManual(patch.fields)
+                changed = changed || previousFields != track.userMetadataOverride?.protectedFields
                 if changed {
                     changedTracks.append(track)
                     updatedIDs.append(id)
@@ -2445,15 +2457,30 @@ final class LibraryViewModel {
                 let currentArtwork = track.loadArtworkDataIfNeeded()
                 let isChanged: Bool
                 if let artworkData {
-                    isChanged = currentArtwork != artworkData
+                    isChanged = currentArtwork != artworkData || track.artworkIsUserSelected != true
                 } else {
-                    isChanged = currentArtwork != nil || track.artworkFileName != nil
+                    isChanged = currentArtwork != nil || track.artworkFileName != nil || track.artworkIsUserSelected != true
                 }
                 guard isChanged else {
                     skippedIDs.append(id)
                     continue
                 }
+                // Automation must not downgrade an existing cover. A provider
+                // search can return a smaller image than the library already
+                // owns; silently replacing it would trade detail for nothing.
+                if let artworkData,
+                   currentArtwork != artworkData,
+                   let currentPixelSize = currentArtwork.flatMap({
+                       ArtworkDataNormalizer.maxPixelSize(of: $0)
+                   }),
+                   let candidatePixelSize = ArtworkDataNormalizer.maxPixelSize(of: artworkData),
+                   candidatePixelSize <= currentPixelSize {
+                    skippedIDs.append(id)
+                    continue
+                }
                 track.artworkData = artworkData
+                track.artworkIsUserSelected = true
+                track.artworkNeedsUpgrade = false
                 changedTracks.append(track)
                 updatedIDs.append(id)
             }
@@ -2537,6 +2564,9 @@ final class LibraryViewModel {
                 changed = changed || updated.metadataConfidence != patch.metadataConfidence
                 updated.metadataConfidence = patch.metadataConfidence
             }
+            let previousFields = updated.manuallyEditedFields
+            updated.manuallyEditedFields.formUnion(patch.fields)
+            changed = changed || previousFields != updated.manuallyEditedFields
             guard changed else {
                 skippedIDs.append(artistID)
                 return
@@ -2642,6 +2672,9 @@ final class LibraryViewModel {
                 changed = changed || updated.metadataConfidence != patch.metadataConfidence
                 updated.metadataConfidence = patch.metadataConfidence
             }
+            let previousFields = updated.manuallyEditedFields
+            updated.manuallyEditedFields.formUnion(patch.fields)
+            changed = changed || previousFields != updated.manuallyEditedFields
             let loudnessChanged = patch.fields.contains("loudnessUnified")
                 && current.loudnessUnifiedOverride != patch.loudnessUnified
             guard changed || loudnessChanged else {
@@ -3053,7 +3086,8 @@ final class LibraryViewModel {
     }
 
     private func saveArtistEntryWithoutOwnership(_ entry: ArtistEntry) async throws {
-        var persisted = entry
+        let latest = artistEntries.first { $0.id == entry.id || $0.canonicalName == entry.canonicalName }
+        var persisted = entry.preservingManualMetadata(from: latest.map { [$0] } ?? [])
         persisted.updatedAt = Date()
         let saved = try await repository.updateArtistEntry(persisted)
         if persisted.id != saved.id {
@@ -3260,6 +3294,7 @@ final class LibraryViewModel {
         var persisted = updated
         persisted.displayName = trimmedName
         persisted.canonicalName = LibraryNormalization.normalizeArtist(trimmedName)
+        persisted.recordManualMetadataEdits(since: original)
         persisted.updatedAt = Date()
 
         try await repository.applyArtistEdits(original: original, updated: persisted)
@@ -3285,7 +3320,8 @@ final class LibraryViewModel {
     }
 
     private func saveAlbumEntryWithoutOwnership(_ entry: AlbumEntry) async throws {
-        var persisted = entry
+        let latest = albumEntries.first { $0.id == entry.id || $0.canonicalKey == entry.canonicalKey }
+        var persisted = entry.preservingManualMetadata(from: latest.map { [$0] } ?? [])
         persisted.updatedAt = Date()
         let saved = try await repository.updateAlbumEntry(persisted)
         if persisted.id != saved.id {
@@ -3420,6 +3456,7 @@ final class LibraryViewModel {
         )
         persisted.primaryArtistCanonicalName = original.primaryArtistCanonicalName
         persisted.primaryArtistDisplayName = original.primaryArtistDisplayName
+        persisted.recordManualMetadataEdits(since: original)
         persisted.updatedAt = Date()
 
         try await repository.applyAlbumEdits(original: original, updated: persisted)
@@ -3658,6 +3695,44 @@ final class LibraryViewModel {
             notifyTrackAuxiliaryDataChanged(trackIDs: [track.id])
         }
         return result
+    }
+
+    /// The mutation owner rechecks the cover after network work, so a manual
+    /// selection or another writer that arrived meanwhile always wins.
+    func applyRenovatedArtwork(
+        trackID: UUID, data: Data, expectedFile: TrackArtworkFileSnapshot?, expectedMemory: Data?,
+        isAllowed: @escaping @MainActor () -> Bool
+    ) async throws -> Bool {
+        var applied = false
+        try await performAutomationLibraryMutation {
+            try Task.checkCancellation()
+            guard isAllowed(),
+                  let track = self.allTracks.first(where: { $0.id == trackID }),
+                  track.artworkIsUserSelected != true,
+                  track.existingArtworkFileSnapshot() == expectedFile,
+                  track.artworkData == expectedMemory,
+                  let original = ArtworkDataNormalizer.originalData(from: data) else { return }
+            let previousData = track.loadArtworkDataIfNeeded()
+            let oldSelection = track.artworkIsUserSelected
+            if let previousData,
+               let oldSize = ArtworkDataNormalizer.minPixelSize(of: previousData),
+               let newSize = ArtworkDataNormalizer.minPixelSize(of: original), newSize < oldSize { return }
+            guard previousData != original else { return }
+            track.artworkData = original
+            track.artworkIsUserSelected = false
+            let result = await self.repository.persistTrackMetaAndArtwork([track], reason: "artworkRenovation")
+            guard result.persistedTrackIDs.contains(trackID), !result.failedTrackIDs.contains(trackID) else {
+                if track.artworkData == original && track.artworkIsUserSelected == false {
+                    track.artworkData = previousData
+                    track.artworkIsUserSelected = oldSelection
+                }
+                throw CocoaError(.fileWriteUnknown)
+            }
+            track.artworkNeedsUpgrade = false
+            self.notifyTrackAuxiliaryDataChanged(trackIDs: [trackID])
+            applied = true
+        }
+        return applied
     }
 
     @discardableResult

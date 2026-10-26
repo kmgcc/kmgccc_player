@@ -14,6 +14,7 @@ import asyncio
 import importlib
 import importlib.metadata
 import json
+import os
 import re
 import sys
 import time
@@ -21,6 +22,11 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse, urlunparse
+
+# Statically imported so PyInstaller follows every optional provider module.
+import music_enrichment_cache
+import music_enrichment_musicbrainz
+import music_enrichment_web
 
 
 try:
@@ -806,5 +812,59 @@ async def main() -> int:
             )
 
 
+def music_enrichment_main() -> int:
+    """One request per process; this path needs no QQMusic dependency/account."""
+    try:
+        raw = sys.stdin.buffer.read(1_000_001)
+        if len(raw) > 1_000_000:
+            raise ValueError("invalid_request")
+        request = json.loads(raw)
+        if not isinstance(request, dict):
+            raise ValueError("invalid_request")
+        provider = request.get("provider")
+        query = request.get("query") or {}
+        if not isinstance(query, dict):
+            raise ValueError("invalid_request")
+        cache_directory = request.get("cacheDirectory")
+        if isinstance(cache_directory, str) and os.path.isabs(cache_directory):
+            music_enrichment_web.TOKEN_CACHE_DIRECTORY = cache_directory
+        if provider == "motion":
+            url, destination = request.get("url"), request.get("destination")
+            if not isinstance(url, str) or not isinstance(destination, str) or not destination:
+                raise ValueError("invalid_request")
+            response = {"ok": True, "asset": music_enrichment_web.materialize_motion(url, destination)}
+        elif provider == "motionSearch":
+            response = {"ok": True, "candidates": music_enrichment_cache.sanitize_public_value(music_enrichment_web.search_motion(query))}
+        else:
+            fetchers = {
+                "appleWeb": music_enrichment_web.fetch,
+                "appleArtwork": lambda query: music_enrichment_web.fetch(query, artwork_only=True),
+                "appleCache": music_enrichment_cache.fetch,
+                "amllDB": music_enrichment_web.fetch_amll,
+                "musicBrainz": music_enrichment_musicbrainz.fetch,
+            }
+            fetch = fetchers.get(provider)
+            if fetch is None:
+                raise ValueError("unsupported_provider")
+            response = {"ok": True, "result": music_enrichment_cache.sanitize_public_value(fetch(query)) or None}
+        encoded = json.dumps(response, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    except Exception as exc:
+        # Provider exceptions can embed request URLs, tokens or private paths.
+        # Only a fixed error class crosses this optional protocol boundary.
+        response = {"ok": False, "error": type(exc).__name__, "retryable": _is_transient_error(exc)}
+        encoded = json.dumps(response, separators=(",", ":"))
+    print(encoded, flush=True)
+    return 0
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    """Network trouble a later attempt may get past; a bad reply is final."""
+    from http.client import HTTPException
+    from urllib.error import HTTPError, URLError
+    if isinstance(exc, HTTPError):
+        return exc.code in (408, 425, 429) or exc.code >= 500
+    return isinstance(exc, (URLError, TimeoutError, ConnectionError, HTTPException))
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    raise SystemExit(music_enrichment_main() if sys.argv[1:] == ["--music-enrichment"] else asyncio.run(main()))

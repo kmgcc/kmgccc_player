@@ -55,6 +55,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Self.applicationWillTerminateHandler?()
     }
 
+    #if DEBUG
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        // XCTest suppresses the main window and closes fixture windows between
+        // tests. SwiftUI must keep that host alive until the test run finishes.
+        !KmgcccPlayerApp.isRunningTests
+    }
+    #endif
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if UpdateCoordinator.shared.prepareUpdateForOrdinaryTermination() {
             Log.info(

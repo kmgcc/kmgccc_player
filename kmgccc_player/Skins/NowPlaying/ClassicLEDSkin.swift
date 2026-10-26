@@ -204,24 +204,39 @@ struct ClassicArtworkCoverContainer: View {
                     mask: mask.image,
                     frameIndex: mask.index,
                     artworkChecksum: artwork.checksum,
+                    motionArtwork: context.track?.preferredMotionArtwork,
+                    isPlaying: context.playback.isPlaying,
                     size: size,
                     displayScale: displayScale,
                     rasterScale: rasterScale
                 )
             } else {
-                RoundedCoverArtworkImage(image: artwork.image, size: size, cornerRadius: cornerRadius)
+                RoundedCoverArtworkImage(
+                    image: artwork.image, size: size, cornerRadius: cornerRadius,
+                    motionArtwork: context.track?.preferredMotionArtwork, isPlaying: context.playback.isPlaying
+                )
             }
         } else if let image = context.track?.artworkImage {
             if usesFrameMask, artworkFrameMaskRequest != nil {
                 Color.clear
             } else {
-                RoundedCoverArtworkImage(image: image, size: size, cornerRadius: cornerRadius)
+                RoundedCoverArtworkImage(
+                    image: image, size: size, cornerRadius: cornerRadius,
+                    motionArtwork: context.track?.preferredMotionArtwork, isPlaying: context.playback.isPlaying
+                )
             }
         } else {
-            ArtworkPlaceholderView.nowPlaying(
-                size: min(context.contentSize.width, context.contentSize.height) * 0.5,
-                cornerRadius: cornerRadius
-            )
+            MotionArtworkView(
+                resource: context.track?.preferredMotionArtwork,
+                isPlaying: context.playback.isPlaying
+            ) {
+                ArtworkPlaceholderView.nowPlaying(
+                    size: min(context.contentSize.width, context.contentSize.height) * 0.5,
+                    cornerRadius: cornerRadius
+                )
+            }
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
     }
 
@@ -388,12 +403,22 @@ private struct AppleStyleArtworkCoverContainer: View {
                     .opacity(context.theme.colorScheme == .dark ? 0.34 : 0.26)
                     .allowsHitTesting(false)
 
-                RoundedCoverArtworkImage(image: image, size: size, cornerRadius: cornerRadius)
-            } else {
-                ArtworkPlaceholderView.nowPlaying(
-                    size: min(context.contentSize.width, context.contentSize.height) * 0.5,
-                    cornerRadius: cornerRadius
+                RoundedCoverArtworkImage(
+                    image: image, size: size, cornerRadius: cornerRadius,
+                    motionArtwork: context.track?.preferredMotionArtwork, isPlaying: context.playback.isPlaying
                 )
+            } else {
+                MotionArtworkView(
+                    resource: context.track?.preferredMotionArtwork,
+                    isPlaying: context.playback.isPlaying
+                ) {
+                    ArtworkPlaceholderView.nowPlaying(
+                        size: min(context.contentSize.width, context.contentSize.height) * 0.5,
+                        cornerRadius: cornerRadius
+                    )
+                }
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
         }
         .frame(width: size, height: size)
@@ -404,12 +429,16 @@ private struct RoundedCoverArtworkImage: View {
     let image: NSImage
     let size: CGFloat
     let cornerRadius: CGFloat
+    var motionArtwork: MotionArtworkResource? = nil
+    var isPlaying = false
 
     var body: some View {
-        Image(nsImage: image)
-            .resizable()
-            .interpolation(.high)
-            .aspectRatio(contentMode: .fill)
+        MotionArtworkView(resource: motionArtwork, isPlaying: isPlaying) {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fill)
+        }
             .frame(width: size, height: size)
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -421,6 +450,8 @@ private struct ArtworkFrameMaskedImageView: View {
     let mask: CGImage
     let frameIndex: Int
     let artworkChecksum: UInt64
+    let motionArtwork: MotionArtworkResource?
+    let isPlaying: Bool
     let size: CGFloat
     let displayScale: CGFloat
     let rasterScale: CGFloat
@@ -440,13 +471,24 @@ private struct ArtworkFrameMaskedImageView: View {
     var body: some View {
         Group {
             if let extendedArtworkImage {
-                Image(nsImage: extendedArtworkImage)
+                let poster = Image(nsImage: extendedArtworkImage)
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fill)
                     .frame(width: size, height: size)
                     .clipped()
-                    .scaleEffect(displayedFinalScale)
+                Group {
+                    if let displayedMask {
+                        let style = ClassicMotionArtworkFrameStyle(mask: displayedMask, outputPixel: targetPixel,
+                            artworkScale: artworkScale, edgeBlurEnabled: edgeBlurEnabled)
+                        MotionArtworkView(resource: motionArtwork, isPlaying: isPlaying,
+                            frameProcessor: MotionArtworkFrameProcessor(identity: processingKey, process: { style.render($0) })
+                        ) { poster }
+                    } else {
+                        poster
+                    }
+                }
+                .scaleEffect(displayedFinalScale)
             } else {
                 Color.clear
             }
@@ -1198,11 +1240,8 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
             SettingsSwitchRow(
                 title: "启用艺术背景",
                 isOn: $fullscreenArtBackgroundEnabled,
-                detail: "遇到性能问题时，可以关闭此选项",
                 titleFont: presentationStyle.rowLabelFont,
-                detailFont: presentationStyle.captionFont,
-                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors),
-                detailColor: presentationStyle.settingsSecondaryTextColor(appColors: appColors)
+                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors)
             )
 
             HStack(spacing: 0) {
@@ -1376,5 +1415,66 @@ private struct PillSpectrumContainer: NSViewRepresentable {
             )
             return (resolved.fillColors, resolved.strokeColors)
         }
+    }
+}
+
+private nonisolated struct ClassicMotionArtworkFrameStyle: @unchecked Sendable {
+    let mask: CGImage
+    let outputPixel: Int
+    let artworkScale: CGFloat
+    let edgeBlurEnabled: Bool
+
+    nonisolated func render(_ image: CGImage) -> CGImage? {
+        ClassicArtworkFrameExtendedArtworkRenderer.render(sourceImage: image, mask: mask,
+            outputPixel: outputPixel, artworkScale: artworkScale, edgeBlurEnabled: edgeBlurEnabled)
+    }
+}
+
+// MARK: - Scene Parts
+
+/// The built-in cover stacks, sized by the scene frame instead of the legacy column layout.
+struct SkinClassicCoverPart: View {
+    let snapshot: SkinSceneSnapshot
+    let configuration: SkinComponentConfiguration
+    let appleStyle: Bool
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        GeometryReader { proxy in
+            let side = min(proxy.size.width, proxy.size.height)
+            let context = snapshot.context.withComponentBounds(proxy.size)
+            Group {
+                if appleStyle {
+                    AppleStyleArtworkCoverContainer(context: context, size: side)
+                } else {
+                    ClassicArtworkCoverContainer(
+                        context: context, size: side, displayScale: displayScale, rasterScale: 1,
+                        frameMaskOverride: configuration.values["frameMask"] == nil
+                            ? nil : configuration.boolean("frameMask", fallback: true),
+                        cornerRadius: configuration.number("cornerRadius", fallback: 12)
+                    )
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+    }
+}
+
+/// The capsule spectrum pill shared by the classic, Apple style and rotating cover skins.
+struct SkinPillSpectrumPart: View {
+    let snapshot: SkinSceneSnapshot
+    let configuration: SkinComponentConfiguration
+    @Environment(\.skinSceneSurface) private var surface
+
+    var body: some View {
+        let fullscreen = surface == .fullscreen
+        PillSpectrumView(
+            context: snapshot.context,
+            dotSize: fullscreen ? 14 : 12,
+            spacing: fullscreen ? 9 : 7,
+            pillTint: snapshot.theme.artworkAccentColor,
+            isFullscreen: fullscreen
+        )
+        .allowsHitTesting(false)
     }
 }

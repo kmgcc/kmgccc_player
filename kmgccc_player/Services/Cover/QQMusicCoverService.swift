@@ -51,7 +51,8 @@ actor QQMusicCoverService {
         artist: String,
         album: String,
         duration: Double? = nil,
-        limit: Int = CoverLookupConfiguration.qqMusicCandidateLimit
+        limit: Int = CoverLookupConfiguration.qqMusicCandidateLimit,
+        stopAtTarget: Bool = false
     ) async throws -> [CoverCandidate] {
         let query = CoverQuery(
             title: trimmed(title),
@@ -71,7 +72,7 @@ actor QQMusicCoverService {
         }
 
         let startedAt = Date()
-        let rawCandidates = try await fetchRawCandidates(for: query)
+        let rawCandidates = try await fetchRawCandidates(for: query, cancelsWithCaller: stopAtTarget)
 
         var scored: [(candidate: QQMusicArtworkCandidate, confidence: Double)] = []
         for candidate in rawCandidates {
@@ -109,6 +110,7 @@ actor QQMusicCoverService {
         var seenImageURLs = Set<String>()
 
         for item in scored {
+            try Task.checkCancellation()
             guard results.count < limit else { break }
             guard let rawImageURL = trimmed(item.candidate.imageURL) else {
                 Log.info("[QQMusicCover] skipped: empty imageURL title=\(item.candidate.title ?? "-")", category: .import)
@@ -140,6 +142,8 @@ actor QQMusicCoverService {
                         imageURL: imageURL
                     )
                 )
+                if stopAtTarget,
+                   CoverCandidateSorter.bestAutomaticCandidate(from: results.filter(\.meetsAutomaticTarget)) != nil { break }
             } catch {
                 let nsErr = error as NSError
                 Log.warning("[QQMusicCover] download failed: url=\(imageURL) code=\(nsErr.code) domain=\(nsErr.domain) \(error)", category: .import)
@@ -239,7 +243,7 @@ actor QQMusicCoverService {
         return CoverCandidateSorter.sorted(results)
     }
 
-    private func fetchRawCandidates(for query: CoverQuery) async throws -> [QQMusicArtworkCandidate] {
+    private func fetchRawCandidates(for query: CoverQuery, cancelsWithCaller: Bool = false) async throws -> [QQMusicArtworkCandidate] {
         var results: [QQMusicArtworkCandidate] = []
         var firstError: Error?
         let helper = self.helper
@@ -249,6 +253,7 @@ actor QQMusicCoverService {
                 results.append(
                     contentsOf: try await cachedMetadata(
                         key: metadataKey(method: "track", title: title, artist: query.artist, album: query.album, duration: query.duration),
+                        cancelsWithCaller: cancelsWithCaller,
                         taskFactory: {
                             Task {
                                 try await helper.searchTrackArtwork(
@@ -268,11 +273,13 @@ actor QQMusicCoverService {
             }
         }
 
+        try Task.checkCancellation()
         if !query.album.isEmpty {
             do {
                 results.append(
                     contentsOf: try await cachedMetadata(
                         key: metadataKey(method: "album", title: nil, artist: query.artist, album: query.album, duration: nil),
+                        cancelsWithCaller: cancelsWithCaller,
                         taskFactory: {
                             Task {
                                 try await helper.searchAlbumArtwork(
@@ -299,10 +306,24 @@ actor QQMusicCoverService {
 
     private func cachedMetadata(
         key: String,
+        cancelsWithCaller: Bool = false,
         taskFactory: () -> Task<[QQMusicArtworkCandidate], Error>
     ) async throws -> [QQMusicArtworkCandidate] {
         if let cached = readMetadataCache(for: key) {
             return cached
+        }
+
+        // Automatic cover selection must be able to stop at another provider's
+        // result. Keep its cancellable task separate from shared editor work,
+        // so cancelling it never cancels a manual search for the same song.
+        if cancelsWithCaller {
+            let task = taskFactory()
+            let candidates = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: { task.cancel() }
+            try Task.checkCancellation()
+            writeMetadataCache(candidates, for: key)
+            return candidates
         }
 
         if let task = inFlightMetadata[key] {
@@ -743,14 +764,13 @@ actor QQMusicCoverService {
 nonisolated enum CoverCandidateSorter {
     static func sorted(_ candidates: [CoverCandidate]) -> [CoverCandidate] {
         candidates.sorted { lhs, rhs in
-            let lhsScore = lhs.rankingScore
-            let rhsScore = rhs.rankingScore
-            if abs(lhsScore - rhsScore) > 0.01 {
-                return lhsScore > rhsScore
+            if lhs.confidence != rhs.confidence {
+                return lhs.confidence > rhs.confidence
             }
-            if lhs.resolution != rhs.resolution {
-                return lhs.resolution > rhs.resolution
+            if lhs.squarePixelSize != rhs.squarePixelSize {
+                return lhs.squarePixelSize > rhs.squarePixelSize
             }
+            if lhs.source.priority != rhs.source.priority { return lhs.source.priority < rhs.source.priority }
             return lhs.id < rhs.id
         }
     }
@@ -758,6 +778,7 @@ nonisolated enum CoverCandidateSorter {
     static func bestAutomaticCandidate(from candidates: [CoverCandidate]) -> CoverCandidate? {
         sorted(candidates).first {
             $0.confidence >= CoverLookupConfiguration.automaticCoverConfidenceThreshold
+                && $0.squarePixelSize > 0
                 && !QQMusicCoverService.isPlaceholderArtistArtwork($0.imageData)
         }
     }

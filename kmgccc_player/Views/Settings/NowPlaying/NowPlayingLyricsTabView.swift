@@ -45,6 +45,8 @@ struct NowPlayingLyricsTabView: View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
             renderingSection
 
+            springSection
+
             fontsSection
 
             previewSection
@@ -60,16 +62,11 @@ struct NowPlayingLyricsTabView: View {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                 AMLLLyricsRenderQualitySlider(quality: $amllLyricsRenderQuality)
 
-                AMLLLyricSpringSettingsControls(
-                    duration: $amllLyricsSpringDuration,
-                    bounce: $amllLyricsSpringBounce
-                )
-
                 SettingsSwitchRow(
                     title: "减弱高亮",
                     isOn: $amllDiscreteWordHighlightEnabled,
                     titleFont: presentationStyle.rowLabelFont,
-                    info: "开启后歌词逐字亮起而不是扫光。"
+                    info: "开启后歌词逐字亮起而不是扫光。" + (skinOwnedNote("highlight", "高亮") ?? "")
                 )
             }
         }
@@ -90,8 +87,26 @@ struct NowPlayingLyricsTabView: View {
         }
     }
 
+    /// Names the selected skins that keep this group of lyrics settings for themselves.
+    private func skinOwnedNote(_ group: String, _ subject: String) -> String? {
+        let skins = [SkinRegistry.skin(for: settings.selectedNowPlayingSkinID), SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID)]
+        let names = skins.filter { $0.lyricsSkinOwnedSettings.contains(group) }
+            .reduce(into: [String]()) { if !$0.contains($1.name) { $0.append($1.name) } }
+        guard !names.isEmpty else { return nil }
+        return "「" + names.joined(separator: "」「") + "」皮肤使用自己的\(subject)。"
+    }
+
+    private var springSection: some View {
+        SettingsSection("滚动弹性", info: skinOwnedNote("spring", "滚动弹性")) {
+            AMLLLyricSpringSettingsControls(
+                duration: $amllLyricsSpringDuration,
+                bounce: $amllLyricsSpringBounce
+            )
+        }
+    }
+
     private var fontsSection: some View {
-        SettingsSection("settings.lyrics.fonts") {
+        SettingsSection("settings.lyrics.fonts", info: skinOwnedNote("font", "字体")) {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                 HStack {
                     Text("settings.lyrics.font_size")

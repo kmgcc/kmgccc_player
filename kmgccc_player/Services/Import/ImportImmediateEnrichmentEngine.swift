@@ -317,7 +317,11 @@ final class ImportImmediateEnrichmentEngine {
         let result = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: entry)
         guard result.changed else { return false }
         return await commitMetadataEntry(id: result.value.id) {
-            try await self.repository.updateArtistEntry(result.value)
+            let latest = await self.latestArtistEntry(canonical: canonical, displayName: artist)
+            let fresh = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: latest)
+            if fresh.changed {
+                try await self.repository.updateArtistEntry(fresh.value)
+            }
         }
     }
 
@@ -344,7 +348,11 @@ final class ImportImmediateEnrichmentEngine {
         let result = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: entry)
         guard result.changed else { return false }
         return await commitMetadataEntry(id: result.value.id) {
-            try await self.repository.updateAlbumEntry(result.value)
+            let latest = await self.latestAlbumEntry(album: album, artist: artist)
+            let fresh = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: latest)
+            if fresh.changed {
+                try await self.repository.updateAlbumEntry(fresh.value)
+            }
         }
     }
 
@@ -628,7 +636,7 @@ final class ImportImmediateEnrichmentEngine {
         if let lyricOutcome = output.lyricOutcome {
             switch lyricOutcome {
             case .completed(let ttml):
-                if record.track.ttmlLyricText == nil {
+                if record.track.allowsAutomaticLyrics && record.track.ttmlLyricText == nil {
                     record.track.ttmlLyricText = ttml
                 }
                 stats.lyricSuccess += 1
@@ -647,19 +655,32 @@ final class ImportImmediateEnrichmentEngine {
         if let coverOutcome = output.coverOutcome {
             switch coverOutcome {
             case .completed(let artworkData):
-                if !record.track.hasArtwork {
+                let canReplace = record.track.artworkIsUserSelected != true && (!record.track.hasArtwork || record.track.artworkNeedsUpgrade)
+                let replaced = canReplace && ArtworkDataNormalizer.isHigherResolution(
+                    artworkData,
+                    than: record.track.loadArtworkDataIfNeeded()
+                )
+                if replaced {
                     record.track.artworkData = artworkData
+                    record.track.artworkIsUserSelected = false
+                    stats.coverSuccess += 1
+                    detailParts.append("封面已补全")
                 }
-                stats.coverSuccess += 1
-                detailParts.append("封面已补全")
+                record.track.artworkNeedsUpgrade = false
             case .noResults:
-                stats.noResults += 1
-                status = .warning
-                detailParts.append("未找到封面")
+                record.track.artworkNeedsUpgrade = false
+                if !record.track.hasArtwork {
+                    stats.noResults += 1
+                    status = .warning
+                    detailParts.append("未找到封面")
+                }
             case .failed:
-                stats.failures += 1
-                status = .warning
-                detailParts.append("封面补全失败")
+                record.track.artworkNeedsUpgrade = false
+                if !record.track.hasArtwork {
+                    stats.failures += 1
+                    status = .warning
+                    detailParts.append("封面补全失败")
+                }
             }
         }
 

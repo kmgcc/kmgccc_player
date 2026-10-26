@@ -96,7 +96,7 @@ struct AutomationLibraryQueries {
                       TrackAvailability(rawValue: raw) != nil else {
                     throw AutomationParameterError.invalidValue("filter.availability")
                 }
-            case "missing", "hasLyrics", "hasArtwork":
+            case "missing", "hasLyrics", "hasArtwork", "hasMotionArtwork", "motionArtworkUserSelected":
                 guard case .boolean = value else {
                     throw AutomationParameterError.invalidType("filter.\(key)", expected: "boolean")
                 }
@@ -273,6 +273,14 @@ struct AutomationLibraryQueries {
                     throw AutomationParameterError.invalidType("filter.hasArtwork", expected: "boolean")
                 }
                 if artworkAvailable != expected { return false }
+            case "hasMotionArtwork", "motionArtworkUserSelected":
+                guard case .boolean(let expected) = value else {
+                    throw AutomationParameterError.invalidType("filter.\(key)", expected: "boolean")
+                }
+                let actual = key == "hasMotionArtwork"
+                    ? track.motionArtwork?.assets.isEmpty == false
+                    : track.motionArtwork?.isUserSelected == true
+                if actual != expected { return false }
             case "addedAfter":
                 if let date = try filterDate(value, key: key), track.addedAt <= date { return false }
             case "addedBefore":
@@ -584,6 +592,8 @@ struct AutomationLibraryQueries {
             lyricsStatus: trackLyricsStatus(track),
             artworkAvailable: track.hasArtwork,
             artworkFileName: track.artworkFileName,
+            motionArtworkAvailable: track.motionArtwork?.assets.isEmpty == false,
+            motionArtworkUserSelected: track.motionArtwork?.isUserSelected == true,
             format: audio?.format,
             codec: audio?.codec,
             sampleRateHz: audio?.sampleRateHz,

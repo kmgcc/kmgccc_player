@@ -175,6 +175,14 @@ run_step "CostBoundedCache regression" 180 \
     -o "$COST_BOUNDED_CACHE_EXECUTABLE"
 run_step "CostBoundedCache regression execution" 60 "$COST_BOUNDED_CACHE_EXECUTABLE"
 
+ARTWORK_CACHE_GENERATION_EXECUTABLE="$WORK_DIR/artwork-cache-generation-regression"
+run_step "Artwork cache generation regression" 180 \
+  xcrun swiftc -swift-version 6 -parse-as-library \
+    "$ROOT/kmgccc_player/Services/Artwork/FastArtworkMemoryCache.swift" \
+    "$ROOT/Tests/FastArtworkMemoryCacheGenerationRegressionTests.swift" \
+    -o "$ARTWORK_CACHE_GENERATION_EXECUTABLE"
+run_step "Artwork cache generation regression execution" 60 "$ARTWORK_CACHE_GENERATION_EXECUTABLE"
+
 DEVICE_TELEMETRY_EXECUTABLE="$WORK_DIR/device-telemetry-regression"
 run_step "DeviceTelemetry regression" 180 \
   xcrun swiftc -parse-as-library \

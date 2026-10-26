@@ -44,6 +44,7 @@ struct MiniPlayerView: View {
     @State private var isVolumeHovering = false
     @State private var isVolumeAdjusting = false
     @State private var isShowingExternalMatchEditor = false
+    @State private var isShowingMusicEnrichment = false
     @State private var showPlaybackModeRetapTip = false
 
     private var playbackModeExpandedWidth: CGFloat { 168 }
@@ -87,6 +88,7 @@ struct MiniPlayerView: View {
                     trackToEdit: $trackToEdit,
                     trackForDetailReader: $trackForDetailReader,
                     isShowingExternalMatchEditor: $isShowingExternalMatchEditor,
+                    isShowingMusicEnrichment: $isShowingMusicEnrichment,
                     onDeleteTrack: { track in
                         trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
                     },
@@ -113,6 +115,16 @@ struct MiniPlayerView: View {
                         }
                     )
                     .environmentObject(themeStore)
+                }
+                .sheet(isPresented: $isShowingMusicEnrichment) {
+                    if let snapshot = presentation.musicEnrichment {
+                        MusicEnrichmentDetailView(
+                            snapshot: snapshot,
+                            title: presentation.title,
+                            artist: presentation.artist
+                        )
+                        .environmentObject(themeStore)
+                    }
                 }
             }
 
@@ -166,6 +178,9 @@ struct MiniPlayerView: View {
                 materialStyle: .regular,
                 isFloating: true
             )
+            // The palette of a new track arrives as one update; fade the tint
+            // and the controls into it alongside the backgrounds.
+            .motionAnimation(.backgroundTransition, value: themeStore.accentNSColor)
             .contentShape(Capsule())
             .onTapGesture {}
             .libraryTrackDropTarget(.playNow, cornerRadius: GlassStyleTokens.miniPlayerHeight / 2, highlight: .overlay)
@@ -464,8 +479,8 @@ struct MiniPlayerView: View {
         // Local-track artwork source shortcut is local-playback only; for
         // external playback the provider-resolved `artworkData` is authoritative.
         if presentation.source == .local,
-           let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
-            return "local-\(source.sourceKey)-thumb"
+           let sourceKey = presentation.localArtworkSourceKey {
+            return "local-\(sourceKey)-thumb"
         }
         let identity = presentation.artworkIdentity
             ?? presentation.lyricsIdentity
@@ -691,6 +706,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
     @Binding var trackToEdit: Track?
     @Binding var trackForDetailReader: Track?
     @Binding var isShowingExternalMatchEditor: Bool
+    @Binding var isShowingMusicEnrichment: Bool
 
     let onDeleteTrack: (Track) -> Void
     let onFullscreen: () -> Void
@@ -851,6 +867,13 @@ private struct MiniPlayerLeftSection: View, Equatable {
         )
         let _ = ContextMenuDiagnostics.end(token)
         let presentation = playbackCoordinator.presentation
+        if presentation.musicEnrichment != nil {
+            Button {
+                isShowingMusicEnrichment = true
+            } label: {
+                Label("音乐资料", systemImage: "text.book.closed")
+            }
+        }
         if let track = presentation.localTrack {
             TrackActionMenuContent(
                 track: track,

@@ -129,8 +129,8 @@ final class SkinPackageCompletionTests: XCTestCase {
         )
         _ = try await store.importPackage(compatibleUpgrade, disposition: .replace)
         let current = try XCTUnwrap(catalog.registeredSkin(for: id) as? PackagedSkin)
-        XCTAssertEqual(current.manifest.formatVersion, 1)
-        XCTAssertEqual(current.manifest.hostAPIVersion, 1)
+        XCTAssertEqual(current.manifest.formatVersion, 2)
+        XCTAssertEqual(current.manifest.hostAPIVersion, 2)
         XCTAssertEqual(current.manifest.version, "3.2.0")
         guard case .installed(let currentDirectory) = current.origin else {
             return XCTFail("The compatible version should replace the prior installation")
@@ -149,8 +149,8 @@ final class SkinPackageCompletionTests: XCTestCase {
 
         for unsupportedVersion in ["format", "hostAPI"] {
             var manifest = makeManifest(id: id, name: "Rejected \(unsupportedVersion)", version: "4.0.0")
-            if unsupportedVersion == "format" { manifest.formatVersion = 2 }
-            else { manifest.hostAPIVersion = 2 }
+            if unsupportedVersion == "format" { manifest.formatVersion = 3 }
+            else { manifest.hostAPIVersion = 3 }
             let archive = try makeArchive(manifest: JSONEncoder().encode(manifest), in: sandbox)
 
             do {
