@@ -56,6 +56,11 @@ enum WhatsNewConfiguration {
         title: "什么是新的",
         features: [
             WhatsNew.Feature(
+                image: .init(systemName: "checkmark.circle", foregroundColor: .green),
+                title: "更新公告",
+                subtitle: "点击“继续”后可正常关闭更新公告。"
+            ),
+            WhatsNew.Feature(
                 image: .init(systemName: "livephoto", foregroundColor: .pink),
                 title: "Apple Music 动态封面",
                 subtitle: "为歌曲或专辑查找动态封面，也可以导入自己的视频。"
