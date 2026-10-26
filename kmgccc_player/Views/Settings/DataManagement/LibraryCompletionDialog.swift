@@ -48,6 +48,7 @@ private final class LibraryCompletionDialogViewModel {
     var progress: LibraryCompletionProgress = .idle
     var result: LibraryCompletionResult?
     var isRunning = false
+    var isStopping = false
 
     @ObservationIgnored private let service: LibraryCompletionService
     @ObservationIgnored private var task: Task<Void, Never>?
@@ -57,7 +58,8 @@ private final class LibraryCompletionDialogViewModel {
             libraryVM: libraryVM,
             qqMusicCoverService: cacheServices.qqMusicCoverService,
             lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
-            amllDBService: cacheServices.amllDBService
+            amllDBService: cacheServices.amllDBService,
+            musicEnrichmentService: cacheServices.musicEnrichmentService
         )
     }
 
@@ -72,6 +74,7 @@ private final class LibraryCompletionDialogViewModel {
     func start() {
         guard canStart else { return }
         isRunning = true
+        isStopping = false
         result = nil
         stage = .running
         progress = LibraryCompletionProgress(
@@ -101,7 +104,8 @@ private final class LibraryCompletionDialogViewModel {
     }
 
     func cancel() {
-        guard isRunning else { return }
+        guard isRunning, !isStopping else { return }
+        isStopping = true
         progress = LibraryCompletionProgress(
             phase: .cancelled,
             processedCount: progress.processedCount,
@@ -111,9 +115,10 @@ private final class LibraryCompletionDialogViewModel {
             currentAlbum: progress.currentAlbum,
             currentTaskLabel: progress.currentTaskLabel,
             recentEvents: progress.recentEvents,
-            detail: "正在取消，当前请求结束后停止继续处理"
+            detail: "正在停止，进行中的歌曲保存后结束"
         )
-        task?.cancel()
+        // Not a task cancel: songs in flight finish and are saved.
+        service.requestStop()
     }
 }
 
@@ -138,7 +143,7 @@ private final class LibraryCompletionDialogController: NSObject, NSWindowDelegat
         }
 
         let windowSize = NSSize(width: 560, height: 580)
-        let (panel, visualEffect) = AppDialogTokens.makePanel(width: windowSize.width, height: windowSize.height)
+        let (panel, visualEffect) = AppDialogTokens.makeInsetPanel(contentSize: windowSize)
 
         panel.title = ""
         panel.titlebarAppearsTransparent = true
@@ -168,9 +173,10 @@ private final class LibraryCompletionDialogController: NSObject, NSWindowDelegat
         .tint(ThemeStore.shared.accentColor)
         .accentColor(ThemeStore.shared.accentColor)
         .frame(width: windowSize.width, height: windowSize.height)
+        .padding(AppDialogTokens.panelShadowInset)
 
-        let hostingView = NSHostingView(rootView: rootView)
-        hostingView.frame = NSRect(origin: .zero, size: windowSize)
+        let hostingView = AppDialogTokens.makeHostingView(rootView: rootView)
+        hostingView.frame = visualEffect.bounds
         hostingView.autoresizingMask = [.width, .height]
         visualEffect.addSubview(hostingView)
 
@@ -260,7 +266,7 @@ private struct LibraryCompletionDialogView: View {
         case .running:
             return "处理中，可随时取消。"
         case .result:
-            return "已生成本次补全结果摘要。"
+            return viewModel.result?.cancelled == true ? "已找到的内容均已保存。" : "本次补全结果。"
         }
     }
 
@@ -310,6 +316,12 @@ private struct LibraryCompletionDialogView: View {
                     title: "补全歌曲信息",
                     detail: "补全歌曲资料、封面、专辑和艺人信息。",
                     isOn: $viewModel.options.fillMetadata
+                )
+
+                SettingsTaskOptionToggle(
+                    title: "补全动态封面",
+                    detail: "按专辑查找，同一专辑的歌曲共用一份。",
+                    isOn: $viewModel.options.fillMotionArtwork
                 )
 
                 SettingsTaskOptionToggle(
@@ -411,11 +423,21 @@ private struct LibraryCompletionDialogView: View {
             if let result = viewModel.result {
                 SettingsTaskPanel(accentColor: result.failureCount == 0 ? .green : .orange) {
                     VStack(alignment: .leading, spacing: 10) {
+                        let options = viewModel.options
                         resultRow("已检查", value: "\(result.processedTrackCount) 首")
-                        resultRow("已补全信息", value: "\(result.metadataItemsFilledCount) 项")
-                        resultRow("已补全歌词", value: "\(result.lyricsFilledTrackCount) 首")
-                        resultRow("已跳过已有内容", value: "\(result.skippedExistingDataCount) 项")
-                        resultRow("未找到", value: "\(result.failureCount) 项")
+                        if options.fillMetadata {
+                            resultRow("补全歌曲信息", value: "\(result.metadataItemsFilledCount) 项")
+                        }
+                        if options.fillMotionArtwork {
+                            resultRow("补全动态封面", value: "\(result.motionArtworkAlbumCount) 张专辑，\(result.motionArtworkTrackCount) 首")
+                        }
+                        if options.fillLyrics {
+                            resultRow("补全歌词", value: "\(result.lyricsFilledTrackCount) 首")
+                        }
+                        if options.fillMetadata || options.fillLyrics {
+                            resultRow("保留已有内容", value: "\(result.skippedExistingDataCount) 项")
+                        }
+                        resultRow("未补全", value: "\(result.failureCount) 项")
                     }
                 }
 
@@ -461,7 +483,12 @@ private struct LibraryCompletionDialogView: View {
                     action: viewModel.start
                 )
             case .running:
-                SettingsTaskDialogButton("取消操作", kind: .secondary, action: viewModel.cancel)
+                SettingsTaskDialogButton(
+                    viewModel.isStopping ? "正在停止" : "停止",
+                    kind: .secondary,
+                    disabled: viewModel.isStopping,
+                    action: viewModel.cancel
+                )
             case .result:
                 SettingsTaskDialogButton("关闭", kind: .primary, action: onCloseResult)
             }

@@ -604,6 +604,8 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
     let metadataFetchedAt: Date?
     let metadataConfidence: Double?
     let musicBrainzReleaseID: String?
+    let motionArtwork: TrackMotionArtwork?
+    let artworkIsUserSelected: Bool?
     let duration: Double
     let addedAt: Date
     let importedAt: Date
@@ -643,6 +645,8 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         case metadataFetchedAt
         case metadataConfidence
         case musicBrainzReleaseID
+        case motionArtwork
+        case artworkIsUserSelected
         case duration
         case addedAt
         case importedAt
@@ -683,6 +687,8 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         metadataFetchedAt = meta.metadataFetchedAt
         metadataConfidence = meta.metadataConfidence
         musicBrainzReleaseID = meta.musicBrainzReleaseID
+        motionArtwork = meta.motionArtwork
+        artworkIsUserSelected = meta.artworkIsUserSelected
         duration = meta.duration
         addedAt = meta.addedAt
         importedAt = meta.importedAt
@@ -724,6 +730,8 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         metadataFetchedAt = try c.decodeIfPresent(Date.self, forKey: .metadataFetchedAt)
         metadataConfidence = try c.decodeIfPresent(Double.self, forKey: .metadataConfidence)
         musicBrainzReleaseID = try c.decodeIfPresent(String.self, forKey: .musicBrainzReleaseID)
+        motionArtwork = try c.decodeIfPresent(TrackMotionArtwork.self, forKey: .motionArtwork)
+        artworkIsUserSelected = try c.decodeIfPresent(Bool.self, forKey: .artworkIsUserSelected)
         duration = try c.decode(Double.self, forKey: .duration)
         addedAt = try c.decode(Date.self, forKey: .addedAt)
         importedAt = try c.decode(Date.self, forKey: .importedAt)
@@ -785,7 +793,9 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
             ncmConversionAssociation: ncmConversionAssociation,
             playCount: playCount,
             preferenceStats: preferenceStats,
-            folderURL: rootURL.appendingPathComponent(folderRelativePath, isDirectory: true)
+            folderURL: rootURL.appendingPathComponent(folderRelativePath, isDirectory: true),
+            motionArtwork: motionArtwork,
+            artworkIsUserSelected: artworkIsUserSelected
         )
     }
 }

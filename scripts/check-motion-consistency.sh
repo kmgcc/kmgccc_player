@@ -145,6 +145,12 @@ is_allowlisted() {
         return 0
       fi
       ;;
+    kmgccc_player/Skins/SceneV2/SkinNodeStyle.swift)
+      if [[ "$text" == *'MotionSpec('* ]]; then
+        printf 'skin-authored token overrides translated into MotionKit specs'
+        return 0
+      fi
+      ;;
     kmgccc_player/Skins/NowPlaying/SkinSceneNativeLyricsLifecycle.swift)
       if [[ "$text" == *enableSpring* ]]; then
         printf 'lyrics spring opt-out forwarded to the MelismaKit surface; lyrics animation stays outside MotionKit'

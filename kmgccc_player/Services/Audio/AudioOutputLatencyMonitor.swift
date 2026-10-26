@@ -268,7 +268,8 @@ enum AudioOutputLatencyMonitor {
         ) == noErr else {
             return nil
         }
-        return name?.takeUnretainedValue() as String?
+        // Core Audio transfers ownership of device name and UID CFStrings to the caller.
+        return name?.takeRetainedValue() as String?
     }
 
     private static func read<T>(

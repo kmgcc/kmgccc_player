@@ -1,17 +1,24 @@
 import Foundation
 
 extension SkinPackageManifest {
-    private enum CodingKeys: String, CodingKey { case formatVersion, hostAPIVersion, version, descriptor, nativePreset, scene, parameters }
+    private enum CodingKeys: String, CodingKey { case formatVersion, hostAPIVersion, version, descriptor, nativePreset, scene, scenes, parameters, requires, uses, fonts }
 
     init(from decoder: any Decoder) throws {
         let keys = try decoder.container(keyedBy: CodingKeys.self)
-        formatVersion = try keys.decodeIfPresent(Int.self, forKey: .formatVersion) ?? 1
-        hostAPIVersion = try keys.decodeIfPresent(Int.self, forKey: .hostAPIVersion) ?? 1
+        formatVersion = try keys.decode(Int.self, forKey: .formatVersion)
+        hostAPIVersion = try keys.decode(Int.self, forKey: .hostAPIVersion)
+        guard formatVersion == 2, hostAPIVersion == 2 else { throw SkinPackageError.unsupportedVersion }
         version = try keys.decodeIfPresent(String.self, forKey: .version) ?? "1.0.0"
         descriptor = try keys.decode(SkinDescriptor.self, forKey: .descriptor)
         nativePreset = try keys.decodeIfPresent(String.self, forKey: .nativePreset)
-        scene = try keys.decodeIfPresent(SkinSceneDocument.self, forKey: .scene)
+        scene = nil
+        if let path = try? keys.decode(String.self, forKey: .scene) { scenePath = path }
+        else { sceneV2 = try keys.decodeIfPresent(SkinSceneV2Document.self, forKey: .scene) }
+        scenes = try keys.decodeIfPresent([String: SkinSceneV2Document].self, forKey: .scenes) ?? [:]
         parameters = try keys.decodeIfPresent([SkinParameterDefinition].self, forKey: .parameters) ?? []
+        requires = try keys.decodeIfPresent([String].self, forKey: .requires) ?? []
+        uses = try keys.decodeIfPresent([String].self, forKey: .uses) ?? []
+        fonts = try keys.decodeIfPresent([String].self, forKey: .fonts) ?? []
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -21,8 +28,13 @@ extension SkinPackageManifest {
         try keys.encode(version, forKey: .version)
         try keys.encode(descriptor, forKey: .descriptor)
         try keys.encodeIfPresent(nativePreset, forKey: .nativePreset)
-        try keys.encodeIfPresent(scene, forKey: .scene)
+        if let scenePath { try keys.encode(scenePath, forKey: .scene) }
+        else { try keys.encodeIfPresent(sceneV2 ?? scene?.v2Document, forKey: .scene) }
+        if !scenes.isEmpty { try keys.encode(scenes, forKey: .scenes) }
         if !parameters.isEmpty { try keys.encode(parameters, forKey: .parameters) }
+        if !requires.isEmpty { try keys.encode(requires, forKey: .requires) }
+        if !uses.isEmpty { try keys.encode(uses, forKey: .uses) }
+        if !fonts.isEmpty { try keys.encode(fonts, forKey: .fonts) }
     }
 }
 

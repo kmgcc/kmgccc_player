@@ -60,6 +60,9 @@ nonisolated struct LibraryPaths: Sendable, Equatable {
     var artistsRootURL: URL { directory("Artists") }
     var albumsRootURL: URL { directory("Albums") }
 
+    /// Persisted provider snapshots and original media, retained with the library.
+    var musicEnrichmentRootURL: URL { directory("Enrichment") }
+
     var playbackHistoryRootURL: URL { directory("PlaybackHistory") }
     var playbackHistoryStoreURL: URL {
         playbackHistoryRootURL.appendingPathComponent("PlaybackHistory.sqlite")

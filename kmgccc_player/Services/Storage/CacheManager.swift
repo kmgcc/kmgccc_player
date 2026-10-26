@@ -255,6 +255,7 @@ nonisolated enum CacheManager {
 
         await ArtworkAssetStore.shared.purgeHydratedImages()
         if let cacheServices {
+            cacheServices.motionArtworkFirstFrameCache.clearMemory()
             await cacheServices.trackArtworkCache.clearMemory()
             cacheServices.headerColorExtractor.clearMemory()
             await cacheServices.artworkDerivativeStore.clearMemory()
@@ -293,6 +294,7 @@ nonisolated enum CacheManager {
         ArtAssetLoader.shared.purgeCache()
         await ArtworkAssetStore.shared.purgeHydratedImages()
         if let cacheServices {
+            cacheServices.motionArtworkFirstFrameCache.clearMemory()
             await cacheServices.trackArtworkCache.clearMemory()
             await cacheServices.artworkDerivativeStore.clearMemory()
             await cacheServices.playlistArtworkPipeline.clearMemory()
@@ -329,6 +331,10 @@ nonisolated enum CacheManager {
         )
     }
 
+    /// Runs while music plays, so it must not cost the visible surfaces a
+    /// frame. Art BK keeps its own copies of the shared assets it displays,
+    /// and those caches are bounded, so purging them here freed nothing and
+    /// only made its next phase decode on the main thread.
     @MainActor
     static func trimRoutinePlaybackMemory() {
         guard routineTrimTask == nil else { return }
@@ -352,13 +358,28 @@ nonisolated enum CacheManager {
                 await SkinRegistry.releaseInactiveCachedResources()
             }
 
-            BKThemeAssets.shared.purgeTransientCaches()
             await ArtworkLoader.clearMemoryCache()
             await ArtworkAssetStore.shared.trimCachedImages()
             CATransaction.begin()
             CATransaction.flush()
             CATransaction.commit()
-            trimProcessMemory()
+            await trimProcessMemoryInBackground()
+        }
+    }
+
+    private nonisolated static let processMemoryTrimQueue = DispatchQueue(
+        label: "kmgccc.cache.process-memory-trim",
+        qos: .utility
+    )
+
+    /// Allocator relief walks every malloc zone and can hold the main thread
+    /// for tens of milliseconds, long enough to drop lyric and cover frames.
+    nonisolated static func trimProcessMemoryInBackground() async {
+        await withCheckedContinuation { continuation in
+            processMemoryTrimQueue.async {
+                trimProcessMemory()
+                continuation.resume()
+            }
         }
     }
 
@@ -399,6 +420,7 @@ nonisolated enum CacheManager {
         let storage = services.storageLocations
         switch category {
         case .artworkCache:
+            services.motionArtworkFirstFrameCache.clearMemory()
             await ArtworkAssetStore.shared.clearCache()
             await services.trackArtworkCache.clearMemory()
             await services.artworkDerivativeStore.clearAll()

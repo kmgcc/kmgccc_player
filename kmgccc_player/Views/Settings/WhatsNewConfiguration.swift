@@ -24,7 +24,9 @@ enum WhatsNewConfiguration {
             WhatsNew.Feature(
                 image: .init(systemName: "sparkles.rectangle.stack.fill", foregroundColor: .pink),
                 title: "别出心裁的播放界面",
-                subtitle: "动态取色，艺术背景，自定义皮肤，旨在提供不一样的聆听体验。"
+                subtitle: SkinRegistry.customizationEnabled
+                    ? "动态取色，艺术背景，自定义皮肤，旨在提供不一样的聆听体验。"
+                    : "动态取色与艺术背景，提供不一样的聆听体验。"
             ),
             WhatsNew.Feature(
                 image: .init(systemName: "slider.vertical.3", foregroundColor: .orange),
@@ -54,29 +56,29 @@ enum WhatsNewConfiguration {
         title: "什么是新的",
         features: [
             WhatsNew.Feature(
-                image: .init(systemName: "slider.vertical.3", foregroundColor: .blue),
-                title: "专业音频处理与音效",
-                subtitle: "加入歌曲音量均衡、平滑淡入淡出与等响度补偿，以及可高度自定义的 DSP 链路，听到你想要的声音。"
+                image: .init(systemName: "livephoto", foregroundColor: .pink),
+                title: "Apple Music 动态封面",
+                subtitle: "为歌曲或专辑查找动态封面，也可以导入自己的视频。"
             ),
             WhatsNew.Feature(
-                image: .init(systemName: "hand.draw", foregroundColor: .orange),
-                title: "支持曲目拖动管理",
-                subtitle: "支持键盘快捷多选与自由拖拽，可直接拖动曲目归类至播放列表，或快速加入播放队列。"
+                image: .init(systemName: "slider.horizontal.3", foregroundColor: .orange),
+                title: "侧边栏快捷按钮",
+                subtitle: "自己选择和排列常用按钮，最多放四个。"
             ),
             WhatsNew.Feature(
-                image: .init(systemName: "gauge.with.needle", foregroundColor: .purple),
-                title: "智能后台调度",
-                subtitle: "依据系统负载与聆听状况，在设备空闲时段静默执行音频分析与缓存预备，保持播放流畅，不被打扰。"
+                image: .init(systemName: "photo.badge.arrow.down", foregroundColor: .blue),
+                title: "更新旧封面",
+                subtitle: "为部分旧歌曲重新查找更清晰的封面。任务可暂停或结束；旧曲库中来源不明的手动封面可能会被替换。"
             ),
             WhatsNew.Feature(
-                image: .init(systemName: "internaldrive", foregroundColor: .green),
-                title: "存储空间统计与维护",
-                subtitle: "设置中新增存储分析面板，清晰查看曲库与各级缓存占用，支持一键安全清理以释放磁盘空间。"
+                image: .init(systemName: "photo", foregroundColor: .green),
+                title: "改善封面画质",
+                subtitle: "保存封面时尽量保留原图，切换歌曲时封面衔接也更快。"
             ),
             WhatsNew.Feature(
-                image: .init(systemName: "memorychip", foregroundColor: .pink),
-                title: "内存占用优化",
-                subtitle: "结合 SwiftUI 特性对内存占用进行全面检查与优化，在提升显示效果的同时降低了内存占用。"
+                image: .init(systemName: "pencil.line", foregroundColor: .purple),
+                title: "保留手动修改",
+                subtitle: "自动补充歌曲资料时，会保留你手动修改的内容。"
             )
         ],
         primaryAction: .init(

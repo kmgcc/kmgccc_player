@@ -5,9 +5,10 @@
 //  kmgccc_player - Reusable Lyrics Timing Configuration Section
 //
 
+import MotionKit
 import SwiftUI
 
-/// Lyrics timing parameters configuration section.
+/// Lyrics timing parameters configuration section, folded by default.
 /// These parameters are shared between window and fullscreen lyrics.
 struct LyricsTimingConfigSection: View {
     private enum Defaults {
@@ -21,11 +22,15 @@ struct LyricsTimingConfigSection: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
     @Environment(\.settingsAppForegroundColors) private var appColors
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var configuredMotionPolicy
 
     // Local state for slider binding (fixes UI update issue with @ObservationIgnored properties)
     @State private var leadInMs: Double = Defaults.leadInMs
     @State private var nearSwitchGapMs: Double = Defaults.nearSwitchGapMs
     @State private var globalAdvanceMs: Double = Defaults.globalAdvanceMs
+    @State private var isExpanded = false
 
     var body: some View {
         GroupBox {
@@ -33,11 +38,13 @@ struct LyricsTimingConfigSection: View {
                 Text("参数仅供调试，日常聆听保持默认即可。")
                     .settingsDescriptionStyle()
 
-                leadInSection
-                Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
-                nearSwitchGapSection
-                Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
-                globalAdvanceSection
+                if isExpanded {
+                    leadInSection
+                    Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
+                    nearSwitchGapSection
+                    Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
+                    globalAdvanceSection
+                }
             }
             .padding(
                 presentationStyle.usesCustomSectionCards
@@ -50,12 +57,15 @@ struct LyricsTimingConfigSection: View {
                     .font(presentationStyle.sectionTitleFont)
                     .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
                 Spacer()
-                Button("恢复默认值") {
-                    resetToDefaults()
+                if isExpanded {
+                    Button("恢复默认值") {
+                        resetToDefaults()
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: presentationStyle.captionFontSize))
+                    .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
                 }
-                .buttonStyle(.borderless)
-                .font(.system(size: presentationStyle.captionFontSize))
-                .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
+                expandButton
             }
         }
         .onAppear {
@@ -66,6 +76,27 @@ struct LyricsTimingConfigSection: View {
         .onChange(of: leadInMs) { _, _ in syncToSettings() }
         .onChange(of: nearSwitchGapMs) { _, _ in syncToSettings() }
         .onChange(of: globalAdvanceMs) { _, _ in syncToSettings() }
+    }
+
+    private var expandButton: some View {
+        Button {
+            let policy = configuredMotionPolicy.resolving(
+                accessibilityReduceMotion: reduceMotion
+            )
+            withAnimation(policy.animation(for: motionTokens[.microInteraction])) {
+                isExpanded.toggle()
+            }
+        } label: {
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(isExpanded ? "收起" : "展开")
+        .accessibilityLabel(isExpanded ? "收起时间轴" : "展开时间轴")
     }
 
     private var leadInSection: some View {

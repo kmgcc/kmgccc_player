@@ -25,7 +25,7 @@ struct GlassStyleTokens {
 
     // MARK: - Sizing
     static let headerBarHeight: CGFloat = 60
-    static let headerControlHeight: CGFloat = 36
+    nonisolated static let headerControlHeight: CGFloat = 36
     static let headerPrimaryControlHeight: CGFloat = 36
     static let headerStandardIconSize: CGFloat = 12
     static let headerPrimaryIconSize: CGFloat = 14

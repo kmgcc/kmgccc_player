@@ -168,6 +168,16 @@ public final class AppSettings {
     public static let shared = AppSettings()
     public static let defaultVolume: Double = 0.8
 
+    /// Shared with view leaves that observe the motion-artwork switch directly.
+    static let motionArtworkEnabledDefaultsKey = "motionArtworkEnabled"
+    nonisolated static let motionArtworkFetchEnabledDefaultsKey = "motionArtworkFetchEnabled"
+
+    /// Read off the main actor by the enrichment pipeline before any automatic
+    /// motion download. Manual choices and explicit batch requests ignore it.
+    nonisolated static var isMotionArtworkFetchEnabled: Bool {
+        UserDefaults.standard.object(forKey: motionArtworkFetchEnabledDefaultsKey) as? Bool ?? true
+    }
+
     // MARK: - Localization Settings
 
     enum Language: String, CaseIterable {
@@ -395,6 +405,7 @@ public final class AppSettings {
         static let artworkTintMode = "artworkTintMode"
         static let globalArtworkTintEnabled = "globalArtworkTintEnabled"
         static let audioVisualizationHDREnabled = "audioVisualizationHDREnabled"
+        static let motionArtworkEnabled = AppSettings.motionArtworkEnabledDefaultsKey
         static let dockProgressVisible = "dockProgressVisible"
         static let followSystemAppearance = "followSystemAppearance"
         static let manualAppearance = "manualAppearance"
@@ -585,6 +596,59 @@ public final class AppSettings {
                     newValue,
                     forKey: AppearanceKeys.audioVisualizationHDREnabled
                 )
+            }
+        }
+    }
+
+    /// Whether library motion artwork plays in any surface. Hiding it never
+    /// touches the stored assets; static artwork is shown instead.
+    var motionArtworkEnabled: Bool {
+        get {
+            access(keyPath: \.motionArtworkEnabled)
+            if UserDefaults.standard.object(forKey: AppearanceKeys.motionArtworkEnabled) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: AppearanceKeys.motionArtworkEnabled)
+        }
+        set {
+            withMutation(keyPath: \.motionArtworkEnabled) {
+                UserDefaults.standard.set(
+                    newValue,
+                    forKey: AppearanceKeys.motionArtworkEnabled
+                )
+            }
+        }
+    }
+
+    /// Whether motion artwork is downloaded automatically during playback and
+    /// idle completion. Turning it off keeps saved assets.
+    var motionArtworkFetchEnabled: Bool {
+        get {
+            access(keyPath: \.motionArtworkFetchEnabled)
+            return Self.isMotionArtworkFetchEnabled
+        }
+        set {
+            withMutation(keyPath: \.motionArtworkFetchEnabled) {
+                UserDefaults.standard.set(
+                    newValue,
+                    forKey: Self.motionArtworkFetchEnabledDefaultsKey
+                )
+            }
+        }
+    }
+
+    var sidebarSetBarConfiguration: SidebarSetBarConfiguration {
+        get {
+            access(keyPath: \.sidebarSetBarConfiguration)
+            guard let data = UserDefaults.standard.data(forKey: SidebarSetBarConfiguration.defaultsKey),
+                  let configuration = try? JSONDecoder().decode(SidebarSetBarConfiguration.self, from: data)
+            else { return .defaultValue }
+            return configuration
+        }
+        set {
+            guard let data = try? JSONEncoder().encode(newValue) else { return }
+            withMutation(keyPath: \.sidebarSetBarConfiguration) {
+                UserDefaults.standard.set(data, forKey: SidebarSetBarConfiguration.defaultsKey)
             }
         }
     }

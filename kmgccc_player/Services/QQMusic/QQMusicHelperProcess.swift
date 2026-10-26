@@ -118,11 +118,21 @@ nonisolated enum MetadataDetailApplicator {
         var updated = entry
         var changed = false
 
-        fillString(&updated.description, with: detail.description, changed: &changed)
-        fillStringArray(&updated.genreTags, with: detail.genreTags, changed: &changed)
-        fillString(&updated.region, with: detail.region, changed: &changed)
-        fillString(&updated.foreignName, with: detail.foreignName, changed: &changed)
-        fillOptionalString(&updated.qqMusicSingerMid, with: detail.qqMusicSingerMid, changed: &changed)
+        if !updated.manuallyEditedFields.contains("description") {
+            fillString(&updated.description, with: detail.description, changed: &changed)
+        }
+        if !updated.manuallyEditedFields.contains("genreTags") {
+            fillStringArray(&updated.genreTags, with: detail.genreTags, changed: &changed)
+        }
+        if !updated.manuallyEditedFields.contains("region") {
+            fillString(&updated.region, with: detail.region, changed: &changed)
+        }
+        if !updated.manuallyEditedFields.contains("foreignName") {
+            fillString(&updated.foreignName, with: detail.foreignName, changed: &changed)
+        }
+        if !updated.manuallyEditedFields.contains("qqMusicSingerMid") {
+            fillOptionalString(&updated.qqMusicSingerMid, with: detail.qqMusicSingerMid, changed: &changed)
+        }
 
         if changed {
             applyMetadataStamp(
@@ -131,7 +141,8 @@ nonisolated enum MetadataDetailApplicator {
                 confidence: detail.confidence,
                 metadataSource: &updated.metadataSource,
                 metadataFetchedAt: &updated.metadataFetchedAt,
-                metadataConfidence: &updated.metadataConfidence
+                metadataConfidence: &updated.metadataConfidence,
+                manuallyEditedFields: updated.manuallyEditedFields
             )
             updated.updatedAt = Date()
         }
@@ -150,15 +161,31 @@ nonisolated enum MetadataDetailApplicator {
         var updated = entry
         var changed = false
 
-        fillString(&updated.description, with: detail.description, changed: &changed)
-        fillOptionalInt(&updated.releaseYear, with: detail.releaseYear, changed: &changed)
-        fillOptionalDate(&updated.releaseDate, with: detail.releaseDate, changed: &changed)
-        fillString(&updated.albumType, with: detail.albumType, changed: &changed)
-        fillStringArray(&updated.genreTags, with: detail.genreTags, changed: &changed)
-        fillString(&updated.language, with: detail.language, changed: &changed)
-        fillString(&updated.labelOrCompany, with: detail.labelOrCompany, changed: &changed)
-        fillOptionalString(&updated.qqMusicAlbumMid, with: detail.qqMusicAlbumMid, changed: &changed)
-        if updated.year == nil, let releaseYear = updated.releaseYear {
+        if !updated.manuallyEditedFields.contains("description") {
+            fillString(&updated.description, with: detail.description, changed: &changed)
+        }
+        if !updated.manuallyEditedFields.contains("releaseYear") {
+            fillOptionalInt(&updated.releaseYear, with: detail.releaseYear, changed: &changed)
+        }
+        if !updated.manuallyEditedFields.contains("releaseDate") {
+            fillOptionalDate(&updated.releaseDate, with: detail.releaseDate, changed: &changed)
+        }
+        if !updated.manuallyEditedFields.contains("albumType") {
+            fillString(&updated.albumType, with: detail.albumType, changed: &changed)
+        }
+        if !updated.manuallyEditedFields.contains("genreTags") {
+            fillStringArray(&updated.genreTags, with: detail.genreTags, changed: &changed)
+        }
+        if !updated.manuallyEditedFields.contains("language") {
+            fillString(&updated.language, with: detail.language, changed: &changed)
+        }
+        if !updated.manuallyEditedFields.contains("labelOrCompany") {
+            fillString(&updated.labelOrCompany, with: detail.labelOrCompany, changed: &changed)
+        }
+        if !updated.manuallyEditedFields.contains("qqMusicAlbumMid") {
+            fillOptionalString(&updated.qqMusicAlbumMid, with: detail.qqMusicAlbumMid, changed: &changed)
+        }
+        if !updated.manuallyEditedFields.contains("year"), updated.year == nil, let releaseYear = updated.releaseYear {
             updated.year = releaseYear
             changed = true
         }
@@ -170,7 +197,8 @@ nonisolated enum MetadataDetailApplicator {
                 confidence: detail.confidence,
                 metadataSource: &updated.metadataSource,
                 metadataFetchedAt: &updated.metadataFetchedAt,
-                metadataConfidence: &updated.metadataConfidence
+                metadataConfidence: &updated.metadataConfidence,
+                manuallyEditedFields: updated.manuallyEditedFields
             )
             updated.updatedAt = Date()
         }
@@ -185,13 +213,27 @@ nonisolated enum MetadataDetailApplicator {
         guard detail.confidence >= minimumConfidence else { return false }
 
         var changed = false
-        fillMissingAlbum(&track.album, with: detail.album, changed: &changed)
-        fillString(&track.userDescription, with: detail.description, changed: &changed)
-        fillStringArray(&track.genreTags, with: detail.genreTags, changed: &changed)
-        fillString(&track.language, with: detail.language, changed: &changed)
-        fillString(&track.labelOrCompany, with: detail.labelOrCompany, changed: &changed)
-        fillOptionalDate(&track.releaseDate, with: detail.releaseDate, changed: &changed)
-        fillOptionalString(&track.qqMusicSongMid, with: detail.qqMusicSongMid, changed: &changed)
+        if !track.isMetadataFieldManual("album") {
+            fillMissingAlbum(&track.album, with: detail.album, changed: &changed)
+        }
+        if !track.isMetadataFieldManual("description") {
+            fillString(&track.userDescription, with: detail.description, changed: &changed)
+        }
+        if !track.isMetadataFieldManual("genreTags") {
+            fillStringArray(&track.genreTags, with: detail.genreTags, changed: &changed)
+        }
+        if !track.isMetadataFieldManual("language") {
+            fillString(&track.language, with: detail.language, changed: &changed)
+        }
+        if !track.isMetadataFieldManual("labelOrCompany") {
+            fillString(&track.labelOrCompany, with: detail.labelOrCompany, changed: &changed)
+        }
+        if !track.isMetadataFieldManual("releaseDate") {
+            fillOptionalDate(&track.releaseDate, with: detail.releaseDate, changed: &changed)
+        }
+        if !track.isMetadataFieldManual("qqMusicSongMid") {
+            fillOptionalString(&track.qqMusicSongMid, with: detail.qqMusicSongMid, changed: &changed)
+        }
 
         if changed {
             applyMetadataStamp(
@@ -200,7 +242,8 @@ nonisolated enum MetadataDetailApplicator {
                 confidence: detail.confidence,
                 metadataSource: &track.metadataSource,
                 metadataFetchedAt: &track.metadataFetchedAt,
-                metadataConfidence: &track.metadataConfidence
+                metadataConfidence: &track.metadataConfidence,
+                manuallyEditedFields: track.userMetadataOverride?.protectedFields ?? []
             )
         }
         return changed
@@ -262,15 +305,17 @@ nonisolated enum MetadataDetailApplicator {
         confidence: Double,
         metadataSource: inout String?,
         metadataFetchedAt: inout Date?,
-        metadataConfidence: inout Double?
+        metadataConfidence: inout Double?,
+        manuallyEditedFields: Set<String>
     ) {
-        if metadataSource?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+        if !manuallyEditedFields.contains("metadataSource"),
+           metadataSource?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
             metadataSource = source
         }
-        if metadataFetchedAt == nil {
+        if !manuallyEditedFields.contains("metadataFetchedAt"), metadataFetchedAt == nil {
             metadataFetchedAt = fetchedAt ?? Date()
         }
-        if metadataConfidence == nil {
+        if !manuallyEditedFields.contains("metadataConfidence"), metadataConfidence == nil {
             metadataConfidence = confidence
         }
     }
@@ -1118,6 +1163,9 @@ actor QQMusicHelperProcess {
             }
         }
         pending.continuation.resume(throwing: error)
+        // Choosing a cover from another source deliberately cancels this
+        // waiter. It is not a provider outage and must not trip the breaker.
+        if let helperError = error as? QQMusicHelperError, case .cancelled = helperError { return }
         recordFailure(reason: String(describing: error))
     }
 

@@ -377,13 +377,9 @@ struct LEDColorResolver {
         NSColor(accentColor)
     }
 
-    private var semanticPalette: LEDSemanticPalette {
-        LEDPerceptualPolicy.makePalette(
-            palette: palette,
-            accentColor: accentNS,
-            scheme: colorScheme
-        )
-    }
+    // Resolver inputs are immutable. Reuse their palette for every LED fill,
+    // stroke and status level instead of repeating artwork hue analysis.
+    private let semanticPalette: LEDSemanticPalette
 
     private var isNearMonochrome: Bool {
         semanticPalette.isNearMonochrome
@@ -406,6 +402,11 @@ struct LEDColorResolver {
         self.levelToneVariant = levelToneVariant
         self.isEffectivelyMonochrome = palette?.analysis.isEffectivelyMonochrome ?? false
         self.isHDR = isHDR
+        self.semanticPalette = LEDPerceptualPolicy.makePalette(
+            palette: palette,
+            accentColor: NSColor(accentColor),
+            scheme: colorScheme
+        )
     }
 
     var oklchSemanticPalette: LEDSemanticPalette {

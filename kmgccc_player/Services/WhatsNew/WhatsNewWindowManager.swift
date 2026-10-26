@@ -43,7 +43,8 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
         FeatureTipPresentationCoordinator.shared.setSuspended(true, reason: .whatsNew)
         let whatsNewView = WhatsNewView(whatsNew: whatsNew)
 
-        let (panel, _) = AppDialogTokens.makePanel(width: 520, height: 620)
+        let contentSize = NSSize(width: 520, height: 620)
+        let (panel, surface) = AppDialogTokens.makeInsetPanel(contentSize: contentSize)
 
         panel.title = ""
         panel.titlebarAppearsTransparent = true
@@ -58,7 +59,10 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
-        panel.minSize = NSSize(width: 480, height: 560)
+        panel.minSize = NSSize(
+            width: 480 + AppDialogTokens.panelShadowInset * 2,
+            height: 560 + AppDialogTokens.panelShadowInset * 2
+        )
 
         let themedView = whatsNewView
             .appPopupSurface()
@@ -66,9 +70,13 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
             .environmentObject(ThemeStore.shared)
             .tint(ThemeStore.shared.accentColor)
             .accentColor(ThemeStore.shared.accentColor)
+            .frame(width: contentSize.width, height: contentSize.height)
+            .padding(AppDialogTokens.panelShadowInset)
 
-        let hostingView = NSHostingView(rootView: themedView)
-        panel.contentView = hostingView
+        let hostingView = AppDialogTokens.makeHostingView(rootView: themedView)
+        hostingView.frame = surface.bounds
+        hostingView.autoresizingMask = [.width, .height]
+        surface.addSubview(hostingView)
 
         applyCurrentAppearance(to: panel)
 

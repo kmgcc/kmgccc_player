@@ -232,6 +232,11 @@ final class LDDCServerManager: ObservableObject {
 
         let weakSelf = WeakBox(self)
         let stderr = Pipe()
+        // A launchd/XCTest host can expose stdin as a guarded descriptor. Leaving
+        // Process.standardInput unset makes Foundation duplicate that fd while
+        // launching the server, which can terminate the host with EXC_GUARD.
+        // The LDDC server is non-interactive, so give it the null device.
+        process.standardInput = FileHandle.nullDevice
         if captureStdout {
             let stdout = Pipe()
             process.standardOutput = stdout

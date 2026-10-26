@@ -23,7 +23,7 @@ struct LyricsSearchHelper {
     // MARK: - Search Configuration
 
     /// Default sources for LDDC search (nonisolated because it's just a configuration constant)
-    nonisolated static let defaultLDDCSources: Set<LDDCSource> = [.QM, .KG, .NE]
+    nonisolated static let defaultLDDCSources: Set<LDDCSource> = [.QM, .KG, .NE, .LRCLIB]
     nonisolated static let automaticMatchMinimumScore = 75.0
 
     struct AutomaticFetchCandidateSummary: Sendable, Equatable {
@@ -92,12 +92,14 @@ struct LyricsSearchHelper {
         album: String? = nil,
         duration: Double? = nil,
         lddcSources: Set<LDDCSource> = defaultLDDCSources,
+        enableAMLLDB: Bool = true,
         mode: LDDCMode = .verbatim,
         translation: Bool = true,
         amlldbLimit: Int = 20,
         lddcLimitPerSource: Int = 5,
         searchCoordinator: LyricsSearchCoordinator
     ) async -> (amlldb: [LDDCCandidate], lddc: [LDDCCandidate]) {
+        Log.info("[LyricsLookup] event=attempt providers=\(lddcSources.map(\.rawValue).sorted().joined(separator: ",")) amllDB=\(enableAMLLDB) title=\(title) artist=\(artist ?? "") album=\(album ?? "")", category: .lyrics)
         var amlldbResults: [LDDCCandidate] = []
         var lddcResults: [LDDCCandidate] = []
 
@@ -107,7 +109,7 @@ struct LyricsSearchHelper {
             album: album,
             duration: duration,
             lddcSources: lddcSources,
-            enableAMLLDB: true,
+            enableAMLLDB: enableAMLLDB,
             mode: mode,
             translation: translation,
             amlldbLimit: amlldbLimit,
@@ -122,12 +124,15 @@ struct LyricsSearchHelper {
                 Self.logger.debug("[LyricsSearchHelper] AMLLDB status: \(message)")
 
             case .amlldbResults(let results):
+                Log.info("[LyricsLookup] provider=amllDB event=result count=\(results.count)", category: .lyrics)
                 amlldbResults = results
 
             case .amlldbFailure(let message):
+                Log.info("[LyricsLookup] provider=amllDB event=failed", category: .lyrics)
                 Self.logger.warning("[LyricsSearchHelper] AMLLDB search failed: \(message)")
 
             case .lddc(let outcome):
+                Log.info("[LyricsLookup] provider=\(outcome.source.rawValue) event=result count=\(outcome.results.count) errors=\(outcome.errors.count)", category: .lyrics)
                 lddcResults.append(contentsOf: outcome.results)
                 if !outcome.errors.isEmpty {
                     Self.logger.warning(
@@ -158,6 +163,7 @@ struct LyricsSearchHelper {
         album: String? = nil,
         duration: Double? = nil,
         lddcSources: Set<LDDCSource> = defaultLDDCSources,
+        enableAMLLDB: Bool = true,
         mode: LDDCMode = .verbatim,
         translation: Bool = true,
         amlldbLimit: Int = 20,
@@ -183,6 +189,7 @@ struct LyricsSearchHelper {
             album: album,
             duration: duration,
             lddcSources: lddcSources,
+            enableAMLLDB: enableAMLLDB,
             mode: mode,
             translation: translation,
             amlldbLimit: amlldbLimit,
@@ -215,6 +222,7 @@ struct LyricsSearchHelper {
                 album: album,
                 duration: duration,
                 lddcSources: lddcSources,
+                enableAMLLDB: enableAMLLDB,
                 mode: mode,
                 translation: translation,
                 amlldbLimit: amlldbLimit,
@@ -539,6 +547,10 @@ struct LyricsSearchHelper {
         }
 
         for (index, candidate) in candidates.enumerated() {
+            if let minimumTopCandidateScore,
+               candidate.normalizedScore() <= minimumTopCandidateScore {
+                continue
+            }
             guard !Task.isCancelled else {
                 return AutomaticFetchResult(
                     status: .allCandidatesFailed,

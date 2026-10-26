@@ -28,6 +28,7 @@ struct AlbumEntry: Identifiable {
     var metadataSource: String?
     var metadataFetchedAt: Date?
     var metadataConfidence: Double?
+    var manuallyEditedFields: Set<String>
     var artworkData: Data?
     var createdAt: Date
     var updatedAt: Date
@@ -88,6 +89,7 @@ struct AlbumEntry: Identifiable {
         metadataSource: String? = nil,
         metadataFetchedAt: Date? = nil,
         metadataConfidence: Double? = nil,
+        manuallyEditedFields: Set<String> = [],
         artworkData: Data? = nil,
         createdAt: Date,
         updatedAt: Date,
@@ -107,7 +109,7 @@ struct AlbumEntry: Identifiable {
         self.artworkFileURL = artworkFileURL
         self.description = description
         self.year = year
-        self.releaseYear = releaseYear ?? year
+        self.releaseYear = manuallyEditedFields.contains("releaseYear") ? releaseYear : (releaseYear ?? year)
         self.releaseDate = releaseDate
         self.albumType = albumType
         self.genreTags = genreTags
@@ -117,6 +119,7 @@ struct AlbumEntry: Identifiable {
         self.metadataSource = metadataSource
         self.metadataFetchedAt = metadataFetchedAt
         self.metadataConfidence = metadataConfidence
+        self.manuallyEditedFields = manuallyEditedFields
         self.artworkData = artworkData
         self.createdAt = createdAt
         self.updatedAt = updatedAt

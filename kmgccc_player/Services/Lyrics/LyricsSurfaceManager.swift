@@ -64,6 +64,9 @@ final class LyricsSurfaceManager {
     private var surfaceSnapshots: [LyricsSurfaceRole: SurfaceSnapshot] = [:]
     private var baseThemePalette: ThemePalette?
 
+    var currentPlaybackTime: Double { currentPlaybackSnapshot.currentTime }
+    var currentPlaybackIsPlaying: Bool { currentPlaybackSnapshot.isPlaying }
+
     enum TargetMode {
         case main
         case fullscreen
@@ -207,29 +210,23 @@ final class LyricsSurfaceManager {
 
     func applyTheme(_ palette: ThemePalette) {
         baseThemePalette = palette
-        NativeLyricsSurfaceManager.shared.applyTheme(palette)
-
-        // Reapply track-scoped fullscreen skin overrides after the global
-        // palette changes. The config snapshot is also replayed because it
-        // contains line-timing colors that are not part of ThemePalette.
+        var roleOverrides: [LyricsSurfaceRole: NativeLyricsSurfaceManager.ThemeOverride] = [:]
+        // Resolve the track guards before publishing any configuration. A
+        // fullscreen role must never briefly receive the global colors before
+        // its skin palette and line-timing colors are restored.
         for (role, snapshot) in surfaceSnapshots {
             let trackMatches = !snapshot.isThemeOverrideTrackGuarded
                 || snapshot.themeOverrideTrackID == currentPlaybackSnapshot.trackID
             guard trackMatches else { continue }
 
-            if let override = snapshot.themeOverridePalette {
-                NativeLyricsSurfaceManager.shared.applyPalette(override, for: role)
-            }
-
             let configMatches = !snapshot.isConfigTrackGuarded
                 || snapshot.configTrackID == currentPlaybackSnapshot.trackID
-            if configMatches, let json = snapshot.configJSON {
-                NativeLyricsSurfaceManager.shared.applyConfigurationJSON(json, for: role)
-                if role == .main {
-                    NativeLyricsSurfaceManager.shared.applyPalette(palette, for: role)
-                }
-            }
+            roleOverrides[role] = .init(
+                palette: snapshot.themeOverridePalette,
+                configJSON: configMatches ? snapshot.configJSON : nil
+            )
         }
+        NativeLyricsSurfaceManager.shared.applyTheme(palette, roleOverrides: roleOverrides)
     }
 
     func updatePlaybackSnapshot(
@@ -330,6 +327,13 @@ final class LyricsSurfaceManager {
         trackGuarded: Bool = false
     ) {
         var snapshot = surfaceSnapshots[role] ?? SurfaceSnapshot()
+        if palette == nil, snapshot.themeOverridePalette != nil {
+            // The saved skin config also carries its colors. Once the skin
+            // override is cleared, replaying that config would restore them.
+            snapshot.configJSON = nil
+            snapshot.configTrackID = nil
+            snapshot.isConfigTrackGuarded = false
+        }
         snapshot.themeOverridePalette = palette
         snapshot.themeOverrideTrackID = trackID
         snapshot.isThemeOverrideTrackGuarded = trackGuarded

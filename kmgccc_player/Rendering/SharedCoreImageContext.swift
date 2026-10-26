@@ -6,6 +6,7 @@
 //
 
 import CoreImage
+import Metal
 
 /// Core Image compiles Metal compute programs for the filter graphs a context
 /// renders, and the GPU driver keeps every compiled program for the life of the
@@ -19,6 +20,20 @@ import CoreImage
 /// the next render compiles again while the driver keeps the old copies.
 enum SharedCoreImageContext {
     nonisolated static let context = CIContext(options: options)
+
+    /// Small tints that Art BK and the cassette skin render synchronously on
+    /// the main thread. On `context` they queued behind cover blur and motion
+    /// artwork renders and held the main thread until those finished, so this
+    /// context submits through its own Metal queue. It also lives for the
+    /// whole process and compiles only those few graphs.
+    nonisolated static let interactive: CIContext = {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue() else {
+            return CIContext(options: options)
+        }
+        queue.label = "kmgccc.coreimage.interactive"
+        return CIContext(mtlCommandQueue: queue, options: options)
+    }()
 
     /// `KMGCCC_CI_MEMORY_LIMIT_MB` caps the memory the context allocates for a
     /// render; measurement runs compare it with the system default.

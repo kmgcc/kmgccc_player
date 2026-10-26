@@ -284,7 +284,7 @@ private final class RotatingCoverCDMotionBlurCache: ObservableObject {
     @Published private(set) var blurredImage: NSImage?
 
     private static let blurVersion = 6
-    private static let maxRenderPixelSize = 640
+    private static let maxRenderPixelSize = 480
     private static let minRenderableDiscSize: CGFloat = 24
 
     private struct CacheKey: Equatable, Sendable {
@@ -615,17 +615,20 @@ private struct RotatingDiscLayerView<Content: View>: NSViewRepresentable {
     let rotation: RotatingCoverRotation
     let baseSize: CGFloat
     let discSize: CGFloat
+    let rasterizesContent: Bool
     let content: Content
 
     init(
         rotation: RotatingCoverRotation,
         baseSize: CGFloat,
         discSize: CGFloat,
+        rasterizesContent: Bool = true,
         @ViewBuilder content: () -> Content
     ) {
         self.rotation = rotation
         self.baseSize = baseSize
         self.discSize = discSize
+        self.rasterizesContent = rasterizesContent
         self.content = content()
     }
 
@@ -634,14 +637,14 @@ private struct RotatingDiscLayerView<Content: View>: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> RotatingDiscHostView<Content> {
-        let view = RotatingDiscHostView(rootView: content, discSize: discSize)
+        let view = RotatingDiscHostView(rootView: content, discSize: discSize, rasterizesContent: rasterizesContent)
         context.coordinator.attach(to: view)
         return view
     }
 
     func updateNSView(_ nsView: RotatingDiscHostView<Content>, context: Context) {
         nsView.setRootView(content)
-        nsView.updateDiscSize(discSize)
+        nsView.updateDiscSize(discSize, rasterizesContent: rasterizesContent)
         context.coordinator.attach(to: nsView)
     }
 
@@ -681,7 +684,7 @@ private final class RotatingDiscHostView<Content: View>: NSView {
     private let widthConstraint: NSLayoutConstraint
     private let heightConstraint: NSLayoutConstraint
 
-    init(rootView: Content, discSize: CGFloat) {
+    init(rootView: Content, discSize: CGFloat, rasterizesContent: Bool) {
         hostingView = NSHostingView(rootView: rootView)
         let safeDiscSize = Self.sanitizedDiscSize(discSize)
         widthConstraint = hostingView.widthAnchor.constraint(equalToConstant: safeDiscSize)
@@ -694,7 +697,7 @@ private final class RotatingDiscHostView<Content: View>: NSView {
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         hostingView.wantsLayer = true
         hostingView.layer?.masksToBounds = false
-        hostingView.layer?.shouldRasterize = true
+        hostingView.layer?.shouldRasterize = rasterizesContent
         hostingView.layer?.rasterizationScale = NSScreen.main?.backingScaleFactor ?? 2
 
         addSubview(hostingView)
@@ -715,10 +718,11 @@ private final class RotatingDiscHostView<Content: View>: NSView {
         hostingView.rootView = rootView
     }
 
-    func updateDiscSize(_ discSize: CGFloat) {
+    func updateDiscSize(_ discSize: CGFloat, rasterizesContent: Bool) {
         let safeDiscSize = Self.sanitizedDiscSize(discSize)
         widthConstraint.constant = safeDiscSize
         heightConstraint.constant = safeDiscSize
+        hostingView.layer?.shouldRasterize = rasterizesContent
         needsLayout = true
     }
 
@@ -955,14 +959,28 @@ private final class RotatingCDDiscHostView: NSView {
     }
 }
 
+struct SkinRotatingDiscPart: View {
+    let snapshot: SkinSceneSnapshot
+    let configuration: SkinComponentConfiguration
+    var body: some View {
+        GeometryReader { proxy in
+            RotatingCoverArtwork(context: snapshot.context.withComponentBounds(proxy.size))
+                .environment(\.skinComponentConfiguration, .init(values: configuration.values.merging(["visualizerMode": .text("off"), "fillsFrame": .boolean(true)]) { _, new in new }))
+        }
+    }
+}
+
 private struct RotatingCoverArtwork: View {
     let context: SkinContext
+    @Environment(\.skinSceneIsActive) private var skinSceneIsActive
     @StateObject private var rotation = RotatingCoverRotation()
     @StateObject private var cdMotionBlurCache = RotatingCoverCDMotionBlurCache()
 
     private let windowCoverScaleEffect: CGFloat = 1.08
 
-    @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = true
+    @AppStorage("skin.rotatingCover.cdMode") private var savedCDMode: Bool = true
+    @Environment(\.skinComponentConfiguration) private var componentConfiguration
+    private var cdMode: Bool { componentConfiguration.boolean("cdMode", fallback: savedCDMode) }
     @AppStorage("skin.rotatingCover.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.rotatingCover.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "led"
 
@@ -978,8 +996,12 @@ private struct RotatingCoverArtwork: View {
 
     var body: some View {
         let usesFullscreenLayout = context.usesFullscreenPlayerLayout
-        let layout = RotatingCoverLayout.metrics(for: context, isFullscreen: usesFullscreenLayout)
-        let visualizerMode = usesFullscreenLayout ? fullscreenVisualizerMode : normalVisualizerMode
+        let fillsFrame = componentConfiguration.boolean("fillsFrame", fallback: false)
+        let side = min(context.contentSize.width, context.contentSize.height)
+        let layout = fillsFrame
+            ? RotatingCoverLayout.Metrics(discSize: side * RotatingCoverLayout.discToBaseRatio, baseSize: side, xOffset: 0, yOffset: 0)
+            : RotatingCoverLayout.metrics(for: context, isFullscreen: usesFullscreenLayout)
+        let visualizerMode = componentConfiguration.text("visualizerMode", fallback: usesFullscreenLayout ? fullscreenVisualizerMode : normalVisualizerMode)
         let motionEnabled = context.motionPolicy == .full
 
         VStack(spacing: 32) {
@@ -987,7 +1009,8 @@ private struct RotatingCoverArtwork: View {
                 context: context,
                 baseSize: layout.baseSize
             ) {
-                if discMode == .cd, let artworkImage = context.track?.artworkImage {
+                if discMode == .cd,
+                   let artworkImage = context.track?.artworkImage {
                     RotatingCDDiscLayerView(
                         rotation: rotation,
                         baseSize: layout.baseSize,
@@ -1000,7 +1023,8 @@ private struct RotatingCoverArtwork: View {
                     RotatingDiscLayerView(
                         rotation: rotation,
                         baseSize: layout.baseSize,
-                        discSize: layout.discSize
+                        discSize: layout.discSize,
+                        rasterizesContent: true
                     ) {
                         artworkView(size: layout.discSize)
                     }
@@ -1029,7 +1053,7 @@ private struct RotatingCoverArtwork: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .scaleEffect(usesFullscreenLayout ? 1.0 : windowCoverScaleEffect)
+        .scaleEffect(usesFullscreenLayout || fillsFrame ? 1.0 : windowCoverScaleEffect)
         .offset(x: layout.xOffset, y: layout.yOffset)
         .onAppear {
             lastTrackID = context.track?.id
@@ -1053,6 +1077,9 @@ private struct RotatingCoverArtwork: View {
         .onChange(of: artworkSignature) { _, _ in
             updateCDMotionBlurCache(discSize: layout.discSize)
         }
+        .onChange(of: context.track?.preferredMotionArtwork) { _, _ in
+            updateCDMotionBlurCache(discSize: layout.discSize)
+        }
         .onChange(of: context.track?.id) { _, newID in
             if newID != lastTrackID {
                 lastTrackID = newID
@@ -1069,26 +1096,20 @@ private struct RotatingCoverArtwork: View {
 
     @ViewBuilder
     private func artworkView(size: CGFloat) -> some View {
-        if let image = context.track?.artworkImage {
-            Image(nsImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .clipShape(Circle())
-                .overlay(
-                    Circle()
-                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                )
-        } else {
-            ArtworkPlaceholderView.nowPlaying(
-                size: size,
-                cornerRadius: 0,
-                isCircle: true
-            )
-            .overlay(
-                Circle()
-                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
-            )
+        Group {
+            if let image = context.track?.artworkImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                ArtworkPlaceholderView.nowPlaying(size: size, cornerRadius: 0, isCircle: true)
+            }
         }
+        .clipShape(Circle())
+        .overlay(
+            Circle()
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        )
     }
 
     private func updateCDMotionBlurCache(discSize: CGFloat) {
@@ -1139,11 +1160,8 @@ private struct RotatingCoverSkinFullscreenSettingsView: View {
             SettingsSwitchRow(
                 title: "启用艺术背景",
                 isOn: $fullscreenArtBackgroundEnabled,
-                detail: "遇到性能问题时，可以关闭此选项",
                 titleFont: presentationStyle.rowLabelFont,
-                detailFont: presentationStyle.captionFont,
-                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors),
-                detailColor: presentationStyle.settingsSecondaryTextColor(appColors: appColors)
+                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors)
             )
 
             SettingsSwitchRow(

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SkinVolumeComponent: View {
@@ -21,18 +22,71 @@ struct SkinVolumeComponent: View {
     }
 }
 
+/// `symbol` names the outline glyph; the active state uses its `.fill` variant.
+/// `fontSize` and `color` size and tint it; `activeColor` tints the active state.
 struct SkinLikeComponent: View {
+    var configuration = SkinComponentConfiguration()
+    var dislike = false
     @Environment(PlaybackCoordinator.self) private var playback
     @Environment(LibraryViewModel.self) private var library
     @Environment(\.skinSceneActions) private var actions
 
     var body: some View {
+        let _ = library.refreshTrigger
         let track = playback.stablePresentation.localTrack
-        let liked = track.map { library.preferenceStats(for: $0.id).manualLikeState == .liked } ?? false
-        Button(action: actions.like) { Image(systemName: liked ? "heart.fill" : "heart") }
+        let state = track.map { library.preferenceStats(for: $0.id).manualLikeState } ?? ManualLikeState.none
+        let active = state == (dislike ? .disliked : .liked)
+        let symbol = configuration.text("symbol", fallback: dislike ? "hand.thumbsdown" : "heart")
+        // Without `color` the glyph keeps the surrounding foreground.
+        let base = OKLCHColor(named: configuration.text("color"))
+        let tint = active ? OKLCHColor(named: configuration.text("activeColor")) ?? base : base
+        Button(action: dislike ? actions.toggleDislike : actions.like) {
+            let image = Image(systemName: active ? symbol + ".fill" : symbol)
+                .font(.system(size: configuration.number("fontSize", fallback: 13)))
+                .contentShape(Rectangle())
+            if let tint { image.foregroundStyle(tint.swiftUIColor) } else { image }
+        }
             .buttonStyle(.plain)
             .disabled(track == nil)
-            .help(liked ? "取消喜欢" : "喜欢")
+            .help(dislike ? (active ? "取消不喜欢" : "不喜欢") : (active ? "取消喜欢" : "喜欢"))
+    }
+}
+
+/// The playback route as a symbol and name; a click lists the outputs.
+struct SkinOutputDeviceComponent: View {
+    let configuration: SkinComponentConfiguration
+    @Environment(\.skinSceneActions) private var actions
+    @Environment(AppSettings.self) private var settings
+
+    var body: some View {
+        let current = AudioDSPDeviceController.current?.currentDevice
+        let fontSize = configuration.number("fontSize", fallback: 13)
+        HStack(spacing: configuration.number("spacing", fallback: 6)) {
+            Image(systemName: current?.symbolName ?? "hifispeaker").font(.system(size: fontSize * 1.15))
+            if configuration.boolean("showsName", fallback: true) {
+                Text(current?.name ?? "").font(.system(size: fontSize, weight: .medium)).lineLimit(1)
+            }
+        }
+        .foregroundStyle(configuration.color(fallback: .primary))
+        .contentShape(Rectangle())
+        // An AppKit snapshot menu, so per-tick scene redraws never close it.
+        .overlay { SkinMenuAnchor(opensOnClick: true) { NSHostingMenu(rootView: SkinOutputDeviceItems(actions: actions).environment(settings)) } }
+        .skinControlRegion()
+        .help("输出设备")
+    }
+}
+
+private struct SkinOutputDeviceItems: View {
+    let actions: SkinSceneActions
+    @Environment(AppSettings.self) private var settings
+
+    var body: some View {
+        Picker(selection: Binding(get: { settings.audioOutputDeviceUID ?? "" }, set: { actions.selectOutput($0.isEmpty ? nil : $0) })) {
+            Text("跟随系统").tag("")
+            ForEach(AudioDSPDeviceController.current?.devices ?? []) { device in Label(device.name, systemImage: device.symbolName).tag(device.uid) }
+        } label: { EmptyView() }
+            .pickerStyle(.inline)
+            .labelStyle(.titleAndIcon)
     }
 }
 
@@ -67,7 +121,7 @@ struct SkinPlaybackModeComponent: View {
                     mode: presentation.localPlaybackOrderMode ?? settings.playbackOrderMode,
                     isEnabled: presentation.isPlaybackModeControlEnabled,
                     isExpanded: expanded,
-                    iconSize: 16 * scale, selectedColor: color, scale: scale,
+                    iconSize: configuration.number("iconSize", fallback: 16) * scale, selectedColor: color, scale: scale,
                     onModeChange: actions.setPlaybackOrder, onCurrentModeRetap: { _ in actions.toggleQueue() }
                 )
             } else {
@@ -75,7 +129,7 @@ struct SkinPlaybackModeComponent: View {
                     mode: presentation.appleMusicPlaybackMode ?? .sequence,
                     isEnabled: presentation.isPlaybackModeControlEnabled,
                     isExpanded: expanded,
-                    iconSize: 16 * scale, selectedColor: color, scale: scale,
+                    iconSize: configuration.number("iconSize", fallback: 16) * scale, selectedColor: color, scale: scale,
                     onModeChange: actions.setExternalPlaybackOrder
                 )
             }

@@ -33,19 +33,18 @@ enum AppKitMainToolbarPresentation {
     ) {
         guard let item else { return }
         item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: item.label)
-        item.toolTip = isSidebarVisible ? "Hide Sidebar" : "Show Sidebar"
+        item.toolTip = isSidebarVisible ? "隐藏侧边栏" : "显示侧边栏"
         item.isEnabled = true
     }
 
     static func syncLyricsToggle(
         item: NSToolbarItem?,
-        isLyricsVisible: Bool,
-        isFlashFilled: Bool
+        isLyricsVisible: Bool
     ) {
         guard let item else { return }
-        let symbol = isFlashFilled ? "quote.bubble.fill" : "quote.bubble"
+        let symbol = isLyricsVisible ? "quote.bubble.fill" : "quote.bubble"
         item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: item.label)
-        item.toolTip = isLyricsVisible ? "Hide Lyrics" : "Show Lyrics"
+        item.toolTip = isLyricsVisible ? "隐藏歌词" : "显示歌词"
         item.isEnabled = true
     }
 

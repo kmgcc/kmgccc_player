@@ -454,7 +454,7 @@ final class ImportEnrichmentService {
 
             trackByID[track.id] = track
 
-            if track.ttmlLyricText == nil {
+            if track.allowsAutomaticLyrics && track.ttmlLyricText == nil {
                 enqueuePart(.lyrics, for: track.id)
             } else if var state = itemStates[track.id], state.state(for: .lyrics) != .completed {
                 state.setState(.skipped, for: .lyrics)
@@ -465,7 +465,7 @@ final class ImportEnrichmentService {
                 )
             }
 
-            if !track.hasArtwork {
+            if !track.hasArtwork || track.artworkNeedsUpgrade {
                 enqueuePart(.cover, for: track.id)
             } else if var state = itemStates[track.id], state.state(for: .cover) != .completed {
                 state.setState(.skipped, for: .cover)
@@ -551,8 +551,8 @@ final class ImportEnrichmentService {
         artistEntriesByCanonical: [String: ArtistEntry],
         albumEntriesByCanonical: [String: AlbumEntry]
     ) -> ImportEnrichmentItemState? {
-        let needsLyrics = track.ttmlLyricText == nil
-        let needsCover = !track.hasArtwork
+        let needsLyrics = track.allowsAutomaticLyrics && track.ttmlLyricText == nil
+        let needsCover = !track.hasArtwork || track.artworkNeedsUpgrade
         let needsTrackMetadata = trackMetadataIsMissing(track)
         let needsArtistMetadata = Self.artistMetadataNeedsEnrichment(
             artist: track.artist,
@@ -594,16 +594,11 @@ final class ImportEnrichmentService {
     }
 
     private func trackMetadataIsMissing(_ track: Track) -> Bool {
-        if MetadataDetailApplicator.shouldFillMissingAlbum(track.album) {
-            return true
-        }
-        if track.genreTags.isEmpty == false,
-           track.language.isEmpty == false,
-           track.labelOrCompany.isEmpty == false,
-           track.releaseDate != nil {
-            return false
-        }
-        return true
+        (!track.isMetadataFieldManual("album") && MetadataDetailApplicator.shouldFillMissingAlbum(track.album))
+            || (!track.isMetadataFieldManual("genreTags") && track.genreTags.isEmpty)
+            || (!track.isMetadataFieldManual("language") && track.language.isEmpty)
+            || (!track.isMetadataFieldManual("labelOrCompany") && track.labelOrCompany.isEmpty)
+            || (!track.isMetadataFieldManual("releaseDate") && track.releaseDate == nil)
     }
 
     static func artistEntriesByCanonical(_ entries: [ArtistEntry]) -> [String: ArtistEntry] {
@@ -629,10 +624,10 @@ final class ImportEnrichmentService {
         let canonical = LibraryNormalization.normalizeArtist(artist)
         guard canonical != LibraryNormalization.normalizeArtist(nil) else { return false }
         guard let entry = entriesByCanonical[canonical] else { return true }
-        return entry.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || entry.genreTags.isEmpty
-            || entry.region.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || entry.foreignName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return (!entry.manuallyEditedFields.contains("description") && entry.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            || (!entry.manuallyEditedFields.contains("genreTags") && entry.genreTags.isEmpty)
+            || (!entry.manuallyEditedFields.contains("region") && entry.region.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            || (!entry.manuallyEditedFields.contains("foreignName") && entry.foreignName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     static func artistArtworkNeedsEnrichment(
@@ -652,12 +647,15 @@ final class ImportEnrichmentService {
         guard !LibraryNormalization.isUnknownAlbum(album) else { return false }
         let canonical = LibraryNormalization.normalizedAlbumKey(album: album)
         guard let entry = entriesByCanonical[canonical] else { return true }
-        return entry.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || (entry.year == nil && entry.releaseYear == nil && entry.releaseDate == nil)
-            || entry.albumType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || entry.genreTags.isEmpty
-            || entry.language.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || entry.labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return (!entry.manuallyEditedFields.contains("description") && entry.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            || (entry.year == nil && entry.releaseYear == nil && entry.releaseDate == nil
+                && (!entry.manuallyEditedFields.contains("year")
+                    || !entry.manuallyEditedFields.contains("releaseYear")
+                    || !entry.manuallyEditedFields.contains("releaseDate")))
+            || (!entry.manuallyEditedFields.contains("albumType") && entry.albumType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            || (!entry.manuallyEditedFields.contains("genreTags") && entry.genreTags.isEmpty)
+            || (!entry.manuallyEditedFields.contains("language") && entry.language.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            || (!entry.manuallyEditedFields.contains("labelOrCompany") && entry.labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     static func albumArtworkNeedsEnrichment(
@@ -1005,7 +1003,7 @@ final class ImportEnrichmentService {
                 continue
             }
 
-            if request.part == .lyrics, track.ttmlLyricText != nil {
+            if request.part == .lyrics, !track.allowsAutomaticLyrics || track.ttmlLyricText != nil {
                 state.setState(.skipped, for: .lyrics)
                 itemStates[request.trackID] = state
                 Log.info(
@@ -1016,7 +1014,7 @@ final class ImportEnrichmentService {
                 continue
             }
 
-            if request.part == .cover, track.hasArtwork {
+            if request.part == .cover, track.hasArtwork, !track.artworkNeedsUpgrade {
                 state.setState(.skipped, for: .cover)
                 itemStates[request.trackID] = state
                 Log.info(
@@ -1156,7 +1154,7 @@ final class ImportEnrichmentService {
         var shouldRequeue = false
         switch outcome {
         case .completed(let ttml):
-            if track.ttmlLyricText == nil {
+            if track.allowsAutomaticLyrics && track.ttmlLyricText == nil {
                 bufferFlushPatch(
                     trackID: request.trackID,
                     title: state.title,
@@ -1221,7 +1219,7 @@ final class ImportEnrichmentService {
         var shouldRequeue = false
         switch outcome {
         case .completed(let data):
-            if !track.hasArtwork {
+            if !track.hasArtwork || track.artworkNeedsUpgrade {
                 bufferFlushPatch(
                     trackID: request.trackID,
                     title: state.title,
@@ -1258,6 +1256,7 @@ final class ImportEnrichmentService {
                     category: .import
                 )
             }
+            track.artworkNeedsUpgrade = false
         case .failed(let message):
             shouldRequeue = shouldRetry(part: .cover, state: state)
             if shouldRequeue {
@@ -1267,6 +1266,7 @@ final class ImportEnrichmentService {
                     category: .import
                 )
             } else if track.hasArtwork {
+                track.artworkNeedsUpgrade = false
                 state.setState(.skipped, for: .cover)
                 Log.info(
                     "[ImportEnrichment] cover failed \(state.title) - \(state.artist) | embedded artwork present: \(message)",
@@ -1856,7 +1856,7 @@ final class ImportEnrichmentService {
             )
 
             if patch.lyricShouldFlush {
-                if track.ttmlLyricText == nil, let ttml = patch.ttmlLyricText {
+                if track.allowsAutomaticLyrics && track.ttmlLyricText == nil, let ttml = patch.ttmlLyricText {
                     track.ttmlLyricText = ttml
                 } else {
                     effectivePatch.ttmlLyricText = nil
@@ -1865,18 +1865,26 @@ final class ImportEnrichmentService {
                 }
             }
             if patch.coverShouldFlush {
-                if !track.hasArtwork, let artworkData = patch.artworkData {
+                let canReplace = track.artworkIsUserSelected != true && (!track.hasArtwork || track.artworkNeedsUpgrade)
+                if canReplace,
+                   let artworkData = patch.artworkData,
+                   ArtworkDataNormalizer.isHigherResolution(
+                       artworkData,
+                       than: track.loadArtworkDataIfNeeded()
+                   ) {
                     track.artworkData = artworkData
+                    track.artworkIsUserSelected = false
                 } else {
                     effectivePatch.artworkData = nil
                     effectivePatch.coverShouldFlush = false
                     markSupersededFlushPart(.cover, for: trackID)
                 }
+                track.artworkNeedsUpgrade = false
             }
             if patch.trackMetadataShouldFlush {
                 var hasMetadataFieldToFlush = false
                 if let album = patch.album {
-                    if track.album == album || MetadataDetailApplicator.shouldFillMissingAlbum(track.album) {
+                    if !track.isMetadataFieldManual("album") && (track.album == album || MetadataDetailApplicator.shouldFillMissingAlbum(track.album)) {
                         track.album = album
                         hasMetadataFieldToFlush = true
                     } else {
@@ -1884,7 +1892,7 @@ final class ImportEnrichmentService {
                     }
                 }
                 if let desc = patch.userDescription {
-                    if track.userDescription == desc || track.userDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if !track.isMetadataFieldManual("description") && (track.userDescription == desc || track.userDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
                         track.userDescription = desc
                         hasMetadataFieldToFlush = true
                     } else {
@@ -1892,7 +1900,7 @@ final class ImportEnrichmentService {
                     }
                 }
                 if let tags = patch.genreTags {
-                    if track.genreTags == tags || track.genreTags.isEmpty {
+                    if !track.isMetadataFieldManual("genreTags") && (track.genreTags == tags || track.genreTags.isEmpty) {
                         track.genreTags = tags
                         hasMetadataFieldToFlush = true
                     } else {
@@ -1900,7 +1908,7 @@ final class ImportEnrichmentService {
                     }
                 }
                 if let lang = patch.language {
-                    if track.language == lang || track.language.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if !track.isMetadataFieldManual("language") && (track.language == lang || track.language.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
                         track.language = lang
                         hasMetadataFieldToFlush = true
                     } else {
@@ -1908,7 +1916,7 @@ final class ImportEnrichmentService {
                     }
                 }
                 if let label = patch.labelOrCompany {
-                    if track.labelOrCompany == label || track.labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if !track.isMetadataFieldManual("labelOrCompany") && (track.labelOrCompany == label || track.labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
                         track.labelOrCompany = label
                         hasMetadataFieldToFlush = true
                     } else {
@@ -1916,7 +1924,7 @@ final class ImportEnrichmentService {
                     }
                 }
                 if let date = patch.releaseDate {
-                    if track.releaseDate == date || track.releaseDate == nil {
+                    if !track.isMetadataFieldManual("releaseDate") && (track.releaseDate == date || track.releaseDate == nil) {
                         track.releaseDate = date
                         hasMetadataFieldToFlush = true
                     } else {
@@ -1924,7 +1932,7 @@ final class ImportEnrichmentService {
                     }
                 }
                 if let mid = patch.qqMusicSongMid {
-                    if track.qqMusicSongMid == mid || (track.qqMusicSongMid?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+                    if !track.isMetadataFieldManual("qqMusicSongMid") && (track.qqMusicSongMid == mid || (track.qqMusicSongMid?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)) {
                         track.qqMusicSongMid = mid
                         hasMetadataFieldToFlush = true
                     } else {
@@ -2124,15 +2132,42 @@ final class ImportEnrichmentService {
         for trackID in failedTrackIDs {
             guard let patch = effectivePatches[trackID], let revert = revertByTrackID[trackID] else { continue }
             if let track = trackByID[trackID] {
-                track.ttmlLyricText = revert.lyrics
-                track.artworkData = revert.artworkData
-                track.album = revert.album
-                track.userDescription = revert.userDescription
-                track.genreTags = revert.genreTags
-                track.language = revert.language
-                track.labelOrCompany = revert.labelOrCompany
-                track.releaseDate = revert.releaseDate
-                track.qqMusicSongMid = revert.qqMusicSongMid
+                if patch.lyricShouldFlush, track.allowsAutomaticLyrics,
+                   track.ttmlLyricText == patch.ttmlLyricText {
+                    track.ttmlLyricText = revert.lyrics
+                }
+                if patch.coverShouldFlush, track.artworkIsUserSelected != true,
+                   track.artworkData == patch.artworkData {
+                    track.artworkData = revert.artworkData
+                }
+                if !track.isMetadataFieldManual("album"), let candidate = patch.album,
+                   track.album == candidate {
+                    track.album = revert.album
+                }
+                if !track.isMetadataFieldManual("description"), let candidate = patch.userDescription,
+                   track.userDescription == candidate {
+                    track.userDescription = revert.userDescription
+                }
+                if !track.isMetadataFieldManual("genreTags"), let candidate = patch.genreTags,
+                   track.genreTags == candidate {
+                    track.genreTags = revert.genreTags
+                }
+                if !track.isMetadataFieldManual("language"), let candidate = patch.language,
+                   track.language == candidate {
+                    track.language = revert.language
+                }
+                if !track.isMetadataFieldManual("labelOrCompany"), let candidate = patch.labelOrCompany,
+                   track.labelOrCompany == candidate {
+                    track.labelOrCompany = revert.labelOrCompany
+                }
+                if !track.isMetadataFieldManual("releaseDate"), let candidate = patch.releaseDate,
+                   track.releaseDate == candidate {
+                    track.releaseDate = revert.releaseDate
+                }
+                if !track.isMetadataFieldManual("qqMusicSongMid"), let candidate = patch.qqMusicSongMid,
+                   track.qqMusicSongMid == candidate {
+                    track.qqMusicSongMid = revert.qqMusicSongMid
+                }
             }
             if var state = itemStates[trackID] {
                 if patch.lyricShouldFlush, state.state(for: .lyrics) == .flushPending {

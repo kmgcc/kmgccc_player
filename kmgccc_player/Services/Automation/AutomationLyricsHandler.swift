@@ -53,6 +53,19 @@ final class AutomationLyricsHandler {
                     throw AutomationParameterError.invalidValue("mode")
                 }
                 let translation = try parameters.boolean("translation", default: true)
+                var sources = LyricsSearchHelper.defaultLDDCSources.union([.AMLLDB])
+                if let value = parameters.values["sources"] {
+                    guard case .array(let values) = value, !values.isEmpty, values.count <= LDDCSource.allCases.count else {
+                        throw AutomationParameterError.invalidValue("sources")
+                    }
+                    sources.removeAll()
+                    for value in values {
+                        guard case .string(let name) = value, let source = LDDCSource(rawValue: name) else {
+                            throw AutomationParameterError.invalidValue("sources")
+                        }
+                        sources.insert(source)
+                    }
+                }
                 let requestedRefresh = try parameters.boolean("refresh", default: false)
                 let shouldRefresh = request.method == AutomationMethod.lyricsSearch
                     || requestedRefresh
@@ -60,6 +73,7 @@ final class AutomationLyricsHandler {
                 let usedCache = !shouldRefresh
                     && cache?.mode == mode
                     && cache?.translation == translation
+                    && cache?.sources == sources
                 let result: LyricsSearchHelper.SearchResult
                 if usedCache, let cache {
                     result = cache.result
@@ -69,6 +83,8 @@ final class AutomationLyricsHandler {
                         artist: track.artist.isEmpty ? nil : track.artist,
                         album: track.album.isEmpty ? nil : track.album,
                         duration: track.duration > 0 ? track.duration : nil,
+                        lddcSources: sources.subtracting([.AMLLDB]),
+                        enableAMLLDB: sources.contains(.AMLLDB),
                         mode: mode,
                         translation: translation,
                         searchCoordinator: session.cacheServices.lyricsSearchCoordinator
@@ -76,6 +92,7 @@ final class AutomationLyricsHandler {
                     lyricsCandidateCache[trackID] = CachedLyricsCandidates(
                         mode: mode,
                         translation: translation,
+                        sources: sources,
                         result: result
                     )
                     trimLyricsCandidateCacheIfNeeded()
@@ -433,6 +450,7 @@ final class AutomationLyricsHandler {
     private struct CachedLyricsCandidates {
         let mode: LDDCMode
         let translation: Bool
+        let sources: Set<LDDCSource>
         let result: LyricsSearchHelper.SearchResult
     }
 

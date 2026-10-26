@@ -21,18 +21,36 @@ struct SkinArtworkComponent: View {
                     let ratio = image.size.width / max(1, image.size.height)
                     let width = min(proxy.size.width, proxy.size.height * ratio)
                     let height = width / max(0.01, ratio)
-                    Image(nsImage: image).resizable().interpolation(.high)
-                        .aspectRatio(contentMode: .fill)
+                    MotionArtworkView(
+                        resource: motionArtwork(for: proxy.size),
+                        isPlaying: snapshot.playback.isPlaying
+                    ) {
+                        Image(nsImage: image).resizable().interpolation(.high)
+                            .aspectRatio(contentMode: .fill)
+                    }
                         .frame(width: fills ? proxy.size.width : width, height: fills ? proxy.size.height : height)
                         .clipShape(RoundedRectangle(cornerRadius: configuration.number("cornerRadius", fallback: 12)))
                 } else {
-                    ArtworkPlaceholderView.nowPlaying(size: size, cornerRadius: configuration.number("cornerRadius", fallback: 12))
+                    MotionArtworkView(
+                        resource: motionArtwork(for: proxy.size),
+                        isPlaying: snapshot.playback.isPlaying
+                    ) {
+                        ArtworkPlaceholderView.nowPlaying(size: size, cornerRadius: configuration.number("cornerRadius", fallback: 12))
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: configuration.number("cornerRadius", fallback: 12)))
                 }
             }
             .blur(radius: configuration.number("blur", fallback: 0))
             .opacity(configuration.number("opacity", fallback: 1))
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
+    }
+
+    private func motionArtwork(for size: CGSize) -> MotionArtworkResource? {
+        if size.height > size.width * 1.2 {
+            return snapshot.track?.tallMotionArtwork ?? snapshot.track?.motionArtwork
+        }
+        return snapshot.track?.preferredMotionArtwork
     }
 }
 
@@ -48,8 +66,10 @@ struct SkinBackgroundComponent: View {
                 .clipped()
                 .contentShape(Rectangle())
                 .contextMenuWithVisibleIcons {
-                    Button("刷新皮肤", action: actions.reload)
-                    Button("恢复外观", action: actions.restore)
+                    if SkinRegistry.customizationEnabled {
+                        Button("刷新皮肤", action: actions.reload)
+                        Button("恢复外观", action: actions.restore)
+                    }
                 }
         }
     }

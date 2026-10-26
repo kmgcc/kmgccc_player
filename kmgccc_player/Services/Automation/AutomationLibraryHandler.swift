@@ -1006,7 +1006,9 @@ struct AutomationLibraryHandler {
                         artworkURL: existingAsset(track.existingArtworkURL()),
                         lyricsURL: existingAsset(track.resolvedLyricsURL()),
                         ttmlURL: existingAsset(track.resolvedTTMLURL()),
-                        failures: trackFailures
+                        failures: trackFailures,
+                        motionArtwork: track.motionArtwork,
+                        libraryRootURL: session.context.paths.rootURL
                     )
                 }
                 let playlists = libraryPlaylists.map {

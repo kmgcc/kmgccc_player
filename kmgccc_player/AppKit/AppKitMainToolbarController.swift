@@ -20,9 +20,17 @@ final class AppKitMainToolbarController: NSObject,
     NSPopoverDelegate
 {
     enum Identifier {
-        static let toolbar = NSToolbar.Identifier("AppKitMainToolbar")
+        // Toolbar configuration is scoped to each major content mode so a
+        // home-only group cannot reappear beside the library actions.
+        static let homeToolbar = NSToolbar.Identifier("AppKitMainToolbar.home")
+        static let libraryToolbar = NSToolbar.Identifier("AppKitMainToolbar.library")
+        static let historyToolbar = NSToolbar.Identifier("AppKitMainToolbar.history")
+        static let otherToolbar = NSToolbar.Identifier("AppKitMainToolbar.other")
+        static let fullscreenToolbar = NSToolbar.Identifier("AppKitMainToolbar.fullscreen")
         static let sidebarToggle = NSToolbarItem.Identifier("AppKitMainToolbar.sidebarToggle")
         static let homeNavPill = NSToolbarItem.Identifier("AppKitMainToolbar.homeNavPill")
+        static let homeBack = NSToolbarItem.Identifier("AppKitMainToolbar.homeBack")
+        static let homeForward = NSToolbarItem.Identifier("AppKitMainToolbar.homeForward")
         static let sort = NSToolbarItem.Identifier("AppKitMainToolbar.sort")
         static let pillGroup = NSToolbarItem.Identifier("AppKitMainToolbar.pillGroup")
         static let search = NSToolbarItem.Identifier("AppKitMainToolbar.search")
@@ -44,22 +52,24 @@ final class AppKitMainToolbarController: NSObject,
     private var attachmentGeneration = 0
 
     private weak var multiselectItem: NSToolbarItem?
+    private var multiselectItems: [NSToolbarItem] = []
     private weak var playItem: NSToolbarItem?
     private weak var revealNowPlayingItem: NSToolbarItem?
+    private var revealNowPlayingItems: [NSToolbarItem] = []
     private weak var importItem: NSToolbarItem?
     private weak var pillGroupItem: NSToolbarItemGroup?
     private weak var homePillGroupItem: NSToolbarItemGroup?
     private weak var historyDeleteItem: NSToolbarItem?
+    private var historyDeleteItems: [NSToolbarItem] = []
     private weak var sidebarToggleItem: NSToolbarItem?
     private weak var lyricsToggleItem: NSToolbarItem?
     private weak var homeNavPillItem: NSToolbarItemGroup?
+    private weak var homeBackItem: NSToolbarItem?
+    private weak var homeForwardItem: NSToolbarItem?
 
     private var fullscreenModeCancellable: AnyCancellable?
     private var selectionModifierMonitor: ListSelectionModifierMonitor?
     private var featureTipPopover: NSPopover?
-    private var lyricsFlashTicket = 0
-    private var lyricsFlashFilled = false
-
     private let itemFactory = AppKitMainToolbarItemFactory()
     private let searchBridge = AppKitMainToolbarSearchBridge()
     private let sortMenuController = AppKitMainToolbarSortMenuController()
@@ -86,6 +96,19 @@ final class AppKitMainToolbarController: NSObject,
 
     private var isPlaybackHistoryMode: Bool {
         appSession?.uiState.contentMode == .playbackHistory
+    }
+
+    private var toolbarIdentifierForCurrentState: NSToolbar.Identifier {
+        if FullscreenWindowManager.shared.isWindowedFullscreenActive {
+            return Identifier.fullscreenToolbar
+        }
+        if isPlaybackHistoryMode {
+            return Identifier.historyToolbar
+        }
+        guard appSession?.uiState.contentMode == .library else {
+            return Identifier.otherToolbar
+        }
+        return isHomeLandingSelection ? Identifier.homeToolbar : Identifier.libraryToolbar
     }
 
     private var isHomeLandingSelection: Bool {
@@ -231,9 +254,12 @@ final class AppKitMainToolbarController: NSObject,
             }
             return !queueTracks.isEmpty || (hasSelection && !isCollectionSelection)
         case Identifier.revealNowPlaying:
-            return isLibraryMode
-                && hasLibrary
-                && currentPlayerVM?.currentTrack != nil
+            if isHistoryMode {
+                return hasLibrary
+                    && currentHistoryVM?.isMultiselectMode == true
+                    && currentHistoryVM?.hasSelectedEvents == true
+            }
+            return isLibraryMode && hasLibrary && currentPlayerVM?.currentTrack != nil
         case Identifier.import:
             return (isLibraryMode || isHistoryMode) && hasLibrary
         case Identifier.pillGroup:
@@ -247,6 +273,10 @@ final class AppKitMainToolbarController: NSObject,
             return true
         case Identifier.homeNavPill:
             return shouldShowHomeNavPill()
+        case Identifier.homeBack:
+            return isHistoryMode || (isLibraryMode && !appSession.uiState.homeBackStack.isEmpty)
+        case Identifier.homeForward:
+            return isLibraryMode && !appSession.uiState.homeForwardStack.isEmpty
         default:
             return true
         }
@@ -265,17 +295,68 @@ final class AppKitMainToolbarController: NSObject,
     // MARK: - NSToolbarDelegate
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [
+        if FullscreenWindowManager.shared.isWindowedFullscreenActive {
+            return []
+        }
+
+        var identifiers: [NSToolbarItem.Identifier] = [
             Identifier.sidebarToggle,
             .sidebarTrackingSeparator,
-            Identifier.homeNavPill,
-            Identifier.sort,
-            Identifier.pillGroup,
-            Identifier.homePillGroup,
-            Identifier.historySectionTitle,
+        ]
+
+        let isHistoryMode = isPlaybackHistoryMode
+        let isLibraryMode = appSession?.uiState.contentMode == .library
+        if isHistoryMode || isLibraryMode {
+            identifiers += [
+                Identifier.homeNavPill,
+                Identifier.homeBack,
+                Identifier.homeForward,
+            ]
+        }
+
+        if isHistoryMode {
+            identifiers += [
+                Identifier.pillGroup,
+                Identifier.multiselect,
+                Identifier.play,
+                Identifier.revealNowPlaying,
+                Identifier.import,
+                Identifier.historySectionTitle,
+                Identifier.search,
+            ]
+        } else if isLibraryMode {
+            if isHomeLandingSelection {
+                identifiers += [
+                    Identifier.homePillGroup,
+                    Identifier.play,
+                    Identifier.revealNowPlaying,
+                    Identifier.import,
+                    Identifier.search,
+                ]
+            } else {
+                identifiers += [
+                    Identifier.sort,
+                    Identifier.pillGroup,
+                    Identifier.multiselect,
+                    Identifier.play,
+                    Identifier.revealNowPlaying,
+                    Identifier.import,
+                    Identifier.search,
+                ]
+            }
+        }
+        identifiers += [
+            .space,
             .flexibleSpace,
-            Identifier.search,
             Identifier.lyricsToggle,
+            .inspectorTrackingSeparator,
+        ]
+        return identifiers
+    }
+
+    func toolbarImmovableItemIdentifiers(_ toolbar: NSToolbar) -> Set<NSToolbarItem.Identifier> {
+        [
+            .sidebarTrackingSeparator,
             .inspectorTrackingSeparator,
         ]
     }
@@ -322,6 +403,7 @@ final class AppKitMainToolbarController: NSObject,
             isSidebarVisible: appSession?.uiState.sidebarVisible == true,
             isLyricsVisible: appSession?.uiState.lyricsVisible == true,
             isPlaybackHistoryMode: isHistoryMode,
+            isHomeLandingSelection: isHomeLandingSelection,
             isMultiselectMode: (isHistoryMode
                 ? currentHistoryVM?.isMultiselectMode
                 : currentPageController?.isMultiselectMode) == true,
@@ -335,6 +417,7 @@ final class AppKitMainToolbarController: NSObject,
             homeNavigation: #selector(handleHomeNavPillAction(_:)),
             pillGroup: #selector(handlePillGroupAction(_:)),
             homePillGroup: #selector(handleHomePillGroupAction(_:)),
+            pillItem: #selector(handlePillItemAction(_:)),
             lyricsToggle: #selector(handleLyricsToggle(_:))
         )
         guard let item = itemFactory.makeItem(
@@ -496,19 +579,8 @@ final class AppKitMainToolbarController: NSObject,
     private func handleLyricsToggle(_ sender: NSToolbarItem) {
         guard isCurrentToolbarAttached else { return }
         guard let splitViewController else { return }
-        lyricsFlashTicket += 1
-        let ticket = lyricsFlashTicket
-        let generation = attachmentGeneration
-        lyricsFlashFilled = true
+        splitViewController.toggleLyricsVisibility()
         syncLyricsToggleItemPresentation()
-        splitViewController.setLyricsVisible(!splitViewController.isLyricsVisible)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) { [weak self] in
-            guard let self else { return }
-            if self.lyricsFlashTicket == ticket, self.isCurrentAttachment(generation) {
-                self.lyricsFlashFilled = false
-                self.syncLyricsToggleItemPresentation()
-            }
-        }
     }
 
     @objc
@@ -643,6 +715,8 @@ final class AppKitMainToolbarController: NSObject,
         if let groupView = pillGroupItem?.view {
             return (groupView, multiselectAnchorRect(in: groupView))
         }
+
+        guard pillGroupItem != nil else { return nil }
 
         guard let rootView = window?.contentView?.superview ?? window?.contentView else { return nil }
         if let segmentedControl = firstSubview(
@@ -858,6 +932,15 @@ final class AppKitMainToolbarController: NSObject,
             selectedIndex = group.selectedIndex
         } else if let segmentedControl = sender as? NSSegmentedControl {
             selectedIndex = segmentedControl.selectedSegment
+        } else if let item = sender as? NSToolbarItem {
+            switch item.itemIdentifier {
+            case Identifier.homeBack:
+                selectedIndex = 0
+            case Identifier.homeForward:
+                selectedIndex = 1
+            default:
+                selectedIndex = -1
+            }
         } else {
             selectedIndex = homeNavPillItem?.selectedIndex ?? -1
         }
@@ -892,16 +975,22 @@ final class AppKitMainToolbarController: NSObject,
     }
 
     private func syncHomeNavPillPresentation() {
-        guard let group = homeNavPillItem else { return }
         guard let appSession = appSession else {
-            group.subitems.forEach { $0.isEnabled = false }
+            homeNavPillItem?.subitems.forEach { $0.isEnabled = false }
+            homeBackItem?.isEnabled = false
+            homeForwardItem?.isEnabled = false
             return
         }
+        let isHistoryMode = appSession.uiState.contentMode == .playbackHistory
+        let canGoBack = !appSession.uiState.homeBackStack.isEmpty
+        let canGoForward = !appSession.uiState.homeForwardStack.isEmpty
+        homeBackItem?.isEnabled = isHistoryMode || canGoBack
+        homeForwardItem?.isEnabled = !isHistoryMode && canGoForward
         AppKitMainToolbarPresentation.syncHomeNavigation(
-            group: group,
-            isPlaybackHistoryMode: appSession.uiState.contentMode == .playbackHistory,
-            canGoBack: !appSession.uiState.homeBackStack.isEmpty,
-            canGoForward: !appSession.uiState.homeForwardStack.isEmpty
+            group: homeNavPillItem,
+            isPlaybackHistoryMode: isHistoryMode,
+            canGoBack: canGoBack,
+            canGoForward: canGoForward
         )
     }
 
@@ -1091,28 +1180,34 @@ final class AppKitMainToolbarController: NSObject,
     private func syncMultiselectItemPresentation() {
         if isPlaybackHistoryMode {
             let isOn = currentHistoryVM?.isMultiselectMode == true
-            AppKitMainToolbarPresentation.syncMultiselect(
-                item: multiselectItem,
-                isOn: isOn,
-                isEnabled: currentHistoryVM?.hasVisibleItems == true
-            )
+            for item in multiselectItems {
+                AppKitMainToolbarPresentation.syncMultiselect(
+                    item: item,
+                    isOn: isOn,
+                    isEnabled: currentHistoryVM?.hasVisibleItems == true
+                )
+            }
             syncMultiselectSegmentImage()
             return
         }
         let pageController = currentPageController
         let isOn = pageController?.isMultiselectMode == true
-        AppKitMainToolbarPresentation.syncMultiselect(
-            item: multiselectItem,
-            isOn: isOn,
-            isEnabled: !isHomeLandingSelection
-                && pageController?.hasMultiselectRowsForCurrentSelection == true
-        )
+        let isEnabled = !isHomeLandingSelection
+            && pageController?.hasMultiselectRowsForCurrentSelection == true
+        for item in multiselectItems {
+            AppKitMainToolbarPresentation.syncMultiselect(
+                item: item,
+                isOn: isOn,
+                isEnabled: isEnabled
+            )
+        }
         syncMultiselectSegmentImage()
     }
 
     /// The expanded group draws its own segmented control and does not always
     /// pick up a subitem's new image, so the segment is updated as well.
     private func syncMultiselectSegmentImage() {
+        guard pillGroupItem != nil else { return }
         guard let image = multiselectItem?.image,
               let rootView = window?.contentView?.superview ?? window?.contentView,
               let control = firstSubview(in: rootView, matching: { view in
@@ -1125,19 +1220,19 @@ final class AppKitMainToolbarController: NSObject,
     }
 
     private func syncHistoryDeleteItemPresentation() {
-        AppKitMainToolbarPresentation.syncHistoryDelete(
-            item: historyDeleteItem,
-            isEnabled: isPlaybackHistoryMode
-                && currentHistoryVM?.isMultiselectMode == true
-                && currentHistoryVM?.hasSelectedEvents == true
-        )
+        let isEnabled = isPlaybackHistoryMode
+            && currentHistoryVM?.isMultiselectMode == true
+            && currentHistoryVM?.hasSelectedEvents == true
+        for item in historyDeleteItems {
+            AppKitMainToolbarPresentation.syncHistoryDelete(item: item, isEnabled: isEnabled)
+        }
     }
 
     private func syncRevealNowPlayingItemPresentation() {
-        AppKitMainToolbarPresentation.syncRevealNowPlaying(
-            item: revealNowPlayingItem,
-            isEnabled: currentPlayerVM?.currentTrack != nil
-        )
+        let isEnabled = currentPlayerVM?.currentTrack != nil
+        for item in revealNowPlayingItems {
+            AppKitMainToolbarPresentation.syncRevealNowPlaying(item: item, isEnabled: isEnabled)
+        }
     }
 
     private func syncSearchFieldFromModel() {
@@ -1216,10 +1311,12 @@ final class AppKitMainToolbarController: NSObject,
     }
 
     private func syncLyricsToggleItemPresentation() {
+        let uiState = appSession?.uiState
         AppKitMainToolbarPresentation.syncLyricsToggle(
             item: lyricsToggleItem,
-            isLyricsVisible: appSession?.uiState.lyricsVisible == true,
-            isFlashFilled: lyricsFlashFilled
+            isLyricsVisible: uiState.map {
+                $0.usesSkinScene ? $0.skinSceneLyricsVisible : $0.lyricsVisible
+            } ?? false
         )
     }
 
@@ -1331,6 +1428,8 @@ final class AppKitMainToolbarController: NSObject,
         let generation = attachmentGeneration
         withObservationTracking {
             _ = uiState.lyricsVisible
+            _ = uiState.skinSceneLyricsVisible
+            _ = uiState.usesSkinScene
         } onChange: { [weak self] in
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentAttachment(generation) else { return }
@@ -1369,9 +1468,9 @@ final class AppKitMainToolbarController: NSObject,
 
     private func applyToolbarLayoutForCurrentState() {
         guard isCurrentToolbarAttached, let window, let currentToolbar = toolbar else { return }
-        let desiredIdentifiers = desiredToolbarIdentifiersForCurrentState()
-        let currentIdentifiers = currentToolbar.items.map(\.itemIdentifier)
-        guard currentIdentifiers != desiredIdentifiers else {
+        // Item order is user-owned once customization is enabled. The mode-specific
+        // toolbar identifier is the only reason to replace the current toolbar.
+        guard currentToolbar.identifier != toolbarIdentifierForCurrentState else {
             reattachVisibleToolbarItemReferences()
             validateCurrentToolbarVisibleItems()
             syncVisibleToolbarItemPresentation()
@@ -1397,15 +1496,20 @@ final class AppKitMainToolbarController: NSObject,
     private func resetToolbarItemReferences() {
         searchBridge.resetReferences()
         multiselectItem = nil
+        multiselectItems.removeAll(keepingCapacity: true)
         playItem = nil
         revealNowPlayingItem = nil
+        revealNowPlayingItems.removeAll(keepingCapacity: true)
         importItem = nil
         pillGroupItem = nil
         homePillGroupItem = nil
         historyDeleteItem = nil
+        historyDeleteItems.removeAll(keepingCapacity: true)
         sidebarToggleItem = nil
         lyricsToggleItem = nil
         homeNavPillItem = nil
+        homeBackItem = nil
+        homeForwardItem = nil
     }
 
     private func reattachVisibleToolbarItemReferences() {
@@ -1448,6 +1552,7 @@ final class AppKitMainToolbarController: NSObject,
             pillGroupItem = group
             if group.subitems.indices.contains(0) {
                 multiselectItem = group.subitems[0]
+                multiselectItems.append(group.subitems[0])
             }
             if group.subitems.indices.contains(1) {
                 playItem = group.subitems[1]
@@ -1455,8 +1560,10 @@ final class AppKitMainToolbarController: NSObject,
             if group.subitems.indices.contains(2) {
                 if isPlaybackHistoryMode {
                     historyDeleteItem = group.subitems[2]
+                    historyDeleteItems.append(group.subitems[2])
                 } else {
                     revealNowPlayingItem = group.subitems[2]
+                    revealNowPlayingItems.append(group.subitems[2])
                 }
             }
             if group.subitems.indices.contains(3) {
@@ -1475,6 +1582,7 @@ final class AppKitMainToolbarController: NSObject,
             }
             if group.subitems.indices.contains(1) {
                 revealNowPlayingItem = group.subitems[1]
+                revealNowPlayingItems.append(group.subitems[1])
             }
             if group.subitems.indices.contains(2) {
                 importItem = group.subitems[2]
@@ -1487,6 +1595,42 @@ final class AppKitMainToolbarController: NSObject,
             group.autovalidates = false
             group.isEnabled = true
             homeNavPillItem = group
+
+        case Identifier.multiselect, Identifier.play, Identifier.revealNowPlaying, Identifier.import:
+            item.target = self
+            item.action = #selector(handlePillItemAction(_:))
+            item.autovalidates = false
+            switch item.itemIdentifier {
+            case Identifier.multiselect:
+                if multiselectItem == nil { multiselectItem = item }
+                multiselectItems.append(item)
+            case Identifier.play:
+                if playItem == nil { playItem = item }
+            case Identifier.revealNowPlaying:
+                if isPlaybackHistoryMode {
+                    historyDeleteItem = item
+                    historyDeleteItems.append(item)
+                } else {
+                    revealNowPlayingItem = item
+                    revealNowPlayingItems.append(item)
+                }
+            case Identifier.import:
+                if importItem == nil { importItem = item }
+            default:
+                break
+            }
+
+        case Identifier.homeBack:
+            item.target = self
+            item.action = #selector(handleHomeNavPillAction(_:))
+            item.autovalidates = false
+            homeBackItem = item
+
+        case Identifier.homeForward:
+            item.target = self
+            item.action = #selector(handleHomeNavPillAction(_:))
+            item.autovalidates = false
+            homeForwardItem = item
 
         default:
             return
@@ -1679,12 +1823,12 @@ final class AppKitMainToolbarController: NSObject,
     }
 
     private func makeToolbar() -> NSToolbar {
-        let toolbar = NSToolbar(identifier: Identifier.toolbar)
+        let toolbar = NSToolbar(identifier: toolbarIdentifierForCurrentState)
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         toolbar.sizeMode = .default
-        toolbar.allowsUserCustomization = false
-        toolbar.autosavesConfiguration = false
+        toolbar.allowsUserCustomization = !FullscreenWindowManager.shared.isWindowedFullscreenActive
+        toolbar.autosavesConfiguration = true
         return toolbar
     }
 }

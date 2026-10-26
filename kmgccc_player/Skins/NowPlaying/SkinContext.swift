@@ -34,6 +34,12 @@ struct SkinContext {
         let artworkFileURL: URL?
         let artworkImage: NSImage?
         let displayedArtworkID: UUID?
+        var motionArtwork: MotionArtworkResource? = nil
+        var tallMotionArtwork: MotionArtworkResource? = nil
+
+        var preferredMotionArtwork: MotionArtworkResource? {
+            motionArtwork ?? tallMotionArtwork
+        }
     }
 
     struct PlaybackState {

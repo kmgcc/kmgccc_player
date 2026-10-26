@@ -920,6 +920,9 @@ struct AutomationMetadataHandler {
                     patchValues["metadataConfidence"] = .number(metadataConfidence)
                 }
 
+                if !overwriteExistingFields {
+                    patchValues = patchValues.filter { !track.isMetadataFieldManual($0.key) }
+                }
                 let currentRevision = session.libraryViewModel.automationTrackRevision(for: track)
                 let conflicted = currentRevision != initialRevision
                     || (expectedRevision != nil && expectedRevision != currentRevision)
@@ -1138,7 +1141,7 @@ struct AutomationMetadataHandler {
         guard !overwriteExistingFields else { return values }
         var result: [String: AutomationJSONValue] = [:]
         for (key, value) in values {
-            guard value != .null else { continue }
+            guard value != .null, !currentTrack.isMetadataFieldManual(key) else { continue }
             let existingValueIsEmpty: Bool
             switch key {
             case "title": existingValueIsEmpty = currentTrack.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

@@ -114,6 +114,9 @@ struct TrackRowView<MenuContent: View>: View {
     var rowSecondaryColor: Color = ColorTokens.textSecondary
     var rowTertiaryColor: Color = ColorTokens.textTertiary
     var artworkTintMode: AppSettings.ArtworkTintMode = .dynamic
+    /// Hosted rows receive the theme owner's scheme explicitly so appearance
+    /// changes participate in Equatable invalidation across NSHostingView roots.
+    var rowColorScheme: ColorScheme?
     @ViewBuilder let menuContent: () -> MenuContent
 
     @State private var isHovering = false
@@ -127,11 +130,13 @@ struct TrackRowView<MenuContent: View>: View {
     /// `revealHighlightOverlay`). `nil` = no animation (used for the instant reset).
     @State private var revealCurrentAnimation: Animation? = nil
 
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorScheme) private var environmentColorScheme
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var configuredMotionPolicy
+
+    private var colorScheme: ColorScheme { rowColorScheme ?? environmentColorScheme }
 
     private var artistColumnWidth: CGFloat { 164 }
     private var playingIndicatorColumnWidth: CGFloat { 20 }
@@ -162,6 +167,7 @@ struct TrackRowView<MenuContent: View>: View {
         rowSecondaryColor: Color = ColorTokens.textSecondary,
         rowTertiaryColor: Color = ColorTokens.textTertiary,
         artworkTintMode: AppSettings.ArtworkTintMode = .dynamic,
+        rowColorScheme: ColorScheme? = nil,
         @ViewBuilder menuContent: @escaping () -> MenuContent
     ) {
         self.model = model
@@ -181,11 +187,18 @@ struct TrackRowView<MenuContent: View>: View {
         self.rowSecondaryColor = rowSecondaryColor
         self.rowTertiaryColor = rowTertiaryColor
         self.artworkTintMode = artworkTintMode
+        self.rowColorScheme = rowColorScheme
         self.menuContent = menuContent
 
-        let fastCached = FastArtworkMemoryCache.shared.image(forKey: model.highArtworkCacheKey)
+        let cacheKey = model.highArtworkCacheKey
+        let fastCached = FastArtworkMemoryCache.shared.image(forKey: cacheKey)
         _artworkImage = State(initialValue: fastCached)
         _isArtworkReady = State(initialValue: fastCached != nil)
+        if artworkTintMode == .rich {
+            _rowArtworkAccentColor = State(
+                initialValue: FastArtworkMemoryCache.shared.accent(forKey: cacheKey)?.color
+            )
+        }
     }
 
     var body: some View {
@@ -336,6 +349,18 @@ struct TrackRowView<MenuContent: View>: View {
         .task(id: artworkTaskIdentity) {
             await loadArtwork()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .artworkThumbnailDidBecomeAvailable)) { notification in
+            // A prefetch finished after this row had already mounted. Take the
+            // cover now instead of leaving the placeholder until the row is
+            // recycled and mounted again.
+            guard artworkImage == nil,
+                  let cacheKey = notification.userInfo?[ArtworkThumbnailNotificationKey.cacheKey] as? String,
+                  cacheKey == model.highArtworkCacheKey,
+                  let image = FastArtworkMemoryCache.shared.image(forKey: cacheKey)
+            else { return }
+            artworkImage = image
+            isArtworkReady = true
+        }
         .task(id: artworkTintTaskIdentity) {
             await loadArtworkTint()
         }
@@ -357,8 +382,10 @@ struct TrackRowView<MenuContent: View>: View {
 
     private var artworkTintTaskIdentity: String {
         let loadingState = enableArtworkLoading ? "loading" : "paused"
-        let artworkPath = model.artworkFileURL?.standardizedFileURL.path ?? "inline"
-        return "\(loadingState)|\(artworkTintMode.rawValue)|\(model.artworkIdentity)|\(artworkPath)"
+        // The tint is read from the row cover, so it resolves again once the
+        // cover arrives.
+        let coverState = artworkImage == nil ? "pending" : "cover"
+        return "\(loadingState)|\(artworkTintMode.rawValue)|\(model.artworkIdentity)|\(coverState)"
     }
 
     private var artistText: String {
@@ -395,25 +422,32 @@ struct TrackRowView<MenuContent: View>: View {
         artworkTintColor?.opacity(0.62) ?? rowTertiaryColor
     }
 
+    /// Resolves the rich tint from the row cover. Reading it from the original
+    /// artwork meant every row that scrolled in decoded a full-size picture,
+    /// which starved the covers themselves during a fling and repeated on each
+    /// launch.
     @MainActor
     private func loadArtworkTint() async {
-        rowArtworkAccentColor = nil
         guard enableArtworkLoading,
               artworkTintMode == .rich,
-              !model.isMissing,
-              let source = TrackArtworkSource(
-                trackID: model.artworkTrackID,
-                artworkFileName: nil,
-                artworkFileURL: model.artworkFileURL,
-                inlineArtworkData: model.artworkData
-              )
-        else { return }
+              !model.isMissing
+        else {
+            rowArtworkAccentColor = nil
+            return
+        }
 
-        let accentColor = await cacheServices.trackArtworkCache.artworkAccentColor(
-            for: source,
-            purpose: "song-row-color",
-            priority: .userInitiated
-        )
+        let cacheKey = model.highArtworkCacheKey
+        if let cached = FastArtworkMemoryCache.shared.accent(forKey: cacheKey) {
+            rowArtworkAccentColor = cached.color
+            return
+        }
+        // Wait for the cover; this task runs again once it is on the row.
+        guard let artworkImage else { return }
+
+        let accentColor = await Task.detached(priority: .utility) {
+            ArtworkAssetStore.rowAccentColor(fromThumbnail: artworkImage)
+        }.value
+        FastArtworkMemoryCache.shared.storeAccent(accentColor, forKey: cacheKey)
         guard !Task.isCancelled, artworkTintMode == .rich else { return }
         rowArtworkAccentColor = accentColor
     }
@@ -773,6 +807,7 @@ extension TrackRowView: Equatable where MenuContent: View {
             && lhs.rowSecondaryColor == rhs.rowSecondaryColor
             && lhs.rowTertiaryColor == rhs.rowTertiaryColor
             && lhs.artworkTintMode == rhs.artworkTintMode
+            && lhs.rowColorScheme == rhs.rowColorScheme
     }
 }
 

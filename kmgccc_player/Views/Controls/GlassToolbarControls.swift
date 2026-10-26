@@ -48,7 +48,12 @@ struct GlassIconButtonLabel: View {
 
     var body: some View {
         Group {
-            if surfaceVariant == .systemToolbar {
+            if surfaceVariant == .sidebarBottom {
+                // SidebarSetBar owns the capsule shared by adjacent button segments.
+                iconContent
+                    .frame(width: size, height: size)
+                    .contentShape(Rectangle())
+            } else if surfaceVariant == .systemToolbar {
                 iconContent
                     .frame(width: size, height: size)
                     .contentShape(Circle())

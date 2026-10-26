@@ -430,13 +430,59 @@ struct SidebarView: View {
             Divider()
 
             // Bottom controls
-            GlassEffectContainer(spacing: 8) {
-                HStack(spacing: 8) {
-                    settingsButton
-                    appearanceSwitchButton
-                    fullscreenButton
-                    Spacer(minLength: 0)
+            HStack(spacing: 0) {
+                SidebarSetBar(configuration: settings.sidebarSetBarConfiguration) { item in
+                    switch item.kind {
+                    case .settings:
+                        SidebarSetBarHoverableButton(kind: item.kind) {
+                            settingsButton(
+                                isTipAnchor: item.id == settings.sidebarSetBarConfiguration.items.first(where: { $0.kind == .settings })?.id,
+                                showsHelp: false
+                            )
+                        }
+                    case .appearance:
+                        SidebarSetBarHoverableButton(kind: item.kind) { appearanceSwitchButton(showsHelp: false) }
+                    case .fullscreen:
+                        SidebarSetBarHoverableButton(kind: item.kind) { fullscreenButton(showsHelp: false) }
+                    case .volumeTarget, .soundEffects, .externalPlayback, .backgroundPreparation,
+                         .latencyCompensation, .hdr, .motionArtwork, .systemAppearance, .lyrics:
+                        SidebarSetBarHoverableButton(kind: item.kind) {
+                            SidebarSetBarButton(kind: item.kind, isSegment: true, showsHelp: false) {
+                                switch item.kind {
+                                case .volumeTarget:
+                                    settings.volumeControlTarget = settings.volumeControlTarget == .app ? .system : .app
+                                case .soundEffects:
+                                    let controller = appSession.audioDSPController
+                                    Task { @MainActor in
+                                        await controller.ensureLoaded()
+                                        controller.updateConfiguration(commit: true) {
+                                            $0.enabled.toggle()
+                                        }
+                                    }
+                                case .externalPlayback:
+                                    settings.showPlaybackSourceSwitcher.toggle()
+                                case .backgroundPreparation:
+                                    settings.backgroundPreparationEnabled.toggle()
+                                case .latencyCompensation:
+                                    settings.audioLookaheadEnabled.toggle()
+                                case .hdr: settings.audioVisualizationHDREnabled.toggle()
+                                case .motionArtwork: settings.motionArtworkEnabled.toggle()
+                                case .systemAppearance:
+                                    settings.appearanceMode = settings.followSystemAppearance
+                                        ? (settings.resolvedColorScheme == .dark ? .dark : .light)
+                                        : .system
+                                    settings.applyAppearanceToAppAndWindows()
+                                case .lyrics: AppKitMainSplitWindowController.toggleLyricsVisibility()
+                                default: break
+                                }
+                            }
+                        }
+                    case .separator: EmptyView()
+                    }
+                } separator: { _ in
+                    Color.clear
                 }
+                Spacer(minLength: 0)
             }
             .tint(themeStore.accentColor)
             .padding(.horizontal, 12)
@@ -488,11 +534,15 @@ struct SidebarView: View {
                 finishCrashReportTipPresentation()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .presentSettingsFromMenu)) { _ in
+            openSettings()
+        }
         .sheet(isPresented: $showSettings, onDismiss: {
             FeatureTipPresentationCoordinator.shared.setSuspended(false, reason: .settingsSheet)
         }) {
             SettingsView(hasActiveLibrarySession: true)
                 .environment(settings)
+                .environment(uiState)
                 .environment(libraryVM)
                 .environment(playerVM)
                 .environment(playbackCoordinator)
@@ -747,6 +797,7 @@ struct SidebarView: View {
             || activeLibraryImportTask != nil
             || !uiState.libraryImportFailureReports.isEmpty
             || backgroundLoudnessSidebarProgress != nil
+            || artworkRenovationSource != nil
     }
 
     private var activeSessionForLoudness: LibrarySession? {
@@ -779,6 +830,19 @@ struct SidebarView: View {
 
     private var sidebarTaskProgressStack: some View {
         VStack(spacing: 6) {
+            if let source = artworkRenovationSource {
+                SidebarTaskProgressView(
+                    progress: SidebarTaskProgress(
+                        title: "正在翻新资料库封面",
+                        detail: "已检查 \(source.completed)/\(source.total) 首",
+                        fractionCompleted: source.isReady ? Double(source.completed) / Double(max(1, source.total)) : nil,
+                        state: .running,
+                        systemImage: "photo.badge.arrow.down"
+                    ),
+                    onShowDetails: { ArtworkRenovationDialogPresenter.present(source: source) }
+                )
+                .transition(.opacity)
+            }
             if let notice = uiState.sidebarNotice {
                 SidebarNoticeView(notice: notice) {
                     if activeLibraryImportTask != nil || !uiState.libraryImportFailureReports.isEmpty {
@@ -867,6 +931,17 @@ struct SidebarView: View {
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
+    }
+
+    private var artworkRenovationSource: ArtworkRenovationWorkSource? {
+        let scheduler = appSession.backgroundWorkScheduler
+        // Activity is stored outside Observation; its revision publishes
+        // starts, scheduler pauses, resumes and completions without polling.
+        _ = scheduler.activityRevision
+        guard let source = appSession.activeLibraryBinding.activeSession?.cacheServices.artworkRenovationSource,
+              source.isVisible, !source.isPaused, source.lastError == nil,
+              scheduler.activity(of: .artworkRenovation).running > 0 else { return nil }
+        return source
     }
 
     /// The latest running task the sidebar shows. Each task kind registers its
@@ -990,20 +1065,23 @@ struct SidebarView: View {
         currentColorScheme == .dark ? .primary : themeStore.accentColor
     }
 
-    private var settingsButton: some View {
+    private func settingsButton(isTipAnchor: Bool, showsHelp: Bool) -> some View {
         GlassIconButton(
             systemImage: "gear",
             size: GlassStyleTokens.headerControlHeight,
             iconSize: 14,
             isPrimary: false,
-            help: LocalizedStringKey("sidebar.settings"),
+            help: showsHelp ? LocalizedStringKey("sidebar.settings") : nil,
             surfaceVariant: .sidebarBottom
         ) {
             openSettings()
         }
+        .accessibilityLabel(Text("sidebar.settings"))
         .symbolEffect(.rotate, value: settingsRotateTrigger)
-        .keyboardShortcut(",", modifiers: .command)
-        .popover(isPresented: $showCrashReportSettingsTip, arrowEdge: .bottom) {
+        .popover(isPresented: Binding(
+            get: { isTipAnchor && showCrashReportSettingsTip },
+            set: { showCrashReportSettingsTip = $0 }
+        ), arrowEdge: .bottom) {
             CrashReportSettingsTipView(
                 onOpenSettings: {
                     showCrashReportSettingsTip = false
@@ -1036,6 +1114,7 @@ struct SidebarView: View {
     private func scheduleCrashReportSettingsTipIfNeeded() {
         crashReportTipTask?.cancel()
         guard !crashReportService.isPromptFlowActive,
+              settings.sidebarSetBarConfiguration.items.contains(where: { $0.kind == .settings }),
               !showSettings,
               !showingPlaylistSheet,
               !showCrashReportSettingsTip
@@ -1062,6 +1141,7 @@ struct SidebarView: View {
     private func presentCrashReportSettingsTipNow() -> Bool {
         let key = FeatureTipCatalog.AutomaticCrashReports.key
         guard !showCrashReportSettingsTip,
+              settings.sidebarSetBarConfiguration.items.contains(where: { $0.kind == .settings }),
               !crashReportService.isPromptFlowActive,
               !showSettings,
               !showingPlaylistSheet
@@ -1076,7 +1156,7 @@ struct SidebarView: View {
         return true
     }
 
-    private var appearanceSwitchButton: some View {
+    private func appearanceSwitchButton(showsHelp: Bool) -> some View {
         let effectiveManualMode: AppSettings.ManualAppearance = {
             if settings.followSystemAppearance {
                 return settings.resolvedColorScheme == .dark ? .dark : .light
@@ -1096,7 +1176,7 @@ struct SidebarView: View {
             size: GlassStyleTokens.headerControlHeight,
             iconSize: 14,
             isPrimary: true,
-            help: helpText,
+            help: showsHelp ? helpText : nil,
             surfaceVariant: .sidebarBottom
         ) {
             let target = nextAppearanceTarget()
@@ -1105,6 +1185,7 @@ struct SidebarView: View {
             }
             cycleAppearance(to: target)
         }
+        .accessibilityLabel(Text(helpText))
         .symbolEffect(.rotate, value: appearanceRotateTrigger)
         .contentTransition(
             .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
@@ -1112,17 +1193,18 @@ struct SidebarView: View {
         .motionAnimation(.microInteraction, value: icon)
     }
 
-    private var fullscreenButton: some View {
+    private func fullscreenButton(showsHelp: Bool) -> some View {
         GlassIconButton(
             systemImage: "arrow.up.left.and.arrow.down.right",
             size: GlassStyleTokens.headerControlHeight,
             iconSize: 14,
             isPrimary: false,
-            help: LocalizedStringKey("sidebar.fullscreen"),
+            help: showsHelp ? LocalizedStringKey("sidebar.fullscreen") : nil,
             surfaceVariant: .sidebarBottom
         ) {
             FullscreenWindowManager.shared.showFullscreenWindow()
         }
+        .accessibilityLabel(Text("sidebar.fullscreen"))
     }
 
     private func cycleAppearance(to target: AppSettings.ManualAppearance) {
@@ -1868,6 +1950,7 @@ private struct SidebarTaskProgressView: View {
     let onRetry: (() -> Void)?
     let onShowReleaseNotes: (() -> Void)?
     let onPause: (() -> Void)?
+    let onShowDetails: (() -> Void)?
 
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -1876,13 +1959,15 @@ private struct SidebarTaskProgressView: View {
         onDismiss: (() -> Void)? = nil,
         onRetry: (() -> Void)? = nil,
         onShowReleaseNotes: (() -> Void)? = nil,
-        onPause: (() -> Void)? = nil
+        onPause: (() -> Void)? = nil,
+        onShowDetails: (() -> Void)? = nil
     ) {
         self.progress = progress
         self.onDismiss = onDismiss
         self.onRetry = onRetry
         self.onShowReleaseNotes = onShowReleaseNotes
         self.onPause = onPause
+        self.onShowDetails = onShowDetails
     }
 
     var body: some View {
@@ -1948,11 +2033,25 @@ private struct SidebarTaskProgressView: View {
                     .tint(themeStore.accentColor)
             }
 
-            if !progress.detail.isEmpty {
-                Text(progress.detail)
-                    .font(.caption)
-                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                    .lineLimit(2)
+            if !progress.detail.isEmpty || onShowDetails != nil {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if !progress.detail.isEmpty {
+                        Text(progress.detail)
+                            .font(.caption)
+                            .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                            .lineLimit(2)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    if let onShowDetails {
+                        Button("查看详情", action: onShowDetails)
+                            .buttonStyle(SidebarNoticeCapsuleButtonStyle(
+                                accentColor: themeStore.accentColor, accentNSColor: themeStore.accentNSColor
+                            ))
+                            .fixedSize()
+                    }
+                }
             }
 
             if let onShowReleaseNotes {

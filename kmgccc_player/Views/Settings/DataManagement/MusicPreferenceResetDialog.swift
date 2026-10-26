@@ -134,7 +134,7 @@ private final class MusicPreferenceResetDialogController: NSObject, NSWindowDele
         }
 
         let windowSize = NSSize(width: 540, height: 560)
-        let (panel, visualEffect) = AppDialogTokens.makePanel(width: windowSize.width, height: windowSize.height)
+        let (panel, visualEffect) = AppDialogTokens.makeInsetPanel(contentSize: windowSize)
 
         panel.title = ""
         panel.titlebarAppearsTransparent = true
@@ -164,9 +164,10 @@ private final class MusicPreferenceResetDialogController: NSObject, NSWindowDele
         .tint(ThemeStore.shared.accentColor)
         .accentColor(ThemeStore.shared.accentColor)
         .frame(width: windowSize.width, height: windowSize.height)
+        .padding(AppDialogTokens.panelShadowInset)
 
-        let hostingView = NSHostingView(rootView: rootView)
-        hostingView.frame = NSRect(origin: .zero, size: windowSize)
+        let hostingView = AppDialogTokens.makeHostingView(rootView: rootView)
+        hostingView.frame = visualEffect.bounds
         hostingView.autoresizingMask = [.width, .height]
         visualEffect.addSubview(hostingView)
 

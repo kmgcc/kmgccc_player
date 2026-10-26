@@ -1,0 +1,188 @@
+{
+  "formatVersion": 2,
+  "hostAPIVersion": 2,
+  "version": "1.0.0",
+  "descriptor": {
+    "id": "example.vinyl",
+    "name": "唱片",
+    "systemImage": "paintpalette",
+    "surfaces": [
+      "window",
+      "fullscreen"
+    ]
+  },
+  "requires": [
+    "scene@2",
+    "theme@1",
+    "clock.playback@1"
+  ],
+  "scene": {
+    "state": {
+      "expanded": false
+    },
+    "root": {
+      "type": "layer",
+      "children": [
+        {
+          "type": "gradient",
+          "colors": [
+            "=theme.ambientSurface",
+            "=theme.artBackgroundSecondary"
+          ],
+          "frame": {
+            "x": "50%",
+            "y": "50%",
+            "width": "100%",
+            "height": "100%"
+          }
+        },
+        {
+          "type": "shape",
+          "shape": "circle",
+          "color": "#111115",
+          "frame": {
+            "x": "50%",
+            "y": "42%",
+            "width": "58vmin",
+            "height": "58vmin"
+          },
+          "scale": "=1 + audio.bass * 0.025"
+        },
+        {
+          "type": "artwork",
+          "frame": {
+            "x": "50%",
+            "y": "42%",
+            "width": "24vmin",
+            "height": "24vmin"
+          },
+          "clip": true,
+          "shape": "circle",
+          "rotation": "=clock.position * 18"
+        },
+        {
+          "type": "shape",
+          "shape": "circle",
+          "color": "=theme.ambientSurface",
+          "frame": {
+            "x": "50%",
+            "y": "42%",
+            "width": 10,
+            "height": 10
+          }
+        },
+        {
+          "type": "text",
+          "text": "=track.title",
+          "fontSize": 28,
+          "weight": "semibold",
+          "alignment": "center",
+          "color": "=params.tint",
+          "frame": {
+            "x": "50%",
+            "y": "74%",
+            "width": "82%",
+            "height": 44
+          }
+        },
+        {
+          "type": "lyricLine",
+          "fontSize": 16,
+          "color": "=theme.appForeground.secondary",
+          "alignment": "center",
+          "frame": {
+            "x": "50%",
+            "y": "80%",
+            "width": "82%",
+            "height": 32
+          }
+        },
+        {
+          "type": "shape",
+          "shape": "capsule",
+          "color": "=theme.ambientSurface",
+          "frame": {
+            "x": "50%",
+            "y": "90%",
+            "width": 230,
+            "height": 56
+          },
+          "opacity": 0.85
+        },
+        {
+          "type": "symbol",
+          "name": "backward.end.fill",
+          "color": "=theme.appForeground.primary",
+          "frame": {
+            "x": "40%",
+            "y": "90%",
+            "width": 22,
+            "height": 22
+          },
+          "on": {
+            "tap": "previous"
+          },
+          "help": "上一首"
+        },
+        {
+          "type": "symbol",
+          "name": "=playback.isPlaying ? 'pause.fill' : 'play.fill'",
+          "color": "=theme.appForeground.primary",
+          "frame": {
+            "x": "50%",
+            "y": "90%",
+            "width": 22,
+            "height": 22
+          },
+          "on": {
+            "tap": "playPause"
+          },
+          "help": "播放或暂停"
+        },
+        {
+          "type": "symbol",
+          "name": "forward.end.fill",
+          "color": "=theme.appForeground.primary",
+          "frame": {
+            "x": "60%",
+            "y": "90%",
+            "width": 22,
+            "height": 22
+          },
+          "on": {
+            "tap": "next"
+          },
+          "help": "下一首"
+        },
+        {
+          "type": "shape",
+          "shape": "capsule",
+          "color": "=theme.appForeground.quaternary",
+          "frame": {
+            "x": "50%",
+            "y": "96%",
+            "width": "72%",
+            "height": 5
+          },
+          "on": {
+            "drag": {
+              "do": "seek",
+              "value": "=gesture.fractionX * playback.duration"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "parameters": [
+    {
+      "id": "tint",
+      "title": "强调色",
+      "defaultValue": "#E4B68C",
+      "control": {
+        "type": "color"
+      },
+      "isUserVisible": true
+    }
+  ]
+}

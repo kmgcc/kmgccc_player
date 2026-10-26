@@ -85,6 +85,7 @@ struct LibraryDetailHeaderView: View {
     @Environment(\.libraryHeaderSemanticPalette) private var headerSemanticPalette
     @Environment(\.libraryHeaderForegroundPalette) private var headerForegroundPaletteOverride
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(LibraryCacheServices.self) private var cacheServices
 
     let config: DetailHeaderConfig
     /// Stable identity for artwork crossfade state machine
@@ -111,6 +112,7 @@ struct LibraryDetailHeaderView: View {
     @State private var isShowingArtistInfo = false
     @State private var isShowingAlbumInfo = false
     @State private var isShowingDescriptionReader = false
+    @State private var albumMotion: MotionArtworkResource?
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("LibraryDetailHeaderView.body")
@@ -138,6 +140,7 @@ struct LibraryDetailHeaderView: View {
         .task(id: config.artworkIdentity) {
             await handleAutomaticArtistArtworkFillIfNeeded()
         }
+        .task(id: albumMotionLookupID) { await loadAlbumMotion() }
         .sheet(isPresented: $isShowingArtistInfo) {
             if case .artist(let entry, _) = config {
                 ArtistInfoEditSheet(entry: entry) {
@@ -219,8 +222,11 @@ struct LibraryDetailHeaderView: View {
     private var artworkColumn: some View {
         ZStack(alignment: .bottomTrailing) {
             ZStack(alignment: .center) {
-                artworkImage
-                    .clipShape(artworkClipShape)
+                // An album with motion artwork loops it over the cover.
+                MotionArtworkView(resource: albumMotion, isPlaying: true, followsSong: false) {
+                    artworkImage
+                }
+                .clipShape(artworkClipShape)
 
                 // Loading overlay during regeneration
                 if isArtworkActionInFlight {
@@ -315,6 +321,31 @@ struct LibraryDetailHeaderView: View {
         } else {
             artworkPlaceholder
         }
+    }
+
+    /// The album's songs; their artwork sidecars change whenever the album's does.
+    private var albumTracks: [Track] {
+        guard case .album(let entry, _) = config else { return [] }
+        return libraryVM.allTracks.filter { $0.albumGroupKey == entry.canonicalKey }
+    }
+
+    private var albumMotionLookupID: String? {
+        guard case .album(let entry, _) = config else { return nil }
+        let tracks = albumTracks
+        let shared = tracks.first { $0.motionArtwork?.isUserSelected != true }?.motionArtwork?.assets.first?.relativePath
+        return "\(entry.canonicalKey)|\(tracks.count)|\(shared ?? "")"
+    }
+
+    private func loadAlbumMotion() async {
+        let tracks = albumTracks
+        guard let track = tracks.first(where: { $0.motionArtwork?.isUserSelected != true }) ?? tracks.first else {
+            albumMotion = nil
+            return
+        }
+        let resource = try? await cacheServices.musicEnrichmentService
+            .albumMotionResource(for: MusicEnrichmentWorkSource.query(track))
+        guard !Task.isCancelled else { return }
+        albumMotion = resource
     }
 
     @ViewBuilder
@@ -978,52 +1009,65 @@ struct ArtistInfoEditSheet: View {
     @State private var artworkMessage: String?
     @State private var artworkCandidates: [CoverCandidate] = []
     @State private var selectedArtworkCandidate: CoverCandidate?
+    @State private var selectedTab: EntityEditorTab = .artworkAndBasics
 
     var body: some View {
         metadataEntitySheet(
             title: "编辑艺人信息",
             systemImage: "person.crop.circle",
             canSave: hasChanges,
+            tabs: [.artworkAndBasics, .details],
+            selection: $selectedTab,
             onCancel: { dismiss() },
             onSave: save
-        ) {
-            artworkEditor(
-                data: artworkData,
-                fileURL: artworkData == nil ? entry.artworkFileURL : nil,
-                derivativeStore: cacheServices.artworkDerivativeStore,
-                isLoading: isArtworkLookupInFlight,
-                error: artworkMessage,
-                candidates: artworkCandidates,
-                selectedCandidate: selectedArtworkCandidate,
-                chooseImage: { isImportingArtwork = true },
-                searchArtwork: { searchArtwork() },
-                generateArtworkTitle: "生成封面",
-                isGeneratingArtwork: isArtworkGenerationInFlight,
-                generateArtwork: { generateArtwork() },
-                selectCandidate: { candidate in
-                    selectedArtworkCandidate = candidate
-                    artworkData = candidate.imageData
+        ) { tab in
+            switch tab {
+            case .artworkAndBasics:
+                artworkEditor(
+                    data: artworkData,
+                    fileURL: artworkData == nil ? entry.artworkFileURL : nil,
+                    derivativeStore: cacheServices.artworkDerivativeStore,
+                    isLoading: isArtworkLookupInFlight,
+                    error: artworkMessage,
+                    candidates: artworkCandidates,
+                    selectedCandidate: selectedArtworkCandidate,
+                    chooseImage: { isImportingArtwork = true },
+                    searchArtwork: { searchArtwork() },
+                    generateArtworkTitle: "生成封面",
+                    isGeneratingArtwork: isArtworkGenerationInFlight,
+                    generateArtwork: { generateArtwork() },
+                    selectCandidate: { candidate in
+                        selectedArtworkCandidate = candidate
+                        artworkData = candidate.imageData
+                    }
+                )
+                SettingsSection("基础信息") {
+                    labeledField("艺人名称", prompt: "艺人名称", text: $displayName)
                 }
-            )
+                labeledEditor("介绍", prompt: "添加艺人介绍…", text: $description)
+            case .details:
+                metadataLookupButton(
+                    isLoading: isMetadataLookupInFlight, message: metadataMessage,
+                    info: "联网查找这位艺人，补全介绍、标签与地区。"
+                ) {
+                    fetchMetadata()
+                }
 
-            Divider()
+                SettingsSection("详细信息") {
+                    VStack(alignment: .leading, spacing: TrackInfoEditorLayout.rowSpacing) {
+                        labeledField("流派 / 标签", prompt: "用逗号分隔", text: $genreTagsText)
+                        labeledField("地区", prompt: "地区", text: $region)
+                        labeledField("外文名", prompt: "外文名", text: $foreignName)
+                    }
+                }
 
-            labeledField("艺人名称", prompt: "艺人名称", text: $displayName)
-            labeledEditor("介绍", prompt: "添加艺人介绍…", text: $description)
-            labeledField("流派 / 标签", prompt: "用逗号分隔", text: $genreTagsText)
-            labeledField("地区", prompt: "地区", text: $region)
-            labeledField("外文名", prompt: "外文名", text: $foreignName)
-
-            metadataLookupButton(isLoading: isMetadataLookupInFlight, message: metadataMessage) {
-                fetchMetadata()
+                readonlyMetadataBlock(rows: [
+                    ("QQ 音乐 Singer MID", qqMusicSingerMid),
+                    ("来源", metadataSource),
+                    ("获取时间", metadataFetchedAt.map(formatMetadataDate) ?? ""),
+                    ("置信度", metadataConfidence.map { String(format: "%.2f", $0) } ?? ""),
+                ])
             }
-
-            readonlyMetadataBlock(rows: [
-                ("QQMusic Singer MID", qqMusicSingerMid),
-                ("来源", metadataSource),
-                ("获取时间", metadataFetchedAt.map(formatMetadataDate) ?? ""),
-                ("置信度", metadataConfidence.map { String(format: "%.2f", $0) } ?? ""),
-            ])
         }
         .tint(themeStore.accentColor)
         .onAppear(perform: load)
@@ -1209,62 +1253,93 @@ struct AlbumInfoEditSheet: View {
     @State private var isArtworkGenerationInFlight = false
     @State private var coverCoordinator: CoverSearchCoordinator?
     @State private var loudnessUnified = false
+    @State private var selectedTab: EntityEditorTab = .artworkAndBasics
+    @State private var pendingMotionCandidate: MusicEnrichmentResult?
+    @State private var pendingMotionVideo: MotionVideoImportSelection?
+    @State private var pendingMotionClear: AlbumMotionClear?
+    @State private var isMotionImportValidating = false
+    @State private var isSaving = false
+    @State private var saveFailureMessage: String?
 
     var body: some View {
         metadataEntitySheet(
             title: "编辑专辑信息",
             systemImage: "rectangle.stack",
-            canSave: hasChanges,
+            canSave: (hasChanges || hasMotionChange) && !isSaving && !isMotionImportValidating,
+            message: saveFailureMessage,
+            tabs: EntityEditorTab.allCases,
+            selection: $selectedTab,
             onCancel: { dismiss() },
             onSave: save
-        ) {
-            artworkEditor(
-                data: artworkData,
-                fileURL: artworkData == nil ? entry.artworkFileURL : nil,
-                derivativeStore: cacheServices.artworkDerivativeStore,
-                isLoading: coverCoordinator?.isLoading == true,
-                error: coverCoordinator?.error,
-                candidates: coverCoordinator?.candidates ?? [],
-                selectedCandidate: coverCoordinator?.selectedForPreview,
-                chooseImage: { isImportingArtwork = true },
-                searchArtwork: { searchArtwork() },
-                generateArtworkTitle: "使用歌曲封面",
-                isGeneratingArtwork: isArtworkGenerationInFlight,
-                generateArtwork: { restoreDefaultArtworkIntoDraft() },
-                selectCandidate: { candidate in
-                    coverCoordinator?.selectForPreview(candidate)
-                    artworkData = candidate.imageData
+        ) { tab in
+            switch tab {
+            case .artworkAndBasics:
+                artworkEditor(
+                    data: artworkData,
+                    fileURL: artworkData == nil ? entry.artworkFileURL : nil,
+                    derivativeStore: cacheServices.artworkDerivativeStore,
+                    isLoading: coverCoordinator?.isLoading == true,
+                    error: coverCoordinator?.error,
+                    candidates: coverCoordinator?.candidates ?? [],
+                    selectedCandidate: coverCoordinator?.selectedForPreview,
+                    chooseImage: { isImportingArtwork = true },
+                    searchArtwork: { searchArtwork() },
+                    generateArtworkTitle: "使用歌曲封面",
+                    isGeneratingArtwork: isArtworkGenerationInFlight,
+                    generateArtwork: { restoreDefaultArtworkIntoDraft() },
+                    selectCandidate: { candidate in
+                        coverCoordinator?.selectForPreview(candidate)
+                        artworkData = candidate.imageData
+                    }
+                )
+                AlbumMotionArtworkSection(
+                    query: albumMotionQuery,
+                    albumTitle: entry.displayTitle,
+                    albumArtist: entry.primaryArtistDisplayName,
+                    selection: $pendingMotionCandidate,
+                    importedVideo: $pendingMotionVideo,
+                    isValidatingImport: $isMotionImportValidating,
+                    pendingClear: $pendingMotionClear
+                )
+                SettingsSection("基础信息") {
+                    VStack(alignment: .leading, spacing: TrackInfoEditorLayout.rowSpacing) {
+                        labeledField("专辑名称", prompt: "专辑名称", text: $displayTitle)
+                        labeledField("发行年份", prompt: "YYYY", text: $releaseYearText)
+                        labeledField("发行日期", prompt: "YYYY-MM-DD", text: $releaseDateText)
+                        labeledField("专辑类型", prompt: "专辑类型", text: $albumType)
+                    }
                 }
-            )
+                labeledEditor("介绍", prompt: "添加专辑介绍…", text: $description)
+            case .details:
+                metadataLookupButton(
+                    isLoading: isMetadataLookupInFlight, message: metadataMessage,
+                    info: "联网查找这张专辑，补全介绍、类型与发行信息。"
+                ) {
+                    fetchMetadata()
+                }
 
-            Divider()
+                SettingsSection("详细信息") {
+                    VStack(alignment: .leading, spacing: TrackInfoEditorLayout.rowSpacing) {
+                        labeledField("流派 / 标签", prompt: "用逗号分隔", text: $genreTagsText)
+                        labeledField("语言", prompt: "语言", text: $language)
+                        labeledField("厂牌 / 公司", prompt: "厂牌或公司", text: $labelOrCompany)
+                    }
+                }
 
-            labeledField("专辑名称", prompt: "专辑名称", text: $displayTitle)
-            labeledEditor("介绍", prompt: "添加专辑介绍…", text: $description)
-            labeledField("发行年份", prompt: "YYYY", text: $releaseYearText)
-            labeledField("发行日期", prompt: "YYYY-MM-DD", text: $releaseDateText)
-            labeledField("专辑类型", prompt: "专辑类型", text: $albumType)
-            labeledField("流派 / 标签", prompt: "用逗号分隔", text: $genreTagsText)
-            labeledField("语言", prompt: "语言", text: $language)
-            labeledField("厂牌 / 公司", prompt: "厂牌或公司", text: $labelOrCompany)
+                readonlyMetadataBlock(rows: [
+                    ("QQ 音乐 Album MID", qqMusicAlbumMid),
+                    ("来源", metadataSource),
+                    ("获取时间", metadataFetchedAt.map(formatMetadataDate) ?? ""),
+                    ("置信度", metadataConfidence.map { String(format: "%.2f", $0) } ?? ""),
+                ])
 
-            metadataLookupButton(isLoading: isMetadataLookupInFlight, message: metadataMessage) {
-                fetchMetadata()
+                SettingsSection("响度") {
+                    SettingsSwitchRow(
+                        title: "专辑内响度统一",
+                        isOn: $loudnessUnified
+                    )
+                }
             }
-
-            readonlyMetadataBlock(rows: [
-                ("QQMusic Album MID", qqMusicAlbumMid),
-                ("来源", metadataSource),
-                ("获取时间", metadataFetchedAt.map(formatMetadataDate) ?? ""),
-                ("置信度", metadataConfidence.map { String(format: "%.2f", $0) } ?? ""),
-            ])
-
-            Divider()
-
-            SettingsSwitchRow(
-                title: "专辑内响度统一",
-                isOn: $loudnessUnified
-            )
         }
         .tint(themeStore.accentColor)
         .onAppear {
@@ -1277,6 +1352,7 @@ struct AlbumInfoEditSheet: View {
         }
         .onDisappear {
             coverCoordinator?.cancelSearch()
+            pendingMotionVideo = nil
         }
         .fileImporter(
             isPresented: $isImportingArtwork,
@@ -1285,6 +1361,17 @@ struct AlbumInfoEditSheet: View {
         ) { result in
             importArtwork(result)
         }
+    }
+
+    private var hasMotionChange: Bool {
+        pendingMotionCandidate != nil || pendingMotionVideo != nil || pendingMotionClear != nil
+    }
+
+    /// A song of this album, preferring one that follows the album's artwork.
+    private var albumMotionQuery: MusicEnrichmentQuery? {
+        let tracks = libraryVM.allTracks.filter { $0.albumGroupKey == entry.canonicalKey }
+        return (tracks.first { $0.motionArtwork?.isUserSelected != true } ?? tracks.first)
+            .map(MusicEnrichmentWorkSource.query)
     }
 
     private var hasChanges: Bool {
@@ -1426,11 +1513,43 @@ struct AlbumInfoEditSheet: View {
     }
 
     private func save() {
+        guard !isSaving else { return }
         let updated = currentDraft()
         let unified = loudnessUnified
         let loudnessChanged = unified != storedLoudnessUnified
         let automatic = automaticLoudnessExclusion == nil
+        let fieldsChanged = hasChanges
+        let motionQuery = albumMotionQuery
+        let candidate = pendingMotionCandidate
+        let video = pendingMotionVideo
+        let clear = pendingMotionClear
+        isSaving = true
+        saveFailureMessage = nil
         Task {
+            defer { isSaving = false }
+            // The album's artwork is keyed by its current name, so it is
+            // stored before a rename takes effect.
+            if let motionQuery {
+                let service = cacheServices.musicEnrichmentService
+                do {
+                    if let video {
+                        try await service.importAlbumMotionVideo(from: video.url, for: motionQuery)
+                    } else if let candidate {
+                        try await service.setAlbumMotion(candidate, for: motionQuery)
+                    } else if let clear {
+                        try await service.clearAlbumMotion(for: motionQuery, resumeAutomatic: clear == .automatic)
+                    }
+                } catch {
+                    Log.warning("[MusicEnrichment] event=album-motion-save-failed errorType=\(String(describing: type(of: error)))", category: .library)
+                    saveFailureMessage = (error as? MotionVideoImportError)?.errorDescription ?? "动态封面保存失败，请重试。"
+                    return
+                }
+            }
+            guard fieldsChanged else {
+                onSaved()
+                dismiss()
+                return
+            }
             await libraryVM.saveAlbumEdits(original: entry, updated: updated)
             if loudnessChanged {
                 // Matching the automatic judgement stores no override, so a
@@ -1458,21 +1577,52 @@ struct AlbumInfoEditSheet: View {
     }
 }
 
-private func metadataEntitySheet<Content: View>(
+/// Pages of the album and artist editors.
+nonisolated enum EntityEditorTab: Int, CaseIterable, Identifiable, InfoEditorTab {
+    case artworkAndBasics
+    case details
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .artworkAndBasics: "封面与基础"
+        case .details: "更多信息"
+        }
+    }
+}
+
+private func metadataEntitySheet<Tab: InfoEditorTab, Page: View>(
     title: String,
     systemImage: String,
     canSave: Bool,
+    message: String? = nil,
+    tabs: [Tab],
+    selection: Binding<Tab>,
     onCancel: @escaping () -> Void,
     onSave: @escaping () -> Void,
-    @ViewBuilder content: () -> Content
+    @ViewBuilder page: @escaping (Tab) -> Page
 ) -> some View {
     AppPopupFrame(title: title, systemImage: systemImage, onClose: onCancel) {
-        AppPopupScrollRegion {
-            VStack(alignment: .leading, spacing: AppPopupStyle().sectionSpacing) { content() }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture { clearCurrentTextInputFocus() }
+        VStack(alignment: .leading, spacing: 12) {
+            TrackInfoEditorTabBar(tabs: tabs, selection: selection)
+            TrackInfoEditorTabPages(tabs: tabs, selection: selection.wrappedValue) { tab in
+                AppPopupScrollRegion {
+                    VStack(alignment: .leading, spacing: SettingsStyleTokens.sectionSpacing) { page(tab) }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.bottom, TrackInfoEditorLayout.pageBottomRoom)
+                        .contentShape(Rectangle())
+                        .onTapGesture { clearCurrentTextInputFocus() }
+                }
+            }
+            if let message {
+                Text(message)
+                    .font(.system(size: SettingsStyleTokens.descriptionFontSize))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+        .trackInfoEditorSettingsStyle()
     } footer: {
         AppPopupActionGroup {
             Button("取消", action: onCancel)
@@ -1502,10 +1652,7 @@ private func artworkEditor(
     generateArtwork: (() -> Void)?,
     selectCandidate: @escaping (CoverCandidate) -> Void
 ) -> some View {
-    VStack(alignment: .leading, spacing: 12) {
-        Label("封面", systemImage: "photo")
-            .font(.headline)
-
+    SettingsSection("封面") {
         HStack(spacing: 16) {
             ZStack {
                 Group {
@@ -1540,23 +1687,23 @@ private func artworkEditor(
             VStack(alignment: .leading, spacing: 8) {
                 Button("选择图片", action: chooseImage)
                     .buttonStyle(AppPanelButtonStyle())
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: SettingsStyleTokens.rowFontSize, weight: .medium))
 
                 Button("查找封面", action: searchArtwork)
                     .buttonStyle(AppPanelButtonStyle())
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: SettingsStyleTokens.rowFontSize, weight: .medium))
                     .disabled(isLoading)
 
                 if let generateArtworkTitle, let generateArtwork {
                     Button(generateArtworkTitle, action: generateArtwork)
                         .buttonStyle(AppPanelButtonStyle())
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: SettingsStyleTokens.rowFontSize, weight: .medium))
                         .disabled(isGeneratingArtwork)
                 }
 
                 if let error {
                     Text(error)
-                        .font(.caption)
+                        .font(.system(size: SettingsStyleTokens.descriptionFontSize))
                         .foregroundStyle(.red)
                 }
             }
@@ -1611,85 +1758,51 @@ private struct ArtworkEditorFilePreview: View {
 private func metadataLookupButton(
     isLoading: Bool,
     message: String?,
+    info: String,
     action: @escaping () -> Void
 ) -> some View {
-    HStack {
-        Button {
-            action()
-        } label: {
-            Label("查找元数据", systemImage: "sparkle.magnifyingglass")
-        }
-        .buttonStyle(AppPanelButtonStyle())
-        .font(.system(size: 13, weight: .medium))
-        .disabled(isLoading)
+    SettingsSection("在线匹配", info: info) {
+        HStack(spacing: 8) {
+            Button {
+                action()
+            } label: {
+                Label("查找元数据", systemImage: "sparkle.magnifyingglass")
+            }
+            .buttonStyle(AppPanelButtonStyle())
+            .font(.system(size: SettingsStyleTokens.rowFontSize, weight: .medium))
+            .disabled(isLoading)
 
-        if isLoading {
-            ProgressView()
-                .controlSize(.small)
-        }
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+            }
 
-        if let message {
-            Text(message)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let message {
+                Text(message)
+                    .settingsDescriptionStyle()
+            }
         }
     }
 }
 
 private func labeledField(_ label: String, prompt: String, text: Binding<String>) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
-        Text(label)
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-        TextField(prompt, text: text)
-            .textFieldStyle(.roundedBorder)
-    }
+    TrackInfoFieldRow(LocalizedStringKey(label), prompt: LocalizedStringKey(prompt), text: text)
 }
 
 private func labeledEditor(_ label: String, prompt: String, text: Binding<String>) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
-        Text(label)
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-        ZStack(alignment: .topLeading) {
-            TextEditor(text: text)
-                .font(.body)
-                .lineSpacing(4)
-                .padding(8)
-                .frame(height: 148)
-                .scrollContentBackground(.hidden)
-            if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(prompt)
-                    .foregroundStyle(.tertiary)
-                    .font(.body)
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 16)
-                    .allowsHitTesting(false)
-            }
-        }
-        .appPopupContentBackground()
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .padding(.trailing, 18)
+    SettingsSection(LocalizedStringKey(label)) {
+        TrackInfoTextEditorBox(prompt: LocalizedStringKey(prompt), text: text, height: 148)
     }
 }
 
 private func readonlyMetadataBlock(rows: [(String, String)]) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
-        Text("来源信息")
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-        ForEach(rows, id: \.0) { label, value in
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(label)
-                    .frame(width: 142, alignment: .leading)
-                    .foregroundStyle(.tertiary)
-                Text(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未记录" : value)
-                    .textSelection(.enabled)
+    SettingsSection("来源记录") {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(rows, id: \.0) { label, value in
+                TrackInfoValueRow(LocalizedStringKey(label), value: value)
             }
         }
     }
-    .font(.caption)
-    .foregroundStyle(.secondary)
 }
 
 private func normalizedImportedArtwork(from url: URL) -> NormalizedImportedHeaderArtwork? {

@@ -5,6 +5,7 @@ nonisolated enum LibraryTrackDropMetadataEdit {
     case album(title: String, artist: String, key: String, musicBrainzReleaseID: String?)
 
     func apply(to track: Track) {
+        let originalMetadata = LibraryMetadataEditSnapshot(track)
         var correction = track.userMetadataOverride ?? UserMetadataOverride(editedAt: Date())
         switch self {
         case let .artist(name, canonicalName):
@@ -28,6 +29,12 @@ nonisolated enum LibraryTrackDropMetadataEdit {
         }
         if track.userMetadataOverride != correction {
             correction.editedAt = Date()
+            track.userMetadataOverride = correction
+        }
+        let assignedAlbumGroup = track.userMetadataOverride?.albumGroupKey
+        track.recordManualMetadataEdits(since: originalMetadata)
+        if case .album = self, var correction = track.userMetadataOverride {
+            correction.albumGroupKey = assignedAlbumGroup
             track.userMetadataOverride = correction
         }
     }

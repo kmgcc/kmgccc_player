@@ -10,6 +10,8 @@ struct SkinSceneControlHost<Content: View>: View {
     let onRestore: () -> Void
     let onReload: () -> Void
     let onToggleLyrics: () -> Void
+    /// The skin's own foreground policy, as the built-in fullscreen host applies it.
+    var controlForeground: SkinPresentationPolicy.ControlForeground = .chrome
     @ViewBuilder let content: () -> Content
 
     @Environment(PlaybackCoordinator.self) private var playback
@@ -17,6 +19,7 @@ struct SkinSceneControlHost<Content: View>: View {
     @Environment(LibraryCacheServices.self) private var caches
     @Environment(AppSettings.self) private var settings
     @Environment(UIStateViewModel.self) private var uiState
+    @Environment(PlayerViewModel.self) private var player
     @EnvironmentObject private var theme: ThemeStore
     @State private var controls = FullscreenBottomControlsCoordinator()
     @State private var providedControls: Set<SkinSceneControl> = []
@@ -25,17 +28,19 @@ struct SkinSceneControlHost<Content: View>: View {
     @State private var editingExternalInfo = false
     @State private var showingSettings = false
     @State private var detailTrack: Track?
+    @State private var deletionRequest: TrackDeletionConfirmationRequest?
+    @State private var showingMusicInfo = false
 
     private var nativeContext: SkinNativeControlsContext {
         let material: LiquidGlassPillMaterialStyle = settings.fullscreenMiniPlayerGlassMaterial == .normal ? .normal : .clear
         let profile = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: theme.semanticPalette, localArtworkPolarity: nil,
-            hasArtworkThemeColor: theme.palette != nil, controlForeground: .chrome,
-            colorScheme: theme.colorScheme, materialStyle: material, fullscreenArtBackgroundEnabled: false
+            hasArtworkThemeColor: theme.palette != nil, controlForeground: controlForeground,
+            colorScheme: theme.colorScheme, materialStyle: material, fullscreenArtBackgroundEnabled: settings.fullscreenArtBackgroundEnabled
         )
         return .init(
             presentation: .init(
-                glassStyle: .init(colorScheme: theme.colorScheme, accentColor: theme.accentColor, materialStyle: material),
+                glassStyle: .init(colorScheme: profile.complementaryGlassColorScheme, accentColor: theme.accentColor, materialStyle: material),
                 miniPlayerForegroundProfile: profile,
                 primaryColor: Color(nsColor: profile.primary), iconBlendMode: profile.iconBlendMode,
                 playbackMode: playback.stablePresentation.localPlaybackOrderMode ?? settings.playbackOrderMode,
@@ -107,6 +112,16 @@ struct SkinSceneControlHost<Content: View>: View {
                 }
             }
             .sheet(item: $editingTrack) { TrackEditSheet(track: $0).environmentObject(theme) }
+            .sheet(isPresented: $showingMusicInfo) {
+                let presentation = playback.stablePresentation
+                if let snapshot = presentation.musicEnrichment {
+                    MusicEnrichmentDetailView(snapshot: snapshot, title: presentation.title, artist: presentation.artist)
+                        .environmentObject(theme)
+                }
+            }
+            .trackDeletionConfirmation(item: $deletionRequest) { tracks in
+                Task { await library.deleteTracks(tracks) }
+            }
             .sheet(isPresented: $editingExternalInfo) {
                 ExternalPlaybackInfoEditorView(
                     presentation: playback.presentation, metadataStore: caches.externalPlaybackMetadataStore,
@@ -149,7 +164,54 @@ struct SkinSceneControlHost<Content: View>: View {
             toggleQueue: { uiState.toggleWindowPlaybackQueue() }, toggleLyrics: onToggleLyrics,
             enterFullscreen: enterFullscreen, exit: onExit,
             openSettings: { presentSettings() }, openQuickPanel: { if surface == .fullscreen { controls.isQuickAppearancePanelPresented = true } else { presentSettings() } },
-            reload: onReload, restore: onRestore
+            reload: onReload, restore: onRestore,
+            stop: { playback.stop() },
+            playQueueIndex: { index in
+                guard player.currentQueueTracks.indices.contains(index) else { return }
+                playback.playTrackFromQueue(player.currentQueueTracks[index])
+            },
+            openTrackDetail: { detailTrack = playback.stablePresentation.localTrack },
+            openTrackEdit: { editingTrack = playback.stablePresentation.localTrack },
+            openExternalInfo: { if playback.stablePresentation.source != .local { editingExternalInfo = true } },
+            play: { playback.resume() }, pause: { playback.pause() }, seekAndResume: { playback.seekAndResumeIfNeeded(to: $0) },
+            setLikeState: { state in
+                guard let track = playback.stablePresentation.localTrack else { return }
+                Task { await library.setManualLikeState(state, for: track) }
+            },
+            toggleDislike: {
+                guard let track = playback.stablePresentation.localTrack else { return }
+                let disliked = library.preferenceStats(for: track.id).manualLikeState == .disliked
+                Task { await library.setManualLikeState(disliked ? .none : .disliked, for: track) }
+            },
+            addToPlaylist: { id in
+                guard let track = playback.stablePresentation.localTrack else { return }
+                Task {
+                    let target: Playlist?
+                    if let id { target = library.playlists.first(where: { $0.id == id }) }
+                    else { target = await library.createNewPlaylist() }
+                    guard let target else { return }
+                    await library.addTracksToPlaylist([track], playlist: target)
+                }
+            },
+            deleteTrack: {
+                guard let track = playback.stablePresentation.localTrack else { return }
+                deletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
+            },
+            openMusicInfo: { if playback.stablePresentation.musicEnrichment != nil { showingMusicInfo = true } },
+            showArtist: { navigate { library.navigateToArtist(for: $0, uiState: uiState) } },
+            showAlbum: { navigate { library.navigateToAlbum(for: $0, uiState: uiState) } },
+            selectOutput: { uid in
+                guard settings.audioOutputDeviceUID != uid else { return }
+                settings.audioOutputDeviceUID = uid
+                NotificationCenter.default.post(name: .audioOutputDevicePreferenceDidChange, object: nil)
+            }
         )
+    }
+
+    /// Library navigation lands in the main window, so fullscreen closes first.
+    private func navigate(_ body: (Track) -> Void) {
+        guard let track = playback.stablePresentation.localTrack else { return }
+        if surface == .fullscreen { onExit() }
+        body(track)
     }
 }

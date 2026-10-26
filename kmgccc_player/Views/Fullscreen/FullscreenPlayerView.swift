@@ -409,6 +409,12 @@ struct FullscreenPlayerView: View {
     }
 
     var body: some View {
+        // Both task identities derive from this key; resolve local artwork once.
+        let artworkTaskKey = currentArtworkTaskKey
+        let isArtworkLoading = currentDisplayContext.isArtworkLoading
+        let artworkPreparationKey = "\(artworkTaskKey)-\(isArtworkLoading)-skin:\(skinSession.generation)"
+        let presentationPreparationKey = "\(artworkPreparationKey)-\(embeddedInitialThemeUnlocked)-\(preparedArtworkTaskKey ?? "pending")"
+
         fullscreenScene
         .overlayPreferenceValue(SkinControlRegionKey.self) { anchors in
             GeometryReader { proxy in
@@ -416,10 +422,10 @@ struct FullscreenPlayerView: View {
                     .allowsHitTesting(false)
             }
         }
-        .task(id: embeddedArtworkPreparationKey) {
-            await prepareFullscreenArtwork()
+        .task(id: artworkPreparationKey) {
+            await prepareFullscreenArtwork(expectedTaskKey: artworkTaskKey)
         }
-        .task(id: embeddedPresentationPreparationKey) {
+        .task(id: presentationPreparationKey) {
             await prepareEmbeddedFullscreenPresentation()
         }
         .transaction(configureEmbeddedPresentationTransaction)
@@ -431,31 +437,25 @@ struct FullscreenPlayerView: View {
         transaction.disablesAnimations = true
     }
 
-    private var embeddedArtworkPreparationKey: String {
-        "\(currentArtworkTaskKey)-\(currentDisplayContext.isArtworkLoading)-skin:\(skinSession.generation)"
-    }
-
-    private var embeddedPresentationPreparationKey: String {
-        "\(embeddedArtworkPreparationKey)-\(embeddedInitialThemeUnlocked)-\(preparedArtworkTaskKey ?? "pending")"
-    }
-
-    private func prepareFullscreenArtwork() async {
+    private func prepareFullscreenArtwork(expectedTaskKey: String) async {
         let generation = skinSession.generation
-        let key = currentArtworkTaskKey
-        await loadArtworkSnapshot()
+        await loadArtworkSnapshot(expectedTaskKey: expectedTaskKey)
         guard !Task.isCancelled, generation == skinSession.generation,
-              key == currentArtworkTaskKey,
+              expectedTaskKey == currentArtworkTaskKey,
               !currentDisplayContext.isArtworkLoading else { return }
-        preparedArtworkTaskKey = key
+        preparedArtworkTaskKey = expectedTaskKey
     }
 
     private func prepareEmbeddedFullscreenPresentation() async {
         guard isEmbeddedFullscreenPresentationActive, embeddedInitialThemeUnlocked,
               preparedArtworkTaskKey == currentArtworkTaskKey else { return }
         // Native lyric installation is synchronous. Wait for its mounted host
-        // and final canvas before allowing the complete frame to rise.
+        // and final canvas before allowing the complete frame to rise. A scene
+        // that draws its own lyrics never mounts that surface, so it has nothing to wait for.
+        let skin = SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID) as? PackagedSkin
+        let skinMountsLyrics = skin?.sceneMountsNativeLyrics(on: .fullscreen) ?? true
         while !Task.isCancelled && isEmbeddedFullscreenPresentationActive {
-            let lyricsReady = !lyricsCoordinator.hostMounted
+            let lyricsReady = !skinMountsLyrics || !lyricsCoordinator.hostMounted
                 || (!lyricsCoordinator.suppressViewport
                     && NativeLyricsSurfaceManager.shared.existingSurface(for: .fullscreen)?.isRenderingActive == true)
             if lyricsReady && isValidEmbeddedFullscreenGeometry(fullscreenViewportSize, scale: currentFullscreenScale) {
@@ -770,6 +770,7 @@ struct FullscreenPlayerView: View {
                         onRestore: { settings.fullscreen.setSkinID(SkinRegistry.defaultFullscreenSkinID) }
                     )
                     .id(skinIdentity)
+                    .modifier(SkinSceneSwitchTransition())
                 } else {
                     fullscreenBackgroundLayer(
                         selectedSkin: selectedSkin,
@@ -956,13 +957,13 @@ struct FullscreenPlayerView: View {
         scale: CGFloat,
         viewportSize: CGSize
     ) -> some View {
-        let context = makeContext(
-            windowSize: CGSize(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight),
-            artworkColumnWidth: layoutMetrics.artworkWidth,
-            fullscreenScale: scale
-        )
-
         if fullscreenSkinUsesCustomBackground {
+            let context = makeContext(
+                windowSize: CGSize(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight),
+                artworkColumnWidth: layoutMetrics.artworkWidth,
+                fullscreenScale: scale
+            )
+
             if usesCoverBlurBackdrop {
                 selectedSkin.makeBackground(context: context)
                     .frame(width: viewportSize.width, height: viewportSize.height)
@@ -980,15 +981,20 @@ struct FullscreenPlayerView: View {
                     .allowsHitTesting(false)
             }
         } else if settings.fullscreenArtBackgroundEnabled && currentDisplayContext.hasTrack {
-            let renderingArtworkData = currentRenderingArtworkData
+            let display = currentDisplayContext
+            let artworkFileURL = display.source == .local
+                ? playbackCoordinator.presentation.localArtworkFileURL
+                : nil
+            let renderingArtworkData = resolvedRenderingArtworkData(
+                for: display,
+                localArtworkURL: artworkFileURL
+            )
             BKArtBackgroundView(
                 controller: bkController,
-                trackID: currentArtworkTrackID,
+                trackID: display.artworkTrackID,
                 artworkData: renderingArtworkData,
-                isPlaying: currentDisplayContext.isPlaying,
-                artworkFileURL: currentDisplayContext.source == .local
-                    ? playbackCoordinator.presentation.localTrack?.existingArtworkURL()
-                    : nil,
+                isPlaying: display.isPlaying,
+                artworkFileURL: artworkFileURL,
                 avoidanceRect: nil,
                 resourceProfile: BKArtBackgroundView.ResourceProfile(
                     skinProfile: fullscreenSkinDescriptor.presentation.artBackgroundResourceProfile
@@ -996,7 +1002,7 @@ struct FullscreenPlayerView: View {
                 dotRenderStyle: .solidCircles,
                 motionProfile: .fullscreenBalanced,
                 initialPalette: fullscreenArtBackgroundSeedPalette,
-                isArtworkLoading: currentDisplayContext.isArtworkLoading
+                isArtworkLoading: display.isArtworkLoading
             )
             .ignoresSafeArea()
 
@@ -1005,6 +1011,12 @@ struct FullscreenPlayerView: View {
                     .ignoresSafeArea()
             }
         } else {
+            let context = makeContext(
+                windowSize: CGSize(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight),
+                artworkColumnWidth: layoutMetrics.artworkWidth,
+                fullscreenScale: scale
+            )
+
             selectedSkin.makeBackground(context: context)
                 .ignoresSafeArea()
 
@@ -3082,7 +3094,10 @@ struct FullscreenPlayerView: View {
                 isPlaying: playerVM.isPlaying
             )
         case .appleMusic, .systemNowPlaying:
-            let lyricsText = LyricsFormatSupport.normalizedTTMLText(presentation.lyricsText)
+            let lyricsText = lyricsCoordinator.normalizedLyricsText(
+                trackID: presentation.displayTrackID,
+                rawText: presentation.lyricsText
+            )
             return FullscreenPlaybackPayload(
                 trackID: presentation.displayTrackID,
                 ttml: lyricsText == nil ? nil : (lyricsText ?? ""),
@@ -3127,7 +3142,10 @@ struct FullscreenPlayerView: View {
             return fileText
         }
 
-        if let ttml = LyricsFormatSupport.normalizedTTMLText(track.ttmlLyricText ?? track.readTTMLLyricsText()) {
+        if let ttml = lyricsCoordinator.normalizedLyricsText(
+            trackID: track.id,
+            rawText: track.ttmlLyricText ?? track.readTTMLLyricsText()
+        ) {
             return ttml
         }
 
@@ -3137,7 +3155,7 @@ struct FullscreenPlayerView: View {
     private func resolvedFullscreenLyricsTextFromDisk(for track: Track) -> String? {
         if let ttmlURL = track.resolvedTTMLURL(),
            let text = try? String(contentsOf: ttmlURL, encoding: .utf8),
-           let ttml = LyricsFormatSupport.normalizedTTMLText(text) {
+           let ttml = lyricsCoordinator.normalizedLyricsText(trackID: track.id, rawText: text) {
             return ttml
         }
 
@@ -3815,14 +3833,18 @@ struct FullscreenPlayerView: View {
                 // artworkData advances before the new full image decodes, so a
                 // presentation-derived checksum would let skins render the held
                 // previous cover under the next track's key and stay stuck on it.
-                artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
+                artworkChecksum: artworkSnapshot?.artworkChecksum
+                    ?? display.artworkDataChecksum
+                    ?? 0,
                 artworkData: renderingArtworkData,
                 artworkFileURL: display.source == .local
                     && display.artworkData?.isEmpty != false
-                    ? playbackCoordinator.stablePresentation.localTrack?.existingArtworkURL()
+                    ? playbackCoordinator.stablePresentation.localArtworkFileURL
                     : nil,
                 artworkImage: artworkSnapshot?.fullImage,
-                displayedArtworkID: artworkSnapshot?.trackID
+                displayedArtworkID: artworkSnapshot?.trackID,
+                motionArtwork: playbackCoordinator.stablePresentation.motionArtwork,
+                tallMotionArtwork: playbackCoordinator.stablePresentation.tallMotionArtwork
             )
             : nil
 
@@ -4187,8 +4209,8 @@ struct FullscreenPlayerView: View {
         // presentation; using the local track's own source here would disagree
         // with `artworkDisplayTrackID` and get rejected by the snapshot guard.
         if display.source == .local,
-           let source = playbackCoordinator.stablePresentation.localTrack?.trackArtworkSource(fallbackData: display.artworkData) {
-            return "\(trackID.uuidString)-local-\(source.sourceKey)-px:\(preferredArtworkFullImageMaxPixel)"
+           let sourceKey = playbackCoordinator.stablePresentation.localArtworkSourceKey {
+            return "\(trackID.uuidString)-local-\(sourceKey)-px:\(preferredArtworkFullImageMaxPixel)"
         }
         if ArtworkRenderingFallback.shouldUse(
             for: display.artworkData,
@@ -4206,7 +4228,21 @@ struct FullscreenPlayerView: View {
         if let artworkData = display.artworkData, !artworkData.isEmpty {
             return artworkData
         }
-        if display.source == .local, playbackCoordinator.presentation.localTrack?.existingArtworkURL() != nil {
+
+        let localArtworkURL = display.source == .local
+            ? playbackCoordinator.presentation.localArtworkFileURL
+            : nil
+        return resolvedRenderingArtworkData(for: display, localArtworkURL: localArtworkURL)
+    }
+
+    private func resolvedRenderingArtworkData(
+        for display: NowPlayingDisplayContext,
+        localArtworkURL: URL?
+    ) -> Data? {
+        if let artworkData = display.artworkData, !artworkData.isEmpty {
+            return artworkData
+        }
+        if display.source == .local, localArtworkURL != nil {
             return nil
         }
         let fallbackTrackID = display.artworkTrackID
@@ -4216,7 +4252,7 @@ struct FullscreenPlayerView: View {
         return ArtworkRenderingFallback.data(for: fallbackTrackID)
     }
     
-    private func loadArtworkSnapshot() async {
+    private func loadArtworkSnapshot(expectedTaskKey: String) async {
         let expectedSkinGeneration = skinSession.generation
         let display = currentDisplayContext
         guard let trackID = display.artworkTrackID else {
@@ -4224,7 +4260,6 @@ struct FullscreenPlayerView: View {
         }
 
         let expectedTrackID = trackID
-        let expectedTaskKey = currentArtworkTaskKey
         let snapshot: ArtworkAssetSnapshot?
         if display.source == .local,
            let source = playbackCoordinator.presentation.localTrack?.trackArtworkSource(fallbackData: display.artworkData) {
@@ -4267,8 +4302,17 @@ struct FullscreenPlayerView: View {
         applyFullscreenLyricsTheme(reason: "artworkSnapshot-loaded")
     }
 
+    /// Decode budget derived from the cover column and the screen's backing
+    /// scale. The 2048 cap keeps a single 5K/6K cover under ~17 MB instead of
+    /// decoding the full artwork, while still matching the cover's real size.
     private var preferredArtworkFullImageMaxPixel: Int {
-        1_024
+        guard let screen = NSApp.keyWindow?.screen ?? NSScreen.main else { return 1_400 }
+        let scale = max(1, screen.backingScaleFactor)
+        let coverWidth = FullscreenHorizontalSplitLayout.resolve(
+            showLyricsColumn: isShowingRightPanel,
+            windowWidth: screen.frame.width
+        ).artworkWidth
+        return min(2_048, max(1_024, Int((coverWidth * scale).rounded(.up))))
     }
 
     private static func isValidDisplayArtworkSnapshot(_ snapshot: ArtworkAssetSnapshot?) -> Bool {

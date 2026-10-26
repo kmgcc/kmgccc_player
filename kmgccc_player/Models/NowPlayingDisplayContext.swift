@@ -16,6 +16,7 @@ struct NowPlayingDisplayContext: Equatable {
     var artist: String
     var album: String?
     var artworkData: Data?
+    var artworkDataChecksum: UInt64?
     var artworkIdentity: String?
     var isArtworkLoading: Bool
     var lyricsText: String?
@@ -36,6 +37,7 @@ extension NowPlayingPresentation {
             artist: artist,
             album: album,
             artworkData: artworkData,
+            artworkDataChecksum: artworkDataChecksum,
             artworkIdentity: artworkIdentity,
             isArtworkLoading: isArtworkLoading,
             lyricsText: lyricsText,

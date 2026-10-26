@@ -52,6 +52,9 @@ final class AppleMusicBridge: @unchecked Sendable {
         var year: Int
         var shuffleEnabled: Bool
         var songRepeat: RepeatMode
+        var genre: String? = nil
+        var composer: String? = nil
+        var discNumber: Int? = nil
     }
 
     struct ArtworkSnapshot: Sendable {
@@ -209,7 +212,10 @@ final class AppleMusicBridge: @unchecked Sendable {
             trackNumber: Int(descriptor.atIndex(startIndex + 9)?.int32Value ?? 0),
             year: Int(descriptor.atIndex(startIndex + 10)?.int32Value ?? 0),
             shuffleEnabled: descriptor.atIndex(startIndex + 11)?.booleanValue ?? false,
-            songRepeat: RepeatMode(rawValue: repeatRaw) ?? .unknown
+            songRepeat: RepeatMode(rawValue: repeatRaw) ?? .unknown,
+            genre: nonEmptyString(descriptor.atIndex(startIndex + 13)?.stringValue),
+            composer: nonEmptyString(descriptor.atIndex(startIndex + 14)?.stringValue),
+            discNumber: descriptor.atIndex(startIndex + 15).map { Int($0.int32Value) }
         )
     }
 
@@ -254,6 +260,10 @@ final class AppleMusicBridge: @unchecked Sendable {
                         set currentRepeat to "unknown"
                     end try
                     set trk to current track
+                    set expectedTrackID to persistent ID of trk
+                    set expectedTitle to name of trk
+                    set expectedArtist to artist of trk
+                    set expectedAlbum to album of trk
                     if (count of artworks of trk) is 0 then return {"noArtwork"}
                     set artworkData to data of artwork 1 of trk
                     set targetFile to POSIX file "\(path)"
@@ -261,7 +271,11 @@ final class AppleMusicBridge: @unchecked Sendable {
                     set eof of fileRef to 0
                     write artworkData to fileRef
                     close access fileRef
-                    return {"ok", name of trk, artist of trk, album of trk, album artist of trk, duration of trk, currentPosition, currentPlayerState, currentSoundVolume, persistent ID of trk, track number of trk, year of trk, currentShuffle, currentRepeat}
+                    if persistent ID of current track is not expectedTrackID then return {"changedTrack"}
+                    if name of current track is not expectedTitle then return {"changedTrack"}
+                    if artist of current track is not expectedArtist then return {"changedTrack"}
+                    if album of current track is not expectedAlbum then return {"changedTrack"}
+                    return {"ok", expectedTitle, expectedArtist, expectedAlbum, album artist of trk, duration of trk, currentPosition, currentPlayerState, currentSoundVolume, persistent ID of trk, track number of trk, year of trk, currentShuffle, currentRepeat}
                 on error
                     try
                         close access POSIX file "\(path)"
@@ -400,7 +414,19 @@ final class AppleMusicBridge: @unchecked Sendable {
                         end try
                         try
                             set trk to current track
-                            return {"ok", name of trk, artist of trk, album of trk, album artist of trk, duration of trk, currentPosition, currentPlayerState, currentSoundVolume, persistent ID of trk, track number of trk, year of trk, currentShuffle, currentRepeat}
+                            set trackGenre to ""
+                            set trackComposer to ""
+                            set trackDisc to 0
+                            try
+                                set trackGenre to genre of trk
+                            end try
+                            try
+                                set trackComposer to composer of trk
+                            end try
+                            try
+                                set trackDisc to disc number of trk
+                            end try
+                            return {"ok", name of trk, artist of trk, album of trk, album artist of trk, duration of trk, currentPosition, currentPlayerState, currentSoundVolume, persistent ID of trk, track number of trk, year of trk, currentShuffle, currentRepeat, trackGenre, trackComposer, trackDisc}
                         on error errMsg number errNum
                             return {"trackError", errNum as string, errMsg, currentPlayerState, currentSoundVolume, currentShuffle, currentRepeat, currentPosition}
                         end try

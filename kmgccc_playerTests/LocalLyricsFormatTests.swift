@@ -139,6 +139,24 @@ final class LocalLyricsFormatTests: XCTestCase {
 
     // MARK: - TTML output
 
+    func testFullscreenLyricsResolutionTracksExactPayloadChanges() {
+        let coordinator = FullscreenLyricsCoordinator()
+        let trackID = UUID()
+        let first = #"<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="00:01.000" end="00:02.000">First</p></div></body></tt>"#
+        let replacement = first.replacingOccurrences(of: "First", with: "Second")
+
+        XCTAssertEqual(coordinator.normalizedLyricsText(trackID: trackID, rawText: "\n\(first)\n"), first)
+        XCTAssertEqual(coordinator.normalizedLyricsText(trackID: trackID, rawText: "\n\(first)\n"), first)
+        XCTAssertEqual(coordinator.normalizedLyricsText(trackID: trackID, rawText: replacement), replacement)
+        XCTAssertNil(coordinator.normalizedLyricsText(trackID: trackID, rawText: "<tt></tt>"))
+        XCTAssertNil(coordinator.normalizedLyricsText(trackID: trackID, rawText: "<tt></tt>"))
+        XCTAssertEqual(coordinator.normalizedLyricsText(trackID: trackID, rawText: first), first)
+        XCTAssertEqual(coordinator.normalizedLyricsText(trackID: UUID(), rawText: replacement), replacement)
+        XCTAssertNil(coordinator.normalizedLyricsText(trackID: nil, rawText: nil))
+        coordinator.resetForDisappear()
+        XCTAssertEqual(coordinator.normalizedLyricsText(trackID: trackID, rawText: first), first)
+    }
+
     func testLRCWithSameTimestampTranslationProducesTranslationSpans() async throws {
         let ttml = try await LyricsTTMLConverter.ttml(
             from: "[00:01.00]Hello world\n[00:01.00]你好世界\n[00:04.00]Second line\n[00:04.00]第二行\n[00:08.00]Third line"

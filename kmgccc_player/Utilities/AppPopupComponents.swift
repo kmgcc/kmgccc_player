@@ -1,3 +1,4 @@
+import AppKit
 import PopupKit
 import SwiftUI
 
@@ -117,6 +118,14 @@ private struct AppPopupAppearance: ViewModifier {
                 )
             )
             .foregroundStyle(primaryColor ?? colors.primaryColor)
+            .overlay(alignment: .topLeading) {
+                AppDialogWindowDragRegion()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: style.padding)
+                    .padding(.trailing, style.closeMarginTrailing + style.closeButtonSize)
+                    .allowsWindowActivationEvents(true)
+                    .accessibilityHidden(true)
+            }
     }
 }
 
@@ -178,5 +187,63 @@ extension PopupStyle {
         style.buttonMarginLeading = 10
         style.buttonMarginTrailing = 10
         return style
+    }
+}
+
+
+extension View {
+    /// End native text editing on an outside click without consuming the destination's event.
+    func dismissTextEditingOnOutsideClick(onDismiss: @escaping () -> Void = {}) -> some View {
+        background(EditorTextFocusDismissal(onDismiss: onDismiss))
+    }
+}
+
+private struct EditorTextFocusDismissal: NSViewRepresentable {
+    let onDismiss: () -> Void
+
+    func makeNSView(context: Context) -> EditorTextFocusDismissalView {
+        EditorTextFocusDismissalView()
+    }
+
+    func updateNSView(_ view: EditorTextFocusDismissalView, context: Context) {
+        view.onDismiss = onDismiss
+    }
+
+    static func dismantleNSView(_ view: EditorTextFocusDismissalView, coordinator: ()) {
+        view.stopMonitoring()
+    }
+}
+
+private final class EditorTextFocusDismissalView: NSView {
+    var onDismiss: () -> Void = {}
+    private var monitor: Any?
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        stopMonitoring()
+        guard window != nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
+            guard let self, let window = self.window, event.window === window,
+                  self.bounds.contains(self.convert(event.locationInWindow, from: nil)),
+                  let editor = window.firstResponder as? NSTextView, editor.isEditable,
+                  let content = window.contentView else { return event }
+
+            // Both field editors and TextEditor views must keep normal text selection.
+            var hit = content.hitTest(content.convert(event.locationInWindow, from: nil))
+            while let view = hit {
+                if let text = view as? NSTextView, text.isEditable { return event }
+                if let field = view as? NSTextField, field.isEditable { return event }
+                hit = view.superview
+            }
+            if window.makeFirstResponder(nil) { self.onDismiss() }
+            return event
+        }
+    }
+
+    func stopMonitoring() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
     }
 }

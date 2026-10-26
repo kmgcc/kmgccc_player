@@ -86,7 +86,89 @@ enum AppDialogTokens {
 
 // MARK: - NSPanel Factory
 
+private protocol AppDialogHosting {}
+
+/// Standalone cards own their padding; a native titlebar safe area would shift
+/// their fixed-size content down and consume the bottom shadow clearance.
+@MainActor
+private final class AppDialogHostingView<Content: View>: NSHostingView<Content>, AppDialogHosting {
+    required init(rootView: Content) {
+        super.init(rootView: rootView)
+        safeAreaRegions = []
+        sizingOptions = []
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+}
+
+/// Placed on the rendered card, so short dialogs and full-height task views
+/// share the same visible drag target regardless of their outer window frame.
+struct AppDialogWindowDragRegion: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { AppDialogWindowDragView() }
+    func updateNSView(_ view: NSView, context: Context) {}
+}
+
+@MainActor
+private final class AppDialogWindowDragView: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let event = NSApp.currentEvent, event.type == .leftMouseDown,
+              event.clickCount == 1, !event.modifierFlags.contains(.control),
+              draggablePanel != nil,
+              bounds.contains(convert(point, from: superview)) else { return nil }
+        return self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let panel = draggablePanel else {
+            super.mouseDown(with: event)
+            return
+        }
+        panel.makeKeyAndOrderFront(nil)
+        panel.performDrag(with: event)
+    }
+
+    private var draggablePanel: NSPanel? {
+        guard let panel = window as? NSPanel, panel.isMovable,
+              !panel.isSheet, panel.sheetParent == nil, panel.attachedSheet == nil else { return nil }
+
+        var ancestor = superview
+        while let view = ancestor {
+            if view is any AppDialogHosting { return panel }
+            ancestor = view.superview
+        }
+        return nil
+    }
+}
+
 extension AppDialogTokens {
+    /// Transparent room around a dialog so its glass shadow and floating
+    /// buttons fade out instead of being cut at the window edge.
+    static let panelShadowInset: CGFloat = 32
+
+    /// Use only for standalone panels created by makeInsetPanel. SwiftUI content
+    /// retains the shared shadow inset and the presenter retains window ownership.
+    @MainActor
+    static func makeHostingView<Content: View>(rootView: Content) -> NSHostingView<Content> {
+        AppDialogHostingView(rootView: rootView)
+    }
+
+    /// A host for a dialog of `contentSize`, with `panelShadowInset` on each
+    /// side. Pad the root view by the inset and fill `effectView.bounds`.
+    @MainActor
+    static func makeInsetPanel(contentSize: NSSize, closable: Bool = true) -> (
+        panel: NSPanel, effectView: NSView
+    ) {
+        makePanel(
+            width: contentSize.width + panelShadowInset * 2,
+            height: contentSize.height + panelShadowInset * 2,
+            closable: closable
+        )
+    }
+
     /// Creates a transparent floating host. PopupKit supplies the sole material layer.
     /// The caller adds its hosting view to effectView (the retained compatibility label).
     @MainActor
@@ -448,13 +530,15 @@ struct AppDialogGlassButtonStyle: ButtonStyle {
 // MARK: - Panel Content Button Style
 // Content tools keep their local font and compact sizing, independent of PopupStyle.
 struct AppPanelButtonStyle: ButtonStyle {
+    var tint: Color? = nil
+
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         let label = configuration.label
-            .foregroundStyle(configuration.role == .destructive ? Color.red : Color.primary)
+            .foregroundStyle(configuration.role == .destructive ? Color.red : (tint ?? Color.primary))
             .lineLimit(1)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
@@ -470,9 +554,9 @@ struct AppPanelButtonStyle: ButtonStyle {
 
     @ViewBuilder private func surface<SurfaceLabel: View>(_ label: SurfaceLabel) -> some View {
         if reduceTransparency {
-            label.background(Color.secondary.opacity(0.12), in: Capsule())
+            label.background((tint ?? Color.secondary).opacity(0.12), in: Capsule())
         } else {
-            label.glassEffect(.clear.interactive(isEnabled && !reduceMotion), in: Capsule())
+            label.glassEffect(.clear.tint(tint?.opacity(0.16)).interactive(isEnabled && !reduceMotion), in: Capsule())
         }
     }
 }

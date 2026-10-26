@@ -1,3 +1,4 @@
+import MotionKit
 import SwiftUI
 
 struct SkinLyricsSlotKey: PreferenceKey {
@@ -26,6 +27,20 @@ struct SkinLyricsSlot: View {
     }
 }
 
+/// A switched-in scene cross-fades over the outgoing one on MotionKit's `backgroundTransition`.
+/// The animation rides on the transition, so nothing else in the host animates with it; a scene's
+/// root `enter` adds its own entrance on top.
+struct SkinSceneSwitchTransition: ViewModifier {
+    @Environment(\.motionTokens) private var motionTokens
+    @Environment(\.motionPolicy) private var motionPolicy
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let policy = motionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
+        content.transition(policy.animation(for: motionTokens[.backgroundTransition]).map { AnyTransition.opacity.animation($0) } ?? .identity)
+    }
+}
+
 /// Authors own content; the host owns the single native surface and recovery affordances.
 struct SkinSceneHost: View {
     let skin: any NowPlayingSkin
@@ -43,6 +58,7 @@ struct SkinSceneHost: View {
     @ObservedObject private var fullscreen = FullscreenWindowManager.shared
     @State private var lyricsConfiguration: SkinComponentConfiguration?
     @State private var reloadError: String?
+    @State private var sceneDrawsQueue = false
 
     private var role: LyricsSurfaceRole { viewport.surface == .window ? .main : .fullscreen }
     private var isActive: Bool {
@@ -62,13 +78,20 @@ struct SkinSceneHost: View {
         SkinSceneControlHost(
             surface: viewport.surface, lyricsVisible: viewport.surface == .fullscreen ? lyricsVisible : uiState.skinSceneLyricsVisible,
             onExit: exit, onRestore: onRestore, onReload: reload,
-            onToggleLyrics: toggleLyrics
+            onToggleLyrics: toggleLyrics, controlForeground: skin.descriptor.presentation.controlForeground
         ) {
           ZStack(alignment: .topLeading) {
             if isActive {
                 scene.makeContent(snapshot: snapshot, viewport: viewport, components: components)
+                    .transformEnvironment(\.skinSceneActions) { actions in
+                        actions.setParameter = { id, value in
+                            guard let definition = skin.parameterDefinitions.first(where: { $0.id == id }) else { return }
+                            skinManager.catalog.parameters.set(skinID: skin.id, surface: viewport.surface, definition: definition, value: value)
+                        }
+                    }
                     .frame(width: viewport.size.width, height: viewport.size.height)
                     .id(skin.id)
+                    .onPreferenceChange(SkinSceneControlsKey.self) { sceneDrawsQueue = $0.contains(.queue) }
             } else {
                 Color.clear
                     .frame(width: viewport.size.width, height: viewport.size.height)
@@ -79,7 +102,7 @@ struct SkinSceneHost: View {
                 isVisible: nativeLyricsVisible
             )
 
-            if uiState.isWindowPlaybackQueueVisible && isActive {
+            if uiState.isWindowPlaybackQueueVisible && isActive && !sceneDrawsQueue {
                 WindowPlaybackQueuePanelView()
                     .frame(width: min(viewport.size.width, 620), height: viewport.size.height)
                     .frame(maxWidth: .infinity, alignment: .trailing)
@@ -88,19 +111,23 @@ struct SkinSceneHost: View {
           }
         }
         .environment(\.skinSceneSurface, viewport.surface)
+        .environment(\.skinScenePresentation, skin.descriptor.presentation)
         .environment(\.skinSceneFullscreenHost, viewport.fullscreenHost)
         .environment(\.skinSceneLyricsRenderingEnabled, nativeLyricsVisible)
         .environment(\.skinSceneLyricsVisible, lyricsVisible && (viewport.surface == .fullscreen || uiState.skinSceneLyricsVisible))
         .environment(\.skinSceneIsActive, isActive)
         .environment(\.skinSceneSession, session)
         .environment(\.skinPackageResources, resourceDirectory)
+        .environment(\.skinPackageFonts, (skin as? PackagedSkin)?.manifest.fonts ?? [])
         .onPreferenceChange(SkinLyricsSlotKey.self) { configuration in
             lyricsConfiguration = configuration
         }
         .contentShape(Rectangle())
         .contextMenuWithVisibleIcons {
-            Button("刷新皮肤", action: reload)
-            Button("恢复外观", action: onRestore)
+            if SkinRegistry.customizationEnabled {
+                Button("刷新皮肤", action: reload)
+                Button("恢复外观", action: onRestore)
+            }
         }
         .alert("皮肤包", isPresented: Binding(get: { reloadError != nil }, set: { if !$0 { reloadError = nil } })) {
             Button("好", role: .cancel) { reloadError = nil }
@@ -113,6 +140,7 @@ struct SkinSceneHost: View {
         switch skin.origin {
         case .bundled: return Bundle.main.resourceURL
         case .installed(let url): return url
+        case .development(let url): return url
         }
     }
 

@@ -2,8 +2,6 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 自定义皮肤包管理操作视图（导入、导出、重载、删除）。
-/// 当前版本暂未对外开放，入口已在设置页面暂时隐藏，源码与逻辑完整保留供后续版本开放。
 /// Only panel and selection state lives here; installation is owned by SkinPackageStore.
 struct SkinPackageSettingsActions: View {
     let skin: any NowPlayingSkin
@@ -19,6 +17,7 @@ struct SkinPackageSettingsActions: View {
     var body: some View {
         HStack(spacing: 8) {
             Button("导入", action: chooseArchive)
+            Button("关联目录", action: chooseDevelopmentDirectory)
             Button("导出", action: chooseExport)
                 .disabled((skin as? PackagedSkin)?.isExportable != true)
             Button("重载", action: reload)
@@ -47,6 +46,16 @@ struct SkinPackageSettingsActions: View {
     private func reload() {
         do { try manager.catalog.reload(skin.id) }
         catch { errorMessage = error.localizedDescription }
+    }
+
+    private func chooseDevelopmentDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do { try manager.catalog.developmentDirectories.attach(url) }
+            catch { errorMessage = error.localizedDescription }
+        }
     }
 
     private func remove() {

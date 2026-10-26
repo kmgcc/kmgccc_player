@@ -14,6 +14,7 @@ struct FullscreenSkinTabView: View {
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
     @Environment(\.settingsAppForegroundColors) private var appColors
 
+    @AppStorage("fullscreenArtBackgroundEnabled") private var fullscreenArtBackgroundEnabled: Bool = true
     @State private var fullscreenArtworkScale: Double = AppSettings.shared.fullscreenArtworkScale
     @State private var fullscreenMiniPlayerAutoHideSeconds: Double = AppSettings.shared.fullscreenMiniPlayerAutoHideSeconds
     @State private var fullscreenMiniPlayerGlassMaterial: AppSettings.FullscreenMiniPlayerGlassMaterial = AppSettings.shared.fullscreenMiniPlayerGlassMaterial
@@ -42,8 +43,9 @@ struct FullscreenSkinTabView: View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
             SettingsSection("选择外观") {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                    // 自定义皮肤包管理入口（导入/导出/重载/删除）暂未开放，待功能完善后恢复
-                    // SkinPackageSettingsActions(skin: SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID))
+                    if SkinRegistry.customizationEnabled {
+                        SkinPackageSettingsActions(skin: SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID))
+                    }
                     SkinSelectorRow(
                         skins: SkinRegistry.fullscreenOptions,
                         selectedSkinID: Binding(
@@ -63,17 +65,30 @@ struct FullscreenSkinTabView: View {
             }
 
             let selectedSkin = SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID)
-            if selectedSkin.fullscreenSettingsView != nil || selectedSkin.parameterDefinitions.contains(where: { $0.isUserVisible && $0.surfaces.contains(.fullscreen) }) {
+            // A package scene that draws the host backdrop gets the toggle built-in skins carry in their own options.
+            let showsArtBackgroundOption = selectedSkin.fullscreenSettingsView == nil
+                && selectedSkin.sceneComponents.contains("background.host")
+            if showsArtBackgroundOption || selectedSkin.fullscreenSettingsView != nil || (SkinRegistry.customizationEnabled && selectedSkin.parameterDefinitions.contains(where: { $0.isUserVisible && $0.surfaces.contains(.fullscreen) })) {
                 SettingsSection("\(selectedSkin.name) 选项") {
                     VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
+                        if showsArtBackgroundOption {
+                            SettingsSwitchRow(
+                                title: "启用艺术背景",
+                                isOn: $fullscreenArtBackgroundEnabled,
+                                titleFont: presentationStyle.rowLabelFont,
+                                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors)
+                            )
+                        }
                         if let optionsView = selectedSkin.fullscreenSettingsView { optionsView }
-                        SkinParameterSettingsView(skinID: selectedSkin.id, surface: .fullscreen,
-                                                  definitions: selectedSkin.parameterDefinitions, store: SkinRegistry.catalog.parameters)
+                        if SkinRegistry.customizationEnabled {
+                            SkinParameterSettingsView(skinID: selectedSkin.id, surface: .fullscreen,
+                                                      definitions: selectedSkin.parameterDefinitions, store: SkinRegistry.catalog.parameters)
+                        }
                     }
                 }
             }
 
-            if selectedSkin.scene == nil {
+            if selectedSkin.scene == nil || selectedSkin.sceneComponents.contains("control.miniPlayer") {
                 SettingsSection("Mini Player") {
                     VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                         AudioVisualizationSelectorRow(
@@ -210,8 +225,10 @@ struct FullscreenSkinTabView: View {
     }
 
     private func supportsArtworkScaleControl(for skinID: String) -> Bool {
-        SkinRegistry.fullscreenSkin(for: skinID).scene == nil
-            && SkinRegistry.fullscreenSkin(for: skinID).descriptor.presentation.artworkLayout == .foreground
+        let skin = SkinRegistry.fullscreenSkin(for: skinID)
+        // Preset artwork in host layout follows the same scale setting.
+        let usesPresetArtwork = skin.sceneComponents.contains { $0.hasPrefix("builtin.") && $0.hasSuffix(".artwork") }
+        return (skin.scene == nil || usesPresetArtwork) && skin.descriptor.presentation.artworkLayout == .foreground
     }
 
     private var currentArtworkScaleRange: ClosedRange<Double> {

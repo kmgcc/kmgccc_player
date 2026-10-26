@@ -188,15 +188,24 @@ struct KmgcccPlayerApp: App {
         Settings {
             EmptyView()
         }
+        .restorationBehavior(.disabled)
+        .defaultLaunchBehavior(.suppressed)
         .commands {
-            // 0. 移除默认设置菜单
-            CommandGroup(replacing: .appSettings) {}
-
-            CommandGroup(after: .appInfo) {
-                Button("检查更新…") {
-                    UpdateCoordinator.shared.checkManually()
+            // 0. 设置入口复用主窗口中的设置弹窗。
+            CommandGroup(replacing: .appSettings) {
+                Button(NSLocalizedString("menu.settings", comment: "Settings")) {
+                    Task { @MainActor in
+                        await appSession.setupIfNeeded()
+                        _ = AppKitMainSplitWindowController.reveal(appSession: appSession)
+                        DispatchQueue.main.async {
+                            NotificationCenter.default.post(name: .presentSettingsFromMenu, object: nil)
+                        }
+                    }
                 }
+                .keyboardShortcut(",", modifiers: .command)
             }
+
+            AppInfoCommands()
 
             // 1. 文件菜单
             CommandGroup(replacing: .newItem) {
@@ -339,6 +348,36 @@ struct KmgcccPlayerApp: App {
                 }
             }
         }
+
+        Window("menu.about_window_title", id: "about") {
+            AboutWindowRoot()
+                .environmentObject(ThemeStore.shared)
+        }
+        .defaultSize(width: 760, height: 720)
+        .restorationBehavior(.disabled)
+        .defaultLaunchBehavior(.suppressed)
+    }
+}
+
+@MainActor
+private struct AppInfoCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button(
+                String(
+                    format: NSLocalizedString("menu.about_app", comment: "About %@"),
+                    Constants.appName
+                )
+            ) {
+                openWindow(id: "about")
+            }
+
+            Button("检查更新…") {
+                UpdateCoordinator.shared.checkManually()
+            }
+        }
     }
 }
 
@@ -350,4 +389,5 @@ extension Notification.Name {
     static let toggleQueuePanel = Notification.Name("kmgccc_player.toggleQueuePanel")
     static let playbackModeChanged = Notification.Name("kmgccc_player.playbackModeChanged")
     static let dockProgressVisibilityChanged = Notification.Name("kmgccc_player.dockProgressVisibilityChanged")
+    static let presentSettingsFromMenu = Notification.Name("kmgccc_player.presentSettingsFromMenu")
 }

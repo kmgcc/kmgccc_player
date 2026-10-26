@@ -1,0 +1,385 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native Skin Package v2",
+  "type": "object",
+  "required": [
+    "formatVersion",
+    "hostAPIVersion",
+    "descriptor"
+  ],
+  "properties": {
+    "formatVersion": {
+      "const": 2
+    },
+    "hostAPIVersion": {
+      "const": 2
+    },
+    "version": {
+      "type": "string"
+    },
+    "descriptor": {
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "surfaces": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "window",
+              "fullscreen"
+            ]
+          }
+        }
+      }
+    },
+    "scene": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/scene"
+        }
+      ]
+    },
+    "scenes": {
+      "type": "object",
+      "properties": {
+        "window": {
+          "$ref": "#/$defs/scene"
+        },
+        "fullscreen": {
+          "$ref": "#/$defs/scene"
+        }
+      },
+      "additionalProperties": false
+    },
+    "parameters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "defaultValue",
+          "control"
+        ]
+      }
+    },
+    "requires": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "uses": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "fonts": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "scene": {
+      "type": "object",
+      "required": [
+        "root"
+      ],
+      "properties": {
+        "root": {
+          "$ref": "#/$defs/node"
+        },
+        "state": {
+          "type": "object"
+        },
+        "components": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/node"
+          }
+        },
+        "events": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "node": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "frame": {},
+        "visible": {},
+        "opacity": {},
+        "rotation": {},
+        "scale": {},
+        "scaleX": {},
+        "scaleY": {},
+        "offsetX": {},
+        "offsetY": {},
+        "zIndex": {},
+        "blur": {},
+        "brightness": {},
+        "contrast": {},
+        "saturation": {},
+        "grayscale": {},
+        "hueRotation": {},
+        "invert": {},
+        "blendMode": {},
+        "cornerRadius": {},
+        "clip": {},
+        "background": {},
+        "material": {},
+        "glass": {},
+        "appGlass": {},
+        "border": {},
+        "shadow": {},
+        "animation": {},
+        "keyframes": {},
+        "hitTesting": {},
+        "controls": {},
+        "cursor": {},
+        "help": {},
+        "text": {},
+        "fontSize": {},
+        "font": {},
+        "weight": {},
+        "color": {},
+        "lineLimit": {},
+        "alignment": {},
+        "spacing": {},
+        "columns": {},
+        "items": {},
+        "layout": {},
+        "when": {},
+        "props": {},
+        "name": {},
+        "path": {},
+        "fit": {},
+        "shape": {},
+        "points": {},
+        "colors": {},
+        "start": {},
+        "end": {},
+        "count": {},
+        "gain": {},
+        "lineWidth": {},
+        "function": {},
+        "speed": {},
+        "size": {},
+        "lifetime": {},
+        "seed": {},
+        "loop": {},
+        "muted": {},
+        "poster": {},
+        "mode": {},
+        "index": {},
+        "watch": {},
+        "contextMenu": {},
+        "effects": {},
+        "limit": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 1024,
+          "description": "repeat: the most cells drawn, counted against the node budget"
+        },
+        "scrollTo": {
+          "description": "scroll: the repeat index brought to the centre when it changes"
+        },
+        "adaptive": {
+          "description": "Read the backdrop beneath this node and give its subtree legible ink and native control colours"
+        },
+        "highlightColor": {
+          "description": "lyricLine: colour of the sung part, filled left to right"
+        },
+        "highlightStyle": {
+          "enum": ["sweep", "word"],
+          "description": "lyricLine: sweep fills left to right; word tints each word as it is sung"
+        },
+        "measure": {
+          "description": "Expose self.x/y/width/height/midX/midY in scene points"
+        },
+        "transition": {
+          "description": "Enter and leave as visible changes: fade, scale, blur, glyphs, fromTop, fromBottom, fromLeading, fromTrailing joined with +, or a record with type, token, duration, bounce, distance, scale, blur, stagger, leaveDuration"
+        },
+        "stops": {
+          "description": "gradient: [{color, at}] stops"
+        },
+        "radius": {
+          "description": "gradient: radial radius relative to the node's longer side; elliptical radius as a fraction of the frame, so the glow ends inside it"
+        },
+        "tracking": {},
+        "lineSpacing": {},
+        "design": {
+          "enum": ["default", "rounded", "serif", "monospaced"]
+        },
+        "italic": {},
+        "minScale": {
+          "description": "text: smallest scale factor before truncation"
+        },
+        "key": {
+          "description": "when the value changes, the old content leaves and the new arrives with the node's transition; leaveDuration in the transition sets how long the old content takes"
+        },
+        "track": {
+          "description": "artwork: a queue track id (queue.items[].id); draws that track's thumbnail"
+        },
+        "motion": {
+          "description": "retunes MotionKit tokens for this subtree, including the animated playback controls: {token: {duration, bounce, mass, stiffness, damping}} plus speed"
+        },
+        "enter": {
+          "description": "plays once when the node first appears; takes the same values as transition, plus delay"
+        },
+        "group": {
+          "description": "composites the subtree first, so blend modes inside it mix only with each other"
+        },
+        "glyphMotion": {
+          "type": "object",
+          "properties": {
+            "x": {}, "y": {}, "rotation": {}, "scale": {}, "opacity": {}, "blur": {}, "tint": {}, "split": {}, "smearX": {}, "smearY": {}
+          },
+          "additionalProperties": false,
+          "description": "text, lyricLine: per-glyph x, y, rotation, scale, opacity, blur, tint, split (RGB separation) and smearX/smearY (motion smear) around each glyph's centre; expressions read glyph.index, count, char, word, line, start, end, age, progress, lineAge"
+        },
+        "extrude": {
+          "description": "text, lyricLine: solid depth behind each glyph: a depth, or {depth, angle, color, endColor}"
+        },
+        "angle": {
+          "description": "particles with lifetime: direction of travel in degrees, -90 is up"
+        },
+        "spread": {
+          "description": "particles with lifetime: random spread of the direction in degrees"
+        },
+        "trail": {
+          "description": "particles with lifetime: tail length in seconds of travel"
+        },
+        "outline": {
+          "description": "text, lyricLine: a width, or {width, color, hollow}; hollow keeps only the ring"
+        },
+        "filter": {
+          "description": "a preset {type, ...} or a list applied in order: chromatic {amount, angle}, glitch {amount, slice, rate, intensity}, motionBlur {x, y, samples}, scanlines {spacing, intensity, speed}, wave {amplitude, wavelength, speed}, grain {amount}, custom {library (.metallib), function, kind (layer, color, distortion), args, reach, animated}"
+        },
+        "bloom": {
+          "description": "bright parts of the subtree glow: a radius, or {radius, intensity, threshold}"
+        },
+        "camera": {
+          "description": "layer: {x, y, zoom, rotation, rotationX, rotationY, perspective}; positioned children pan and zoom scaled by 1 / (1 + depth)"
+        },
+        "depth": {
+          "description": "a positioned child of a layer with camera: 0 follows the camera fully, larger values move less, negative values move more (above -0.9)"
+        },
+        "stroke": {
+          "description": "shape: a width, or {width, color, cap, join, dash}; the shape is filled as well only when it has color"
+        },
+        "trimStart": {
+          "description": "shape: where the drawn part of the outline begins, 0 to 1"
+        },
+        "trimEnd": {
+          "description": "shape: where the drawn part of the outline ends, 0 to 1"
+        },
+        "warp": {
+          "description": "fog: how strongly the noise folds into itself"
+        },
+        "type": {
+          "enum": [
+            "layer",
+            "row",
+            "column",
+            "stack",
+            "grid",
+            "scroll",
+            "repeat",
+            "switch",
+            "use",
+            "component",
+            "glassGroup",
+            "lyrics",
+            "spacer",
+            "text",
+            "lyricLine",
+            "image",
+            "artwork",
+            "video",
+            "shape",
+            "gradient",
+            "symbol",
+            "spectrum",
+            "waveform",
+            "meter",
+            "shader",
+            "particles",
+            "fog"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node"
+          }
+        },
+        "template": {
+          "$ref": "#/$defs/node"
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node"
+          }
+        },
+        "default": {
+          "$ref": "#/$defs/node"
+        },
+        "component": {
+          "enum": [
+            "lyrics.native", "lyrics.panel",
+            "artwork.basic", "artwork.classicFrame", "artwork.appleStyle", "artwork.rotatingDisc", "artwork.coverGradientBlur",
+            "cassette.shell", "cassette.label", "cassette.reels", "cassette.waveform", "cassette.overlay", "cassette.kmgLook",
+            "background.host", "background.unifiedMesh", "background.amllMesh", "background.coverGradientBlur", "background.art", "background.artworkBlur", "background.dimming",
+            "visualizer.capsuleSpectrum", "visualizer.pillSpectrum", "visualizer.led", "visualizer.waveform", "visualizer.progressSpectrum",
+            "control.miniPlayer", "control.leadingCapsule", "control.volumeCapsule", "control.transport", "control.playPause", "control.skip",
+            "control.previous", "control.next", "control.progress", "control.volume", "control.expandableVolume", "control.playbackMode",
+            "control.like", "control.dislike", "control.outputDevice", "control.queue", "control.lyricsToggle", "control.fullscreen", "control.settings", "control.quickPanel",
+            "control.actionButton", "control.glassButton", "control.glassTriplePill",
+            "text.trackInfo", "text.marquee", "transition.bokeh",
+            "panel.queue", "panel.quickAppearance", "panel.trackDetail", "sheet.trackEdit", "sheet.externalInfo", "sheet.settings", "menu.trackContext", "menu.player",
+            "behavior.autoHide", "behavior.lyricsEndAutoHide", "behavior.scrollVolume", "behavior.pointerOcclusion", "behavior.windowDrag",
+            "template.classicLED", "template.appleStyle", "template.rotatingCover", "template.cassette", "template.coverGradientBlur",
+            "builtin.coverLed.artwork", "builtin.coverLed.background", "builtin.coverLed.overlay",
+            "builtin.appleStyle.artwork", "builtin.appleStyle.background", "builtin.appleStyle.overlay",
+            "builtin.rotatingCover.artwork", "builtin.rotatingCover.background", "builtin.rotatingCover.overlay",
+            "builtin.kmgccc.cassette.artwork", "builtin.kmgccc.cassette.background", "builtin.kmgccc.cassette.overlay",
+            "builtin.fullscreen.coverGradientBlur.artwork", "builtin.fullscreen.coverGradientBlur.background", "builtin.fullscreen.coverGradientBlur.overlay"
+          ]
+        },
+        "variants": {},
+        "on": {},
+        "mask": {
+          "$ref": "#/$defs/node"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

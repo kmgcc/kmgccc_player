@@ -142,9 +142,13 @@ final class AudioDSPDeviceController {
 
     func ensureLoaded() async { await bootstrapTask?.value }
 
+    /// The started controller, read by skin scenes that show the playback route.
+    private(set) static weak var current: AudioDSPDeviceController?
+
     /// Started by the application dependency owner, never by a settings view.
     func start() {
         guard deviceObservation == nil else { return }
+        Self.current = self
         deviceObservation = AudioOutputDeviceObservation { [weak self] in self?.refreshDevices() }
         refreshDevices()
     }

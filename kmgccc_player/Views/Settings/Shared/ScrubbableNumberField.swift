@@ -31,7 +31,12 @@ struct ScrubbableNumberField: View {
     var fractionDigits: Int = 1
     var alignment: TextAlignment = .trailing
     var scrubScale: ScrubScale = .automatic
+    /// Typed and scrubbed values may reach beyond `range` up to this, while a
+    /// companion slider stays within `range`.
+    var freeRange: ClosedRange<Double>? = nil
     var onCommit: (() -> Void)? = nil
+
+    private var inputRange: ClosedRange<Double> { freeRange ?? range }
 
     @State private var isHovering = false
     @State private var isEditingText = false
@@ -192,7 +197,7 @@ struct ScrubbableNumberField: View {
     private func assign(_ raw: Double, snapsToStep: Bool) {
         let next = Self.quantize(
             raw,
-            range: range,
+            range: inputRange,
             step: snapsToStep ? step : 0,
             fractionDigits: fractionDigits
         )
@@ -230,7 +235,7 @@ struct ScrubbableNumberField: View {
         isEditingText = false
         guard let parsed = Self.parse(textInput, unit: unit) else { return }
         // Typed values keep their precision; only the range and display digits apply.
-        let next = Self.quantize(parsed, range: range, step: 0, fractionDigits: fractionDigits)
+        let next = Self.quantize(parsed, range: inputRange, step: 0, fractionDigits: fractionDigits)
         if next != value { value = next }
         onCommit?()
     }

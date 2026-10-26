@@ -26,7 +26,6 @@ struct TrackInfoEditorCore: View {
     }
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(CoverDownloadService.self) private var coverDownloadService
@@ -44,6 +43,8 @@ struct TrackInfoEditorCore: View {
     let saveTitle: LocalizedStringKey
     let descriptionFallback: String?
     let showsDetailedMetadata: Bool
+    var enrichmentKey: String? = nil
+    var enrichmentAlbumArtist: String? = nil
     let onSave: () -> Bool
     let onCancel: () -> Void
     let onClearOverride: (() -> Void)?
@@ -66,10 +67,17 @@ struct TrackInfoEditorCore: View {
     @Binding var lyricsText: String
     @Binding var artworkData: Data?
     @Binding var lyricsTimeOffsetMs: Double
+    var onArtworkEdited: (() -> Void)? = nil
 
+    @State private var pendingMotionCandidate: MusicEnrichmentResult?
+    @State private var pendingMotionVideo: MotionVideoImportSelection?
+    @State private var isMotionImportValidating = false
+    @State private var motionScope: MotionArtworkScope = .album
+    @State private var followAlbumMotion = false
+    @State private var isSaving = false
     @State private var showingArtworkPicker = false
     @State private var showingLyricsPicker = false
-    @State private var isDetailedMetadataExpanded = false
+    @State private var selectedTab: TrackInfoEditorTab = .artworkAndBasics
     @State private var isMetadataLookupInFlight = false
     @State private var metadataLookupMessage: String?
     @State private var lyricsValidationMessage: String?
@@ -83,11 +91,6 @@ struct TrackInfoEditorCore: View {
     @State private var coverCoordinator: CoverSearchCoordinator?
     @State private var metadataCandidates: [QQMusicArtworkCandidate] = []
     @State private var cachedLyricsValidationError: String?
-    @State private var lyricsEditorMaterialized = false
-    @State private var lyricsSearchMaterialized = false
-
-    private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
-    private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
 
     private var effectiveLyricsValidationError: String? {
         lyricsValidationMessage ?? cachedLyricsValidationError
@@ -98,24 +101,38 @@ struct TrackInfoEditorCore: View {
             title: mode == .local ? String(localized: "edit.track.title") : "编辑外部播放覆盖信息",
             systemImage: "music.note",
             onClose: {
+                guard !isSaving else { return }
                 onCancel(); dismiss()
             }
         ) {
-            VStack(alignment: .leading, spacing: 8) {
-                AppPopupScrollRegion {
-                    VStack(alignment: .leading, spacing: AppPopupStyle().sectionSpacing) { editorScrollContent }
+            VStack(alignment: .leading, spacing: 12) {
+                TrackInfoEditorTabBar(tabs: tabs, selection: $selectedTab)
+                TrackInfoEditorTabPages(tabs: tabs, selection: selectedTab) { tab in
+                    AppPopupScrollRegion {
+                        VStack(alignment: .leading, spacing: SettingsStyleTokens.sectionSpacing) {
+                            tabPage(tab)
+                        }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.bottom, TrackInfoEditorLayout.pageBottomRoom)
+                    }
                 }
-                if let saveFailureMessage {
-                    Text(saveFailureMessage)
-                        .font(.caption).foregroundStyle(.red)
+                // Saving stays disabled while the lyrics are invalid; say why on every tab.
+                if let message = saveFailureMessage
+                    ?? (selectedTab == .lyrics ? nil : effectiveLyricsValidationError.map { "歌词：\($0)" }) {
+                    Text(message)
+                        .font(.system(size: SettingsStyleTokens.descriptionFontSize))
+                        .foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            .trackInfoEditorSettingsStyle()
         } footer: {
             footerView
         }
+        .disabled(isSaving)
+        .interactiveDismissDisabled(isSaving)
         .frame(width: 550, height: 750)
+        .dismissTextEditingOnOutsideClick()
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
         .onAppear {
@@ -144,12 +161,25 @@ struct TrackInfoEditorCore: View {
             // sheet's SwiftUI state is retained for a later presentation.
             coverCoordinator?.clear()
             metadataCandidates.removeAll(keepingCapacity: false)
+            pendingMotionCandidate = nil
+            pendingMotionVideo = nil
+            followAlbumMotion = false
             artworkPreviewImage = nil
             artworkPreviewSourceIdentity = nil
+            // Building the panel lays out its whole control tree and decodes the
+            // artwork preview in one burst. The objects go on dismissal, but the
+            // allocator keeps the freed pages; hand them back once the layers
+            // have finished tearing down.
+            CacheManager.trimProcessMemory()
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(600))
+                CacheManager.trimProcessMemory()
+            }
         }
         .onChange(of: coverCoordinator?.selectedForPreview) { _, newValue in
             if let candidate = newValue {
                 artworkData = candidate.imageData
+                onArtworkEdited?()
             }
         }
         .onChange(of: artworkData) { _, _ in
@@ -159,155 +189,77 @@ struct TrackInfoEditorCore: View {
             lyricsValidationMessage = nil
             scheduleLyricsValidation(reason: "lyricsText changed")
         }
-        .task {
-            // The editor scroll content is a plain (non-lazy) VStack, so without
-            // staging the sheet's opening frame would also build the below-the-fold
-            // lyrics editor (NSTextView loaded with the full TTML document) and the
-            // lyrics-search section (more text fields + first touch of the
-            // AMLLDB/LDDC service singletons) in one main-thread transaction.
-            // The delays land each chunk after the sheet's open animation; the
-            // section sits below the fold, so the placeholder is not visible
-            // unless the user scrolls down immediately.
-            guard !lyricsEditorMaterialized || !lyricsSearchMaterialized else { return }
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            lyricsEditorMaterialized = true
-            try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled else { return }
-            lyricsSearchMaterialized = true
-        }
     }
 
-    private var editorScrollContent: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            if mode == .externalPlayback {
-                externalNoticeSection
-            }
+    /// External playback has no description or library metadata to edit.
+    private var tabs: [TrackInfoEditorTab] {
+        let hasDetails = allowsDescriptionEditing || showsDetailedMetadata || onFetchMetadata != nil
+        return TrackInfoEditorTab.allCases.filter { $0 != .details || hasDetails }
+    }
 
+    @ViewBuilder
+    private func tabPage(_ tab: TrackInfoEditorTab) -> some View {
+        switch tab {
+        case .artworkAndBasics:
             if let rawReference {
                 rawReferenceSection(rawReference)
-                Divider()
             }
-
             artworkSection
-            Divider()
-            metadataSection
-            Divider()
-            lyricsSection
-            Color.clear.frame(height: 120)
-        }
-    }
-
-    private var externalNoticeSection: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "info.circle.fill")
-                .foregroundStyle(themeStore.accentColor)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("这里编辑的是外部播放匹配和展示信息")
-                    .font(.headline)
-                Text("修改会保存为本 app 的匹配覆盖与解析缓存，不会回写外部播放源的原始元数据。")
-                    .font(.subheadline)
-                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+            if let motionQuery {
+                SettingsSection("动态封面") {
+                    MotionArtworkSearchSection(
+                        query: motionQuery,
+                        selection: $pendingMotionCandidate,
+                        importedVideo: $pendingMotionVideo,
+                        isValidatingImport: $isMotionImportValidating,
+                        scope: $motionScope,
+                        hasOwnChoice: lyricsSearchTrack?.motionArtwork?.isUserSelected == true,
+                        followAlbum: $followAlbumMotion
+                    )
+                }
             }
+            TrackInfoBasicsSection(title: $title, artist: $artist, album: $album, duration: duration)
+        case .details:
+            detailsPage
+        case .lyrics:
+            lyricsPage
         }
-        .padding(12)
-        .appPopupContentBackground()
-        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private func rawReferenceSection(_ reference: TrackInfoEditorRawReference) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("当前外部播放原始信息", systemImage: "music.note")
-                .font(.headline)
-
+        SettingsSection("原始信息", info: "外部播放提供的信息。下方的修改会保存为这首歌的匹配与显示设置。") {
             HStack(alignment: .top, spacing: 16) {
                 TrackInfoStaticArtworkPreview(data: reference.artworkData, size: 72)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    rawRow("标题", reference.title)
-                    rawRow("艺人", reference.artist)
-                    rawRow("专辑", reference.album)
-                    rawRow("歌词", reference.hasLyrics ? "当前可用" : "当前不可用")
+                VStack(alignment: .leading, spacing: 6) {
+                    TrackInfoValueRow("标题", value: reference.title)
+                    TrackInfoValueRow("艺人", value: reference.artist)
+                    TrackInfoValueRow("专辑", value: reference.album)
+                    TrackInfoValueRow("歌词", value: reference.hasLyrics ? "可用" : "无")
                 }
             }
-        }
-    }
-
-    private func rawRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                .frame(width: 34, alignment: .leading)
-            Text(value.isEmpty ? "未提供" : value)
-                .font(.callout)
-                .lineLimit(2)
-                .textSelection(.enabled)
         }
     }
 
     private var artworkSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("edit.track.artwork", systemImage: "photo")
-                .font(.headline)
-
-            HStack(spacing: 16) {
-                ZStack {
-                    artworkPreview(size: 100)
-                    if coverCoordinator?.isLoading == true {
-                        ProgressView()
-                            .controlSize(.small)
-                            .padding(8)
-                            .background(.regularMaterial)
-                            .clipShape(Circle())
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    if allowsArtworkImport {
-                        Button(LocalizedStringKey("edit.track.choose_image")) {
-                            showingArtworkPicker = true
-                        }
-                        .buttonStyle(AppPanelButtonStyle())
-                        .font(.system(size: 13, weight: .medium))
-                    }
-
-                    Button(LocalizedStringKey("查找封面")) {
-                        fetchCover()
-                    }
-                    .buttonStyle(AppPanelButtonStyle())
-                    .font(.system(size: 13, weight: .medium))
-                    .disabled(coverCoordinator?.isLoading == true)
-
-                    if artworkData != nil {
-                        Button(LocalizedStringKey("edit.track.remove_artwork"), role: .destructive) {
-                            artworkData = nil
-                            coverCoordinator?.clear()
-                        }
-                        .buttonStyle(AppPanelButtonStyle())
-                        .font(.system(size: 13, weight: .medium))
-                    }
-
-                    if let error = coverCoordinator?.error {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                if let coordinator = coverCoordinator, coordinator.hasCandidates {
-                    CoverCandidateStripView(
-                        candidates: coordinator.candidates,
-                        selectedCandidate: coordinator.selectedForPreview,
-                        onSelect: { candidate in
-                            coordinator.selectForPreview(candidate)
-                            artworkData = candidate.imageData
-                        }
-                    )
-                }
-            }
-        }
+        TrackInfoArtworkSection(
+            coordinator: coverCoordinator,
+            hasArtwork: artworkData != nil,
+            allowsImport: allowsArtworkImport,
+            onChooseImage: { showingArtworkPicker = true },
+            onFetchCover: { fetchCover() },
+            onRemoveArtwork: {
+                artworkData = nil
+                onArtworkEdited?()
+                coverCoordinator?.clear()
+            },
+            onSelectCandidate: { candidate in
+                coverCoordinator?.selectForPreview(candidate)
+                artworkData = candidate.imageData
+                onArtworkEdited?()
+            },
+            preview: { artworkPreview(size: 100) }
+        )
         .fileImporter(
             isPresented: $showingArtworkPicker,
             allowedContentTypes: [.image],
@@ -372,305 +324,57 @@ struct TrackInfoEditorCore: View {
         }
     }
 
-    private var metadataSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Label("edit.track.metadata", systemImage: "info.circle")
-                .font(.headline)
-
-            VStack(alignment: .leading, spacing: 12) {
-                labeledField("edit.track.track_title", prompt: "edit.track.track_title", text: $title)
-                labeledField("edit.track.artist", prompt: "edit.track.artist_name", text: $artist)
-                labeledField("edit.track.album", prompt: "edit.track.album_name", text: $album)
-                labeledField("流派 / 标签", prompt: "用逗号分隔", text: $genreTagsText)
-                labeledField("发行日期", prompt: "YYYY-MM-DD", text: $releaseDateText)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("edit.track.duration")
-                        .font(.subheadline)
-                        .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                    Text(formatDuration(duration))
-                        .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                }
-
-                if allowsDescriptionEditing {
-                    descriptionEditorSection
-                }
-
-                if showsDetailedMetadata {
-                    metadataDetailsSection
-                }
-            }
-        }
-    }
-
-    private var descriptionEditorSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            labeledEditor(
-                "edit.track.description",
-                prompt: "edit.track.description_placeholder",
-                text: $trackDescription
-            )
-
-            if let descriptionFallback,
-               trackDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               !descriptionFallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("来自专辑介绍")
-                        .font(.caption)
-                        .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
-                    Text(descriptionFallback)
-                        .font(.caption)
-                        .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                        .lineLimit(3)
-                }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .appPopupContentBackground()
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-        }
-    }
-
-    private var metadataDetailsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if onFetchMetadata != nil {
-                HStack {
-                    Button {
-                        fetchMetadata()
-                    } label: {
-                        Label("查找元数据", systemImage: "sparkle.magnifyingglass")
-                    }
-                    .buttonStyle(AppPanelButtonStyle())
-                    .font(.system(size: 13, weight: .medium))
-                    .disabled(isMetadataLookupInFlight)
-
-                    if isMetadataLookupInFlight {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-
-                    if let metadataLookupMessage {
-                        Text(metadataLookupMessage)
-                            .font(.caption)
-                            .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                    }
-                }
-            }
-
-            if !metadataCandidates.isEmpty {
-                MetadataCandidateStripView(
-                    candidates: metadataCandidates,
-                    selectedSongMid: qqMusicSongMid,
-                    onSelect: { candidate in
-                        selectMetadataCandidate(candidate)
-                    }
-                )
-            }
-
-            VStack(alignment: .leading, spacing: 0) {
-                CollapsibleSectionHeader(
-                    "更多详细元数据",
-                    systemImage: "list.bullet.rectangle",
-                    isExpanded: $isDetailedMetadataExpanded
-                )
-
-                if isDetailedMetadataExpanded {
-                    VStack(alignment: .leading, spacing: 12) {
-                        labeledField("语言", prompt: "语言", text: $language)
-                        labeledField("厂牌 / 公司", prompt: "厂牌或公司", text: $labelOrCompany)
-
-                        metadataReadonlySection
-
-                        if let trackID = lyricsSearchTrack?.id {
-                            TrackLoudnessMetadataSection(trackIDs: [trackID])
-                                .padding(.top, 4)
-                        }
-                    }
-                    .padding(.top, 10)
-                }
-            }
-        }
-    }
-
-    private var metadataReadonlySection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            readonlyMetadataRow("QQMusic Song MID", qqMusicSongMid)
-            readonlyMetadataRow("来源", metadataSource)
-            readonlyMetadataRow("获取时间", metadataFetchedAt.map(formatMetadataDate) ?? "")
-            readonlyMetadataRow(
-                "置信度",
-                metadataConfidence.map { String(format: "%.2f", $0) } ?? ""
-            )
-        }
-        .font(.caption)
-        .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-        .padding(.top, 2)
-    }
-
-    private func readonlyMetadataRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label)
-                .frame(width: 118, alignment: .leading)
-                .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
-            Text(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未记录" : value)
-                .textSelection(.enabled)
-        }
-    }
-
-    private func labeledField(
-        _ label: LocalizedStringKey,
-        prompt: LocalizedStringKey,
-        text: Binding<String>
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.subheadline)
-                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-            TextField(prompt, text: text)
-                .textFieldStyle(.roundedBorder)
-        }
-    }
-
-    private func labeledEditor(
-        _ label: LocalizedStringKey,
-        prompt: LocalizedStringKey,
-        text: Binding<String>
-    ) -> some View {
-        AnyView(
-            VStack(alignment: .leading, spacing: 4) {
-                Text(label)
-                    .font(.subheadline)
-                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-
-                ZStack(alignment: .topLeading) {
-                    TextEditor(text: text)
-                        .font(.body)
-                        .lineSpacing(4)
-                        .padding(8)
-                        .frame(height: 132)
-                        .scrollContentBackground(.hidden)
-
-                    if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(prompt)
-                            .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
-                            .font(.body)
-                            .padding(.horizontal, 13)
-                            .padding(.vertical, 16)
-                            .allowsHitTesting(false)
-                    }
-                }
-                .appPopupContentBackground()
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .padding(.trailing, 18)
-            }
-        )
-    }
-
     @ViewBuilder
-    private var lyricsSection: some View {
-        if lyricsEditorMaterialized {
-            materializedLyricsSection
-        } else {
-            deferredSectionPlaceholder("edit.track.lyrics", systemImage: "text.quote")
-        }
-    }
-
-    private func deferredSectionPlaceholder(
-        _ titleKey: LocalizedStringKey,
-        systemImage: String
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label(titleKey, systemImage: systemImage)
-                .font(.headline)
-            HStack(spacing: 8) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("正在准备…")
-                    .font(.caption)
-                    .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
-            }
-        }
-    }
-
-    private var materializedLyricsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("edit.track.lyrics", systemImage: "text.quote")
-                    .font(.headline)
-
-                Spacer()
-
-                Button {
-                    openURL(amllDbURL)
-                } label: {
-                    Label("AMLL DB", systemImage: "arrow.up.right.square")
-                }
-                .buttonStyle(AppPanelButtonStyle())
-                .font(.caption)
-
-                Button {
-                    openURL(ttmlToolURL)
-                } label: {
-                    Label("TTML Tool", systemImage: "hammer.fill")
-                }
-                .buttonStyle(AppPanelButtonStyle())
-                .font(.caption)
-
-                Button(LocalizedStringKey("edit.track.import_lyrics")) {
-                    showingLyricsPicker = true
-                }
-                .buttonStyle(AppPanelButtonStyle())
-                .font(.caption)
-
-                if mode == .local || mode == .externalPlayback {
-                    Button("清除歌词", role: .destructive) {
-                        lyricsText = ""
-                    }
-                    .buttonStyle(AppPanelButtonStyle())
-                    .font(.caption)
-                    .disabled(lyricsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-
-            Text(
-                "AMLL DB 歌词库中的 TTML 专为 AMLL 组件设计，支持对唱歌词、背景歌词等高级特性，来自网络的转换歌词仅为歌词缺失情况下的备选。您也可以使用 AMLL TTML Tool 自己制作歌词使用或贡献到 AMLL DB。"
+    private var detailsPage: some View {
+        // The lookup also fills the description, so it comes first.
+        if onFetchMetadata != nil {
+            TrackInfoMetadataLookupSection(
+                isLookupInFlight: isMetadataLookupInFlight,
+                message: metadataLookupMessage,
+                candidates: metadataCandidates,
+                selectedSongMid: qqMusicSongMid,
+                onFetch: { fetchMetadata() },
+                onSelect: { selectMetadataCandidate($0) }
             )
-            .font(.caption)
-            .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-            .fixedSize(horizontal: false, vertical: true)
+        }
 
-            TextEditor(text: $lyricsText)
-                .font(.system(.body, design: .monospaced))
-                .frame(height: 120)
-                .padding(.trailing, 18)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
-                }
+        if allowsDescriptionEditing {
+            TrackInfoDescriptionSection(text: $trackDescription, albumDescription: descriptionFallback)
+        }
 
-            Text("edit.track.paste_desc")
-                .font(.caption)
-                .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
-
-            if let message = effectiveLyricsValidationError {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
+        if showsDetailedMetadata {
+            TrackInfoDetailFieldsSection(
+                genreTagsText: $genreTagsText,
+                releaseDateText: $releaseDateText,
+                language: $language,
+                labelOrCompany: $labelOrCompany
+            )
+            TrackInfoMetadataRecordSection(
+                songMid: qqMusicSongMid,
+                source: metadataSource,
+                fetchedAt: metadataFetchedAt,
+                confidence: metadataConfidence
+            )
+            if let trackID = lyricsSearchTrack?.id {
+                TrackLoudnessMetadataSection(trackIDs: [trackID])
             }
+        }
+    }
+
+    private var lyricsPage: some View {
+        VStack(alignment: .leading, spacing: SettingsStyleTokens.sectionSpacing) {
+            TrackInfoLyricsEditorSection(
+                lyricsText: $lyricsText,
+                validationMessage: effectiveLyricsValidationError,
+                onImport: { showingLyricsPicker = true },
+                onClear: { lyricsText = "" }
+            )
 
             if allowsLyricsOffset {
-                lyricsOffsetSection
+                TrackInfoLyricsOffsetSection(offsetMs: $lyricsTimeOffsetMs)
             }
 
-            Divider()
-                .padding(.vertical, 8)
-
-            if lyricsSearchMaterialized {
-                lyricsSearchSection
-            } else {
-                deferredSectionPlaceholder("歌词搜索", systemImage: "magnifyingglass")
-            }
+            lyricsSearchSection
         }
         .fileImporter(
             isPresented: $showingLyricsPicker,
@@ -678,31 +382,6 @@ struct TrackInfoEditorCore: View {
             allowsMultipleSelection: false
         ) { result in
             handleLyricsImport(result)
-        }
-    }
-
-    private var lyricsOffsetSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("edit.track.offset")
-                    .font(.subheadline)
-                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                Spacer()
-                Text(String(format: "%+.2f s", lyricsTimeOffsetMs / 1000.0))
-                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                    .monospacedDigit()
-                Button(LocalizedStringKey("edit.track.reset")) {
-                    lyricsTimeOffsetMs = 0
-                }
-                .buttonStyle(AppPanelButtonStyle())
-                .font(.caption)
-            }
-
-            Slider(value: $lyricsTimeOffsetMs, in: -5000...5000, step: 100)
-
-            Text(NSLocalizedString("edit.track.offset_desc", comment: ""))
-                .font(.caption)
-                .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
         }
     }
 
@@ -746,21 +425,60 @@ struct TrackInfoEditorCore: View {
             }
 
 
+            if isSaving {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
             Button(saveTitle) {
-                if let message = LyricsEditorInput.saveIssue(in: lyricsText) {
-                    lyricsValidationMessage = message
-                    return
-                }
-                saveFailureMessage = nil
-                if onSave() {
-                    dismiss()
-                } else {
-                    saveFailureMessage = "无法保存，请重试。"
-                }
+                saveEdits()
             }
             .buttonStyle(AppDialogGlassButtonStyle(kind: .primary))
             .keyboardShortcut(.return)
-            .disabled(!canSave || effectiveLyricsValidationError != nil)
+            .disabled((!canSave && pendingMotionCandidate == nil && pendingMotionVideo == nil && !followAlbumMotion) || effectiveLyricsValidationError != nil || isSaving || isMotionImportValidating)
+        }
+    }
+
+    private var motionQuery: MusicEnrichmentQuery? {
+        guard let key = enrichmentKey ?? lyricsSearchTrack.map({ "track:" + $0.id.uuidString }) else { return nil }
+        return MusicEnrichmentQuery(
+            key: key, title: title, artist: artist, album: album, duration: duration,
+            albumArtist: lyricsSearchTrack?.albumArtist ?? enrichmentAlbumArtist
+        )
+    }
+
+    private func saveEdits() {
+        guard !isSaving, !isMotionImportValidating else { return }
+        if let message = LyricsEditorInput.saveIssue(in: lyricsText) {
+            lyricsValidationMessage = message
+            return
+        }
+        saveFailureMessage = nil
+        isSaving = true
+        let candidate = pendingMotionCandidate
+        let importedVideo = pendingMotionVideo
+        let query = motionQuery
+        let scope = motionScope
+        let followAlbum = followAlbumMotion
+        Task { @MainActor in
+            defer { isSaving = false }
+            do {
+                guard onSave() else {
+                    saveFailureMessage = "无法保存，请重试。"
+                    return
+                }
+                if let importedVideo, let query {
+                    _ = try await cacheServices.musicEnrichmentService.importMotionVideo(from: importedVideo.url, for: query, scope: scope)
+                } else if let candidate, let query {
+                    _ = try await cacheServices.musicEnrichmentService.selectMotion(candidate, for: query, scope: scope)
+                } else if followAlbum, let query {
+                    _ = try await cacheServices.musicEnrichmentService.clearMotion(for: query, resumeAutomatic: true)
+                }
+                dismiss()
+            } catch {
+                Log.warning("[MusicEnrichment] event=editor-import-failed errorType=\(String(describing: type(of: error)))", category: .library)
+                saveFailureMessage = (error as? MotionVideoImportError)?.errorDescription ?? "动态封面保存失败，请重试。"
+            }
         }
     }
 
@@ -802,10 +520,11 @@ struct TrackInfoEditorCore: View {
 
         coverFetchTask = Task {
             guard let coordinator = coverCoordinator else { return }
+            // External display edits are independent of the provider identity.
             await coordinator.search(
-                artist: artist,
-                album: album,
-                title: title,
+                artist: mode == .externalPlayback ? (rawReference?.artist ?? artist) : artist,
+                album: mode == .externalPlayback ? (rawReference?.album ?? album) : album,
+                title: mode == .externalPlayback ? (rawReference?.title ?? title) : title,
                 duration: duration
             )
         }
@@ -832,7 +551,11 @@ struct TrackInfoEditorCore: View {
             let didApply = await onFetchMetadata()
             await MainActor.run {
                 isMetadataLookupInFlight = false
-                metadataLookupMessage = didApply ? "已自动应用最佳匹配" : "未发现新匹配字段，可手动选择"
+                if didApply {
+                    metadataLookupMessage = "已自动应用最佳匹配"
+                } else {
+                    metadataLookupMessage = candidates.isEmpty ? "未找到匹配" : "没有可补全的空白字段，可从候选中选择"
+                }
             }
         }
     }
@@ -869,6 +592,7 @@ struct TrackInfoEditorCore: View {
             }.value
             if let data {
                 artworkData = data
+                onArtworkEdited?()
             }
         }
     }
@@ -887,18 +611,6 @@ struct TrackInfoEditorCore: View {
         }
     }
 
-    private func formatDuration(_ seconds: Double) -> String {
-        let mins = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%d:%02d", mins, secs)
-    }
-
-    private func formatMetadataDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
-    }
 }
 
 private nonisolated final class TrackInfoArtworkPreviewImage: @unchecked Sendable {

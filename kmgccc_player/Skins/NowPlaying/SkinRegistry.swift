@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import PlayerAutomationProtocol
 import SwiftUI
 
 struct SkinOption: Identifiable {
@@ -17,6 +18,9 @@ struct SkinOption: Identifiable {
 
 enum SkinRegistry {
 
+    /// Keep every custom skin entry point on the same temporary release gate.
+    static let customizationEnabled = SkinCustomizationAvailability.isEnabled
+
     static let catalog: SkinCatalog = {
         let renderers: [any NowPlayingSkin] = [
             ClassicLEDSkin(), AppleStyleSkin(), RotatingCoverSkin(),
@@ -27,11 +31,14 @@ enum SkinRegistry {
         for renderer in renderers {
             catalog.registerBundled(renderer)
         }
-        catalog.packages.loadInstalled()
+        if customizationEnabled {
+            catalog.packages.loadInstalled()
+            catalog.developmentDirectories.restore()
+        }
         #if DEBUG
-        if CommandLine.arguments.contains("--skin-development-example") {
+        if customizationEnabled && CommandLine.arguments.contains("--skin-development-example") {
             catalog.register(MinimalSkinExample())
-            SkinDevelopmentScenes.packages.forEach { catalog.register($0) }
+            SkinDevelopmentScenes.packages(in: catalog).forEach { catalog.register($0) }
         }
         #endif
         return catalog

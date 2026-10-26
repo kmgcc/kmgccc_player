@@ -34,7 +34,6 @@ struct BatchTrackEditSheet: View {
     }
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
     @Environment(\.colorScheme) private var colorScheme
     @Environment(AppSettings.self) private var settings
     @Environment(LibraryViewModel.self) private var libraryVM
@@ -68,6 +67,7 @@ struct BatchTrackEditSheet: View {
     @State private var metadataConfidence: Double?
     @State private var lyricsText = ""
     @State private var artworkData: Data?
+    @State private var artworkWasEdited = false
     @State private var lyricsTimeOffsetMs: Double = 0
     @State private var batchPreviewRefreshTask: Task<Void, Never>?
     @State private var lyricsConversionTask: Task<Void, Never>?
@@ -87,13 +87,18 @@ struct BatchTrackEditSheet: View {
     @State private var isMetadataLookupInFlight = false
     @State private var metadataLookupMessage: String?
     @State private var metadataFetchTask: Task<Void, Never>?
+    /// A song picked while the current one was still being written.
+    @State private var queuedSwitchIndex: Int?
+    @State private var pendingMotionCandidate: MusicEnrichmentResult?
+    @State private var pendingMotionVideo: MotionVideoImportSelection?
+    @State private var isMotionImportValidating = false
+    @State private var motionScope: MotionArtworkScope = .album
+    @State private var followAlbumMotion = false
 
     // MARK: - Cover Search Coordinator
 
     @State private var coverCoordinator: CoverSearchCoordinator?
-
-    private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
-    private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
+    @State private var selectedTab: TrackInfoEditorTab = .artworkAndBasics
 
     // Phase 4.5: ordinary-text foregrounds tinted from the active ThemeStore palette.
     private var appFgPrimary: Color { themeStore.appForegroundPalette.primaryColor }
@@ -237,6 +242,7 @@ struct BatchTrackEditSheet: View {
         .onChange(of: coverCoordinator?.selectedForPreview) { _, newValue in
             // Reactively update artwork preview when coordinator selects a candidate
             if let candidate = newValue {
+                artworkWasEdited = true
                 artworkData = candidate.imageData
                 statusMessage = "封面已更新"
                 // Auto-save for batch edit
@@ -368,10 +374,6 @@ struct BatchTrackEditSheet: View {
                 RoundedRectangle(cornerRadius: 10)
                     .fill(isCurrent ? themeStore.selectionFill : Color(nsColor: .controlBackgroundColor).opacity(0.22))
             )
-            .overlay {
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(isCurrent ? themeStore.accentColor.opacity(0.45) : .clear, lineWidth: 1)
-            }
             .contentShape(RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
@@ -398,267 +400,152 @@ struct BatchTrackEditSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
+    /// Same tabs and sections as the single-song editor; the queue and the
+    /// lyrics preview stay as the outer columns.
     private var editorPanel: some View {
-        AppPopupScrollRegion {
-            VStack(alignment: .leading, spacing: 16) {
-                metadataSection
-                lyricsSection
-                Color.clear.frame(height: 80)
+        VStack(alignment: .leading, spacing: 12) {
+            TrackInfoEditorTabBar(tabs: TrackInfoEditorTab.allCases, selection: $selectedTab)
+                .padding(.horizontal, 18)
+                .padding(.top, 14)
+
+            TrackInfoEditorTabPages(tabs: TrackInfoEditorTab.allCases, selection: selectedTab) { tab in
+                AppPopupScrollRegion {
+                    VStack(alignment: .leading, spacing: SettingsStyleTokens.sectionSpacing) {
+                        editorTabPage(tab)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, TrackInfoEditorLayout.pageBottomRoom)
+                }
             }
-            .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .trackInfoEditorSettingsStyle()
         .clipped()
     }
 
-    private var metadataSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("元数据", systemImage: "info.circle")
-                .font(.headline)
-
-            HStack(spacing: 14) {
-                ZStack {
-                    Group {
-                        if let data = artworkData, let nsImage = NSImage(data: data) {
-                            Image(nsImage: nsImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                        } else {
-                            Image(systemName: "music.note")
-                                .font(.title2)
-                                .foregroundStyle(appFgSecondary)
-                        }
-                    }
-                    .frame(width: 84, height: 84)
-                    .background(.ultraThinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                    if coverCoordinator?.isLoading == true {
-                        ProgressView()
-                            .controlSize(.small)
-                            .padding(8)
-                            .background(.regularMaterial)
-                            .clipShape(Circle())
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Button("导入封面") {
-                        showingArtworkPicker = true
-                    }
-                    .buttonStyle(AppPanelButtonStyle())
-                    .font(.system(size: 13, weight: .medium))
-
-                    Button("查找封面") {
-                        fetchCover()
-                    }
-                    .buttonStyle(AppPanelButtonStyle())
-                    .font(.system(size: 13, weight: .medium))
-                    .disabled(coverCoordinator?.isLoading == true)
-
-                    if artworkData != nil {
-                        Button("移除封面", role: .destructive) {
-                            artworkData = nil
-                            coverCoordinator?.clear()
-                        }
-                        .buttonStyle(AppPanelButtonStyle())
-                        .font(.system(size: 13, weight: .medium))
-                    }
-
-                    if let error = coverCoordinator?.error {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                // Candidate strip (appears when candidates exist)
-                if let coordinator = coverCoordinator, coordinator.hasCandidates {
-                    CoverCandidateStripView(
-                        candidates: coordinator.candidates,
-                        selectedCandidate: coordinator.selectedForPreview,
-                        onSelect: { candidate in
-                            coordinator.selectForPreview(candidate)
-                            artworkData = candidate.imageData
-                        }
+    @ViewBuilder
+    private func editorTabPage(_ tab: TrackInfoEditorTab) -> some View {
+        switch tab {
+        case .artworkAndBasics:
+            artworkSection
+            if let motionQuery, let track = currentTrack {
+                SettingsSection("动态封面") {
+                    MotionArtworkSearchSection(
+                        query: motionQuery,
+                        selection: $pendingMotionCandidate,
+                        importedVideo: $pendingMotionVideo,
+                        isValidatingImport: $isMotionImportValidating,
+                        scope: $motionScope,
+                        hasOwnChoice: track.motionArtwork?.isUserSelected == true,
+                        followAlbum: $followAlbumMotion
                     )
-                    .frame(maxWidth: 200)
-                }
-
-                Spacer()
-            }
-
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("标题")
-                        .font(.caption)
-                        .foregroundStyle(appFgSecondary)
-                    TextField("标题", text: $title)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("艺人")
-                        .font(.caption)
-                        .foregroundStyle(appFgSecondary)
-                    TextField("艺人", text: $artist)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("专辑")
-                        .font(.caption)
-                        .foregroundStyle(appFgSecondary)
-                    TextField("专辑", text: $album)
-                        .textFieldStyle(.roundedBorder)
+                    // Search fields start from each song's own title and artist.
+                    .id(track.id)
                 }
             }
-
-            batchScrollingEditor(
-                "歌曲描述",
-                prompt: "可选，用于主页歌曲卡片横幅展示",
-                text: $trackDescription,
-                height: 96,
-                font: .body
+            TrackInfoBasicsSection(
+                title: $title,
+                artist: $artist,
+                album: $album,
+                duration: currentTrack?.duration
             )
+        case .details:
+            detailsPage
+        case .lyrics:
+            lyricsSection
+        }
+    }
 
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label("更多详细元数据", systemImage: "list.bullet.rectangle")
-                        .font(.subheadline.weight(.semibold))
-
-                    Spacer()
-
-                    Button {
-                        fetchMetadata()
-                    } label: {
-                        Label("查找元数据", systemImage: "sparkle.magnifyingglass")
-                    }
-                    .buttonStyle(AppPanelButtonStyle())
-                    .disabled(isMetadataLookupInFlight)
-                    .font(.caption)
-
-                    if isMetadataLookupInFlight {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-
-                    if let metadataLookupMessage {
-                        Text(metadataLookupMessage)
-                            .font(.caption)
+    private var artworkSection: some View {
+        TrackInfoArtworkSection(
+            coordinator: coverCoordinator,
+            hasArtwork: artworkData != nil,
+            allowsImport: true,
+            onChooseImage: { showingArtworkPicker = true },
+            onFetchCover: { fetchCover() },
+            onRemoveArtwork: {
+                artworkWasEdited = true
+                artworkData = nil
+                coverCoordinator?.clear()
+            },
+            onSelectCandidate: { candidate in
+                artworkWasEdited = true
+                coverCoordinator?.selectForPreview(candidate)
+                artworkData = candidate.imageData
+                draftDidChange()
+                _ = saveCurrentTrack(
+                    showFailureMessage: true,
+                    markProcessedIfUnchanged: false,
+                    reason: "选择封面后保存"
+                )
+            },
+            preview: {
+                Group {
+                    if let data = artworkData, let nsImage = NSImage(data: data) {
+                        Image(nsImage: nsImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else {
+                        Image(systemName: "music.note")
+                            .font(.system(size: 36, weight: .medium))
                             .foregroundStyle(appFgSecondary)
                     }
                 }
-
-                if !metadataCandidates.isEmpty {
-                    MetadataCandidateStripView(
-                        candidates: metadataCandidates,
-                        selectedSongMid: qqMusicSongMid,
-                        onSelect: { candidate in
-                            selectMetadataCandidate(candidate)
-                        }
-                    )
-                }
-
-                HStack(spacing: 10) {
-                    batchLabeledField("流派 / 标签", prompt: "用逗号分隔", text: $genreTagsText)
-                    batchLabeledField("语言", prompt: "语言", text: $language)
-                }
-
-                HStack(spacing: 10) {
-                    batchLabeledField("厂牌 / 公司", prompt: "厂牌或公司", text: $labelOrCompany)
-                    batchLabeledField("发行日期", prompt: "YYYY-MM-DD", text: $releaseDateText)
-                }
-
-                if hasReadonlyMetadata {
-                    VStack(alignment: .leading, spacing: 4) {
-                        batchReadonlyRow("QQMusic Song MID", qqMusicSongMid)
-                        batchReadonlyRow("来源", metadataSource)
-                        batchReadonlyRow("获取时间", metadataFetchedAt.map(formatMetadataDate) ?? "")
-                        batchReadonlyRow(
-                            "置信度",
-                            metadataConfidence.map { String(format: "%.2f", $0) } ?? ""
-                        )
-                    }
-                    .font(.caption)
-                    .foregroundStyle(appFgSecondary)
-                    .padding(.top, 2)
-                }
-
-                TrackLoudnessMetadataSection(trackIDs: tracks.map(\.id))
-                    .padding(.top, 4)
+                .frame(width: 100, height: 100)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
+        )
+    }
+
+    @ViewBuilder
+    private var detailsPage: some View {
+        TrackInfoMetadataLookupSection(
+            isLookupInFlight: isMetadataLookupInFlight,
+            message: metadataLookupMessage,
+            candidates: metadataCandidates,
+            selectedSongMid: qqMusicSongMid,
+            onFetch: { fetchMetadata() },
+            onSelect: { selectMetadataCandidate($0) }
+        )
+
+        TrackInfoDescriptionSection(text: $trackDescription, albumDescription: albumDescriptionFallback)
+
+        TrackInfoDetailFieldsSection(
+            genreTagsText: $genreTagsText,
+            releaseDateText: $releaseDateText,
+            language: $language,
+            labelOrCompany: $labelOrCompany
+        )
+
+        if hasReadonlyMetadata {
+            TrackInfoMetadataRecordSection(
+                songMid: qqMusicSongMid,
+                source: metadataSource,
+                fetchedAt: metadataFetchedAt,
+                confidence: metadataConfidence
+            )
         }
-        .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.36))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+
+        TrackLoudnessMetadataSection(trackIDs: tracks.map(\.id))
+    }
+
+    private var albumDescriptionFallback: String? {
+        guard let track = currentTrack else { return nil }
+        return libraryVM.albumEntries.first(where: { $0.canonicalKey == track.albumGroupKey })?.description
     }
 
     private var lyricsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("歌词导入 / 查找 / 预编辑", systemImage: "text.quote")
-                    .font(.headline)
-
-                Spacer()
-
-                Button {
-                    openURL(amllDbURL)
-                } label: {
-                    Label("AMLL DB", systemImage: "arrow.up.right.square")
-                }
-                .buttonStyle(AppPanelButtonStyle())
-                .font(.caption)
-
-                Button {
-                    openURL(ttmlToolURL)
-                } label: {
-                    Label("TTML Tool", systemImage: "hammer.fill")
-                }
-                .buttonStyle(AppPanelButtonStyle())
-                .font(.caption)
-
-                Button("导入歌词文件") {
-                    showingLyricsPicker = true
-                }
-                .buttonStyle(AppPanelButtonStyle())
-                .font(.caption)
-            }
-
-            batchScrollingEditor(
-                "歌词文本",
-                prompt: "粘贴或应用 TTML / LRC 歌词",
-                text: $lyricsText,
-                height: 120,
-                font: .system(.caption, design: .monospaced)
+        VStack(alignment: .leading, spacing: SettingsStyleTokens.sectionSpacing) {
+            TrackInfoLyricsEditorSection(
+                lyricsText: $lyricsText,
+                validationMessage: nil,
+                onImport: { showingLyricsPicker = true },
+                onClear: { lyricsText = "" }
             )
 
-            Text("TTML 文本区仅用于快速核对/微调；主要操作建议在下方 LDDC 区域完成。")
-                .font(.caption2)
-                .foregroundStyle(appFgSecondary)
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("歌词时间偏移")
-                        .font(.subheadline)
-                        .foregroundStyle(appFgSecondary)
-                    Spacer()
-                    Text(String(format: "%+.2f s", lyricsTimeOffsetMs / 1000.0))
-                        .foregroundStyle(appFgSecondary)
-                        .monospacedDigit()
-                    Button("重置") {
-                        lyricsTimeOffsetMs = 0
-                    }
-                    .buttonStyle(AppPanelButtonStyle())
-                    .font(.caption)
-                }
-
-                Slider(value: $lyricsTimeOffsetMs, in: -5000...5000, step: 100)
-            }
-
-            Divider()
+            TrackInfoLyricsOffsetSection(offsetMs: $lyricsTimeOffsetMs)
 
             if let track = currentTrack {
                 LDDCSearchSection(
@@ -674,13 +561,9 @@ struct BatchTrackEditSheet: View {
                         reason: "LDDC 应用歌词"
                     )
                 }
-                .frame(maxWidth: .infinity, minHeight: 560)
-                .clipped()
+                .frame(maxWidth: .infinity)
             }
         }
-        .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.36))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private var hasReadonlyMetadata: Bool {
@@ -688,66 +571,6 @@ struct BatchTrackEditSheet: View {
             || !metadataSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || metadataFetchedAt != nil
             || metadataConfidence != nil
-    }
-
-    private func batchLabeledField(
-        _ label: String,
-        prompt: String,
-        text: Binding<String>
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(appFgSecondary)
-            TextField(prompt, text: text)
-                .textFieldStyle(.roundedBorder)
-        }
-    }
-
-    private func batchReadonlyRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label)
-                .frame(width: 118, alignment: .leading)
-                .foregroundStyle(appFgTertiary)
-            Text(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未记录" : value)
-                .lineLimit(1)
-                .textSelection(.enabled)
-        }
-    }
-
-    private func batchScrollingEditor(
-        _ label: String,
-        prompt: String,
-        text: Binding<String>,
-        height: CGFloat,
-        font: Font
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(appFgSecondary)
-
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: text)
-                    .font(font)
-                    .lineSpacing(4)
-                    .padding(8)
-                    .frame(height: height)
-                    .scrollContentBackground(.hidden)
-
-                if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(prompt)
-                        .foregroundStyle(appFgTertiary)
-                        .font(.callout)
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 16)
-                        .allowsHitTesting(false)
-                }
-            }
-            .appPopupContentBackground()
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .padding(.trailing, 18)
-        }
     }
 
     private var lyricsPreviewPanel: some View {
@@ -775,28 +598,40 @@ struct BatchTrackEditSheet: View {
 
             Spacer()
 
+            Button("上一首") {
+                switchTrack(to: currentIndex - 1)
+            }
+            .buttonStyle(AppDialogGlassButtonStyle())
+            .disabled(currentIndex == 0 || isBusy)
+
             Button("跳过本首") {
                 skipCurrentTrack()
             }
             .buttonStyle(AppDialogGlassButtonStyle())
-            .disabled(tracks.isEmpty)
+            .disabled(tracks.isEmpty || isBusy)
 
             Button("保存当前") {
-                _ = saveCurrentTrack(
-                    showFailureMessage: true,
-                    markProcessedIfUnchanged: true,
-                    reason: "手动保存"
-                )
+                commitCurrentTrack(reason: "手动保存") {}
             }
             .buttonStyle(AppDialogGlassButtonStyle())
-            .disabled(tracks.isEmpty || isSavingCurrent)
+            .disabled(tracks.isEmpty || isBusy)
 
             Button(currentIndex >= tracks.count - 1 ? "完成" : "下一首") {
-                goNextTrack()
+                switchTrack(to: currentIndex + 1)
             }
             .buttonStyle(AppDialogGlassButtonStyle(kind: .primary))
-            .disabled(tracks.isEmpty || isSavingCurrent)
+            .disabled(tracks.isEmpty || isBusy)
         }
+    }
+
+    private var isBusy: Bool { isSavingCurrent || isMotionImportValidating }
+
+    private var motionQuery: MusicEnrichmentQuery? {
+        guard let track = currentTrack else { return nil }
+        return MusicEnrichmentQuery(
+            key: "track:" + track.id.uuidString, title: title, artist: artist, album: album,
+            duration: track.duration, albumArtist: track.albumArtist
+        )
     }
 
     // MARK: - Actions
@@ -806,6 +641,9 @@ struct BatchTrackEditSheet: View {
 
         currentIndex = index
         coverCoordinator?.clear()  // Clear stale candidates from previous track
+        pendingMotionCandidate = nil
+        pendingMotionVideo = nil
+        followAlbumMotion = false
         metadataCandidates = []
         metadataLookupMessage = nil
         metadataFetchTask?.cancel()
@@ -836,6 +674,7 @@ struct BatchTrackEditSheet: View {
         metadataConfidence = track.metadataConfidence
         lyricsText = LyricsFormatSupport.normalizedTTMLText(track.readTTMLLyricsText()) ?? ""
         artworkData = track.loadArtworkDataIfNeeded()
+        artworkWasEdited = false
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
         statusMessage = nil
         isLoadingDraft = false
@@ -854,29 +693,72 @@ struct BatchTrackEditSheet: View {
         processStateByTrackID[track.id] = state
     }
 
-    private func finalizeCurrentTrackBeforeSwitch() -> Bool {
+    private func selectTrack(_ index: Int) {
+        guard tracks.indices.contains(index), index != currentIndex else { return }
+        switchTrack(to: index)
+    }
+
+    /// Saves the current song, then opens `index`; an index past the end
+    /// finishes the batch. Picking a song while a write is in flight waits for it.
+    private func switchTrack(to index: Int) {
+        guard index >= 0, !isMotionImportValidating else { return }
+        guard !isSavingCurrent else {
+            queuedSwitchIndex = index
+            return
+        }
+        commitCurrentTrack(reason: "切换歌曲前自动保存") {
+            if tracks.indices.contains(index) {
+                prepareTrack(at: index, triggerAutoSearch: true)
+            } else {
+                dismiss()
+            }
+        }
+    }
+
+    /// Writes the song draft, then the motion artwork choice, then runs `next`.
+    private func commitCurrentTrack(reason: String, then next: @escaping () -> Void) {
         saveCurrentTrack(
             showFailureMessage: true,
             markProcessedIfUnchanged: true,
-            reason: "切换到下一首前自动保存"
+            reason: reason,
+            then: { applyPendingMotion(then: next) }
         )
     }
 
-    private func selectTrack(_ index: Int) {
-        guard tracks.indices.contains(index), index != currentIndex else { return }
-        guard finalizeCurrentTrackBeforeSwitch() else { return }
-        prepareTrack(at: index, triggerAutoSearch: true)
-    }
-
-    private func goNextTrack() {
-        if currentIndex >= tracks.count - 1 {
-            guard finalizeCurrentTrackBeforeSwitch() else { return }
-            dismiss()
+    private func applyPendingMotion(then next: @escaping () -> Void) {
+        let candidate = pendingMotionCandidate
+        let importedVideo = pendingMotionVideo
+        let followAlbum = followAlbumMotion
+        guard let query = motionQuery, candidate != nil || importedVideo != nil || followAlbum else {
+            next()
             return
         }
-
-        guard finalizeCurrentTrackBeforeSwitch() else { return }
-        prepareTrack(at: currentIndex + 1, triggerAutoSearch: true)
+        let scope = motionScope
+        let service = cacheServices.musicEnrichmentService
+        isSavingCurrent = true
+        Task { @MainActor in
+            defer {
+                isSavingCurrent = false
+                queuedSwitchIndex = nil
+            }
+            do {
+                if let importedVideo {
+                    _ = try await service.importMotionVideo(from: importedVideo.url, for: query, scope: scope)
+                } else if let candidate {
+                    _ = try await service.selectMotion(candidate, for: query, scope: scope)
+                } else {
+                    _ = try await service.clearMotion(for: query, resumeAutomatic: true)
+                }
+                pendingMotionCandidate = nil
+                pendingMotionVideo = nil
+                followAlbumMotion = false
+                statusMessage = "动态封面已保存"
+                next()
+            } catch {
+                Log.warning("[MusicEnrichment] event=batch-editor-motion-failed errorType=\(String(describing: type(of: error)))", category: .library)
+                statusMessage = (error as? MotionVideoImportError)?.errorDescription ?? "动态封面保存失败，请重试"
+            }
+        }
     }
 
     private func skipCurrentTrack() {
@@ -906,7 +788,8 @@ struct BatchTrackEditSheet: View {
     private func saveCurrentTrack(
         showFailureMessage: Bool,
         markProcessedIfUnchanged: Bool,
-        reason: String
+        reason: String,
+        then onSaved: (() -> Void)? = nil
     ) -> Bool {
         guard let track = currentTrack else {
             print("[BatchTrackEditSheet] Save current track failed: No current track.")
@@ -948,13 +831,20 @@ struct BatchTrackEditSheet: View {
                 let failedCount = processStateByTrackID.values.filter { $0.saveError != nil }.count
                 print("[BatchTrackEditSheet] Session Stats -> Total: \(totalCount), Saved: \(savedCount), Skipped: \(skippedCount), Failed: \(failedCount)")
             }
+            onSaved?()
             return true
         }
 
         isSavingCurrent = true
+        let originalMetadata = LibraryMetadataEditSnapshot(track)
+        let previousArtist = track.artist
 
         track.title = title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : title
         track.artist = artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : artist
+        if track.artist != previousArtist {
+            track.artistCredits = TrackCredit.fallback(for: track.artist)
+                + track.artistCredits.filter { !$0.role.isArtistContributor }
+        }
         track.album = album.trimmingCharacters(in: .whitespacesAndNewlines)
         track.userDescription = trackDescription
         track.genreTags = parsedGenreTags(from: genreTagsText)
@@ -962,9 +852,16 @@ struct BatchTrackEditSheet: View {
         track.labelOrCompany = labelOrCompany.trimmingCharacters(in: .whitespacesAndNewlines)
         track.releaseDate = parseEditingDate(releaseDateText)
         track.artworkData = artworkData
+        if artworkWasEdited {
+            track.artworkIsUserSelected = true
+            track.artworkNeedsUpgrade = false
+        }
         track.lyricsTimeOffsetMs = lyricsTimeOffsetMs
 
-        TrackLyricsDraft.assign(editorText: lyricsText, to: track)
+        if changeSet.persistenceMode == .metaAndLyrics || changeSet.persistenceMode == .metaLyricsAndArtwork {
+            TrackLyricsDraft.assign(editorText: lyricsText, to: track)
+        }
+        track.recordManualMetadataEdits(since: originalMetadata)
         refreshLiveLyricsIfEditingCurrentTrack(track, reason: "\(reason) draft")
 
         let trackID = track.id
@@ -983,6 +880,8 @@ struct BatchTrackEditSheet: View {
             guard !Task.isCancelled else { return }
             isSavingCurrent = false
             currentSaveTask = nil
+            let queuedIndex = queuedSwitchIndex
+            queuedSwitchIndex = nil
 
             guard result.persistedTrackIDs.contains(trackID),
                   !result.failedTrackIDs.contains(trackID) else {
@@ -1004,11 +903,16 @@ struct BatchTrackEditSheet: View {
                 trackSnapshots[index].artworkData = artworkData
             }
             statusMessage = "已保存：\(track.title)"
+            if let onSaved {
+                onSaved()
+            } else if let queuedIndex {
+                switchTrack(to: queuedIndex)
+            }
         }
 
         // A changed track is not considered processed until the repository
-        // confirms the write. Callers stay on this track while the task is
-        // pending, preventing a second edit from racing the first write.
+        // confirms the write; callers continue through `onSaved` once it does,
+        // so a second edit never races the first write.
         return false
     }
 
@@ -1047,6 +951,7 @@ struct BatchTrackEditSheet: View {
         let lyricsChanged = TrackLyricsDraft.differs(from: track, editorText: lyricsText)
         let artworkChanged = artworkData != track.artworkData
         let hasChanges = metadataChanged || lyricsChanged || artworkChanged
+            || (artworkWasEdited && track.artworkIsUserSelected != true)
 
         let persistenceMode: TrackEditPersistenceMode
         if artworkChanged && lyricsChanged {
@@ -1088,6 +993,7 @@ struct BatchTrackEditSheet: View {
 
         do {
             artworkData = try Data(contentsOf: url)
+            artworkWasEdited = true
             _ = saveCurrentTrack(
                 showFailureMessage: true,
                 markProcessedIfUnchanged: false,
@@ -1479,13 +1385,6 @@ struct BatchTrackEditSheet: View {
         return formatter.date(from: trimmed)
     }
 
-    private func formatMetadataDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
-    }
-
 }
 
 private struct BatchNativeLyricsPreviewPanel: View, Equatable {
@@ -1621,9 +1520,6 @@ private struct BatchNativeLyricsPreviewPanel: View, Equatable {
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
                     .fill(backgroundColor)
-
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
 
                 switch previewState {
                 case .noTrack:

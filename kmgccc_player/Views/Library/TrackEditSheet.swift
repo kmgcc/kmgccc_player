@@ -118,6 +118,7 @@ struct TrackEditSheet: View {
     @State private var metadataConfidence: Double?
     @State private var lyricsText: String = ""
     @State private var artworkData: Data?
+    @State private var artworkWasEdited = false
     @State private var lyricsTimeOffsetMs: Double = 0
 
     @State private var deferredMediaTask: Task<Void, Never>?
@@ -205,7 +206,8 @@ struct TrackEditSheet: View {
             metadataConfidence: $metadataConfidence,
             lyricsText: $lyricsText,
             artworkData: $artworkData,
-            lyricsTimeOffsetMs: $lyricsTimeOffsetMs
+            lyricsTimeOffsetMs: $lyricsTimeOffsetMs,
+            onArtworkEdited: { artworkWasEdited = true }
         )
         .onAppear {
             if LogConfig.perfDebugEnabled {
@@ -320,6 +322,7 @@ struct TrackEditSheet: View {
             && TrackLyricsDraft.storage(from: lyricsText) != originalLyricsStorage
         let artworkChanged = artworkData != originalArtworkData
         let hasChanges = metadataChanged || lyricsChanged || artworkChanged
+            || (artworkWasEdited && track.artworkIsUserSelected != true)
 
         let persistenceMode: TrackEditPersistenceMode
         if artworkChanged && lyricsChanged {
@@ -354,6 +357,7 @@ struct TrackEditSheet: View {
         let changeSet = trackEditChangeSet
         guard changeSet.hasChanges else { return }
 
+        let originalMetadata = LibraryMetadataEditSnapshot(track)
         let previousArtist = track.artist
         track.title =
             title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : title
@@ -364,14 +368,6 @@ struct TrackEditSheet: View {
                 + track.artistCredits.filter { !$0.role.isArtistContributor }
         }
         track.album = album.trimmingCharacters(in: .whitespacesAndNewlines)
-        if var correction = track.userMetadataOverride {
-            correction.title = track.title
-            correction.artistDisplay = track.artist
-            if correction.album != track.album { correction.albumGroupKey = nil }
-            correction.album = track.album
-            correction.editedAt = Date()
-            track.userMetadataOverride = correction
-        }
         track.userDescription = trackDescription
         track.genreTags = parsedGenreTags(from: genreTagsText)
         track.language = language.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -387,7 +383,12 @@ struct TrackEditSheet: View {
         if changeSet.persistenceMode == .metaAndArtwork || changeSet.persistenceMode == .metaLyricsAndArtwork {
             track.artworkData = artworkData
         }
+        if artworkWasEdited {
+            track.artworkIsUserSelected = true
+            track.artworkNeedsUpgrade = false
+        }
         track.lyricsTimeOffsetMs = lyricsTimeOffsetMs
+        track.recordManualMetadataEdits(since: originalMetadata)
 
         if changeSet.affectsLiveLyrics {
             refreshLiveLyricsIfEditingCurrentTrack(reason: "track info saved draft")

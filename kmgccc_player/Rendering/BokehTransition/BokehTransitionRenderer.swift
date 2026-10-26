@@ -2,6 +2,11 @@
 //  BokehTransitionRenderer.swift
 //  myPlayer2
 //
+//  Every frame draws the panorama for the cover's current position from one
+//  square cover, then lens-blurs it. Both ends of the movement are exactly
+//  the settled leading and centered panoramas, so there is no second source
+//  to cross-fade and nothing to line up.
+//
 
 @preconcurrency import Metal
 @preconcurrency import MetalKit
@@ -10,9 +15,16 @@ import MotionKit
 import os
 import QuartzCore
 
-private enum BokehMotion {
-    static func phase(
-        duration: CFTimeInterval,
+enum BokehTransitionMotionTiming {
+    static let riseSeconds: TimeInterval = 0.34
+    static let blurFallSeconds: TimeInterval = 0.78
+    static let fadeInSeconds: TimeInterval = 0.08
+    static let resumeSeconds: TimeInterval = 0.12
+    static let artworkDissolveSeconds: TimeInterval = 0.60
+    static let handoffFadeOutSeconds: TimeInterval = 0.30
+
+    static func phaseSpec(
+        duration: TimeInterval,
         token: MotionToken,
         tokens: MotionTokens
     ) -> MotionSpec {
@@ -28,9 +40,15 @@ private struct MotionTransitionScalar {
         self.value = value
     }
 
+    var isAnimating: Bool { state != nil }
+
     mutating func advance(to time: CFTimeInterval) {
         guard var state else { return }
         let frame = state.advance(to: time)
+        if state.isSettled(at: time, positionEpsilon: 0.0001, velocityEpsilon: 0.001) {
+            snap(to: CGFloat(state.target))
+            return
+        }
         self.state = state
         value = CGFloat(frame.value)
     }
@@ -42,7 +60,10 @@ private struct MotionTransitionScalar {
         policy: MotionPolicy
     ) {
         advance(to: time)
-        guard abs(target - value) > 0.0001 else { return }
+        guard abs(target - value) > 0.0001 else {
+            snap(to: target)
+            return
+        }
 
         guard let resolvedSpec = policy.resolve(spec) else {
             snap(to: target)
@@ -64,88 +85,86 @@ private struct MotionTransitionScalar {
     }
 }
 
+private struct BokehTransitionPresentation {
+    var position: CGFloat
+    /// Sampled on the radius clock.
+    var radius: CGFloat
+    var alpha: CGFloat
+    var handoffComplete: Bool
+}
+
 private struct BokehTransitionPresentationState {
     private(set) var target = BokehTransitionSnapshot.inactive
     private var position = MotionTransitionScalar(0)
-    private var centeredOpacity = MotionTransitionScalar(0)
-    private var transitionOpacity = MotionTransitionScalar(0)
     private var radius = MotionTransitionScalar(0)
-    private var opticalOpacity = MotionTransitionScalar(0)
     private var handoffOpacity = MotionTransitionScalar(0)
+    /// The renderer's own dissolve into the settled layer during the fall.
+    private var settleOpacity = MotionTransitionScalar(1)
+    private var settleStarted = false
+    /// A moving surface that is still translucent would show the static
+    /// layer beneath as a ghost, so the cover moves only once it is opaque.
+    private var pendingPosition: CGFloat?
+    private var positionReleased = false
+    private var radiusSample: CGFloat = 0
+    private var radiusTick: Int64 = .min
 
     mutating func retarget(to newTarget: BokehTransitionSnapshot, at time: CFTimeInterval) {
-        // Keep the dormant renderer exactly aligned with whichever static layout
-        // is currently visible. Otherwise a surface first activated from the
-        // centered state would animate internally from the default leading state.
+        // A dormant surface follows the visible static layout exactly, so it
+        // activates from where the cover already is.
         if target.surfaceOpacity <= 0.5, newTarget.surfaceOpacity <= 0.5 {
             target = newTarget
             position = MotionTransitionScalar(newTarget.transitionPosition)
-            centeredOpacity = MotionTransitionScalar(newTarget.centeredOpacity)
-            transitionOpacity = MotionTransitionScalar(newTarget.transitionOpacity)
             radius = MotionTransitionScalar(newTarget.bokehRadius)
-            opticalOpacity = MotionTransitionScalar(newTarget.opticalOpacity)
             handoffOpacity = MotionTransitionScalar(newTarget.handoffOpacity)
+            settleOpacity = MotionTransitionScalar(1)
+            settleStarted = false
+            pendingPosition = nil
+            positionReleased = false
+            radiusSample = newTarget.bokehRadius
+            radiusTick = .min
             return
         }
-        let motionPolicy = newTarget.motionPolicy
-        let reducedMotion = motionPolicy != .full
-        if abs(newTarget.transitionPosition - target.transitionPosition) > 0.0001 {
-            position.retarget(
-                to: newTarget.transitionPosition,
-                at: time,
-                spec: newTarget.motionTokens[.backgroundTransition],
-                policy: reducedMotion ? .disabled : .full
-            )
-        }
-        if abs(newTarget.centeredOpacity - target.centeredOpacity) > 0.0001 {
-            centeredOpacity.retarget(
-                to: newTarget.centeredOpacity,
-                at: time,
-                spec: BokehMotion.phase(
-                    duration: 0.72,
-                    token: .backgroundTransition,
-                    tokens: newTarget.motionTokens
+        let policy = newTarget.motionPolicy
+        let tokens = newTarget.motionTokens
+
+        if target.keepsSurfaceOpaque, !newTarget.keepsSurfaceOpaque {
+            // The fall was interrupted by a new movement: become opaque
+            // again before the cover moves on.
+            settleOpacity.retarget(
+                to: 1, at: time,
+                spec: BokehTransitionMotionTiming.phaseSpec(
+                    duration: BokehTransitionMotionTiming.resumeSeconds,
+                    token: .contentReplacement, tokens: tokens
                 ),
-                policy: motionPolicy
+                policy: policy
             )
+            settleStarted = false
+            positionReleased = false
+        } else if !target.keepsSurfaceOpaque, newTarget.keepsSurfaceOpaque {
+            settleStarted = false
         }
-        if abs(newTarget.transitionOpacity - target.transitionOpacity) > 0.0001 {
-            let rising = newTarget.transitionOpacity > target.transitionOpacity
-            transitionOpacity.retarget(
-                to: newTarget.transitionOpacity,
-                at: time,
-                spec: BokehMotion.phase(
-                    duration: rising ? 0.08 : 0.42,
-                    token: .contentReplacement,
-                    tokens: newTarget.motionTokens
-                ),
-                policy: motionPolicy
-            )
+
+        if abs(newTarget.transitionPosition - target.transitionPosition) > 0.0001
+            || pendingPosition != nil {
+            if positionReleased {
+                retargetPosition(to: newTarget.transitionPosition, at: time, target: newTarget)
+            } else {
+                pendingPosition = newTarget.transitionPosition
+            }
         }
         if abs(newTarget.bokehRadius - target.bokehRadius) > 0.0001 {
             let rising = newTarget.bokehRadius > target.bokehRadius
             radius.retarget(
                 to: newTarget.bokehRadius,
                 at: time,
-                spec: BokehMotion.phase(
-                    duration: rising ? 0.34 : 0.78,
+                spec: BokehTransitionMotionTiming.phaseSpec(
+                    duration: rising
+                        ? BokehTransitionMotionTiming.riseSeconds
+                        : BokehTransitionMotionTiming.blurFallSeconds,
                     token: .backgroundTransition,
-                    tokens: newTarget.motionTokens
+                    tokens: tokens
                 ),
-                policy: motionPolicy
-            )
-        }
-        if abs(newTarget.opticalOpacity - target.opticalOpacity) > 0.0001 {
-            let rising = newTarget.opticalOpacity > target.opticalOpacity
-            opticalOpacity.retarget(
-                to: newTarget.opticalOpacity,
-                at: time,
-                spec: BokehMotion.phase(
-                    duration: rising ? 0.08 : 0.60,
-                    token: .contentReplacement,
-                    tokens: newTarget.motionTokens
-                ),
-                policy: motionPolicy
+                policy: policy
             )
         }
         if abs(newTarget.handoffOpacity - target.handoffOpacity) > 0.0001 {
@@ -153,114 +172,121 @@ private struct BokehTransitionPresentationState {
             handoffOpacity.retarget(
                 to: newTarget.handoffOpacity,
                 at: time,
-                spec: BokehMotion.phase(
-                    duration: rising ? 0.08 : 0.60,
+                spec: BokehTransitionMotionTiming.phaseSpec(
+                    duration: rising
+                        ? BokehTransitionMotionTiming.fadeInSeconds
+                        : BokehTransitionMotionTiming.handoffFadeOutSeconds,
                     token: .contentReplacement,
-                    tokens: newTarget.motionTokens
+                    tokens: tokens
                 ),
-                policy: motionPolicy
+                policy: policy
             )
         }
         target = newTarget
     }
 
-    /// Snap layout values to the current target and prepare the optical
-    /// opacity for an instant-appear-then-fade-out. Called when a new source
-    /// set is installed so:
-    ///  1. The first draw does not animate from stale dormant position values
-    ///     (which caused the new artwork to flash to a wrong position).
-    ///  2. The overlay surface appears at full opacity instantly (no fade-in)
-    ///     and, if the target opacity is below full, immediately begins fading
-    ///     out - all in a single update, so the blur decrease and the overlay
-    ///     fade-out start on the same frame.
-    /// The blur radius is intentionally left alone so an in-flight blur
-    /// animation is not interrupted.
-    mutating func snapAfterInstall(
-        targetOpticalOpacity: CGFloat,
-        motionPolicy: MotionPolicy,
-        at time: CFTimeInterval
-    ) {
-        let t = target
-        position = MotionTransitionScalar(t.transitionPosition)
-        centeredOpacity = MotionTransitionScalar(t.centeredOpacity)
-        transitionOpacity = MotionTransitionScalar(t.transitionOpacity)
-        // Snap to full so the surface is visible immediately (no fade-in).
-        opticalOpacity = MotionTransitionScalar(1)
-        // If the target is below full, set up the fade-out animation from
-        // full to the target in the same update.
-        if targetOpticalOpacity < 0.999 {
-            opticalOpacity.retarget(
-                to: targetOpticalOpacity,
-                at: time,
-                spec: BokehMotion.phase(
-                    duration: 0.60,
-                    token: .contentReplacement,
-                    tokens: t.motionTokens
+    mutating func frame(at time: CFTimeInterval) -> BokehTransitionPresentation {
+        radius.advance(to: time)
+        handoffOpacity.advance(to: time)
+        settleOpacity.advance(to: time)
+
+        // The radius changes on its own coarse clock; a settled radius is
+        // taken at once so the last step is never late.
+        let tick = Int64((time * BokehTransitionConfig.radiusUpdatesPerSecond).rounded(.down))
+        if tick != radiusTick || !radius.isAnimating {
+            radiusTick = tick
+            radiusSample = radius.value
+        }
+
+        let visibility = target.keepsSurfaceOpaque
+            ? 1
+            : BokehTransitionConfig.opticalVisibility(forRadiusAt1080: radius.value)
+        if let pendingPosition,
+           visibility >= 0.999, handoffOpacity.value >= 0.999, settleOpacity.value >= 0.999 {
+            positionReleased = true
+            self.pendingPosition = nil
+            retargetPosition(to: pendingPosition, at: time, target: target)
+        }
+        position.advance(to: time)
+
+        if target.keepsSurfaceOpaque, !settleStarted,
+           radius.value < CGFloat(BokehTransitionConfig.handoffRadiusAt1080) {
+            settleStarted = true
+            settleOpacity.retarget(
+                to: 0, at: time,
+                spec: BokehTransitionMotionTiming.phaseSpec(
+                    duration: BokehTransitionMotionTiming.handoffFadeOutSeconds,
+                    token: .contentReplacement, tokens: target.motionTokens
                 ),
-                policy: motionPolicy
+                policy: target.motionPolicy
+            )
+        }
+
+        let alpha = handoffOpacity.value * settleOpacity.value * visibility
+        return BokehTransitionPresentation(
+            position: position.value,
+            radius: radiusSample,
+            alpha: min(max(alpha, 0), 1),
+            handoffComplete: target.keepsSurfaceOpaque && settleStarted && !settleOpacity.isAnimating
+        )
+    }
+
+    private mutating func retargetPosition(
+        to value: CGFloat,
+        at time: CFTimeInterval,
+        target: BokehTransitionSnapshot
+    ) {
+        if target.motionPolicy != .full {
+            position.snap(to: value)
+        } else {
+            position.retarget(
+                to: value, at: time,
+                spec: target.motionTokens[.backgroundTransition],
+                policy: .full
             )
         }
     }
-
-    mutating func snapshot(at time: CFTimeInterval) -> BokehTransitionSnapshot {
-        if target.motionPolicy != .full {
-            position.snap(to: target.transitionPosition)
-        } else {
-            position.advance(to: time)
-        }
-        centeredOpacity.advance(to: time)
-        transitionOpacity.advance(to: time)
-        radius.advance(to: time)
-        opticalOpacity.advance(to: time)
-        handoffOpacity.advance(to: time)
-        var result = target
-        result.transitionPosition = position.value
-        result.centeredOpacity = centeredOpacity.value
-        result.transitionOpacity = transitionOpacity.value
-        result.bokehRadius = radius.value
-        result.opticalOpacity = opticalOpacity.value
-        result.handoffOpacity = handoffOpacity.value
-        return result
-    }
 }
 
-struct BokehTransitionRendererMetrics: Sendable {
-    fileprivate(set) var completedFrames = 0
-    fileprivate(set) var droppedFrames = 0
-    fileprivate(set) var lastGPUSeconds: Double = 0
-    fileprivate(set) var p95GPUSeconds: Double = 0
+/// Reported to SwiftUI only when the value changes.
+struct BokehTransitionSurfaceState: Equatable, Sendable {
+    /// The surface fully covers the layers beneath it.
+    var isOpaque = false
+    /// The fall's dissolve into the settled layer has finished.
+    var handoffComplete = false
 }
 
-/// Per-surface resource owner. It keeps all allocations outside the hot frame
+/// Per-surface resource owner. It keeps allocations outside the hot frame
 /// path and accepts only immutable SwiftUI snapshots during animation.
 @MainActor
 final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
-    private final class SourceTextures {
-        let identity: BokehTransitionSourceIdentity
-        let leading: MTLTexture
-        let centered: MTLTexture
-        let transition: MTLTexture
-        let transitionCanvasSizeRatio: CGSize
-
-        init(
-            identity: BokehTransitionSourceIdentity,
-            leading: MTLTexture,
-            centered: MTLTexture,
-            transition: MTLTexture,
-            transitionCanvasSizeRatio: CGSize
-        ) {
-            self.identity = identity
-            self.leading = leading
-            self.centered = centered
-            self.transition = transition
-            self.transitionCanvasSizeRatio = transitionCanvasSizeRatio
-        }
+    private nonisolated final class TextureBox: @unchecked Sendable {
+        let texture: MTLTexture
+        init(_ texture: MTLTexture) { self.texture = texture }
     }
 
-    private struct IntermediateTextures {
-        let size: MTLSize
-        let composed: MTLTexture
+    private nonisolated struct ImageBox: @unchecked Sendable {
+        let image: CGImage
+    }
+
+    private struct Intermediates {
+        let width: Int
+        let height: Int
+        let panorama: MTLTexture
+        let prepared: MTLTexture
         let bokeh: MTLTexture
+    }
+
+    /// Everything a frame's pixels depend on. An unchanged key reuses the
+    /// presented drawable.
+    private struct FrameKey: Equatable {
+        var coverX0: Int
+        var radius: Int
+        var coverRevision: UInt64
+        var dissolve: Int
+        var width: Int
+        var height: Int
+        var viewport: SIMD2<Int>
     }
 
     private let context = BokehTransitionMetalContext.shared
@@ -268,212 +294,262 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
         subsystem: Bundle.main.bundleIdentifier ?? "com.kmgccc.player",
         category: "BokehTransition"
     )
-    private let sourceLock = NSLock()
-    private let metricsLock = NSLock()
     private let inFlight = DispatchSemaphore(value: 2)
 
-    private var sources: SourceTextures?
-    private var intermediateTextures: IntermediateTextures?
+    private var live: CoverProgressiveBlurRenderer.Live?
+    private var sourceSet: BokehTransitionSourceSet?
+    private var cover: MTLTexture?
+    private var previousCover: MTLTexture?
+    private var dissolve = MotionTransitionScalar(0)
+    private var coverRevision: UInt64 = 0
+    private var uploadGeneration: UInt64 = 0
+    private var feedGenerationConsumed: UInt64 = 0
+    private var feedUploadInFlight = false
+    private var intermediates: Intermediates?
     private var snapshot = BokehTransitionSnapshot.inactive
     private var presentationState = BokehTransitionPresentationState()
-    /// Set by `install` so the next `update` snaps layout/opacity to the new
-    /// target instead of animating from stale dormant values.
-    private var needsSnapAfterInstall = false
-    private var gpuSamples: [Double] = []
-    private var rendererMetrics = BokehTransitionRendererMetrics()
+    private var lastFrameKey: FrameKey?
+    private var surfaceState = BokehTransitionSurfaceState()
+    private var diagnosticFrameCount = 0
     private(set) var failureReason: String?
 
-    var isAvailable: Bool {
-        if case .ready = context.availability { return true }
-        return false
-    }
+    /// Latest video frames; replaces the cover while the transition runs.
+    var liveFeed: BokehLiveCoverFeed?
+    var onSurfaceStateChange: ((BokehTransitionSurfaceState) -> Void)?
 
-    var metrics: BokehTransitionRendererMetrics {
-        metricsLock.lock()
-        defer { metricsLock.unlock() }
-        return rendererMetrics
+    var isAvailable: Bool {
+        context.availability.isReady && liveRenderer() != nil
     }
 
     func update(snapshot: BokehTransitionSnapshot) {
+        let wasActive = self.snapshot.isActive
         self.snapshot = snapshot
-        let time = CACurrentMediaTime()
-        presentationState.retarget(to: snapshot, at: time)
-        if needsSnapAfterInstall {
-            presentationState.snapAfterInstall(
-                targetOpticalOpacity: snapshot.opticalOpacity,
-                motionPolicy: snapshot.motionPolicy,
-                at: time
-            )
-            needsSnapAfterInstall = false
+        presentationState.retarget(to: snapshot, at: CACurrentMediaTime())
+        if !snapshot.isActive {
+            lastFrameKey = nil
+            if wasActive { reportSurfaceState(BokehTransitionSurfaceState()) }
         }
     }
 
     func isReady(for identity: BokehTransitionSourceIdentity) -> Bool {
-        sourceLock.lock()
-        defer { sourceLock.unlock() }
-        return sources?.identity == identity
+        sourceSet?.identity == identity && cover != nil
     }
 
-    /// Uploads a complete source set as one replacement. Called before a user
-    /// transition, never from `draw(in:)`; a previous complete set stays live
-    /// until all three textures have succeeded.
+    var hasCover: Bool { sourceSet != nil && cover != nil }
+
+    /// Converts the cover off the display's main-actor clock. A different
+    /// artwork arriving while the surface draws dissolves in from the old
+    /// cover inside the same panorama.
     @discardableResult
-    func install(_ sourceSet: BokehTransitionPreparedSourceSet) -> Bool {
-        guard let device = context.device else {
-            failureReason = "No Metal device"
+    func install(_ newSourceSet: BokehTransitionSourceSet) async -> Bool {
+        guard let live = liveRenderer() else {
+            failureReason = "Bokeh renderer unavailable"
+            return false
+        }
+        uploadGeneration &+= 1
+        let generation = uploadGeneration
+        let side = Self.coverSide(for: newSourceSet.identity, image: newSourceSet.cover)
+        let image = ImageBox(image: newSourceSet.cover)
+        let operation = Task.detached(priority: .userInitiated) { () -> TextureBox? in
+            autoreleasepool {
+                guard !Task.isCancelled,
+                      let texture = live.makeCoverTexture(image.image, side: side) else { return nil }
+                return TextureBox(texture)
+            }
+        }
+        let uploaded = await withTaskCancellationHandler {
+            await operation.value
+        } onCancel: { operation.cancel() }
+        guard !Task.isCancelled, uploadGeneration == generation else { return false }
+        guard let uploaded else {
+            failureReason = "Cover upload failed"
+            logger.error("Bokeh cover upload failed")
             return false
         }
 
-        do {
-            let loader = MTKTextureLoader(device: device)
-            let options: [MTKTextureLoader.Option: Any] = [
-                // Keep source bytes sRGB-encoded. The shader uses the same
-                // explicit transfer function as the original SPBokeh engine.
-                .SRGB: false,
-                .textureUsage: NSNumber(value: MTLTextureUsage.shaderRead.rawValue),
-                .textureStorageMode: NSNumber(value: MTLStorageMode.private.rawValue)
-            ]
-            let uploaded = SourceTextures(
-                identity: sourceSet.identity,
-                leading: try loader.newTexture(cgImage: sourceSet.leading, options: options),
-                centered: try loader.newTexture(cgImage: sourceSet.centered, options: options),
-                transition: try loader.newTexture(cgImage: sourceSet.transition, options: options),
-                transitionCanvasSizeRatio: sourceSet.transitionCanvasSizeRatio
+        let changesArtwork = sourceSet.map {
+            $0.identity.artworkChecksum != newSourceSet.identity.artworkChecksum
+        } ?? false
+        if changesArtwork, snapshot.isActive, let cover {
+            previousCover = cover
+            dissolve.snap(to: 1)
+            dissolve.retarget(
+                to: 0, at: CACurrentMediaTime(),
+                spec: BokehTransitionMotionTiming.phaseSpec(
+                    duration: BokehTransitionMotionTiming.artworkDissolveSeconds,
+                    token: .contentReplacement, tokens: snapshot.motionTokens
+                ),
+                policy: snapshot.motionPolicy
             )
-            sourceLock.lock()
-            sources = uploaded
-            sourceLock.unlock()
-            // Snap layout/opacity to the current target on the next update so
-            // the first frame after a source set change does not animate from
-            // stale dormant values (position flash on the new artwork).
-            needsSnapAfterInstall = true
-            failureReason = nil
-            #if DEBUG
-            logger.debug("Bokeh source textures uploaded for \(sourceSet.identity.artworkChecksum, privacy: .public)")
-            #endif
-            return true
-        } catch {
-            failureReason = "Texture upload failed: \(error.localizedDescription)"
-            logger.error("Bokeh texture upload failed: \(error.localizedDescription, privacy: .public)")
-            return false
+        } else if changesArtwork {
+            previousCover = nil
+            dissolve.snap(to: 0)
         }
+        if sourceSet?.identity.renderSize != newSourceSet.identity.renderSize {
+            intermediates = nil
+        }
+        sourceSet = newSourceSet
+        cover = uploaded.texture
+        coverRevision &+= 1
+        // A video's latest frame, even a paused one, replaces the poster.
+        feedGenerationConsumed = 0
+        failureReason = nil
+        return true
     }
 
     func releaseTextures() {
-        sourceLock.lock()
-        sources = nil
-        sourceLock.unlock()
-        intermediateTextures = nil
+        uploadGeneration &+= 1
+        sourceSet = nil
+        cover = nil
+        previousCover = nil
+        dissolve.snap(to: 0)
+        intermediates = nil
+        lastFrameKey = nil
+        live?.releaseResources()
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-        // `BokehTransitionView` keeps this low-resolution and stable during a
-        // transition. Drop intermediates only when the next source set changes
-        // the size, never in response to a full-resolution view bounds update.
-        if Int(size.width) == 0 || Int(size.height) == 0 {
-            intermediateTextures = nil
-        }
+        lastFrameKey = nil
     }
 
     func draw(in view: MTKView) {
         guard snapshot.isActive,
-              let device = context.device,
+              let live = liveRenderer(),
               let commandQueue = context.commandQueue,
-              let composePipeline = context.composePipeline,
+              let preparePipeline = context.preparePipeline,
               let gatherPipeline = context.gatherPipeline,
-              let presentPipeline = context.presentPipeline else {
+              let presentPipeline = context.presentPipeline,
+              let sourceSet else {
             return
         }
 
-        sourceLock.lock()
-        let sourceTextures = sources
-        sourceLock.unlock()
-        guard let sourceTextures,
-              let drawable = view.currentDrawable,
-              let renderPassDescriptor = view.currentRenderPassDescriptor else {
-            return
-        }
+        let time = CACurrentMediaTime()
+        pollLiveFeed(live: live, sourceSet: sourceSet)
+        let presentation = presentationState.frame(at: time)
+        dissolve.advance(to: time)
+        if !dissolve.isAnimating, dissolve.value <= 0.0001 { previousCover = nil }
+
+        // Opacity follows the display clock even when the pixels do not.
+        view.alphaValue = presentation.alpha
+        reportSurfaceState(BokehTransitionSurfaceState(
+            isOpaque: presentation.alpha >= 0.999,
+            handoffComplete: presentation.handoffComplete
+        ))
+
+        guard let cover else { return }
+        let width = sourceSet.identity.renderSize.width
+        let height = sourceSet.identity.renderSize.height
+        // The square cover fills the height and position 1 centers it, both
+        // in view points: the drawable's rounded size stretches onto the view
+        // by a hair, and the cover must stay exactly as wide as it is tall.
+        let viewport = view.bounds.width > 1 && view.bounds.height > 1
+            ? view.bounds.size
+            : sourceSet.identity.logicalViewportSize
+        let pixelsPerPoint = Double(width) / max(1, Double(viewport.width))
+        let coverSide = Double(viewport.height) * pixelsPerPoint
+        let coverX0 = Double(presentation.position)
+            * Double(viewport.width - viewport.height) * 0.5 * pixelsPerPoint
+        let key = FrameKey(
+            coverX0: Int((coverX0 * 8).rounded()),
+            radius: Int((presentation.radius * 100).rounded()),
+            coverRevision: coverRevision,
+            dissolve: Int((dissolve.value * 1000).rounded()),
+            width: width,
+            height: height,
+            viewport: SIMD2(Int((viewport.width * 4).rounded()), Int((viewport.height * 4).rounded()))
+        )
+        guard key != lastFrameKey else { return }
 
         guard inFlight.wait(timeout: .now()) == .success else {
-            recordDroppedFrame()
+            BokehTransitionPerformancePolicy.shared.recordDroppedFrame()
             return
         }
-
-        guard let intermediate = makeIntermediateTextures(
-            device: device,
-            size: MTLSize(width: drawable.texture.width, height: drawable.texture.height, depth: 1)
-        ) else {
+        guard let intermediates = makeIntermediates(width: width, height: height),
+              let drawable = view.currentDrawable,
+              let renderPassDescriptor = view.currentRenderPassDescriptor,
+              let commandBuffer = commandQueue.makeCommandBuffer() else {
             inFlight.signal()
-            failureReason = "Unable to allocate Bokeh intermediate textures"
-            return
-        }
-
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            inFlight.signal()
-            failureReason = "Unable to create Bokeh command buffer"
             return
         }
         commandBuffer.label = "Fullscreen Cover Bokeh Transition"
 
-        let presentation = presentationState.snapshot(at: CACurrentMediaTime())
-        // On rise (and artwork-swap fall) the radius envelope prevents an
-        // unblurred low-resolution frame. Same-artwork layout transitions
-        // switch to the timed handoff exactly around radius 8, allowing its
-        // last faint opacity to continue briefly after radius zero.
-        let usesTimedHandoff = snapshot.handoffOpacity < 0.999
-        let radiusVisibility = usesTimedHandoff
-            ? 1
-            : BokehTransitionConfig.opticalVisibility(
-                forRadiusAt1080: presentation.bokehRadius
-            )
-        view.alphaValue = presentation.opticalOpacity
-            * presentation.handoffOpacity
-            * radiusVisibility
-        let canvasRatio = presentation.transitionCanvasSizeRatio
-        var composeUniforms = TransitionComposeUniforms(
-            viewportSize: SIMD2(Float(intermediate.size.width), Float(intermediate.size.height)),
-            transitionCanvasSizeRatio: SIMD2(Float(canvasRatio.width), Float(canvasRatio.height)),
-            transitionCanvasOffsetRatio: SIMD2(Float(presentation.transitionCanvasOffsetRatio), 0),
-            transitionPosition: Float(presentation.transitionPosition),
-            centeredOpacity: Float(presentation.centeredOpacity),
-            transitionOpacity: Float(presentation.transitionOpacity)
+        let style = sourceSet.style
+        let coverX1 = coverX0 + coverSide
+        let progress = Double(presentation.position)
+        let frame = CoverProgressiveBlurRenderer.LiveFrame(
+            pixelWidth: width,
+            pixelHeight: height,
+            pixelsPerPoint: pixelsPerPoint,
+            coverX0: coverX0,
+            coverSide: coverSide,
+            edgeFill: style.edgeFill,
+            profile: progress < 0.5 ? style.leading : style.centered,
+            lut: CoverProgressiveBlurProfile.transitionLUT(
+                leading: style.leading,
+                centered: style.centered,
+                progress: progress,
+                width: width,
+                coverX0: coverX0,
+                coverX1: coverX1,
+                pixelsPerPoint: pixelsPerPoint
+            ),
+            overlay: style.overlay,
+            overlayLeftWeight: Float(min(max(progress, 0), 1))
         )
+        guard live.encode(
+            frame,
+            cover: cover,
+            previousCover: previousCover,
+            previousWeight: Float(dissolve.value),
+            output: intermediates.panorama,
+            into: commandBuffer
+        ) else {
+            inFlight.signal()
+            failureReason = "Unable to encode the transition panorama"
+            return
+        }
+
         var bokehUniforms = TransitionBokehUniforms(
-            radiusAt1080: Float(presentation.bokehRadius),
+            radiusAt1080: Float(presentation.radius),
             highlightPower: Float(BokehTransitionConfig.defaultHighlightPower),
             highlightThreshold: Float(BokehTransitionConfig.defaultHighlightThreshold),
-            sampleBudget: presentation.tier.sampleBudget,
+            sampleBudget: snapshot.tier.sampleBudget,
             apertureBlades: BokehTransitionConfig.defaultApertureBlades,
             apertureRotationRadians: Float(BokehTransitionConfig.defaultApertureRotationRadians),
             apertureRoundness: Float(BokehTransitionConfig.defaultApertureRoundness)
         )
 
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
-            encoder.label = "Bokeh transition composition"
-            encoder.setComputePipelineState(composePipeline)
-            encoder.setTexture(sourceTextures.leading, index: 0)
-            encoder.setTexture(sourceTextures.centered, index: 1)
-            encoder.setTexture(sourceTextures.transition, index: 2)
-            encoder.setTexture(intermediate.composed, index: 3)
-            encoder.setBytes(&composeUniforms, length: MemoryLayout<TransitionComposeUniforms>.stride, index: 0)
-            dispatch(encoder, pipeline: composePipeline, width: intermediate.size.width, height: intermediate.size.height)
+            encoder.label = "Bokeh source"
+            encoder.setComputePipelineState(preparePipeline)
+            encoder.setTexture(intermediates.panorama, index: 0)
+            encoder.setTexture(intermediates.prepared, index: 1)
+            encoder.setBytes(&bokehUniforms, length: MemoryLayout<TransitionBokehUniforms>.stride, index: 0)
+            dispatch(encoder, pipeline: preparePipeline, width: width, height: height)
             encoder.endEncoding()
         }
-
+        if let blit = commandBuffer.makeBlitCommandEncoder() {
+            blit.label = "Bokeh source levels"
+            blit.generateMipmaps(for: intermediates.prepared)
+            blit.endEncoding()
+        }
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
             encoder.label = "Basic Bokeh gather"
             encoder.setComputePipelineState(gatherPipeline)
-            encoder.setTexture(intermediate.composed, index: 0)
-            encoder.setTexture(intermediate.bokeh, index: 1)
+            encoder.setTexture(intermediates.prepared, index: 0)
+            encoder.setTexture(intermediates.bokeh, index: 1)
+            encoder.setTexture(intermediates.panorama, index: 2)
             encoder.setBytes(&bokehUniforms, length: MemoryLayout<TransitionBokehUniforms>.stride, index: 0)
-            dispatch(encoder, pipeline: gatherPipeline, width: intermediate.size.width, height: intermediate.size.height)
+            dispatch(
+                encoder, pipeline: gatherPipeline,
+                width: intermediates.bokeh.width, height: intermediates.bokeh.height
+            )
             encoder.endEncoding()
         }
-
         if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) {
             encoder.label = "Bokeh transition present"
             encoder.setRenderPipelineState(presentPipeline)
-            encoder.setFragmentTexture(intermediate.bokeh, index: 0)
+            encoder.setFragmentTexture(intermediates.bokeh, index: 0)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             encoder.endEncoding()
         }
@@ -490,40 +566,103 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
             }
         }
         commandBuffer.commit()
+        lastFrameKey = key
+
+        diagnosticFrameCount &+= 1
+        if diagnosticFrameCount % 12 == 0 {
+            DebugUIHooks.record(String(
+                format: "bokeh-frame pos=%.3f radius=%.1f alpha=%.2f dissolve=%.2f size=%dx%d keeps=%d",
+                presentation.position,
+                presentation.radius,
+                presentation.alpha,
+                dissolve.value,
+                width,
+                height,
+                snapshot.keepsSurfaceOpaque ? 1 : 0
+            ))
+        }
     }
 
-    private func makeIntermediateTextures(device: MTLDevice, size: MTLSize) -> IntermediateTextures? {
-        if let existing = intermediateTextures,
-           existing.size.width == size.width,
-           existing.size.height == size.height {
-            return existing
+    // MARK: - Resources
+
+    private func liveRenderer() -> CoverProgressiveBlurRenderer.Live? {
+        if let live { return live }
+        guard let device = context.device else { return nil }
+        live = CoverProgressiveBlurRenderer.Live(device: device)
+        return live
+    }
+
+    /// A cover never needs more pixels than the panorama draws it with.
+    private nonisolated static func coverSide(
+        for identity: BokehTransitionSourceIdentity,
+        image: CGImage
+    ) -> Int {
+        max(8, min(identity.renderSize.height, min(image.width, image.height)))
+    }
+
+    /// Uploads the newest video frame off the main actor; frames arriving
+    /// meanwhile are skipped, never queued.
+    private func pollLiveFeed(
+        live: CoverProgressiveBlurRenderer.Live,
+        sourceSet: BokehTransitionSourceSet
+    ) {
+        guard !feedUploadInFlight,
+              let frame = liveFeed?.latest(),
+              frame.generation != feedGenerationConsumed,
+              frame.artworkChecksum == sourceSet.identity.artworkChecksum else { return }
+        feedGenerationConsumed = frame.generation
+        feedUploadInFlight = true
+        let generation = uploadGeneration
+        let side = Self.coverSide(for: sourceSet.identity, image: frame.image)
+        let image = ImageBox(image: frame.image)
+        let checksum = frame.artworkChecksum
+        Task { @MainActor [weak self] in
+            let uploaded = await Task.detached(priority: .userInitiated) { () -> TextureBox? in
+                autoreleasepool {
+                    live.makeCoverTexture(image.image, side: side).map(TextureBox.init)
+                }
+            }.value
+            guard let self else { return }
+            self.feedUploadInFlight = false
+            guard self.uploadGeneration == generation,
+                  self.sourceSet?.identity.artworkChecksum == checksum,
+                  let uploaded else { return }
+            self.cover = uploaded.texture
+            self.coverRevision &+= 1
         }
+    }
 
-        let composedDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba8Unorm,
-            width: size.width,
-            height: size.height,
-            mipmapped: false
-        )
-        composedDescriptor.usage = [.shaderRead, .shaderWrite]
-        composedDescriptor.storageMode = .private
-
-        let bokehDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba16Float,
-            width: size.width,
-            height: size.height,
-            mipmapped: false
-        )
-        bokehDescriptor.usage = [.shaderRead, .shaderWrite]
-        bokehDescriptor.storageMode = .private
-        guard let composed = device.makeTexture(descriptor: composedDescriptor),
-              let bokeh = device.makeTexture(descriptor: bokehDescriptor) else {
+    private func makeIntermediates(width: Int, height: Int) -> Intermediates? {
+        if let intermediates, intermediates.width == width, intermediates.height == height {
+            return intermediates
+        }
+        guard let device = context.device else { return nil }
+        func texture(width: Int, height: Int, mipmapped: Bool) -> MTLTexture? {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba16Float, width: width, height: height, mipmapped: mipmapped
+            )
+            descriptor.usage = [.shaderRead, .shaderWrite]
+            descriptor.storageMode = .private
+            return device.makeTexture(descriptor: descriptor)
+        }
+        // The gather writes half the panorama's size; present enlarges it.
+        guard let panorama = texture(width: width, height: height, mipmapped: false),
+              let prepared = texture(width: width, height: height, mipmapped: true),
+              let bokeh = texture(
+                  width: max(1, (width + 1) / 2), height: max(1, (height + 1) / 2), mipmapped: false
+              ) else {
+            failureReason = "Unable to allocate Bokeh intermediate textures"
             return nil
         }
-        let intermediate = IntermediateTextures(size: size, composed: composed, bokeh: bokeh)
-        intermediateTextures = intermediate
-        DebugUIHooks.record("bokeh-intermediates \(size.width)x\(size.height) bytes=\(composed.allocatedSize + bokeh.allocatedSize)")
-        return intermediate
+        let made = Intermediates(
+            width: width, height: height, panorama: panorama, prepared: prepared, bokeh: bokeh
+        )
+        intermediates = made
+        DebugUIHooks.record(
+            "bokeh-intermediates \(width)x\(height) "
+            + "bytes=\(panorama.allocatedSize + prepared.allocatedSize + bokeh.allocatedSize)"
+        )
+        return made
     }
 
     private func dispatch(
@@ -540,25 +679,13 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
         )
     }
 
-    private func recordDroppedFrame() {
-        metricsLock.lock()
-        rendererMetrics.droppedFrames += 1
-        metricsLock.unlock()
-        BokehTransitionPerformancePolicy.shared.recordDroppedFrame()
+    private func reportSurfaceState(_ state: BokehTransitionSurfaceState) {
+        guard state != surfaceState else { return }
+        surfaceState = state
+        onSurfaceStateChange?(state)
     }
 
     private func recordCompletedFrame(gpuSeconds: Double) {
-        metricsLock.lock()
-        rendererMetrics.completedFrames += 1
-        rendererMetrics.lastGPUSeconds = max(0, gpuSeconds)
-        if gpuSeconds > 0 {
-            gpuSamples.append(gpuSeconds)
-            if gpuSamples.count > 120 { gpuSamples.removeFirst(gpuSamples.count - 120) }
-            let sorted = gpuSamples.sorted()
-            let p95Index = min(sorted.count - 1, Int((Double(sorted.count - 1) * 0.95).rounded(.up)))
-            rendererMetrics.p95GPUSeconds = sorted[p95Index]
-        }
-        metricsLock.unlock()
         BokehTransitionPerformancePolicy.shared.recordGPUFrame(gpuSeconds)
     }
 }

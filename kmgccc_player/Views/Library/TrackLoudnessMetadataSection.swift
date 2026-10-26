@@ -2,8 +2,8 @@
 //  TrackLoudnessMetadataSection.swift
 //  myPlayer2
 //
-//  Loudness measurement shown at the bottom of the detailed metadata in the
-//  song and batch information editors, with a button to measure again.
+//  Loudness measurement shown on the "more information" tab of the song and
+//  batch information editors, with a button to measure again.
 //
 
 import SwiftUI
@@ -17,31 +17,23 @@ struct TrackLoudnessMetadataSection: View {
 
     var body: some View {
         if let service = libraryVM.loudnessService, !trackIDs.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .center, spacing: 8) {
-                    Text("响度")
-                        .font(.subheadline)
-                        .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                    Spacer(minLength: 8)
-                    Button {
-                        libraryVM.onRemeasureLoudness?(trackIDs)
-                    } label: {
-                        Label("重新测量", systemImage: "waveform")
-                    }
-                    .audioDSPCapsuleButtonStyle()
-                    .font(.caption)
-                    .disabled(isMeasuring(service))
+            SettingsSection("响度", headerTrailing: {
+                Button {
+                    libraryVM.onRemeasureLoudness?(trackIDs)
+                } label: {
+                    Label("重新测量", systemImage: "waveform")
                 }
-
-                VStack(alignment: .leading, spacing: 6) {
+                .buttonStyle(AppPanelButtonStyle())
+                .font(.system(size: SettingsStyleTokens.descriptionFontSize, weight: .medium))
+                .disabled(isMeasuring(service))
+            }) {
+                VStack(alignment: .leading, spacing: 8) {
                     if trackIDs.count == 1, let id = trackIDs.first {
                         singleRows(service: service, trackID: id)
                     } else {
                         batchRows(service: service)
                     }
                 }
-                .font(.caption)
-                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
             }
             .task(id: reloadKey(service)) {
                 records = await service.loadRecordsSnapshot(trackIDs: trackIDs)
@@ -77,15 +69,7 @@ struct TrackLoudnessMetadataSection: View {
     }
 
     private func row(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label)
-                .frame(width: 118, alignment: .leading)
-                .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
-            Text(value.isEmpty ? "未记录" : value)
-                .monospacedDigit()
-                .lineLimit(1)
-                .textSelection(.enabled)
-        }
+        TrackInfoValueRow(LocalizedStringKey(label), value: value)
     }
 
     // MARK: State

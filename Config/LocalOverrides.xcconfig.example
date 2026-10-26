@@ -5,6 +5,9 @@ BUILD_EXTENSION_HOOK =
 // BUILD_EXTENSION_MODE = auto
 // BUILD_EXTENSION_STRICT = NO
 
+// Unoptimized Debug for step-through debugging; DSP playback will stutter.
+// SWIFT_OPTIMIZATION_LEVEL[config=Debug] = -Onone
+
 // To create an isolated test-channel build, uncomment this complete block and
 // supply the matching test Sparkle Ed25519 public key. Never reuse production's key.
 // UPDATE_RELEASE_CHANNEL = test

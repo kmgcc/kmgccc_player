@@ -54,6 +54,7 @@ struct NowPlayingHostView: View {
                     onRestore: { settings.selectedNowPlayingSkinID = SkinRegistry.defaultSkinID }
                 )
                 .id(skinSession.identity(for: selectedSkinID))
+                .modifier(SkinSceneSwitchTransition())
             } else {
                 ZStack(alignment: .topLeading) {
                     if selectedSkin.descriptor.presentation.windowBackgroundPlacement == .parent || settings.nowPlayingArtBackgroundEnabled {
@@ -145,14 +146,18 @@ struct NowPlayingHostView: View {
                 // while the image is still the previous one makes them render
                 // the old cover under the new key and stick there. Snapshot-
                 // synced checksum keeps key and image atomic across the switch.
-                artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
+                artworkChecksum: artworkSnapshot?.artworkChecksum
+                    ?? presentation.artworkDataChecksum
+                    ?? 0,
                 artworkData: renderingArtworkData,
                 artworkFileURL: presentation.source == .local
                     && presentation.artworkData?.isEmpty != false
-                    ? presentation.localTrack?.existingArtworkURL()
+                    ? presentation.localArtworkFileURL
                     : nil,
                 artworkImage: artworkSnapshot?.fullImage,
-                displayedArtworkID: artworkSnapshot?.trackID
+                displayedArtworkID: artworkSnapshot?.trackID,
+                motionArtwork: presentation.motionArtwork,
+                tallMotionArtwork: presentation.tallMotionArtwork
             )
             : nil
 
@@ -207,15 +212,13 @@ struct NowPlayingHostView: View {
     private var currentArtworkTaskKey: String {
         let presentation = playbackCoordinator.stablePresentation
         guard presentation.hasTrack else { return "none" }
-        // The local-track artwork source shortcut is only valid for local
-        // playback, where the track IS the source of truth. For external playback
-        // (even when a local match exists) the provider resolves the artwork into
-        // `presentation.artworkData` / `artworkDisplayTrackID`; loading from the
-        // local track's own source here would disagree with that resolution and
-        // get rejected by the `snapshot.trackID == expectedTrackID` guard below.
+        // PlaybackCoordinator resolves the local source once per presentation
+        // refresh. Reuse its key so body evaluation does not probe the file
+        // system or hash inline artwork again. External playback continues to
+        // use the provider-resolved presentation identity.
         if presentation.source == .local,
-           let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
-            return "local-\(source.sourceKey)-px:\(preferredArtworkFullImageMaxPixel)"
+           let sourceKey = presentation.localArtworkSourceKey {
+            return "local-\(sourceKey)-px:\(preferredArtworkFullImageMaxPixel)"
         }
         if ArtworkRenderingFallback.shouldUse(
             for: presentation.artworkData,

@@ -76,6 +76,12 @@ nonisolated enum PerAudioFileImportTask {
             let ttmlLyricText = await localLyricsTask
             try await cancellationToken.checkCancellation()
 
+            // A cover that exists but cannot survive a large display is not a
+            // usable local cover: ask providers for a better one. The embedded
+            // image stays as a fallback until a higher-resolution result lands.
+            let needsOnlineCover =
+                artworkData.map { ArtworkDataNormalizer.isBelowPreferredResolution($0) } ?? true
+
             // §9.2: technical properties of the physical file. NCM outputs
             // already carry bitrate/format from the decrypted header; plain
             // files are probed here while they are open for decode checks.
@@ -137,7 +143,7 @@ nonisolated enum PerAudioFileImportTask {
                     enrichmentSuggestions: candidate.enrichmentSuggestions
                 ),
                 needsLyricsEnrichment: ttmlLyricText == nil,
-                needsCoverEnrichment: artworkData == nil,
+                needsCoverEnrichment: needsOnlineCover,
                 needsTrackMetadataEnrichment: true,
                 needsArtistMetadataEnrichment: true,
                 needsAlbumMetadataEnrichment: true,

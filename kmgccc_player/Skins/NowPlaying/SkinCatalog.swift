@@ -15,13 +15,17 @@ final class SkinCatalog {
 
     func reload(_ skinID: String) throws {
         guard let skin = registeredSkin(for: skinID) else { return }
-        if let package = skin as? PackagedSkin, case .installed = package.origin {
-            try packages.reloadPackage(skinID)
+        if let package = skin as? PackagedSkin {
+            switch package.origin {
+            case .installed, .development: try packages.reloadPackage(skinID)
+            case .bundled: revisions[skinID, default: 0] &+= 1
+            }
         } else {
             revisions[skinID, default: 0] &+= 1
         }
     }
     @ObservationIgnored lazy var packages = SkinPackageStore(catalog: self)
+    @ObservationIgnored lazy var developmentDirectories = SkinDevelopmentDirectories(catalog: self)
 
     init(skins: [any NowPlayingSkin]) {
         self.skins = skins
@@ -68,8 +72,8 @@ final class SkinCatalog {
     }
 
     func removeInstalled(_ skinID: String) {
-        guard let skin = registeredSkin(for: skinID) as? PackagedSkin,
-              case .installed = skin.origin else { return }
+        guard let skin = registeredSkin(for: skinID) as? PackagedSkin else { return }
+        if case .bundled = skin.origin { return }
         skins.removeAll { $0.id == skinID }
         revisions[skinID, default: 0] &+= 1
     }

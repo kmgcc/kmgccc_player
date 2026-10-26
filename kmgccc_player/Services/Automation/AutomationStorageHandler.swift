@@ -507,7 +507,8 @@ struct AutomationStorageHandler {
         "Tracks",
         "Playlists",
         "Artists",
-        "Albums"
+        "Albums",
+        "Enrichment"
     ]
 
     private nonisolated static let automationStorageBackupExtensions: Set<String> = [
@@ -595,25 +596,35 @@ struct AutomationStorageHandler {
             }
             let relativePath = String(url.standardizedFileURL.path.dropFirst(rootPath.count + 1))
             let components = relativePath.split(separator: "/", omittingEmptySubsequences: true)
+            // These directories contain library-owned originals, including
+            // playable imports whose native container extension may vary.
+            let isEnrichmentAsset = relativePath.hasPrefix("Enrichment/Assets/")
+                || relativePath.hasPrefix("Enrichment/AlbumAssets/")
+                || (components.first == "Tracks" && url.lastPathComponent.hasPrefix("motion-"))
             guard let first = components.first,
                   (first == "library.json"
                     || automationStorageBackupRoots.contains(String(first))),
-                  automationStorageBackupExtensions.contains(url.pathExtension.lowercased()) else {
+                  (automationStorageBackupExtensions.contains(url.pathExtension.lowercased()) || isEnrichmentAsset) else {
                 omittedFileCount += 1
                 continue
             }
 
             do {
-                let data = try Data(contentsOf: url)
-                let digest = SHA256.hash(data: data)
-                    .map { String(format: "%02x", $0) }
-                    .joined()
+                let source = try FileHandle(forReadingFrom: url)
+                defer { try? source.close() }
+                var hasher = SHA256()
+                var byteCount: Int64 = 0
+                while let chunk = try source.read(upToCount: 1_048_576), !chunk.isEmpty {
+                    hasher.update(data: chunk)
+                    byteCount += Int64(chunk.count)
+                }
+                let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
                 items.append(
                     AutomationStorageInventoryItem(
                         relativePath: relativePath,
                         sourceURL: url,
                         sha256: digest,
-                        byteCount: Int64(data.count)
+                        byteCount: byteCount
                     )
                 )
             } catch {

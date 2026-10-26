@@ -10,16 +10,32 @@ struct SkinParameterSettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     private var visibleDefinitions: [SkinParameterDefinition] {
-        definitions.filter { $0.isUserVisible && $0.surfaces.contains(surface) }
+        definitions.filter { $0.isUserVisible && $0.surfaces.contains(surface) && isVisible($0) }
     }
 
     var body: some View {
         let _ = store.revision
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-            ForEach(visibleDefinitions) { definition in
-                parameterRow(definition)
+            ForEach(sections, id: \.offset) { section in
+                if let title = section.title { Text(title).settingsDescriptionStyle() }
+                ForEach(section.definitions) { definition in
+                    parameterRow(definition)
+                }
             }
         }
+    }
+
+    /// Consecutive rows that share a `section`, in declaration order.
+    private var sections: [(offset: Int, title: String?, definitions: [SkinParameterDefinition])] {
+        var result: [(offset: Int, title: String?, definitions: [SkinParameterDefinition])] = []
+        for definition in visibleDefinitions {
+            if let last = result.indices.last, result[last].title == definition.section {
+                result[last].definitions.append(definition)
+            } else {
+                result.append((result.count, definition.section, [definition]))
+            }
+        }
+        return result
     }
 
     @ViewBuilder
@@ -46,6 +62,11 @@ struct SkinParameterSettingsView: View {
                 ),
                 accentColor: themeStore.accentColor
             )
+        case .color:
+            ColorPicker(definition.title, selection: Binding(
+                get: { SkinValue(store.value(skinID: skinID, surface: surface, definition: definition)).colorValue?.swiftUIColor ?? themeStore.accentColor },
+                set: { set(definition, value: .text(OKLCHColor(NSColor($0)).hexString)) }
+            )).settingsRowLabelStyle()
         }
     }
 
@@ -79,6 +100,16 @@ struct SkinParameterSettingsView: View {
 
     private func set(_ definition: SkinParameterDefinition, value: SkinParameterValue) {
         store.set(skinID: skinID, surface: surface, definition: definition, value: value)
+    }
+
+    private func isVisible(_ definition: SkinParameterDefinition) -> Bool {
+        guard let condition = definition.visibleWhen else { return true }
+        var environment = SkinCompileEnvironment()
+        environment.params = Dictionary(uniqueKeysWithValues: definitions.map { ($0.id, SkinValue($0.defaultValue).type) })
+        guard let expression = try? SkinExpressionCompiler.compile(.text(condition.hasPrefix("=") ? condition : "=" + condition), expected: .boolean, environment: environment) else { return false }
+        let data = SkinSceneData()
+        data.set(.params, store.values(skinID: skinID, surface: surface, definitions: definitions).mapValues(SkinValue.init))
+        return expression.evaluate(.init(data: data)).isTruthy
     }
 
     private func booleanValue(_ value: SkinParameterValue) -> Bool {

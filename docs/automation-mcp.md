@@ -286,3 +286,46 @@ CLI 使用 `--idempotency-key`；每次调参沿用 audio 授权，不弹额外�
 `dsp.schema.equalLoudness` 描述预设中的固定等响阶段：位于效果节点之后、输出增益之前，不可排序或移除，经 `setEqualLoudness` 编辑；参数只调节补偿强度与架式滤波器形状，补偿量来自实际输出设备的系统音量与预设内的标定曲线（标定只在记录它的输出路线上生效，否则使用默认曲线）。`dsp.state.equalLoudness` 报告设备、音量、曲线来源与预期 shelf 增益。
 
 每条输出路线（设备 UID，设备可切换 data source 时再加上当前 data source，例如同一台 Mac 的扬声器与耳机孔）记住自己的预设，未设置时播放平直；`dsp.state` 与 `dsp.presets.list` 的 `deviceProfiles` 用哈希后的 `deviceID` 列出各路线及其预设。一个预设只属于一条路线：`dsp.presets.select` 为当前路线选用并记住预设，选用其他路线的预设时须传 `copyForCurrentDevice`，得到不带原标定的独立副本，否则请求失败。切换输出设备使用 `audio.patch` 的 `values.outputDeviceID`（取自 `audio.get.availableOutputDevices`，null 跟随系统默认），路线变化后自动换用该路线的预设。`kmgccc://audio/state` 可读取和订阅全局与实际 transport 状态，沿用现有订阅 worker。
+
+## 扩展资料、动态封面与后台补齐
+
+`metadata.enrichment.list` 分页发现已保存的本地与外部歌曲身份。
+`metadata.enrichment.get` 读取持久化的扩展属性与来源；`includeRaw:true` 返回原始资源，
+`provider` 可限定单一来源，`includeLyrics:true` 或 `includeRaw:true` 另需 `lyrics.read`。`playback.state` 返回
+`externalStableKey`、`enrichmentKey` 和当前逐字段 `metadataSources`。
+
+目标使用 `trackID` 或 `externalKey`，省略时为当前播放。`metadata.enrichment.refresh`
+重新获取并持久保存，`force:true` 重试已有成功来源，`includeMotion` 默认 true。
+`metadata.enrichment.patch` 用 `fields` 保存手动扩展字段；null 表示明确留空，
+`clearFields` 恢复由来源提供对应字段。修改支持 `dryRun` 与 `expectedRevision`。
+
+`artwork.motion.get/search/applyCandidate/import/clear` 与编辑器使用同一套动态封面服务。
+先 search，再用返回的 `candidateID` 和 `revision` 应用；候选保留十分钟，绑定资料库与目标。
+clear 默认保存空的手动决定；`resumeAutomatic:true` 恢复自动匹配。文件实际下载到资料库，
+`includeFilePaths:true` 需 `files.read`。`library.tracks` 支持 `hasMotionArtwork` 和
+`motionArtworkUserSelected` 布尔过滤，并返回对应状态。
+
+自动动态封面按专辑保存并复用。`artwork.motion.get` 的 `scope`、`albumIdentity` 表示
+专辑默认或单曲覆盖；单曲手选、导入或明确清空优先于专辑默认。
+`artwork.motion.import` 接受绝对路径 `filePath`，验证视频可播放且不超过 20 分钟后，
+复制到资料库成为单曲覆盖；需 `files.read`、`artwork.write`、`library.read`。
+`dryRun:true` 执行相同视频验证并返回时长、尺寸，支持 `expectedRevision`。
+
+refresh、动态封面 search/applyCandidate/import 支持 `background:true` 和协商后的 MCP Tasks；
+结果沿用 `jobs.get/wait`。`metadata.completion.status` 读取空闲补齐队列；
+`metadata.completion.control` 的 action 可为 enqueue、pause、resume、retry，enqueue 可传
+`trackIDs`，省略则遍历全库；force 要求再次检查。该队列按偏好优先、逐首执行并保存进度。
+`storage.backup` 包含扩展记录与下载的视频，`library.bundle.export` 携带所选 Track 的动态资源。
+
+`lyrics.search` 和 `lyrics.candidates` 可用 `sources` 限定来源：`AMLLDB`、`QM`（QQ 音乐）、
+`KG`（酷狗）、`NE`（网易云）、`LRCLIB`。省略时使用全部来源，数组至少包含一项。
+`operations.batch` 可批量执行 `metadata.enrichment.patch`、动态封面 applyCandidate 和 clear。
+
+## 皮肤开发
+
+`skin.capabilities`、`skin.check`、`skin.reload` 与 `skin.runtime` 是同名 MCP 工具，供皮肤作者在编辑中反复校验。
+`skin.capabilities` 列出场景 v2 已实现的节点、组件、操作、数据字段与函数名称。
+`skin.check(directory)` 编译绝对路径下的作者目录，不安装、不选用、不编译 Metal；返回各场景的节点数与数据域，
+失败时给出文件、JSON 路径与拼写建议。`skin.reload(skinID)` 重新编译已安装或关联的皮肤，失败保留上一版。
+`skin.runtime` 返回活动场景的节点数、逐帧求值次数与音频读取者。前三者只读；reload 需 `settings.write`，
+check 另需 `files.read`。参数与返回见 [CLI 文档](automation-cli-reference.md#皮肤开发)。

@@ -7,8 +7,13 @@ import Observation
 final class SkinComponentCatalog {
     typealias Factory = (SkinSceneSnapshot, SkinComponentConfiguration) -> AnyView
     private var factories: [String: Factory] = [:]
+    private var containerFactories: [String: (SkinSceneSnapshot, SkinComponentConfiguration, AnyView) -> AnyView] = [:]
     private var interactiveTypes: Set<String> = []
-    func contains(_ id: String) -> Bool { factories[id] != nil }
+    func contains(_ id: String) -> Bool { factories[id] != nil || containerFactories[id] != nil }
+
+    func registerContainer<Content: View>(_ id: String, @ViewBuilder content: @escaping (SkinSceneSnapshot, SkinComponentConfiguration, AnyView) -> Content) {
+        containerFactories[id] = { snapshot, config, children in AnyView(content(snapshot, config, children)) }
+    }
 
     func register<Content: View>(
         _ id: String,
@@ -25,8 +30,10 @@ final class SkinComponentCatalog {
     func makeComponent(
         _ id: String,
         snapshot: SkinSceneSnapshot,
-        configuration: SkinComponentConfiguration
+        configuration: SkinComponentConfiguration,
+        children: AnyView = AnyView(EmptyView())
     ) -> AnyView {
+        if let container = containerFactories[id] { return container(snapshot, configuration, children) }
         guard let content = factories[id]?(snapshot, configuration) else { return AnyView(EmptyView()) }
         return interactiveTypes.contains(id) ? AnyView(content.skinControlRegion()) : content
     }
@@ -87,8 +94,9 @@ struct SkinComponents {
 
     func component(
         _ id: String,
-        configuration: SkinComponentConfiguration = .init()
+        configuration: SkinComponentConfiguration = .init(),
+        children: AnyView = AnyView(EmptyView())
     ) -> AnyView {
-        catalog.makeComponent(id, snapshot: snapshot, configuration: configuration.resolving(parameters: parameters))
+        catalog.makeComponent(id, snapshot: snapshot, configuration: configuration.resolving(parameters: parameters), children: children)
     }
 }

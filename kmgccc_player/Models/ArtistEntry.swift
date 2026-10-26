@@ -22,6 +22,7 @@ struct ArtistEntry: Identifiable {
     var metadataSource: String?
     var metadataFetchedAt: Date?
     var metadataConfidence: Double?
+    var manuallyEditedFields: Set<String>
     var artworkData: Data?
     var createdAt: Date
     var updatedAt: Date
@@ -63,6 +64,7 @@ struct ArtistEntry: Identifiable {
         metadataSource: String? = nil,
         metadataFetchedAt: Date? = nil,
         metadataConfidence: Double? = nil,
+        manuallyEditedFields: Set<String> = [],
         artworkData: Data? = nil,
         createdAt: Date,
         updatedAt: Date,
@@ -85,6 +87,7 @@ struct ArtistEntry: Identifiable {
         self.metadataSource = metadataSource
         self.metadataFetchedAt = metadataFetchedAt
         self.metadataConfidence = metadataConfidence
+        self.manuallyEditedFields = manuallyEditedFields
         self.artworkData = artworkData
         self.createdAt = createdAt
         self.updatedAt = updatedAt

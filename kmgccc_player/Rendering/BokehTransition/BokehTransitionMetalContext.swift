@@ -13,7 +13,6 @@ struct BokehTransitionMetalManifest: Codable, Equatable, Sendable {
     let schemaVersion: Int
     let libraryVersion: String
     let abiVersion: Int
-    let composeUniformStride: Int
     let bokehUniformStride: Int
     let entryPoints: [String]
     let librarySHA256: String
@@ -22,15 +21,20 @@ struct BokehTransitionMetalManifest: Codable, Equatable, Sendable {
 /// Contract shared by the Swift boundary and an optional local runtime
 /// resource. The Metal library and manifest are optional; when they are
 /// absent, transitions use the in-repo Gaussian renderer.
+///
+/// ABI 2: the prepare kernel reads the live panorama (rgba16Float,
+/// premultiplied linear light) and writes the gather's source, whose mip
+/// levels Swift generates; the gather writes premultiplied linear light at
+/// half the panorama's size, measuring its radius on the source.
 enum BokehTransitionMetalResourceContract {
-    static let manifestSchemaVersion = 1
-    static let libraryVersion = "1.0.0"
-    static let abiVersion = 1
+    static let manifestSchemaVersion = 2
+    static let libraryVersion = "2.0.0"
+    static let abiVersion = 2
     static let manifestFileName = "BokehTransition.manifest.json"
     static let libraryFileName = "BokehTransition.metallib"
     static let resourceBundleName = "BokehTransitionResources"
     static let requiredEntryPoints = [
-        "composeTransition",
+        "prepareBokehSource",
         "basicBokehGather",
         "presentTransitionVertex",
         "presentTransitionFragment"
@@ -58,10 +62,22 @@ final class BokehTransitionMetalContext {
 
     static let shared = BokehTransitionMetalContext()
 
+    /// Loads the optional renderer during launch setup instead of letting the
+    /// first fullscreen transition pay the pipeline-compile cost. The result
+    /// is logged with public values so a fallback is diagnosable from Console.
+    @discardableResult
+    static func prewarm() -> Availability {
+        let availability = shared.availability
+        shared.logger.notice(
+            "Bokeh renderer available=\(availability.isReady, privacy: .public) reason=\(availability.reason ?? "none", privacy: .public)"
+        )
+        return availability
+    }
+
     let availability: Availability
     let device: MTLDevice?
     let commandQueue: MTLCommandQueue?
-    let composePipeline: MTLComputePipelineState?
+    let preparePipeline: MTLComputePipelineState?
     let gatherPipeline: MTLComputePipelineState?
     let presentPipeline: MTLRenderPipelineState?
     let manifest: BokehTransitionMetalManifest?
@@ -72,12 +88,11 @@ final class BokehTransitionMetalContext {
     )
 
     private init() {
-        guard MemoryLayout<TransitionComposeUniforms>.stride == 40,
-              MemoryLayout<TransitionBokehUniforms>.stride == 32 else {
+        guard MemoryLayout<TransitionBokehUniforms>.stride == 32 else {
             availability = .unavailable("Swift/Metal uniform stride mismatch")
             device = nil
             commandQueue = nil
-            composePipeline = nil
+            preparePipeline = nil
             gatherPipeline = nil
             presentPipeline = nil
             manifest = nil
@@ -88,7 +103,7 @@ final class BokehTransitionMetalContext {
             availability = .unavailable("No Metal device")
             self.device = nil
             commandQueue = nil
-            composePipeline = nil
+            preparePipeline = nil
             gatherPipeline = nil
             presentPipeline = nil
             manifest = nil
@@ -98,7 +113,7 @@ final class BokehTransitionMetalContext {
             availability = .unavailable("Unable to create Metal command queue")
             self.device = device
             self.commandQueue = nil
-            composePipeline = nil
+            preparePipeline = nil
             gatherPipeline = nil
             presentPipeline = nil
             manifest = nil
@@ -111,7 +126,7 @@ final class BokehTransitionMetalContext {
             )
             self.device = device
             self.commandQueue = commandQueue
-            composePipeline = nil
+            preparePipeline = nil
             gatherPipeline = nil
             presentPipeline = nil
             manifest = nil
@@ -125,8 +140,8 @@ final class BokehTransitionMetalContext {
             )
             let library = try device.makeLibrary(URL: resource.libraryURL)
 
-            let composeFunction = try Self.requiredFunction(
-                named: "composeTransition",
+            let prepareFunction = try Self.requiredFunction(
+                named: "prepareBokehSource",
                 type: .kernel,
                 in: library
             )
@@ -146,7 +161,7 @@ final class BokehTransitionMetalContext {
                 in: library
             )
 
-            let composePipeline = try device.makeComputePipelineState(function: composeFunction)
+            let preparePipeline = try device.makeComputePipelineState(function: prepareFunction)
             let gatherPipeline = try device.makeComputePipelineState(function: gatherFunction)
             let descriptor = MTLRenderPipelineDescriptor()
             descriptor.vertexFunction = vertexFunction
@@ -156,7 +171,7 @@ final class BokehTransitionMetalContext {
 
             self.device = device
             self.commandQueue = commandQueue
-            self.composePipeline = composePipeline
+            self.preparePipeline = preparePipeline
             self.gatherPipeline = gatherPipeline
             self.presentPipeline = presentPipeline
             self.manifest = manifest
@@ -168,7 +183,7 @@ final class BokehTransitionMetalContext {
             availability = .unavailable("Metal pipeline could not be created: \(error.localizedDescription)")
             self.device = device
             self.commandQueue = commandQueue
-            composePipeline = nil
+            preparePipeline = nil
             gatherPipeline = nil
             presentPipeline = nil
             manifest = nil
@@ -234,8 +249,7 @@ final class BokehTransitionMetalContext {
         guard manifest.abiVersion == BokehTransitionMetalResourceContract.abiVersion else {
             throw BokehTransitionMetalError.invalidManifest("ABI version mismatch")
         }
-        guard manifest.composeUniformStride == MemoryLayout<TransitionComposeUniforms>.stride,
-              manifest.bokehUniformStride == MemoryLayout<TransitionBokehUniforms>.stride else {
+        guard manifest.bokehUniformStride == MemoryLayout<TransitionBokehUniforms>.stride else {
             throw BokehTransitionMetalError.invalidManifest("uniform stride mismatch")
         }
         guard Set(BokehTransitionMetalResourceContract.requiredEntryPoints).isSubset(

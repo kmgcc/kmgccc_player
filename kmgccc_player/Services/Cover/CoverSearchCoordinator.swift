@@ -85,6 +85,21 @@ final class CoverSearchCoordinator {
 
             var backgroundCandidates: [CoverCandidate] = []
             await withTaskGroup(of: [CoverCandidate].self) { group in
+                for provider in ["appleCache", "appleWeb"] {
+                    group.addTask {
+                        Log.info("[CoverSearch] event=attempt provider=\(provider)", category: .playback)
+                        do {
+                            return try await withCoverLookupTimeout(CoverLookupConfiguration.appleMusicTimeout) {
+                                try await AutomaticCoverLookup.appleCandidates(provider: provider, title: cleanTitle,
+                                    artist: artist, album: album, duration: duration)
+                            }
+                        } catch {
+                            Log.info("[CoverSearch] event=failed provider=\(provider) errorType=\(String(describing: type(of: error)))", category: .playback)
+                            return []
+                        }
+                    }
+                }
+
                 if hasValidAlbum || hasValidArtist {
                     group.addTask {
                         do {
@@ -98,7 +113,7 @@ final class CoverSearchCoordinator {
                             }
                             return [preferredCandidate]
                         } catch {
-                            print("[CoverSearchCoordinator] NetEase preferred candidate failed: \(error)")
+                            Log.info("[CoverSearch] event=failed provider=NetEase errorType=\(String(describing: type(of: error)))", category: .playback)
                             return []
                         }
                     }
@@ -115,7 +130,7 @@ final class CoverSearchCoordinator {
                                 )
                             }
                         } catch {
-                            print("[CoverSearchCoordinator] NetEase candidates failed: \(error)")
+                            Log.info("[CoverSearch] event=failed provider=NetEase errorType=\(String(describing: type(of: error)))", category: .playback)
                             return []
                         }
                     }
@@ -140,7 +155,7 @@ final class CoverSearchCoordinator {
                             )
                             return [candidate]
                         } catch {
-                            print("[CoverSearchCoordinator] Sacad failed: \(error)")
+                            Log.info("[CoverSearch] event=failed provider=Sacad errorType=\(String(describing: type(of: error)))", category: .playback)
                             return []
                         }
                     }
@@ -161,7 +176,7 @@ final class CoverSearchCoordinator {
                                 )
                             }
                         } catch {
-                            print("[CoverSearchCoordinator] QQMusic candidates failed: \(error)")
+                            Log.info("[CoverSearch] event=failed provider=QQMusic errorType=\(String(describing: type(of: error)))", category: .playback)
                             return []
                         }
                     }
@@ -182,7 +197,7 @@ final class CoverSearchCoordinator {
 
             guard searchGeneration == generation, !Task.isCancelled else { return }
             if candidates.isEmpty {
-                error = NSLocalizedString("cover.no_results", comment: "No cover found")
+                error = String(localized: "cover.no_results", defaultValue: "未找到封面")
             }
         }
         searchTask = task

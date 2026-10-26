@@ -845,7 +845,9 @@ struct AppKitMainWindowArtBackgroundLayer: View {
                     ? presentation.localTrack?.existingArtworkURL()
                     : nil,
                 artworkImage: nil,
-                displayedArtworkID: nil
+                displayedArtworkID: nil,
+                motionArtwork: presentation.motionArtwork,
+                tallMotionArtwork: presentation.tallMotionArtwork
             )
             : nil
 

@@ -307,7 +307,8 @@ private enum CassetteAssetToneMapper {
             )
             let outputSpace = CGColorSpace(name: CGColorSpace.displayP3)
                 ?? CGColorSpaceCreateDeviceRGB()
-            return SharedCoreImageContext.context.createCGImage(
+            // Called from view updates on the main thread.
+            return SharedCoreImageContext.interactive.createCGImage(
                 mapped,
                 from: input.extent,
                 format: .RGBA8,
@@ -394,6 +395,23 @@ private struct CassetteArtworkHost: View {
     }
 }
 
+struct SkinCassettePart: View {
+    let snapshot: SkinSceneSnapshot
+    let part: String
+    let configuration: SkinComponentConfiguration
+    @EnvironmentObject private var theme: ThemeStore
+    var body: some View {
+        GeometryReader { proxy in
+            let context = snapshot.context.withComponentBounds(proxy.size)
+            if part == "overlay" { CassetteOverlay(context: context) }
+            else {
+                CassetteArtwork(context: context, tint: theme.semanticPalette.cassetteTint, isolatedPart: part)
+                    .environment(\.skinComponentConfiguration, configuration)
+            }
+        }
+    }
+}
+
 private struct CassetteArtwork: View, Equatable {
     private struct ArtworkSourceIdentity: Equatable {
         let trackID: UUID?
@@ -410,6 +428,8 @@ private struct CassetteArtwork: View, Equatable {
 
     let context: SkinContext
     let tint: CassetteTintPalette
+    var isolatedPart: String? = nil
+    @Environment(\.skinComponentConfiguration) private var componentConfiguration
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
     @Environment(\.displayScale) private var displayScale
     @State private var adjustedArtworkImage: NSImage?
@@ -428,7 +448,8 @@ private struct CassetteArtwork: View, Equatable {
     }
 
     static func == (lhs: CassetteArtwork, rhs: CassetteArtwork) -> Bool {
-        lhs.showKmgLook == rhs.showKmgLook
+        lhs.isolatedPart == rhs.isolatedPart
+            && lhs.showKmgLook == rhs.showKmgLook
             && lhs.normalVisualizerMode == rhs.normalVisualizerMode
             && lhs.fullscreenVisualizerMode == rhs.fullscreenVisualizerMode
             && artworkSourceIdentity(for: lhs.context.track)
@@ -456,13 +477,16 @@ private struct CassetteArtwork: View, Equatable {
         let centeredYOffset = metrics.centeredYOffset
 
         ZStack {
+          if isolatedPart == nil || isolatedPart == "shell" {
             cassetteThemeImage(themeImages?.shell, fallbackNamed: tapeAssetName)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: size.width, height: size.height)
-
+          }
+          if isolatedPart == nil || isolatedPart == "label" {
             maskedArtwork(size: size, maskImage: themeImages?.mask)
-
+          }
+          if isolatedPart == nil || isolatedPart == "shell" {
             cassetteThemeImage(themeImages?.gray, fallbackNamed: "tapegray")
                 .resizable()
                 .aspectRatio(contentMode: .fit)
@@ -480,9 +504,10 @@ private struct CassetteArtwork: View, Equatable {
                 .aspectRatio(contentMode: .fit)
                 .frame(width: size.width, height: size.height)
                 .opacity(context.theme.colorScheme == .dark ? 0.20 : 0.80)
+          }
         }
         .overlay(alignment: .bottomTrailing) {
-            if showKmgLook {
+            if (isolatedPart == nil && componentConfiguration.boolean("showKmgLook", fallback: showKmgLook)) || isolatedPart == "kmgLook" {
                 ArtAssetImages.image(
                     named: "kmglook",
                     maxPixel: Int(ceil(kmgLookWidth(for: size) * displayScale * 2))
@@ -496,16 +521,16 @@ private struct CassetteArtwork: View, Equatable {
                     .transition(.opacity.animation(kmgLookTransitionAnimation))
             }
         }
-        .overlay(HolesOverlay(context: context, tint: tint))
-        .overlay(WaveformCapsulesLayer(context: context).zIndex(999))
+        .overlay { if isolatedPart == nil || isolatedPart == "reels" { HolesOverlay(context: context, tint: tint) } }
+        .overlay { if isolatedPart == nil || isolatedPart == "waveform" { WaveformCapsulesLayer(context: context).zIndex(999) } }
         .frame(width: size.width, height: size.height)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .offset(x: horizontalOffset, y: centeredYOffset)
         .onAppear {
-            scheduleAdjustedArtworkProcessing(targetSize: size)
+            if isolatedPart == nil || isolatedPart == "label" { scheduleAdjustedArtworkProcessing(targetSize: size) }
         }
         .onChange(of: artworkProcessingInputKey(for: size)) { _, _ in
-            scheduleAdjustedArtworkProcessing(targetSize: size)
+            if isolatedPart == nil || isolatedPart == "label" { scheduleAdjustedArtworkProcessing(targetSize: size) }
         }
         .onDisappear {
             teardownArtworkState(purgeCaches: true)
@@ -514,9 +539,14 @@ private struct CassetteArtwork: View, Equatable {
 
     @ViewBuilder
     private func maskedArtwork(size: CGSize, maskImage: NSImage?) -> some View {
-        displayedArtworkImage
-            .resizable()
-            .aspectRatio(contentMode: .fill)
+        MotionArtworkView(
+            resource: context.track?.preferredMotionArtwork,
+            isPlaying: context.playback.isPlaying
+        ) {
+            displayedArtworkImage
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        }
         .frame(width: size.width, height: size.height)
         .scaleEffect(0.90)
         .clipped()
@@ -1742,11 +1772,8 @@ private struct KmgcccCassetteFullscreenSettingsView: View {
             SettingsSwitchRow(
                 title: "启用艺术背景",
                 isOn: $fullscreenArtBackgroundEnabled,
-                detail: "遇到性能问题时，可以关闭此选项",
                 titleFont: presentationStyle.rowLabelFont,
-                detailFont: presentationStyle.captionFont,
-                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors),
-                detailColor: presentationStyle.settingsSecondaryTextColor(appColors: appColors)
+                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors)
             )
 
             SettingsSwitchRow(title: "LED 电平表", isOn: Binding(

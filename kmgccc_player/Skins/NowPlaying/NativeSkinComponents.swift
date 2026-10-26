@@ -18,7 +18,7 @@ enum NativeSkinComponents {
         catalog.register("native.transport", isInteractive: true) { _, config in SkinTransportComponent(configuration: config) }
         catalog.register("native.progress", isInteractive: true) { _, _ in SkinProgressComponent() }
         catalog.register("native.volume", isInteractive: true) { _, _ in SkinVolumeComponent() }
-        catalog.register("native.like", isInteractive: true) { _, _ in SkinLikeComponent() }
+        catalog.register("native.like", isInteractive: true) { _, config in SkinLikeComponent(configuration: config) }
         catalog.register("native.queue", isInteractive: true) { _, _ in SkinQueueComponent() }
         catalog.register("native.playbackMode", isInteractive: true) { _, config in SkinPlaybackModeComponent(configuration: config) }
         catalog.register("native.spectrum") { snapshot, config in SkinSpectrumComponent(snapshot: snapshot, configuration: config) }
@@ -32,6 +32,7 @@ enum NativeSkinComponents {
         catalog.register("native.miniPlayer", isInteractive: true) { snapshot, config in
             SkinMiniPlayerComponent(snapshot: snapshot, configuration: config)
         }
+        SkinComponentContract.register(in: catalog)
     }
 }
 
@@ -51,7 +52,24 @@ extension SkinComponentConfiguration {
         return fallback
     }
 
+    func color(_ key: String, fallback: Color) -> Color {
+        if case .text(let color) = values[key], let value = OKLCHColor(named: color) { return value.swiftUIColor }
+        return fallback
+    }
+
+    /// The App's animated media controls, sized by `size` (hit target) and `symbolSize`.
+    func mediaControlMetrics(navigation: Bool) -> AnimatedMediaControlMetrics {
+        let size = number("size", fallback: AnimatedMediaControlMetrics.windowMiniPlayer.hitSize)
+        let scale = size / AnimatedMediaControlMetrics.windowMiniPlayer.hitSize
+        return AnimatedMediaControlMetrics(
+            hitSize: size,
+            playSymbolSize: number("symbolSize", fallback: AnimatedMediaControlMetrics.windowMiniPlayer.playSymbolSize * scale),
+            navSymbolSize: number(navigation ? "symbolSize" : "navSymbolSize", fallback: AnimatedMediaControlMetrics.windowMiniPlayer.navSymbolSize * scale)
+        )
+    }
+
     func color(fallback: Color) -> Color {
+        if case .text(let color) = values["color"], let value = OKLCHColor(named: color) { return value.swiftUIColor }
         guard case .number(let red) = values["red"],
               case .number(let green) = values["green"],
               case .number(let blue) = values["blue"] else { return fallback }
@@ -95,34 +113,61 @@ private struct SkinSpectrumComponent: View {
     @Environment(\.skinSceneIsActive) private var isActive
 
     var body: some View {
+        // `count` capsules; `artworkColors` false keeps them in `color`; `paused` "dots" shrinks them while paused.
         GeometryReader { proxy in
             MiniPlayerSpectrumView(
                 isPlaying: snapshot.playback.isPlaying,
                 isActive: isActive,
                 accentColor: configuration.color(fallback: snapshot.theme.accentColor),
-                artworkColors: snapshot.theme.spectrumArtworkColors,
-                usesDarkForeground: snapshot.theme.spectrumUsesDarkForeground,
-                scale: 1, isHovered: false, pausedBehavior: .default,
-                capsuleCount: Int(configuration.number("count", fallback: 9)),
+                artworkColors: configuration.boolean("artworkColors", fallback: true) ? snapshot.theme.spectrumArtworkColors : [],
+                usesDarkForeground: configuration.boolean("darkForeground", fallback: snapshot.theme.spectrumUsesDarkForeground),
+                scale: configuration.number("scale", fallback: 1), isHovered: false,
+                pausedBehavior: configuration.text("paused") == "dots" ? .minimalDots : .default,
+                capsuleCount: max(1, min(64, Int(configuration.number("count", fallback: 9)))),
                 preferredWidth: proxy.size.width, preferredHeight: proxy.size.height
             )
         }
     }
 }
 
+/// The layer-backed LED meter of the bundled skins. `count` segments, `levels` brightness steps,
+/// `color` for the accent, `tint` for the pill, `direction` centerOut or leftToRight, `tone`
+/// standard, light, bright or miniPlayer; `pill`, `statusLight` and `paddingX/Y` shape the shell.
 private struct SkinLEDComponent: View {
     let snapshot: SkinSceneSnapshot
     let configuration: SkinComponentConfiguration
-    @Environment(LEDMeterServiceProvider.self) private var provider
     @Environment(\.skinSceneIsActive) private var isActive
 
     var body: some View {
-        LedMeterView(
-            level: Double(provider.metrics.level), ledValues: provider.metrics.leds,
+        let isPlaying = snapshot.playback.isPlaying
+        let tone: PerceptualToneLadder.LEDToneVariant = switch configuration.text("tone", fallback: "light") {
+        case "standard": .retuned
+        case "bright": .appleStyleBright
+        case "miniPlayer": .miniPlayer
+        default: .skinLight
+        }
+        let scheme: ColorScheme? = switch configuration.text("scheme") {
+        case "dark": .dark
+        case "light": .light
+        default: nil
+        }
+        LiveLedMeterView(
             dotSize: configuration.number("dotSize", fallback: 12),
             spacing: configuration.number("spacing", fallback: 7),
-            isPlaying: snapshot.playback.isPlaying
+            pillTint: configuration.values["tint"] == nil ? nil : configuration.color("tint", fallback: .clear),
+            isPlaying: isPlaying,
+            forceBrightLEDColors: configuration.boolean("bright", fallback: snapshot.theme.artBackgroundIsUltraDark),
+            colorSchemeOverride: scheme,
+            levelToneVariant: tone,
+            ledCountOverride: configuration.values["count"] == nil ? nil : max(1, min(64, Int(configuration.number("count", fallback: 11)))),
+            accentColorOverride: configuration.values["color"] == nil ? nil : configuration.color(fallback: snapshot.theme.accentColor),
+            brightnessLevelsOverride: configuration.values["levels"] == nil ? nil : max(2, min(16, Int(configuration.number("levels", fallback: 4)))),
+            showsStatusLight: configuration.boolean("statusLight", fallback: true),
+            fillDirection: configuration.text("direction") == "leftToRight" ? .leftToRight : .centerOut,
+            drawsPill: configuration.boolean("pill", fallback: true),
+            horizontalPadding: configuration.number("paddingX", fallback: 14),
+            verticalPadding: configuration.number("paddingY", fallback: 10)
         )
-        .ledMeterLifecycle(isActive: isActive, isPlaying: snapshot.playback.isPlaying)
+        .ledMeterLifecycle(isActive: isActive, isPlaying: isPlaying)
     }
 }

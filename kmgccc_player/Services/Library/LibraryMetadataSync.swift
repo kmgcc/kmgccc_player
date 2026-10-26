@@ -84,6 +84,7 @@ final class LibraryMetadataSync {
                     metadataSource: sidecar.metadataSource,
                     metadataFetchedAt: sidecar.metadataFetchedAt,
                     metadataConfidence: sidecar.metadataConfidence,
+                    manuallyEditedFields: sidecar.manuallyEditedFields,
                     artworkData: nil,
                     createdAt: sidecar.createdAt,
                     updatedAt: sidecar.updatedAt,
@@ -127,7 +128,8 @@ final class LibraryMetadataSync {
         // Handle orphans: keep if user-edited content exists, otherwise delete
         for (_, (sidecar, folderURL)) in existing {
             let hasUserContent =
-                !(sidecar.description ?? "").isEmpty
+                !sidecar.manuallyEditedFields.isEmpty
+                || !(sidecar.description ?? "").isEmpty
                 || sidecar.artworkFileName != nil
                 || !sidecar.genreTags.isEmpty
                 || !(sidecar.region ?? "").isEmpty
@@ -154,6 +156,7 @@ final class LibraryMetadataSync {
                     metadataSource: sidecar.metadataSource,
                     metadataFetchedAt: sidecar.metadataFetchedAt,
                     metadataConfidence: sidecar.metadataConfidence,
+                    manuallyEditedFields: sidecar.manuallyEditedFields,
                     artworkData: nil,
                     createdAt: sidecar.createdAt,
                     updatedAt: sidecar.updatedAt,
@@ -258,7 +261,8 @@ final class LibraryMetadataSync {
         // Handle orphans
         for (_, (sidecar, folderURL)) in existing {
             let hasUserContent =
-                !(sidecar.description ?? "").isEmpty
+                !sidecar.manuallyEditedFields.isEmpty
+                || !(sidecar.description ?? "").isEmpty
                 || sidecar.artworkFileName != nil
                 || sidecar.year != nil
                 || sidecar.releaseYear != nil
@@ -285,7 +289,7 @@ final class LibraryMetadataSync {
                     },
                     description: sidecar.description ?? "",
                     year: sidecar.year,
-                    releaseYear: sidecar.releaseYear ?? sidecar.year,
+                    releaseYear: sidecar.releaseYear,
                     releaseDate: sidecar.releaseDate,
                     albumType: sidecar.albumType ?? "",
                     genreTags: sidecar.genreTags,
@@ -295,6 +299,7 @@ final class LibraryMetadataSync {
                     metadataSource: sidecar.metadataSource,
                     metadataFetchedAt: sidecar.metadataFetchedAt,
                     metadataConfidence: sidecar.metadataConfidence,
+                    manuallyEditedFields: sidecar.manuallyEditedFields,
                     artworkData: nil,
                     createdAt: sidecar.createdAt,
                     updatedAt: sidecar.updatedAt,
@@ -549,7 +554,7 @@ final class LibraryMetadataSync {
             trackSortKey: firstNonEmpty(candidates.map(\.sidecar.trackSortKey)),
             trackSortOrder: firstNonEmpty(candidates.map(\.sidecar.trackSortOrder)),
             customTrackOrder: firstNonEmptyUUIDArray(candidates.map(\.sidecar.customTrackOrder))
-        )
+        ).preservingManualMetadata(from: candidates.map(\.sidecar))
     }
 
     private func mergedAlbumSidecar(
@@ -583,7 +588,7 @@ final class LibraryMetadataSync {
             trackSortOrder: firstNonEmpty(candidates.map(\.sidecar.trackSortOrder)),
             customTrackOrder: firstNonEmptyUUIDArray(candidates.map(\.sidecar.customTrackOrder)),
             loudnessUnified: keeper.sidecar.loudnessUnified ?? candidates.compactMap(\.sidecar.loudnessUnified).first
-        )
+        ).preservingManualMetadata(from: candidates.map(\.sidecar))
     }
 
     private func firstNonEmpty(_ values: [String?]) -> String? {
@@ -634,7 +639,8 @@ final class LibraryMetadataSync {
 
         let sortedCandidates = candidates.sorted { lhs, rhs in
             let lhsHasUserContent =
-                !(lhs.sidecar.description ?? "").isEmpty
+                !lhs.sidecar.manuallyEditedFields.isEmpty
+                || !(lhs.sidecar.description ?? "").isEmpty
                 || lhs.sidecar.artworkFileName != nil
                 || lhs.sidecar.year != nil
                 || lhs.sidecar.releaseYear != nil
@@ -649,7 +655,8 @@ final class LibraryMetadataSync {
                 || lhs.sidecar.trackSortOrder != nil
                 || lhs.sidecar.customTrackOrder != nil
             let rhsHasUserContent =
-                !(rhs.sidecar.description ?? "").isEmpty
+                !rhs.sidecar.manuallyEditedFields.isEmpty
+                || !(rhs.sidecar.description ?? "").isEmpty
                 || rhs.sidecar.artworkFileName != nil
                 || rhs.sidecar.year != nil
                 || rhs.sidecar.releaseYear != nil
@@ -737,7 +744,7 @@ final class LibraryMetadataSync {
             trackSortKey: mergedTrackSortKey,
             trackSortOrder: mergedTrackSortOrder,
             customTrackOrder: mergedCustomTrackOrder
-        )
+        ).preservingManualMetadata(from: sortedCandidates.map(\.sidecar))
         let needsArtworkCopy: Bool
         if let artworkSourceURL,
            let artworkFileName = artworkSource?.sidecar.artworkFileName {
@@ -753,6 +760,7 @@ final class LibraryMetadataSync {
             || keeper.sidecar.canonicalKey != candidateSidecar.canonicalKey
             || keeper.sidecar.displayTitle != candidateSidecar.displayTitle
             || keeper.sidecar.primaryArtistCanonicalName != candidateSidecar.primaryArtistCanonicalName
+            || keeper.sidecar.primaryArtistDisplayName != candidateSidecar.primaryArtistDisplayName
             || keeper.sidecar.artworkFileName != candidateSidecar.artworkFileName
             || keeper.sidecar.description != candidateSidecar.description
             || keeper.sidecar.year != candidateSidecar.year
@@ -766,6 +774,7 @@ final class LibraryMetadataSync {
             || keeper.sidecar.metadataSource != candidateSidecar.metadataSource
             || keeper.sidecar.metadataFetchedAt != candidateSidecar.metadataFetchedAt
             || keeper.sidecar.metadataConfidence != candidateSidecar.metadataConfidence
+            || keeper.sidecar.manuallyEditedFields != candidateSidecar.manuallyEditedFields
             || keeper.sidecar.trackSortKey != candidateSidecar.trackSortKey
             || keeper.sidecar.trackSortOrder != candidateSidecar.trackSortOrder
             || keeper.sidecar.customTrackOrder != candidateSidecar.customTrackOrder
@@ -779,6 +788,7 @@ final class LibraryMetadataSync {
                 canonicalKey: candidateSidecar.canonicalKey,
                 displayTitle: candidateSidecar.displayTitle,
                 primaryArtistCanonicalName: candidateSidecar.primaryArtistCanonicalName,
+                primaryArtistDisplayName: candidateSidecar.primaryArtistDisplayName,
                 artworkFileName: candidateSidecar.artworkFileName,
                 description: candidateSidecar.description,
                 year: candidateSidecar.year,
@@ -792,6 +802,7 @@ final class LibraryMetadataSync {
                 metadataSource: candidateSidecar.metadataSource,
                 metadataFetchedAt: candidateSidecar.metadataFetchedAt,
                 metadataConfidence: candidateSidecar.metadataConfidence,
+                manuallyEditedFields: candidateSidecar.manuallyEditedFields,
                 createdAt: candidateSidecar.createdAt,
                 updatedAt: now,
                 trackSortKey: candidateSidecar.trackSortKey,
@@ -826,7 +837,7 @@ final class LibraryMetadataSync {
             },
             description: mergedSidecar.description ?? "",
             year: mergedSidecar.year,
-            releaseYear: mergedSidecar.releaseYear ?? mergedSidecar.year,
+            releaseYear: mergedSidecar.releaseYear,
             releaseDate: mergedSidecar.releaseDate,
             albumType: mergedSidecar.albumType ?? "",
             genreTags: mergedSidecar.genreTags,
@@ -836,6 +847,7 @@ final class LibraryMetadataSync {
             metadataSource: mergedSidecar.metadataSource,
             metadataFetchedAt: mergedSidecar.metadataFetchedAt,
             metadataConfidence: mergedSidecar.metadataConfidence,
+            manuallyEditedFields: mergedSidecar.manuallyEditedFields,
             artworkData: nil,
             createdAt: mergedSidecar.createdAt,
             updatedAt: mergedSidecar.updatedAt,

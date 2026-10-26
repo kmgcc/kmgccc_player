@@ -11,7 +11,7 @@ import ImageIO
 import MotionKit
 import SwiftUI
 
-private let coverGradientBlurRendererCacheVersion = "sharpCoverV18"
+private let coverGradientBlurRendererCacheVersion = "progressiveV1"
 
 // MARK: - Edge Fill Mode
 
@@ -72,6 +72,11 @@ struct CoverGradientBlurConfig: Sendable {
     // default; HomeHero and other consumers stay on the pure ramp pipeline).
     var extensionFloorStrength: CGFloat = 0
 
+    // Radius curve for the GPU progressive blur. Set, it replaces the Core
+    // Image pass chain and the sharp-cover composite above; nil keeps them
+    // (HomeHero, and the fallback when Metal is unavailable).
+    var progressiveProfile: CoverProgressiveBlurProfile? = nil
+
     static let `default` = CoverGradientBlurConfig()
     static let fullscreen = CoverGradientBlurConfig(
         blurRadius: 50.0,
@@ -96,6 +101,7 @@ private struct RenderKey: Equatable {
     let outputPixelSize: CGSize?
     let configHash: String
     let dominantColorHash: String
+    let sourceRevision: String?
 
     init(
         artworkChecksum: UInt64,
@@ -104,8 +110,10 @@ private struct RenderKey: Equatable {
         config: CoverGradientBlurConfig,
         dominantColor: NSColor?,
         prefersAdaptiveArtworkSizing: Bool,
-        outputPixelSize: CGSize?
+        outputPixelSize: CGSize?,
+        sourceRevision: String? = nil
     ) {
+        self.sourceRevision = sourceRevision
         self.artworkChecksum = artworkChecksum
         self.size = Self.quantized(size)
         self.displayScale = min(2, max(1, displayScale))
@@ -117,7 +125,7 @@ private struct RenderKey: Equatable {
             alphaCoeffStr = "default"
         }
         self.configHash = String(
-            format: "%@-%.1f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%@-%@-%@-%@-%.3f-%@-%.3f",
+            format: "%@-%.1f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%@-%@-%@-%@-%.3f-%@-%.3f-%@",
             coverGradientBlurRendererCacheVersion,
             config.blurRadius,
             config.colorOverlayOpacity,
@@ -134,25 +142,27 @@ private struct RenderKey: Equatable {
             prefersAdaptiveArtworkSizing ? "adaptive" : "fixed",
             config.blurStartRatioFromEdge,
             alphaCoeffStr,
-            config.extensionFloorStrength
+            config.extensionFloorStrength,
+            config.progressiveProfile?.cacheToken ?? "ci"
         )
         self.dominantColorHash = dominantColor?.hexString ?? "nil"
     }
 
     var cacheKey: String {
         let output = outputPixelSize.map { "\(Int($0.width))x\(Int($0.height))" } ?? "display"
-        return "\(artworkChecksum)-\(Int(size.width))x\(Int(size.height))-ds\(displayScale)-\(configHash)-\(dominantColorHash)-rs\(Int((CoverGradientBlurRenderer.internalRenderScale() * 100).rounded()))-out\(output)"
+        return "\(artworkChecksum)-\(Int(size.width))x\(Int(size.height))-ds\(displayScale)-\(configHash)-\(dominantColorHash)-rs\(Int((CoverGradientBlurRenderer.internalRenderScale() * 100).rounded()))-out\(output)-source\(sourceRevision ?? "poster")"
     }
 
     var isRenderable: Bool {
         artworkChecksum != 0 && size.width > 0 && size.height > 0
     }
 
+    /// Whole points only. The render is stretched to the view's exact size,
+    /// so a coarser step would make the square cover non-square and leave it
+    /// out of register with the Bokeh surface and motion frames.
     static func quantized(_ size: CGSize) -> CGSize {
         guard size.width > 1, size.height > 1 else { return .zero }
-        let quantizedWidth = CGFloat(Int(size.width / 10) * 10)
-        let quantizedHeight = CGFloat(Int(size.height / 10) * 10)
-        return CGSize(width: max(10, quantizedWidth), height: max(10, quantizedHeight))
+        return CGSize(width: size.width.rounded(), height: size.height.rounded())
     }
 }
 
@@ -183,6 +193,7 @@ struct CoverGradientBlurBackgroundView: View {
     /// backgrounds leave this nil and keep their display-resolution output.
     let outputPixelSize: CGSize?
     let displaysRenderedImage: Bool
+    let sourceRevision: String?
     /// When non-nil, the view publishes a readability snapshot (with a
     /// luminance map built from the final render) each time a render completes.
     /// Only the fullscreen Cover Blur bridge sets this.
@@ -212,8 +223,10 @@ struct CoverGradientBlurBackgroundView: View {
         onReadabilitySnapshot: (@MainActor (CoverGradientBlurReadabilitySnapshot) -> Void)? = nil,
         onRenderedFrame: (@MainActor (CoverGradientBlurRenderedFrame) -> Void)? = nil,
         outputPixelSize: CGSize? = nil,
-        displaysRenderedImage: Bool = true
+        displaysRenderedImage: Bool = true,
+        sourceRevision: String? = nil
     ) {
+        self.sourceRevision = sourceRevision
         self.artworkData = artworkData
         self.artworkImage = artworkImage
         self.artworkChecksum = artworkChecksum
@@ -258,7 +271,8 @@ struct CoverGradientBlurBackgroundView: View {
             config: config,
             dominantColor: dominantColor,
             prefersAdaptiveArtworkSizing: preferAdaptiveArtworkSizing,
-            outputPixelSize: outputPixelSize
+            outputPixelSize: outputPixelSize,
+            sourceRevision: sourceRevision
         )
     }
     
@@ -555,7 +569,7 @@ enum CoverGradientBlurRenderer {
     /// Internal resolution at which the multi-pass backdrop blur is rendered.
     /// 0.5 → each blur pass costs 1/4 the logical canvas pixels. The clear
     /// cover is composited separately at display resolution after these passes.
-    private nonisolated static let defaultInternalRenderScale: CGFloat = 0.5
+    private nonisolated static let defaultInternalRenderScale: CGFloat = 0.4
 
     nonisolated static func internalRenderScale() -> CGFloat {
         if let raw = ProcessInfo.processInfo.environment["KMGCCC_CGB_RENDER_SCALE"],
@@ -600,6 +614,8 @@ enum CoverGradientBlurRenderer {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
+    /// Materialized passes bound the retained graph for static renders. Live
+    /// video disables them to avoid a CPU-backed image round trip per pass.
     nonisolated static func render(
         artworkCGImage: CGImage,
         targetSize: CGSize,
@@ -607,17 +623,23 @@ enum CoverGradientBlurRenderer {
         config: CoverGradientBlurConfig,
         preferAdaptiveArtworkSizing: Bool = false,
         displayScale: CGFloat = 1,
-        outputPixelSize: CGSize? = nil
+        outputPixelSize: CGSize? = nil,
+        internalScaleOverride: CGFloat? = nil,
+        materializeIntermediateBlurPasses: Bool = true
     ) -> CGImage? {
 
         guard targetSize.width > 0, targetSize.height > 0,
               targetSize.width < 10000, targetSize.height < 10000 else {
             return nil
         }
+        // Every cover is shown square: off-square artwork is center-cropped.
+        let artworkCGImage = MotionArtworkFrameGeometry.centerSquareCrop(artworkCGImage)
 
         // Keep expensive blur passes at their existing logical resolution.
         // Only the final composite and the unblurred cover use backing pixels.
-        let internalRenderScale = CoverGradientBlurRenderer.internalRenderScale()
+        // Live video frames override it: they are already moving and blurred,
+        // and the full-resolution backdrop pipeline cannot hold 60 fps.
+        let internalRenderScale = internalScaleOverride ?? CoverGradientBlurRenderer.internalRenderScale()
         // A small stored cover cannot supply Retina detail; avoid retaining
         // a larger bitmap solely to magnify those same source pixels.
         let sourceScale = CGFloat(artworkCGImage.height) / targetSize.height
@@ -625,6 +647,21 @@ enum CoverGradientBlurRenderer {
         let outputLogicalWidth = outputPixelSize?.width ?? (targetSize.width * outputScale).rounded()
         let outputLogicalHeight = outputPixelSize?.height ?? (targetSize.height * outputScale).rounded()
         let outputFeatherScale = outputPixelSize == nil ? outputScale : outputLogicalWidth / targetSize.width
+
+        if let profile = config.progressiveProfile,
+           let image = renderProgressive(
+               artworkCGImage: artworkCGImage,
+               profile: profile,
+               targetSize: targetSize,
+               pixelWidth: Int(outputLogicalWidth),
+               pixelHeight: Int(outputLogicalHeight),
+               dominantColor: dominantColor,
+               config: config,
+               purpose: outputPixelSize == nil ? "display" : "bokeh-source"
+           ) {
+            return image
+        }
+
         let canvasLogicalWidth = targetSize.width * internalRenderScale
         let canvasLogicalHeight = targetSize.height * internalRenderScale
         let canvasPixelWidth = max(1, Int(canvasLogicalWidth.rounded()))
@@ -829,7 +866,7 @@ enum CoverGradientBlurRenderer {
                     floorBlurFilter.setValue(floorRadius, forKey: kCIInputRadiusKey)
                     floorBlurFilter.setValue(floorMask, forKey: "inputMask")
                     if let flooredImage = floorBlurFilter.outputImage?.cropped(to: canvasRect) {
-                        currentImage = passRadii.count > 1
+                        currentImage = materializeIntermediateBlurPasses && passRadii.count > 1
                             ? materializedBlurImage(flooredImage, context: renderContext, bounds: canvasRect)
                             : flooredImage
                     }
@@ -889,7 +926,7 @@ enum CoverGradientBlurRenderer {
                 guard let passImage = blurFilter.outputImage?.cropped(to: canvasRect) else {
                     return nil
                 }
-                return passIndex < passRadii.count - 1
+                return materializeIntermediateBlurPasses && passIndex < passRadii.count - 1
                     ? materializedBlurImage(passImage, context: renderContext, bounds: canvasRect)
                     : passImage
             }) else {
@@ -1001,13 +1038,73 @@ enum CoverGradientBlurRenderer {
         return cgImage
     }
 
+    /// Full-resolution GPU path: the cover passes through untouched where its
+    /// sigma is zero, so no sharp-artwork composite is needed. Returns nil
+    /// when Metal is unavailable; the caller then uses the Core Image chain.
+    private nonisolated static func renderProgressive(
+        artworkCGImage: CGImage,
+        profile: CoverProgressiveBlurProfile,
+        targetSize: CGSize,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        dominantColor: NSColor?,
+        config: CoverGradientBlurConfig,
+        purpose: String
+    ) -> CGImage? {
+        let renderStart = ContinuousClock.now
+        guard let output = CoverProgressiveBlurRenderer.render(.init(
+            artwork: artworkCGImage,
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight,
+            pixelsPerPoint: Double(pixelWidth) / Double(targetSize.width),
+            placement: config.artworkPlacement == .leading ? .leading : .centered,
+            edgeFill: config.edgeFillMode == .pixelStretch ? .stretch : .mirror,
+            profile: profile,
+            overlay: progressiveOverlay(dominantColor: dominantColor, config: config)
+        )) else { return nil }
+        let renderTime = renderStart.duration(to: .now)
+        DebugUIHooks.record(String(
+            format: "render cover-blur %ldx%ld ms=%.1f gpu=%.1f purpose=%@",
+            output.image.width,
+            output.image.height,
+            Double(renderTime.components.attoseconds) / 1e15 + Double(renderTime.components.seconds) * 1000,
+            output.gpuMilliseconds,
+            purpose
+        ))
+        return output.image
+    }
+
+    /// The dominant-colour tint the Core Image chain draws: a linear alpha
+    /// ramp whose colour is raised to `overlayCurveGamma` in linear light.
+    nonisolated static func progressiveOverlay(
+        dominantColor: NSColor?,
+        config: CoverGradientBlurConfig
+    ) -> CoverProgressiveBlurRenderer.Overlay? {
+        guard config.colorOverlayOpacity > 0,
+              let displayP3 = CGColorSpace(name: CGColorSpace.displayP3) else { return nil }
+        let source = dominantColor.map { ColorRenderingAdapter.makeCGColor($0) }
+            ?? CGColor(srgbRed: 0.15, green: 0.15, blue: 0.15, alpha: 1)
+        guard let components = source.converted(to: displayP3, intent: .defaultIntent, options: nil)?.components,
+              components.count >= 3 else { return nil }
+        func linear(_ value: CGFloat) -> Float {
+            let v = Double(min(1, max(0, value)))
+            let decoded = v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+            return Float(pow(decoded, Double(config.overlayCurveGamma)))
+        }
+        return CoverProgressiveBlurRenderer.Overlay(
+            linearColor: SIMD3(linear(components[0]), linear(components[1]), linear(components[2])),
+            maxAlpha: Float(config.colorOverlayOpacity),
+            startRatioFromEdge: Double(config.overlayStartRatioFromEdge)
+        )
+    }
+
     private nonisolated static func materializedBlurImage(
         _ image: CIImage,
         context: CIContext,
         bounds: CGRect
     ) -> CIImage {
         // CGImage integralizes fractional bounds and shifts subsequent samples.
-        // Keep that path lazy; normal render keys use an integral internal canvas.
+        // Keep the reference path lazy for non-integral bounds.
         guard bounds == bounds.integral,
               let workingColorSpace = context.workingColorSpace,
               let bitmap = context.createCGImage(

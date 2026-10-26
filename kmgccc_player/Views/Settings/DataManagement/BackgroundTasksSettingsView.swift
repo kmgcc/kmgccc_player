@@ -96,6 +96,15 @@ struct BackgroundTasksSettingsView: View {
         result.append(thumbnailsCard)
         result.append(nextSongCard)
         result.append(lyricsIndexCard)
+        result.append(metadataCompletionCard)
+        if let source = cacheServices.artworkRenovationSource, source.isVisible {
+            result.append(BackgroundTaskCard(
+                id: "artwork-renovation", title: "资料库封面翻新", systemImage: "photo.badge.arrow.down",
+                status: "已检查 \(source.completed)/\(source.total) 首，已翻新 \(source.updated) 首",
+                note: source.lastError ?? (source.isPaused ? "已暂停，下次启动继续" : waitNote(.artworkRenovation, resources: [.network, .disk], hasWork: true)),
+                controlledDomains: nil
+            ))
+        }
         if let update = appUpdateCard { result.append(update) }
         result.append(maintenanceCard)
         if let sources = sourceSyncCard { result.append(sources) }
@@ -104,13 +113,16 @@ struct BackgroundTasksSettingsView: View {
 
     private func domainBinding(_ domains: [BackgroundWorkDomain]) -> Binding<Bool> {
         Binding(
-            get: { !domains.contains { settings.backgroundDisabledDomains.contains($0) } },
+            get: { !domains.contains { settings.backgroundDisabledDomains.contains($0) } && !(domains.contains(.metadataCompletion) && cacheServices.metadataCompletionSource?.status.isPaused == true) },
             set: { enabled in
                 var disabled = settings.backgroundDisabledDomains
                 for domain in domains {
                     if enabled { disabled.remove(domain) } else { disabled.insert(domain) }
                 }
                 settings.backgroundDisabledDomains = disabled
+                if domains.contains(.metadataCompletion) {
+                    cacheServices.metadataCompletionSource?.setPaused(!enabled)
+                }
             }
         )
     }
@@ -156,6 +168,19 @@ struct BackgroundTasksSettingsView: View {
             id: "covers", title: "封面与颜色", systemImage: "paintpalette",
             status: status, note: reason,
             controlledDomains: [.artworkColors, .missingArtwork]
+        )
+    }
+
+    private var metadataCompletionCard: BackgroundTaskCard {
+        let progress = cacheServices.metadataCompletionSource?.progress ?? .empty
+        let paused = cacheServices.metadataCompletionSource?.status.isPaused == true
+        let status = "已检查 \(progress.completed.formatted()) 首，剩余 \(progress.remaining.formatted()) 首"
+        let failure = progress.failed > 0 ? "\(progress.failed.formatted()) 首联网失败，稍后自动重试" : nil
+        return BackgroundTaskCard(
+            id: "metadata-completion", title: "歌曲资料与动态封面", systemImage: "photo.on.rectangle.angled",
+            status: status,
+            note: paused ? "已暂停" : (waitNote(.metadataCompletion, resources: [.network, .disk], hasWork: progress.remaining > 0) ?? failure),
+            controlledDomains: [.metadataCompletion]
         )
     }
 

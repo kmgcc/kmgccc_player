@@ -15,7 +15,6 @@ struct PlaylistTrackRowsSection: View {
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var motionPolicy
 
@@ -29,6 +28,10 @@ struct PlaylistTrackRowsSection: View {
     var rowPrimaryColor: Color = ColorTokens.textPrimary
     var rowSecondaryColor: Color = ColorTokens.textSecondary
     var rowTertiaryColor: Color = ColorTokens.textTertiary
+
+    // Table cells are separate hosting roots. Their foregrounds and appearance
+    // must come from the same owner, including during an AppKit appearance change.
+    private var colorScheme: ColorScheme { themeStore.colorScheme }
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("PlaylistTrackRowsSection.body")
@@ -118,6 +121,7 @@ struct PlaylistTrackRowsSection: View {
             artworkLoadingEnabled: pageController.areRowArtworkLoadsEnabled,
             trackDragActive: pageController.isNativeTrackDragActive,
             colorScheme: colorScheme,
+            accentColor: themeStore.accentColor,
             primaryColor: rowPrimaryColor,
             secondaryColor: rowSecondaryColor,
             tertiaryColor: rowTertiaryColor,
@@ -151,6 +155,9 @@ struct PlaylistTrackRowsSection: View {
                     trackRow(row, isSelected: false, selectionContinuity: .isolated)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .frame(height: rowHeight(for: row), alignment: .leading)
+                },
+                onRowPrepared: { index in
+                    pageController.prepareRowArtwork(at: index)
                 }
             )
             .frame(maxWidth: .infinity)
@@ -220,16 +227,14 @@ struct PlaylistTrackRowsSection: View {
                     libraryQueueSource: .librarySelection(selectionIdentity)
                 )
             },
-            onRowAppear: {
-                pageController.prefetchAroundTrackID(row.id)
-            },
             onRevealHighlightFinished: {
                 pageController.clearRevealHighlight(for: row.id)
             },
             rowPrimaryColor: rowPrimaryColor,
             rowSecondaryColor: rowSecondaryColor,
             rowTertiaryColor: rowTertiaryColor,
-            artworkTintMode: settings.artworkTintMode
+            artworkTintMode: settings.artworkTintMode,
+            rowColorScheme: colorScheme
         ) {
             menuBuilder(row.id)
         }
@@ -283,7 +288,8 @@ struct PlaylistTrackRowsSection: View {
             rowPrimaryColor: rowPrimaryColor,
             rowSecondaryColor: rowSecondaryColor,
             rowTertiaryColor: rowTertiaryColor,
-            artworkTintMode: settings.artworkTintMode
+            artworkTintMode: settings.artworkTintMode,
+            rowColorScheme: colorScheme
         ) {
             EmptyView()
         }
@@ -320,6 +326,7 @@ private struct AppKitPlaylistRowsPresentation: Equatable {
     let artworkLoadingEnabled: Bool
     let trackDragActive: Bool
     let colorScheme: ColorScheme
+    let accentColor: Color
     let primaryColor: Color
     let secondaryColor: Color
     let tertiaryColor: Color
@@ -332,6 +339,7 @@ private struct AppKitPlaylistTrackRowsTable<RowContent: View>: NSViewRepresentab
     let presentation: AppKitPlaylistRowsPresentation
     let rowHeight: (PlaylistPageRowModel) -> CGFloat
     let rowContent: (PlaylistPageRowModel) -> RowContent
+    let onRowPrepared: (Int) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -352,7 +360,8 @@ private struct AppKitPlaylistTrackRowsTable<RowContent: View>: NSViewRepresentab
             dataRevision: dataRevision,
             presentation: presentation,
             rowHeight: rowHeight,
-            rowContent: rowContent
+            rowContent: rowContent,
+            onRowPrepared: onRowPrepared
         )
     }
 
@@ -370,6 +379,7 @@ private struct AppKitPlaylistTrackRowsTable<RowContent: View>: NSViewRepresentab
         private var rowContent: ((PlaylistPageRowModel) -> RowContent)?
         private var dataRevision: AppKitPlaylistRowsDataRevision?
         private var presentation: AppKitPlaylistRowsPresentation?
+        private var onRowPrepared: ((Int) -> Void)?
 
         private let cellIdentifier = NSUserInterfaceItemIdentifier("PlaylistTrackHostingCell")
         private let cells = NSHashTable<AppKitPlaylistTrackCellView<RowContent>>.weakObjects()
@@ -388,6 +398,7 @@ private struct AppKitPlaylistTrackRowsTable<RowContent: View>: NSViewRepresentab
             rowContent = nil
             dataRevision = nil
             presentation = nil
+            onRowPrepared = nil
         }
 
         func update(
@@ -395,7 +406,8 @@ private struct AppKitPlaylistTrackRowsTable<RowContent: View>: NSViewRepresentab
             dataRevision: AppKitPlaylistRowsDataRevision,
             presentation: AppKitPlaylistRowsPresentation,
             rowHeight: @escaping (PlaylistPageRowModel) -> CGFloat,
-            rowContent: @escaping (PlaylistPageRowModel) -> RowContent
+            rowContent: @escaping (PlaylistPageRowModel) -> RowContent,
+            onRowPrepared: @escaping (Int) -> Void
         ) {
             // Reloading a hosting cell destroys its active SwiftUI gesture.
             // Apply playback/library presentation changes after mouse-up and
@@ -409,12 +421,13 @@ private struct AppKitPlaylistTrackRowsTable<RowContent: View>: NSViewRepresentab
             self.rowContent = rowContent
             self.dataRevision = dataRevision
             self.presentation = presentation
+            self.onRowPrepared = onRowPrepared
 
             guard let tableView else { return }
             if dataChanged {
                 tableView.reloadData()
             } else if presentationChanged {
-                reloadVisibleRows(in: tableView)
+                refreshHostedRows(in: tableView)
             }
         }
 
@@ -433,26 +446,33 @@ private struct AppKitPlaylistTrackRowsTable<RowContent: View>: NSViewRepresentab
                 ?? AppKitPlaylistTrackCellView<RowContent>(identifier: cellIdentifier)
             cells.add(cell)
             cell.setRootView(PlaylistTrackCellContent(trackID: rows[row].id, content: rowContent(rows[row])))
+            // Lets the cover warmup follow the rows the table is building.
+            onRowPrepared?(row)
             return cell
         }
 
         func tableView(_ tableView: NSTableView, didRemove rowView: NSTableRowView, forRow row: Int) {
-            // NSTableView may retain the cell in its reuse queue. Keep the shell,
-            // but release its SwiftUI graph and captured page state offscreen.
-            (rowView.view(atColumn: 0) as? AppKitPlaylistTrackCellView<RowContent>)?.releaseHostedContent()
+            // Keep the hosted SwiftUI graph while the cell waits in the reuse
+            // queue. Rebuilding it for every row that scrolls back in costs a
+            // full hosting-view setup per row and drops the cover the row had
+            // already decoded. The pool stays bounded by the visible height.
         }
 
         func selectionShouldChange(in tableView: NSTableView) -> Bool {
             false
         }
 
-        private func reloadVisibleRows(in tableView: NSTableView) {
-            let visibleRows = tableView.rows(in: tableView.visibleRect)
-            guard visibleRows.location != NSNotFound, visibleRows.length > 0 else { return }
-            let rowIndexes = IndexSet(integersIn: visibleRows.location..<NSMaxRange(visibleRows))
-            let columnIndexes = IndexSet(integersIn: 0..<tableView.numberOfColumns)
-            guard !columnIndexes.isEmpty else { return }
-            tableView.reloadData(forRowIndexes: rowIndexes, columnIndexes: columnIndexes)
+        private func refreshHostedRows(in tableView: NSTableView) {
+            guard let rowContent else { return }
+            // Apply the latest explicit theme to every materialized hosting
+            // root while retaining each row's artwork and tint state.
+            tableView.enumerateAvailableRowViews { rowView, index in
+                guard self.rows.indices.contains(index),
+                      let cell = rowView.view(atColumn: 0) as? AppKitPlaylistTrackCellView<RowContent>
+                else { return }
+                let row = self.rows[index]
+                cell.setRootView(PlaylistTrackCellContent(trackID: row.id, content: rowContent(row)))
+            }
         }
     }
 }

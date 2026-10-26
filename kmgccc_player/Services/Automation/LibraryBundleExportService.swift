@@ -9,6 +9,8 @@ nonisolated struct LibraryBundleExportTrackInput: Sendable {
     let lyricsURL: URL?
     let ttmlURL: URL?
     let failures: [String]
+    var motionArtwork: TrackMotionArtwork? = nil
+    var libraryRootURL: URL? = nil
 }
 
 nonisolated struct LibraryBundleExportPlaylistInput: Codable, Equatable, Sendable {
@@ -41,6 +43,7 @@ private nonisolated struct LibraryBundleExportTrack: Codable, Sendable {
     let artworkPath: String?
     let lyricsPath: String?
     let ttmlPath: String?
+    var motionArtwork: TrackMotionArtwork? = nil
 }
 
 private nonisolated struct LibraryBundleExportManifest: Codable, Sendable {
@@ -63,6 +66,7 @@ nonisolated enum LibraryBundleExportService {
         let kind: String
         let sourceURL: URL
         let relativePath: String
+        var motionDescriptor: StoredMotionArtwork? = nil
     }
 
     private struct CopyResult: Sendable {
@@ -70,11 +74,11 @@ nonisolated enum LibraryBundleExportService {
     }
 
     static func estimatedBytes(for tracks: [LibraryBundleExportTrackInput]) -> Int64 {
-        tracks
-            .flatMap { [$0.audioURL, $0.artworkURL, $0.lyricsURL, $0.ttmlURL] }
-            .compactMap { $0 }
-            .reduce(Int64(0)) { total, url in
-                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        var counted = Set<String>()
+        return makeAssets(from: tracks)
+            .reduce(Int64(0)) { total, asset in
+                guard counted.insert(asset.relativePath).inserted else { return total }
+                let size = (try? asset.sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
                 return total + max(0, size)
             }
     }
@@ -101,7 +105,7 @@ nonisolated enum LibraryBundleExportService {
         )
         try fileManager.createDirectory(at: stagingURL, withIntermediateDirectories: false)
         do {
-            for directory in ["Media", "Artwork", "Lyrics", "Metadata"] {
+            for directory in ["Media", "Artwork", "Lyrics", "Metadata", "Tracks"] {
                 try fileManager.createDirectory(
                     at: stagingURL.appendingPathComponent(directory, isDirectory: true),
                     withIntermediateDirectories: true
@@ -113,6 +117,7 @@ nonisolated enum LibraryBundleExportService {
                 LibraryBundleExportTrack(id: $0.metadata.id, audioPath: nil, artworkPath: nil, lyricsPath: nil, ttmlPath: nil)
             }
             var files: [LibraryBundleExportFile] = []
+            var copiedAssets: [String: CopyResult] = [:]
             let assets = makeAssets(from: tracks)
             let metadataPages = max(1, (tracks.count + 99) / 100)
             let totalSteps = assets.count + metadataPages + 2
@@ -122,16 +127,30 @@ nonisolated enum LibraryBundleExportService {
                 try Task.checkCancellation()
                 let destination = stagingURL.appendingPathComponent(asset.relativePath)
                 do {
-                    let copied = try await copyAndHash(asset, to: destination)
-                    files.append(copied.record)
+                    if copiedAssets[asset.relativePath] == nil {
+                        let copied = try await copyAndHash(asset, to: destination)
+                        copiedAssets[asset.relativePath] = copied
+                        files.append(copied.record)
+                    }
                     if let index = trackRecords.firstIndex(where: { $0.id == asset.trackID }) {
                         let current = trackRecords[index]
+                        var motion = current.motionArtwork
+                        if var descriptor = asset.motionDescriptor,
+                           let original = tracks.first(where: { $0.metadata.id == asset.trackID })?.motionArtwork {
+                            if motion == nil {
+                                motion = original
+                                motion?.assets = []
+                            }
+                            descriptor.relativePath = asset.relativePath
+                            motion?.assets.append(descriptor)
+                        }
                         trackRecords[index] = LibraryBundleExportTrack(
                             id: current.id,
                             audioPath: asset.kind == "audio" ? asset.relativePath : current.audioPath,
                             artworkPath: asset.kind == "artwork" ? asset.relativePath : current.artworkPath,
                             lyricsPath: asset.kind == "lyrics" ? asset.relativePath : current.lyricsPath,
-                            ttmlPath: asset.kind == "ttml" ? asset.relativePath : current.ttmlPath
+                            ttmlPath: asset.kind == "ttml" ? asset.relativePath : current.ttmlPath,
+                            motionArtwork: motion
                         )
                     }
                 } catch is CancellationError {
@@ -217,12 +236,34 @@ nonisolated enum LibraryBundleExportService {
 
     private static func makeAssets(from tracks: [LibraryBundleExportTrackInput]) -> [Asset] {
         tracks.flatMap { track -> [Asset] in
-            [
+            var assets = [
                 track.audioURL.map { Asset(trackID: track.metadata.id, kind: "audio", sourceURL: $0, relativePath: "Media/\(track.metadata.id.uuidString)/audio.\(safeExtension($0))") },
                 track.artworkURL.map { Asset(trackID: track.metadata.id, kind: "artwork", sourceURL: $0, relativePath: "Artwork/\(track.metadata.id.uuidString).\(safeExtension($0))") },
                 track.lyricsURL.map { Asset(trackID: track.metadata.id, kind: "lyrics", sourceURL: $0, relativePath: "Lyrics/\(track.metadata.id.uuidString).\(safeExtension($0))") },
                 track.ttmlURL.map { Asset(trackID: track.metadata.id, kind: "ttml", sourceURL: $0, relativePath: "Lyrics/\(track.metadata.id.uuidString).ttml") }
             ].compactMap { $0 }
+            if let motion = track.motionArtwork, let root = track.libraryRootURL {
+                let folder = root.appendingPathComponent("Tracks/\(track.metadata.id.uuidString)", isDirectory: true).standardizedFileURL
+                for descriptor in motion.assets {
+                    guard !descriptor.relativePath.hasPrefix("/"),
+                          !descriptor.relativePath.split(separator: "/").contains("..") else { continue }
+                    let isTrackAsset = descriptor.relativePath.hasPrefix("Tracks/")
+                    let isLibraryRelative = isTrackAsset || descriptor.relativePath.hasPrefix("Enrichment/")
+                    let base = isLibraryRelative ? root : root.appendingPathComponent("Enrichment", isDirectory: true)
+                    let source = base.appendingPathComponent(descriptor.relativePath).standardizedFileURL
+                    let sharedFolder = root.appendingPathComponent("Enrichment/AlbumAssets", isDirectory: true).standardizedFileURL
+                    let validTrack = source.deletingLastPathComponent().path == folder.path
+                    let validAlbum = !isTrackAsset && source.path.hasPrefix(sharedFolder.path + "/")
+                    guard validTrack || validAlbum,
+                          source.resolvingSymlinksInPath().path.hasPrefix(root.resolvingSymlinksInPath().path + "/") else { continue }
+                    assets.append(Asset(
+                        trackID: track.metadata.id, kind: "motion.\(descriptor.kind)", sourceURL: source,
+                        relativePath: isLibraryRelative ? descriptor.relativePath : "Enrichment/\(descriptor.relativePath)",
+                        motionDescriptor: descriptor
+                    ))
+                }
+            }
+            return assets
         }.sorted {
             if $0.trackID != $1.trackID { return $0.trackID.uuidString < $1.trackID.uuidString }
             return $0.kind < $1.kind

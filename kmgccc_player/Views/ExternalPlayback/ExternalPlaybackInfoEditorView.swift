@@ -81,6 +81,9 @@ struct ExternalPlaybackInfoEditorView: View {
             saveTitle: LocalizedStringKey("保存外部播放匹配"),
             descriptionFallback: nil,
             showsDetailedMetadata: false,
+            enrichmentKey: stableKey,
+            enrichmentAlbumArtist: presentation.musicEnrichment?.record.query.albumArtist
+                ?? presentation.externalMusicAttributes?["albumArtistName"]?.text,
             onSave: {
                 saveExternalEdits()
             },

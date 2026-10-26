@@ -2015,8 +2015,9 @@ private final class BKArtBackgroundLayerView: NSView {
             ]
         )
 
+        // Dot colors are retinted on the main thread when the palette changes.
         let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
-        return SharedCoreImageContext.context.createCGImage(
+        return SharedCoreImageContext.interactive.createCGImage(
             tinted,
             from: input.extent,
             format: .RGBA8,
@@ -2876,7 +2877,8 @@ private final class BKArtBackgroundLayerView: NSView {
                 from: sourceImage,
                 toneStops: toneComponents,
                 tuning: tuning,
-                isDark: harmonized.isDark
+                isDark: harmonized.isDark,
+                context: SharedCoreImageContext.interactive
             )
         else {
             return nil
@@ -3019,7 +3021,8 @@ private final class BKArtBackgroundLayerView: NSView {
         from image: CGImage,
         toneStops: [ToneStopComponent],
         tuning: ImageVariantTuning,
-        isDark: Bool
+        isDark: Bool,
+        context: CIContext = SharedCoreImageContext.context
     ) -> CGImage? {
         guard let mapImage = makeColorMapImage(colors: toneStops) else { return nil }
         let input = CIImage(cgImage: image)
@@ -3066,7 +3069,7 @@ private final class BKArtBackgroundLayerView: NSView {
         }
         let finalImage = toneMap(image: composed, isDark: isDark)
         let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
-        return SharedCoreImageContext.context.createCGImage(
+        return context.createCGImage(
             finalImage,
             from: input.extent,
             format: .RGBA8,

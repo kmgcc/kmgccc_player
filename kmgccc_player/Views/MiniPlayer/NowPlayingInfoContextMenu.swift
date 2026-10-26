@@ -84,6 +84,7 @@ struct TrackActionMenuContent: View {
     var showsPlay: Bool = true
     var showsNavigation: Bool = true
     var showsDeleteFromLibrary: Bool = true
+    var showsDislike: Bool = false
     var diagnosticSurface: String = "TrackContextMenu"
 
     @Environment(LibraryViewModel.self) private var libraryVM
@@ -104,6 +105,7 @@ struct TrackActionMenuContent: View {
         showsPlay: Bool = true,
         showsNavigation: Bool = true,
         showsDeleteFromLibrary: Bool = true,
+        showsDislike: Bool = false,
         diagnosticSurface: String = "TrackContextMenu"
     ) {
         let token = FirstUseHitchDiagnostics.begin(
@@ -126,6 +128,7 @@ struct TrackActionMenuContent: View {
         self.showsPlay = showsPlay
         self.showsNavigation = showsNavigation
         self.showsDeleteFromLibrary = showsDeleteFromLibrary
+        self.showsDislike = showsDislike
         self.diagnosticSurface = diagnosticSurface
     }
 
@@ -201,6 +204,20 @@ struct TrackActionMenuContent: View {
                 Label("取消喜欢", systemImage: "heart.slash")
             } else {
                 Label("喜欢", systemImage: "heart")
+            }
+        }
+
+        if showsDislike {
+            let isManuallyDisliked = currentManualLikeState == .disliked
+            Button {
+                let nextState: ManualLikeState = isManuallyDisliked ? .none : .disliked
+                invokeAction(isManuallyDisliked ? "undislike" : "dislike") {
+                    Task {
+                        await libraryVM.setManualLikeState(nextState, for: track)
+                    }
+                }
+            } label: {
+                Label(isManuallyDisliked ? "取消不喜欢" : "不喜欢", systemImage: "hand.thumbsdown")
             }
         }
 

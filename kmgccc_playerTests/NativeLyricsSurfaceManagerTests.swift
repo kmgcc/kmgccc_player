@@ -255,6 +255,173 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testActivationRestoresPausedSeekAfterDeferredResourceReleaseForPlaybackSurfaces() async throws {
+        let manager = NativeLyricsSurfaceManager.shared
+        defer { manager.shutdownAll() }
+
+        for role in [LyricsSurfaceRole.main, .fullscreen, .fullscreenCoverBlurHighlight] {
+            manager.shutdownAll()
+
+            let trackID = UUID()
+            manager.updatePlaybackSnapshot(
+                trackID: trackID,
+                lyricsTTML: legacyAbsoluteTTML,
+                currentTime: 2,
+                isPlaying: false
+            )
+            let surface = manager.surface(for: role)
+            surface.view.frame = NSRect(x: 0, y: 0, width: 400, height: 600)
+            manager.activate(role: role)
+            XCTAssertEqual(surface.view.lastFrame?.timeline.focus, 0, "Initial focus for \(role)")
+
+            manager.deactivate(role: role)
+            manager.updatePlaybackSnapshot(
+                trackID: trackID,
+                lyricsTTML: legacyAbsoluteTTML,
+                currentTime: 6,
+                isPlaying: false
+            )
+            try await Task.sleep(for: .milliseconds(650))
+
+            XCTAssertFalse(surface.isRenderingActive, "Inactive state for \(role)")
+            XCTAssertEqual(renderedRowLayerCount(of: surface), 0, "Released row layers for \(role)")
+            XCTAssertEqual(manager.currentPlaybackTime, 6, accuracy: 0.0001)
+
+            manager.activate(role: role)
+            let restoredSurface = manager.surface(for: role)
+            restoredSurface.view.frame = NSRect(x: 0, y: 0, width: 400, height: 600)
+
+            XCTAssertEqual(restoredSurface.currentTime, 6, accuracy: 0.0001, "Restored time for \(role)")
+            XCTAssertEqual(manager.currentPlaybackTime, 6, accuracy: 0.0001)
+            let restoredFrame = restoredSurface.view.render(at: CACurrentMediaTime())
+            XCTAssertEqual(restoredFrame.timeline.focus, 1, "Restored focus for \(role)")
+            XCTAssertGreaterThan(renderedRowLayerCount(of: restoredSurface), 0, "Rebuilt row layers for \(role)")
+        }
+    }
+
+    @MainActor
+    func testPendingSidecarLoadCannotReplaceExternalLyricsForTheSameTrack() async throws {
+        let nativeManager = NativeLyricsSurfaceManager.shared
+        nativeManager.shutdownAll()
+        let lyricsViewModel = LyricsViewModel(settings: AppSettings.shared)
+        defer {
+            lyricsViewModel.clearLyrics()
+            nativeManager.shutdownAll()
+        }
+
+        let trackID = UUID()
+        let libraryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lyrics-cancel-\(UUID().uuidString)", isDirectory: true)
+        let paths = LibraryPaths(rootURL: libraryRoot)
+        try FileManager.default.createDirectory(
+            at: paths.trackFolderURL(for: trackID),
+            withIntermediateDirectories: true
+        )
+        let lyricsURL = try XCTUnwrap(paths.trackAssetURL(for: trackID, fileName: "legacy.lrc"))
+        try Data("[00:01.000]Local sidecar".utf8).write(to: lyricsURL)
+        defer { try? FileManager.default.removeItem(at: libraryRoot) }
+
+        let track = Track(
+            id: trackID,
+            title: "Matched local track",
+            libraryRootSnapshot: libraryRoot.path,
+            lyricsFileName: "legacy.lrc"
+        )
+        lyricsViewModel.ensureLyricsLoaded(
+            track: track,
+            currentTime: 1,
+            isPlaying: false,
+            reason: "test pending sidecar"
+        )
+
+        var external = NowPlayingPresentation.emptyAppleMusic
+        external.localTrack = track
+        external.title = "External playback"
+        external.lyricsText = mainTTML
+        external.lyricsIdentity = "test-external-lyrics"
+        external.currentTime = 3
+        external.lyricsCurrentTimeOverride = 3
+        external.isPlaying = false
+        external.lyricsIsPlaying = false
+        lyricsViewModel.ensureExternalLyricsLoaded(
+            presentation: external,
+            reason: "test source switch"
+        )
+
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertTrue(nativeManager.currentTTML.contains("Main"))
+        XCTAssertEqual(nativeManager.currentPlaybackTime, 3, accuracy: 0.0001)
+        XCTAssertNil(track.lyricsText, "A cancelled track load must not start its legacy sidecar read")
+    }
+
+    @MainActor
+    func testPendingLegacyLyricsMigrationCannotReplaceExternalLyricsForTheSameTrack() async throws {
+        let nativeManager = NativeLyricsSurfaceManager.shared
+        nativeManager.shutdownAll()
+        let lyricsViewModel = LyricsViewModel(settings: AppSettings.shared)
+        defer {
+            lyricsViewModel.clearLyrics()
+            nativeManager.shutdownAll()
+        }
+
+        let track = Track(
+            title: "Matched local track with legacy lyrics",
+            lyricsText: "[00:01.000]Local line\n[00:03.000]Next local line"
+        )
+        lyricsViewModel.applyTrack(track, currentTime: 1, isPlaying: false)
+
+        var external = NowPlayingPresentation.emptyAppleMusic
+        external.localTrack = track
+        external.title = "External playback"
+        external.lyricsText = mainTTML
+        external.lyricsIdentity = "test-external-legacy-race"
+        external.currentTime = 3
+        external.lyricsCurrentTimeOverride = 3
+        external.isPlaying = false
+        external.lyricsIsPlaying = false
+        lyricsViewModel.ensureExternalLyricsLoaded(
+            presentation: external,
+            reason: "test legacy source switch"
+        )
+
+        try await Task.sleep(for: .milliseconds(500))
+
+        XCTAssertTrue(nativeManager.currentTTML.contains("Main"))
+        XCTAssertEqual(nativeManager.currentPlaybackTime, 3, accuracy: 0.0001)
+        XCTAssertNil(track.ttmlLyricText)
+    }
+
+    @MainActor
+    func testPendingSidecarLoadInstallsAtLatestSeekAndPlayingState() async throws {
+        let nativeManager = NativeLyricsSurfaceManager.shared
+        nativeManager.shutdownAll()
+        let lyricsViewModel = LyricsViewModel(settings: AppSettings.shared)
+        defer {
+            lyricsViewModel.clearLyrics()
+            nativeManager.shutdownAll()
+        }
+
+        let track = Track(title: "Pending sidecar seek")
+        lyricsViewModel.syncTime(1, force: true)
+        lyricsViewModel.setPlaying(true)
+        lyricsViewModel.ensureLyricsLoaded(
+            track: track,
+            currentTime: 1,
+            isPlaying: true,
+            reason: "test pending seek"
+        )
+
+        lyricsViewModel.syncTime(6, force: true)
+        lyricsViewModel.setPlaying(false)
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(nativeManager.currentPlaybackTime, 6, accuracy: 0.0001)
+        XCTAssertEqual(LyricsSurfaceManager.shared.currentPlaybackTime, 6, accuracy: 0.0001)
+        XCTAssertFalse(LyricsSurfaceManager.shared.currentPlaybackIsPlaying)
+    }
+
+    @MainActor
     func testPlaybackTimePreviewIsNotOverwrittenByTransportSamples() {
         let nativeManager = NativeLyricsSurfaceManager.shared
         nativeManager.shutdownAll()
@@ -545,12 +712,8 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
     func testGlobalThemeRefreshReplaysGuardedFullscreenPaletteAndConfig() throws {
         let native = NativeLyricsSurfaceManager.shared
         let surfaces = LyricsSurfaceManager.shared
-        native.shutdownAll()
-        defer {
-            native.shutdownAll()
-            surfaces.updateThemeOverrideSnapshot(nil, for: .fullscreen)
-            surfaces.updateSurfaceConfigSnapshot("{}", for: .fullscreen)
-        }
+        surfaces.shutdownAll()
+        defer { surfaces.shutdownAll() }
 
         let trackID = UUID()
         let base = ThemePalette(
@@ -586,12 +749,67 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
             trackGuarded: true
         )
 
+        let revision = native.documentPublication.revision
         surfaces.applyTheme(base)
+        XCTAssertEqual(native.documentPublication.revision, revision + 1)
 
         let configuration = try XCTUnwrap(native.configuration(for: .fullscreen))
         XCTAssertEqual(configuration.palette.mainActive.red, 242.0 / 255.0, accuracy: 0.0001)
         XCTAssertEqual(configuration.palette.mainInactive.blue, 45.0 / 255.0, accuracy: 0.0001)
         XCTAssertEqual(configuration.palette.lineTimingInactive.red, 80.0 / 255.0, accuracy: 0.0001)
+
+        // An unchanged final skin configuration must not publish the
+        // intermediate global palette or override-only palette.
+        surfaces.applyTheme(base)
+        XCTAssertEqual(native.documentPublication.revision, revision + 1)
+
+        // An inactive surface must also lose the old track's override before
+        // it can be reactivated for a different playback source or track.
+        surfaces.deactivate(role: .fullscreen)
+        surfaces.updatePlaybackSnapshot(
+            trackID: UUID(), lyricsTTML: "", currentTime: 0, isPlaying: false
+        )
+        surfaces.applyTheme(base)
+        let nextTrack = try XCTUnwrap(native.configuration(for: .fullscreen))
+        XCTAssertEqual(nextTrack.palette, NativeLyricsConfigurationMapper.paletteForWindow(base))
+    }
+
+    @MainActor
+    func testClearedFullscreenThemeDoesNotReplaySavedSkinColors() throws {
+        let native = NativeLyricsSurfaceManager.shared
+        let surfaces = LyricsSurfaceManager.shared
+        surfaces.shutdownAll()
+        defer { surfaces.shutdownAll() }
+        let palette = ThemePalette(
+            scheme: .dark, background: "#000000", text: "#ffffff",
+            activeLine: "#ffffff", inactiveLine: "#555555"
+        )
+        surfaces.updateThemeOverrideSnapshot(palette, for: .fullscreen)
+        surfaces.updateSurfaceConfigSnapshot(
+            "{\"fontSize\":42,\"fullscreenActiveColor\":\"rgb(80, 90, 100)\"}",
+            for: .fullscreen
+        )
+        surfaces.applyTheme(palette)
+        surfaces.updateThemeOverrideSnapshot(nil, for: .fullscreen)
+        surfaces.applyTheme(palette)
+        let configuration = try XCTUnwrap(native.configuration(for: .fullscreen))
+        XCTAssertEqual(configuration.palette, NativeLyricsConfigurationMapper.paletteForWindow(palette))
+        XCTAssertEqual(configuration.fontSize, 42)
+    }
+
+    @MainActor
+    func testSurfaceCreatedAfterThemeRefreshInheritsLatestBasePalette() {
+        let native = NativeLyricsSurfaceManager.shared
+        native.shutdownAll()
+        defer { native.shutdownAll() }
+        let palette = ThemePalette(
+            scheme: .dark, background: "#000000", text: "#ffffff",
+            activeLine: "#f2c078", inactiveLine: "#6a402d"
+        )
+        native.applyTheme(palette)
+        let surface = native.surface(for: .fullscreen)
+        native.activate(role: .fullscreen)
+        XCTAssertEqual(surface.view.configuration.palette, NativeLyricsConfigurationMapper.paletteForWindow(palette))
     }
 
     @MainActor

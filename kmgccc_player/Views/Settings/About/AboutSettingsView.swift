@@ -15,7 +15,6 @@ struct AboutSettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var configuredMotionPolicy
-    @AppStorage(UpdatePreferences.automaticUpdatesEnabledKey) private var automaticUpdatesEnabled = true
     @State private var aboutEasterEggTracker = AboutEasterEggTapTracker()
     @State private var showEasterEggImage: Bool = false
     @State private var page: AboutSettingsPage = .main
@@ -53,9 +52,11 @@ struct AboutSettingsView: View {
                     maxPixel: 800,
                     fallbackSystemName: "text.quote"
                 ))
+                .renderingMode(.template)
                 .resizable()
                 .scaledToFit()
                 .frame(width: 230, height: 230)
+                .foregroundStyle(themeStore.semanticPalette.complementaryAccentColor)
                 .shadow(color: Color.black.opacity(0.1), radius: 10, y: 5)
 
             VStack(spacing: 8) {
@@ -68,6 +69,12 @@ struct AboutSettingsView: View {
                 )
                 .settingsDescriptionStyle()
             }
+
+            Text("settings.about.description")
+                .font(.system(size: SettingsStyleTokens.rowFontSize))
+                .multilineTextAlignment(.center)
+                .settingsDescriptionStyle()
+                .frame(maxWidth: 360)
 
             Text(NSLocalizedString("settings.about.quote", comment: ""))
                 .font(.system(size: SettingsStyleTokens.rowFontSize, weight: .regular))
@@ -120,25 +127,9 @@ struct AboutSettingsView: View {
             }
             .padding(.bottom, 34)
 
-            updateCheckPreferenceSection
-                .padding(.bottom, 6)
-
             complianceSection
 
             Spacer()
-        }
-    }
-
-    private var updateCheckPreferenceSection: some View {
-        SettingsSection {
-            SettingsSwitchRow(
-                title: "自动更新",
-                isOn: $automaticUpdatesEnabled,
-                info: "自动检查并在后台下载更新；退出 App 或点击侧边栏“重启更新”时安装。"
-            )
-        }
-        .onChange(of: automaticUpdatesEnabled) { _, enabled in
-            UpdateCoordinator.shared.setAutomaticUpdatesEnabled(enabled)
         }
     }
 
