@@ -1,12 +1,12 @@
 {
-  "latestVersion": "2.4.1",
-  "build_number": 16,
-  "releaseURL": "https://github.com/kmgcc/kmgccc_player/releases/tag/v2.4.1",
-  "notes": "## [v2.4.1] - 2026-10-21\n\n### Added\n\n- **音效✨**：新增均衡器、低音增强、混响等音效，可以调整顺序，并为不同设备保存设置。\n- **音量均衡**：统一不同歌曲间的音量，采用统一放缩，不会引入压缩失真。\n- **拖动歌曲**：可把多首歌曲拖进歌单或播放队列，也可拖到专辑、艺人页面整理。\n- **歌词导入（beta）**：可手动为歌曲导入更多格式的歌词；导入歌曲时，也会自动寻找同名歌词文件。\n- **后台任务与存储空间**：可查看后台任务的进度、资料库占用的空间，并分类清理缓存。\n\n### Changed\n\n- **界面**：配色改为三种选择；主页卡片可以用鼠标拖动浏览，全屏和弹窗的布局也作了调整。\n- **切歌**：提前准备下一首歌的封面和歌词，并调整声音与频谱画面的同步。\n- **MCP**：已连接的 agent 可以调整音效，查看和管理后台任务。\n\n### Fixed\n\n- 修复资料库读取出错时，可能误删歌曲信息的问题；拖动整理歌曲保存失败时，也会恢复原来的内容。\n- 修复导入时无法选择文件夹，以及在输入框里按方向键却触发快进的问题。\n- 修复编辑其他播放器的歌曲信息时，保存失败却仍关闭窗口的问题，以及部分背景切换异常。\n\n### 安装与校验\n\n支持 macOS 26.0 及以上，仅支持 Apple Silicon。打开 DMG，将 kmgccc_player 拖入 Applications 后启动。App 与 DMG 已使用 Developer ID 签名并通过 Apple 公证。\n\nDMG 为安装包；`.symbols.zip` 用于崩溃报告符号化，日常使用无需下载；`.sha256` 为安装包和符号包的校验文件。将待校验文件放在同一目录后运行：\n\n```sh\nshasum -a 256 -c kmgccc_player_2.4.1_16.sha256\n```",
-  "version": "2.4.1",
-  "build": "16",
+  "latestVersion": "2.4.2",
+  "build_number": 18,
+  "releaseURL": "https://github.com/kmgcc/kmgccc_player/releases/tag/v2.4.2",
+  "notes": "## [v2.4.2] - 2026-10-26\n\n### Added\n\n- **Apple Music 动态封面**：可为歌曲或专辑查找动态封面，也可以使用自己的视频。\n- **侧边栏快捷按钮**：可以自己挑选和排列按钮，最多放四个。\n- **自定义工具栏**：支持根据使用习惯自定义工具栏。\n- **旧封面更新**：旧版本可能降低了部分封面的画质；App 会为这些歌曲重新查找更清晰的封面。任务可以暂停或结束。旧曲库中来源不明的封面可能会被替换。若要保留手动换过的封面，请在 App 启动后停止此任务。\n\n### Changed\n\n- **设置布局调整**：重新整理设置项并按功能分组。\n- 切换歌曲时，封面显示衔接得更快。\n\n### Fixed\n\n- 保存封面时尽量保留原图，减少图片变小或变糊的情况。\n- 自动补充歌曲资料时保留手动修改，避免被自动结果覆盖。",
+  "version": "2.4.2",
+  "build": "18",
   "channel": "production",
-  "release_notes_url": "https://kmgcc.github.io/kmgccc_player/release-notes/v2.4.1.md",
-  "dmg_url": "https://github.com/kmgcc/kmgccc_player/releases/download/v2.4.1/kmgccc_player_2.4.1_16.dmg",
-  "generated_at": "2026-10-21T00:00:00Z"
+  "release_notes_url": "https://kmgcc.github.io/kmgccc_player/release-notes/v2.4.2.md",
+  "dmg_url": "https://github.com/kmgcc/kmgccc_player/releases/download/v2.4.2/kmgccc_player_2.4.2_18.dmg",
+  "generated_at": "2026-10-26T00:00:00Z"
 }
