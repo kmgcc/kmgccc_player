@@ -1772,7 +1772,9 @@ final class LibrarySession: LibrarySessionLifecycle {
     }
 
     func flush() async throws {
-        guard !isClosed else { return }
+        // Finder can move or replace an active root before the next refresh.
+        // Pending stats must not recreate that path or write into the Trash.
+        guard !isClosed, try LibraryRootLocationPolicy.canFlush(context) else { return }
         preferenceStatsService.saveAllPendingNow(
             trackProvider: { [weak libraryViewModel] trackID in
                 libraryViewModel?.allTracks.first { $0.id == trackID }

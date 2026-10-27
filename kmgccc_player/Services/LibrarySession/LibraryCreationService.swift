@@ -221,6 +221,7 @@ final class LibraryCreationService {
         mode: MusicLibraryMode,
         parentURL: URL,
         displayName: String,
+        factoryDefaultRoot: Bool = false,
         initialImport: LibraryInitialImportPayload = .init(),
         allowAlternateDestinationWhenOccupied: Bool = false,
         allowStalePathConflictRepair: Bool = false
@@ -253,16 +254,18 @@ final class LibraryCreationService {
         }
 
         // Different names share a parent without sharing a library root.
-        // The wizard and startup fallback choose a numbered sibling whenever
-        // a destination is occupied, leaving its contents untouched.
-        let directoryName = LibraryPaths.newLibraryDirectoryName(for: trimmedName)
+        // The wizard may choose a numbered sibling when a destination is
+        // occupied. The controlled factory default keeps its exact path.
+        let directoryName = factoryDefaultRoot
+            ? LibraryPaths.rootDirectoryName
+            : LibraryPaths.newLibraryDirectoryName(for: trimmedName)
         var destination = selectedParent
             .appendingPathComponent(directoryName, isDirectory: true)
             .standardizedFileURL
         var suffix = 1
         while await fileOperator.itemExists(at: destination) {
             try Task.checkCancellation()
-            if allowAlternateDestinationWhenOccupied {
+            if allowAlternateDestinationWhenOccupied, !factoryDefaultRoot {
                 suffix += 1
                 destination = selectedParent
                     .appendingPathComponent("\(directoryName) \(suffix)", isDirectory: true)

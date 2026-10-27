@@ -23,19 +23,22 @@ nonisolated struct MusicLibraryRegistry: Codable, Sendable, Equatable {
     var activeLibraryID: UUID?
     var recentManagedLibraryID: UUID?
     var recentReferencedLibraryID: UUID?
+    var pendingFactoryDefaultReplacement: Bool?
 
     init(
         schemaVersion: Int = MusicLibraryRegistry.schemaVersion,
         libraries: [MusicLibraryBookmark] = [],
         activeLibraryID: UUID? = nil,
         recentManagedLibraryID: UUID? = nil,
-        recentReferencedLibraryID: UUID? = nil
+        recentReferencedLibraryID: UUID? = nil,
+        pendingFactoryDefaultReplacement: Bool? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.libraries = libraries
         self.activeLibraryID = activeLibraryID
         self.recentManagedLibraryID = recentManagedLibraryID
         self.recentReferencedLibraryID = recentReferencedLibraryID
+        self.pendingFactoryDefaultReplacement = pendingFactoryDefaultReplacement
     }
 
     func validated() throws -> MusicLibraryRegistry {
@@ -274,12 +277,15 @@ actor MusicLibraryRegistryStore {
         try commit(updated)
     }
 
-    func remove(libraryID: UUID) throws {
+    func remove(libraryID: UUID, requireFactoryDefaultReplacement: Bool = false) throws {
         var updated = registry
         guard updated.libraries.contains(where: { $0.id == libraryID }) else {
             throw MusicLibraryRegistryError.libraryNotFound(libraryID)
         }
         updated.libraries.removeAll { $0.id == libraryID }
+        if requireFactoryDefaultReplacement {
+            updated.pendingFactoryDefaultReplacement = true
+        }
 
         if updated.activeLibraryID == libraryID {
             updated.activeLibraryID = nil
@@ -294,6 +300,20 @@ actor MusicLibraryRegistryStore {
                 $0.modeProjection == .referenced
             })?.id
         }
+        try commit(updated)
+    }
+
+    func completeFactoryDefaultReplacement(
+        libraryID: UUID,
+        defaultRootURL: URL = LibraryLocationStore.defaultLibraryRootURL
+    ) throws {
+        guard registry.pendingFactoryDefaultReplacement == true,
+              registry.activeLibraryID == libraryID,
+              let descriptor = registry.library(id: libraryID),
+              URL(fileURLWithPath: descriptor.lastKnownPath).standardizedFileURL.path
+                == defaultRootURL.standardizedFileURL.path else { return }
+        var updated = registry
+        updated.pendingFactoryDefaultReplacement = nil
         try commit(updated)
     }
 
