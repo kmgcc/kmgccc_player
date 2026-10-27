@@ -1,12 +1,12 @@
 {
-  "latestVersion": "2.4.3",
-  "build_number": 19,
-  "releaseURL": "https://github.com/kmgcc/kmgccc_player/releases/tag/v2.4.3",
-  "notes": "## [v2.4.3] - 2026-10-27\n\n### Fixed\n\n- 修复点击“继续”后，What's New 更新公告无法关闭的问题。\n\n### 安装与校验\n\n支持 macOS 26.0 及以上，仅支持 Apple Silicon。打开 DMG，将 kmgccc_player 拖入 Applications 后启动。App 与 DMG 已使用 Developer ID 签名并通过 Apple 公证。\n\nDMG 为安装包；`.symbols.zip` 用于崩溃报告符号化，日常使用无需下载；`.sha256` 为安装包和符号包的校验文件。将待校验文件放在同一目录后运行：\n\n```sh\nshasum -a 256 -c kmgccc_player_2.4.3_19.sha256\n```",
-  "version": "2.4.3",
-  "build": "19",
+  "latestVersion": "2.4.4",
+  "build_number": 21,
+  "releaseURL": "https://github.com/kmgcc/kmgccc_player/releases/tag/v2.4.4",
+  "notes": "## [v2.4.4] - 2026-10-27\n\n### Fixed\n\n- 修复资料库打开或删除异常的问题。\n\n### Files\n\nDMG 为安装包；`.symbols.zip` 用于崩溃报告符号化，日常使用无需下载；`.sha256` 为安装包和符号包的校验文件。",
+  "version": "2.4.4",
+  "build": "21",
   "channel": "production",
-  "release_notes_url": "https://kmgcc.github.io/kmgccc_player/release-notes/v2.4.3.md",
-  "dmg_url": "https://github.com/kmgcc/kmgccc_player/releases/download/v2.4.3/kmgccc_player_2.4.3_19.dmg",
+  "release_notes_url": "https://kmgcc.github.io/kmgccc_player/release-notes/v2.4.4.md",
+  "dmg_url": "https://github.com/kmgcc/kmgccc_player/releases/download/v2.4.4/kmgccc_player_2.4.4_21.dmg",
   "generated_at": "2026-10-27T00:00:00Z"
 }
