@@ -100,14 +100,27 @@ nonisolated enum LibraryRootLocationPolicy {
 
     static func canFlush(_ context: LibraryContext) throws -> Bool {
         guard !isInTrash(context.rootURL) else { return false }
+        guard try rootIsDirectory(context.rootURL) else { return false }
         do {
-            let values = try context.rootURL.resourceValues(forKeys: [.isDirectoryKey])
-            if values.isDirectory == false { return false }
+            let manifest = try MusicLibraryManifest.read(from: context.paths.manifestURL)
+            return manifest.libraryID == context.id && manifest.mode == context.mode
+        } catch {
+            // The root can disappear between the directory check and read.
+            // An existing root with a broken manifest must still report it.
+            guard try rootIsDirectory(context.rootURL) else { return false }
+            throw error
+        }
+    }
+
+    private static func rootIsDirectory(_ rootURL: URL) throws -> Bool {
+        var root = rootURL
+        // URL resource values can outlive a directory moved in Finder.
+        root.removeAllCachedResourceValues()
+        do {
+            return try root.resourceValues(forKeys: [.isDirectoryKey]).isDirectory != false
         } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
             return false
         }
-        let manifest = try MusicLibraryManifest.read(from: context.paths.manifestURL)
-        return manifest.libraryID == context.id && manifest.mode == context.mode
     }
 }
 

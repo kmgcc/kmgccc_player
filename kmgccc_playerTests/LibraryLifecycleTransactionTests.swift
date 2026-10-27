@@ -1071,7 +1071,8 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         let parent = fixture.root.appendingPathComponent("Music")
         let oldRoot = parent.appendingPathComponent(LibraryPaths.rootDirectoryName)
         let old = try fixture.makeLibrary(at: oldRoot, mode: .referenced)
-        _ = try await fixture.openService.open(selectedURL: oldRoot)
+        let opened = try await fixture.openService.open(selectedURL: oldRoot)
+        let oldBookmark = opened.context.rootBookmarkData
         let customRoot = parent.appendingPathComponent("kmgccc_player Library - Custom")
         let custom = try fixture.makeLibrary(at: customRoot, mode: .managed)
         try await fixture.registerWithoutActivation(root: customRoot, manifest: custom)
@@ -1079,11 +1080,11 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         let trashRoot = fixture.root.appendingPathComponent(".Trash").appendingPathComponent(LibraryPaths.rootDirectoryName)
         try FileManager.default.createDirectory(at: trashRoot.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.moveItem(at: oldRoot, to: trashRoot)
-        fixture.bookmarks.redirectedRoots[oldRoot.path] = trashRoot
+        fixture.bookmarks.redirect(oldBookmark, to: trashRoot)
         // Reproduce an older build that already persisted the followed Trash path.
         try await fixture.registry.updateBookmark(
             libraryID: old.libraryID,
-            bookmarkData: Data(oldRoot.path.utf8),
+            bookmarkData: oldBookmark,
             lastKnownPath: trashRoot.path,
             modeProjection: old.mode
         )
@@ -1107,6 +1108,9 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         guard case .created(let replacement, _) = result else { return XCTFail("Expected an empty replacement") }
         XCTAssertEqual(replacement.rootURL.path, oldRoot.standardizedFileURL.path)
         XCTAssertNotEqual(replacement.id, old.libraryID)
+        XCTAssertNotEqual(replacement.rootBookmarkData, oldBookmark)
+        XCTAssertEqual(try fixture.bookmarks.resolve(oldBookmark).url.path, trashRoot.path)
+        XCTAssertEqual(try fixture.bookmarks.resolve(replacement.rootBookmarkData).url.path, replacement.rootURL.path)
         XCTAssertEqual(replacement.mode, .referenced)
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: replacement.paths.tracksRootURL.path).isEmpty)
         XCTAssertEqual(try MusicLibraryManifest.read(from: replacement.paths.manifestURL).libraryID, replacement.id)
@@ -1265,10 +1269,25 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         try Data("damaged manifest".utf8).write(to: context.paths.manifestURL)
         XCTAssertThrowsError(try LibraryRootLocationPolicy.canFlush(context))
 
+        try FileManager.default.removeItem(at: context.paths.manifestURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.path))
+        XCTAssertThrowsError(try LibraryRootLocationPolicy.canFlush(context))
+
         let replacement = MusicLibraryManifest(displayName: "Replacement", mode: .referenced)
         try replacement.write(to: context.paths.manifestURL)
+        let replacementData = try Data(contentsOf: context.paths.manifestURL)
         XCTAssertFalse(try LibraryRootLocationPolicy.canFlush(context))
 
+        _ = try context.rootURL.resourceValues(forKeys: [.isDirectoryKey])
+        let movedRoot = fixture.root.appendingPathComponent("moved-library")
+        try FileManager.default.moveItem(at: root, to: movedRoot)
+        XCTAssertFalse(try LibraryRootLocationPolicy.canFlush(context))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        XCTAssertEqual(try Data(contentsOf: LibraryPaths(rootURL: movedRoot).manifestURL), replacementData)
+
+        _ = try fixture.makeLibrary(at: root, mode: .referenced)
+        XCTAssertFalse(try LibraryRootLocationPolicy.canFlush(context))
+        _ = try context.rootURL.resourceValues(forKeys: [.isDirectoryKey])
         try FileManager.default.removeItem(at: root)
         XCTAssertFalse(try LibraryRootLocationPolicy.canFlush(context))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
@@ -1463,31 +1482,65 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
 }
 
 private final class LifecycleTestBookmarkResolver: kmgccc_player.BookmarkResolving, @unchecked Sendable {
+    private struct State {
+        var isStale = false
+        var allowsAccess = true
+        var failNextRefresh = false
+        var redirectedBookmarks: [Data: URL] = [:]
+        var bookmarkRoots: [Data: URL] = [:]
+        var startCount = 0
+        var stopCount = 0
+        var refreshCount = 0
+    }
+
     private let lock = NSLock()
-    var isStale = false
-    var allowsAccess = true
-    var failNextRefresh = false
-    var redirectedRoots: [String: URL] = [:]
-    private(set) var startCount = 0
-    private(set) var stopCount = 0
-    private(set) var refreshCount = 0
+    private var state = State()
+    var isStale: Bool {
+        get { lock.withLock { state.isStale } }
+        set { lock.withLock { state.isStale = newValue } }
+    }
+    var allowsAccess: Bool {
+        get { lock.withLock { state.allowsAccess } }
+        set { lock.withLock { state.allowsAccess = newValue } }
+    }
+    var failNextRefresh: Bool {
+        get { lock.withLock { state.failNextRefresh } }
+        set { lock.withLock { state.failNextRefresh = newValue } }
+    }
+    var startCount: Int { lock.withLock { state.startCount } }
+    var stopCount: Int { lock.withLock { state.stopCount } }
+    var refreshCount: Int { lock.withLock { state.refreshCount } }
+
+    func redirect(_ bookmark: Data, to rootURL: URL) {
+        lock.withLock { state.redirectedBookmarks[bookmark] = rootURL }
+    }
+
     func resolve(_ data: Data) throws -> (url: URL, isStale: Bool) {
-        guard let path = String(data: data, encoding: .utf8) else { throw TestError.expected }
-        return (redirectedRoots[path] ?? URL(fileURLWithPath: path, isDirectory: true), isStale)
+        try lock.withLock {
+            if let root = state.redirectedBookmarks[data] ?? state.bookmarkRoots[data] { return (root, state.isStale) }
+            guard let path = String(data: data, encoding: .utf8) else { throw TestError.expected }
+            return (URL(fileURLWithPath: path, isDirectory: true), state.isStale)
+        }
     }
     func refreshBookmark(for url: URL) throws -> Data {
-        refreshCount += 1
-        if failNextRefresh { failNextRefresh = false; throw TestError.expected }
-        return Data(url.standardizedFileURL.path.utf8)
+        try lock.withLock {
+            state.refreshCount += 1
+            if state.failNextRefresh { state.failNextRefresh = false; throw TestError.expected }
+            // A fresh bookmark belongs to this root, even if an earlier root at
+            // the same path has moved to the Trash.
+            let bookmark = Data(UUID().uuidString.utf8)
+            state.bookmarkRoots[bookmark] = url.standardizedFileURL
+            return bookmark
+        }
     }
     func startAccessing(_ url: URL) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        startCount += 1
-        return allowsAccess
+        lock.withLock {
+            state.startCount += 1
+            return state.allowsAccess
+        }
     }
     func stopAccessing(_ url: URL) {
-        lock.lock(); defer { lock.unlock() }
-        stopCount += 1
+        lock.withLock { state.stopCount += 1 }
     }
 }
 
