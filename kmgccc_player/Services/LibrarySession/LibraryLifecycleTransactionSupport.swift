@@ -27,6 +27,7 @@ nonisolated final class LibraryRootAccessLease: @unchecked Sendable {
     init(descriptor: MusicLibraryBookmark, resolver: any BookmarkResolving, requiresSecurityScope: Bool) throws {
         let resolution = try resolver.resolve(descriptor.rootBookmarkData)
         rootURL = resolution.url.standardizedFileURL
+        guard !LibraryRootLocationPolicy.isInTrash(rootURL) else { throw LibraryRootAccessError.inTrash }
         isStale = resolution.isStale
         let didStart = resolver.startAccessing(rootURL)
         guard didStart || (!requiresSecurityScope && FileManager.default.isReadableFile(atPath: rootURL.path)) else {
@@ -39,6 +40,7 @@ nonisolated final class LibraryRootAccessLease: @unchecked Sendable {
 
     init(context: LibraryContext, resolver: any BookmarkResolving, requiresSecurityScope: Bool) throws {
         let expectedRoot = context.rootURL.standardizedFileURL
+        guard !LibraryRootLocationPolicy.isInTrash(expectedRoot) else { throw LibraryRootAccessError.inTrash }
         let resolution: (url: URL, isStale: Bool)
         do {
             resolution = try resolver.resolve(context.rootBookmarkData)
@@ -55,6 +57,7 @@ nonisolated final class LibraryRootAccessLease: @unchecked Sendable {
 
         rootURL = resolution.url.standardizedFileURL
         isStale = resolution.isStale
+        guard !LibraryRootLocationPolicy.isInTrash(rootURL) else { throw LibraryRootAccessError.inTrash }
         guard rootURL == expectedRoot else {
             throw LibraryRootAccessError.identityMismatch
         }
@@ -73,6 +76,52 @@ nonisolated final class LibraryRootAccessLease: @unchecked Sendable {
 nonisolated enum LibraryRootAccessError: Error, Equatable {
     case permissionDenied
     case identityMismatch
+    case inTrash
+}
+
+nonisolated enum LibraryRootLocationPolicy {
+    static func isInTrash(_ rootURL: URL) -> Bool {
+        let components = rootURL.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        return components.contains(".Trash") || components.contains(".Trashes")
+    }
+
+    static func isFactoryDefaultRegistration(
+        _ descriptor: MusicLibraryBookmark,
+        defaultRootURL: URL = LibraryLocationStore.defaultLibraryRootURL
+    ) -> Bool {
+        let recordedRoot = URL(fileURLWithPath: descriptor.lastKnownPath).standardizedFileURL
+        if recordedRoot.path == defaultRootURL.standardizedFileURL.path { return true }
+        // Earlier builds persisted a bookmark's Trash destination. The bare
+        // legacy root name identifies that controlled default root; current
+        // user-created libraries always have a named directory suffix.
+        return isInTrash(recordedRoot)
+            && recordedRoot.lastPathComponent == LibraryPaths.rootDirectoryName
+    }
+
+    static func canFlush(_ context: LibraryContext) throws -> Bool {
+        guard !isInTrash(context.rootURL) else { return false }
+        guard try rootIsDirectory(context.rootURL) else { return false }
+        do {
+            let manifest = try MusicLibraryManifest.read(from: context.paths.manifestURL)
+            return manifest.libraryID == context.id && manifest.mode == context.mode
+        } catch {
+            // The root can disappear between the directory check and read.
+            // An existing root with a broken manifest must still report it.
+            guard try rootIsDirectory(context.rootURL) else { return false }
+            throw error
+        }
+    }
+
+    private static func rootIsDirectory(_ rootURL: URL) throws -> Bool {
+        var root = rootURL
+        // URL resource values can outlive a directory moved in Finder.
+        root.removeAllCachedResourceValues()
+        do {
+            return try root.resourceValues(forKeys: [.isDirectoryKey]).isDirectory != false
+        } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+            return false
+        }
+    }
 }
 
 @MainActor
@@ -141,7 +190,9 @@ struct LibraryStartupContextResolver {
         allowSuccessorAfterRemoval removedMode: MusicLibraryMode? = nil,
         generation: UInt64 = 1
     ) async -> LibraryStartupResolution {
+        await removeTrashedLibraries()
         let registry = await registryStore.snapshot()
+        guard registry.pendingFactoryDefaultReplacement != true else { return .noActive }
         var seen = Set<UUID>()
         if let activeID = registry.activeLibraryID {
             seen.insert(activeID)
@@ -169,6 +220,7 @@ struct LibraryStartupContextResolver {
     }
 
     func resolveRegistered(libraryID: UUID, generation: UInt64 = 1) async throws -> LibraryContext {
+        await removeTrashedLibraries()
         let registry = await registryStore.snapshot()
         guard let descriptor = registry.library(id: libraryID) else {
             throw RegisteredLibraryActivationError.notRegistered
@@ -177,6 +229,29 @@ struct LibraryStartupContextResolver {
             throw RegisteredLibraryActivationError.reconnectRequired(libraryID)
         }
         return context
+    }
+
+    /// A bookmark follows a root into the Trash. Remove only its registry
+    /// entry; offline and unreadable roots retain their reconnect path.
+    @discardableResult
+    func removeTrashedLibraries() async -> Set<UUID> {
+        let registry = await registryStore.snapshot()
+        var removedIDs = Set<UUID>()
+        for descriptor in registry.libraries {
+            let root = (try? bookmarkResolver.resolve(descriptor.rootBookmarkData).url)
+                ?? URL(fileURLWithPath: descriptor.lastKnownPath, isDirectory: true)
+            guard LibraryRootLocationPolicy.isInTrash(root) else { continue }
+            do {
+                try await registryStore.remove(
+                    libraryID: descriptor.id,
+                    requireFactoryDefaultReplacement: LibraryRootLocationPolicy.isFactoryDefaultRegistration(descriptor)
+                )
+                removedIDs.insert(descriptor.id)
+            } catch {
+                Log.error("[LibrarySession] failed to remove trashed library registration library=\(descriptor.id): \(error)", category: .library)
+            }
+        }
+        return removedIDs
     }
 
     private func resolve(_ descriptor: MusicLibraryBookmark, generation: UInt64) async -> LibraryContext? {

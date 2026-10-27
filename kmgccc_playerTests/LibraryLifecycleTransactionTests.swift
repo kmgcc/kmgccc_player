@@ -1065,6 +1065,258 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("keep").path))
     }
 
+    func testTrashedDefaultIsReplacedWithEmptyExactRootAndPreservesCustomLibrary() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let parent = fixture.root.appendingPathComponent("Music")
+        let oldRoot = parent.appendingPathComponent(LibraryPaths.rootDirectoryName)
+        let old = try fixture.makeLibrary(at: oldRoot, mode: .referenced)
+        let opened = try await fixture.openService.open(selectedURL: oldRoot)
+        let oldBookmark = opened.context.rootBookmarkData
+        let customRoot = parent.appendingPathComponent("kmgccc_player Library - Custom")
+        let custom = try fixture.makeLibrary(at: customRoot, mode: .managed)
+        try await fixture.registerWithoutActivation(root: customRoot, manifest: custom)
+        let customManifestBefore = try Data(contentsOf: LibraryPaths(rootURL: customRoot).manifestURL)
+        let trashRoot = fixture.root.appendingPathComponent(".Trash").appendingPathComponent(LibraryPaths.rootDirectoryName)
+        try FileManager.default.createDirectory(at: trashRoot.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: oldRoot, to: trashRoot)
+        fixture.bookmarks.redirect(oldBookmark, to: trashRoot)
+        // Reproduce an older build that already persisted the followed Trash path.
+        try await fixture.registry.updateBookmark(
+            libraryID: old.libraryID,
+            bookmarkData: oldBookmark,
+            lastKnownPath: trashRoot.path,
+            modeProjection: old.mode
+        )
+        let trashedManifestBefore = try Data(contentsOf: LibraryPaths(rootURL: trashRoot).manifestURL)
+        let resolver = LibraryStartupContextResolver(registryStore: fixture.registry, bookmarkResolver: fixture.bookmarks)
+
+        let resolution = await resolver.resolve()
+
+        XCTAssertEqual(resolution, .noActive)
+        var registry = await fixture.registry.snapshot()
+        XCTAssertNil(registry.library(id: old.libraryID))
+        XCTAssertEqual(registry.pendingFactoryDefaultReplacement, true)
+        XCTAssertNotNil(registry.library(id: custom.libraryID))
+        let result = try await fixture.creationService().create(
+            mode: .referenced,
+            parentURL: parent,
+            displayName: "音乐资料库",
+            factoryDefaultRoot: true,
+            allowAlternateDestinationWhenOccupied: true
+        )
+        guard case .created(let replacement, _) = result else { return XCTFail("Expected an empty replacement") }
+        XCTAssertEqual(replacement.rootURL.path, oldRoot.standardizedFileURL.path)
+        XCTAssertNotEqual(replacement.id, old.libraryID)
+        XCTAssertNotEqual(replacement.rootBookmarkData, oldBookmark)
+        XCTAssertEqual(try fixture.bookmarks.resolve(oldBookmark).url.path, trashRoot.path)
+        XCTAssertEqual(try fixture.bookmarks.resolve(replacement.rootBookmarkData).url.path, replacement.rootURL.path)
+        XCTAssertEqual(replacement.mode, .referenced)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: replacement.paths.tracksRootURL.path).isEmpty)
+        XCTAssertEqual(try MusicLibraryManifest.read(from: replacement.paths.manifestURL).libraryID, replacement.id)
+        try await fixture.registry.completeFactoryDefaultReplacement(libraryID: replacement.id, defaultRootURL: oldRoot)
+        registry = await fixture.registry.snapshot()
+        XCTAssertEqual(registry.activeLibraryID, replacement.id)
+        XCTAssertNil(registry.pendingFactoryDefaultReplacement)
+        XCTAssertEqual(try Data(contentsOf: LibraryPaths(rootURL: customRoot).manifestURL), customManifestBefore)
+        XCTAssertEqual(try Data(contentsOf: LibraryPaths(rootURL: trashRoot).manifestURL), trashedManifestBefore)
+    }
+
+    func testFactoryDefaultCreationNeverSelectsAnAlternateOccupiedRoot() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let parent = fixture.root.appendingPathComponent("Music")
+        let occupiedRoot = parent.appendingPathComponent(LibraryPaths.rootDirectoryName)
+        try FileManager.default.createDirectory(at: occupiedRoot, withIntermediateDirectories: true)
+        let unknownFile = occupiedRoot.appendingPathComponent("keep.txt")
+        let original = Data("user content".utf8)
+        try original.write(to: unknownFile)
+
+        await XCTAssertThrowsErrorAsync(try await fixture.creationService().create(
+            mode: .referenced,
+            parentURL: parent,
+            displayName: "音乐资料库",
+            factoryDefaultRoot: true,
+            allowAlternateDestinationWhenOccupied: true
+        )) { XCTAssertEqual($0 as? LibraryCreationError, .destinationContainsUnknownItems) }
+
+        XCTAssertEqual(try Data(contentsOf: unknownFile), original)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: parent.path), [LibraryPaths.rootDirectoryName])
+        let registry = await fixture.registry.snapshot()
+        XCTAssertTrue(registry.libraries.isEmpty)
+    }
+
+    func testDeletingActiveDefaultRequestsReplacementInsteadOfCustomSuccessor() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("default")
+        let original = try fixture.makeLibrary(at: root, mode: .referenced)
+        _ = try await fixture.openService.open(selectedURL: root)
+        try await fixture.registry.updateBookmark(
+            libraryID: original.libraryID,
+            bookmarkData: Data(root.path.utf8),
+            lastKnownPath: LibraryLocationStore.defaultLibraryRootURL.path,
+            modeProjection: original.mode
+        )
+        let customRoot = fixture.root.appendingPathComponent("custom")
+        let custom = try fixture.makeLibrary(at: customRoot, mode: .managed)
+        try await fixture.registerWithoutActivation(root: customRoot, manifest: custom)
+
+        let action = try await fixture.removalService().moveToTrash(libraryID: original.libraryID)
+
+        XCTAssertEqual(action, .chooseLibrary)
+        XCTAssertNil(fixture.controller.activeLibraryContext)
+        let registry = await fixture.registry.snapshot()
+        XCTAssertNil(registry.library(id: original.libraryID))
+        XCTAssertNotNil(registry.library(id: custom.libraryID))
+        XCTAssertEqual(registry.pendingFactoryDefaultReplacement, true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: customRoot.path))
+    }
+
+    func testTrashReconciliationPreservesUnavailableCustomRegistration() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("offline-custom")
+        let manifest = try fixture.makeLibrary(at: root, mode: .managed)
+        try await fixture.registerWithoutActivation(root: root, manifest: manifest)
+        try FileManager.default.removeItem(at: root)
+        fixture.bookmarks.allowsAccess = false
+        let resolver = LibraryStartupContextResolver(registryStore: fixture.registry, bookmarkResolver: fixture.bookmarks)
+
+        let removed = await resolver.removeTrashedLibraries()
+
+        XCTAssertTrue(removed.isEmpty)
+        let registry = await fixture.registry.snapshot()
+        XCTAssertNotNil(registry.library(id: manifest.libraryID))
+        XCTAssertNil(registry.pendingFactoryDefaultReplacement)
+    }
+
+    func testInactiveDefaultInTrashRequiresReplacementWhileCustomLibraryIsActive() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let trashRoot = fixture.root.appendingPathComponent(".Trash").appendingPathComponent(LibraryPaths.rootDirectoryName)
+        let old = try fixture.makeLibrary(at: trashRoot, mode: .referenced)
+        try await fixture.registerWithoutActivation(root: trashRoot, manifest: old)
+        let customRoot = fixture.root.appendingPathComponent("custom")
+        let custom = try fixture.makeLibrary(at: customRoot, mode: .managed)
+        _ = try await fixture.openService.open(selectedURL: customRoot)
+        let customManifestBefore = try Data(contentsOf: LibraryPaths(rootURL: customRoot).manifestURL)
+
+        let resolution = await LibraryStartupContextResolver(
+            registryStore: fixture.registry,
+            bookmarkResolver: fixture.bookmarks
+        ).resolve()
+
+        XCTAssertEqual(resolution, .noActive)
+        let registry = await fixture.registry.snapshot()
+        XCTAssertNil(registry.library(id: old.libraryID))
+        XCTAssertEqual(registry.activeLibraryID, custom.libraryID)
+        XCTAssertEqual(registry.pendingFactoryDefaultReplacement, true)
+        XCTAssertEqual(try Data(contentsOf: LibraryPaths(rootURL: customRoot).manifestURL), customManifestBefore)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: trashRoot.path))
+    }
+
+    func testDeletingInactiveDefaultRequestsReplacementAndPreservesActiveCustomLibrary() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let defaultRoot = fixture.root.appendingPathComponent("default")
+        let old = try fixture.makeLibrary(at: defaultRoot, mode: .referenced)
+        try await fixture.registerWithoutActivation(root: defaultRoot, manifest: old)
+        try await fixture.registry.updateBookmark(
+            libraryID: old.libraryID,
+            bookmarkData: Data(defaultRoot.path.utf8),
+            lastKnownPath: LibraryLocationStore.defaultLibraryRootURL.path,
+            modeProjection: old.mode
+        )
+        let customRoot = fixture.root.appendingPathComponent("custom")
+        let custom = try fixture.makeLibrary(at: customRoot, mode: .managed)
+        _ = try await fixture.openService.open(selectedURL: customRoot)
+
+        let action = try await fixture.removalService().moveToTrash(libraryID: old.libraryID)
+
+        XCTAssertEqual(action, .chooseLibrary)
+        XCTAssertEqual(fixture.controller.activeLibraryContext?.id, custom.libraryID)
+        var registry = await fixture.registry.snapshot()
+        XCTAssertEqual(registry.pendingFactoryDefaultReplacement, true)
+        XCTAssertNil(registry.library(id: old.libraryID))
+        let parent = fixture.root.appendingPathComponent("Music")
+        let result = try await fixture.creationService().create(
+            mode: .referenced,
+            parentURL: parent,
+            displayName: "音乐资料库",
+            factoryDefaultRoot: true
+        )
+        guard case .created(let replacement, _) = result else { return XCTFail("Expected replacement") }
+        XCTAssertEqual(fixture.controller.activeLibraryContext?.id, replacement.id)
+        try await fixture.registry.completeFactoryDefaultReplacement(
+            libraryID: replacement.id,
+            defaultRootURL: parent.appendingPathComponent(LibraryPaths.rootDirectoryName)
+        )
+        registry = await fixture.registry.snapshot()
+        XCTAssertNil(registry.pendingFactoryDefaultReplacement)
+        XCTAssertNotNil(registry.library(id: custom.libraryID))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: customRoot.path))
+    }
+
+    func testFlushPolicySkipsMovedOrReplacedRootsButReportsManifestErrors() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("library")
+        let manifest = try fixture.makeLibrary(at: root, mode: .referenced)
+        let context = LibraryContext(manifest: manifest, rootURL: root, rootBookmarkData: Data(), generation: 1)
+        XCTAssertTrue(try LibraryRootLocationPolicy.canFlush(context))
+
+        try Data("damaged manifest".utf8).write(to: context.paths.manifestURL)
+        XCTAssertThrowsError(try LibraryRootLocationPolicy.canFlush(context))
+
+        try FileManager.default.removeItem(at: context.paths.manifestURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.path))
+        XCTAssertThrowsError(try LibraryRootLocationPolicy.canFlush(context))
+
+        let replacement = MusicLibraryManifest(displayName: "Replacement", mode: .referenced)
+        try replacement.write(to: context.paths.manifestURL)
+        let replacementData = try Data(contentsOf: context.paths.manifestURL)
+        XCTAssertFalse(try LibraryRootLocationPolicy.canFlush(context))
+
+        _ = try context.rootURL.resourceValues(forKeys: [.isDirectoryKey])
+        let movedRoot = fixture.root.appendingPathComponent("moved-library")
+        try FileManager.default.moveItem(at: root, to: movedRoot)
+        XCTAssertFalse(try LibraryRootLocationPolicy.canFlush(context))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        XCTAssertEqual(try Data(contentsOf: LibraryPaths(rootURL: movedRoot).manifestURL), replacementData)
+
+        _ = try fixture.makeLibrary(at: root, mode: .referenced)
+        XCTAssertFalse(try LibraryRootLocationPolicy.canFlush(context))
+        _ = try context.rootURL.resourceValues(forKeys: [.isDirectoryKey])
+        try FileManager.default.removeItem(at: root)
+        XCTAssertFalse(try LibraryRootLocationPolicy.canFlush(context))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+        let trashContext = LibraryContext(
+            manifest: manifest,
+            rootURL: fixture.root.appendingPathComponent(".Trash/library"),
+            rootBookmarkData: Data(),
+            generation: 1
+        )
+        XCTAssertFalse(try LibraryRootLocationPolicy.canFlush(trashContext))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: trashContext.rootURL.path))
+    }
+
+    func testExplicitOpenRejectsTrashBeforeRepairingScaffolding() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent(".Trashes/501/custom")
+        _ = try fixture.makeLibrary(at: root, mode: .managed)
+        let settingsURL = LibraryPaths(rootURL: root).librarySettingsURL
+        try FileManager.default.removeItem(at: settingsURL)
+
+        await XCTAssertThrowsErrorAsync(try await fixture.openService.open(selectedURL: root)) {
+            XCTAssertEqual($0 as? LibraryOpenError, .libraryNotFound)
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: settingsURL.path))
+        XCTAssertNil(fixture.controller.activeLibraryContext)
+    }
+
     func testStartupResolverNeverReturnsRemovedInitialLibrary() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -1230,30 +1482,65 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
 }
 
 private final class LifecycleTestBookmarkResolver: kmgccc_player.BookmarkResolving, @unchecked Sendable {
+    private struct State {
+        var isStale = false
+        var allowsAccess = true
+        var failNextRefresh = false
+        var redirectedBookmarks: [Data: URL] = [:]
+        var bookmarkRoots: [Data: URL] = [:]
+        var startCount = 0
+        var stopCount = 0
+        var refreshCount = 0
+    }
+
     private let lock = NSLock()
-    var isStale = false
-    var allowsAccess = true
-    var failNextRefresh = false
-    private(set) var startCount = 0
-    private(set) var stopCount = 0
-    private(set) var refreshCount = 0
+    private var state = State()
+    var isStale: Bool {
+        get { lock.withLock { state.isStale } }
+        set { lock.withLock { state.isStale = newValue } }
+    }
+    var allowsAccess: Bool {
+        get { lock.withLock { state.allowsAccess } }
+        set { lock.withLock { state.allowsAccess = newValue } }
+    }
+    var failNextRefresh: Bool {
+        get { lock.withLock { state.failNextRefresh } }
+        set { lock.withLock { state.failNextRefresh = newValue } }
+    }
+    var startCount: Int { lock.withLock { state.startCount } }
+    var stopCount: Int { lock.withLock { state.stopCount } }
+    var refreshCount: Int { lock.withLock { state.refreshCount } }
+
+    func redirect(_ bookmark: Data, to rootURL: URL) {
+        lock.withLock { state.redirectedBookmarks[bookmark] = rootURL }
+    }
+
     func resolve(_ data: Data) throws -> (url: URL, isStale: Bool) {
-        guard let path = String(data: data, encoding: .utf8) else { throw TestError.expected }
-        return (URL(fileURLWithPath: path, isDirectory: true), isStale)
+        try lock.withLock {
+            if let root = state.redirectedBookmarks[data] ?? state.bookmarkRoots[data] { return (root, state.isStale) }
+            guard let path = String(data: data, encoding: .utf8) else { throw TestError.expected }
+            return (URL(fileURLWithPath: path, isDirectory: true), state.isStale)
+        }
     }
     func refreshBookmark(for url: URL) throws -> Data {
-        refreshCount += 1
-        if failNextRefresh { failNextRefresh = false; throw TestError.expected }
-        return Data(url.standardizedFileURL.path.utf8)
+        try lock.withLock {
+            state.refreshCount += 1
+            if state.failNextRefresh { state.failNextRefresh = false; throw TestError.expected }
+            // A fresh bookmark belongs to this root, even if an earlier root at
+            // the same path has moved to the Trash.
+            let bookmark = Data(UUID().uuidString.utf8)
+            state.bookmarkRoots[bookmark] = url.standardizedFileURL
+            return bookmark
+        }
     }
     func startAccessing(_ url: URL) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        startCount += 1
-        return allowsAccess
+        lock.withLock {
+            state.startCount += 1
+            return state.allowsAccess
+        }
     }
     func stopAccessing(_ url: URL) {
-        lock.lock(); defer { lock.unlock() }
-        stopCount += 1
+        lock.withLock { state.stopCount += 1 }
     }
 }
 

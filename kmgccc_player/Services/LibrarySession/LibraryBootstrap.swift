@@ -15,6 +15,7 @@ nonisolated struct LibraryBootstrapResult: Sendable, Equatable {
 
 nonisolated enum LibraryBootstrapError: Error, Equatable {
     case manifestIdentityMismatch
+    case libraryInTrash
 }
 
 /// Restores the active library from the registry before the main window
@@ -47,6 +48,7 @@ nonisolated struct LibraryBootstrap: Sendable {
             return .noLibrary
         }
         var registry = try MusicLibraryRegistryFile.load(from: registryURL)
+        guard registry.pendingFactoryDefaultReplacement != true else { return .noLibrary }
         guard let activeID = registry.activeLibraryID,
               let descriptorIndex = registry.libraries.firstIndex(where: { $0.id == activeID }) else {
             return .noLibrary
@@ -73,6 +75,10 @@ nonisolated struct LibraryBootstrap: Sendable {
         let rootURL = bookmarkRootExists
             ? bookmarkedURL
             : URL(fileURLWithPath: descriptor.lastKnownPath, isDirectory: true)
+        guard !LibraryRootLocationPolicy.isInTrash(bookmarkedURL),
+              !LibraryRootLocationPolicy.isInTrash(rootURL) else {
+            throw LibraryBootstrapError.libraryInTrash
+        }
         let manifest = try MusicLibraryManifest.read(
             from: LibraryPaths(rootURL: rootURL).manifestURL
         )

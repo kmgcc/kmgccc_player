@@ -3,6 +3,42 @@ import XCTest
 @testable import kmgccc_player
 
 final class LibraryBootstrapTests: XCTestCase {
+    func testLegacyRegistryWithoutReplacementMarkerRemainsDecodable() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.container) }
+        let data = Data(#"{"schemaVersion":1,"libraries":[]}"#.utf8)
+        try FileManager.default.createDirectory(at: fixture.registry.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: fixture.registry)
+
+        let registry = try MusicLibraryRegistryFile.load(from: fixture.registry)
+
+        XCTAssertEqual(registry, MusicLibraryRegistry())
+        XCTAssertNil(registry.pendingFactoryDefaultReplacement)
+    }
+
+    func testBootstrapRejectsBookmarkThatFollowedRootIntoTrash() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.container) }
+        _ = try registerLibrary(at: fixture)
+        let trashRoot = fixture.container.appendingPathComponent(".Trash/Library")
+        try FileManager.default.createDirectory(at: trashRoot.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: fixture.root, to: trashRoot)
+        let manifestURL = LibraryPaths(rootURL: trashRoot).manifestURL
+        let manifestBefore = try Data(contentsOf: manifestURL)
+        let registryBefore = try Data(contentsOf: fixture.registry)
+        let bootstrap = LibraryBootstrap(
+            registryURL: fixture.registry,
+            bookmarkDataProvider: { _ in throw NSError(domain: "Unexpected refresh", code: 1) },
+            bookmarkURLResolver: { _ in (trashRoot, true) }
+        )
+
+        XCTAssertThrowsError(try bootstrap.run()) {
+            XCTAssertEqual($0 as? LibraryBootstrapError, .libraryInTrash)
+        }
+        XCTAssertEqual(try Data(contentsOf: manifestURL), manifestBefore)
+        XCTAssertEqual(try Data(contentsOf: fixture.registry), registryBefore)
+    }
+
     func testDefaultBookmarkResolverRestoresRegularBookmark() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.container) }

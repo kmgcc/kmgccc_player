@@ -56,6 +56,11 @@ enum WhatsNewConfiguration {
         title: "什么是新的",
         features: [
             WhatsNew.Feature(
+                image: .init(systemName: "books.vertical", foregroundColor: .orange),
+                title: "资料库修复",
+                subtitle: "修复打开或移除资料库时可能退出，以及已移入废纸篓的资料库仍显示的问题。"
+            ),
+            WhatsNew.Feature(
                 image: .init(systemName: "checkmark.circle", foregroundColor: .green),
                 title: "更新公告",
                 subtitle: "点击“继续”后可正常关闭更新公告。"
