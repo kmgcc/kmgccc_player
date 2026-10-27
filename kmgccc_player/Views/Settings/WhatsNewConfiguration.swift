@@ -58,37 +58,7 @@ enum WhatsNewConfiguration {
             WhatsNew.Feature(
                 image: .init(systemName: "books.vertical", foregroundColor: .orange),
                 title: "资料库修复",
-                subtitle: "修复打开或移除资料库时可能退出，以及已移入废纸篓的资料库仍显示的问题。"
-            ),
-            WhatsNew.Feature(
-                image: .init(systemName: "checkmark.circle", foregroundColor: .green),
-                title: "更新公告",
-                subtitle: "点击“继续”后可正常关闭更新公告。"
-            ),
-            WhatsNew.Feature(
-                image: .init(systemName: "livephoto", foregroundColor: .pink),
-                title: "Apple Music 动态封面",
-                subtitle: "为歌曲或专辑查找动态封面，也可以导入自己的视频。"
-            ),
-            WhatsNew.Feature(
-                image: .init(systemName: "slider.horizontal.3", foregroundColor: .orange),
-                title: "侧边栏快捷按钮",
-                subtitle: "自己选择和排列常用按钮，最多放四个。"
-            ),
-            WhatsNew.Feature(
-                image: .init(systemName: "photo.badge.arrow.down", foregroundColor: .blue),
-                title: "更新旧封面",
-                subtitle: "为部分旧歌曲重新查找更清晰的封面。任务可暂停或结束；旧曲库中来源不明的手动封面可能会被替换。"
-            ),
-            WhatsNew.Feature(
-                image: .init(systemName: "photo", foregroundColor: .green),
-                title: "改善封面画质",
-                subtitle: "保存封面时尽量保留原图，切换歌曲时封面衔接也更快。"
-            ),
-            WhatsNew.Feature(
-                image: .init(systemName: "pencil.line", foregroundColor: .purple),
-                title: "保留手动修改",
-                subtitle: "自动补充歌曲资料时，会保留你手动修改的内容。"
+                subtitle: "修复资料库打开或删除异常的问题。"
             )
         ],
         primaryAction: .init(
