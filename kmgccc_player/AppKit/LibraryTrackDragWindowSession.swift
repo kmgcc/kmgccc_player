@@ -129,6 +129,8 @@ final class LibraryTrackDragWindowSession {
     private var windowOrigin: CGRect = .zero
     private var grabOffset: CGPoint = .zero
     private var pendingPress: Press?
+    private var pointerTimer: Timer?
+    private var lastPointerLocation: NSPoint?
 
     // Source-owned drag state.
     private var sourceHandlers: SourceHandlers?
@@ -371,7 +373,25 @@ final class LibraryTrackDragWindowSession {
         moveWindowDrag()
         overlay.layoutSubtreeIfNeeded()
         installDragMonitors()
+        startPointerTracking()
         start.onSessionChanged?(true)
+
+        let destination = presentation.frame.origin
+        if let pickupAnimation = motion.control,
+           hypot(destination.x - windowOrigin.minX, destination.y - windowOrigin.minY) > 16 {
+            presentation.pickupOrigin = windowOrigin.origin
+            presentation.pickupProgress = 0
+            presentation.isPickingUp = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.activeID == id, self.phase == .dragging else { return }
+                withAnimation(pickupAnimation, completionCriteria: .removed) {
+                    self.presentation.pickupProgress = 1
+                } completion: {
+                    guard self.activeID == id else { return }
+                    self.presentation.isPickingUp = false
+                }
+            }
+        }
 
         // Lift on the next pass so the card first renders flush with its row.
         DispatchQueue.main.async { [weak self] in
@@ -392,6 +412,8 @@ final class LibraryTrackDragWindowSession {
     }
 
     private func releaseWindowDrag(at windowPoint: NSPoint) {
+        stopPointerTracking()
+        presentation.isPickingUp = false
         // Resolve the drop from this mouse-up event, never from cached hover.
         moveWindowDrag(at: windowPoint)
         if let destination = hoveredDestination, destination.performDrop != nil {
@@ -502,6 +524,8 @@ final class LibraryTrackDragWindowSession {
         guard activeID != nil else { return }
         let start = windowStart
         activeID = nil
+        stopPointerTracking()
+        presentation.isPickingUp = false
         dropTask?.cancel()
         dropTask = nil
         setHoveredDestination(nil)
@@ -520,8 +544,38 @@ final class LibraryTrackDragWindowSession {
 
     private func cancelActiveDrag() {
         guard let id = activeID, phase == .dragging else { return }
+        stopPointerTracking()
+        presentation.isPickingUp = false
         setHoveredDestination(nil)
         returnHome(id)
+    }
+
+    // Some controls enter their own tracking loop and stop forwarding drag
+    // events to local monitors. Sample the pointer while the window owns the
+    // drag, including during AppKit's event-tracking run-loop mode.
+    private func startPointerTracking() {
+        stopPointerTracking()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let window = self.window,
+                      self.activeID != nil, self.owner == .window, self.phase == .dragging else { return }
+                let point = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+                if NSEvent.pressedMouseButtons & 1 == 0 {
+                    self.releaseWindowDrag(at: point)
+                } else if self.lastPointerLocation != point {
+                    self.lastPointerLocation = point
+                    self.moveWindowDrag(at: point)
+                }
+            }
+        }
+        pointerTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func stopPointerTracking() {
+        pointerTimer?.invalidate()
+        pointerTimer = nil
+        lastPointerLocation = nil
     }
 
     private func installDragMonitors() {
@@ -676,6 +730,9 @@ private final class LibraryTrackDragPresentation {
     var glassOpacity: Double = 1
     var isSettled = false
     var isOverTarget = false
+    var pickupOrigin: CGPoint = .zero
+    var pickupProgress: CGFloat = 1
+    var isPickingUp = false
 }
 
 private struct LibraryTrackDragOverlay: View {
@@ -686,7 +743,11 @@ private struct LibraryTrackDragOverlay: View {
             .frame(width: presentation.frame.width, height: presentation.frame.height, alignment: .topLeading)
             .scaleEffect(presentation.scale, anchor: presentation.scaleAnchor)
             .opacity(presentation.opacity)
-            .position(x: presentation.frame.midX, y: presentation.frame.midY)
+            .modifier(LibraryTrackPickupPosition(
+                start: presentation.pickupOrigin,
+                destination: presentation.frame.origin,
+                progress: presentation.isPickingUp ? presentation.pickupProgress : 1
+            ))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
@@ -709,6 +770,36 @@ private struct LibraryTrackDragOverlay: View {
         case let .custom(view):
             view
         }
+    }
+}
+
+private struct LibraryTrackPickupPosition: GeometryEffect {
+    let start: CGPoint
+    var destination: CGPoint
+    var progress: CGFloat
+
+    var animatableData: AnimatablePair<CGFloat, AnimatablePair<CGFloat, CGFloat>> {
+        get { AnimatablePair(progress, AnimatablePair(destination.x, destination.y)) }
+        set {
+            progress = newValue.first
+            destination = CGPoint(x: newValue.second.first, y: newValue.second.second)
+        }
+    }
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        let t = min(max(progress, 0), 1)
+        let dx = destination.x - start.x
+        let dy = destination.y - start.y
+        let distance = hypot(dx, dy)
+        let bend = min(26, distance * 0.16)
+        let direction: CGFloat = dy <= 0 ? 1 : -1
+        let bx = distance > 1 ? -dy / distance * bend * direction : 0
+        let by = distance > 1 ? dx / distance * bend * direction : 0
+        let curve = 3 * (1 - t) * t
+        return ProjectionTransform(CGAffineTransform(
+            translationX: start.x + dx * t + bx * curve,
+            y: start.y + dy * t + by * curve
+        ))
     }
 }
 

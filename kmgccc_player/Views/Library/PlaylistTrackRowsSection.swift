@@ -47,10 +47,13 @@ struct PlaylistTrackRowsSection: View {
         Group {
             if pageController.isMultiselectMode {
                 swiftUIRows
+                    .transition(.identity)
             } else {
                 appKitRows
+                    .transition(.identity)
             }
         }
+        .animation(nil, value: pageController.isMultiselectMode)
     }
 
     private var swiftUIRows: some View {
