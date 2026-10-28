@@ -67,41 +67,46 @@ final class SkinSceneData {
     func invalidate() { revision &+= 1 }
 
     func set(_ domain: SkinDataDomain, _ values: [String: SkinValue]) {
-        revision &+= 1
         switch domain {
-        case .track: if track != values { track = values }
-        case .artwork: if artwork != values { artwork = values }
-        case .playback: if playback != values { playback = values }
-        case .lyrics: if lyrics != values { lyrics = values }
-        case .theme: if theme != values { theme = values }
+        case .track: replace(\.track, values)
+        case .artwork: replace(\.artwork, values)
+        case .playback: replace(\.playback, values)
+        case .lyrics: replace(\.lyrics, values)
+        case .theme: replace(\.theme, values)
         case .viewport:
-            let merged = values.merging(viewportFacts) { _, new in new }
-            if viewport != merged { viewport = merged }
+            replace(\.viewport, values.merging(viewportFacts) { _, new in new })
             viewportSize = CGSize(width: values["viewport.width"]?.number(1) ?? 1, height: values["viewport.height"]?.number(1) ?? 1)
-        case .host:
-            let merged = values.merging(hostFacts) { _, new in new }
-            if host != merged { host = merged }
-        case .prefs: if prefs != values { prefs = values }
-        case .like: if like != values { like = values }
-        case .queue: if queue != values { queue = values }
-        case .library: if library != values { library = values }
-        case .output: if output != values { output = values }
-        case .params: if parameters != values { parameters = values }
-        case .state: if state != values { state = values }
+        case .host: replace(\.host, values.merging(hostFacts) { _, new in new })
+        case .prefs: replace(\.prefs, values)
+        case .like: replace(\.like, values)
+        case .queue: replace(\.queue, values)
+        case .library: replace(\.library, values)
+        case .output: replace(\.output, values)
+        case .params: replace(\.parameters, values)
+        case .state: replace(\.state, values)
         case .clock, .lyricsTimeline, .audio, .time, .local: break
         }
     }
 
+    /// Writes only a changed domain, so readers and cached node values stay put otherwise.
+    private func replace(_ field: ReferenceWritableKeyPath<SkinSceneData, [String: SkinValue]>, _ values: [String: SkinValue]) {
+        guard self[keyPath: field] != values else { return }
+        revision &+= 1
+        self[keyPath: field] = values
+    }
+
     // Unchanged facts are not written, so a host probe update does not re-render every reader.
     func updateHostFacts(_ values: [String: SkinValue]) {
-        revision &+= 1
         hostFacts.merge(values) { _, new in new }
-        if values.contains(where: { host[$0.key] != $0.value }) { host.merge(values) { _, new in new } }
+        guard values.contains(where: { host[$0.key] != $0.value }) else { return }
+        revision &+= 1
+        host.merge(values) { _, new in new }
     }
     func updateViewportFacts(_ values: [String: SkinValue]) {
-        revision &+= 1
         viewportFacts.merge(values) { _, new in new }
-        if values.contains(where: { viewport[$0.key] != $0.value }) { viewport.merge(values) { _, new in new } }
+        guard values.contains(where: { viewport[$0.key] != $0.value }) else { return }
+        revision &+= 1
+        viewport.merge(values) { _, new in new }
     }
 
     func setState(_ name: String, _ value: SkinValue) {
@@ -111,8 +116,7 @@ final class SkinSceneData {
     }
 
     func resetState(_ defaults: [String: SkinValue]) {
-        revision &+= 1
-        if state != defaults { state = defaults }
+        replace(\.state, defaults)
     }
 
     // MARK: Reads from expressions

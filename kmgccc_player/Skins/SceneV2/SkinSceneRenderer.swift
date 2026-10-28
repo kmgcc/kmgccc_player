@@ -409,8 +409,8 @@ struct SkinSceneNodeV2View: View {
     }
 
     /// Evaluates `glyphMotion` once per glyph. `glyph` carries index, count, char, word, line,
-    /// start and end (seconds), age (seconds since the glyph's start), progress (0…1 through it)
-    /// and lineAge. Lyric lines time glyphs by the sung words; plain text from when it last changed.
+    /// start and end (seconds), age (seconds since the glyph's start), progress (0…1 through it),
+    /// lineAge and fontSize. Lyric lines time glyphs by the sung words; plain text from when it last changed.
     private func glyphStyle(_ values: [String: SkinValue], text: String, lineIndex: Int?, lyricTime: Double, now: Double, fontSize: Double) -> SkinGlyphStyle? {
         let fallback = values["color"]?.colorValue ?? data.theme["theme.appForeground.primary"]?.colorValue
         let outline = SkinGlyphOutline(values["outline"], fallback: fallback)
@@ -441,7 +441,7 @@ struct SkinSceneNodeV2View: View {
                 "word": .number(Double(time.word)), "line": .number(Double(lineIndex ?? 0)),
                 "start": .number(time.start), "end": .number(time.end), "age": .number(clock - time.start),
                 "progress": .number(time.end > time.start ? ((clock - time.start) / (time.end - time.start)).clamped01 : (clock >= time.start ? 1 : 0)),
-                "lineAge": .number(clock - lineStart),
+                "lineAge": .number(clock - lineStart), "fontSize": .number(fontSize),
             ])
             let transform = SkinGlyphTransform(motion.evaluate(scope))
             reach = max(reach, abs(transform.x) + abs(transform.split) + abs(transform.smearX) / 2,

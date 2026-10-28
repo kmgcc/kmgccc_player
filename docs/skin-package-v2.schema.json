@@ -258,7 +258,7 @@
             "x": {}, "y": {}, "rotation": {}, "scale": {}, "opacity": {}, "blur": {}, "tint": {}, "split": {}, "smearX": {}, "smearY": {}
           },
           "additionalProperties": false,
-          "description": "text, lyricLine: per-glyph x, y, rotation, scale, opacity, blur, tint, split (RGB separation) and smearX/smearY (motion smear) around each glyph's centre; expressions read glyph.index, count, char, word, line, start, end, age, progress, lineAge"
+          "description": "text, lyricLine: per-glyph x, y, rotation, scale, opacity, blur, tint, split (RGB separation) and smearX/smearY (motion smear) around each glyph's centre; expressions read glyph.index, count, char, word, line, start, end, age, progress, lineAge, fontSize"
         },
         "extrude": {
           "description": "text, lyricLine: solid depth behind each glyph: a depth, or {depth, angle, color, endColor}"

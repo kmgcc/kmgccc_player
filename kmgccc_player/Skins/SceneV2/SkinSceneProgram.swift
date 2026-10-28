@@ -164,9 +164,13 @@ final class SkinCompiledSceneNode: Identifiable {
         }
         for watch in watches { frame.formUnion(watch.value.frameDomains) }
         if ["particles", "shader", "fog"].contains(type) { frame.insert(.time) }
-        // A plain text's glyphs keep their own clock from the moment the text appears.
-        pausesWithPlayback = properties["keyframes"] == nil && frame.isDisjoint(with: [.time, .host])
-            && !(type == "text" && properties["glyphMotion"] != nil)
+        // A plain text's glyphs keep their own clock from the moment the text appears, so only
+        // glyph motion that reads that clock keeps running while playback pauses.
+        let glyphClockFields = ["glyph.age", "glyph.lineAge", "glyph.progress", "glyph.start", "glyph.end"]
+        let readsGlyphClock = type == "text" && (properties["glyphMotion"]?.sources.contains { source in
+            glyphClockFields.contains { source.contains($0) }
+        } ?? false)
+        pausesWithPlayback = properties["keyframes"] == nil && frame.isDisjoint(with: [.time, .host]) && !readsGlyphClock
         nodeValues = evaluated
         camera = properties["camera"]
         cameraPausesWithPlayback = camera.map { $0.frameDomains.isDisjoint(with: [.time, .host]) } ?? true

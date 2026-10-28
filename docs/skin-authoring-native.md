@@ -160,6 +160,7 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 | `start`、`end` | 字的开始与结束时刻，秒 |
 | `age`、`progress` | 自开始以来的秒数，以及在本字时长内的 0 到 1 进度 |
 | `lineAge` | 自本行第一个字开始以来的秒数 |
+| `fontSize` | 该节点的字号，位移可写成字号的倍数 |
 
 歌词行按逐词时间分配到字，没有逐词时间时按整行均分；普通文字以文字最近一次变化为起点，`progress` 恒为 1。静止时的字波与逐字进入可以合写：
 
@@ -171,7 +172,7 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 }}
 ```
 
-`easeIn`、`easeOut`、`easeInOut` 与 `backOut` 把 0 到 1 的进度映射为缓动曲线，`backOut` 带回弹。表达式里的时长宜写成 MotionKit token 的倍数：声明 `motion@1` 后，`motion.emphasis`、`motion.contentReplacement` 等给出各 token 按用户动画速度换算后的秒数，`motion.speed` 为相对标准速度的倍率；上例的 0.5 可写作 `motion.emphasis`。颜色同理取自 `theme.*`，皮肤便随歌曲换色。逐字运动与 `glyphs` 过渡可以叠加；`outline` 为每个字描边，写成宽度，或 `{width, color, hollow}`，`hollow` 只留外圈，适合做空心衬底大字。`extrude` 为每个字加上实心的厚度，写成深度，或 `{depth, angle, color, endColor}`，颜色由近及远渐变。glyphMotion 另有 `split`（红蓝错开的点数，逐字色散）与 `smearX`/`smearY`（沿位移方向的拖影）。减弱动态效果时逐字运动停止，描边与厚度保留。
+`easeIn`、`easeOut`、`easeInOut` 与 `backOut` 把 0 到 1 的进度映射为缓动曲线，`backOut` 带回弹。表达式里的时长宜写成 MotionKit token 的倍数：声明 `motion@1` 后，`motion.emphasis`、`motion.contentReplacement` 等给出各 token 按用户动画速度换算后的秒数，`motion.speed` 为相对标准速度的倍率；上例的 0.5 可写作 `motion.emphasis`。颜色同理取自 `theme.*`，皮肤便随歌曲换色。逐字运动与 `glyphs` 过渡可以叠加；`outline` 为每个字描边，写成宽度，或 `{width, color, hollow}`，`hollow` 只留外圈，适合做空心衬底大字；宽度为 0 时不描边。`extrude` 为每个字加上实心的厚度，写成深度，或 `{depth, angle, color, endColor}`，颜色由近及远渐变。glyphMotion 另有 `split`（红蓝错开的点数，逐字色散）与 `smearX`/`smearY`（沿位移方向的拖影）。减弱动态效果时逐字运动停止，描边与厚度保留。
 
 逐词排版用文字测量与列表函数完成，不必手算：
 
@@ -233,7 +234,7 @@ float4 skinFragment(float2 uv, constant SkinUniforms& u, texture2d<float> artwor
 
 内置原件保留，导出置灰。导入同 ID 用户包时可替换或另存副本；失败保留当前版本。删除使用中的皮肤会把相关模式切回默认皮肤，播放继续。
 
-“关联目录”登记作者目录，并监听文件变更。错误保留上一次可用场景；移除关联保留源码。右键刷新或设置内重载会重新编译当前包。
+“关联目录”登记作者目录，并监听文件变更；选中存放多个皮肤包的文件夹时，其中每个含 `manifest.json` 的子目录都会关联。错误保留上一次可用场景；移除关联保留源码。右键刷新或设置内重载会重新编译当前包。
 
 从仓库根目录检查和打包：
 

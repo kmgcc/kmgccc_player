@@ -253,6 +253,17 @@ final class SkinSystemTests: XCTestCase {
         XCTAssertFalse(wave.pausesWithPlayback)
         XCTAssertNil(wave.values(SkinEvaluationContext(data: SkinSceneData()))["glyphMotion"])
         XCTAssertTrue(try node(#"{"type":"lyricLine","glyphMotion":{"opacity":"=glyph.progress"}}"#).pausesWithPlayback)
+        // A plain text keeps running only when its glyph motion reads the glyph clock.
+        XCTAssertFalse(try node(#"{"type":"text","text":"a","glyphMotion":{"y":"=easeOut(glyph.age / 0.4)"}}"#).pausesWithPlayback)
+        XCTAssertTrue(try node(#"{"type":"text","text":"a","glyphMotion":{"y":"=glyph.index * glyph.fontSize * 0.1"}}"#).pausesWithPlayback)
+        XCTAssertNil(SkinGlyphOutline(.number(0), fallback: nil))
+        // Unchanged writes leave the revision alone, so cached node values survive pointer moves.
+        let facts = SkinSceneData()
+        facts.set(.theme, ["theme.accent": .number(1)])
+        let revision = facts.revision
+        facts.set(.theme, ["theme.accent": .number(1)])
+        facts.updateHostFacts(["host.pointerIdle": .boolean(false)])
+        XCTAssertEqual(facts.revision, revision)
         XCTAssertThrowsError(try node(#"{"type":"text","text":"=glyph.char"}"#))
         XCTAssertThrowsError(try node(#"{"type":"shape","glyphMotion":{"y":1}}"#))
 
