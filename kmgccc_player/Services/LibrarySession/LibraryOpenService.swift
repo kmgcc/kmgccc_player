@@ -62,6 +62,7 @@ final class LibraryOpenService {
         allowStalePathConflictRepair: Bool = false
     ) async throws -> LibraryOpenInspection {
         let root = try await resolveLibraryRoot(selectedURL)
+        guard !LibraryRootLocationPolicy.isInTrash(root) else { throw LibraryOpenError.libraryNotFound }
         let didStart = bookmarkResolver.startAccessing(root)
         guard didStart || !requiresSecurityScope else { throw LibraryOpenError.securityScopeDenied }
         defer { if didStart { bookmarkResolver.stopAccessing(root) } }

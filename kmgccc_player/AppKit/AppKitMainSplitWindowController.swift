@@ -55,8 +55,12 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     private static var sharedController: AppKitMainSplitWindowController?
     private static var rebuildState = LibraryHostRebuildState()
 
-    private let splitViewController: AppKitMainSplitViewController
-    private let rootViewController: AppKitMainRootViewController
+    static var isRebuildingAfterLibrarySwitch: Bool {
+        rebuildState.pendingGeneration != nil
+    }
+
+    private var splitViewController: AppKitMainSplitViewController
+    private var rootViewController: AppKitMainRootViewController
     private var toolbarController: AppKitMainToolbarController?
     private let appSession: AppSessionHost
     private var didInstallToolbar = false
@@ -206,16 +210,33 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
     static func releaseActiveLibraryReferences() {
         guard let controller = sharedController else { return }
-        controller.splitViewController.playlistPageController.releaseForSessionTeardown()
-        controller.window?.contentViewController = nil
-        controller.window?.orderOut(nil)
-        sharedController = nil
+        // The window belongs to the process, while its panes belong to a
+        // library. Keep the window alive throughout the asynchronous handoff.
         _ = rebuildState.recordRelease()
+        controller.splitViewController.playlistPageController.releaseForSessionTeardown()
+        controller.splitViewController.onToolbarTrackingReady = nil
+        if let window = controller.window {
+            controller.toolbarController?.detachFromWindow(window)
+            window.toolbar = nil
+        }
+        controller.toolbarController = nil
+        controller.didInstallToolbar = false
     }
 
     static func rebuildAfterLibrarySwitchIfNeeded(appSession: AppSessionHost) {
-        guard rebuildState.consumeRebuildAfterPublish() != nil else { return }
+        guard isRebuildingAfterLibrarySwitch else { return }
+        if let controller = sharedController {
+            let splitViewController = AppKitMainSplitViewController(appSession: appSession)
+            controller.splitViewController = splitViewController
+            controller.rootViewController = AppKitMainRootViewController(
+                appSession: appSession,
+                splitViewController: splitViewController
+            )
+            controller.configureToolbarReadiness()
+            controller.window?.contentViewController = controller.rootViewController
+        }
         _ = show(appSession: appSession)
+        _ = rebuildState.consumeRebuildAfterPublish()
     }
 
     static func currentLyricsWidth() -> CGFloat {
@@ -277,6 +298,10 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         window.delegate = self
         installPlaybackQueueDismissMonitorIfNeeded()
 
+        configureToolbarReadiness()
+    }
+
+    private func configureToolbarReadiness() {
         // Install the toolbar only after the split view has applied its initial layout (viewDidAppear),
         // otherwise tracking separator items may bind too early (or throw during setToolbar).
         splitViewController.onToolbarTrackingReady = { [weak self] in

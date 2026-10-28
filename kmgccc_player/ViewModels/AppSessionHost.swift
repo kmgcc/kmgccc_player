@@ -158,6 +158,7 @@ final class AppSessionHost: ObservableObject {
     private var appActiveLibraryObserver: NSObjectProtocol?
     private var backgroundSettingsObserver: NSObjectProtocol?
     private var activeLibraryRescanTask: Task<Void, Never>?
+    private var trashedLibraryReconciliationTask: Task<Void, Never>?
     private var playbackMemoryTimer: Timer?
     private var memoryPressureObserverToken: UUID?
     private let mainThreadStallMonitor = MainThreadStallMonitor()
@@ -307,7 +308,51 @@ final class AppSessionHost: ObservableObject {
     }
 
     func musicLibraryRegistrySnapshot() async -> MusicLibraryRegistry {
-        await registryStore?.snapshot() ?? MusicLibraryRegistry()
+        await reconcileTrashedMusicLibraries()
+        return await registryStore?.snapshot() ?? MusicLibraryRegistry()
+    }
+
+    private func reconcileTrashedMusicLibraries() async {
+        if let task = trashedLibraryReconciliationTask {
+            await task.value
+            return
+        }
+        // Settings reloads can be cancelled when publishing a new generation.
+        // The library handoff must finish independently of that view task.
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performTrashedLibraryReconciliation()
+        }
+        trashedLibraryReconciliationTask = task
+        await task.value
+        trashedLibraryReconciliationTask = nil
+    }
+
+    private func performTrashedLibraryReconciliation() async {
+        guard let registryStore else { return }
+        do { try libraryLifecycleGate.acquire() }
+        catch { return }
+        let previousContext = sessionController.activeLibraryContext
+        let removedIDs = await LibraryStartupContextResolver(registryStore: registryStore)
+            .removeTrashedLibraries()
+        let removedActive = previousContext.map { removedIDs.contains($0.id) } ?? false
+        var didClose = false
+        if removedActive {
+            do {
+                try await sessionController.closeActiveSession()
+                didClose = true
+            } catch {
+                Log.error("[LibrarySession] failed to close externally trashed active library: \(error)", category: .library)
+            }
+        }
+        let requiresDefaultReplacement = await registryStore.snapshot().pendingFactoryDefaultReplacement == true
+        libraryLifecycleGate.release()
+        if didClose || requiresDefaultReplacement {
+            if await ensureFactoryDefaultLibraryIfNeeded(allowUnreachableActiveLibrary: true) == nil,
+               requiresDefaultReplacement {
+                uiState.showSidebarNotice("默认资料库暂时无法创建", style: .warning)
+            }
+        }
     }
 
     func openMusicLibrary(at url: URL) async throws -> [UUID] {
@@ -603,7 +648,10 @@ final class AppSessionHost: ObservableObject {
                 // The removal service has already released its transaction gate by
                 // the time this returns. Re-run the normal successor/default
                 // policy so deletion can never leave the app with an empty shell.
-                _ = await ensureFactoryDefaultLibraryIfNeeded(allowUnreachableActiveLibrary: true)
+                if let context = await ensureFactoryDefaultLibraryIfNeeded(allowUnreachableActiveLibrary: true) {
+                    return .activated(context)
+                }
+                uiState.showSidebarNotice("默认资料库暂时无法创建", style: .warning)
             }
             return nextAction
         } catch {
@@ -1369,7 +1417,7 @@ final class AppSessionHost: ObservableObject {
     }
 
     /// Restores the startup invariant: when there is no active, reachable
-    /// library, a legacy default root is opened if present; otherwise a named
+    /// library, the factory-default root is opened if present; otherwise an
     /// empty library is created under `~/Music` before the main window is
     /// shown. This keeps the normal empty-library shell available while the
     /// setup wizard floats above it.
@@ -1380,18 +1428,20 @@ final class AppSessionHost: ObservableObject {
               let libraryOpenService,
               let libraryCreationService else { return nil }
         let registry = await registryStore.snapshot()
+        let preferRegisteredLibraries = registry.pendingFactoryDefaultReplacement != true
 
         // A nil active pointer can also be left behind by an interrupted
         // removal or by an older registry reset. Prefer activating any
         // reachable registered library before falling back to the default.
-        guard allowUnreachableActiveLibrary || registry.activeLibraryID == nil else { return nil }
+        guard allowUnreachableActiveLibrary || registry.activeLibraryID == nil
+            || registry.pendingFactoryDefaultReplacement == true else { return nil }
         let resolver = LibraryStartupContextResolver(registryStore: registryStore)
         var candidateIDs: [UUID] = []
         if let activeID = registry.activeLibraryID { candidateIDs.append(activeID) }
         candidateIDs.append(contentsOf: [registry.recentManagedLibraryID, registry.recentReferencedLibraryID].compactMap { $0 })
         candidateIDs.append(contentsOf: registry.libraries.map(\.id))
         var seen = Set<UUID>()
-        for candidateID in candidateIDs where seen.insert(candidateID).inserted {
+        for candidateID in candidateIDs where preferRegisteredLibraries && seen.insert(candidateID).inserted {
             guard let context = try? await resolver.resolveRegistered(libraryID: candidateID) else { continue }
             do {
                 try await sessionController.switchToLibrary(context)
@@ -1411,14 +1461,24 @@ final class AppSessionHost: ObservableObject {
 
         let defaultRoot = LibraryLocationStore.defaultLibraryRootURL
         if FileManager.default.fileExists(atPath: defaultRoot.path) {
+            if registry.pendingFactoryDefaultReplacement == true {
+                guard let manifest = try? MusicLibraryManifest.read(from: LibraryPaths(rootURL: defaultRoot).manifestURL),
+                      registry.activeLibraryID == manifest.libraryID,
+                      registry.library(id: manifest.libraryID)?.lastKnownPath == defaultRoot.path else {
+                    Log.warning("[LibrarySession] replacement default path is occupied; waiting for recovery", category: .library)
+                    return nil
+                }
+            }
             do {
                 // This also repairs a stale registry row that still claims
                 // the default path for a different library identifier. The
                 // physical library is never removed by this recovery path.
-                return try await libraryOpenService.open(
+                let context = try await libraryOpenService.open(
                     selectedURL: defaultRoot,
                     allowStalePathConflictRepair: true
                 ).context
+                try await registryStore.completeFactoryDefaultReplacement(libraryID: context.id)
+                return context
             } catch {
                 guard LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error) else {
                     Log.warning(
@@ -1440,14 +1500,17 @@ final class AppSessionHost: ObservableObject {
                 mode: .referenced,
                 parentURL: parentURL,
                 displayName: "音乐资料库",
-                allowAlternateDestinationWhenOccupied: true,
+                factoryDefaultRoot: true,
+                allowAlternateDestinationWhenOccupied: false,
                 allowStalePathConflictRepair: true
             )
             switch result {
             case .created(let context, _):
+                try await registryStore.completeFactoryDefaultReplacement(libraryID: context.id)
                 shouldPresentFirstRunLibrarySetup = true
                 return context
             case .existingLibrary(let context):
+                guard registry.pendingFactoryDefaultReplacement != true else { return nil }
                 // `create` deliberately leaves an already existing library
                 // unactivated for the setup flow. Startup must explicitly
                 // activate it before returning a context to the window.
@@ -1866,7 +1929,9 @@ final class AppSessionHost: ObservableObject {
     private func scheduleActiveLibraryRescan() {
         activeLibraryRescanTask?.cancel()
         activeLibraryRescanTask = Task { @MainActor [weak self] in
-            guard let self, let session = activeLibraryBinding.activeSession else { return }
+            guard let self else { return }
+            await reconcileTrashedMusicLibraries()
+            guard !Task.isCancelled, let session = activeLibraryBinding.activeSession else { return }
             let libraryID = session.context.id
             if session.context.mode == .referenced {
                 do {

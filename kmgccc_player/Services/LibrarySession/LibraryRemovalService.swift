@@ -133,7 +133,13 @@ final class LibraryRemovalService {
         }
         let snapshot = await registryStore.snapshot()
         if snapshot.library(id: intent.libraryID) != nil {
-            do { try await registryStore.remove(libraryID: intent.libraryID) }
+            do {
+                try await registryStore.remove(
+                    libraryID: intent.libraryID,
+                    requireFactoryDefaultReplacement: intent.registryBefore.library(id: intent.libraryID)
+                            .map { LibraryRootLocationPolicy.isFactoryDefaultRegistration($0) } == true
+                )
+            }
             catch { throw LibraryRemovalError.pendingRepair }
         }
         do { try LibraryRemovalRepairIntentFile.remove(at: intentURL) }
@@ -207,14 +213,19 @@ final class LibraryRemovalService {
             catch { throw LibraryRemovalError.recoveryFailed }
             throw LibraryRemovalError.recycleFailed
         }
-        do { try await registryStore.remove(libraryID: libraryID) }
+        let removedDefault = LibraryRootLocationPolicy.isFactoryDefaultRegistration(descriptor)
+        do {
+            try await registryStore.remove(
+                libraryID: libraryID,
+                requireFactoryDefaultReplacement: removedDefault
+            )
+        }
         catch { throw LibraryRemovalError.pendingRepair }
         do { try LibraryRemovalRepairIntentFile.remove(at: intentURL) }
         catch { throw LibraryRemovalError.pendingRepair }
 
-        // Removing a non-active library must not unexpectedly move playback to
-        // another library. Only the active-library removal needs successor
-        // selection; the current session is already the correct destination.
+        if removedDefault { return .chooseLibrary }
+        // Removing an inactive custom library keeps the current session.
         if !wasActive, let activeContext = sessionController.activeLibraryContext {
             return .activated(activeContext)
         }

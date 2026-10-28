@@ -1,3 +1,5 @@
+import AppKit
+import SwiftData
 import XCTest
 @testable import kmgccc_player
 
@@ -273,6 +275,36 @@ final class LibrarySessionControllerTests: XCTestCase {
         XCTAssertGreaterThan(nextGeneration, generation)
         XCTAssertEqual(state.consumeRebuildAfterPublish(), nextGeneration)
         XCTAssertNil(state.consumeRebuildAfterPublish())
+    }
+
+    func testLibraryHandoffRebuildsContentInsideTheSameMainWindow() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = try MusicLibraryRegistryStore(fileURL: root.appendingPathComponent("Registry.json"))
+        let schema = Schema([TrackIndexEntry.self])
+        let container = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
+        )
+        let appSession = AppSessionHost(modelContainer: container, initialLibraryContext: nil, registryStore: registry)
+        // Setup is intentionally not run: show creates a hidden host and
+        // never opens the user's library or presents the main App window.
+        let controller = AppKitMainSplitWindowController.show(appSession: appSession)
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        let oldContent = window.contentViewController
+
+        AppKitMainSplitWindowController.releaseActiveLibraryReferences()
+
+        XCTAssertTrue(AppKitMainSplitWindowController.isRebuildingAfterLibrarySwitch)
+        XCTAssertTrue(AppKitMainSplitWindowController.show(appSession: appSession) === controller)
+        XCTAssertTrue(controller.window === window)
+        XCTAssertTrue(window.contentViewController === oldContent)
+        AppKitMainSplitWindowController.rebuildAfterLibrarySwitchIfNeeded(appSession: appSession)
+        XCTAssertFalse(AppKitMainSplitWindowController.isRebuildingAfterLibrarySwitch)
+        XCTAssertTrue(controller.window === window)
+        XCTAssertNotNil(window.contentViewController)
+        XCTAssertFalse(window.contentViewController === oldContent)
     }
 
     private func context(id: UUID) -> LibraryContext {

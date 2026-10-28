@@ -658,9 +658,9 @@ struct MusicSettingsView: View {
     }
 
     private func reload() async {
+        let loadedRegistry = await appSession.musicLibraryRegistrySnapshot()
         let targetGeneration = appSession.activeLibraryBinding.generation
         let targetLibraryID = activeContext?.id
-        let loadedRegistry = await appSession.musicLibraryRegistrySnapshot()
         do {
             let loadedSources = try await appSession.referencedSources()
             let loadedSettings = try await appSession.libraryScopedSettings()
