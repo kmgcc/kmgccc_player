@@ -19,6 +19,29 @@ final class SkinDevelopmentDirectories {
         }
     }
 
+    /// Links the chosen package, or every package directly inside a chosen folder of packages.
+    @discardableResult
+    func attachChosen(_ directory: URL) throws -> [String] {
+        let manager = FileManager.default
+        func isPackage(_ url: URL) -> Bool { manager.fileExists(atPath: url.appendingPathComponent("manifest.json").path) }
+        if isPackage(directory) { return [try attach(directory)] }
+        // The parent's scope stays open while its packages are linked; they live inside it.
+        let scoped = directory.startAccessingSecurityScopedResource()
+        let packages = ((try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? [])
+            .filter(isPackage).sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard !packages.isEmpty else {
+            if scoped { directory.stopAccessingSecurityScopedResource() }
+            throw SkinPackageError.folder("所选文件夹里没有 manifest.json")
+        }
+        var ids: [String] = [], failures: [String] = []
+        for package in packages {
+            do { ids.append(try attach(package)) } catch { failures.append("\(package.lastPathComponent)：\(error.localizedDescription)") }
+        }
+        if ids.isEmpty, scoped { directory.stopAccessingSecurityScopedResource() }
+        if !failures.isEmpty { throw SkinPackageError.folder(failures.joined(separator: "\n")) }
+        return ids
+    }
+
     @discardableResult
     func attach(_ directory: URL) throws -> String {
         let scoped = directory.startAccessingSecurityScopedResource()

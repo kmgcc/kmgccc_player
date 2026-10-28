@@ -109,7 +109,9 @@ struct SkinGlyphOutline: Equatable, Sendable {
 
     init?(_ value: SkinValue?, fallback: OKLCHColor?) {
         guard let value, value.type != .null else { return nil }
-        width = max(0.5, value.numberValue ?? value[member: "width"].number(1.5))
+        let width = value.numberValue ?? value[member: "width"].number(1.5)
+        guard width > 0 else { return nil }
+        self.width = max(0.5, width)
         ink = SkinGlyphInk(value[member: "color"].colorValue ?? fallback ?? OKLCHColor(lightness: 1, chroma: 0, hue: nil))
         hollow = value[member: "hollow"].isTruthy
     }
