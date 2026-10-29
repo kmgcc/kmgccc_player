@@ -38,17 +38,19 @@ enum SkinBuiltinSceneTemplates {
         let hostLayout: [String: SkinParameterValue] = ["layout": .text("host")]
         // Cover blur draws its artwork as the backdrop, as the host does.
         let artworkIsBackdrop = name == "coverGradientBlur"
-        var children: [SkinParameterValue] = [component("background.host", frame: full, props: ["preset": .text(preset)])]
+        // The backdrop runs under the window's mini player to the bottom edge.
+        var children: [SkinParameterValue] = [component("background.host", frame: hostFrame("window"), props: ["preset": .text(preset)])]
         if !artworkIsBackdrop {
             children.append(component("builtin.\(preset).artwork", frame: full, props: hostLayout))
             children.append(component("builtin.\(preset).overlay", frame: full, props: hostLayout))
         }
         children.append(component("lyrics.native", frame: hostFrame("lyrics"), extra: ["visible": .text("=host.lyricsVisible")]))
         // Over cover blur the host reads the backdrop beneath the controls; `adaptive` does the same.
+        // A window keeps the App's own mini player, so the scene's capsule is fullscreen only.
         children.append(component("behavior.autoHide", frame: hostFrame("miniPlayer"),
             props: ["delay": .text("=prefs.miniPlayerAutoHide")],
             extra: ["children": .array([component("control.miniPlayer", frame: frame("50%", "50%", "100%", "100%"))]),
-                    "adaptive": .boolean(artworkIsBackdrop)]))
+                    "adaptive": .boolean(artworkIsBackdrop), "visible": .text("=viewport.isFullscreen")]))
         return .init(root: .object(["type": .text("layer"), "children": .array(children)]))
     }
 

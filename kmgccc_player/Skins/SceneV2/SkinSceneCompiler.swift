@@ -1,4 +1,5 @@
 import Foundation
+import MotionKit
 
 enum SkinSceneCompiler {
     static let nodeTypes: Set<String> = ["layer", "row", "column", "stack", "grid", "scroll", "repeat", "switch", "use", "component", "glassGroup", "lyrics", "spacer", "text", "lyricLine", "image", "artwork", "video", "shape", "gradient", "symbol", "spectrum", "waveform", "meter", "shader", "particles", "fog"]
@@ -30,7 +31,45 @@ enum SkinSceneCompiler {
             throw SkinSceneError(file: file, path: "$.scene.events." + name, message: "未知场景事件" + skinSuggestion(name, in: sceneEvents))
         }
         let events = try document.events.mapValues { try compiler.actions($0, path: "$.scene.events", environment: environment) }
-        return SkinSceneProgram(root: root, state: document.state.mapValues(SkinValue.init), events: events, nodeCount: compiler.count)
+        return SkinSceneProgram(root: root, state: document.state.mapValues(SkinValue.init), events: events, nodeCount: compiler.count,
+                                motion: try motion(document.motion, file: file))
+    }
+
+    /// `motion`: `pause` is settle (default), continue or stop; `flow` names the token the
+    /// playback flow rides; `tokens` names the skin's own tokens, each retuning a built-in one.
+    static func motion(_ raw: [String: SkinParameterValue], file: String) throws -> SkinSceneMotion {
+        func error(_ key: String, _ message: String) -> SkinSceneError { .init(file: file, path: "$.scene.motion." + key, message: message) }
+        let keys: Set<String> = ["pause", "flow", "tokens"]
+        for key in raw.keys where !keys.contains(key) { throw error(key, "未知动效设置" + skinSuggestion(key, in: keys)) }
+        var motion = SkinSceneMotion()
+        if let pause = raw["pause"] {
+            let modes = SkinScenePauseMode.allCases.map(\.rawValue)
+            guard let name = pause.stringValue, let mode = SkinScenePauseMode(rawValue: name) else {
+                throw error("pause", "需要 \(modes.joined(separator: "、")) 之一")
+            }
+            motion.pause = mode
+        }
+        let builtins = Set(MotionToken.allCases.map(\.rawValue))
+        let springKeys: Set<String> = ["token", "duration", "bounce", "blendDuration", "stiffness", "damping", "mass"]
+        for (name, value) in raw["tokens"]?.objectValue ?? [:] {
+            guard !builtins.contains(name) else { throw error("tokens." + name, "与内置动效 token 重名") }
+            guard let fields = value.objectValue else { throw error("tokens." + name, "需要 duration、bounce 等字段") }
+            for key in fields.keys where !springKeys.contains(key) { throw error("tokens.\(name).\(key)", "未知弹簧参数" + skinSuggestion(key, in: springKeys)) }
+            if let base = fields["token"]?.stringValue, !builtins.contains(base) {
+                throw error("tokens.\(name).token", "需要内置 token" + skinSuggestion(base, in: builtins))
+            }
+            motion.tokens[name] = SkinValue(value)
+        }
+        if raw["tokens"] != nil, raw["tokens"]?.objectValue == nil { throw error("tokens", "需要以名称为键的记录") }
+        if let flow = raw["flow"] {
+            let value = SkinValue(flow)
+            let name = value.type == .text ? value.textValue : value[member: "token"].textValue
+            guard builtins.contains(name) || motion.tokens[name] != nil || (value.type == .record && name.isEmpty) else {
+                throw error("flow", "未知动效 token" + skinSuggestion(name, in: builtins.union(motion.tokens.keys)))
+            }
+            motion.flow = value
+        }
+        return motion
     }
 
     private struct Compiler {

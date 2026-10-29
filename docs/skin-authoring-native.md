@@ -62,6 +62,8 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 | 面板 | `panel.queue`、`panel.quickAppearance`、`panel.trackDetail`、`sheet.trackEdit`、`sheet.externalInfo`、`sheet.settings`、`menu.trackContext`、`menu.player` |
 | 行为 | `behavior.autoHide`、`behavior.lyricsEndAutoHide`、`behavior.scrollVolume`、`behavior.pointerOcclusion`、`behavior.windowDrag` |
 
+窗口里的播放条由 App 固定提供，皮肤不能替换或移除；`control.miniPlayer`、`control.leadingCapsule` 与 `control.volumeCapsule` 只在全屏显示，写在窗口场景里不会出现。
+
 `control.miniPlayer` 默认与全屏播放条等长，并在节点 `frame` 内居中。`props` 可调：`width` 为 1 倍尺寸下的总长度，`align` 为 leading、center 或 trailing；`showsLeading`、`showsVolume`、`showsTrackInfo`、`showsTransport`、`showsPlaybackMode`、`showsProgress` 与 `showsLyricsButton` 控制各部分显隐。隐去进度后，播放条按内容收紧。
 
 `background.host` 绘制宿主在该皮肤后方的背景：用户开启艺术背景且皮肤不自带背景时显示艺术背景，否则显示 `preset` 指定内置皮肤的背景，并沿用全屏压暗。`background.art` 直接调用艺术背景。
@@ -109,7 +111,9 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 | `queue` | 播放队列：数量、位置、接下来的曲目，以及完整队列 |
 | `params`、`state` | 持久皮肤参数与当前场景的临时状态 |
 
-`host.layout` 给出内置宿主为皮肤安排的位置，单位为视口点：`artwork`、`lyrics`、`miniPlayer` 与 `canvas` 各含 x、y、width、height、midX、midY，`scale` 为宿主缩放。歌词显隐时随之更新。把节点 `frame` 写成 `"x": "=host.layout.lyrics.x"` 并配 `"anchor": "topLeading"`，即可与内置皮肤对齐。`prefs.artBackgroundEnabled`、`prefs.artworkScale` 与 `prefs.miniPlayerAutoHide` 按当前界面读取用户设置。
+`host.layout` 给出内置宿主为皮肤安排的位置，单位为视口点：`artwork`、`lyrics`、`miniPlayer`、`canvas` 与 `window` 各含 x、y、width、height、midX、midY，`scale` 为宿主缩放。歌词显隐时随之更新。
+
+窗口里的视口是 App 播放条上方的区域：`50%`、`vh` 与 `viewport.height` 都按这块区域计算，内容居中时便以播放条之上的高度为准，与内置皮肤一致。`host.layout.miniPlayer` 是播放条在视口下方的位置，`host.layout.window` 是从视口原点到窗口底边的整块区域；背景要铺到播放条下面时，把 `frame` 写成 `{"x": 0, "y": 0, "anchor": "topLeading", "width": "100%", "height": "=host.layout.window.height"}`。全屏时 `window` 与视口相同。把节点 `frame` 写成 `"x": "=host.layout.lyrics.x"` 并配 `"anchor": "topLeading"`，即可与内置皮肤对齐。`prefs.artBackgroundEnabled`、`prefs.artworkScale` 与 `prefs.miniPlayerAutoHide` 按当前界面读取用户设置。
 
 播放队列可以完全由皮肤绘制。声明 `queue.items@1` 后，`queue.items` 是队列中每首曲目的记录（id、index、title、artist、album、duration、isCurrent），`queue.currentIndex` 为当前曲目的序号，`queue.title` 为队列名称，`queue.available` 表示当前来源有本地队列。用 `scroll` 包住 `repeat`，`scrollTo` 绑定 `queue.currentIndex`，只绘制可见的行；`artwork` 写上 `"track": "=item.id"` 即显示该曲目的缩略图；点击行时执行 `{"do": "queue.play", "value": "=item.index"}`。面板随 `host.queueVisible` 显隐，宽高、背景与排版都由皮肤决定。根节点的 `controls` 列出 `queue` 后，宿主不再叠加自己的队列面板。
 
@@ -119,7 +123,7 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 
 `clock.position` 是音频进度；`clock.lyrics` 是含视觉偏移的歌词文档时间。点击歌词使用 `seekToLyric` 或 `lyricTime(index)`，避免把视觉提前量带进跳转。
 
-常量在编译时折叠；曲目、主题和参数按变化更新；只有引用时钟、音频或逐帧效果的节点进入显示时间线。进入时间线的节点每帧只重算逐帧的属性，其余属性保留到数据变化；但它每帧重建自身与全部子节点，所以逐帧的值应写在叶子节点上，不要写在包着控件的图层上。`camera`、`filter` 与 `bloom` 各自带时间线，只逐帧改变几何与着色，不重建子树，因此镜头漂移可以放心写在根图层上。`host.pointerIdle` 只在指针停下或再次移动时变化，可以放心用来隐藏整组控件；`host.pointerIdleTime` 逐帧更新。时间线跟随显示器，不另设帧率上限。只依赖时钟、歌词或音频的节点在暂停播放时停下；`time` 与动画函数照常运行。
+常量在编译时折叠；曲目、主题和参数按变化更新；只有引用时钟、音频或逐帧效果的节点进入显示时间线。进入时间线的节点每帧只重算逐帧的属性，其余属性保留到数据变化；但它每帧重建自身与全部子节点，所以逐帧的值应写在叶子节点上，不要写在包着控件的图层上。`camera`、`filter` 与 `bloom` 各自带时间线，只逐帧改变几何与着色，不重建子树，因此镜头漂移可以放心写在根图层上。`host.pointerIdle` 只在指针停下或再次移动时变化，可以放心用来隐藏整组控件；`host.pointerIdleTime` 逐帧更新。时间线跟随显示器，不另设帧率上限。节点的时间线在它读到的输入全部静止后歇下：只依赖时钟、歌词或音频的节点在暂停的一刻停下；读 `time` 的节点随播放流缓缓停稳后停下；`follow()` 落定后停下；关键帧、`host.pointerIdleTime` 与 `time.free` 一直运行。
 
 ## 交互与动画
 
@@ -146,6 +150,33 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 ```json
 {"motion":{"speed":1.2,"emphasis":{"bounce":0.3},"control":{"stiffness":320,"damping":24}}}
 ```
+
+表达式里也能直接用 MotionKit 的弹簧，时长都随用户的动画速度缩放，减弱动态效果时直接落到终点：
+
+| 写法 | 结果 |
+| --- | --- |
+| `spring(token, 秒)` | 该 token 的弹簧在给定秒数时的进度，自 0 起、到 1 落定，带回弹的 token 会略过 1 |
+| `springVelocity(token, 秒)` | 同一弹簧每秒的进度变化 |
+| `follow(目标, token)` | 一个追随目标的弹簧；目标改变时从当前位置与速度接着追，不会跳变。token 省略时为 control |
+| `followVelocity(目标, token)` | 同一追随弹簧的速度，单位为目标单位每秒，适合做拉伸与倾斜 |
+
+token 可以是名称，也可以是与 `animation` 相同的记录。`spring` 适合有起点的动作，例如 `"=mix(-40, 0, spring(\"emphasis\", glyph.age))"` 让字带着回弹落位；`follow` 适合跟随会变的值，例如 `"=follow(self.hovered ? 1.08 : 1, \"emphasis\")"`。每个 `follow` 在每个节点与每个字上各有一份弹簧；数字写成 `spring(t, 频率, 阻尼)` 时仍是自 1 衰减到 0 的振荡。
+
+场景的 `motion` 设置写在 `scene` 下，与 `root` 并列：
+
+```json
+{"motion":{
+  "pause":"settle",
+  "flow":"gestureSettle",
+  "tokens":{"slam":{"token":"emphasis","duration":0.32,"bounce":0.45},"drift":{"token":"layout","duration":1.6}}
+}}
+```
+
+- `pause` 决定暂停时自由运动怎么办。`settle`（默认）让 `time` 随播放流减速直到停下，播放时再加速回来；`continue` 让 `time` 按墙钟一直走；`stop` 在暂停的一刻停住。歌词与播放时钟始终如实。
+- `flow` 是播放流使用的 token。`playback.flow` 读到这条曲线本身，播放时为 1，暂停后弹向 0，可以用来让光晕、镜头推近等随暂停收拢。
+- `tokens` 定义皮肤自己的 token，每个都在一个内置 token 上重设参数（未写 `token` 时为 control），名称不能与内置 token 相同。`animation`、`transition`、`enter`、`spring` 与 `follow` 都可以用这些名称，用户的动画速度同样作用于它们。
+
+`time.free` 是不受暂停影响的场景秒数，写给即使暂停也应缓缓流动的背景；读它的节点一直在时间线上，宜用在少数叶子节点。
 
 `enter` 让节点首次出现时按给定方式进入，取值与 transition 相同，另可加 `delay`。写在根节点上，就是切换到这款皮肤时的入场；切换皮肤时，新旧场景先按 backgroundTransition 交叉淡化。减弱动态效果时只保留淡入淡出。
 

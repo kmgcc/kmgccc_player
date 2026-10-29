@@ -24,6 +24,7 @@ struct SkinScenePreview: View {
                         data.set(.track, ["track.title": .text("夜航"), "track.artist": .text("Scene Preview")])
                         data.set(.theme, ["theme.globalAccent": .color(.rgb(0.95, 0.58, 0.25)), "theme.ambientSurface": .color(.rgb(0.06, 0.065, 0.09))])
                         data.set(.viewport, ["viewport.width": .number(size.width), "viewport.height": .number(size.height)])
+                        data.updateFlow(playing: true)
                     }
             }
         }.frame(width: size.width, height: size.height).background(.black)

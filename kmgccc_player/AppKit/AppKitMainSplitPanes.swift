@@ -333,24 +333,23 @@ struct AppKitMainContentPaneRoot: View {
                 }
             }
 
-            if !uiState.usesSkinScene {
-                GeometryReader { proxy in
-                    MiniPlayerView()
-                        .onGeometryChange(for: CGRect.self) { geometry in
-                            geometry.frame(in: .global)
-                        } action: { newRect in
-                            HomeWindowLayoutState.shared.setMiniPlayerFrame(newRect)
-                        }
-                        .frame(maxWidth: proxy.size.width, alignment: .leading)
-                        .padding(.leading, GlassStyleTokens.miniPlayerHorizontalPadding)
-                        .padding(.trailing, GlassStyleTokens.miniPlayerHorizontalPadding)
-                        .padding(.bottom, 12)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                }
-                .opacity(fullscreenWindowManager.isWindowedFullscreenActive ? 0 : 1)
-                .allowsHitTesting(!fullscreenWindowManager.isWindowedFullscreenActive)
-                .accessibilityHidden(fullscreenWindowManager.isWindowedFullscreenActive)
+            // The window mini player is fixed: author scenes lay out above it and never replace it.
+            GeometryReader { proxy in
+                MiniPlayerView()
+                    .onGeometryChange(for: CGRect.self) { geometry in
+                        geometry.frame(in: .global)
+                    } action: { newRect in
+                        HomeWindowLayoutState.shared.setMiniPlayerFrame(newRect)
+                    }
+                    .frame(maxWidth: proxy.size.width, alignment: .leading)
+                    .padding(.leading, GlassStyleTokens.miniPlayerHorizontalPadding)
+                    .padding(.trailing, GlassStyleTokens.miniPlayerHorizontalPadding)
+                    .padding(.bottom, 12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             }
+            .opacity(fullscreenWindowManager.isWindowedFullscreenActive ? 0 : 1)
+            .allowsHitTesting(!fullscreenWindowManager.isWindowedFullscreenActive)
+            .accessibilityHidden(fullscreenWindowManager.isWindowedFullscreenActive)
 
             if fullscreenWindowManager.isEmbeddedFullscreenSurfaceMounted {
                 EmbeddedFullscreenSurface {

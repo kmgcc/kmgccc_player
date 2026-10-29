@@ -7,12 +7,15 @@ struct SkinSceneV2Document: Codable, Equatable {
     var state: [String: SkinParameterValue] = [:]
     var components: [String: SkinParameterValue] = [:]
     var events: [String: SkinParameterValue] = [:]
+    /// `pause`, `flow` and the skin's own `tokens`; see `SkinSceneMotion`.
+    var motion: [String: SkinParameterValue] = [:]
 
-    private enum CodingKeys: String, CodingKey { case root, state, components, events }
+    private enum CodingKeys: String, CodingKey { case root, state, components, events, motion }
 
     init(root: SkinParameterValue, state: [String: SkinParameterValue] = [:],
-         components: [String: SkinParameterValue] = [:], events: [String: SkinParameterValue] = [:]) {
-        self.root = root; self.state = state; self.components = components; self.events = events
+         components: [String: SkinParameterValue] = [:], events: [String: SkinParameterValue] = [:],
+         motion: [String: SkinParameterValue] = [:]) {
+        self.root = root; self.state = state; self.components = components; self.events = events; self.motion = motion
     }
 
     init(from decoder: any Decoder) throws {
@@ -21,6 +24,7 @@ struct SkinSceneV2Document: Codable, Equatable {
         state = try keys.decodeIfPresent([String: SkinParameterValue].self, forKey: .state) ?? [:]
         components = try keys.decodeIfPresent([String: SkinParameterValue].self, forKey: .components) ?? [:]
         events = try keys.decodeIfPresent([String: SkinParameterValue].self, forKey: .events) ?? [:]
+        motion = try keys.decodeIfPresent([String: SkinParameterValue].self, forKey: .motion) ?? [:]
     }
 }
 
@@ -109,9 +113,10 @@ final class SkinCompiledSceneNode: Identifiable {
     let domains: Set<SkinDataDomain>
     /// Hover state is tracked only for nodes that read `self` or handle hover events.
     let tracksPointer: Bool
-    /// True when every per-frame input stands still while playback is paused, so the
-    /// node's display timeline can pause with it. Free-running time and pointer idle keep it live.
-    let pausesWithPlayback: Bool
+    /// What keeps the node's display timeline running, so it can rest once every input stands still.
+    let frameInputs: SkinFrameInputs
+    /// True when every per-frame input stands still the moment playback pauses.
+    var pausesWithPlayback: Bool { !frameInputs.always && !frameInputs.time && !frameInputs.follow }
 
     private static func ownTier(properties: [String: SkinCompiledProperty], variants: [SkinCompiledVariant]) -> SkinDataTier {
         (properties.values.map(\.tier) + variants.map { max($0.condition.tier, $0.properties.values.map(\.tier).max() ?? .constant) }).max() ?? .constant
@@ -170,10 +175,10 @@ final class SkinCompiledSceneNode: Identifiable {
         let readsGlyphClock = type == "text" && (properties["glyphMotion"]?.sources.contains { source in
             glyphClockFields.contains { source.contains($0) }
         } ?? false)
-        pausesWithPlayback = properties["keyframes"] == nil && frame.isDisjoint(with: [.time, .host]) && !readsGlyphClock
+        frameInputs = SkinFrameInputs(frame: frame, always: properties["keyframes"] != nil || readsGlyphClock)
         nodeValues = evaluated
         camera = properties["camera"]
-        cameraPausesWithPlayback = camera.map { $0.frameDomains.isDisjoint(with: [.time, .host]) } ?? true
+        cameraInputs = SkinFrameInputs(frame: camera?.frameDomains ?? [], always: false)
         let frameKeys = Set(evaluated.filter { $0.value.tier == .frame }.keys)
         frameValues = evaluated.filter { frameKeys.contains($0.key) }
         steadyValues = evaluated.filter { !frameKeys.contains($0.key) }
@@ -194,7 +199,7 @@ final class SkinCompiledSceneNode: Identifiable {
     /// True when a per-frame node can keep its other values until the scene data changes.
     let cachesSteadyValues: Bool
     let camera: SkinCompiledProperty?
-    let cameraPausesWithPlayback: Bool
+    let cameraInputs: SkinFrameInputs
 
     func values(_ context: SkinEvaluationContext) -> [String: SkinValue] {
         var result = nodeValues.mapValues { $0.evaluate(context) }
@@ -319,6 +324,7 @@ struct SkinSceneProgram {
     let state: [String: SkinValue]
     let events: [String: [SkinCompiledAction]]
     let nodeCount: Int
+    var motion = SkinSceneMotion()
     var domains: Set<SkinDataDomain> {
         var result = root.domains.union([.playback, .viewport, .host])
         if events["trackChange"] != nil { result.insert(.track) }

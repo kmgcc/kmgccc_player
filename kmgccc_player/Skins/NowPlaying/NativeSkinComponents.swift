@@ -24,15 +24,26 @@ enum NativeSkinComponents {
         catalog.register("native.spectrum") { snapshot, config in SkinSpectrumComponent(snapshot: snapshot, configuration: config) }
         catalog.register("native.waveform") { _, config in SkinWaveformComponent(configuration: config) }
         catalog.register("native.led") { snapshot, config in SkinLEDComponent(snapshot: snapshot, configuration: config) }
-        catalog.register("native.actionsCapsule", isInteractive: true) { _, config in SkinLeadingCapsule(configuration: config) }
-        catalog.register("native.volumeCapsule", isInteractive: true) { _, config in SkinVolumeCapsule(configuration: config) }
+        catalog.register("native.actionsCapsule", isInteractive: true) { _, config in SkinFullscreenOnly { SkinLeadingCapsule(configuration: config) } }
+        catalog.register("native.volumeCapsule", isInteractive: true) { _, config in SkinFullscreenOnly { SkinVolumeCapsule(configuration: config) } }
         for control in SkinActionButton.Kind.allCases {
             catalog.register("native." + control.rawValue) { _, config in SkinActionButton(kind: control, configuration: config) }
         }
         catalog.register("native.miniPlayer", isInteractive: true) { snapshot, config in
-            SkinMiniPlayerComponent(snapshot: snapshot, configuration: config)
+            SkinFullscreenOnly { SkinMiniPlayerComponent(snapshot: snapshot, configuration: config) }
         }
         SkinComponentContract.register(in: catalog)
+    }
+}
+
+/// The window keeps the App's own mini player, so a scene's mini player capsules appear only in
+/// fullscreen and a window skin can neither replace nor remove it.
+struct SkinFullscreenOnly<Content: View>: View {
+    @Environment(\.skinSceneSurface) private var surface
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if surface == .fullscreen { content() }
     }
 }
 

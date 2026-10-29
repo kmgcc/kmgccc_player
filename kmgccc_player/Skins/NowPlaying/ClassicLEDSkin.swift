@@ -114,7 +114,7 @@ struct ClassicCoverArtworkView: View {
         // so trim the fullscreen cover stack offset only for that host.
         let yOffset: CGFloat = usesFullscreenLayout
             ? (context.fullscreenHostMode == .embeddedWindow ? 12 : 32)
-            : 18
+            : 0
 
         let dotSize: CGFloat = usesFullscreenLayout ? 14 : 12
         let spacing: CGFloat = usesFullscreenLayout ? 9 : 7

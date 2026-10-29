@@ -279,7 +279,8 @@ final class SkinSystemTests: XCTestCase {
         // A per-frame camera keeps its layer off the display timeline; its children follow on their own.
         let stage = try node(#"{"type":"layer","camera":{"x":"=sin(time) * 20"},"children":[{"type":"repeat","layout":"free","items":[1,2],"template":{"type":"text","text":"=str(item)","depth":"=index"}}]}"#)
         XCTAssertNotEqual(stage.tier, .frame)
-        XCTAssertFalse(stage.cameraPausesWithPlayback)
+        XCTAssertTrue(stage.cameraInputs.time)
+        XCTAssertFalse(stage.cameraInputs.always)
         // Per-frame nodes keep their steady values between frames unless they read live clocks.
         XCTAssertTrue(try node(#"{"type":"text","text":"=track.title","opacity":"=oscillate(2)"}"#).cachesSteadyValues)
         XCTAssertFalse(try node(#"{"type":"text","text":"=track.title"}"#).cachesSteadyValues)
@@ -293,6 +294,83 @@ final class SkinSystemTests: XCTestCase {
     }
 
     @MainActor
+    func testV2MotionSpringsFollowAndPlaybackFlow() throws {
+        func program(_ json: String) throws -> SkinSceneProgram {
+            try SkinSceneCompiler.compile(JSONDecoder().decode(SkinSceneV2Document.self, from: Data(json.utf8)))
+        }
+        func node(_ root: String) throws -> SkinCompiledSceneNode { try program("{\"root\":\(root)}").root }
+        let data = SkinSceneData()
+        func evaluate(_ source: String, _ context: SkinEvaluationContext? = nil) throws -> Double {
+            let expression = try SkinExpressionCompiler.compile(source: source, expected: .number, environment: SkinCompileEnvironment())
+            return expression.evaluate(context ?? SkinEvaluationContext(data: data)).number()
+        }
+        // Token springs start at 0, overshoot with bounce, and land at 1; numbers keep the oscillation.
+        XCTAssertEqual(try evaluate(#"spring("emphasis", 0)"#), 0)
+        XCTAssertGreaterThan(try evaluate(#"spring("emphasis", 0.35)"#), 1)
+        XCTAssertEqual(try evaluate(#"spring("emphasis", 3)"#), 1, accuracy: 0.001)
+        XCTAssertGreaterThan(try evaluate(#"springVelocity("layout", 0.05)"#), 0)
+        XCTAssertEqual(try evaluate("spring(0, 2)"), 1, accuracy: 0.0001)
+        var still = SkinEvaluationContext(data: data)
+        still.moves = false
+        XCTAssertEqual(try evaluate(#"spring("emphasis", 0.1)"#, still), 1)
+
+        // A follow spring starts on its target, chases a new one and lands.
+        let followers = SkinFollowers()
+        var context = SkinEvaluationContext(data: data)
+        context.followers = followers
+        let site = try SkinExpressionCompiler.compile(source: #"follow(state.x, "control")"#, expected: .number,
+                                                      environment: SkinCompileEnvironment(state: ["x": .number]))
+        data.setState("x", .number(0))
+        context.now = Date.timeIntervalSinceReferenceDate
+        XCTAssertEqual(site.evaluate(context).number(), 0)
+        data.setState("x", .number(100))
+        XCTAssertEqual(site.evaluate(context).number(), 0, accuracy: 0.5)
+        context.now += 0.1
+        let midway = site.evaluate(context).number()
+        XCTAssertTrue(midway > 1 && midway < 100)
+        context.now += 3
+        XCTAssertEqual(site.evaluate(context).number(), 100, accuracy: 0.001)
+        XCTAssertEqual(site.tier, .frame)
+        XCTAssertTrue(site.domains.contains(.follow))
+
+        // Inputs: follow springs and scene time rest once settled; free time never does.
+        let follower = try node(#"{"type":"shape","scale":"=follow(self.hovered ? 1.1 : 1, \"emphasis\")"}"#)
+        XCTAssertTrue(follower.frameInputs.follow)
+        XCTAssertTrue(follower.frameInputs.isStill(playing: true, timeMoves: true, following: false))
+        XCTAssertFalse(follower.frameInputs.isStill(playing: false, timeMoves: false, following: true))
+        let spinner = try node(#"{"type":"shape","rotation":"=spin(10)"}"#)
+        XCTAssertFalse(spinner.frameInputs.isStill(playing: false, timeMoves: true, following: false))
+        XCTAssertTrue(spinner.frameInputs.isStill(playing: false, timeMoves: false, following: false))
+        XCTAssertTrue(try node(#"{"type":"shape","rotation":"=time.free * 10"}"#).frameInputs.always)
+
+        // Scene time rides the playback flow: it coasts a little after a pause, then stands still.
+        let flow = SkinSceneData()
+        let start = 1000.0
+        flow.updateFlow(playing: true, now: start)
+        let atPause = flow.time(at: start + 1)
+        XCTAssertEqual(atPause, 1, accuracy: 0.001)
+        flow.updateFlow(playing: false, now: start + 1)
+        XCTAssertTrue(flow.flowMoving)
+        XCTAssertTrue(flow.timeMoves(playing: false))
+        let later = flow.time(at: start + 6)
+        XCTAssertGreaterThan(later - atPause, 0.03)
+        XCTAssertLessThan(later - atPause, 0.6)
+        XCTAssertEqual(flow.time(at: start + 10), later, accuracy: 0.001)
+        XCTAssertEqual(flow.value(forKey: "playback.flow", domain: .time, now: start + 10).number(), 0, accuracy: 0.001)
+
+        // Scene motion: own tokens retune built-in ones; pause modes and names are checked.
+        let tuned = try program(#"{"root":{"type":"layer"},"motion":{"pause":"continue","flow":"slam","tokens":{"slam":{"token":"emphasis","duration":0.3,"bounce":0.4}}}}"#)
+        XCTAssertEqual(tuned.motion.pause, .continue)
+        let slam = SkinMotion.spec(.text("slam"), tokens: .standard, custom: tuned.motion.tokens)
+        XCTAssertEqual(slam.duration, 0.3, accuracy: 0.0001)
+        XCTAssertEqual(slam.bounce, 0.4, accuracy: 0.0001)
+        XCTAssertThrowsError(try program(#"{"root":{"type":"layer"},"motion":{"pause":"hold"}}"#))
+        XCTAssertThrowsError(try program(#"{"root":{"type":"layer"},"motion":{"tokens":{"emphasis":{"duration":1}}}}"#))
+        XCTAssertThrowsError(try program(#"{"root":{"type":"layer"},"motion":{"flow":"slow"}}"#))
+        XCTAssertThrowsError(try program(#"{"root":{"type":"layer"},"motion":{"tokens":{"slam":{"durration":1}}}}"#))
+    }
+
+    @MainActor
     func testV2TemplatesFollowHostLayoutAndMiniPlayerSections() throws {
         // The fullscreen host's bar is 1150 pt on its 1470 × 923 canvas.
         let size = CGSize(width: 1470 * 2, height: 923 * 2)
@@ -303,6 +381,16 @@ final class SkinSystemTests: XCTestCase {
         XCTAssertGreaterThan(frames.lyrics.minX, frames.artwork.minX)
         let hidden = SkinHostLayout.frames(size: size, surface: .fullscreen, lyricsVisible: false, presentation: .init())
         XCTAssertGreaterThan(hidden.artwork.width, frames.artwork.width)
+        XCTAssertEqual(frames.window, CGRect(origin: .zero, size: size))
+
+        // A window scene's viewport is the area above the App's mini player: artwork fills it,
+        // the mini player sits just below, and `window` reaches the bottom edge.
+        let content = CGSize(width: 900, height: 600)
+        let window = SkinHostLayout.frames(size: content, surface: .window, lyricsVisible: false, presentation: .init())
+        XCTAssertEqual(window.artwork, CGRect(origin: .zero, size: content))
+        XCTAssertEqual(window.miniPlayer.minY, content.height, accuracy: 0.001)
+        XCTAssertEqual(window.window.height, content.height + SkinHostLayout.windowMiniPlayerReserve, accuracy: 0.001)
+        XCTAssertLessThanOrEqual(window.miniPlayer.maxY, window.window.maxY)
 
         let metrics = FullscreenMiniPlayerLayoutMetrics(scale: 1)
         XCTAssertEqual(metrics.containerWidth(for: .all), metrics.minimumExpandedContainerWidth, accuracy: 0.001)

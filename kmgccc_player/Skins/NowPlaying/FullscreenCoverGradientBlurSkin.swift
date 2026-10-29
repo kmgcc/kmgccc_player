@@ -349,7 +349,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     private func motionPanoramaProcessor(size: CGSize, centered: Bool) -> MotionArtworkFrameProcessor {
         let style = MotionPanoramaFrameStyle(
             size: size, displayScale: displayScale,
-            dominantColor: themeStore.semanticPalette.coverGradientDominant,
+            dominantColor: context.theme.coverGradientDominant ?? themeStore.semanticPalette.coverGradientDominant,
             config: config(for: centered ? .centeredSymmetric : .leading)
         )
         return MotionArtworkFrameProcessor(
@@ -470,7 +470,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             centered: centered.progressiveProfile ?? .centered,
             edgeFill: config.edgeFillMode == .pixelStretch ? .stretch : .mirror,
             overlay: CoverGradientBlurRenderer.progressiveOverlay(
-                dominantColor: themeStore.semanticPalette.coverGradientDominant,
+                dominantColor: context.theme.coverGradientDominant ?? themeStore.semanticPalette.coverGradientDominant,
                 config: leading
             )
         )
@@ -645,7 +645,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             artworkData: context.track?.artworkData,
             artworkImage: context.track?.artworkImage,
             artworkChecksum: context.track?.artworkChecksum ?? 0,
-            dominantColor: themeStore.semanticPalette.coverGradientDominant,
+            dominantColor: context.theme.coverGradientDominant ?? themeStore.semanticPalette.coverGradientDominant,
             config: config(for: placement),
             extendsIntoSafeArea: false,
             readabilityPlacement: readabilityPlacement,
@@ -662,7 +662,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             artworkData: context.track?.artworkData,
             artworkImage: context.track?.artworkImage,
             artworkChecksum: context.track?.artworkChecksum ?? 0,
-            dominantColor: themeStore.semanticPalette.coverGradientDominant,
+            dominantColor: context.theme.coverGradientDominant ?? themeStore.semanticPalette.coverGradientDominant,
             config: config(for: .centeredSymmetric),
             extendsIntoSafeArea: false,
             readabilityPlacement: .transition,
@@ -1063,7 +1063,7 @@ private struct CoverGradientBlurSkinBackground: View {
             artworkData: context.track?.artworkData,
             artworkImage: context.track?.artworkImage,
             artworkChecksum: context.track?.artworkChecksum ?? 0,
-            dominantColor: themeStore.semanticPalette.coverGradientDominant,
+            dominantColor: context.theme.coverGradientDominant ?? themeStore.semanticPalette.coverGradientDominant,
             config: config
         )
         .ignoresSafeArea()

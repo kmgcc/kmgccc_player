@@ -3819,7 +3819,10 @@ struct FullscreenPlayerView: View {
     private func makeContext(windowSize: CGSize, artworkColumnWidth: CGFloat, fullscreenScale: CGFloat = 1.0) -> SkinContext {
         let display = currentDisplayContext
         let displayArtworkTrackID = display.artworkTrackID ?? display.trackID ?? Self.fallbackExternalTrackID
-        let renderingArtworkData = currentRenderingArtworkData
+        // The renderer prefers data over image. Do not pair new-track bytes
+        // with the retained previous snapshot's image, checksum and colors.
+        let renderingArtworkData = artworkSnapshot?.fullImage == nil ? currentRenderingArtworkData : nil
+        let snapshotMatchesDisplay = artworkSnapshot?.trackID == displayArtworkTrackID
 
         let trackMeta: SkinContext.TrackMetadata? = display.hasTrack
             ? SkinContext.TrackMetadata(
@@ -3843,8 +3846,8 @@ struct FullscreenPlayerView: View {
                     : nil,
                 artworkImage: artworkSnapshot?.fullImage,
                 displayedArtworkID: artworkSnapshot?.trackID,
-                motionArtwork: playbackCoordinator.stablePresentation.motionArtwork,
-                tallMotionArtwork: playbackCoordinator.stablePresentation.tallMotionArtwork
+                motionArtwork: snapshotMatchesDisplay ? playbackCoordinator.stablePresentation.motionArtwork : nil,
+                tallMotionArtwork: snapshotMatchesDisplay ? playbackCoordinator.stablePresentation.tallMotionArtwork : nil
             )
             : nil
 
@@ -3886,7 +3889,10 @@ struct FullscreenPlayerView: View {
                 && settings.fullscreenArtBackgroundEnabled
                 && bkController.isUltraDarkActive,
             spectrumArtworkColors: spectrumArtworkColors,
-            spectrumUsesDarkForeground: spectrumUsesDarkForeground
+            spectrumUsesDarkForeground: spectrumUsesDarkForeground,
+            coverGradientDominant: artworkSnapshot?.analysis.map {
+                SemanticPaletteFactory.coverGradientDominant(analysis: $0, isDark: colorScheme == .dark)
+            } ?? artworkSnapshot?.dominantColor
         )
 
         let contentBounds = CGRect(

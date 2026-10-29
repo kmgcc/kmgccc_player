@@ -2478,7 +2478,7 @@ nonisolated enum SemanticPaletteFactory {
         return OKColor.okLCHToNSColor(OKColor.OKLCH(l: clampedL, c: capC, h: lch.h), alpha: 1.0)
     }
 
-    fileprivate static func coverGradientDominant(
+    static func coverGradientDominant(
         analysis: ArtworkColorAnalysis,
         isDark: Bool
     ) -> NSColor {

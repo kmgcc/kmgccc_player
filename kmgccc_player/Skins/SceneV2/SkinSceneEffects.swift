@@ -195,8 +195,14 @@ nonisolated struct SkinSceneCamera: Equatable, Sendable {
 @MainActor
 final class SkinCameraSource {
     var evaluate: @MainActor (Double) -> SkinSceneCamera = { _ in SkinSceneCamera(.null) }
-    var pausesWithPlayback = true
+    var inputs = SkinFrameInputs(frame: [], always: false)
+    /// The layer's `follow()` springs, so its children's timelines rest with them.
+    var followers: SkinFollowers?
     private var cached: (now: Double, camera: SkinSceneCamera)?
+
+    func isStill(data: SkinSceneData, playing: Bool) -> Bool {
+        inputs.isStill(playing: playing, timeMoves: data.timeMoves(playing: playing), following: followers?.isMoving == true)
+    }
 
     func camera(at now: Double) -> SkinSceneCamera {
         if let cached, cached.now == now { return cached.camera }

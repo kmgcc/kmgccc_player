@@ -118,6 +118,35 @@
         },
         "events": {
           "type": "object"
+        },
+        "motion": {
+          "type": "object",
+          "properties": {
+            "pause": {
+              "enum": ["settle", "continue", "stop"]
+            },
+            "flow": {
+              "description": "MotionKit token the playback flow rides, as a name or a retuning record."
+            },
+            "tokens": {
+              "type": "object",
+              "description": "The skin's own tokens, each retuning a built-in token.",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "token": {"type": "string"},
+                  "duration": {"type": "number"},
+                  "bounce": {"type": "number"},
+                  "blendDuration": {"type": "number"},
+                  "stiffness": {"type": "number"},
+                  "damping": {"type": "number"},
+                  "mass": {"type": "number"}
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

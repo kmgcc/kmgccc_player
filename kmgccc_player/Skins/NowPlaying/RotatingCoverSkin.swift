@@ -60,7 +60,7 @@ private enum RotatingCoverLayout {
     private static let embeddedFullscreenYOffset: CGFloat = 12
 
     static let discToBaseRatio: CGFloat = 0.75
-    static let yOffsetWindow: CGFloat = 18
+    static let yOffsetWindow: CGFloat = 0
     static let yOffsetFullscreen: CGFloat = 32
 
     struct Metrics {

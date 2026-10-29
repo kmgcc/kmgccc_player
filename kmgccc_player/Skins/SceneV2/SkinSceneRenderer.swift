@@ -51,6 +51,7 @@ struct SkinSceneV2View: View {
             .onDisappear { fonts.release(); didPrepare = false; SkinSceneRuntimeMetrics.shared.unmount(metricsID) }
             .environment(\.skinSceneMetricsID, metricsID)
             .environment(\.skinSceneData, data)
+            .environment(\.skinMotionCustomTokens, program.motion.tokens)
             .alert("皮肤资源", isPresented: Binding(get: { resourceError != nil }, set: { if !$0 { resourceError = nil } })) {
                 Button("好", role: .cancel) { resourceError = nil }
             } message: { Text(resourceError ?? "") }
@@ -86,6 +87,7 @@ struct SkinSceneNodeV2View: View {
     @State private var glyphClock = SkinGlyphClock()
     @State private var valueCache = SkinNodeValueCache()
     @State private var cameraSource = SkinCameraSource()
+    @State private var followers = SkinFollowers()
     @Environment(\.skinBackdropReading) private var inheritedReading
     @Namespace private var glassNamespace
 
@@ -94,10 +96,14 @@ struct SkinSceneNodeV2View: View {
             || ["spectrum", "waveform", "meter", "particles", "shader", "fog", "lyricLine"].contains(node.type)
     }
 
-    /// Clock, lyric and audio inputs stand still while paused; free-running time keeps going.
+    /// Clock, lyric and audio inputs stand still while paused; scene time once the playback flow
+    /// settles; follow springs once they land.
     private var framesPaused: Bool {
-        !active || (node.pausesWithPlayback && !components.snapshot.playback.isPlaying)
+        let playing = components.snapshot.playback.isPlaying
+        return !active || node.frameInputs.isStill(playing: playing, timeMoves: data.timeMoves(playing: playing), following: followers.isMoving)
     }
+
+    private var moves: Bool { configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion) == .full }
 
     var body: some View {
         Group {
@@ -121,7 +127,11 @@ struct SkinSceneNodeV2View: View {
         values["self"] = .record(own)
         values["parent"] = .record(["width": .number(size.width), "height": .number(size.height)])
         if let gesture { values["gesture"] = gesture }
-        return SkinEvaluationContext(data: data, locals: values, now: now, live: live)
+        var context = SkinEvaluationContext(data: data, locals: values, now: now, live: live)
+        context.motionTokens = motionTokens
+        context.moves = moves
+        context.followers = followers
+        return context
     }
 
     private func render(at now: Double) -> AnyView {
@@ -179,7 +189,7 @@ struct SkinSceneNodeV2View: View {
         }
         let tokens = SkinMotion.tokens(motionTokens, override: values["motion"])
         if let animation = values["animation"] {
-            let spec = SkinMotion.spec(animation, tokens: tokens)
+            let spec = SkinMotion.spec(animation, tokens: tokens, custom: data.motion.tokens)
             // Per-frame values are already continuous; animating them would chase every frame.
             let animated = values.filter { node.properties[$0.key]?.tier != .frame }
             result = AnyView(result.motionAnimation(spec, value: animated))
@@ -255,7 +265,7 @@ struct SkinSceneNodeV2View: View {
             let centre = CGPoint(x: x + (0.5 - point.x) * (width ?? 0), y: y + (0.5 - point.y) * (height ?? 0))
             // A free repeat hands the camera on to its cells instead of following it as a whole.
             if let camera, !(node.type == "repeat" && values["layout"]?.textValue == "free") {
-                let paused = !active || (camera.source.pausesWithPlayback && !components.snapshot.playback.isPlaying)
+                let paused = !active || camera.source.isStill(data: data, playing: components.snapshot.playback.isPlaying)
                 result = AnyView(result.modifier(SkinCameraFollow(link: camera, centre: centre, depth: values["depth"]?.number() ?? 0, size: size, paused: paused)))
             }
             result = AnyView(result.position(centre))
@@ -279,7 +289,7 @@ struct SkinSceneNodeV2View: View {
             let link = cameraLink(now: now)
             let stack = AnyView(ZStack(alignment: .topLeading) { ForEach(node.children) { child($0, size: size, positioned: true, camera: link) } }.frame(width: size.width, height: size.height))
             guard let link else { return stack }
-            let paused = !active || (link.source.pausesWithPlayback && !components.snapshot.playback.isPlaying)
+            let paused = !active || link.source.isStill(data: data, playing: components.snapshot.playback.isPlaying)
             return AnyView(stack.modifier(SkinCameraTurn(link: link, paused: paused)))
         case "row": return AnyView(HStack(spacing: spacing) { ForEach(node.children) { child($0, size: size) } })
         case "column": return AnyView(VStack(spacing: spacing) { ForEach(node.children) { child($0, size: size) } })
@@ -436,6 +446,7 @@ struct SkinSceneNodeV2View: View {
         style.transforms.reserveCapacity(characters.count)
         for (index, character) in characters.enumerated() {
             let time = times[index]
+            scope.followSlot = index + 1
             scope.locals["glyph"] = .record([
                 "index": .number(Double(index)), "count": .number(Double(characters.count)), "char": .text(String(character)),
                 "word": .number(Double(time.word)), "line": .number(Double(lineIndex ?? 0)),
@@ -462,7 +473,8 @@ struct SkinSceneNodeV2View: View {
             return SkinCameraLink(source: cameraSource, steady: SkinSceneCamera(property.evaluate(context(now: now))))
         }
         let view = self
-        cameraSource.pausesWithPlayback = node.cameraPausesWithPlayback
+        cameraSource.inputs = node.cameraInputs
+        cameraSource.followers = followers
         cameraSource.evaluate = { now in SkinSceneCamera(property.evaluate(view.context(now: now))) }
         return SkinCameraLink(source: cameraSource, steady: nil)
     }

@@ -34,6 +34,8 @@ struct SkinSceneFeeds: View {
             .onChange(of: domains, initial: true) { _, next in
                 for (domain, values) in next { data.set(domain, values) }
                 data.freezesTime = motionPolicy.resolving(accessibilityReduceMotion: reduceMotion) != .full
+                data.motion = program.motion
+                data.motionTokens = motionTokens
             }
             .onChange(of: audioKey, initial: true) { _, _ in updateAudio() }
             .onChange(of: NativeLyricsSurfaceManager.shared.documentPublication.revision, initial: true) { _, _ in updateLyrics() }
@@ -253,6 +255,7 @@ private struct SkinSceneClockFeed: View {
             data.clock.seekOffset = config.timing.seekOffset
             data.clock.updateLyrics(position: p.lyricsCurrentTime - config.timing.trackOffset, isPlaying: p.lyricsIsPlaying ?? p.isPlaying, now: Date.timeIntervalSinceReferenceDate)
             data.clock.update(position: p.currentTime, isPlaying: p.isPlaying, duration: p.duration, now: Date.timeIntervalSinceReferenceDate)
+            data.updateFlow(playing: p.isPlaying)
         }
     }
 }

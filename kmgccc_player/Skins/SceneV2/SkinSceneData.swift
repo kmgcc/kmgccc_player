@@ -1,5 +1,6 @@
 import AppKit
 import MelismaKit
+import MotionKit
 import Observation
 import SwiftUI
 
@@ -38,6 +39,14 @@ final class SkinSceneData {
     @ObservationIgnored var pointerMovedAt = Date.timeIntervalSinceReferenceDate
     /// Reduced motion freezes the scene clock, so `spin()` and friends hold still.
     @ObservationIgnored var freezesTime = false
+    /// The scene's own motion settings and the MotionKit tokens in effect at its root.
+    @ObservationIgnored var motion = SkinSceneMotion()
+    @ObservationIgnored var motionTokens = MotionTokens.standard
+    /// True while the playback flow eases between paused and playing, so nodes that read
+    /// `time` stay on their timeline until it settles.
+    private(set) var flowMoving = false
+    @ObservationIgnored private var flow = SkinPlaybackFlow()
+    @ObservationIgnored private var flowTimer: Timer?
     @ObservationIgnored private(set) var viewportSize = CGSize(width: 1, height: 1)
     @ObservationIgnored private var hostFacts: [String: SkinValue] = ["host.pointerIdle": .boolean(false)]
     @ObservationIgnored private var viewportFacts: [String: SkinValue] = [:]
@@ -84,7 +93,7 @@ final class SkinSceneData {
         case .output: replace(\.output, values)
         case .params: replace(\.parameters, values)
         case .state: replace(\.state, values)
-        case .clock, .lyricsTimeline, .audio, .time, .local: break
+        case .clock, .lyricsTimeline, .audio, .time, .local, .follow, .wallTime: break
         }
     }
 
@@ -124,7 +133,30 @@ final class SkinSceneData {
     func parameter(_ name: String) -> SkinValue { parameters[name] ?? .null }
     func stateValue(_ name: String) -> SkinValue { state[name] ?? .null }
 
-    func time(at now: Double) -> Double { freezesTime ? 0 : max(0, now - startTime) }
+    /// Scene time: wall seconds weighted by the playback flow, so motion slows to a stop on
+    /// pause and gathers pace on play. A scene that continues while paused runs on the wall clock.
+    func time(at now: Double) -> Double {
+        if freezesTime { return 0 }
+        return motion.pause == .continue ? freeTime(at: now) : flow.time(at: now)
+    }
+
+    func freeTime(at now: Double) -> Double { freezesTime ? 0 : max(0, now - startTime) }
+
+    /// Whether `time` can still advance; a paused scene whose flow has settled stands still.
+    func timeMoves(playing: Bool) -> Bool { playing || flowMoving || motion.pause == .continue }
+
+    /// Retargets the flow when playback starts or pauses. The first call places it without easing.
+    func updateFlow(playing: Bool, now: Double = Date.timeIntervalSinceReferenceDate) {
+        let spec = freezesTime || motion.pause == .stop ? nil : SkinMotion.spec(motion.flow, tokens: motionTokens, custom: motion.tokens)
+        guard let delay = flow.set(playing: playing, spec: spec, now: now) else { return }
+        flowTimer?.invalidate()
+        flowMoving = true
+        let timer = Timer(timeInterval: delay + 0.05, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.flowMoving = false }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        flowTimer = timer
+    }
 
     func value(forKey key: String, domain: SkinDataDomain, now: Double) -> SkinValue {
         switch domain {
@@ -141,7 +173,9 @@ final class SkinSceneData {
         case .output: return output[key] ?? .null
         case .params: return parameters[key] ?? .null
         case .state: return state[key] ?? .null
-        case .time: return .number(time(at: now))
+        case .time: return .number(key == "playback.flow" ? (freezesTime ? 0 : flow.value(at: now)) : time(at: now))
+        case .wallTime: return .number(freeTime(at: now))
+        case .follow: return .null
         case .host:
             switch key {
             case "host.pointerIdleTime": return .number(max(0, now - pointerMovedAt))

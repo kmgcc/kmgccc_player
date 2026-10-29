@@ -11,12 +11,13 @@ struct SkinVisibilityTransition: ViewModifier {
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var motionPolicy
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.skinMotionCustomTokens) private var customTokens
 
     func body(content: Content) -> some View {
         let spec = SkinTransitionLook.spec(value)
         content
             .modifier(SkinTransitionLook(spec: spec, hidden: hidden, moves: motionPolicy.resolving(accessibilityReduceMotion: reduceMotion) == .full))
-            .motionAnimation(SkinTransitionLook.animation(spec, tokens: motionTokens), value: hidden)
+            .motionAnimation(SkinTransitionLook.animation(spec, tokens: motionTokens, custom: customTokens), value: hidden)
     }
 }
 
@@ -29,7 +30,9 @@ struct SkinTransitionLook: ViewModifier {
     var direction: Double = 1
 
     static func spec(_ value: SkinValue) -> SkinValue { value.type == .record ? value : .record(["type": value]) }
-    static func animation(_ spec: SkinValue, tokens: MotionTokens) -> MotionSpec { SkinMotion.spec(spec, tokens: tokens) }
+    static func animation(_ spec: SkinValue, tokens: MotionTokens, custom: [String: SkinValue] = [:]) -> MotionSpec {
+        SkinMotion.spec(spec, tokens: tokens, custom: custom)
+    }
 
     func body(content: Content) -> some View {
         let kinds = Set(spec[member: "type"].textValue.split(separator: "+").map { $0.trimmingCharacters(in: .whitespaces) })
@@ -294,6 +297,8 @@ struct SkinGlyphLayer<Content: View>: View {
 
 extension EnvironmentValues {
     @Entry var skinGlyphReveal: SkinGlyphReveal?
+    /// The scene's own named motion tokens, from its `motion.tokens`.
+    @Entry var skinMotionCustomTokens: [String: SkinValue] = [:]
 }
 
 /// MotionKit for authors. An `animation` or `transition` names a token and may retune it with
@@ -316,8 +321,18 @@ enum SkinMotion {
         return tokens
     }
 
-    static func spec(_ value: SkinValue, tokens: MotionTokens) -> MotionSpec {
+    /// A name may also be one of the skin's own tokens from the scene's `motion.tokens`; those
+    /// retune a built-in token (`control` unless they name another), so they follow the user's speed.
+    static func spec(_ value: SkinValue, tokens: MotionTokens, custom: [String: SkinValue] = [:]) -> MotionSpec {
         let name = value.type == .text ? value.textValue : value[member: "token"].textValue
+        if MotionToken(rawValue: name) == nil, let own = custom[name] {
+            var base = own
+            if value.type == .record, case .record(var fields) = own, case .record(let overrides) = value {
+                fields.merge(overrides.filter { $0.key != "token" }) { _, new in new }
+                base = .record(fields)
+            }
+            return spec(base, tokens: tokens)
+        }
         let token = MotionToken(rawValue: name) ?? .control
         return value.type == .record ? tuned(value, token: token, tokens: tokens) : tokens[token]
     }
@@ -346,13 +361,14 @@ struct SkinEnterTransition: ViewModifier {
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var motionPolicy
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.skinMotionCustomTokens) private var customTokens
 
     func body(content: Content) -> some View {
         let spec = SkinTransitionLook.spec(value)
         content
             .modifier(SkinTransitionLook(spec: spec, hidden: !shown, moves: motionPolicy.resolving(accessibilityReduceMotion: reduceMotion) == .full))
             .onAppear {
-                let animation = motionPolicy.resolvedAnimation(for: SkinTransitionLook.animation(spec, tokens: motionTokens), accessibilityReduceMotion: reduceMotion)
+                let animation = motionPolicy.resolvedAnimation(for: SkinTransitionLook.animation(spec, tokens: motionTokens, custom: customTokens), accessibilityReduceMotion: reduceMotion)
                 withAnimation(animation?.delay(max(0, spec[member: "delay"].number()))) { shown = true }
             }
     }
@@ -369,20 +385,22 @@ struct SkinKeyedSwap: View {
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var motionPolicy
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.skinMotionCustomTokens) private var customTokens
 
     var body: some View {
         let spec = SkinTransitionLook.spec(transition.type == .null ? .text("fade") : transition)
         let moves = motionPolicy.resolving(accessibilityReduceMotion: reduceMotion) == .full
-        let leave = Self.leaving(spec, enterDuration: SkinTransitionLook.animation(spec, tokens: motionTokens).duration)
-        let enterAnimation = motionPolicy.resolvedAnimation(for: SkinTransitionLook.animation(spec, tokens: motionTokens), accessibilityReduceMotion: reduceMotion)
-        let leaveAnimation = motionPolicy.resolvedAnimation(for: SkinTransitionLook.animation(leave, tokens: motionTokens), accessibilityReduceMotion: reduceMotion)
+        let enter = SkinTransitionLook.animation(spec, tokens: motionTokens, custom: customTokens)
+        let leave = Self.leaving(spec, enterDuration: enter.duration)
+        let enterAnimation = motionPolicy.resolvedAnimation(for: enter, accessibilityReduceMotion: reduceMotion)
+        let leaveAnimation = motionPolicy.resolvedAnimation(for: SkinTransitionLook.animation(leave, tokens: motionTokens, custom: customTokens), accessibilityReduceMotion: reduceMotion)
         ZStack {
             content.id(key).transition(.asymmetric(
                 insertion: AnyTransition.modifier(active: SkinTransitionLook(spec: spec, hidden: true, moves: moves), identity: SkinTransitionLook(spec: spec, hidden: false)).animation(enterAnimation),
                 removal: AnyTransition.modifier(active: SkinTransitionLook(spec: spec, hidden: true, moves: moves, direction: -1), identity: SkinTransitionLook(spec: spec, hidden: false)).animation(leaveAnimation)
             ))
         }
-        .motionAnimation(SkinTransitionLook.animation(spec, tokens: motionTokens), value: key)
+        .motionAnimation(enter, value: key)
     }
 
     private static func leaving(_ spec: SkinValue, enterDuration: Double) -> SkinValue {

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MotionKit
 
 /// The fixed function table of the expression language: maths, interpolation, colour, text,
 /// lists, time and the few data functions that take arguments (spectrum, lyric context).
@@ -87,11 +88,24 @@ enum SkinFunctions {
         }
         number("random", 1...1) { SkinFunctions.hash01($0[0]) }
         number("noise", 1...1) { SkinFunctions.valueNoise($0[0]) }
-        number("spring", 2...3) { arguments in
-            // Damped oscillation from 1 towards 0 over `t`; useful for entrance motion.
-            let t = max(0, arguments[0]), frequency = max(0.01, arguments[1])
-            let damping = arguments.count == 3 ? max(0, arguments[2]) : 6
-            return Foundation.exp(-damping * t) * Foundation.cos(2 * .pi * frequency * t)
+        // `spring(token, t)`: the MotionKit spring of a token (or a retuning record, or one of the
+        // skin's own tokens) from 0 to 1 over `t` seconds, at the user's motion speed, overshoot
+        // included; `springVelocity` is its rate per second. Reduced motion lands at 1 at once.
+        // `spring(t, frequency, damping)` with numbers is a damped oscillation from 1 towards 0.
+        for name in ["spring", "springVelocity"] {
+            table[name] = SkinFunction(arity: 2...3, argumentTypes: [.any, .number], result: { _ in .number }, tier: .change, domains: [.viewport]) { arguments, context in
+                let t = arguments[1].number()
+                guard arguments[0].type == .text || arguments[0].type == .record else {
+                    guard name == "spring" else { return .number(0) }
+                    let time = max(0, arguments[0].number()), frequency = max(0.01, t)
+                    let damping = arguments.count == 3 ? max(0, arguments[2].number()) : 6
+                    return .number(SkinFunctions.sanitized(Foundation.exp(-damping * time) * Foundation.cos(2 * .pi * frequency * time)))
+                }
+                guard t > 0 else { return .number(0) }
+                guard let spec = context.motionSpec(arguments[0]) else { return .number(name == "spring" ? 1 : 0) }
+                let evaluator = MotionSpringEvaluator(spec: spec)
+                return .number(SkinFunctions.sanitized(name == "spring" ? evaluator.normalizedValue(at: t) : evaluator.normalizedVelocity(at: t)))
+            }
         }
 
         table["mix"] = SkinFunction(arity: 3...3, argumentTypes: [.any, .any, .number], result: { types in
