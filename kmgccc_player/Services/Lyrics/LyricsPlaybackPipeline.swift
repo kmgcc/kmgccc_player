@@ -28,6 +28,7 @@ final class LyricsPlaybackPipeline {
     private var lastContentState: ContentState?
     private var lastHadTrack = false
     private var lastIsPlaying: Bool?
+    private var lastTransportIsPlaying: Bool?
     private var lastSyncedTime: Double?
     private var lastSeekRevision: Int?
 
@@ -96,7 +97,7 @@ final class LyricsPlaybackPipeline {
             lyricsVM.ensureLyricsLoaded(
                 track: presentation.localTrack,
                 currentTime: presentation.lyricsCurrentTime,
-                isPlaying: presentation.isPlaying,
+                isPlaying: presentation.effectiveLyricsIsPlaying,
                 reason: "pipeline \(reason)",
                 forceLyricsReload: forceLyricsReload
             )
@@ -127,7 +128,7 @@ final class LyricsPlaybackPipeline {
         let explicitSeek = seekRevision != nil && seekRevision != lastSeekRevision
         let restarted = (lastSyncedTime ?? 0) > 1.0
             && currentTime < 0.2
-            && presentation.effectiveLyricsIsPlaying
+            && presentation.isPlaying
         if restarted {
             // A same-track replay has no content-state change, but it is still
             // a new lyric entrance. Reinstall the document so MelismaKit can
@@ -141,6 +142,8 @@ final class LyricsPlaybackPipeline {
             return
         }
         let isPlaying = presentation.effectiveLyricsIsPlaying
+        let rendererBecameReady = lastIsPlaying == false && isPlaying
+            && lastTransportIsPlaying == true && presentation.isPlaying
         if lastIsPlaying != isPlaying {
             // Freeze/restart the native presentation clock at the transport
             // transition before feeding it the next (possibly stale) media
@@ -149,8 +152,8 @@ final class LyricsPlaybackPipeline {
             // ordering move the lyric highlight backwards.
             lyricsVM.setPlaying(isPlaying)
         }
-        if explicitSeek || lastSyncedTime == nil || abs((lastSyncedTime ?? 0) - currentTime) >= 0.01 {
-            lyricsVM.syncTime(currentTime, force: explicitSeek)
+        if explicitSeek || rendererBecameReady || lastSyncedTime == nil || abs((lastSyncedTime ?? 0) - currentTime) >= 0.01 {
+            lyricsVM.syncTime(currentTime, force: explicitSeek || rendererBecameReady)
         }
     }
 
@@ -161,6 +164,7 @@ final class LyricsPlaybackPipeline {
         lastContentState = contentState
         lastHadTrack = presentation.hasTrack
         lastIsPlaying = presentation.effectiveLyricsIsPlaying
+        lastTransportIsPlaying = presentation.isPlaying
         lastSyncedTime = presentation.lyricsCurrentTime
         lastSeekRevision = playbackCoordinator?.lyricsSeekRevision
     }

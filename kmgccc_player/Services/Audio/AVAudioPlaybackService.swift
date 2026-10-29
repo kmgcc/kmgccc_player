@@ -35,6 +35,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         audioFile != nil
     }
 
+    var isLyricsClockPlaying: Bool {
+        isPlaying && audioFile != nil && pendingRendererStartSegmentID == nil
+            && spatialPendingSeek == nil && currentTime > audioOutputDelay
+    }
+
     var volume: Double {
         didSet {
             rendererPipeline.setVolume(Float(volume))

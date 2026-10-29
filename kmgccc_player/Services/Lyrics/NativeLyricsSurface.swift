@@ -33,6 +33,18 @@ final class NativeLyricsSurface: NSObject {
     private(set) var currentTime = 0.0
     private(set) var isPlaying = false
     private var pendingClickSeek = false
+    private struct EntryDiagnostics {
+        let started: CFTimeInterval
+        let initialLayouts: Int
+        let initialGlyphMisses: Int
+        var previousFrame: CFTimeInterval?
+        var frames = 0
+        var maxRenderMs = 0.0
+        var maxGapMs = 0.0
+        var over8ms = 0
+        var over16ms = 0
+    }
+    private var entryDiagnostics: EntryDiagnostics?
 
     init(role: LyricsSurfaceRole) {
         self.role = role
@@ -43,6 +55,10 @@ final class NativeLyricsSurface: NSObject {
         // A surface may be configured or receive a snapshot before a host is
         // visible. Activation is the only operation that starts frame delivery.
         view.automaticDisplayUpdates = false
+
+        if DebugUIHooks.diagnosticsEnabled {
+            view.onFrame = { [weak self] frame in self?.recordEntryFrame(frame) }
+        }
 
         view.onSeek = { [weak self] seconds in
             guard let self else { return }
@@ -113,6 +129,7 @@ final class NativeLyricsSurface: NSObject {
         lastInputTrackID = trackID
 
         if rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            entryDiagnostics = nil
             view.clear(time: self.currentTime, playing: isPlaying)
             view.releaseRenderingResources()
             lastError = nil
@@ -127,8 +144,16 @@ final class NativeLyricsSurface: NSObject {
             let data = Data(rawText.utf8)
             let decoded = try TTMLDecoder().decode(data)
             let decodeEnd = CACurrentMediaTime()
+            let previousFrame = view.lastFrame
             view.releaseRenderingResources()
             let releaseEnd = CACurrentMediaTime()
+            if DebugUIHooks.diagnosticsEnabled {
+                entryDiagnostics = EntryDiagnostics(
+                    started: releaseEnd,
+                    initialLayouts: previousFrame?.layoutCount ?? 0,
+                    initialGlyphMisses: previousFrame?.glyphCacheMisses ?? 0
+                )
+            }
             view.install(
                 document: decoded,
                 time: self.currentTime,
@@ -146,6 +171,7 @@ final class NativeLyricsSurface: NSObject {
             lastTTML = rawText
             lastTrackID = trackID
         } catch {
+            entryDiagnostics = nil
             // Parse before replacing the previous visible document. The native
             // view follows the same failure boundary as the old bridge: an
             // invalid payload is recorded and the last valid surface remains.
@@ -162,6 +188,31 @@ final class NativeLyricsSurface: NSObject {
             )
         }
         pendingClickSeek = false
+    }
+
+    private func recordEntryFrame(_ frame: LyricsFrame) {
+        guard var metrics = entryDiagnostics else { return }
+        let now = CACurrentMediaTime()
+        metrics.frames += 1
+        metrics.maxRenderMs = max(metrics.maxRenderMs, frame.renderMilliseconds)
+        if let previous = metrics.previousFrame {
+            metrics.maxGapMs = max(metrics.maxGapMs, (now - previous) * 1000)
+        }
+        metrics.previousFrame = now
+        if frame.renderMilliseconds > 8.33 { metrics.over8ms += 1 }
+        if frame.renderMilliseconds > 16.67 { metrics.over16ms += 1 }
+        if now - metrics.started >= 2 {
+            entryDiagnostics = nil
+            DebugUIHooks.record(String(
+                format: "lyrics-entry role=%@ frames=%d maxRender=%.1fms maxCallbackGap=%.1fms over8ms=%d over16ms=%d layouts=%d glyphMisses=%d",
+                role.rawValue, metrics.frames, metrics.maxRenderMs, metrics.maxGapMs,
+                metrics.over8ms, metrics.over16ms,
+                max(0, frame.layoutCount - metrics.initialLayouts),
+                max(0, frame.glyphCacheMisses - metrics.initialGlyphMisses)
+            ))
+        } else {
+            entryDiagnostics = metrics
+        }
     }
 
     func synchronize(

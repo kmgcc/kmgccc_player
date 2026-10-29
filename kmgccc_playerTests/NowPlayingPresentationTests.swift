@@ -3,6 +3,35 @@ import XCTest
 
 @MainActor
 final class NowPlayingPresentationTests: XCTestCase {
+    func testLyricsClockStateParticipatesInPresentationEquality() {
+        var preparing = NowPlayingPresentation.emptyLocal
+        preparing.isPlaying = true
+        preparing.lyricsIsPlaying = false
+        var ready = preparing
+        ready.lyricsIsPlaying = true
+
+        XCTAssertFalse(preparing.effectiveLyricsIsPlaying)
+        XCTAssertTrue(ready.effectiveLyricsIsPlaying)
+        XCTAssertFalse(preparing.isEffectivelyEqualIgnoringCurrentTime(to: ready))
+    }
+
+    func testLocalArtworkFileTakesPrecedenceOverEnrichmentArtwork() {
+        var presentation = NowPlayingPresentation.emptyLocal
+        presentation.localArtworkFileURL = URL(fileURLWithPath: "/tmp/local-cover.jpg")
+
+        XCTAssertFalse(presentation.canUseEnrichmentArtwork)
+
+        presentation.localArtworkFileURL = nil
+        XCTAssertTrue(presentation.canUseEnrichmentArtwork)
+
+        presentation.artworkData = Data([1])
+        XCTAssertFalse(presentation.canUseEnrichmentArtwork)
+
+        presentation.source = .appleMusic
+        presentation.artworkData = nil
+        XCTAssertTrue(presentation.canUseEnrichmentArtwork)
+    }
+
     func testPlaybackLyricsCacheKeyTracksEveryInputValue() {
         let trackID = UUID()
         let original = PlaybackLyricsCacheKey(

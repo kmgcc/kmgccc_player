@@ -16,6 +16,9 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
     /// Whether audio is currently playing.
     var isPlaying: Bool { get }
 
+    /// Whether the renderer's current timeline can advance the lyric clock.
+    var isLyricsClockPlaying: Bool { get }
+
     /// Playback volume (0.0 to 1.0).
     var volume: Double { get set }
 
@@ -106,6 +109,10 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
 
     /// Seek to a specific time position.
     func seek(to seconds: Double)
+}
+
+extension AudioPlaybackServiceProtocol {
+    var isLyricsClockPlaying: Bool { isPlaying }
 }
 
 // MARK: - Convenience Extension

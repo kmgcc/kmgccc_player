@@ -63,6 +63,10 @@ struct NowPlayingPresentation {
     var musicEnrichment: MusicEnrichmentSnapshot? = nil
     var externalMusicAttributes: [String: MusicMetadataValue]? = nil
 
+    var canUseEnrichmentArtwork: Bool {
+        artworkData == nil && (source != .local || localArtworkFileURL == nil)
+    }
+
     var motionArtwork: MotionArtworkResource? {
         musicEnrichment?.squareArtwork ?? (source == .local ? localTrack?.storedMotionArtworkResource : nil)
     }

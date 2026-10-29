@@ -733,14 +733,10 @@ struct FullscreenPlayerView: View {
         let skinIdentity = "fullscreen_\(skinSession.identity(for: settings.fullscreen.skinID))"
 
         ZStack {
-            // Keep the 4 Hz playback clock in a leaf view. Native lyrics and the
-            // fullscreen lyrics state still receive live time, while the
-            // artwork/background/control tree remains on the stable projection.
+            // Keep fullscreen auto-hide time observation in a leaf view.
             FullscreenPlaybackSyncView(
                 onLocalTimeChange: handleCurrentTimeChange,
-                onLocalPlayingChange: handleLocalPlayingChange,
-                onExternalTimeChange: handlePresentationCurrentTimeChange,
-                onExternalPlayingChange: handleExternalPlayingChange
+                onExternalTimeChange: handlePresentationCurrentTimeChange
             )
             .frame(width: 0, height: 0)
             .allowsHitTesting(false)
@@ -2828,22 +2824,9 @@ struct FullscreenPlayerView: View {
         playbackCoordinator.playTrackFromQueue(track)
     }
 
-    private func handleLocalPlayingChange(_ newValue: Bool) {
-        guard currentDisplayContext.source == .local else { return }
-        LyricsSurfaceManager.shared.updatePlayingState(newValue)
-    }
-
-    private func handleExternalPlayingChange(_ newValue: Bool) {
-        guard currentDisplayContext.source.isExternal else { return }
-        LyricsSurfaceManager.shared.updatePlayingState(newValue)
-    }
-
     private func handleCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
         guard currentDisplayContext.source == .local else { return }
-        let trackID = playerVM.currentTrack?.id
         let rawLyricsTime = playerVM.lyricsCurrentTime
-        let lyricsTime = fullscreenLyricsSurfaceTime(rawLyricsTime, trackID: trackID)
-        LyricsSurfaceManager.shared.updatePlaybackTime(lyricsTime)
         evaluateFullscreenLyricsAutoHide(
             currentTime: rawLyricsTime,
             duration: playerVM.duration,
@@ -2854,14 +2837,6 @@ struct FullscreenPlayerView: View {
                 restoreIfNeeded: false,
                 preserveRestoreEligibility: shouldPreserveFullscreenLyricsEndingAutoHideRestore()
             )
-            // A manual track switch also resets the playback clock. The
-            // track-id observer will perform the required full reload for the
-            // new song; reloading here as well duplicates the WebKit layer
-            // commit and was the main fullscreen hitch during next/previous.
-            let currentTrackID = playerVM.currentTrack?.id ?? currentDisplayContext.trackID
-            if lastFullscreenLyricsReloadSignature?.trackID == currentTrackID {
-                reloadLyricsSurface(reason: "fullscreen playback restarted", forceLyricsReload: true)
-            }
         }
     }
 
@@ -2879,10 +2854,7 @@ struct FullscreenPlayerView: View {
 
     private func handlePresentationCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
         guard playbackCoordinator.presentation.source.isExternal else { return }
-        let trackID = playbackCoordinator.presentation.displayTrackID
         let rawLyricsTime = playbackCoordinator.presentation.lyricsCurrentTime
-        let lyricsTime = fullscreenLyricsSurfaceTime(rawLyricsTime, trackID: trackID)
-        LyricsSurfaceManager.shared.updatePlaybackTime(lyricsTime)
         evaluateFullscreenLyricsAutoHide(
             currentTime: rawLyricsTime,
             duration: playbackCoordinator.presentation.duration,
@@ -2893,13 +2865,6 @@ struct FullscreenPlayerView: View {
                 restoreIfNeeded: false,
                 preserveRestoreEligibility: shouldPreserveFullscreenLyricsEndingAutoHideRestore()
             )
-            // External track identity changes have their own observer below;
-            // only reload here when the identity is still the one already
-            // delivered to the fullscreen surface (true same-track replay).
-            let currentTrackID = playbackCoordinator.presentation.displayTrackID
-            if lastFullscreenLyricsReloadSignature?.trackID == currentTrackID {
-                reloadLyricsSurface(reason: "fullscreen external playback restarted", forceLyricsReload: true)
-            }
         }
     }
 
@@ -2983,9 +2948,8 @@ struct FullscreenPlayerView: View {
                 isPlaying: playbackPayload.isPlaying
             )
         }
-        publishFullscreenPlaybackSnapshot(playbackPayload)
-
         if shouldDeferFullscreenLyricsAutoRestoreApply(for: playbackPayload, reason: reason) {
+            publishFullscreenPlaybackSnapshot(playbackPayload)
             Log.debug(
                 "[FullscreenLyricsAutoHide] deferring auto-restore reload track=\(playbackPayload.trackID?.uuidString.prefix(8) ?? "nil"), time=\(String(format: "%.3f", playbackPayload.currentTime)), host=\(hostContext.rawValue)",
                 category: .lyrics
@@ -2995,6 +2959,7 @@ struct FullscreenPlayerView: View {
         }
 
         if hostContext == .embeddedWindow && !embeddedInitialThemeUnlocked {
+            publishFullscreenPlaybackSnapshot(playbackPayload)
             Log.info(
                 "[FullscreenLyricsReload] skipped embedded startup gate reason=\(reason), trackID=\(playbackPayload.trackID?.uuidString.prefix(8) ?? "nil")",
                 category: .lyrics
@@ -3091,7 +3056,7 @@ struct FullscreenPlayerView: View {
                     playerVM.lyricsCurrentTime,
                     trackID: track?.id
                 ),
-                isPlaying: playerVM.isPlaying
+                isPlaying: playerVM.isLyricsClockPlaying
             )
         case .appleMusic, .systemNowPlaying:
             let lyricsText = lyricsCoordinator.normalizedLyricsText(

@@ -31,6 +31,7 @@ enum DebugUIHooks {
         "memory.relief",
     ]
     private nonisolated static let isEnabled = ProcessInfo.processInfo.environment["KMGCCC_DEBUG_UI_HOOKS"] == "1"
+    nonisolated static var diagnosticsEnabled: Bool { isEnabled }
     private static weak var appSession: AppSessionHost?
     private static var isInstalled = false
     static let fullscreenLyricsToggleNotification = Notification.Name("kmgccc.player.debug.fullscreen.lyrics.toggle")

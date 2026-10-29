@@ -42,6 +42,18 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
     """
 
     @MainActor
+    func testLyricsRemainAtStartWhileAudioIsPreparing() {
+        let surface = NativeLyricsSurface(role: .main)
+        let text = "<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='1s'>First</p><p begin='1s' end='3s'>Second</p></div></body></tt>"
+        let host = CACurrentMediaTime()
+        surface.applyTrack(trackID: UUID(), ttml: text, currentTime: 0, isPlaying: false)
+
+        let whilePreparing = surface.view.render(at: host + 2)
+        XCTAssertEqual(whilePreparing.timeline.focus, 0)
+        XCTAssertEqual(whilePreparing.timeline.time, 0, accuracy: 0.001)
+    }
+
+    @MainActor
     func testAMLLTTMLIsPassedToDecoderWithoutTimingRewrite() throws {
         let surface = NativeLyricsSurface(role: .main)
         surface.applyTrack(

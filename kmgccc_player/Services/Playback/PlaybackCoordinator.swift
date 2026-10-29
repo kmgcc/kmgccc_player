@@ -23,6 +23,7 @@ nonisolated struct PlaybackLyricsCacheKey: Equatable, Sendable {
 @MainActor
 protocol LocalPlaybackControlling: AnyObject {
     var isPlaying: Bool { get }
+    var isLyricsClockPlaying: Bool { get }
     var currentTime: Double { get }
     var audioOutputDelay: Double { get }
     var duration: Double { get }
@@ -59,6 +60,7 @@ extension PlayerViewModel: LocalPlaybackControlling {}
 
 extension LocalPlaybackControlling {
     var nowPlayingAssetURL: URL? { nil }
+    var isLyricsClockPlaying: Bool { isPlaying }
 }
 
 @Observable
@@ -337,6 +339,12 @@ final class PlaybackCoordinator {
         recordCrashPlaybackCommand(.previous)
         switch activeSource {
         case .local:
+            // Local previous restarts the current track after three seconds.
+            // Mark that internal seek just like the progress-bar seek so the
+            // lyric clock can rebase while the renderer is still preparing.
+            if (localPlayback?.currentTime ?? 0) > 3 {
+                lyricsSeekRevision &+= 1
+            }
             localPlayback?.previous()
         case .appleMusic, .systemNowPlaying:
             activeExternalProvider?.previous()
@@ -771,7 +779,7 @@ final class PlaybackCoordinator {
         musicEnrichmentService.update(query: query)
         guard let snapshot = musicEnrichmentService.snapshot(for: key) else { return }
         value.musicEnrichment = snapshot
-        if value.artworkData == nil, let artwork = snapshot.artworkData {
+        if value.canUseEnrichmentArtwork, let artwork = snapshot.artworkData {
             value.artworkData = artwork
             let artworkIdentity = "enrichment:\(key):artwork"
             value.artworkIdentity = artworkIdentity
@@ -979,6 +987,7 @@ final class PlaybackCoordinator {
             externalMatchConfidence: nil,
             externalLyricsStatusMessage: nil,
             externalConnectionState: nil,
+            lyricsIsPlaying: playback.isLyricsClockPlaying,
             isControlEnabled: true,
             isSeekEnabled: playback.duration > 0,
             isVolumeControlEnabled: true,
