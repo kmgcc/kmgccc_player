@@ -42,7 +42,7 @@ actor ReferencedSourceScanner {
             try ReferencedFileIdentityProvider().fingerprint(for: $0)
         },
         fileManager: FileManager = .default,
-        supportedExtensions: Set<String> = ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "ogg", "opus", "ncm"],
+        supportedExtensions: Set<String> = AudioFormatSupport.importableExtensions,
         isReserved: @escaping ReservationCheck = { _, _ in false },
         isIgnored: @escaping IgnoreCheck = { _ in false }
     ) {

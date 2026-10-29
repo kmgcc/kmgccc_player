@@ -863,6 +863,19 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         XCTAssertTrue(failureTracks.isEmpty)
     }
 
+    func testScannerUsesImportableAudioExtensions() async throws {
+        let fixture = try await ReconcileFixture()
+        defer { fixture.cleanup() }
+        let expected = AudioFormatSupport.importableExtensions
+        for ext in expected.union(["ogg", "opus", "cue", "dsf"]) {
+            try Data("candidate".utf8).write(to: fixture.sourceRoot.appendingPathComponent("sample.\(ext)"))
+        }
+        let scanner = ReferencedSourceScanner(paths: fixture.paths)
+        let result = try await scanner.scan(context: fixture.context, sourceID: fixture.sourceID, rootURL: fixture.sourceRoot)
+        let found = Set((result.proposedManifest?.entries ?? []).map { URL(fileURLWithPath: $0.relativePath).pathExtension })
+        XCTAssertEqual(found, expected)
+    }
+
     func testMarkedNCMOutputIsHiddenWhileCommittedNCMRemainsCanonicalScanEntry() async throws {
         let fixture = try await ReconcileFixture(scannerFactory: { paths in
             let filter = NCMScanReservationFilter(registry: NCMConversionRegistry(paths: paths))
