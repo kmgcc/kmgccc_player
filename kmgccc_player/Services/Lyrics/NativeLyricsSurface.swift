@@ -33,6 +33,15 @@ final class NativeLyricsSurface: NSObject {
     private(set) var currentTime = 0.0
     private(set) var isPlaying = false
     private var pendingClickSeek = false
+    private struct DecodedDocument {
+        let trackID: UUID?
+        let text: String
+        let document: LyricsDocument
+    }
+    // Keep the current and previous documents for replay and adjacent-track
+    // switches. Exact source text is part of the key so edits cannot reuse a
+    // document decoded from older lyrics for the same track.
+    private var decodedDocuments: [DecodedDocument] = []
     private struct EntryDiagnostics {
         let started: CFTimeInterval
         let initialLayouts: Int
@@ -141,8 +150,19 @@ final class NativeLyricsSurface: NSObject {
 
         do {
             let installStart = CACurrentMediaTime()
-            let data = Data(rawText.utf8)
-            let decoded = try TTMLDecoder().decode(data)
+            let decoded: LyricsDocument
+            let cacheHit: Bool
+            if let index = decodedDocuments.firstIndex(where: { $0.trackID == trackID && $0.text == rawText }) {
+                let cached = decodedDocuments.remove(at: index)
+                decodedDocuments.insert(cached, at: 0)
+                decoded = cached.document
+                cacheHit = true
+            } else {
+                decoded = try TTMLDecoder().decode(Data(rawText.utf8))
+                decodedDocuments.insert(DecodedDocument(trackID: trackID, text: rawText, document: decoded), at: 0)
+                if decodedDocuments.count > 2 { decodedDocuments.removeLast() }
+                cacheHit = false
+            }
             let decodeEnd = CACurrentMediaTime()
             let previousFrame = view.lastFrame
             view.releaseRenderingResources()
@@ -161,11 +181,12 @@ final class NativeLyricsSurface: NSObject {
             )
             let installEnd = CACurrentMediaTime()
             DebugUIHooks.record(String(
-                format: "lyrics-install role=%@ decode=%.1fms release=%.1fms install=%.1fms",
+                format: "lyrics-install role=%@ decode=%.1fms release=%.1fms install=%.1fms cache=%@",
                 role.rawValue,
                 (decodeEnd - installStart) * 1000,
                 (releaseEnd - decodeEnd) * 1000,
-                (installEnd - releaseEnd) * 1000
+                (installEnd - releaseEnd) * 1000,
+                cacheHit ? "hit" : "miss"
             ))
             lastError = nil
             lastTTML = rawText
@@ -284,6 +305,7 @@ final class NativeLyricsSurface: NSObject {
     }
 
     func trimTransientResources() {
+        decodedDocuments.removeAll()
         view.pruneTransientCaches()
     }
 
@@ -300,6 +322,7 @@ final class NativeLyricsSurface: NSObject {
     }
 
     func shutdown() {
+        decodedDocuments.removeAll()
         setRenderingActive(false)
         view.releaseRenderingResources()
         onSeek = nil
