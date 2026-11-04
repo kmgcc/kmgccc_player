@@ -41,6 +41,7 @@ struct ImportCandidate: Sendable {
     /// Original paths represented by this candidate, including converted NCM
     /// inputs and files coalesced onto one physical referenced Track.
     let originalInputFilePaths: [String]
+    let videoOutputDirectoryURL: URL?
 
     nonisolated init(
         progressID: String,
@@ -59,7 +60,8 @@ struct ImportCandidate: Sendable {
         manuallyEditedFields: Set<String> = [],
         audioPropertiesOverride: TrackAudioProperties? = nil,
         enrichmentSuggestions: [EnrichmentSuggestion]? = nil,
-        originalInputFilePaths: [String] = []
+        originalInputFilePaths: [String] = [],
+        videoOutputDirectoryURL: URL? = nil
     ) {
         self.progressID = progressID
         self.displayName = displayName
@@ -78,9 +80,10 @@ struct ImportCandidate: Sendable {
         self.audioPropertiesOverride = audioPropertiesOverride
         self.enrichmentSuggestions = enrichmentSuggestions
         self.originalInputFilePaths = originalInputFilePaths
+        self.videoOutputDirectoryURL = videoOutputDirectoryURL
     }
 
-    func prepared(trackID: UUID, placement: ImportPlacement) -> ImportCandidate {
+    func prepared(trackID: UUID, placement: ImportPlacement, videoOutputDirectoryURL: URL? = nil) -> ImportCandidate {
         ImportCandidate(
             progressID: progressID,
             displayName: displayName,
@@ -98,7 +101,8 @@ struct ImportCandidate: Sendable {
             manuallyEditedFields: manuallyEditedFields,
             audioPropertiesOverride: audioPropertiesOverride,
             enrichmentSuggestions: enrichmentSuggestions,
-            originalInputFilePaths: originalInputFilePaths
+            originalInputFilePaths: originalInputFilePaths,
+            videoOutputDirectoryURL: videoOutputDirectoryURL
         )
     }
 }
@@ -144,6 +148,8 @@ struct ImportExecutionPlan {
         /// Interactive referenced-mode import: similarity matches reuse the
         /// existing Track and merge the newly selected physical location.
         case automaticReuseExisting
+        /// Ordinary audio locations are reused; videos still need extraction.
+        case automaticReuseExistingAndImportVideo
     }
 
     let reusedTracks: [Track]
@@ -221,7 +227,9 @@ final class ImportPlanner {
         if storageBackend.mode != .referenced {
             for track in libraryTracks where !track.originalFilePath.isEmpty {
                 let canonicalPath = TrackIdentityResolver.canonicalPath(track.originalFilePath)
-                if existingTracksByCanonicalPath[canonicalPath] == nil {
+                if existingTracksByCanonicalPath[canonicalPath] == nil
+                    || (Self.isUnconvertedVideoTrack(existingTracksByCanonicalPath[canonicalPath]!)
+                        && !Self.isUnconvertedVideoTrack(track)) {
                     existingTracksByCanonicalPath[canonicalPath] = track
                 }
             }
@@ -251,7 +259,29 @@ final class ImportPlanner {
                     newFiles.append(file)
                     continue
                 }
+                if AudioFormatSupport.isVideoContainer(file.url), Self.isUnconvertedVideoTrack(reuseTarget) {
+                    newFiles.append(file)
+                    continue
+                }
                 do {
+                    // A converted video's source identity belongs to the
+                    // extracted audio. Keep that location when the original
+                    // movie is selected again or appears in a source scan.
+                    if var locator = reuseTarget.mediaLocator.referencedFile,
+                       locator.locations.contains(where: { location in
+                           location.videoSource.map {
+                               TrackIdentityResolver.samePhysicalIdentity($0.fingerprint, fingerprint)
+                           } ?? false
+                       }) {
+                        for membership in file.memberships {
+                            locator.setSourceMembership(membership)
+                            locator.refreshVideoSource(for: membership.sourceID, url: file.url, fingerprint: fingerprint)
+                        }
+                        referencedReuseLocators[reuseTarget.id] = locator
+                        fileTrackMappings.append(.init(filePath: file.url.standardizedFileURL.path, trackID: reuseTarget.id))
+                        if reusedTrackIDs.insert(reuseTarget.id).inserted { reusedTracks.append(reuseTarget) }
+                        continue
+                    }
                     let placement = try await storageBackend.makePlacement(
                         for: file,
                         trackID: reuseTarget.id,
@@ -304,6 +334,10 @@ final class ImportPlanner {
                     newFiles.append(file)
                     continue
                 }
+                if AudioFormatSupport.isVideoContainer(file.url), Self.isUnconvertedVideoTrack(existingTrack) {
+                    newFiles.append(file)
+                    continue
+                }
                 fileTrackMappings.append(.init(
                     filePath: file.url.standardizedFileURL.path,
                     trackID: existingTrack.id
@@ -337,6 +371,15 @@ final class ImportPlanner {
     }
 
     // MARK: - Conversions
+
+    private static func isUnconvertedVideoTrack(_ track: Track) -> Bool {
+        if let path = track.mediaLocator.managedLibraryRelativePath {
+            return AudioFormatSupport.isVideoContainer(URL(fileURLWithPath: path))
+        }
+        guard let locator = track.mediaLocator.referencedFile,
+              !locator.locations.contains(where: { $0.videoSource != nil }) else { return false }
+        return AudioFormatSupport.isVideoContainer(URL(fileURLWithPath: locator.lastKnownPath))
+    }
 
     struct ConversionOutcome {
         let resolvedFiles: [ResolvedImportFile]
@@ -582,6 +625,7 @@ final class ImportPlanner {
             let trackID = candidate.recoveryTrackID ?? UUID()
             do {
                 let placement: ImportPlacement
+                var videoOutputDirectoryURL: URL?
                 if let locator = candidate.ncmLocator {
                     placement = .referenced(locator)
                 } else {
@@ -592,6 +636,17 @@ final class ImportPlanner {
                     )
                 }
                 try storageBackend.validate(placement)
+                if placement.storageKind == .referenced, AudioFormatSupport.isVideoContainer(candidate.fileURL) {
+                    guard let referencedNCMConversionService else {
+                        throw VideoMusicImportError.parentAuthorizationDenied
+                    }
+                    do {
+                        videoOutputDirectoryURL = try await referencedNCMConversionService
+                            .authorizeVideoOutput(for: candidate.discoveredFile)
+                    } catch {
+                        throw VideoMusicImportError.parentAuthorizationDenied
+                    }
+                }
                 if let operationID = candidate.ncmOperationID,
                    let referencedNCMConversionService {
                     try await referencedNCMConversionService.associateTrack(
@@ -599,7 +654,10 @@ final class ImportPlanner {
                         trackID: trackID
                     )
                 }
-                finalCandidates.append(candidate.prepared(trackID: trackID, placement: placement))
+                finalCandidates.append(candidate.prepared(
+                    trackID: trackID, placement: placement,
+                    videoOutputDirectoryURL: videoOutputDirectoryURL
+                ))
             } catch {
                 failures.append(.init(
                     url: candidate.fileURL,
@@ -684,6 +742,7 @@ final class ImportPlanner {
         identityResolver: TrackIdentityResolver
     ) async -> Track? {
         let candidates = libraryTracks.compactMap { track -> ManagedTrackCandidate? in
+            if AudioFormatSupport.isVideoContainer(file.url), Self.isUnconvertedVideoTrack(track) { return nil }
             let managedAudioURL: URL?
             if case let .managed(libraryRelativePath) = track.mediaLocator {
                 managedAudioURL = paths.rootURL.appendingPathComponent(libraryRelativePath)

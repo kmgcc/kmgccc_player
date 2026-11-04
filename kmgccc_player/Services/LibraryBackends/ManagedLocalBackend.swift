@@ -38,7 +38,11 @@ final class ManagedLocalBackend: LibraryStorageBackend {
         if FileManager.default.fileExists(atPath: stagedURL.path) {
             try FileManager.default.removeItem(at: stagedURL)
         }
-        try FileManager.default.copyItem(at: file.url, to: stagedURL)
+        // Video containers are split by the worker directly into staging;
+        // copying the complete movie here would double temporary disk use.
+        if !AudioFormatSupport.isVideoContainer(file.url) {
+            try FileManager.default.copyItem(at: file.url, to: stagedURL)
+        }
         return .managed(
             stagedAudioURL: stagedURL,
             libraryRelativePath: "Tracks/\(trackID.uuidString)/audio.\(ext)"
@@ -99,6 +103,7 @@ nonisolated enum ImportInputScanner {
 
             let filteredCandidates = candidates.filter { candidate in
                 guard candidate.fromDirectory, let fingerprint = candidate.3 else { return true }
+                if VideoMusicImporter.isGeneratedAudio(candidate.0) { return false }
                 return !NCMGeneratedOutputMarkerStore.isGeneratedOutput(
                     candidate.0,
                     fingerprint: fingerprint

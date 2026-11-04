@@ -854,8 +854,16 @@ final class FileImportService: FileImportServiceProtocol {
         if !duplicateRows.isEmpty, presentation == .interactive {
             switch storageBackend.mode {
             case .referenced:
+                // Similar metadata is insufficient to bypass video extraction.
+                // Only the source-identity path above may reuse a converted movie.
+                selectedDuplicates = preparedCandidates.duplicateCandidates.filter {
+                    AudioFormatSupport.isVideoContainer($0.fileURL)
+                }
+                let audioDuplicateCandidates = preparedCandidates.duplicateCandidates.filter {
+                    !AudioFormatSupport.isVideoContainer($0.fileURL)
+                }
                 let reuseResult = await reuseReferencedDuplicateCandidates(
-                    preparedCandidates.duplicateCandidates,
+                    audioDuplicateCandidates,
                     libraryTracks: libraryTracks,
                     existingLocators: referencedReuseLocators,
                     session: importSession,
@@ -868,7 +876,8 @@ final class FileImportService: FileImportServiceProtocol {
                 referencedReuseLocators = reuseResult.locators
                 referencedReuseNCMOperationIDs = reuseResult.ncmOperationIDsByTrackID
                 lastImportFailures.append(contentsOf: reuseResult.failures)
-                policyDecision = .automaticReuseExisting
+                policyDecision = selectedDuplicates.isEmpty
+                    ? .automaticReuseExisting : .automaticReuseExistingAndImportVideo
             case .managed:
                 selectedDuplicates = preparedCandidates.duplicateCandidates
                 policyDecision = .automaticImportAllAsNew

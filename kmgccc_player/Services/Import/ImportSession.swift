@@ -9,9 +9,24 @@ import Foundation
 
 actor ImportCancellationToken {
     private var cancelled = false
+    private var cancellationHandlers: [UUID: @Sendable () -> Void] = [:]
 
     func requestCancel() {
         cancelled = true
+        let handlers = cancellationHandlers.values
+        cancellationHandlers.removeAll()
+        for handler in handlers { handler() }
+    }
+
+    func registerCancellationHandler(_ handler: @escaping @Sendable () -> Void) throws -> UUID {
+        try checkCancellation()
+        let id = UUID()
+        cancellationHandlers[id] = handler
+        return id
+    }
+
+    func removeCancellationHandler(_ id: UUID) {
+        cancellationHandlers.removeValue(forKey: id)
     }
 
     var isCancelled: Bool {
@@ -58,12 +73,19 @@ struct ImportStagedTrackFile: Sendable {
     let libraryRelativePath: String
 }
 
+nonisolated struct ImportStagedAssetFile: Sendable {
+    let stagedURL: URL
+    let libraryRelativePath: String
+}
+
 @MainActor
 final class ImportSession {
     let id: UUID
     let stagingDirectoryURL: URL
 
     private(set) var stagedTrackFiles: [UUID: ImportStagedTrackFile] = [:]
+    private var stagedAssets: [UUID: [ImportStagedAssetFile]] = [:]
+    private var generatedReferencedAudioFiles: [UUID: (url: URL, fingerprint: ReferencedFileFingerprint)] = [:]
     private(set) var finalizedTrackIDs: Set<UUID> = []
     private(set) var committedTrackIDs: Set<UUID> = []
 
@@ -90,6 +112,31 @@ final class ImportSession {
         trackIDs.compactMap { stagedTrackFiles[$0] }
     }
 
+    func registerStagedAssets(_ assets: [ImportStagedAssetFile], for trackID: UUID, generatedAudioURL: URL?) {
+        stagedAssets[trackID] = assets
+        if let url = generatedAudioURL,
+           let fingerprint = try? ReferencedFileIdentityProvider().fingerprint(for: url) {
+            generatedReferencedAudioFiles[trackID] = (url, fingerprint)
+        }
+    }
+
+    func stagedAssetFiles(for trackIDs: Set<UUID>) -> [ImportStagedAssetFile] {
+        trackIDs.flatMap { stagedAssets[$0] ?? [] }
+    }
+
+    func removeGeneratedReferencedAudio(for trackIDs: Set<UUID>, fileManager: FileManager = .default) {
+        for trackID in trackIDs {
+            guard let file = generatedReferencedAudioFiles.removeValue(forKey: trackID),
+                  let current = try? ReferencedFileIdentityProvider().fingerprint(for: file.url),
+                  current == file.fingerprint else { continue }
+            do {
+                try fileManager.removeItem(at: file.url)
+            } catch {
+                Log.warning("[ImportSession] failed to remove generated video audio track=\(trackID): \(error.localizedDescription)", category: .import)
+            }
+        }
+    }
+
     func markFinalized(trackIDs: [UUID]) {
         finalizedTrackIDs.formUnion(trackIDs)
     }
@@ -99,6 +146,10 @@ final class ImportSession {
     }
 
     func cleanupStaging(fileManager: FileManager = .default) {
+        removeGeneratedReferencedAudio(
+            for: Set(generatedReferencedAudioFiles.keys).subtracting(committedTrackIDs),
+            fileManager: fileManager
+        )
         guard fileManager.fileExists(atPath: stagingDirectoryURL.path) else { return }
         do {
             try fileManager.removeItem(at: stagingDirectoryURL)
@@ -180,6 +231,7 @@ struct ImportRollbackService {
             failedFolders = counters.failed
         }
 
+        session.removeGeneratedReferencedAudio(for: fileTrackIDs)
         session.cleanupStaging()
 
         return ImportRollbackReport(

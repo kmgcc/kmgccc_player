@@ -116,7 +116,8 @@ final class ImportCommitter {
                     artist: candidate.metadata.artist,
                     stage: .importing,
                     status: .active,
-                    detail: "正在导入歌曲文件与内嵌信息"
+                    detail: AudioFormatSupport.isVideoContainer(candidate.fileURL)
+                        ? "正在提取音轨和封面" : "正在导入歌曲文件与内嵌信息"
                 )
                 group.addTask {
                     await PerAudioFileImportTask.performImportTask(
@@ -133,6 +134,10 @@ final class ImportCommitter {
                 createdTrackIDs.insert(output.trackID)
 
                 if let payload = output.payload {
+                    session.registerStagedAssets(
+                        payload.stagedAssets, for: payload.id,
+                        generatedAudioURL: payload.generatedReferencedAudioURL
+                    )
                     if case let .managed(relativePath) = payload.mediaLocator,
                        let stagedAudioURL = payload.stagedAudioURL {
                         session.registerStagedTrack(ImportStagedTrackFile(
@@ -247,7 +252,8 @@ final class ImportCommitter {
                         artist: candidate.metadata.artist,
                         stage: .importing,
                         status: .active,
-                        detail: "正在导入歌曲文件与内嵌信息"
+                        detail: AudioFormatSupport.isVideoContainer(candidate.fileURL)
+                            ? "正在提取音轨和封面" : "正在导入歌曲文件与内嵌信息"
                     )
                     group.addTask {
                         await PerAudioFileImportTask.performImportTask(
@@ -362,14 +368,13 @@ final class ImportCommitter {
         cancellationToken: ImportCancellationToken
     ) async throws {
         guard !trackIDs.isEmpty else { return }
+        let stagedFiles = session.stagedFiles(for: trackIDs)
         if storageBackend.mode == .referenced {
-            guard session.stagedFiles(for: trackIDs).isEmpty else {
+            guard stagedFiles.isEmpty else {
                 throw LibraryBackendError.modeMismatch(expected: .referenced, actual: .managed)
             }
-            return
         }
-        let stagedFiles = session.stagedFiles(for: trackIDs)
-        guard stagedFiles.count == trackIDs.count else {
+        if storageBackend.mode == .managed, stagedFiles.count != trackIDs.count {
             let missingCount = trackIDs.count - stagedFiles.count
             throw NSError(
                 domain: "FileImportService.ImportSession",
@@ -378,12 +383,16 @@ final class ImportCommitter {
             )
         }
 
+        let files = stagedFiles.map {
+            ImportStagedAssetFile(stagedURL: $0.stagedAudioURL, libraryRelativePath: $0.libraryRelativePath)
+        } + session.stagedAssetFiles(for: trackIDs)
+
         let capturedPaths = paths
         try await Task.detached(priority: .userInitiated) { @Sendable in
             let fileManager = FileManager.default
             try capturedPaths.createRequiredDirectories(fileManager: fileManager)
 
-            for file in stagedFiles {
+            for file in files {
                 try await cancellationToken.checkCancellation()
                 guard let destinationURL = capturedPaths.libraryURL(
                     from: file.libraryRelativePath
@@ -399,18 +408,18 @@ final class ImportCommitter {
                     try fileManager.removeItem(at: destinationURL)
                 }
                 if fileManager.fileExists(atPath: destinationFolder.path),
-                   !fileManager.fileExists(atPath: file.stagedAudioURL.path) {
+                   !fileManager.fileExists(atPath: file.stagedURL.path) {
                     throw NSError(
                         domain: "FileImportService.ImportSession",
                         code: 2,
                         userInfo: [NSLocalizedDescriptionKey: "Staged audio file is missing"]
                     )
                 }
-                try fileManager.moveItem(at: file.stagedAudioURL, to: destinationURL)
+                try fileManager.moveItem(at: file.stagedURL, to: destinationURL)
             }
         }.value
 
-        session.markFinalized(trackIDs: stagedFiles.map(\.trackID))
+        session.markFinalized(trackIDs: Array(trackIDs))
     }
 
     // MARK: - Rollback & cleanup
@@ -493,6 +502,8 @@ final class ImportCommitter {
             artistCredits: payload.artistCredits,
             album: payload.album,
             albumArtist: payload.albumArtist,
+            motionArtwork: payload.motionArtwork,
+            artworkIsUserSelected: payload.artworkIsUserSelected ? true : nil,
             duration: payload.duration,
             importedAt: payload.importedAt,
             fileBookmarkData: Data(),
@@ -511,9 +522,9 @@ final class ImportCommitter {
             merged.appendDeduplicatingByIDs(suggestions)
             track.enrichmentSuggestions = merged
         }
-        track.artworkNeedsUpgrade = payload.artworkData.map {
+        track.artworkNeedsUpgrade = !payload.artworkIsUserSelected && (payload.artworkData.map {
             ArtworkDataNormalizer.isBelowPreferredResolution($0)
-        } ?? false
+        } ?? false)
         return track
     }
 }

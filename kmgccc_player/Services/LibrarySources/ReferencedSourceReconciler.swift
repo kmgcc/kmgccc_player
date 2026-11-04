@@ -502,6 +502,81 @@ final class ReferencedSourceReconciler {
         return created
     }
 
+    /// File sources stand for the one file the listener added. Once the last
+    /// song it contributed is deleted the descriptor can no longer play or
+    /// rescan anything — its file is tombstoned — so it would linger in
+    /// 音乐来源 as an entry that leads nowhere. Directory sources are never
+    /// retired this way: the folder itself was the choice.
+    ///
+    /// A tombstone is required on purpose. A library whose tracks failed to
+    /// load looks empty, and that must never be mistaken for “every source
+    /// lost its songs”.
+    func unusedFileSourceIDs() async throws -> [UUID] {
+        guard !isClosed else { return [] }
+        let descriptors = try await sourceStore.loadAll()
+        let fileSources = descriptors.filter { $0.mode == .file }
+        guard !fileSources.isEmpty else { return [] }
+        let tracks = await repository.fetchTracks(in: nil)
+        var usedSourceIDs = Set<UUID>()
+        for track in tracks {
+            guard case let .referenced(locator) = track.mediaLocator else { continue }
+            usedSourceIDs.formUnion(locator.allSourceMemberships.map(\.sourceID))
+        }
+        let candidates = fileSources.filter { !usedSourceIDs.contains($0.id) }
+        guard !candidates.isEmpty else { return [] }
+        let tombstones = (try? await ignoredItemsStore.allItems()) ?? []
+        return candidates
+            .filter { hasRemovalTombstone($0, tombstones: tombstones) }
+            .map(\.id)
+    }
+
+    /// The listener removed this file from the library (the tombstone written
+    /// when the song was deleted). Path and physical identity are both
+    /// accepted so an extracted video's tombstone still matches after the
+    /// movie was renamed.
+    private func hasRemovalTombstone(
+        _ descriptor: ReferencedSourceDescriptor,
+        tombstones: [IgnoredReferencedItem]
+    ) -> Bool {
+        guard !tombstones.isEmpty else { return false }
+        let path = URL(fileURLWithPath: descriptor.lastKnownPath).standardizedFileURL.path
+        let knownPaths = Set(tombstones.map {
+            URL(fileURLWithPath: $0.lastKnownPath).standardizedFileURL.path
+        })
+        if knownPaths.contains(path) { return true }
+        guard let fingerprint = try? ReferencedFileIdentityProvider()
+            .fingerprint(for: URL(fileURLWithPath: path)) else { return false }
+        let key = ReferencedPhysicalIdentityKey(fingerprint)
+        return tombstones.contains { ReferencedPhysicalIdentityKey($0.fingerprint) == key }
+    }
+
+    /// Removes every unreferenced file source through the ordinary source
+    /// removal path, so playlist contributions and scan manifests settle the
+    /// same way they do when 移除来源 is used.
+    @discardableResult
+    func pruneUnusedFileSources() async throws -> [UUID] {
+        let candidates = try await unusedFileSourceIDs()
+        guard !candidates.isEmpty else { return [] }
+        var removed: [UUID] = []
+        for sourceID in candidates {
+            do {
+                try await removeSource(sourceID)
+                removed.append(sourceID)
+            } catch {
+                Log.warning(
+                    "[ReferencedSource] failed to retire unused file source \(sourceID): \(error.localizedDescription)",
+                    category: .library
+                )
+            }
+        }
+        guard !removed.isEmpty else { return [] }
+        Log.info(
+            "[ReferencedSource] retired unused file sources count=\(removed.count)",
+            category: .library
+        )
+        return removed
+    }
+
     @discardableResult
     func replayPending(sourceID: UUID? = nil) async throws -> ReferencedReconcileChanges {
         var changes = ReferencedReconcileChanges()
@@ -1218,13 +1293,24 @@ final class ReferencedSourceReconciler {
     }
 
     private func physicalTrackIDMap(_ tracks: [Track]) -> [ReferencedPhysicalIdentityKey: UUID] {
-        tracks.reduce(into: [:]) { result, track in
+        var result = tracks.reduce(into: [ReferencedPhysicalIdentityKey: UUID]()) { result, track in
             guard case let .referenced(locator) = track.mediaLocator else { return }
             for location in locator.locations {
                 guard let fingerprint = location.fingerprint else { continue }
                 result[ReferencedPhysicalIdentityKey(fingerprint)] = track.id
             }
         }
+        // Prefer converted music over an older raw-movie entry for the same
+        // source, independently of the runtime array's ordering.
+        for track in tracks.reversed() {
+            guard let locator = track.mediaLocator.referencedFile else { continue }
+            for location in locator.locations {
+                if let source = location.videoSource {
+                    result[ReferencedPhysicalIdentityKey(source.fingerprint)] = track.id
+                }
+            }
+        }
+        return result
     }
 
     private func ncmSourceTrackIDMap(_ tracks: [Track]) -> [ReferencedFileIdentity: UUID] {
@@ -1267,7 +1353,7 @@ final class ReferencedSourceReconciler {
                 )
                 didRepairGeneratedOutputMembership = true
                 if locator.allSourceMemberships.isEmpty,
-                   let sourcePath = track.ncmConversionAssociation?.sourcePath {
+                   let sourcePath = track.ncmConversionAssociation?.sourcePath ?? locator.videoSource?.path {
                     let sourceURL = URL(fileURLWithPath: sourcePath)
                     if let rel = relativePath(sourceURL, root: rootURL),
                        FileManager.default.fileExists(atPath: sourceURL.path) {
@@ -1404,7 +1490,7 @@ final class ReferencedSourceReconciler {
         groupedByPhysicalIdentity: [ReferencedPhysicalIdentityKey: [ReferencedSourceAddedFile]]
     ) -> ReferencedSourceAddedFile? {
         let candidateGroups = locator.locations.compactMap { location -> [ReferencedSourceAddedFile]? in
-            guard let fingerprint = location.fingerprint else { return nil }
+            guard let fingerprint = location.videoSource?.fingerprint ?? location.fingerprint else { return nil }
             return groupedByPhysicalIdentity[ReferencedPhysicalIdentityKey(fingerprint)]
         }
         let candidates = candidateGroups.flatMap { $0 }
@@ -1418,6 +1504,25 @@ final class ReferencedSourceReconciler {
         url: URL,
         fingerprint: ReferencedFileFingerprint
     ) {
+        if AudioFormatSupport.isVideoContainer(url), let videoLocation = locator.locations.first(where: {
+            $0.videoSource != nil && $0.sourceMemberships.contains { $0.sourceID == sourceID }
+        }) {
+            locator.refreshVideoSource(for: sourceID, url: url, fingerprint: fingerprint)
+            // A folder move can carry both files. Follow the extracted audio
+            // by its own identity, without substituting the observed movie.
+            let audioURL = url.deletingLastPathComponent()
+                .appendingPathComponent(URL(fileURLWithPath: videoLocation.lastKnownPath).lastPathComponent)
+            if let current = try? ReferencedFileIdentityProvider().fingerprint(for: audioURL),
+               let previous = videoLocation.fingerprint,
+               TrackIdentityResolver.samePhysicalIdentity(current, previous),
+               let bookmark = try? bookmarkResolver.refreshBookmark(for: audioURL) {
+                locator.refreshLocation(for: sourceID, fileBookmarkData: bookmark, lastKnownPath: audioURL.path, fingerprint: current)
+                if let source = locator.locations.first(where: { $0.id == videoLocation.id })?.videoSource {
+                    try? VideoMusicImporter.markGeneratedAudio(audioURL, source: source)
+                }
+            }
+            return
+        }
         let bookmark = (try? bookmarkResolver.refreshBookmark(for: url))
             ?? locator.fileBookmarkData
         locator.refreshLocation(
@@ -1457,7 +1562,8 @@ final class ReferencedSourceReconciler {
                 )
             } ?? false
             : false
-        guard associationMatches || markerMatches else { return nil }
+        let videoMatches = locator.videoSource != nil && VideoMusicImporter.isGeneratedAudio(outputURL)
+        guard associationMatches || markerMatches || videoMatches else { return nil }
         return relativePath(outputURL, root: rootURL)
     }
 

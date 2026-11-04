@@ -160,6 +160,175 @@ private actor NoticeRecorder: kmgccc_player.ReferencedSourceNoticePublishing {
 
 @MainActor
 final class ReferencedSourceReconcilerTests: XCTestCase {
+    func testVideoSourceScanAndRenameKeepExtractedAudioAndSingleTrack() async throws {
+        let fixture = try await ReconcileFixture()
+        defer { fixture.cleanup() }
+        let movie = fixture.sourceRoot.appendingPathComponent("clip.mp4")
+        let staged = fixture.root.appendingPathComponent("staged.m4a")
+        try Data("movie".utf8).write(to: movie)
+        try Data("extracted audio".utf8).write(to: staged)
+        let source = ReferencedVideoSource(
+            path: movie.path,
+            fingerprint: try ReferencedFileIdentityProvider().fingerprint(for: movie),
+            bookmarkData: try movie.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        )
+        let audio = try VideoMusicImporter.publishReferencedAudio(
+            from: staged, beside: movie, in: fixture.sourceRoot, source: source
+        )
+        let locator = ReferencedFileLocator(
+            fileBookmarkData: Data(audio.path.utf8),
+            sourceMemberships: [.init(sourceID: fixture.sourceID, relativePath: movie.lastPathComponent)],
+            primarySourceID: fixture.sourceID, lastKnownPath: audio.path,
+            fingerprint: try ReferencedFileIdentityProvider().fingerprint(for: audio),
+            videoSource: source
+        )
+        let track = Track(
+            title: "Clip", fileBookmarkData: locator.fileBookmarkData, originalFilePath: movie.path,
+            mediaLocator: .referenced(locator), libraryRootSnapshot: fixture.paths.rootURL.path
+        )
+        _ = await fixture.repository.commitImportedTracks([track])
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        let first = await fixture.repository.fetchTracks(in: nil)
+        XCTAssertEqual(first.map(\.id), [track.id])
+        XCTAssertEqual(first[0].mediaLocator.referencedFile?.lastKnownPath, audio.path)
+        let renamed = fixture.sourceRoot.appendingPathComponent("renamed.mp4")
+        try FileManager.default.moveItem(at: movie, to: renamed)
+        XCTAssertTrue(VideoMusicImporter.isGeneratedAudio(audio), "The source bookmark follows a renamed movie")
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        let second = await fixture.repository.fetchTracks(in: nil)
+        XCTAssertEqual(second.map(\.id), [track.id])
+        let updated = try XCTUnwrap(second[0].mediaLocator.referencedFile)
+        XCTAssertEqual(updated.lastKnownPath, audio.path)
+        XCTAssertEqual(updated.videoSource?.path, renamed.path)
+        XCTAssertEqual(updated.sourceMemberships.map(\.relativePath), [renamed.lastPathComponent])
+        XCTAssertEqual(second[0].availability, .available)
+        try Data("replaced movie".utf8).write(to: renamed, options: .atomic)
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        let replaced = await fixture.repository.fetchTracks(in: nil)
+        XCTAssertEqual(replaced.map(\.id), [track.id])
+        XCTAssertEqual(replaced.first?.mediaLocator.referencedFile?.lastKnownPath, audio.path)
+        XCTAssertEqual(replaced.first?.availability, .available)
+    }
+
+    func testPruneRetiresOnlyFileSourcesThatLostEveryTrack() async throws {
+        let fixture = try await ReconcileFixture()
+        defer { fixture.cleanup() }
+        let orphanFile = fixture.sourceRoot.appendingPathComponent("orphan.mp3")
+        let ownedFile = fixture.sourceRoot.appendingPathComponent("owned.mp3")
+        let unattributedFile = fixture.sourceRoot.appendingPathComponent("unattributed.mp3")
+        for url in [orphanFile, ownedFile, unattributedFile] {
+            try Data(url.lastPathComponent.utf8).write(to: url)
+        }
+        let orphanSourceID = UUID()
+        let ownedSourceID = UUID()
+        let unattributedSourceID = UUID()
+        for (id, url) in [
+            (orphanSourceID, orphanFile),
+            (ownedSourceID, ownedFile),
+            (unattributedSourceID, unattributedFile),
+        ] {
+            try await fixture.store.save(ReferencedSourceDescriptor(
+                id: id,
+                mode: .file,
+                rootBookmarkData: Data(url.path.utf8),
+                lastKnownPath: url.path,
+                displayName: url.lastPathComponent
+            ))
+        }
+        // Only orphan.mp3 was removed from the library; the file that was
+        // never imported keeps its row.
+        let orphanFingerprint = try ReferencedFileIdentityProvider().fingerprint(for: orphanFile)
+        try await fixture.ignoredItemsStore.add([IgnoredReferencedItem(
+            fingerprint: orphanFingerprint,
+            lastKnownPath: orphanFile.path,
+            reason: .trackRemoval
+        )])
+        let locator = kmgccc_player.ReferencedFileLocator(
+            fileBookmarkData: Data(ownedFile.path.utf8),
+            sourceMemberships: [.init(
+                sourceID: ownedSourceID,
+                relativePath: ownedFile.lastPathComponent
+            )],
+            primarySourceID: ownedSourceID,
+            lastKnownPath: ownedFile.path,
+            fingerprint: try ReferencedFileIdentityProvider().fingerprint(for: ownedFile)
+        )
+        let track = Track(
+            title: "Owned",
+            fileBookmarkData: locator.fileBookmarkData,
+            originalFilePath: ownedFile.path,
+            mediaLocator: .referenced(locator),
+            libraryRootSnapshot: fixture.paths.rootURL.path
+        )
+        _ = await fixture.repository.commitImportedTracks([track])
+
+        let removed = try await fixture.reconciler.pruneUnusedFileSources()
+        XCTAssertEqual(removed, [orphanSourceID])
+        let remaining = Set(try await fixture.store.loadAll().map(\.id))
+        XCTAssertTrue(remaining.contains(ownedSourceID))
+        XCTAssertTrue(remaining.contains(unattributedSourceID))
+        // The folder the listener added is never retired this way, even
+        // while it contributes no song.
+        XCTAssertTrue(remaining.contains(fixture.sourceID))
+        XCTAssertFalse(remaining.contains(orphanSourceID))
+    }
+
+    func testDeletingExtractedVideoSongRemovesItsAudioAndTombstonesMovie() async throws {
+        let fixture = try await ReconcileFixture()
+        defer { fixture.cleanup() }
+        let movie = fixture.sourceRoot.appendingPathComponent("clip.mp4")
+        try Data("movie".utf8).write(to: movie)
+        let staged = fixture.root.appendingPathComponent("staged.m4a")
+        try Data("extracted audio".utf8).write(to: staged)
+        let videoSource = ReferencedVideoSource(
+            path: movie.path,
+            fingerprint: try ReferencedFileIdentityProvider().fingerprint(for: movie)
+        )
+        let audio = try VideoMusicImporter.publishReferencedAudio(
+            from: staged, beside: movie, in: fixture.sourceRoot, source: videoSource
+        )
+        let locator = ReferencedFileLocator(
+            fileBookmarkData: try SystemBookmarkResolver().refreshBookmark(for: audio),
+            sourceMemberships: [.init(
+                sourceID: fixture.sourceID,
+                relativePath: movie.lastPathComponent
+            )],
+            primarySourceID: fixture.sourceID,
+            lastKnownPath: audio.path,
+            fingerprint: try ReferencedFileIdentityProvider().fingerprint(for: audio),
+            videoSource: videoSource
+        )
+        let track = Track(
+            title: "Clip",
+            fileBookmarkData: locator.fileBookmarkData,
+            originalFilePath: movie.path,
+            mediaLocator: .referenced(locator),
+            libraryRootSnapshot: fixture.paths.rootURL.path
+        )
+        _ = await fixture.repository.commitImportedTracks([track])
+        try await LibraryScopedSettingsStore(paths: fixture.paths)
+            .setReferencedTrackDeletePolicy(.onlyLibrary)
+        let deletion = ReferencedTrackDeletionService(
+            context: fixture.context,
+            sourceScope: fixture.scope,
+            ignoredItemsStore: fixture.ignoredItemsStore,
+            ncmRegistry: fixture.ncmRegistry,
+            bookmarkResolver: ReconcileBookmarkResolver()
+        )
+
+        let preparation = await deletion.prepareForAuthorityDeletion([track])
+        XCTAssertEqual(preparation.approvedTrackIDs, Set([track.id]))
+        XCTAssertTrue(preparation.failures.isEmpty)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: audio.path),
+            "The extracted audio is a derivative of the movie"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: movie.path))
+        let movieIgnored = try await fixture.ignoredItemsStore.contains(videoSource.fingerprint)
+        XCTAssertTrue(movieIgnored)
+    }
+
     func testFSEventsCreationFailureReleasesHandlerWithoutDoubleRelease() {
         let source = FSEventsLibraryFileEventSource()
         // This nonempty path exceeds FSEvents' filesystem representation

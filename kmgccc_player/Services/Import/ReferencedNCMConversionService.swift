@@ -705,6 +705,18 @@ final class ReferencedNCMConversionService {
         return try await registry.allowManualRetry(matching: fingerprint)
     }
 
+    /// Video conversion publishes the extracted audio beside the movie. A
+    /// folder this process can already write needs no grant, so importing a
+    /// movie stays as direct as importing any other song; only a refused
+    /// folder falls back to the shared per-batch parent-directory grant that
+    /// NCM conversion uses.
+    func authorizeVideoOutput(for file: ImportDiscoveredFile) async throws -> URL {
+        guard isImportBatchActive else { throw VideoMusicImportError.parentAuthorizationDenied }
+        let directory = file.url.deletingLastPathComponent()
+        if fileManager.isWritableFile(atPath: directory.path) { return directory }
+        return try await writeAuthorization(for: file).directoryURL
+    }
+
     private func writeAuthorization(for file: ImportDiscoveredFile) async throws -> NCMParentDirectoryAuthorization {
         if sourceScope.authorizedDirectorySourceID(containing: file.url) != nil {
             return NCMParentDirectoryAuthorization(

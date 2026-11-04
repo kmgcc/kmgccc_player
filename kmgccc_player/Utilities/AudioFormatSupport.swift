@@ -20,7 +20,7 @@ import UniformTypeIdentifiers
 /// `playableExtensions` lists container/codec extensions that Core Audio
 /// (`AVAudioFile` / `AVURLAsset`) can decode on the app's deployment target.
 /// `importableExtensions` adds formats that are decrypted/transcoded during
-/// import (currently NCM) before they live in the library as a playable file.
+/// import (NCM and video containers) before they become playable audio files.
 ///
 /// Formats deliberately excluded: `ogg` / `opus`. Core Audio cannot decode
 /// Vorbis or Ogg-Opus, so whitelisting them would create a "selectable but the
@@ -46,7 +46,15 @@ nonisolated enum AudioFormatSupport {
     /// plus formats converted to a playable file during import.
     static let importableExtensions: Set<String> = playableExtensions.union([
         "ncm",   // NetEase encrypted; decrypted during import
-    ])
+    ]).union(videoContainerExtensions)
+
+    /// These containers are normalized to an audio-only M4A during import.
+    /// A video track, when present, becomes silent motion artwork.
+    static let videoContainerExtensions: Set<String> = ["mp4", "m4v", "mov"]
+
+    static func isVideoContainer(_ url: URL) -> Bool {
+        videoContainerExtensions.contains(url.pathExtension.lowercased())
+    }
 
     /// Content types offered by the import `NSOpenPanel`. Built from explicit
     /// system types where they exist, with `UTType(filenameExtension:)`
@@ -82,10 +90,8 @@ nonisolated enum AudioFormatSupport {
     }()
 
     static let openPanelContentTypes: [UTType] = {
-        guard let ncm = UTType(filenameExtension: "ncm") else {
-            return playableOpenPanelContentTypes
-        }
-        return playableOpenPanelContentTypes + [ncm]
+        let convertedTypes = ["ncm", "m4v", "mov"].compactMap { UTType(filenameExtension: $0) }
+        return playableOpenPanelContentTypes + convertedTypes
     }()
 
     /// Whether `url`'s extension is something the importer accepts.

@@ -229,6 +229,12 @@ nonisolated struct TrackMotionArtwork: Codable, Equatable, Sendable {
     var catalogAlbumID: String?
     var albumIdentity: String? = nil
 
+    init(importedAssets: [StoredMotionArtwork]) {
+        assets = importedAssets
+        isUserSelected = true
+        catalogAlbumID = nil
+    }
+
     init(snapshot: MusicEnrichmentSnapshot) {
         assets = snapshot.record.assets
         isUserSelected = snapshot.record.manualMotionSelection != nil

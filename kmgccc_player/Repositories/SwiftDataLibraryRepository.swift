@@ -488,13 +488,19 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func track(matching fingerprint: ReferencedFileFingerprint) async -> Track? {
-        allTracks.first { track in
-            guard case let .referenced(locator) = track.mediaLocator else { return false }
-            return locator.locations.contains { location in
-                guard let existingFingerprint = location.fingerprint else { return false }
-                return TrackIdentityResolver.samePhysicalIdentity(existingFingerprint, fingerprint)
+        var physicalMatch: Track?
+        for track in allTracks {
+            guard case let .referenced(locator) = track.mediaLocator else { continue }
+            for location in locator.locations {
+                if let source = location.videoSource,
+                   TrackIdentityResolver.samePhysicalIdentity(source.fingerprint, fingerprint) { return track }
+                if physicalMatch == nil, let existingFingerprint = location.fingerprint,
+                   TrackIdentityResolver.samePhysicalIdentity(existingFingerprint, fingerprint) {
+                    physicalMatch = track
+                }
             }
         }
+        return physicalMatch
     }
 
     func mergeReferencedLocator(_ incoming: ReferencedFileLocator, into track: Track) async throws {

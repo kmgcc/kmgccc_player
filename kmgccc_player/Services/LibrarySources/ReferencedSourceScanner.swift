@@ -193,6 +193,7 @@ actor ReferencedSourceScanner {
                     guard values.isRegularFile == true,
                           supportedExtensions.contains(resolved.pathExtension.lowercased()) else { continue }
                     let fingerprint = try fingerprintProvider(resolved)
+                    if VideoMusicImporter.isGeneratedAudio(resolved) { continue }
                     if await isReserved(resolved, fingerprint.identity) { continue }
                     if NCMGeneratedOutputMarkerStore.isGeneratedOutput(
                         resolved,

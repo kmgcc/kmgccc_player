@@ -95,6 +95,16 @@ final class ReferencedTrackDeletionService {
                 reason: .trackRemoval
             ))
         }
+        // The movie a song was extracted from must not return through the
+        // next source scan. Its own identity is tombstones separately from
+        // the extracted audio's.
+        if let video = locator.videoSource {
+            ignoredItems.append(IgnoredReferencedItem(
+                fingerprint: video.fingerprint,
+                lastKnownPath: video.path,
+                reason: .trackRemoval
+            ))
+        }
 
         let operationID = track.ncmConversionAssociation?.operationID
         if let operationID, let record = try await ncmRegistry.record(operationID: operationID) {
@@ -122,7 +132,7 @@ final class ReferencedTrackDeletionService {
             // (it would throw and refuse deletion) while still writing
             // ignore tombstones above so a leftover file can never be
             // re-scanned back.
-            if recycleSource, track.availability.isPlayable {
+            if track.availability.isPlayable, recycleSource || locator.videoSource != nil {
                 let resolution = try LocalAudioResourceResolver(
                     paths: context.paths,
                     authorizedSourceRoots: sourceScope.authorizedRoots,
@@ -130,7 +140,21 @@ final class ReferencedTrackDeletionService {
                     requiresSecurityScope: requiresSecurityScope
                 ).resolve(track.mediaLocator)
                 defer { resolution.lease.release() }
-                try await recycler.recycle(resolution.url)
+                if recycleSource {
+                    try await recycler.recycle(resolution.url)
+                } else if VideoMusicImporter.isGeneratedAudio(resolution.url) {
+                    // Extracted audio is a derivative the app published beside
+                    // the movie. The movie itself is the listener's file and
+                    // is never touched.
+                    do {
+                        try FileManager.default.removeItem(at: resolution.url)
+                    } catch {
+                        Log.warning(
+                            "[ReferencedSource] failed to remove extracted video audio \(resolution.url.lastPathComponent): \(error.localizedDescription)",
+                            category: .library
+                        )
+                    }
+                }
             }
         } catch {
             if let operationID {

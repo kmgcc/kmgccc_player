@@ -64,40 +64,96 @@ nonisolated enum PerAudioFileImportTask {
             embeddedLyrics: candidate.metadata.lyrics
         )
 
+        var videoMusic: ImportedVideoMusic?
+        var generatedReferencedAudioURL: URL?
+        var preparedSuccessfully = false
+        defer {
+            if !preparedSuccessfully {
+                if let videoMusic {
+                    try? FileManager.default.removeItem(at: videoMusic.audioURL.deletingLastPathComponent())
+                }
+                if let generatedReferencedAudioURL {
+                    try? FileManager.default.removeItem(at: generatedReferencedAudioURL)
+                }
+            }
+        }
         do {
             try await cancellationToken.checkCancellation()
+            if AudioFormatSupport.isVideoContainer(candidate.fileURL) {
+                videoMusic = try await VideoMusicImporter.prepare(
+                    sourceURL: candidate.fileURL,
+                    outputDirectory: stagingDirectoryURL,
+                    cancellationToken: cancellationToken
+                )
+            }
+            let audioURL = videoMusic?.audioURL ?? candidate.fileURL
+            let duration = videoMusic?.duration ?? candidate.metadata.duration
             try Self.ensureAudioIsDecodable(
-                candidate.fileURL,
-                knownDuration: candidate.metadata.duration
+                audioURL,
+                knownDuration: duration
             )
             try await cancellationToken.checkCancellation()
 
-            let artworkData = await extractedArtworkTask
+            let embeddedArtworkData = await extractedArtworkTask
+            let artworkData = videoMusic?.artworkData ?? embeddedArtworkData
             let ttmlLyricText = await localLyricsTask
             try await cancellationToken.checkCancellation()
 
             // A cover that exists but cannot survive a large display is not a
             // usable local cover: ask providers for a better one. The embedded
             // image stays as a fallback until a higher-resolution result lands.
-            let needsOnlineCover =
-                artworkData.map { ArtworkDataNormalizer.isBelowPreferredResolution($0) } ?? true
+            let hasVideoPoster = videoMusic?.artworkData != nil
+            let needsOnlineCover = !hasVideoPoster
+                && (artworkData.map { ArtworkDataNormalizer.isBelowPreferredResolution($0) } ?? true)
 
             // §9.2: technical properties of the physical file. NCM outputs
             // already carry bitrate/format from the decrypted header; plain
             // files are probed here while they are open for decode checks.
             let audioProperties = candidate.audioPropertiesOverride
                 ?? Self.readAudioProperties(
-                    for: candidate.fileURL,
-                    durationSeconds: candidate.metadata.duration
+                    for: audioURL,
+                    durationSeconds: duration
                 )
             let mediaLocator: TrackMediaLocator
+            var stagedAudioURL: URL?
             switch placement {
-            case .managed(_, let relativePath):
+            case .managed(let stagedURL, let plannedRelativePath):
+                let relativePath = videoMusic == nil ? plannedRelativePath : "Tracks/\(trackId.uuidString)/audio.m4a"
+                stagedAudioURL = videoMusic?.audioURL ?? stagedURL
                 mediaLocator = .managed(libraryRelativePath: relativePath)
             case .referenced(var locator):
+                if let videoMusic {
+                    guard let directory = candidate.videoOutputDirectoryURL else {
+                        throw VideoMusicImportError.parentAuthorizationDenied
+                    }
+                    let fingerprint = try candidate.discoveredFile.fingerprint
+                        ?? ReferencedFileIdentityProvider().fingerprint(for: candidate.fileURL)
+                    let source = ReferencedVideoSource(
+                        path: candidate.fileURL.path, fingerprint: fingerprint,
+                        bookmarkData: locator.fileBookmarkData
+                    )
+                    let published = try VideoMusicImporter.publishReferencedAudio(
+                        from: videoMusic.audioURL, beside: candidate.fileURL,
+                        in: directory, source: source
+                    )
+                    generatedReferencedAudioURL = published
+                    locator.fileBookmarkData = try SystemBookmarkResolver().refreshBookmark(for: published)
+                    locator.lastKnownPath = published.path
+                    locator.fingerprint = try ReferencedFileIdentityProvider().fingerprint(for: published)
+                    locator.videoSource = source
+                }
                 locator.primaryAudioProperties = audioProperties
                 mediaLocator = .referenced(locator)
             }
+            try await cancellationToken.checkCancellation()
+            let motionArtwork = videoMusic?.motionArtwork(trackID: trackId)
+            let stagedAssets: [ImportStagedAssetFile]
+            if let motionURL = videoMusic?.motionURL, let asset = motionArtwork?.assets.first {
+                stagedAssets = [.init(stagedURL: motionURL, libraryRelativePath: asset.relativePath)]
+            } else {
+                stagedAssets = []
+            }
+            preparedSuccessfully = true
 
             return ImportTaskOutput(
                 index: index,
@@ -112,14 +168,11 @@ nonisolated enum PerAudioFileImportTask {
                     artistCredits: candidate.metadata.artistCredits,
                     album: candidate.metadata.album,
                     albumArtist: candidate.metadata.albumArtist,
-                    duration: candidate.metadata.duration,
+                    duration: duration,
                     importedAt: importedAt,
                     originalFilePath: originalSourceURL.path,
                     mediaLocator: mediaLocator,
-                    stagedAudioURL: {
-                        if case .managed(let stagedURL, _) = placement { return stagedURL }
-                        return nil
-                    }(),
+                    stagedAudioURL: stagedAudioURL,
                     artworkData: artworkData,
                     ttmlLyricText: ttmlLyricText,
                     lyricsText: nil,
@@ -140,7 +193,11 @@ nonisolated enum PerAudioFileImportTask {
                     }(),
                     embeddedSnapshot: candidate.embeddedSnapshot,
                     audioProperties: audioProperties,
-                    enrichmentSuggestions: candidate.enrichmentSuggestions
+                    enrichmentSuggestions: candidate.enrichmentSuggestions,
+                    motionArtwork: motionArtwork,
+                    artworkIsUserSelected: hasVideoPoster,
+                    stagedAssets: stagedAssets,
+                    generatedReferencedAudioURL: generatedReferencedAudioURL
                 ),
                 needsLyricsEnrichment: ttmlLyricText == nil,
                 needsCoverEnrichment: needsOnlineCover,
@@ -192,22 +249,29 @@ nonisolated enum PerAudioFileImportTask {
         }
     }
 
-    /// Final safety net before copying a file into the library: if we never
-    /// determined a positive duration, confirm Core Audio can at least open the
-    /// file. This turns "silently imported a 0-second broken track" into a
-    /// clear, per-file import failure. Files with a known duration short-circuit
-    /// (the common case), so valid audio is never rejected here.
+    /// Probe the same decoder used by playback, including a small PCM read.
+    /// AVAsset reporting a duration is not evidence that Core Audio can decode
+    /// the media; video containers previously slipped through that shortcut.
     nonisolated static func ensureAudioIsDecodable(
         _ url: URL,
         knownDuration: Double
     ) throws {
-        if knownDuration > 0, knownDuration.isFinite { return }
         do {
             let file = try AVAudioFile(forReading: url)
             guard file.length > 0,
                   file.processingFormat.sampleRate.isFinite,
                   file.processingFormat.sampleRate > 0,
                   file.processingFormat.channelCount > 0 else {
+                throw AudioImportError.undecodable(fileName: url.lastPathComponent)
+            }
+            guard let buffer = AVAudioPCMBuffer(
+                pcmFormat: file.processingFormat,
+                frameCapacity: AVAudioFrameCount(min(file.length, 1_024))
+            ) else {
+                throw AudioImportError.undecodable(fileName: url.lastPathComponent)
+            }
+            try file.read(into: buffer)
+            guard buffer.frameLength > 0 else {
                 throw AudioImportError.undecodable(fileName: url.lastPathComponent)
             }
         } catch {
@@ -352,6 +416,10 @@ internal struct ImportedTrackPayload: Sendable {
     let embeddedSnapshot: EmbeddedMetadataSnapshot?
     let audioProperties: TrackAudioProperties?
     let enrichmentSuggestions: [EnrichmentSuggestion]?
+    let motionArtwork: TrackMotionArtwork?
+    let artworkIsUserSelected: Bool
+    let stagedAssets: [ImportStagedAssetFile]
+    let generatedReferencedAudioURL: URL?
 
     nonisolated init(
         id: UUID,
@@ -372,7 +440,11 @@ internal struct ImportedTrackPayload: Sendable {
         importProvenance: ImportProvenance?,
         embeddedSnapshot: EmbeddedMetadataSnapshot? = nil,
         audioProperties: TrackAudioProperties? = nil,
-        enrichmentSuggestions: [EnrichmentSuggestion]? = nil
+        enrichmentSuggestions: [EnrichmentSuggestion]? = nil,
+        motionArtwork: TrackMotionArtwork? = nil,
+        artworkIsUserSelected: Bool = false,
+        stagedAssets: [ImportStagedAssetFile] = [],
+        generatedReferencedAudioURL: URL? = nil
     ) {
         self.id = id
         self.title = title
@@ -393,6 +465,10 @@ internal struct ImportedTrackPayload: Sendable {
         self.embeddedSnapshot = embeddedSnapshot
         self.audioProperties = audioProperties
         self.enrichmentSuggestions = enrichmentSuggestions
+        self.motionArtwork = motionArtwork
+        self.artworkIsUserSelected = artworkIsUserSelected
+        self.stagedAssets = stagedAssets
+        self.generatedReferencedAudioURL = generatedReferencedAudioURL
     }
 }
 

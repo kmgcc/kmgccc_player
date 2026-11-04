@@ -291,6 +291,9 @@ nonisolated struct LocalAudioResourceResolver: Sendable {
                 return lhs.relativePath.count < rhs.relativePath.count
             }
             for membership in orderedMemberships {
+                // Video memberships identify the import source. Its extracted
+                // audio has its own bookmark and is the only playback target.
+                if location.videoSource != nil { continue }
                 guard TrackMediaLocator.isSafeRelativePath(membership.relativePath) else {
                     // A malformed/stale source edge must not hide a valid
                     // bookmark or alternate location. Reject this candidate
