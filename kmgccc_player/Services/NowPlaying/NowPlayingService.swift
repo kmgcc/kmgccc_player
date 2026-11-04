@@ -155,7 +155,10 @@ final class NowPlayingService {
             info.removeValue(forKey: MPMediaItemPropertyAlbumTitle)
         }
         info[MPMediaItemPropertyPlaybackDuration] = presentation.duration
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = presentation.currentTime
+        // Elapsed time lives in the coordinator's progress channel; the content
+        // presentation only advances when the track state actually changes.
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = coordinator?.playbackProgress.currentTime
+            ?? presentation.currentTime
         info[MPNowPlayingInfoPropertyPlaybackRate] = presentation.isPlaying ? 1.0 : 0.0
         applyAudioMetadata(
             to: &info,

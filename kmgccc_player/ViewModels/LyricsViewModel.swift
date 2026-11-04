@@ -293,7 +293,11 @@ final class LyricsViewModel {
     private func shouldLoadTrackContent(_ track: Track) -> Bool {
         let hasCachedTTML = track.ttmlLyricText?.isEmpty == false
         let hasCachedLyrics = track.lyricsText?.isEmpty == false
-        return !hasCachedTTML && !hasCachedLyrics
+        guard !hasCachedTTML, !hasCachedLyrics else { return false }
+        // Without a sidecar the deferred loader has nothing to read and would
+        // only apply an empty document a second time. Let the synchronous
+        // path clear once instead of scheduling a redundant late install.
+        return track.resolvedTTMLURL() != nil || track.resolvedLyricsURL() != nil
     }
 
     /// Prepare sidecar lyrics away from the main actor before applying a new

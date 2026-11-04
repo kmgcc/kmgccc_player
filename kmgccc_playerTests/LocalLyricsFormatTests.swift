@@ -194,6 +194,18 @@ final class LocalLyricsFormatTests: XCTestCase {
         await assertConversionFails(#"<tt xmlns="http://www.w3.org/ns/ttml"></tt>"#, with: .invalidTTML("TTML 缺少 <body> 节点"))
     }
 
+    func testTTMLValidationScansPrefixedAndCaseInsensitiveTags() {
+        let prefixed = #"<tt:tt xmlns:tt="http://www.w3.org/ns/ttml"><tt:body><tt:div><tt:p begin="00:01.000">Hi</tt:p></tt:div></tt:body></tt:tt>"#
+        XCTAssertTrue(LyricsFormatSupport.validateTTML(prefixed).isValid)
+
+        let uppercase = #"<TT><BODY><DIV><P>Hi</P></DIV></BODY></TT>"#
+        XCTAssertTrue(LyricsFormatSupport.validateTTML(uppercase).isValid)
+
+        XCTAssertFalse(LyricsFormatSupport.validateTTML(#"<tt><div>Hi</div></tt>"#).isValid)
+        XCTAssertFalse(LyricsFormatSupport.validateTTML(#"<body><p>Hi</p></body>"#).isValid)
+        XCTAssertFalse(LyricsFormatSupport.validateTTML(#"<ttm:agent type="person">A</ttm:agent>"#).isValid)
+    }
+
     // MARK: - Files
 
     func testDecodesLegacyEncodingsAndByteOrderMarks() throws {

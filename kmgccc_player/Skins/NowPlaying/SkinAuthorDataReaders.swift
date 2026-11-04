@@ -34,7 +34,7 @@ struct SkinLyricsReader<Content: View>: View {
         content(.init(
             revision: manager.documentPublication.revision,
             document: manager.documentForConsumers(), timedGroups: manager.timedGroupsForConsumers(role: role),
-            currentTime: playback.presentation.lyricsCurrentTime,
+            currentTime: playback.liveLyricsTime,
             isPlaying: playback.presentation.effectiveLyricsIsPlaying,
             configuration: manager.configurationForConsumers(role: role), originalTTML: manager.currentTTML
         ))

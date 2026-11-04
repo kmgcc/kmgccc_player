@@ -830,7 +830,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // stopPlayback runs invalidatePreparation() — bumping playGeneration and
         // cancelling any in-flight prepare — and clears currentTrack/audioFile +
         // releases the old file's security scope.
+        let stopStart = ProcessInfo.processInfo.systemUptime
         stopPlayback(clearQueue: false, keepPlayingState: shouldKeepPlaying)
+        DebugUIHooks.record(String(
+            format: "switch-timing stop-playback=%.1fms",
+            (ProcessInfo.processInfo.systemUptime - stopStart) * 1000
+        ))
 
         if shouldKeepPlaying {
             isPlaying = true
@@ -974,7 +979,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         currentTime = position
         activeTimelineToken = UUID()
 
+        let latencyStart = ProcessInfo.processInfo.systemUptime
         refreshOutputLatency(force: true)
+        DebugUIHooks.record(String(
+            format: "switch-timing output-latency=%.1fms",
+            (ProcessInfo.processInfo.systemUptime - latencyStart) * 1000
+        ))
         AudioAnalysisHub.shared.enableRendererFeed()
         AudioAnalysisHub.shared.setPlaying(shouldAutoplay)
         rendererPipeline.setVolume(Float(volume))

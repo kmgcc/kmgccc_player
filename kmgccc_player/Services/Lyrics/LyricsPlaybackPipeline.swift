@@ -112,6 +112,14 @@ final class LyricsPlaybackPipeline {
         remember(presentation: presentation, contentState: contentState)
     }
 
+    /// Progress-only tick. `PlaybackCoordinator` no longer republishes the
+    /// whole presentation for elapsed-time changes, so the pipeline is nudged
+    /// directly to keep the displayed clock anchored to the transport.
+    func syncProgressOnly(_ presentation: NowPlayingPresentation) {
+        syncPlaybackState(presentation)
+        remember(presentation: presentation, contentState: contentState(for: presentation))
+    }
+
     private func syncPlaybackState(_ presentation: NowPlayingPresentation) {
         guard let lyricsVM else { return }
 
@@ -144,16 +152,21 @@ final class LyricsPlaybackPipeline {
         let isPlaying = presentation.effectiveLyricsIsPlaying
         let rendererBecameReady = lastIsPlaying == false && isPlaying
             && lastTransportIsPlaying == true && presentation.isPlaying
-        if lastIsPlaying != isPlaying {
-            // Freeze/restart the native presentation clock at the transport
-            // transition before feeding it the next (possibly stale) media
-            // sample. This preserves the audio-output-delay/Bluetooth timing
-            // already encoded in lyricsCurrentTime without letting callback
-            // ordering move the lyric highlight backwards.
-            lyricsVM.setPlaying(isPlaying)
-        }
-        if explicitSeek || rendererBecameReady || lastSyncedTime == nil || abs((lastSyncedTime ?? 0) - currentTime) >= 0.01 {
-            lyricsVM.syncTime(currentTime, force: explicitSeek || rendererBecameReady)
+        // Assert the transport state on every sample instead of only on a
+        // transition. Another caller (a scrub preview, a reactivated surface or
+        // a stale snapshot) can start the native clock without this pipeline
+        // seeing a transition; the paused state then never reaches the surface
+        // and the lyrics keep advancing on their own. The call is idempotent.
+        lyricsVM.setPlaying(isPlaying)
+        // A paused surface freezes at its predicted time, which can diverge
+        // from the transport after a renderer re-anchor, a missed seek or a
+        // free-running clock. Rebase it while paused so the next sample cannot
+        // leave the lyrics stranded at the wrong position.
+        let surfaceTime = LyricsSurfaceManager.shared.currentPlaybackTime
+        let pausedDivergence = !isPlaying && abs(surfaceTime - currentTime) > 0.5
+        let timeChanged = lastSyncedTime == nil || abs((lastSyncedTime ?? 0) - currentTime) >= 0.01
+        if explicitSeek || rendererBecameReady || pausedDivergence || timeChanged {
+            lyricsVM.syncTime(currentTime, force: explicitSeek || rendererBecameReady || pausedDivergence)
         }
     }
 

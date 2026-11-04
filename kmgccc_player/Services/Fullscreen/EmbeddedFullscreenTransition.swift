@@ -38,6 +38,12 @@ final class EmbeddedFullscreenTransition {
         contentHost = host
         let surface = FullscreenContentContainer()
         surface.wantsLayer = true
+        // The embedded surface covers the main window and must be opaque:
+        // anything translucent inside it (the glass mini player pill in
+        // particular) samples whatever is behind the surface, so a hole here
+        // lets the library window show through the fullscreen scene.
+        surface.layer?.backgroundColor = NSColor.black.cgColor
+        surface.layer?.isOpaque = true
         surface.layer?.opacity = 0
         host.autoresizingMask = [.width, .height]
         surface.addSubview(host)
@@ -110,6 +116,9 @@ final class EmbeddedFullscreenTransition {
     func animateExit() {
         guard direction == .exiting, !motionStarted else { return }
         let expected = generation
+        // The covered content must be live again before the surface starts
+        // moving away, otherwise the window shows through as it slides.
+        setCoveredWindowContentHidden(false)
         // Publish the restored toolbar/main visibility before moving the
         // fullscreen surface. The existing main views keep their final layout.
         DispatchQueue.main.async { [weak self] in
@@ -162,6 +171,7 @@ final class EmbeddedFullscreenTransition {
     private func completeMotion(generation expected: Int) {
         guard generation == expected else { return }
         if direction == .entering {
+            setCoveredWindowContentHidden(true)
             onEntered?()
             onEntered = nil
         } else {
@@ -176,6 +186,21 @@ final class EmbeddedFullscreenTransition {
         done?()
     }
 
+    /// Stops the main window's own content (library, sidebar) from taking part
+    /// in layout and drawing while the opaque fullscreen surface covers it.
+    /// The surface is a sibling of `contentView`, so hiding that view leaves the
+    /// fullscreen scene untouched.
+    private func setCoveredWindowContentHidden(_ hidden: Bool) {
+        guard let content = window?.contentView else { return }
+        if hidden {
+            guard !content.isHidden else { return }
+            content.isHidden = true
+        } else {
+            guard content.isHidden else { return }
+            content.isHidden = false
+        }
+    }
+
     private func endPreparation() {
         if let prepareToken { FirstUseHitchDiagnostics.end(prepareToken) }
         prepareToken = nil
@@ -184,6 +209,7 @@ final class EmbeddedFullscreenTransition {
     func cancel() {
         endPreparation()
         generation += 1
+        setCoveredWindowContentHidden(false)
         container?.removeFromSuperview()
         container = nil
         contentHost = nil
@@ -251,4 +277,5 @@ private struct NativeEmbeddedFullscreenSurface: NSViewRepresentable {
 
 private final class FullscreenContentContainer: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
+    override var isOpaque: Bool { true }
 }

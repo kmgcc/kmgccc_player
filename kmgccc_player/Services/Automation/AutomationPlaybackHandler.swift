@@ -283,7 +283,7 @@ struct AutomationPlaybackHandler {
             currentTrackID: currentTrack?.id,
             currentTitle: presentation.title.isEmpty ? nil : presentation.title,
             currentArtist: presentation.artist.isEmpty ? nil : presentation.artist,
-            position: max(0, presentation.currentTime),
+            position: max(0, coordinator.playbackProgress.currentTime),
             duration: max(0, presentation.duration),
             volume: min(max(presentation.volume, 0), 1),
             playbackMode: playbackMode,

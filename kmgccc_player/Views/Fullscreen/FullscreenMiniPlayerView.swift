@@ -410,7 +410,7 @@ struct FullscreenMiniPlayerView: View {
                 onInteraction()
                 isDragging = true
                 LyricsSurfaceManager.shared.beginPlaybackTimePreview(
-                    at: presentation.lyricsCurrentTime,
+                    at: playbackCoordinator.liveLyricsTime,
                     isPlaying: presentation.effectiveLyricsIsPlaying
                 )
                 onProgressDraggingChanged(true)
@@ -418,9 +418,13 @@ struct FullscreenMiniPlayerView: View {
             onDragEnd: {
                 onInteraction()
                 playbackCoordinator.seek(to: dragProgress)
+                // Use the transport state at this moment; the captured view
+                // value can still say "playing" after a pause landed during
+                // the drag, which would restart the lyric clock.
+                let live = playbackCoordinator.presentation
                 LyricsSurfaceManager.shared.endPlaybackTimePreview(
-                    at: lyricsPreviewTime(for: dragProgress, presentation: presentation),
-                    isPlaying: presentation.effectiveLyricsIsPlaying
+                    at: lyricsPreviewTime(for: dragProgress, presentation: live),
+                    isPlaying: live.effectiveLyricsIsPlaying
                 )
                 isDragging = false
                 onProgressDraggingChanged(false)
@@ -434,7 +438,8 @@ struct FullscreenMiniPlayerView: View {
         for seekTime: Double,
         presentation: NowPlayingPresentation
     ) -> Double {
-        max(0, presentation.lyricsCurrentTime + (seekTime - presentation.currentTime))
+        max(0, presentation.lyricsCurrentTime
+            + (seekTime - playbackCoordinator.playbackProgress.currentTime))
     }
 
     private func loadArtworkThumbnail() async {
@@ -494,7 +499,7 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private func progressDisplayTime(for presentation: NowPlayingPresentation) -> Double {
-        isDragging ? dragProgress : presentation.currentTime
+        isDragging ? dragProgress : playbackCoordinator.playbackProgress.currentTime
     }
 
     private var progressFillColor: Color {
@@ -508,7 +513,7 @@ struct FullscreenMiniPlayerView: View {
     private func progressWidth(in totalWidth: CGFloat) -> CGFloat {
         let presentation = playbackCoordinator.presentation
         guard presentation.duration > 0 else { return 0 }
-        let time = isDragging ? dragProgress : presentation.currentTime
+        let time = isDragging ? dragProgress : playbackCoordinator.playbackProgress.currentTime
         let progress = time / presentation.duration
         return totalWidth * CGFloat(max(0, min(1, progress)))
     }

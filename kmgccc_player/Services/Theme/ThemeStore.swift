@@ -158,14 +158,24 @@ final class ThemeStore: ObservableObject {
     /// Primary entrypoint: update theme based on current track.
     /// - Uses artwork identity cache to avoid repeated extraction on the same artwork.
     /// - Falls back to default blue when artwork is missing or extraction fails.
+    /// Artwork theme entrypoint for the currently playing local track.
     func updateTheme(for track: Track?) async {
         let trackID = track?.id
+        let loadStart = ProcessInfo.processInfo.systemUptime
         let artworkData: Data?
         if let inlineData = track?.artworkData, !inlineData.isEmpty {
             artworkData = inlineData
         } else {
             artworkData = await track?.loadArtworkDataOffMainIfNeeded()
         }
+        DebugUIHooks.record(String(
+            format: "theme-timing artwork-load=%.1fms bytes=%d",
+            (ProcessInfo.processInfo.systemUptime - loadStart) * 1000,
+            artworkData?.count ?? 0
+        ))
+        // A switch can be superseded while the artwork read is in flight.
+        // Cancelled preparation must not publish a stale palette.
+        guard !Task.isCancelled else { return }
         await updateThemeFromArtworkData(
             artworkData,
             artworkIdentity: trackID?.uuidString,
@@ -187,6 +197,7 @@ final class ThemeStore: ObservableObject {
             ?? presentation.lyricsIdentity
         let assetTrackID = presentation.artworkDisplayTrackID ?? presentation.localTrack?.id
 
+        guard !Task.isCancelled else { return }
         if presentation.hasTrack,
            presentation.isArtworkLoading,
            presentation.artworkData?.isEmpty != false {
@@ -241,6 +252,8 @@ final class ThemeStore: ObservableObject {
             activeArtworkIdentity != artworkIdentity
             || activeAssetTrackID != assetTrackID
             || currentArtworkChecksum != checksum
+
+        guard !Task.isCancelled else { return }
 
         if sourceChanged {
             extractionToken = UUID()
@@ -321,6 +334,7 @@ final class ThemeStore: ObservableObject {
         )
 
         if let cacheKey, let cached = dominantColorCache.object(forKey: cacheKey as NSString) {
+            guard !Task.isCancelled else { return }
             Log.debug("Cache hit for dominant color cache key \(cacheKey)", category: .theme)
             clearPendingArtworkTheme()
             rawDominantColor = cached.color
@@ -353,7 +367,9 @@ final class ThemeStore: ObservableObject {
         }()
 
         // Then apply full extraction.
+        let snapshotStart = ProcessInfo.processInfo.systemUptime
         let artworkSnapshot = await cachedArtworkSnapshot
+        let snapshotEnd = ProcessInfo.processInfo.systemUptime
         let snapshotColor = artworkSnapshot?.accentColor ?? artworkSnapshot?.dominantColor
         let extractedAnalysis: ArtworkColorAnalysis?
         if let snapshotAnalysis = artworkSnapshot?.analysis {
@@ -361,6 +377,14 @@ final class ThemeStore: ObservableObject {
         } else {
             extractedAnalysis = await extractAnalysis(from: data)
         }
+        let extractEnd = ProcessInfo.processInfo.systemUptime
+        DebugUIHooks.record(String(
+            format: "theme-timing snapshot=%.1fms analysis=%.1fms hasSnapshot=%@ hasAnalysis=%@",
+            (snapshotEnd - snapshotStart) * 1000,
+            (extractEnd - snapshotEnd) * 1000,
+            artworkSnapshot == nil ? "no" : "yes",
+            artworkSnapshot?.analysis == nil ? "no" : "yes"
+        ))
         let extractedColor: NSColor?
         if let snapshotColor {
             extractedColor = snapshotColor
@@ -382,6 +406,7 @@ final class ThemeStore: ObservableObject {
         }
 
         Log.trace("Applying extracted color", category: .theme)
+        guard !Task.isCancelled else { return }
 
         let hasResolvedArtworkTheme = extractedColor != nil || extractedAnalysis != nil
         let resolved = extractedColor ?? extractedAnalysis?.dominantColor ?? defaultBlueNS
@@ -409,7 +434,8 @@ final class ThemeStore: ObservableObject {
                 averageColorCache = await extractAverageColor(from: data)
             }
         }
-        
+
+        guard !Task.isCancelled else { return }
         await refreshPalette(reason: "track_artwork_extracted")
     }
 
@@ -451,6 +477,14 @@ final class ThemeStore: ObservableObject {
 
     /// Re-calculate the palette based on scheme and artwork.
     func refreshPalette(reason: String) async {
+        guard !Task.isCancelled else { return }
+        let refreshStart = ProcessInfo.processInfo.systemUptime
+        defer {
+            DebugUIHooks.record(String(
+                format: "theme-timing palette=%.1fms",
+                (ProcessInfo.processInfo.systemUptime - refreshStart) * 1000
+            ))
+        }
         let isDark = colorScheme == .dark
         let schemeState = isDark ? "dark" : "light"
         let shouldLogRefresh = await LogStateTracker.shared.checkStateChanged(
@@ -499,21 +533,6 @@ final class ThemeStore: ObservableObject {
         let fillAlpha = colorScheme == .dark ? 0.20 : 0.14
         let renderedDominant = ColorRenderingAdapter.makeNSColor(rawDominantColor)
         let renderedAccent = ColorRenderingAdapter.makeNSColor(resolvedAccentNS)
-        let policy = MotionPolicy.system(
-            accessibilityReduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        )
-        withAnimation(policy.animation(for: MotionTokens.standard[.backgroundTransition])) {
-            baseColor = ColorRenderingAdapter.makeSwiftUIColor(rawDominantColor)
-            accentColor = ColorRenderingAdapter.makeSwiftUIColor(resolvedAccentNS)
-            accentNSColor = renderedAccent
-            artworkBaseNSColor = renderedDominant
-            selectionFill = ColorRenderingAdapter.makeSwiftUIColor(resolvedAccentNS).opacity(fillAlpha)
-        }
-        // semanticPalette must snap instantly. Animating it causes MiniPlayer
-        // controls that compute Color(nsColor:) inside body to get trapped in
-        // a stuck intermediate state when combined with compositing/blend mode.
-        semanticPalette = semantic
-
         // Default fallbacks
         var bg = isDark ? "rgba(20, 20, 20, 0.85)" : "rgba(245, 245, 245, 0.85)"
         var text = isDark ? "rgba(255, 255, 255, 0.95)" : "rgba(30, 30, 30, 0.95)"
@@ -544,6 +563,13 @@ final class ThemeStore: ObservableObject {
         )
 
         let paletteChanged = palette != newPalette
+        let accentChanged = !renderedAccent.isEqual(accentNSColor)
+        DebugUIHooks.record(String(
+            format: "theme-publish changed=%@ accentChanged=%@ reason=%@",
+            paletteChanged ? "yes" : "no",
+            accentChanged ? "yes" : "no",
+            reason
+        ))
         let paletteSignature = [
             newPalette.scheme == .dark ? "dark" : "light",
             newPalette.background,
@@ -551,10 +577,21 @@ final class ThemeStore: ObservableObject {
             newPalette.activeLine,
             newPalette.inactiveLine,
         ].joined(separator: "|")
-        let shouldLogApplyTheme = await LogStateTracker.shared.checkStateChanged(
-            key: "theme.applyTheme.palette",
-            value: paletteSignature
-        )
+        // Complete log tracking before publishing so it cannot suspend between
+        // the artwork colors and the corresponding semantic lyric palette.
+        // Publish the artwork colours in a plain transaction. Wrapping them in
+        // `withAnimation` made every observer interpolate its colours over the
+        // background-transition duration, which turned one palette change into
+        // a per-frame rebuild of the whole library and now-playing tree — it was
+        // 88% of the view updates measured across a track switch.
+        baseColor = ColorRenderingAdapter.makeSwiftUIColor(rawDominantColor)
+        accentColor = ColorRenderingAdapter.makeSwiftUIColor(resolvedAccentNS)
+        accentNSColor = renderedAccent
+        artworkBaseNSColor = renderedDominant
+        selectionFill = ColorRenderingAdapter.makeSwiftUIColor(resolvedAccentNS).opacity(fillAlpha)
+        // Keep semantic colors out of the animated transaction: Mini Player
+        // blend modes require their final palette rather than an intermediate.
+        semanticPalette = semantic
         self.palette = newPalette
         paletteTrackID = activeAssetTrackID
         paletteArtworkIdentity = activeArtworkIdentity
@@ -573,14 +610,11 @@ final class ThemeStore: ObservableObject {
                 "Theme applied (reason=\(reason), scheme=\(schemeState), fallback=\(usesFallbackThemeColor))",
                 category: .theme
             )
+            // Pushing the same palette into every lyric surface rebuilds their
+            // configuration and re-applies it. Consecutive tracks from one album
+            // usually resolve to the same colours, so only publish a change.
+            LyricsSurfaceManager.shared.applyTheme(newPalette)
         }
-
-        if shouldLogApplyTheme {
-            Log.debug("applyTheme -> all surfaces", category: .theme)
-        }
-
-        // Push to AMLL via surface manager
-        LyricsSurfaceManager.shared.applyTheme(newPalette)
     }
 
     func paletteMatches(

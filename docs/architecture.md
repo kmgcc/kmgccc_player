@@ -16,7 +16,7 @@ flowchart TD
     Presentation --> UI["界面与皮肤"]
     Presentation --> Lyrics["歌词管线"]
     Presentation --> Theme["主题与颜色"]
-    Lyrics --> NativeLyrics["NativeLyrics (Swift / Core Text)"]
+    Lyrics --> NativeLyrics["MelismaKit (Swift / Core Text)"]
     UI --> MeshBackground["AMLL 网格背景"]
     MeshBackground --> AMLLBackground["background.html + amll-background.js"]
 ```

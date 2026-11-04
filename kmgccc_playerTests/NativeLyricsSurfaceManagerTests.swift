@@ -54,6 +54,23 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testCachedDocumentDoesNotReplaceEditedLyricsForSameTrack() throws {
+        let surface = NativeLyricsSurface(role: .main)
+        let trackID = UUID()
+        let otherID = UUID()
+        let original = "<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='4s'>Original</p></div></body></tt>"
+        let edited = "<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='4s'>Edited</p></div></body></tt>"
+        surface.applyTrack(trackID: trackID, ttml: original, currentTime: 0, isPlaying: false)
+        surface.applyTrack(trackID: otherID, ttml: original, currentTime: 0, isPlaying: false)
+        surface.applyTrack(trackID: trackID, ttml: original, currentTime: 0, isPlaying: false)
+        surface.applyTrack(trackID: trackID, ttml: edited, currentTime: 0, isPlaying: false)
+
+        let document = try XCTUnwrap(surface.view.document)
+        XCTAssertEqual(document.groups.first?.main.words.first?.text, "Edited")
+        XCTAssertEqual(surface.lastTTML, edited)
+    }
+
+    @MainActor
     func testAMLLTTMLIsPassedToDecoderWithoutTimingRewrite() throws {
         let surface = NativeLyricsSurface(role: .main)
         surface.applyTrack(
@@ -488,6 +505,58 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
 
         surface.setPlaying(true, hostTime: pauseHost + 0.5)
         XCTAssertEqual(surface.currentTime, pausedTime, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testPausedTransportSampleStopsASurfaceThatKeptItsOwnClock() {
+        let manager = NativeLyricsSurfaceManager.shared
+        manager.shutdownAll()
+        defer { manager.shutdownAll() }
+
+        manager.applyTrack(
+            trackID: UUID(),
+            ttml: mainTTML,
+            currentTime: 1,
+            isPlaying: true
+        )
+        manager.activate(role: .main)
+        let surface = manager.surface(for: .main)
+        XCTAssertTrue(surface.isPlaying)
+
+        // Another caller can leave the surface clock running after the
+        // transport paused. The next transport sample must carry the paused
+        // state and stop it, not just move its position.
+        manager.updatePlayingState(false)
+        surface.setPlaying(true)
+        XCTAssertTrue(surface.isPlaying)
+
+        manager.updatePlaybackTime(2, force: true, playing: false)
+        XCTAssertFalse(surface.isPlaying, "A paused transport sample must stop the surface clock")
+        XCTAssertEqual(surface.currentTime, 2, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testPausedUpdatePlayingStateReachesInactivePlaybackSurfaces() {
+        let manager = NativeLyricsSurfaceManager.shared
+        manager.shutdownAll()
+        defer { manager.shutdownAll() }
+
+        manager.applyTrack(
+            trackID: UUID(),
+            ttml: mainTTML,
+            currentTime: 1,
+            isPlaying: true
+        )
+        manager.activate(role: .main)
+        let surface = manager.surface(for: .main)
+        manager.deactivate(role: .main)
+        XCTAssertTrue(surface.isPlaying)
+
+        manager.updatePlayingState(false)
+        XCTAssertFalse(
+            surface.isPlaying,
+            "A surface hidden during a pause must not keep a running clock"
+        )
     }
 
     @MainActor

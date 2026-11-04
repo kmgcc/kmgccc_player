@@ -53,11 +53,11 @@ scripts/build_and_run.sh 使用运行锁，把这项检查放在构建前和启�
 
 ## 歌词组件 Swift Package 前置
 
-歌词组件通过 Swift Package `MelismaKit` 接入，组件原项目是 `NativeLyrics`。修改组件原项目的源码不会改变 App 当前已经解析的远程依赖；因此本机测试不能只看组件仓库的提交，还要确认 App 的依赖图和实际编译输入：
+歌词组件通过 Swift Package `MelismaKit` 接入，本地 checkout 是 `../MelismaKit`。修改组件原项目的源码不会改变 App 当前已经解析的远程依赖；因此本机测试不能只看组件仓库的提交，还要确认 App 的依赖图和实际编译输入：
 
-1. 默认运行 `./scripts/check-melismakit-dependency.sh --require-local`，确认 Xcode 工程引用本地 `NativeLyrics` checkout，而不是 `XCRemoteSwiftPackageReference`。
-2. 构建使用 `xcodebuild -verbose` 保存的日志，再用同一脚本的 `--build-log` 检查编译输入包含 `NativeLyrics/Sources/MelismaKit`，且没有 `SourcePackages/checkouts/melismakit`。
-3. `Package.resolved` 中残留旧远程 pin 只能作为复核信号；真正决定本次构建来源的是工程依赖图和编译日志。不要因为只修改了 `NativeLyrics` 就假设 App 已经使用了这次修改。
+1. 默认运行 `./scripts/check-melismakit-dependency.sh --require-local`，确认 Xcode 工程引用本地 `MelismaKit` checkout，而不是 `XCRemoteSwiftPackageReference`。
+2. 构建使用 `xcodebuild -verbose` 保存的日志，再用同一脚本的 `--build-log` 检查编译输入包含 `MelismaKit/Sources/MelismaKit`，且没有 `SourcePackages/checkouts/melismakit`。
+3. `Package.resolved` 中残留旧远程 pin 只能作为复核信号；真正决定本次构建来源的是工程依赖图和编译日志。不要因为只修改了 `MelismaKit` 就假设 App 已经使用了这次修改。
 4. 只有明确进行远程依赖构建时才使用 `--require-remote`：组件发布新版本 tag 后，App 必须重新解析依赖并核对 `Package.resolved` 的新 revision。
 
 `build_and_run.sh`、`build_app.sh` 和 `verify.sh` 默认执行本地依赖检查；远程构建必须显式设置 `MELISMAKIT_EXPECTED_SOURCE=remote`，不能用手动 `open` 或其他构建入口绕过依赖和进程检查。

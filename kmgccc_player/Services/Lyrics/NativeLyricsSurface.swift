@@ -165,8 +165,14 @@ final class NativeLyricsSurface: NSObject {
             }
             let decodeEnd = CACurrentMediaTime()
             let previousFrame = view.lastFrame
-            view.releaseRenderingResources()
-            let releaseEnd = CACurrentMediaTime()
+            // `install(document:)` already tears the previous document down
+            // (groups, cache, layout) and re-arms the display link. Calling
+            // `releaseRenderingResources()` first repeated that teardown and
+            // invalidated the display link, so every track switch paid for the
+            // layer tree twice and then rebuilt it. The document is swapped
+            // atomically by `install`, so the old surface also stays intact if
+            // the new document is rejected later.
+            let releaseEnd = decodeEnd
             if DebugUIHooks.diagnosticsEnabled {
                 entryDiagnostics = EntryDiagnostics(
                     started: releaseEnd,
@@ -268,15 +274,22 @@ final class NativeLyricsSurface: NSObject {
     func setCurrentTime(
         _ time: Double,
         force: Bool = false,
+        playing: Bool? = nil,
         motion: LyricsSeekMotion = .immediate
     ) {
         guard time.isFinite else { return }
+        // The transport owns the clock. Re-assert its play state before the
+        // time guard so a surface cannot keep running on its own when the
+        // sample that was supposed to pause it never arrived.
+        if let playing, playing != isPlaying {
+            setPlaying(playing)
+        }
         guard force || abs(time - currentTime) >= 0.001 || pendingClickSeek else { return }
         // A forced update is used for an explicit seek/reveal (for example
         // when the fullscreen surface is brought back on screen). Preserve
         // that intent all the way through the native clock so a stale
         // low-frequency playback sample cannot be mistaken for the seek.
-        synchronize(time: time, playing: isPlaying, seek: force, motion: motion)
+        synchronize(time: time, playing: playing ?? isPlaying, seek: force, motion: motion)
     }
 
     func setPlaying(_ playing: Bool, force: Bool = false, hostTime: Double = CACurrentMediaTime()) {
@@ -558,20 +571,25 @@ final class NativeLyricsSurfaceManager {
     func updatePlaybackTime(
         _ time: Double,
         force: Bool = false,
+        playing: Bool? = nil,
         motion: LyricsSeekMotion = .immediate
     ) {
         guard time.isFinite else { return }
         let normalized = max(0, time)
+        let resolvedPlaying = playing ?? snapshot.playing
         snapshot.time = normalized
         for (role, surface) in surfaces where activeRoles.contains(role) && role.receivesSharedPlaybackSnapshot {
-            surface.setCurrentTime(normalized, force: force, motion: motion)
+            surface.setCurrentTime(normalized, force: force, playing: resolvedPlaying, motion: motion)
         }
         snapshot.time = activePlaybackSurface?.currentTime ?? normalized
     }
 
     func updatePlayingState(_ playing: Bool) {
         snapshot.playing = playing
-        for (role, surface) in surfaces where activeRoles.contains(role) && role.receivesSharedPlaybackSnapshot {
+        // A surface that is hidden while the transport pauses still owns a
+        // clock. Keep its play state authoritative even while it is inactive,
+        // otherwise it can come back with a clock that kept running.
+        for (role, surface) in surfaces where role.receivesSharedPlaybackSnapshot {
             surface.setPlaying(playing)
         }
         if let effectiveTime = activePlaybackSurface?.currentTime {

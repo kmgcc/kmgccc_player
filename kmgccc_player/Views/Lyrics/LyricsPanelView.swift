@@ -303,7 +303,7 @@ struct LyricsPanelView: View {
         case .local:
             lyricsVM.ensureLyricsLoaded(
                 track: presentation.localTrack,
-                currentTime: presentation.lyricsCurrentTime,
+                currentTime: playbackCoordinator.liveLyricsTime,
                 isPlaying: presentation.isPlaying,
                 reason: reason,
                 forceLyricsReload: forceLyricsReload

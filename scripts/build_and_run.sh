@@ -211,6 +211,16 @@ open_app() {
     if [ -n "${KMGCCC_CI_MEMORY_LIMIT_MB:-}" ]; then
         env_args+=(--env "KMGCCC_CI_MEMORY_LIMIT_MB=$KMGCCC_CI_MEMORY_LIMIT_MB")
     fi
+    # Forward every other exported KMGCCC_* variable so measurement scenarios
+    # (KMGCCC_DEBUG_PROOF_*, KMGCCC_DEBUG_MAIN_THREAD_STALL, ...) reach the App
+    # without growing this whitelist one entry per experiment.
+    local forwarded
+    while IFS= read -r forwarded; do
+        case "$forwarded" in
+            KMGCCC_LOG_LEVEL|KMGCCC_DEBUG_PERF|KMGCCC_DEBUG_UI_HOOKS|KMGCCC_CI_MEMORY_LIMIT_MB) continue ;;
+        esac
+        env_args+=(--env "${forwarded}=${!forwarded}")
+    done < <(compgen -e | grep '^KMGCCC_' || true)
     if [ "$#" -gt 0 ]; then
         /usr/bin/open -n "${env_args[@]}" "$APP_BUNDLE" --args "$@"
     else

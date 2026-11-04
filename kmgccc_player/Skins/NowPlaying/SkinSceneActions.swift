@@ -78,11 +78,12 @@ struct SkinProgressComponent: View {
 
     var body: some View {
         let presentation = playbackCoordinator.presentation
+        let progress = playbackCoordinator.playbackProgress.currentTime
         Slider(value: Binding(
-            get: { isDragging ? value : presentation.currentTime },
+            get: { isDragging ? value : progress },
             set: { value = $0 }
         ), in: 0...max(1, presentation.duration)) { editing in
-            if editing { value = presentation.currentTime }
+            if editing { value = progress }
             else { actions.seek(value) }
             isDragging = editing
         }

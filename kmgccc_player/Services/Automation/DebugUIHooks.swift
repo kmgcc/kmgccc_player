@@ -28,6 +28,10 @@ enum DebugUIHooks {
         "lyrics.toggle",
         "skin.fullscreen.next", "skin.window.next",
         "track.next", "track.previous",
+        // Measurement needs a deterministic transport state: a relaunched App
+        // restores paused, and an entrance-animation sample only exists while
+        // the lyrics clock is running.
+        "playback.play", "playback.pause", "playback.toggle",
         "memory.relief",
     ]
     private nonisolated static let isEnabled = ProcessInfo.processInfo.environment["KMGCCC_DEBUG_UI_HOOKS"] == "1"
@@ -110,6 +114,18 @@ enum DebugUIHooks {
             Task { await appSession.performPlaybackCommand(.next) }
         case "track.previous":
             Task { await appSession.performPlaybackCommand(.previous) }
+        case "playback.play":
+            Task { await appSession.performPlaybackCommand(.play) }
+        case let hide where hide == "window.content.hide" || hide == "window.content.show":
+            // Diagnostic: toggles the window content pane below the embedded
+            // fullscreen surface so the two states can be pixel-compared.
+            for window in NSApp.windows where window.isVisible && window.contentView != nil {
+                window.contentView?.isHidden = hide == "window.content.hide"
+            }
+        case "playback.pause":
+            Task { await appSession.performPlaybackCommand(.pause) }
+        case "playback.toggle":
+            Task { await appSession.performPlaybackCommand(.playPause) }
         case "memory.relief":
             // Measures how much the routine malloc relief returns at this moment.
             measure("relief") { CacheManager.trimProcessMemory() }

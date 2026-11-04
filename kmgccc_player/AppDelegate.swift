@@ -215,8 +215,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             at: ProcessInfo.processInfo.systemUptime
         )
         let reference = step.continuesFromPreviousTarget
-            ? (seekTarget ?? playbackCoordinator.presentation.currentTime)
-            : playbackCoordinator.presentation.currentTime
+            ? (seekTarget ?? playbackCoordinator.playbackProgress.currentTime)
+            : playbackCoordinator.playbackProgress.currentTime
         let signedOffset = direction == .forward ? step.seconds : -step.seconds
         let duration = playbackCoordinator.presentation.duration
         let upperBound = duration > 0 ? duration : .greatestFiniteMagnitude

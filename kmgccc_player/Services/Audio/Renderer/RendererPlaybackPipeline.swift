@@ -229,6 +229,12 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         }
     }
 
+    var dspAnalysisChunksForTesting: [(presentationTime: Double, revision: String, pcm: CanonicalPCM, meters: [DSPNodeMeterReading])] {
+        pipelineQueue.sync {
+            analysisQueue.map { ($0.presentationTime, $0.dspRevision, $0.pcm, $0.meters) }
+        }
+    }
+
     @discardableResult
     func recoverSourcesForTesting(atTimelineSeconds clock: Double) -> Bool {
         pipelineQueue.sync {
@@ -369,6 +375,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         let peakGuarantee: String
         let warnings: [DSPDiagnostic]
         let state: AudioDSPProcessor.StateSnapshot?
+        let meters: [[DSPNodeMeterReading]]
     }
 
     private struct DSPReplacementTransaction: @unchecked Sendable {
@@ -1200,6 +1207,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             }
             let state = runtime.stateSnapshot()
             let processed = runtime.process(item.raw.pcm, lookahead: item.lookahead)
+            let meters = runtime.isBypassed ? [] : runtime.meterReadingsByChunk()
             let output = AudioDSPProcessor.crossfade(old: item.oldOutput, new: processed, weights: weights,
                 transitionOffsetSeconds: item.raw.presentationTime - plan.startPTS, weightSampleRate: plan.format.sampleRate)
             guard let buffer = CMSampleBufferFactory.makeSampleBuffer(from: output,
@@ -1210,7 +1218,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             warnings += runtime.diagnostics
             blocks.append(DSPReplacementBlock(raw: item.raw, oldOutput: item.oldOutput, output: output,
                 sampleBuffer: buffer, headroomDB: runtime.headroomDB, processingLatencyFrames: runtime.processingLatencyFrames,
-                peakGuarantee: runtime.peakGuarantee, warnings: runtime.diagnostics, state: state))
+                peakGuarantee: runtime.peakGuarantee, warnings: runtime.diagnostics, state: state, meters: meters))
         }
         return DSPReplacementTransaction(request: plan.request, transactionID: plan.prefix?.transactionID ?? UUID(),
             timelineGeneration: plan.timelineGeneration, rendererGeneration: plan.rendererGeneration,
@@ -1533,8 +1541,30 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         for block in transaction.blocks {
             renderer.enqueue(block.sampleBuffer)
         }
-        // Analysis chunks carry the decoded source, which a DSP replacement
-        // leaves unchanged.
+        // Keep the decoded source for visualization, but replace its meter
+        // readings with those of the output that will actually be heard.
+        // Publish them through analysisTick at their original presentation time.
+        var replacementIndex = 0
+        for index in analysisQueue.indices {
+            let chunk = analysisQueue[index]
+            while replacementIndex < transaction.blocks.count,
+                  chunk.presentationTime >= transaction.blocks[replacementIndex].raw.endPresentationTime - 0.000_001 {
+                replacementIndex += 1
+            }
+            guard replacementIndex < transaction.blocks.count else { break }
+            let block = transaction.blocks[replacementIndex]
+            guard chunk.segmentID == block.raw.segmentID,
+                  chunk.presentationTime >= block.raw.presentationTime - 0.000_001 else { continue }
+            let offset = max(0, Int(((chunk.presentationTime - block.raw.presentationTime) * block.raw.format.sampleRate).rounded()))
+            let meterIndex = offset / Self.analysisChunkFrames
+            analysisQueue[index] = AnalysisChunk(
+                presentationTime: chunk.presentationTime,
+                pcm: chunk.pcm,
+                segmentID: chunk.segmentID,
+                dspRevision: transaction.request.revision,
+                meters: meterIndex < block.meters.count ? block.meters[meterIndex] : []
+            )
+        }
         // Crossfaded buffers retain their actual old/new mixture even when the
         // new processor is bypassed. A following edit may select an earlier T.
         var replacementByKey = [DSPBlockKey: DSPReplacementBlock]()

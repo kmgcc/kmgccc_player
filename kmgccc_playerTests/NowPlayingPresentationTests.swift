@@ -167,4 +167,78 @@ final class NowPlayingPresentationTests: XCTestCase {
             ArtworkAssetStore.checksum(for: data)
         )
     }
+
+    func testMissingSidecarRetriesAreSpacedBetweenProgressTicks() {
+        var retry = PlaybackSidecarRetryState()
+        let key = PlaybackSidecarHydrationKey(
+            trackID: UUID(), libraryRoot: "/tmp/library", ttmlURL: URL(fileURLWithPath: "/tmp/lyrics.ttml"), fallbackURL: nil
+        )
+        XCTAssertTrue(retry.begin(key, uptime: 100))
+        for time in stride(from: 100.25, to: 105.0, by: 0.25) {
+            XCTAssertFalse(retry.begin(key, uptime: time))
+        }
+        XCTAssertTrue(retry.begin(key, uptime: 105))
+    }
+
+    func testSidecarInputChangesCanRetryImmediately() {
+        var retry = PlaybackSidecarRetryState()
+        let trackID = UUID()
+        let original = PlaybackSidecarHydrationKey(
+            trackID: trackID, libraryRoot: "/tmp/first", ttmlURL: URL(fileURLWithPath: "/tmp/first/lyrics.ttml"), fallbackURL: nil
+        )
+        let replaced = PlaybackSidecarHydrationKey(
+            trackID: trackID, libraryRoot: "/tmp/first", ttmlURL: URL(fileURLWithPath: "/tmp/first/replacement.ttml"), fallbackURL: nil
+        )
+        let otherLibrary = PlaybackSidecarHydrationKey(
+            trackID: trackID, libraryRoot: "/tmp/second", ttmlURL: original.ttmlURL, fallbackURL: nil
+        )
+        XCTAssertTrue(retry.begin(original, uptime: 100))
+        XCTAssertTrue(retry.begin(replaced, uptime: 100.25))
+        XCTAssertTrue(retry.begin(otherLibrary, uptime: 100.5))
+    }
+}
+
+@MainActor
+final class SmartPlaybackQueueLookupTests: XCTestCase {
+    func testShuffleCanBeEnabledAfterQueueBecomesEmpty() {
+        let controller = makeController()
+        controller.startPlayback(tracks: [Track(title: "Song")], startingAt: 0, shuffle: false)
+        controller.updateQueue(tracks: [])
+        controller.setShuffle(true)
+        XCTAssertNil(controller.currentTrack)
+        XCTAssertTrue(controller.getCurrentQueue().isEmpty)
+        controller.stop()
+    }
+
+    func testShuffleLookupUsesRefreshedQueueObjects() {
+        let controller = makeController()
+        let original = Track(title: "Original")
+        let other = Track(title: "Other")
+        controller.startPlayback(tracks: [original, other], startingAt: 0, shuffle: true)
+        let replacement = Track(id: original.id, title: "Updated")
+        controller.updateQueue(tracks: [replacement, other])
+        XCTAssertTrue(controller.currentTrack === replacement)
+        XCTAssertTrue(controller.getCurrentQueue().first === replacement)
+        controller.stop()
+    }
+
+    func testShuffleLookupRetainsFirstDuplicateObject() {
+        let controller = makeController()
+        let first = Track(title: "First")
+        let duplicate = Track(id: first.id, title: "Duplicate")
+        controller.startPlayback(tracks: [first, duplicate], startingAt: 0, shuffle: true)
+        XCTAssertTrue(controller.currentTrack === first)
+        XCTAssertTrue(controller.getCurrentQueue().allSatisfy { $0 === first })
+        controller.stop()
+    }
+
+    private func makeController() -> SmartPlaybackController {
+        let preferences = PreferenceStatsService()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let library = LocalLibraryService(paths: LibraryPaths(rootURL: root), preferenceStatsService: preferences)
+        return SmartPlaybackController(
+            playbackHistoryStore: .inMemory(), preferenceStatsService: preferences, libraryService: library
+        )
+    }
 }

@@ -344,14 +344,17 @@ struct FullscreenPlayerView: View {
             )
             syncFullscreenLedService()
         }
-        .onChange(of: playerVM.currentTrack?.id, handleTrackIdChange)
-        .onChange(of: playbackCoordinator.stablePresentation.lyricsIdentity, handlePresentationLyricsIdentityChange)
+        // The committed presentation owns track changes. Reloading here from
+        // `playerVM.currentTrack` would install an empty (or disk-read) lyric
+        // document before the switch preparation finishes, then install the
+        // real one again. LyricsPlaybackPipeline applies the committed
+        // document exactly once.
+        .onChange(of: playbackCoordinator.stablePresentation.lyricsIdentity, handlePresentationTrackIdentityChange)
         .onChange(of: playbackCoordinator.stablePresentation.lyricsText) { _, _ in
-            guard playbackCoordinator.stablePresentation.hasTrack else { return }
-            let reason = playbackCoordinator.stablePresentation.source.isExternal
-                ? "fullscreen external lyrics updated"
-                : "fullscreen local lyrics hydrated"
-            reloadLyricsSurface(reason: reason, forceLyricsReload: true)
+            // The document install is pipeline-owned; this only keeps the
+            // panel availability and ending auto-hide timing in step with a
+            // committed (or late-hydrated) document.
+            syncFullscreenLyricsStateFromCommittedPresentation()
         }
         .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
             handleLibraryTrackDidUpdate(notification)
@@ -2426,7 +2429,7 @@ struct FullscreenPlayerView: View {
         {
             return 0
         }
-        return playbackCoordinator.presentation.lyricsCurrentTime
+        return playbackCoordinator.liveLyricsTime
     }
 
     private func fullscreenLyricsSurfaceTime(
@@ -2840,21 +2843,51 @@ struct FullscreenPlayerView: View {
         }
     }
 
-    private func handleTrackIdChange(_ oldId: UUID?, _ newId: UUID?) {
+    private func handlePresentationTrackIdentityChange(_ oldId: String?, _ newId: String?) {
         guard oldId != newId else { return }
-
         cancelPendingFullscreenLyricsThemeWork()
         lyricsCoordinator.coverBlurTheme = nil
-
-        // Simplified track change handling - matches window mode behavior
-        // Apply track immediately without deferred scheduling
+        // The fullscreen art background samples its new surface after the
+        // artwork transition. Mark the capture pending here (the old reload
+        // path did it) so the lyrics colors follow that new sample.
+        if settings.fullscreenArtBackgroundEnabled {
+            lyricsCoordinator.pendingBackgroundCapture =
+                playbackCoordinator.stablePresentation.hasTrack
+        }
         syncFullscreenLyricsHostMount()
-        reloadLyricsSurface(reason: "fullscreen track changed", forceLyricsReload: true)
+        // The lyric document is installed by LyricsPlaybackPipeline from the
+        // committed presentation, so this handler only resets per-track state,
+        // re-applies the fullscreen role config and updates the ending
+        // auto-hide timing. It runs before the frame that shows the new track.
+        applyFullscreenLyricsTheme(force: true, reason: "committed track change")
+        syncFullscreenLyricsStateFromCommittedPresentation()
+    }
+
+    /// Uses the committed presentation (never a fresh disk read) so a late
+    /// hydration or a switch updates availability and auto-hide timing without
+    /// installing the document a second time.
+    private func syncFullscreenLyricsStateFromCommittedPresentation() {
+        let presentation = playbackCoordinator.stablePresentation
+        let trackID = presentation.source.isExternal
+            ? presentation.displayTrackID
+            : presentation.localTrack?.id
+        let ttml = lyricsCoordinator.normalizedLyricsText(
+            trackID: presentation.hasTrack ? trackID : nil,
+            rawText: presentation.lyricsText
+        )
+        let payload = FullscreenPlaybackPayload(
+            trackID: presentation.hasTrack ? trackID : nil,
+            ttml: ttml,
+            currentTime: playbackCoordinator.liveLyricsTime,
+            isPlaying: presentation.effectiveLyricsIsPlaying
+        )
+        syncFullscreenLyricsAvailability(with: payload)
+        syncFullscreenLyricsAutoHideTiming(with: payload)
     }
 
     private func handlePresentationCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
         guard playbackCoordinator.presentation.source.isExternal else { return }
-        let rawLyricsTime = playbackCoordinator.presentation.lyricsCurrentTime
+        let rawLyricsTime = playbackCoordinator.liveLyricsTime
         evaluateFullscreenLyricsAutoHide(
             currentTime: rawLyricsTime,
             duration: playbackCoordinator.presentation.duration,
@@ -2866,15 +2899,6 @@ struct FullscreenPlayerView: View {
                 preserveRestoreEligibility: shouldPreserveFullscreenLyricsEndingAutoHideRestore()
             )
         }
-    }
-
-    private func handlePresentationLyricsIdentityChange(_ oldId: String?, _ newId: String?) {
-        guard playbackCoordinator.presentation.source.isExternal else { return }
-        guard oldId != newId else { return }
-        cancelPendingFullscreenLyricsThemeWork()
-        lyricsCoordinator.coverBlurTheme = nil
-        syncFullscreenLyricsHostMount()
-        reloadLyricsSurface(reason: "fullscreen external track changed", forceLyricsReload: true)
     }
 
     private func handleLibraryTrackDidUpdate(_ notification: Notification) {
@@ -3067,7 +3091,7 @@ struct FullscreenPlayerView: View {
                 trackID: presentation.displayTrackID,
                 ttml: lyricsText == nil ? nil : (lyricsText ?? ""),
                 currentTime: fullscreenLyricsSurfaceTime(
-                    presentation.lyricsCurrentTime,
+                    playbackCoordinator.liveLyricsTime,
                     trackID: presentation.displayTrackID
                 ),
                 isPlaying: presentation.effectiveLyricsIsPlaying
@@ -3644,7 +3668,7 @@ struct FullscreenPlayerView: View {
     private func handleEmbeddedFullscreenViewportChange(_ size: CGSize, reason: String) {
         let previousViewportSize = fullscreenViewportSize
         guard hostContext == .embeddedWindow else {
-            fullscreenViewportSize = size
+            if hasViewportSizeChanged(size) { fullscreenViewportSize = size }
             return
         }
         guard isEmbeddedFullscreenPresentationActive else {
@@ -3659,13 +3683,22 @@ struct FullscreenPlayerView: View {
         // The outgoing scene remains alive while it slides down. Restoring
         // the main toolbar must not publish its smaller layout rect into that
         // scene and rebuild the cover/theme halfway through the exit.
-        fullscreenViewportSize = size
+        // `WindowToolbarAccessor` dispatches this handler from `updateNSView`,
+        // so publishing the viewport unconditionally made every update schedule
+        // the next one: the fullscreen scene re-evaluated at runloop rate and
+        // the display list never settled. Publish only real changes.
+        if hasViewportSizeChanged(size) {
+            fullscreenViewportSize = size
+        }
         guard size.width > 1, size.height > 1 else { return }
 
-        currentFullscreenScale = min(
+        let nextScale = min(
             size.width / Self.baseCanvasWidth,
             size.height / Self.baseCanvasHeight
         )
+        if abs(nextScale - currentFullscreenScale) > 0.0005 {
+            currentFullscreenScale = nextScale
+        }
 
         if !embeddedInitialThemeUnlocked {
             if !isValidEmbeddedFullscreenGeometry(size, scale: currentFullscreenScale) {
@@ -3706,6 +3739,13 @@ struct FullscreenPlayerView: View {
         lyricsCoordinator.schedule(.themeReapply) {
             applyFullscreenLyricsTheme(force: true, reason: reason)
         }
+    }
+
+    /// Whether a published viewport would actually move. Sub-pixel jitter from
+    /// AppKit layout must not republish the scene state.
+    private func hasViewportSizeChanged(_ size: CGSize) -> Bool {
+        abs(size.width - fullscreenViewportSize.width) > 0.5
+            || abs(size.height - fullscreenViewportSize.height) > 0.5
     }
 
     private func currentEmbeddedHostWindowContentSize() -> CGSize? {

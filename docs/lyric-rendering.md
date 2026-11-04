@@ -1,7 +1,7 @@
 # 歌词渲染系统
 
 > [!NOTE]
-> 应用现已启用纯原生 Swift 歌词引擎（`NativeLyrics`），基于 Core Text 与 Core Animation 实现高刷新率排版。设计原理与原生渲染架构详见 [原生 Swift 歌词系统](native-lyrics.md)。本文档主要记录跨 surface 的统一调度生命周期和时间偏移预处理算法。AMLL 资源仅保留给 Now Playing 的网格背景，不参与歌词渲染。
+> 应用现已启用纯原生 Swift 歌词引擎（`MelismaKit`），基于 Core Text 与 Core Animation 实现高刷新率排版。设计原理与原生渲染架构详见 [原生 Swift 歌词系统](native-lyrics.md)。本文档主要记录跨 surface 的统一调度生命周期和时间偏移预处理算法。AMLL 资源仅保留给 Now Playing 的网格背景，不参与歌词渲染。
 
 kmgccc_player 采用统一的分层调度管理多 surface 歌词显示。播放状态、颜色计算与 surface 生命周期始终由 Swift 原生层持有，核心原则是让渲染层专注绘制，而播放事实与界面切换统一收敛在服务层。
 
@@ -97,7 +97,7 @@ isNearSwitch = !hasOriginalOverlap && rawGap <= nearSwitchGapMs
 
 ## 原生歌词渲染性能
 
-`NativeLyrics` 直接由 Core Animation 与硬件垂直同步驱动。渲染质量设置控制 MelismaKit 的 glyph mask 分辨率：低、中、高分别对应 0.5x、0.75x 和 1x，用于在高分辨率显示器上平衡清晰度与 GPU 开销。
+`MelismaKit` 直接由 Core Animation 与硬件垂直同步驱动。渲染质量设置控制 MelismaKit 的 glyph mask 分辨率：低、中、高分别对应 0.5x、0.75x 和 1x，用于在高分辨率显示器上平衡清晰度与 GPU 开销。
 
 歌词性能问题通常来自高分辨率 glyph mask、模糊与混合图层、surface 反复创建，或同一快照被重复投递。诊断时先确认 surface 是否稳定、渲染比例是否符合当前显示器，以及暂停后动画是否真正收敛。
 

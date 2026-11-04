@@ -115,8 +115,10 @@ private struct NoLibraryContentPane: View {
                 defer { access.release() }
                 do {
                     _ = try await appSession.openMusicLibrary(at: url)
+                } catch is CancellationError {
+                    return
                 } catch {
-                    appSession.uiState.showSidebarNotice("所选位置不是可用资料库", style: .warning)
+                    appSession.uiState.showSidebarNotice(LibraryOpenFailure.message(for: error), style: .warning)
                 }
             }
         }
@@ -334,22 +336,26 @@ struct AppKitMainContentPaneRoot: View {
             }
 
             // The window mini player is fixed: author scenes lay out above it and never replace it.
-            GeometryReader { proxy in
-                MiniPlayerView()
-                    .onGeometryChange(for: CGRect.self) { geometry in
-                        geometry.frame(in: .global)
-                    } action: { newRect in
-                        HomeWindowLayoutState.shared.setMiniPlayerFrame(newRect)
-                    }
-                    .frame(maxWidth: proxy.size.width, alignment: .leading)
-                    .padding(.leading, GlassStyleTokens.miniPlayerHorizontalPadding)
-                    .padding(.trailing, GlassStyleTokens.miniPlayerHorizontalPadding)
-                    .padding(.bottom, 12)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            //
+            // While the embedded fullscreen surface covers it, the mini player is
+            // invisible, so it must leave the view tree: it observes the
+            // now-playing presentation, progress and artwork, and staying
+            // mounted made every track switch rebuild a subtree nobody sees.
+            if !fullscreenWindowManager.isWindowedFullscreenActive {
+                GeometryReader { proxy in
+                    MiniPlayerView()
+                        .onGeometryChange(for: CGRect.self) { geometry in
+                            geometry.frame(in: .global)
+                        } action: { newRect in
+                            HomeWindowLayoutState.shared.setMiniPlayerFrame(newRect)
+                        }
+                        .frame(maxWidth: proxy.size.width, alignment: .leading)
+                        .padding(.leading, GlassStyleTokens.miniPlayerHorizontalPadding)
+                        .padding(.trailing, GlassStyleTokens.miniPlayerHorizontalPadding)
+                        .padding(.bottom, 12)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                }
             }
-            .opacity(fullscreenWindowManager.isWindowedFullscreenActive ? 0 : 1)
-            .allowsHitTesting(!fullscreenWindowManager.isWindowedFullscreenActive)
-            .accessibilityHidden(fullscreenWindowManager.isWindowedFullscreenActive)
 
             if fullscreenWindowManager.isEmbeddedFullscreenSurfaceMounted {
                 EmbeddedFullscreenSurface {
@@ -444,7 +450,10 @@ struct AppKitMainContentPaneRoot: View {
             .onChange(of: uiState.contentMode) { (_: ContentMode, newValue: ContentMode) in
                 handleContentModeChange(newValue, playbackCoordinator: playbackCoordinator, uiState: uiState)
             }
-            .onChange(of: playerVM.currentTrack?.id) { (_: UUID?, newTrackID: UUID?) in
+            // Follow the committed presentation so the background crossfade
+            // starts in the same frame as the cover, palette and lyric
+            // document instead of ahead of them on the raw audio track change.
+            .onChange(of: playbackCoordinator.stablePresentation.localTrack?.id) { (_: UUID?, newTrackID: UUID?) in
                 if shouldTriggerArtBackgroundTransition(playbackCoordinator: playbackCoordinator, uiState: uiState) {
                     artBackgroundController.triggerTransition(
                         for: playbackCoordinator.stablePresentation.source == .local ? newTrackID : nil
@@ -590,7 +599,6 @@ struct AppKitMainContentPaneRoot: View {
 /// timer reassigns the value. Renders an invisible zero-size layer.
 private struct PlaybackThemeArtworkWatcher: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
-    @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
         Color.clear
@@ -598,16 +606,19 @@ private struct PlaybackThemeArtworkWatcher: View {
             .allowsHitTesting(false)
             .task(id: artworkIdentity) {
                 // Artwork extraction and the resulting ThemeStore publication
-                // are visual follow-up work. Let the transport and lyric
-                // surface commit first, and coalesce intermediate artwork
+                // are visual follow-up work. Let the track switch prepare and
+                // commit the palette first, and coalesce intermediate artwork
                 // identities during a rapid track switch.
+                let switchGeneration = playbackCoordinator.switchGeneration
                 do {
                     try await Task.sleep(for: .milliseconds(400))
                 } catch {
                     return
                 }
-                guard !Task.isCancelled else { return }
-                await themeStore.updateTheme(for: playbackCoordinator.stablePresentation)
+                guard !Task.isCancelled,
+                      switchGeneration == playbackCoordinator.switchGeneration
+                else { return }
+                playbackCoordinator.requestAppearanceRefresh()
             }
     }
 
@@ -619,7 +630,7 @@ private struct PlaybackThemeArtworkWatcher: View {
             ?? presentation.lyricsIdentity
             ?? presentation.localTrack?.id.uuidString
             ?? "none"
-        return "\(presentation.source.rawValue)|track:\(presentation.hasTrack)|art:\(identity)|loading:\(presentation.isArtworkLoading)|sig:\(ArtworkDataFingerprint.sampledString(for: presentation.artworkData))"
+        return "\(presentation.source.rawValue)|track:\(presentation.hasTrack)|art:\(identity)|loading:\(presentation.isArtworkLoading)|sig:\(ArtworkDataFingerprint.sampledString(for: presentation.artworkData))|switch:\(playbackCoordinator.switchGeneration)"
     }
 }
 
@@ -1035,7 +1046,7 @@ struct LyricsFlatDriverView: View {
         case .local:
             lyricsVM.ensureLyricsLoaded(
                 track: presentation.localTrack,
-                currentTime: presentation.lyricsCurrentTime,
+                currentTime: playbackCoordinator.liveLyricsTime,
                 isPlaying: presentation.isPlaying,
                 reason: reason,
                 forceLyricsReload: forceLyricsReload

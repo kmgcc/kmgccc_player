@@ -1,13 +1,13 @@
 # 色彩系统
 
-kmgccc_player 从封面提取颜色，但界面不直接消费采样结果。图像分析先生成稳定的统计模型，再由 `SemanticPaletteFactory` 映射为按用途命名的语义色。主要原生界面与纯原生 `NativeLyrics` 歌词引擎直接消费原生颜色；保留的 AMLL 资源只由网格背景桥接层消费，不承载歌词渲染。
+kmgccc_player 从封面提取颜色，但界面不直接消费采样结果。图像分析先生成稳定的统计模型，再由 `SemanticPaletteFactory` 映射为按用途命名的语义色。主要原生界面与纯原生 `MelismaKit` 歌词引擎直接消费原生颜色；保留的 AMLL 资源只由网格背景桥接层消费，不承载歌词渲染。
 
 ```mermaid
 flowchart LR
     Artwork["封面图像"] --> Analysis["ArtworkColorAnalysis"]
     Analysis --> Palette["SemanticPaletteFactory"]
     Palette --> Adapter["ColorRenderingAdapter"]
-    Adapter --> Native["主要原生界面与 NativeLyrics (Display P3)"]
+    Adapter --> Native["主要原生界面与 MelismaKit (Display P3)"]
     Adapter --> Background["AMLL 网格背景配置"]
     Palette --> Store["ThemeStore"]
     Store --> Consumers["皮肤、全屏、频谱与原生歌词"]
@@ -69,7 +69,7 @@ flowchart LR
 
 色域映射策略以保持角色顺序为目标。例如频谱中心色通常应比边缘色更亮、更有彩度，歌词活动色应保留对非活动色的层级。若某个高彩颜色先撞到色域边界再被简单裁剪，多个角色可能收敛；当前实现会在输出前按色相和目标色域收紧彩度，并由 SelfCheck、Golden baseline 和人工视觉检查共同验证这些不变量。
 
-原生 `NativeLyrics` 引擎直接通过 `NativeLyricsConfigurationMapper` 获取原生 `NSColor` 调色板，获得与桌面视窗一致的颜色呈现。AMLL 网格背景只接收背景动画所需的主题配置；Swift 负责决定角色颜色和透明度，背景脚本不从 RGB 值反推新的语义角色。
+原生 `MelismaKit` 引擎直接通过 `NativeLyricsConfigurationMapper` 获取原生 `NSColor` 调色板，获得与桌面视窗一致的颜色呈现。AMLL 网格背景只接收背景动画所需的主题配置；Swift 负责决定角色颜色和透明度，背景脚本不从 RGB 值反推新的语义角色。
 
 ## 主题发布与切歌稳定性
 

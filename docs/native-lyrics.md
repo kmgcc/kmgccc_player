@@ -4,7 +4,7 @@
 
 在早期的设计中，逐字动效往往依赖内嵌网页视图（WebView）呈现。虽然该方案能够快速借鉴前端生态的动画效果，但在 macOS 这一强调能效、系统响应与精致视窗质感的桌面环境中，跨进程渲染带来的内存驻留、冷启动等待以及偶发的发热，难免在无形中打扰了纯粹的聆听体验。
 
-为了让文字以最贴合 macOS 的方式自由呼吸，kmgccc_player 推出了全新的原生 Swift 歌词组件——`NativeLyrics`。它以 Core Text 的精致排版为骨骼，以 Core Animation 的平滑管线为脉络，使文字渲染直接扎根于原生视窗图层之上，在重现印刷品般排版质感的同时，带来了与声音节奏严密咬合的动效体验。
+为了让文字以最贴合 macOS 的方式自由呼吸，kmgccc_player 接入独立的原生 Swift 歌词组件 `MelismaKit`。它以 Core Text 的精致排版为骨骼，以 Core Animation 的平滑管线为脉络，使文字渲染直接扎根于原生视窗图层之上，在重现印刷品般排版质感的同时，带来了与声音节奏严密咬合的动效体验。
 
 ```mermaid
 flowchart TD
@@ -12,7 +12,7 @@ flowchart TD
     Presentation --> NativeManager["NativeLyricsSurfaceManager"]
     NativeManager --> Surface["NativeLyricsSurface 宿主"]
     
-    subgraph Engine["NativeLyrics 原生渲染管线"]
+    subgraph Engine["MelismaKit 原生渲染管线"]
         TTML["TTML 原生解析与字词时间轴"] --> Layout["Core Text 排版与双语/注音度量"]
         Layout --> RenderLayer["Core Animation 图层树合成"]
         RenderLayer --> Shaders["卡拉 OK 渐变遮罩与高斯辉光"]
@@ -25,7 +25,7 @@ flowchart TD
 
 ## 设计哲学：让文字拥有呼吸与重量
 
-许多歌词渲染工具容易陷入两个极端：要么将文字视作单纯的逐行文本跳动，显得机械刻板；要么堆砌过于繁复的光影滤镜，喧宾夺主。`NativeLyrics` 在设计之初，确立了三项朴素而坚定的准则：
+许多歌词渲染工具容易陷入两个极端：要么将文字视作单纯的逐行文本跳动，显得机械刻板；要么堆砌过于繁复的光影滤镜，喧宾夺主。`MelismaKit` 在设计之初，确立了三项朴素而坚定的准则：
 
 1. **文字先于动效**：歌词首先是一篇值得静心阅读的诗文。字体的间距、行高的比例、断句的舒适度，永远排在花哨的动效之前。
 2. **动势顺应声律**：视觉的变化不是自我展示的舞台，而应当作为听觉的自然延展。音节长则光泽舒展，鼓点促则收放利落。
@@ -41,7 +41,7 @@ flowchart TD
 
 ## 逐字呼吸与动力学动画（Core Animation）
 
-为了摆脱传统定时器轮询带来的微小颤动，`NativeLyrics` 构建了专属的图层渲染管线：
+为了摆脱传统定时器轮询带来的微小颤动，`MelismaKit` 构建了专属的图层渲染管线：
 
 ### 卡拉 OK 轮廓遮罩与光晕
 
@@ -61,7 +61,7 @@ flowchart TD
 
 在数字音乐播放中，界面的推进最忌讳与声音脱节。哪怕数十毫秒的视听偏差，也会让敏锐的听者产生抽离感。
 
-`NativeLyrics` 将渲染驱动直接锚定在 `AVAudioEngine` 的硬件时钟输出上：
+kmgccc_player 将 MelismaKit 的渲染采样锚定在 `AVAudioEngine` 的硬件时钟输出上：
 
 - **零跨进程延迟**：以往由主进程向 Web 渲染进程发送 IPC 消息时，容易受到系统调度与消息队列积压的干扰；如今播放管线与视窗图层位于同一原生线程空间，时间采集与图层重绘紧密联动。
 - **无感度的进度跳转（Seek）**：当用户在时间轴上快速拖拽寻道时，引擎能够在下一次垂直同步信号到达前完成文字重排与弹簧重置，消除传统方案中常见的画面回弹、闪烁或文字错位。
@@ -70,7 +70,7 @@ flowchart TD
 
 将歌词渲染迁回原生环境，带来最立竿见影的改变是系统资源的释放：
 
-| 指标维度 | 传统 Web 容器方案 | NativeLyrics 原生方案 | 体验提升 |
+| 指标维度 | 传统 Web 容器方案 | MelismaKit 原生方案 | 体验提升 |
 | --- | --- | --- | --- |
 | **典型内存占用** | 约 150MB ~ 300MB（独立渲染进程） | 约 15MB ~ 30MB（共享应用图层） | 内存常驻减少约 90%，多窗口无压力 |
 | **全屏动效 CPU 占用** | 8% ~ 18% | 1% ~ 3% | 显著减少发热，长时间播放风扇静音 |
@@ -81,4 +81,4 @@ flowchart TD
 
 ## 组件边界
 
-歌词生产路径只有 `NativeLyrics`/MelismaKit。`LyricsSurfaceManager` 统一管理窗口、全屏和预览 surface，但不再在原生歌词与 AMLL Web 歌词之间切换。AMLL 资源仅保留给 Now Playing 的网格背景，背景不可用时不影响歌词和播放。
+歌词生产路径只有 `MelismaKit`。`LyricsSurfaceManager` 统一管理窗口、全屏和预览 surface，但不再在原生歌词与 AMLL Web 歌词之间切换。AMLL 资源仅保留给 Now Playing 的网格背景，背景不可用时不影响歌词和播放。
