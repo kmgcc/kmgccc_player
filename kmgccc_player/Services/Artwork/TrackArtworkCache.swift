@@ -136,6 +136,82 @@ struct TrackArtworkSource: Sendable, Equatable {
     }
 }
 
+/// Playback owns this small file-metadata cache. Progress ticks read memory;
+/// one utility probe at a time observes same-path cover replacements.
+@MainActor
+final class TrackArtworkFileProbe {
+    nonisolated struct Request: Equatable, Sendable {
+        let trackID: UUID
+        let libraryRoot: String
+        let artworkFileName: String?
+        let candidateURLs: [URL]
+
+        init(track: Track) {
+            trackID = track.id
+            libraryRoot = track.libraryRootSnapshot
+            artworkFileName = track.artworkFileName
+            candidateURLs = track.artworkFileCandidateURLs
+        }
+    }
+
+    private let read: @Sendable ([URL]) -> TrackArtworkFileSnapshot?
+    private var request: Request?
+    private var cachedSnapshot: TrackArtworkFileSnapshot?
+    private var task: Task<TrackArtworkFileSnapshot?, Never>?
+    private var nextProbeUptime: TimeInterval = 0
+    private var hasCompletedProbe = false
+    var isResolving: Bool { task != nil && !hasCompletedProbe }
+
+    init(read: @escaping @Sendable ([URL]) -> TrackArtworkFileSnapshot? = { TrackArtworkFileSnapshot.read(from: $0) }) {
+        self.read = read
+    }
+
+    func snapshot(for track: Track, uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) -> TrackArtworkFileSnapshot? {
+        schedule(Request(track: track), uptime: uptime)
+        return cachedSnapshot
+    }
+
+    func resolve(for track: Track, uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) async -> TrackArtworkFileSnapshot? {
+        let request = Request(track: track)
+        schedule(request, uptime: uptime)
+        _ = await task?.value
+        guard !Task.isCancelled, self.request == request else { return nil }
+        return cachedSnapshot
+    }
+
+    func reset() {
+        task?.cancel()
+        task = nil
+        request = nil
+        cachedSnapshot = nil
+        nextProbeUptime = 0
+        hasCompletedProbe = false
+    }
+
+    private func schedule(_ request: Request, uptime: TimeInterval) {
+        if self.request != request {
+            reset()
+            self.request = request
+        }
+        guard !request.candidateURLs.isEmpty else {
+            hasCompletedProbe = true
+            return
+        }
+        guard task == nil, uptime >= nextProbeUptime else { return }
+        nextProbeUptime = uptime + 1
+        let read = read
+        let urls = request.candidateURLs
+        task = Task { @MainActor [weak self] in
+            let snapshot = await Task.detached(priority: .utility) { read(urls) }.value
+            guard !Task.isCancelled, let self, self.request == request else { return nil }
+            self.cachedSnapshot = snapshot
+            self.hasCompletedProbe = true
+            self.task = nil
+            return snapshot
+        }
+    }
+}
+
 extension Track {
     @MainActor
     func trackArtworkSource(fallbackData: Data? = nil) -> TrackArtworkSource? {

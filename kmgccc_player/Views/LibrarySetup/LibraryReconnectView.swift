@@ -257,9 +257,12 @@ struct LibraryReconnectView: View {
                 } catch LibraryOpenError.reconnectModeMismatch {
                     guard flow.isCurrentOperation(operation) else { return }
                     flow.fail("所选资料库的存储方式不一致。")
+                } catch is CancellationError {
+                    guard flow.isCurrentOperation(operation) else { return }
+                    flow.finishOperation()
                 } catch {
                     guard flow.isCurrentOperation(operation) else { return }
-                    flow.fail("无法连接所选资料库。")
+                    flow.fail(LibraryOpenFailure.message(for: error))
                 }
             }
         }

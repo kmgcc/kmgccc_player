@@ -268,12 +268,16 @@ actor MusicLibraryRegistryStore {
             throw MusicLibraryRegistryError.libraryNotFound(id)
         }
         updated.activeLibraryID = id
+        // A successfully activated library satisfies startup. An older
+        // default replacement request must not override this selection.
+        updated.pendingFactoryDefaultReplacement = nil
         switch manifestMode {
         case .managed:
             updated.recentManagedLibraryID = id
         case .referenced:
             updated.recentReferencedLibraryID = id
         }
+        guard updated != registry else { return }
         try commit(updated)
     }
 

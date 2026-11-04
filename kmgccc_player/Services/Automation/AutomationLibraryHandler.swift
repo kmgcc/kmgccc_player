@@ -1404,6 +1404,10 @@ struct AutomationLibraryHandler {
                 return failure(.permissionDenied, "The App could not authorize the selected library location.")
             case .transactionInProgress:
                 return failure(.conflict, "Another library lifecycle operation is in progress.", retryable: true)
+            case .libraryChanged:
+                return failure(.conflict, "The selected library changed before activation. Select it again.", retryable: true)
+            case .registryCommitFailed:
+                return failure(.internalError, "The library index could not be saved.", retryable: true)
             case .activationFailed, .recoveryFailed:
                 return failure(.internalError, "The library could not be activated safely; the App preserved its recovery boundary.", retryable: true)
             }

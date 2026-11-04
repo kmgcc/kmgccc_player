@@ -3,6 +3,54 @@ import XCTest
 @testable import kmgccc_player
 
 final class LibraryBootstrapTests: XCTestCase {
+    func testReleaseIgnoresInheritedAutomaticQuitScenario() {
+        XCTAssertFalse(DebugLaunchScenarioPolicy.allowsScenario(
+            isDebugBuild: false,
+            environment: ["KMGCCC_DEBUG_PROOF_QUIT_AFTER_SECONDS": "1"]
+        ))
+    }
+
+    func testReleaseProofScenarioRequiresExplicitMeasurementHooks() {
+        XCTAssertTrue(DebugLaunchScenarioPolicy.allowsScenario(
+            isDebugBuild: false,
+            environment: ["KMGCCC_DEBUG_UI_HOOKS": "1", "KMGCCC_DEBUG_PROOF_QUIT_AFTER_SECONDS": "1"]
+        ))
+        XCTAssertFalse(DebugLaunchScenarioPolicy.allowsScenario(
+            isDebugBuild: false,
+            environment: ["KMGCCC_DEBUG_UI_HOOKS": "0", "KMGCCC_DEBUG_PROOF_QUIT_AFTER_SECONDS": "1"]
+        ))
+    }
+
+    func testDebugKeepsExistingProofScenarioEntry() {
+        XCTAssertTrue(DebugLaunchScenarioPolicy.allowsScenario(
+            isDebugBuild: true,
+            environment: ["KMGCCC_DEBUG_PROOF_QUIT_AFTER_SECONDS": "1"]
+        ))
+    }
+
+    @MainActor
+    func testUnreadableHistoryLocationFallsBackWithoutReplacingItsContents() throws {
+        let container = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: container) }
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        let blockedRoot = container.appendingPathComponent("blocked-library")
+        let sentinel = Data("keep this file".utf8)
+        try sentinel.write(to: blockedRoot)
+        let context = LibraryContext(
+            id: UUID(), mode: .managed, rootURL: blockedRoot,
+            rootBookmarkData: Data(), generation: 1
+        )
+
+        let history = try PlaybackHistoryStore(context: context)
+        history.record(
+            trackID: UUID(), playedAt: Date(), title: "Song", artist: "", album: "",
+            duration: 120, playedSeconds: 15
+        )
+
+        XCTAssertEqual(history.fetchItems().count, 1)
+        XCTAssertEqual(try Data(contentsOf: blockedRoot), sentinel)
+    }
+
     func testLegacyRegistryWithoutReplacementMarkerRemainsDecodable() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.container) }

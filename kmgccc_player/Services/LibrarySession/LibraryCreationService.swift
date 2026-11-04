@@ -291,15 +291,17 @@ final class LibraryCreationService {
 
         let staging = parentURL.appendingPathComponent(".kmgccc-player-library-\(UUID().uuidString)", isDirectory: true)
         let manifest = MusicLibraryManifest(displayName: trimmedName, mode: mode)
+        var didPublish = false
         do {
             try await fileOperator.createStagedLibrary(at: staging, manifest: manifest)
             try await fileOperator.validateLibrary(at: staging, expectedID: manifest.libraryID, expectedMode: mode)
             try Task.checkCancellation()
             try await fileOperator.publishStaging(at: staging, to: destination)
+            didPublish = true
             try Task.checkCancellation()
         } catch is CancellationError {
             await fileOperator.removeItemIfPresent(at: staging)
-            await fileOperator.removeItemIfPresent(at: destination)
+            if didPublish { await removeCreatedLibrary(at: destination, manifest: manifest) }
             throw CancellationError()
         } catch {
             await fileOperator.removeItemIfPresent(at: staging)
@@ -312,14 +314,32 @@ final class LibraryCreationService {
                 selectedURL: destination,
                 allowStalePathConflictRepair: allowStalePathConflictRepair
             )
+            guard inspection.context.id == manifest.libraryID,
+                  inspection.context.mode == manifest.mode else {
+                throw LibraryCreationError.validationFailed
+            }
             try Task.checkCancellation()
             let opened = try await openService.commitActivation(inspection, gateAlreadyHeld: true)
             return .created(opened.context, initialImport: initialImport)
         } catch LibraryOpenError.recoveryFailed {
             throw LibraryCreationError.recoveryFailed
+        } catch is CancellationError {
+            await removeCreatedLibrary(at: destination, manifest: manifest)
+            throw CancellationError()
         } catch {
-            await fileOperator.removeItemIfPresent(at: destination)
+            await removeCreatedLibrary(at: destination, manifest: manifest)
             throw LibraryCreationError.sessionActivationFailed
+        }
+    }
+
+    private func removeCreatedLibrary(at root: URL, manifest: MusicLibraryManifest) async {
+        do {
+            // Cleanup owns only the library published by this transaction.
+            // A replaced or changed destination must be retained for recovery.
+            try await fileOperator.validateLibrary(at: root, expectedID: manifest.libraryID, expectedMode: manifest.mode)
+            await fileOperator.removeItemIfPresent(at: root)
+        } catch {
+            Log.warning("[LibraryCreation] retaining changed destination root=\(root.path): \(error)", category: .library)
         }
     }
 }

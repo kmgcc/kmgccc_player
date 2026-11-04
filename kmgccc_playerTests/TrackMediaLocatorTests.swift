@@ -186,6 +186,160 @@ final class TrackMediaLocatorTests: XCTestCase {
     }
 
     @MainActor
+    func testAsyncResourceReleaseKeepsDiskFilesAndReloadsTheirContents() async throws {
+        let track = try makeResourceReleaseTrack()
+        let artworkURL = try XCTUnwrap(track.existingArtworkURL())
+        let lyricsURL = try XCTUnwrap(track.resolvedLyricsURL())
+
+        await track.releaseFileBackedResourcesAfterCheckingDisk()
+
+        XCTAssertNil(track.artworkData)
+        XCTAssertNil(track.ttmlLyricText)
+        XCTAssertNil(track.lyricsText)
+        XCTAssertEqual(try Data(contentsOf: artworkURL), Data([1, 2, 3]))
+        XCTAssertEqual(try String(contentsOf: lyricsURL, encoding: .utf8), "saved lyrics")
+        XCTAssertEqual(track.readTTMLLyricsText(), "saved lyrics")
+    }
+
+    @MainActor
+    func testAsyncResourceReleasePreservesMissingFilesAndEmptyArtwork() async throws {
+        let track = try makeResourceReleaseTrack()
+        try Data().write(to: XCTUnwrap(track.existingArtworkURL()))
+        try FileManager.default.removeItem(at: XCTUnwrap(track.resolvedLyricsURL()))
+
+        await track.releaseFileBackedResourcesAfterCheckingDisk()
+
+        XCTAssertEqual(track.artworkData, Data([1, 2, 3]))
+        XCTAssertEqual(track.ttmlLyricText, "saved lyrics")
+        XCTAssertEqual(track.lyricsText, "saved lyrics")
+    }
+
+    @MainActor
+    func testAsyncResourceReleaseRechecksWhetherTrackBecameCurrent() async throws {
+        let track = try makeResourceReleaseTrack()
+        var isCurrent = false
+        await track.releaseFileBackedResourcesAfterCheckingDisk {
+            let mayRelease = !isCurrent
+            isCurrent = true
+            return mayRelease
+        }
+
+        XCTAssertEqual(track.artworkData, Data([1, 2, 3]))
+        XCTAssertEqual(track.ttmlLyricText, "saved lyrics")
+        XCTAssertEqual(track.lyricsText, "saved lyrics")
+    }
+
+    @MainActor
+    func testAsyncResourceReleasePreservesEditsMadeDuringDiskCheck() async throws {
+        let track = try makeResourceReleaseTrack()
+        var checks = 0
+        await track.releaseFileBackedResourcesAfterCheckingDisk {
+            checks += 1
+            if checks == 2 {
+                track.artworkData = Data([4, 5, 6])
+                track.ttmlLyricText = "new TTML"
+                track.lyricsText = "new lyrics"
+            }
+            return true
+        }
+
+        XCTAssertEqual(track.artworkData, Data([4, 5, 6]))
+        XCTAssertEqual(track.ttmlLyricText, "new TTML")
+        XCTAssertEqual(track.lyricsText, "new lyrics")
+    }
+
+    @MainActor
+    func testAsyncResourceReleasePreservesPayloadAfterCancellation() async throws {
+        let track = try makeResourceReleaseTrack()
+        let task = Task { @MainActor in
+            await track.releaseFileBackedResourcesAfterCheckingDisk()
+        }
+        task.cancel()
+        await task.value
+
+        XCTAssertEqual(track.artworkData, Data([1, 2, 3]))
+        XCTAssertEqual(track.ttmlLyricText, "saved lyrics")
+        XCTAssertEqual(track.lyricsText, "saved lyrics")
+    }
+
+    @MainActor
+    func testArtworkProbeChecksOffMainAndReusesMetadataBetweenProgressTicks() async throws {
+        let track = try makeResourceReleaseTrack()
+        let reads = ArtworkProbeReadCounter()
+        let probe = TrackArtworkFileProbe { urls in
+            XCTAssertFalse(Thread.isMainThread)
+            reads.increment()
+            return TrackArtworkFileSnapshot.read(from: urls)
+        }
+        let first = await probe.resolve(for: track, uptime: 100)
+        XCTAssertEqual(first?.fileSize, 3)
+        XCTAssertEqual(probe.snapshot(for: track, uptime: 100.25), first)
+        let reused = await probe.resolve(for: track, uptime: 100.75)
+        XCTAssertEqual(reused, first)
+        XCTAssertEqual(reads.value, 1)
+
+        try Data([4, 5, 6, 7]).write(to: XCTUnwrap(first?.url))
+        let replaced = await probe.resolve(for: track, uptime: 101.25)
+        XCTAssertEqual(replaced?.fileSize, 4)
+        XCTAssertNotEqual(replaced, first)
+        XCTAssertEqual(reads.value, 2)
+    }
+
+    @MainActor
+    func testArtworkProbeSeparatesSameTrackIDInDifferentLibraries() async throws {
+        let firstTrack = try makeResourceReleaseTrack()
+        let secondTrack = try makeResourceReleaseTrack()
+        let secondFile = try XCTUnwrap(secondTrack.existingArtworkURL())
+        secondTrack.id = firstTrack.id
+        let newSecondFile = try XCTUnwrap(secondTrack.resolvedArtworkURL())
+        try FileManager.default.createDirectory(at: newSecondFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: secondFile, to: newSecondFile)
+        let probe = TrackArtworkFileProbe()
+
+        let first = await probe.resolve(for: firstTrack, uptime: 100)
+        let second = await probe.resolve(for: secondTrack, uptime: 100.25)
+
+        XCTAssertNotNil(first)
+        XCTAssertEqual(second?.url, newSecondFile)
+        XCTAssertNotEqual(first?.url, second?.url)
+    }
+
+    @MainActor
+    func testArtworkProbeKeepsMissingArtworkSettledAndCanReset() async throws {
+        let track = try makeResourceReleaseTrack()
+        let artworkURL = try XCTUnwrap(track.existingArtworkURL())
+        try FileManager.default.removeItem(at: artworkURL)
+        let probe = TrackArtworkFileProbe()
+        let missing = await probe.resolve(for: track, uptime: 100)
+        XCTAssertNil(missing)
+        XCTAssertFalse(probe.isResolving)
+        XCTAssertNil(probe.snapshot(for: track, uptime: 101.25))
+        XCTAssertFalse(probe.isResolving)
+        _ = await probe.resolve(for: track, uptime: 101.25)
+
+        try Data([8, 9]).write(to: artworkURL)
+        probe.reset()
+        let restored = await probe.resolve(for: track, uptime: 101.5)
+        XCTAssertEqual(restored?.fileSize, 2)
+    }
+
+    private func makeResourceReleaseTrack() throws -> Track {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let track = Track(
+            title: "Song", artworkData: Data([1, 2, 3]),
+            ttmlLyricText: "saved lyrics", lyricsText: "saved lyrics",
+            libraryRootSnapshot: root.path, artworkFileName: "cover.png",
+            lyricsFileName: "lyrics.ttml"
+        )
+        let artworkURL = try XCTUnwrap(track.resolvedArtworkURL())
+        try FileManager.default.createDirectory(at: artworkURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data([1, 2, 3]).write(to: artworkURL)
+        try "saved lyrics".write(to: XCTUnwrap(track.resolvedLyricsURL()), atomically: true, encoding: .utf8)
+        return track
+    }
+
+    @MainActor
     func testLyricsInspectionDoesNotRetainFileTextOrDiscardInlineEdits() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -980,5 +1134,22 @@ final class TrackMediaLocatorTests: XCTestCase {
             userMetadataOverride: override,
             enrichmentSuggestions: suggestions
         )
+    }
+}
+
+private nonisolated final class ArtworkProbeReadCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func increment() {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+    }
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
     }
 }

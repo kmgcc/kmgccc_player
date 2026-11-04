@@ -61,16 +61,42 @@ final class LibrarySessionController {
             try Task.checkCancellation()
             try await Task.sleep(for: .milliseconds(10))
         }
+        try Task.checkCancellation()
 
-        if let activeSession,
-           activeSession.context.id == context.id,
-           activeSession.context.rootURL == context.rootURL {
-            state = .active(activeSession.context.id)
-            return
-        }
-
+        // Selecting the current library also supersedes an older preparation.
         transactionGeneration &+= 1
         let generation = transactionGeneration
+
+        if let activeSession, activeSession.context.id == context.id {
+            let currentRoot = activeSession.context.rootURL
+            let targetRoot = context.rootURL
+            let isSameRoot: Bool
+            if currentRoot == targetRoot {
+                isSameRoot = true
+            } else {
+                // File panels can return a symlink spelling of the current
+                // root. Resolve only this explicit open, away from the UI.
+                isSameRoot = await Task.detached(priority: .userInitiated) {
+                    currentRoot.resolvingSymlinksInPath().standardizedFileURL
+                        == targetRoot.resolvingSymlinksInPath().standardizedFileURL
+                }.value
+            }
+            guard generation == transactionGeneration else {
+                throw LibrarySessionControllerError.superseded
+            }
+            if Task.isCancelled {
+                restoreVisibleStateAfterPreparationFailure(previousContext: activeSession.context)
+                throw CancellationError()
+            }
+            if isSameRoot {
+                state = .active(activeSession.context.id)
+                guard activeSession.context.mode == context.mode else {
+                    throw LibrarySessionFactoryError.manifestModeMismatch
+                }
+                return
+            }
+        }
+
         let previousContext = activeSession?.context ?? recoveryContext
         var ownsDestructivePhase = false
         defer {
@@ -85,6 +111,9 @@ final class LibrarySessionController {
         do {
             candidate = try await factory.makeSession(for: context)
         } catch {
+            guard generation == transactionGeneration else {
+                throw LibrarySessionControllerError.superseded
+            }
             restoreVisibleStateAfterPreparationFailure(previousContext: previousContext)
             throw error
         }
@@ -93,10 +122,21 @@ final class LibrarySessionController {
             await candidate.close()
             throw LibrarySessionControllerError.superseded
         }
+        if Task.isCancelled {
+            await candidate.close()
+            restoreVisibleStateAfterPreparationFailure(previousContext: previousContext)
+            throw CancellationError()
+        }
+
+        // Loading and publication also need serialization when no old session
+        // exists. A concurrent switch must not publish over an in-flight load.
+        destructiveTransactionGeneration = generation
+        ownsDestructivePhase = true
 
         if let previous = activeSession {
             do {
                 try await previous.flush()
+                try Task.checkCancellation()
             } catch {
                 await candidate.close()
                 state = .active(previous.context.id)
@@ -109,8 +149,6 @@ final class LibrarySessionController {
                 throw LibrarySessionControllerError.superseded
             }
 
-            destructiveTransactionGeneration = generation
-            ownsDestructivePhase = true
             state = .quiescing(context.id)
             await previous.quiesce()
 
@@ -134,11 +172,17 @@ final class LibrarySessionController {
         do {
             try await candidate.load()
         } catch {
+            Log.error("[LibrarySession] target load failed library=\(context.id): \(error)", category: .library)
             await candidate.close()
             guard generation == transactionGeneration else {
                 throw LibrarySessionControllerError.superseded
             }
-            try await recoverPreviousSession(afterTargetFailure: error, generation: generation)
+            // Recovery must remain possible after the initiating task is
+            // cancelled; its cancellation must not poison the restored load.
+            try await Task { @MainActor in
+                try await self.recoverPreviousSession(afterTargetFailure: error, generation: generation)
+            }.value
+            if error is CancellationError { throw CancellationError() }
             throw LibrarySessionControllerError.targetLoadFailed
         }
 
@@ -158,6 +202,7 @@ final class LibrarySessionController {
             try Task.checkCancellation()
             try await Task.sleep(for: .milliseconds(10))
         }
+        try Task.checkCancellation()
 
         transactionGeneration &+= 1
         let generation = transactionGeneration
@@ -204,7 +249,12 @@ final class LibrarySessionController {
                 await restored.close()
                 throw LibrarySessionControllerError.superseded
             }
-            try await restored.load()
+            do {
+                try await restored.load()
+            } catch {
+                await restored.close()
+                throw error
+            }
             guard generation == transactionGeneration else {
                 await restored.close()
                 throw LibrarySessionControllerError.superseded
@@ -215,7 +265,10 @@ final class LibrarySessionController {
         } catch LibrarySessionControllerError.superseded {
             throw LibrarySessionControllerError.superseded
         } catch {
-            _ = afterTargetFailure
+            Log.error(
+                "[LibrarySession] target load failed: \(afterTargetFailure); recovery failed library=\(recoveryContext.id): \(error)",
+                category: .library
+            )
             activeSession = nil
             state = .unavailable(recoveryContext.id)
             throw LibrarySessionControllerError.targetAndRecoveryFailed

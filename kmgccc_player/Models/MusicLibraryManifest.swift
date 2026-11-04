@@ -99,7 +99,16 @@ nonisolated struct MusicLibraryManifest: Codable, Sendable, Equatable {
     static func read(from url: URL) throws -> MusicLibraryManifest {
         let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: value) { return date }
+            formatter.formatOptions = [.withInternetDateTime]
+            if let date = formatter.date(from: value) { return date }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid library manifest date")
+        }
         return try decoder.decode(MusicLibraryManifest.self, from: data).validated()
     }
 

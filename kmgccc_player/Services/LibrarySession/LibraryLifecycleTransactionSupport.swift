@@ -58,7 +58,9 @@ nonisolated final class LibraryRootAccessLease: @unchecked Sendable {
         rootURL = resolution.url.standardizedFileURL
         isStale = resolution.isStale
         guard !LibraryRootLocationPolicy.isInTrash(rootURL) else { throw LibraryRootAccessError.inTrash }
-        guard rootURL == expectedRoot else {
+        guard rootURL == expectedRoot
+            || rootURL.resolvingSymlinksInPath().standardizedFileURL
+                == expectedRoot.resolvingSymlinksInPath().standardizedFileURL else {
             throw LibraryRootAccessError.identityMismatch
         }
         let didStart = resolver.startAccessing(rootURL)
@@ -166,7 +168,19 @@ nonisolated enum LibraryStartupResolution: Sendable, Equatable {
 /// activating a second empty library at an alternate path.
 nonisolated enum LibraryStartupFailurePolicy {
     static func permitsFactoryDefaultFallback(after error: any Error) -> Bool {
-        error is LibraryWriterLeaseError == false
+        if error is LibraryWriterLeaseError || error is CancellationError
+            || error is LibraryLifecycleTransactionGateError {
+            return false
+        }
+        if let error = error as? LibraryOpenError {
+            switch error {
+            case .transactionInProgress, .registryCommitFailed, .recoveryFailed:
+                return false
+            default:
+                break
+            }
+        }
+        return true
     }
 }
 
@@ -192,7 +206,6 @@ struct LibraryStartupContextResolver {
     ) async -> LibraryStartupResolution {
         await removeTrashedLibraries()
         let registry = await registryStore.snapshot()
-        guard registry.pendingFactoryDefaultReplacement != true else { return .noActive }
         var seen = Set<UUID>()
         if let activeID = registry.activeLibraryID {
             seen.insert(activeID)
@@ -201,6 +214,10 @@ struct LibraryStartupContextResolver {
                 return .context(context)
             }
         }
+
+        // Default replacement is deferred maintenance. A reachable selected
+        // library takes precedence, including selections made by older apps.
+        guard registry.pendingFactoryDefaultReplacement != true else { return .noActive }
 
         var ids: [UUID] = []
         if let removedMode {
@@ -236,15 +253,30 @@ struct LibraryStartupContextResolver {
     @discardableResult
     func removeTrashedLibraries() async -> Set<UUID> {
         let registry = await registryStore.snapshot()
+        let descriptors = registry.libraries
+        let resolver = bookmarkResolver
+        // Bookmark resolution can wait on an external or sleeping volume.
+        // Returning to the App must not perform that wait on the main actor.
+        let trashedLibraries = await Task.detached(priority: .utility) {
+            var matches: [UUID: Bool] = [:]
+            for descriptor in descriptors {
+                let root = (try? resolver.resolve(descriptor.rootBookmarkData).url)
+                    ?? URL(fileURLWithPath: descriptor.lastKnownPath, isDirectory: true)
+                if LibraryRootLocationPolicy.isInTrash(root) {
+                    matches[descriptor.id] = LibraryRootLocationPolicy.isFactoryDefaultRegistration(descriptor)
+                }
+            }
+            return matches
+        }.value
         var removedIDs = Set<UUID>()
         for descriptor in registry.libraries {
-            let root = (try? bookmarkResolver.resolve(descriptor.rootBookmarkData).url)
-                ?? URL(fileURLWithPath: descriptor.lastKnownPath, isDirectory: true)
-            guard LibraryRootLocationPolicy.isInTrash(root) else { continue }
+            guard !Task.isCancelled, let requiresReplacement = trashedLibraries[descriptor.id] else { continue }
+            let currentRegistry = await registryStore.snapshot()
+            guard currentRegistry.libraries.contains(descriptor) else { continue }
             do {
                 try await registryStore.remove(
                     libraryID: descriptor.id,
-                    requireFactoryDefaultReplacement: LibraryRootLocationPolicy.isFactoryDefaultRegistration(descriptor)
+                    requireFactoryDefaultReplacement: requiresReplacement
                 )
                 removedIDs.insert(descriptor.id)
             } catch {

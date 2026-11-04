@@ -12,6 +12,12 @@ import Combine
 import Dispatch
 import SwiftData
 
+nonisolated enum DebugLaunchScenarioPolicy {
+    static func allowsScenario(isDebugBuild: Bool, environment: [String: String]) -> Bool {
+        isDebugBuild || environment["KMGCCC_DEBUG_UI_HOOKS"] == "1"
+    }
+}
+
 @MainActor
 final class AppSessionHost: ObservableObject {
     @Published private(set) var libraryVM: LibraryViewModel?
@@ -153,11 +159,14 @@ final class AppSessionHost: ObservableObject {
     /// being opened. The old boolean guard was set before the async work and
     /// let a second caller show the window with a nil session in between.
     private var setupTask: Task<Void, Never>?
+    private var launchDiagnosticsTask: Task<Void, Never>?
+    private var hasPreparedLaunchDiagnostics = false
     private var playbackModeObserver: NSObjectProtocol?
     private var workspaceLibraryObservers: [NSObjectProtocol] = []
     private var appActiveLibraryObserver: NSObjectProtocol?
     private var backgroundSettingsObserver: NSObjectProtocol?
     private var activeLibraryRescanTask: Task<Void, Never>?
+    private var lastForegroundLibraryRescan: (libraryID: UUID, uptime: TimeInterval)?
     private var trashedLibraryReconciliationTask: Task<Void, Never>?
     private var playbackMemoryTimer: Timer?
     private var memoryPressureObserverToken: UUID?
@@ -355,18 +364,20 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
-    func openMusicLibrary(at url: URL) async throws -> [UUID] {
+    func openMusicLibrary(at url: URL, expectedContext: LibraryContext? = nil) async throws -> [UUID] {
         guard let libraryOpenService else { throw LibraryOpenError.libraryNotFound }
+        let previousSession = activeLibraryBinding.activeSession
         let selectedURL = url.standardizedFileURL
         let defaultRoot = LibraryLocationStore.defaultLibraryRootURL.standardizedFileURL
         let isDefaultLibrarySelection = selectedURL == defaultRoot
             || selectedURL.appendingPathComponent(LibraryPaths.rootDirectoryName, isDirectory: true)
                 .standardizedFileURL == defaultRoot
-        _ = try await libraryOpenService.open(
+        let opened = try await libraryOpenService.open(
             selectedURL: selectedURL,
+            expectedContext: expectedContext,
             allowStalePathConflictRepair: isDefaultLibrarySelection
         )
-        return try await unavailableReferencedSourceIDs()
+        return await unavailableReferencedSourceIDs(afterOpening: opened.context, previousSession: previousSession)
     }
 
     func openInspectedMusicLibrary(_ context: LibraryContext) async throws -> [UUID] {
@@ -376,21 +387,21 @@ final class AppSessionHost: ObservableObject {
             requiresSecurityScope: false
         )
         defer { lease.release() }
-        return try await openMusicLibrary(at: context.rootURL)
+        return try await openMusicLibrary(at: context.rootURL, expectedContext: context)
     }
 
     func activateRegisteredLibrary(id: UUID) async throws -> [UUID] {
-        guard let registryStore else { throw RegisteredLibraryActivationError.notRegistered }
-        let context = try await LibraryStartupContextResolver(registryStore: registryStore)
-            .resolveRegistered(libraryID: id, generation: activeLibraryBinding.generation &+ 1)
-        try await sessionController.switchToLibrary(context)
-        return try await unavailableReferencedSourceIDs()
+        guard let libraryOpenService else { throw RegisteredLibraryActivationError.notRegistered }
+        let previousSession = activeLibraryBinding.activeSession
+        let opened = try await libraryOpenService.activateRegisteredLibrary(id: id)
+        return await unavailableReferencedSourceIDs(afterOpening: opened.context, previousSession: previousSession)
     }
 
     func reconnectRegisteredLibrary(id: UUID, at url: URL) async throws -> [UUID] {
         guard let libraryOpenService else { throw LibraryOpenError.libraryNotFound }
-        _ = try await libraryOpenService.reconnectRegisteredLibrary(id: id, selectedURL: url)
-        return try await unavailableReferencedSourceIDs()
+        let previousSession = activeLibraryBinding.activeSession
+        let opened = try await libraryOpenService.reconnectRegisteredLibrary(id: id, selectedURL: url)
+        return await unavailableReferencedSourceIDs(afterOpening: opened.context, previousSession: previousSession)
     }
 
     func prepareSourceReconnect(
@@ -1016,16 +1027,40 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
-    private func unavailableReferencedSourceIDs() async throws -> [UUID] {
+    private func unavailableReferencedSourceIDs(
+        afterOpening context: LibraryContext,
+        previousSession: LibrarySession?
+    ) async -> [UUID] {
         guard let session = activeLibraryBinding.activeSession,
+              session !== previousSession,
+              session.context.id == context.id,
+              session.context.rootURL == context.rootURL,
               session.context.mode == .referenced,
               let store = session.referencedSourceStore else {
             return []
         }
-        return try await store.loadAll()
-            .filter { $0.status != .available }
-            .map(\.id)
-            .sorted { $0.uuidString < $1.uuidString }
+        let sourceIDs: [UUID]?
+        do {
+            sourceIDs = try await session.runLibraryOperation {
+                await LibraryOpenService.unavailableReferencedSourceIDs(in: store)
+            }
+        } catch is CancellationError {
+            return []
+        } catch LibraryOperationError.sessionQuiescing {
+            return []
+        } catch {
+            guard !Task.isCancelled,
+                  activeLibraryBinding.activeSession === session else { return [] }
+            Log.warning("[LibraryOpen] source check could not run library=\(context.id): \(error)", category: .library)
+            sourceIDs = nil
+        }
+        guard !Task.isCancelled,
+              activeLibraryBinding.activeSession === session else { return [] }
+        guard let sourceIDs else {
+            uiState.showSidebarNotice("资料库已打开，来源状态暂时无法读取", style: .warning)
+            return []
+        }
+        return sourceIDs
     }
 
     func libraryScopedSettings() async throws -> LibraryScopedSettings {
@@ -1219,6 +1254,8 @@ final class AppSessionHost: ObservableObject {
     private func performInitialSetup() async {
         guard !hasSetupDependencies else { return }
         hasSetupDependencies = true
+        startLaunchDiagnosticsIfNeeded()
+        await Task.yield()
 
         systemConditions.start()
         backgroundWorkScheduler.configurationProvider = {
@@ -1289,7 +1326,8 @@ final class AppSessionHost: ObservableObject {
         switch startupResolution {
         case .context(let startupContext):
             do {
-                try await sessionController.switchToLibrary(startupContext)
+                guard let libraryOpenService else { throw LibraryOpenError.libraryNotRegistered }
+                _ = try await libraryOpenService.open(selectedURL: startupContext.rootURL, expectedContext: startupContext)
                 await restorePlaybackMemoryIfNeeded()
             } catch {
                 Log.error(
@@ -1306,7 +1344,7 @@ final class AppSessionHost: ObservableObject {
                     }
                 } else {
                     Log.warning(
-                        "[LibrarySession] active library writer lease unavailable; default creation suppressed",
+                        "[LibrarySession] active library activation deferred; default creation suppressed: \(error)",
                         category: .library
                     )
                 }
@@ -1340,22 +1378,11 @@ final class AppSessionHost: ObservableObject {
         }
 
         AppVersionGate.shared.recordCurrentAppLaunch()
-        let crashReportInstallID = await TelemetryService.shared.prepareAnonymousInstallIDForSignedUpload()
-        await CrashReportService.shared.start(
-            anonymousInstallID: crashReportInstallID
-        )
-        MetricKitDiagnosticService.shared.start(anonymousInstallID: crashReportInstallID)
 #if DEBUG
         DebugCrashTrigger.scheduleIfRequested()
 #endif
-        if CrashReportService.shared.hasPendingPrompt {
-            CrashReportService.shared.setPromptQueueDrainedHandler { [weak self] in
-                self?.scheduleDeferredLaunchPromptsIfNeeded()
-            }
-        } else {
-            scheduleDeferredLaunchPromptsIfNeeded()
-        }
         hasCompletedInitialSetup = true
+        finishLaunchPromptsIfReady()
         DebugUIHooks.installIfEnabled(appSession: self)
         if AppSettings.shared.automationEndpointEnabled {
             do {
@@ -1402,11 +1429,41 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
+    /// Crash import and signed delivery do not depend on a readable library or
+    /// hold the main window behind a network registration attempt.
+    private func startLaunchDiagnosticsIfNeeded() {
+        guard launchDiagnosticsTask == nil, !hasPreparedLaunchDiagnostics else { return }
+        launchDiagnosticsTask = Task { @MainActor [weak self] in
+            let installID = await TelemetryService.shared.prepareAnonymousInstallIDForSignedUpload()
+            guard !Task.isCancelled else { return }
+            MetricKitDiagnosticService.shared.start(anonymousInstallID: installID)
+            await CrashReportService.shared.start(anonymousInstallID: installID)
+            guard !Task.isCancelled, let self else { return }
+            self.hasPreparedLaunchDiagnostics = true
+            self.launchDiagnosticsTask = nil
+            self.finishLaunchPromptsIfReady()
+        }
+    }
+
+    private func finishLaunchPromptsIfReady() {
+        guard hasCompletedInitialSetup, hasPreparedLaunchDiagnostics else { return }
+        if CrashReportService.shared.hasPendingPrompt {
+            CrashReportService.shared.setPromptQueueDrainedHandler { [weak self] in
+                self?.scheduleDeferredLaunchPromptsIfNeeded()
+            }
+        } else {
+            scheduleDeferredLaunchPromptsIfNeeded()
+        }
+    }
+
     private func ensureFactoryDefaultLibraryWithRetries() async -> LibraryContext? {
         for attempt in 0..<4 {
+            guard !Task.isCancelled else { return nil }
             if attempt > 0 {
                 try? await Task.sleep(for: .milliseconds(250))
             }
+            // A manual open may have succeeded while a retry was sleeping.
+            if let context = activeLibraryBinding.context { return context }
             if let context = await ensureFactoryDefaultLibraryIfNeeded(
                 allowUnreachableActiveLibrary: true
             ) {
@@ -1424,10 +1481,15 @@ final class AppSessionHost: ObservableObject {
     private func ensureFactoryDefaultLibraryIfNeeded(
         allowUnreachableActiveLibrary: Bool = false
     ) async -> LibraryContext? {
-        guard let registryStore,
+        guard !Task.isCancelled,
+              let registryStore,
               let libraryOpenService,
               let libraryCreationService else { return nil }
+        let observedGeneration = activeLibraryBinding.generation
         let registry = await registryStore.snapshot()
+        guard activeLibraryBinding.generation == observedGeneration else {
+            return activeLibraryBinding.context
+        }
         let preferRegisteredLibraries = registry.pendingFactoryDefaultReplacement != true
 
         // A nil active pointer can also be left behind by an interrupted
@@ -1435,22 +1497,23 @@ final class AppSessionHost: ObservableObject {
         // reachable registered library before falling back to the default.
         guard allowUnreachableActiveLibrary || registry.activeLibraryID == nil
             || registry.pendingFactoryDefaultReplacement == true else { return nil }
-        let resolver = LibraryStartupContextResolver(registryStore: registryStore)
         var candidateIDs: [UUID] = []
         if let activeID = registry.activeLibraryID { candidateIDs.append(activeID) }
         candidateIDs.append(contentsOf: [registry.recentManagedLibraryID, registry.recentReferencedLibraryID].compactMap { $0 })
         candidateIDs.append(contentsOf: registry.libraries.map(\.id))
         var seen = Set<UUID>()
-        for candidateID in candidateIDs where preferRegisteredLibraries && seen.insert(candidateID).inserted {
-            guard let context = try? await resolver.resolveRegistered(libraryID: candidateID) else { continue }
+        for candidateID in candidateIDs where seen.insert(candidateID).inserted {
+            guard preferRegisteredLibraries || candidateID == registry.activeLibraryID else { continue }
+            guard !Task.isCancelled,
+                  activeLibraryBinding.generation == observedGeneration else {
+                return activeLibraryBinding.context
+            }
             do {
-                try await sessionController.switchToLibrary(context)
-                try await registryStore.setActiveLibrary(id: context.id, manifestMode: context.mode)
-                return context
+                return try await libraryOpenService.activateRegisteredLibrary(id: candidateID).context
             } catch {
                 guard LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error) else {
                     Log.warning(
-                        "[LibrarySession] registered library writer lease unavailable; default creation suppressed",
+                        "[LibrarySession] registered library activation deferred; default creation suppressed: \(error)",
                         category: .library
                     )
                     return nil
@@ -1459,12 +1522,17 @@ final class AppSessionHost: ObservableObject {
             }
         }
 
+        guard !Task.isCancelled,
+              activeLibraryBinding.generation == observedGeneration else {
+            return activeLibraryBinding.context
+        }
         let defaultRoot = LibraryLocationStore.defaultLibraryRootURL
         if FileManager.default.fileExists(atPath: defaultRoot.path) {
             if registry.pendingFactoryDefaultReplacement == true {
                 guard let manifest = try? MusicLibraryManifest.read(from: LibraryPaths(rootURL: defaultRoot).manifestURL),
-                      registry.activeLibraryID == manifest.libraryID,
-                      registry.library(id: manifest.libraryID)?.lastKnownPath == defaultRoot.path else {
+                      let descriptor = registry.library(id: manifest.libraryID),
+                      descriptor.modeProjection == manifest.mode,
+                      descriptor.lastKnownPath == defaultRoot.path else {
                     Log.warning("[LibrarySession] replacement default path is occupied; waiting for recovery", category: .library)
                     return nil
                 }
@@ -1477,12 +1545,12 @@ final class AppSessionHost: ObservableObject {
                     selectedURL: defaultRoot,
                     allowStalePathConflictRepair: true
                 ).context
-                try await registryStore.completeFactoryDefaultReplacement(libraryID: context.id)
+                await completeFactoryDefaultReplacementIfPossible(libraryID: context.id)
                 return context
             } catch {
                 guard LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error) else {
                     Log.warning(
-                        "[LibrarySession] default library writer lease unavailable; alternate creation suppressed",
+                        "[LibrarySession] default library activation deferred; alternate creation suppressed: \(error)",
                         category: .library
                     )
                     return nil
@@ -1494,6 +1562,10 @@ final class AppSessionHost: ObservableObject {
             }
         }
 
+        guard !Task.isCancelled,
+              activeLibraryBinding.generation == observedGeneration else {
+            return activeLibraryBinding.context
+        }
         let parentURL = defaultRoot.deletingLastPathComponent()
         do {
             let result = try await libraryCreationService.create(
@@ -1506,7 +1578,7 @@ final class AppSessionHost: ObservableObject {
             )
             switch result {
             case .created(let context, _):
-                try await registryStore.completeFactoryDefaultReplacement(libraryID: context.id)
+                await completeFactoryDefaultReplacementIfPossible(libraryID: context.id)
                 shouldPresentFirstRunLibrarySetup = true
                 return context
             case .existingLibrary(let context):
@@ -1516,6 +1588,7 @@ final class AppSessionHost: ObservableObject {
                 // activate it before returning a context to the window.
                 return try await libraryOpenService.open(
                     selectedURL: context.rootURL,
+                    expectedContext: context,
                     allowStalePathConflictRepair: true
                 ).context
             case .existingLibraryModeMismatch:
@@ -1530,12 +1603,23 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
+    private func completeFactoryDefaultReplacementIfPossible(libraryID: UUID) async {
+        do {
+            try await registryStore?.completeFactoryDefaultReplacement(libraryID: libraryID)
+        } catch {
+            // Activation has committed. Keep the usable session and retry the
+            // housekeeping flag during the next reconciliation.
+            Log.warning("[LibrarySession] default replacement status save deferred library=\(libraryID): \(error)", category: .library)
+        }
+    }
+
     /// First-launch onboarding: after a fresh install the factory-default
     /// library is already open, so present the setup wizard once the
     /// What's New window has been dismissed. The panel floats above the
     /// main window and never blocks its loading or rendering.
     func autoPresentLibrarySetupIfNeeded() {
-        guard hasCompletedInitialSetup, !didAutoPresentLibrarySetup else { return }
+        guard hasCompletedInitialSetup, didScheduleDeferredLaunchPrompts,
+              !didAutoPresentLibrarySetup else { return }
         didAutoPresentLibrarySetup = true
         guard shouldPresentFirstRunLibrarySetup,
               librarySetupFlow.presentation == .none else { return }
@@ -1564,7 +1648,8 @@ final class AppSessionHost: ObservableObject {
     }
 
     private func scheduleDeferredLaunchPromptsIfNeeded() {
-        guard !didScheduleDeferredLaunchPrompts else { return }
+        guard hasCompletedInitialSetup, hasPreparedLaunchDiagnostics,
+              !didScheduleDeferredLaunchPrompts else { return }
         didScheduleDeferredLaunchPrompts = true
         WhatsNewWindowManager.shared.showIfNeeded()
         Log.debug("[Lifecycle] WhatsNew window check completed", category: .ui)
@@ -1577,14 +1662,16 @@ final class AppSessionHost: ObservableObject {
     }
 
     func switchLibrary(to context: LibraryContext) async throws {
+        guard let libraryOpenService else { throw LibraryOpenError.libraryNotRegistered }
         savePlaybackMemory()
-        try await sessionController.switchToLibrary(context)
+        _ = try await libraryOpenService.open(selectedURL: context.rootURL, expectedContext: context)
         didAttemptPlaybackMemoryRestore = false
         await restorePlaybackMemoryIfNeeded()
     }
 
     private func publishActiveSession(_ session: LibrarySession) async {
         uiState.clearLibraryImportFailureReports()
+        uiState.clearAlbumOrderingFailures()
         audioDSPController.setSourceIsLocal(!session.playbackCoordinator.activeSource.isExternal)
         audioProcessingGlobalsController.setSourceIsLocal(!session.playbackCoordinator.activeSource.isExternal)
         audioDSPScriptController.bind(dspController: audioDSPController)
@@ -1612,6 +1699,11 @@ final class AppSessionHost: ObservableObject {
                 revision: { [weak session] in session?.libraryViewModel.tracksRevision ?? 0 },
                 score: { [weak session] id in session?.preferenceStatsService.getPreferenceScore(for: id) ?? 0 }
             )
+            await session.cacheServices.attachMotionAlignmentSource(
+                scheduler: backgroundWorkScheduler, owner: owner, libraryID: session.context.id,
+                tracks: { [weak session] in session?.libraryViewModel.allTracks ?? [] },
+                revision: { [weak session] in session?.libraryViewModel.tracksRevision ?? 0 }
+            )
         }
         session.setEqualLoudnessContext(equalLoudnessController.context)
         activeLibraryBinding.publish(session)
@@ -1628,6 +1720,12 @@ final class AppSessionHost: ObservableObject {
         let importEnrichmentService = session.importEnrichmentService
         session.fileImportService.onImportFailures = { [weak uiState] failures, origin in
             uiState?.recordLibraryImportFailures(failures, origin: origin)
+        }
+        session.fileImportService.onAlbumOrderingResult = { [weak uiState, weak libraryVM] outcome in
+            uiState?.applyAlbumOrderingOutcome(outcome)
+            for albumKey in outcome.updatedAlbumKeys {
+                libraryVM?.refreshAlbumOrderingMetadata(albumKey: albumKey)
+            }
         }
         libraryVM.onTrackDeletionPreparationFailures = { [weak self] failures in
             guard let self, !failures.isEmpty else { return }
@@ -1664,7 +1762,18 @@ final class AppSessionHost: ObservableObject {
             playbackCoordinator: playbackCoordinator
         )
         self.lyricsPlaybackPipeline = lyricsPlaybackPipeline
+
+        // A local track switch resolves its artwork palette before publishing,
+        // so the new colors and the new document land in the same render pass.
+        playbackCoordinator.prepareSwitchAppearance = { presentation in
+            guard ProcessInfo.processInfo.environment["KMGCCC_DEBUG_SKIP_SWITCH_THEME"] != "1" else { return }
+            await ThemeStore.shared.updateTheme(for: presentation)
+        }
+
         lyricsPlaybackPipeline.start()
+        playbackCoordinator.onPlaybackProgressChanged = { [weak lyricsPlaybackPipeline] presentation in
+            lyricsPlaybackPipeline?.syncProgressOnly(presentation)
+        }
 
         playbackCoordinator.onActiveSourceChanged = { [weak ledMeterProvider, weak lyricsVM, weak audioDSPController, weak audioProcessingGlobalsController] source in
             audioDSPController?.setSourceIsLocal(!source.isExternal)
@@ -1759,6 +1868,7 @@ final class AppSessionHost: ObservableObject {
         firstUsePrewarmTask?.cancel()
         firstUsePrewarmTask = nil
         lyricsPlaybackPipeline = nil
+        playbackCoordinator?.onPlaybackProgressChanged = nil
         PreferenceStatsLifecycleHandler.shared.releaseLibrarySession()
         await FullscreenWindowManager.shared.releaseLibrarySession()
         AppKitMainSplitWindowController.releaseActiveLibraryReferences()
@@ -1811,7 +1921,7 @@ final class AppSessionHost: ObservableObject {
                 MainActor.assumeIsolated {
                     // Idle artwork work keeps its place; the scheduler pauses
                     // it while the listener is using the App.
-                    self?.scheduleActiveLibraryRescan()
+                    self?.scheduleActiveLibraryRescan(fromForeground: true)
                 }
             }
         }
@@ -1926,13 +2036,25 @@ final class AppSessionHost: ObservableObject {
         )
     }
 
-    private func scheduleActiveLibraryRescan() {
+    private func scheduleActiveLibraryRescan(fromForeground: Bool = false) {
         activeLibraryRescanTask?.cancel()
         activeLibraryRescanTask = Task { @MainActor [weak self] in
+            if fromForeground {
+                do { try await Task.sleep(for: .milliseconds(500)) }
+                catch { return }
+            }
             guard let self else { return }
             await reconcileTrashedMusicLibraries()
             guard !Task.isCancelled, let session = activeLibraryBinding.activeSession else { return }
             let libraryID = session.context.id
+            if fromForeground {
+                if let previous = lastForegroundLibraryRescan,
+                   previous.libraryID == libraryID,
+                   ProcessInfo.processInfo.systemUptime - previous.uptime < 30 {
+                    return
+                }
+                lastForegroundLibraryRescan = (libraryID, ProcessInfo.processInfo.systemUptime)
+            }
             if session.context.mode == .referenced {
                 do {
                     try await refreshAllReferencedSources(automatic: true)
@@ -1969,6 +2091,7 @@ final class AppSessionHost: ObservableObject {
                 systemConditions.removeObserver(memoryPressureObserverToken)
             }
             firstUsePrewarmTask?.cancel()
+            launchDiagnosticsTask?.cancel()
             activeLibraryRescanTask?.cancel()
             AppDelegate.applicationWillTerminateHandler = nil
             AppDelegate.shouldCancelTerminationForPendingUpdateHandler = nil
@@ -2388,7 +2511,8 @@ final class AppSessionHost: ObservableObject {
     }
 
     private func scheduleDebugTerminationIfNeeded(after seconds: TimeInterval?) {
-        guard let seconds, seconds > 0 else { return }
+        guard DebugLaunchScenario.current != nil,
+              let seconds, seconds.isFinite, seconds > 0 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
             Log.debug("DebugLaunch: terminating app after \(seconds)s", category: .ui)
             NSApp.terminate(nil)
@@ -2579,6 +2703,17 @@ private final class MainThreadStallMonitor {
                 "[MainThreadStall] delayMs=\(String(format: "%.1f", delayMs)) severity=\(severity) thread=main operationStack=[\(stack)] recentEvents=[\(recent)] isPlaying=\(isPlaying) trackID=\(trackPrefix) surface=\(surface) contextMenu=[\(contextMenu)]",
                 category: .perf
             )
+            // The unified-log copy above is private, so a measurement run cannot
+            // read it back. Mirror the same stall through the debug hook channel,
+            // which is public and only active with KMGCCC_DEBUG_UI_HOOKS=1.
+            DebugUIHooks.record(String(
+                format: "main-stall delay=%.1fms severity=%@ surface=%@ stack=[%@] recent=[%@]",
+                delayMs,
+                severity,
+                surface,
+                stack,
+                recent
+            ))
         }
 
         expectedFireTime = DispatchTime(uptimeNanoseconds: now.uptimeNanoseconds + intervalNanoseconds)
@@ -2620,6 +2755,14 @@ private struct DebugLaunchScenario {
 
     static var current: DebugLaunchScenario? {
         let environment = ProcessInfo.processInfo.environment
+#if DEBUG
+        let isDebugBuild = true
+#else
+        let isDebugBuild = false
+#endif
+        guard DebugLaunchScenarioPolicy.allowsScenario(isDebugBuild: isDebugBuild, environment: environment) else {
+            return nil
+        }
         let trackID = environment["KMGCCC_DEBUG_PROOF_TRACK_ID"].flatMap(UUID.init(uuidString:))
         let fullscreenSkinID = environment["KMGCCC_DEBUG_PROOF_FULLSCREEN_SKIN"]?
             .trimmingCharacters(in: .whitespaces)

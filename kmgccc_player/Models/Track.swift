@@ -16,6 +16,20 @@ nonisolated struct TrackArtworkFileSnapshot: Equatable, Sendable {
     let url: URL
     let fileSize: Int64
     let modificationTimeNanoseconds: Int64
+
+    static func read(from candidateURLs: [URL]) -> Self? {
+        let fileManager = FileManager.default
+        guard let url = candidateURLs.first(where: { fileManager.fileExists(atPath: $0.path) }),
+              let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = attributes[.size] as? NSNumber, size.int64Value > 0,
+              fileManager.isReadableFile(atPath: url.path) else { return nil }
+        let modifiedAt = attributes[.modificationDate] as? Date
+        return Self(
+            url: url, fileSize: size.int64Value,
+            modificationTimeNanoseconds: Int64(((modifiedAt?.timeIntervalSince1970 ?? 0) * 1_000_000_000).rounded())
+        )
+    }
 }
 
 nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sendable {
@@ -579,6 +593,54 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
         releaseFileBackedLyricsText()
     }
 
+    /// Periodic queue maintenance checks disk off the main actor, then releases
+    /// only the captured payloads. Edits and a newly playing track stay intact.
+    @MainActor
+    func releaseFileBackedResourcesAfterCheckingDisk(
+        shouldRelease: @MainActor () -> Bool = { true }
+    ) async {
+        guard !Task.isCancelled, shouldRelease(), let paths = capturedLibraryPaths else { return }
+        let cachedArtwork = artworkData
+        let cachedTTML = ttmlLyricText
+        let cachedLyrics = lyricsText
+        let checksArtwork = cachedArtwork?.isEmpty == false
+        let checksTTML = cachedTTML != nil
+        let checksLyrics = cachedLyrics != nil
+        guard checksArtwork || checksTTML || checksLyrics else { return }
+
+        let trackID = id
+        let root = libraryRootSnapshot
+        let artworkName = artworkFileName
+        let ttmlName = ttmlLyricsFileName
+        let lyricsName = lyricsFileName
+        let artworkURLs = checksArtwork
+            ? paths.trackArtworkCandidateFileNames(preferredFileName: artworkName).compactMap {
+                paths.trackArtworkURL(for: trackID, fileName: $0)
+            } : []
+        let ttmlURL = checksTTML ? resolvedTTMLURL() : nil
+        let lyricsURL = resolvedLyricsURL()
+
+        let onDisk = await Task.detached(priority: .utility) {
+            let fileManager = FileManager.default
+            let hasArtwork = TrackArtworkFileSnapshot.read(from: artworkURLs) != nil
+            let hasLyrics = (checksTTML || checksLyrics)
+                && (lyricsURL.map { fileManager.fileExists(atPath: $0.path) } ?? false)
+            let hasTTML = checksTTML && (
+                (ttmlURL.map { fileManager.fileExists(atPath: $0.path) } ?? false)
+                    || (hasLyrics && lyricsURL?.lastPathComponent.lowercased().hasSuffix(".ttml") == true)
+            )
+            return (artwork: hasArtwork, ttml: hasTTML, lyrics: hasLyrics)
+        }.value
+
+        guard !Task.isCancelled, shouldRelease(),
+              id == trackID, libraryRootSnapshot == root,
+              artworkFileName == artworkName, ttmlLyricsFileName == ttmlName,
+              lyricsFileName == lyricsName else { return }
+        if onDisk.artwork, artworkData == cachedArtwork { artworkData = nil }
+        if onDisk.ttml, ttmlLyricText == cachedTTML { ttmlLyricText = nil }
+        if onDisk.lyrics, lyricsText == cachedLyrics { lyricsText = nil }
+    }
+
     // MARK: - Persistence URL Resolution (root-snapshot aware)
 
     /// Resolve the track folder URL using the root captured by its session.
@@ -625,23 +687,14 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
     }
 
     func existingArtworkFileSnapshot() -> TrackArtworkFileSnapshot? {
-        guard let url = resolvedArtworkURL() else { return nil }
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let fileType = attributes[.type] as? FileAttributeType,
-              fileType == .typeRegular,
-              let fileSize = attributes[.size] as? NSNumber,
-              fileSize.int64Value > 0,
-              FileManager.default.isReadableFile(atPath: url.path)
-        else { return nil }
-        let modificationTime = attributes[.modificationDate] as? Date
-        let modificationTimeNanoseconds = Int64(
-            ((modificationTime?.timeIntervalSince1970 ?? 0) * 1_000_000_000).rounded()
-        )
-        return TrackArtworkFileSnapshot(
-            url: url,
-            fileSize: fileSize.int64Value,
-            modificationTimeNanoseconds: modificationTimeNanoseconds
-        )
+        TrackArtworkFileSnapshot.read(from: artworkFileCandidateURLs)
+    }
+
+    var artworkFileCandidateURLs: [URL] {
+        guard let paths = capturedLibraryPaths else { return [] }
+        return paths.trackArtworkCandidateFileNames(preferredFileName: artworkFileName).compactMap {
+            paths.trackArtworkURL(for: id, fileName: $0)
+        }
     }
 
     func existingArtworkURL() -> URL? {
@@ -709,14 +762,18 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
     ///
     /// The playback-to-lyrics pipeline runs on the main actor, but the legacy
     /// LRC fallback is still stored in the track sidecar. Keep the cache write
-    /// on the caller after the detached read so the next synchronous content
+    /// on the main actor after the detached read so the next synchronous content
     /// lookup is memory-only.
+    @MainActor
     func loadLyricsOffMainIfNeeded() async -> String? {
         if let text = lyricsText, !text.isEmpty { return text }
         guard let folder = resolvedTrackFolderURL(),
               let lyricsFileName,
               !lyricsFileName.isEmpty
         else { return nil }
+        let trackID = id
+        let root = libraryRootSnapshot
+        let originalText = lyricsText
 
         let text = await Task.detached(priority: .utility) { @Sendable in
             try? String(
@@ -724,6 +781,9 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
                 encoding: .utf8
             )
         }.value
+        guard !Task.isCancelled, id == trackID, libraryRootSnapshot == root,
+              self.lyricsFileName == lyricsFileName else { return nil }
+        guard lyricsText == originalText else { return lyricsText }
         lyricsText = text
         return text
     }
@@ -753,11 +813,15 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
     }
 
     /// Read TTML lyrics without performing file I/O on the caller's actor.
+    @MainActor
     func loadTTMLLyricsOffMainIfNeeded() async -> String? {
         if let text = ttmlLyricText, !text.isEmpty { return text }
         let folder = resolvedTrackFolderURL()
         let ttmlFileName = ttmlLyricsFileName
         let fallbackLyricsFileName = lyricsFileName
+        let trackID = id
+        let root = libraryRootSnapshot
+        let originalText = ttmlLyricText
         let text = await Task.detached(priority: .utility) { @Sendable () -> String? in
             guard let folder else { return nil }
             if let ttmlFileName, !ttmlFileName.isEmpty {
@@ -775,6 +839,10 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
             }
             return nil
         }.value
+        guard !Task.isCancelled, id == trackID, libraryRootSnapshot == root,
+              ttmlLyricsFileName == ttmlFileName,
+              lyricsFileName == fallbackLyricsFileName else { return nil }
+        guard ttmlLyricText == originalText else { return ttmlLyricText }
         ttmlLyricText = text
         return text
     }

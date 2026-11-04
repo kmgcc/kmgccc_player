@@ -176,7 +176,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
                 )
             }
         }
-        let playbackHistoryStore = PlaybackHistoryStore(context: context)
+        let playbackHistoryStore = try PlaybackHistoryStore(context: context)
         let playbackHistoryViewModel = PlaybackHistoryViewModel(
             preferenceStatsService: preferenceStatsService
         )

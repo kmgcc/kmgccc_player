@@ -335,6 +335,22 @@ final class LibrarySession: LibrarySessionLifecycle {
             )
         }
 
+        // A file source whose songs are already gone can only be left over
+        // from an earlier deletion. The change monitor has not started yet,
+        // so retiring it here needs no watch-path handover.
+        do {
+            _ = try await operationCoordinator.run {
+                try await reconciler.pruneUnusedFileSources()
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            Log.warning(
+                "[LibrarySession] unused file source cleanup deferred after load failure: \(error)",
+                category: .library
+            )
+        }
+
         struct AttemptLedger: Sendable {
             var attempted: Set<UUID> = []
             var failures: [InitialReconcileOutcome.SourceFailure] = []
@@ -943,6 +959,52 @@ final class LibrarySession: LibrarySessionLifecycle {
             ) {
                 try await work()
             }
+        }
+        libraryViewModel.afterTracksDeleted = { [weak self] in
+            await self?.pruneUnusedFileSourcesAfterDeletion()
+        }
+    }
+
+    /// Deleting the last song of a single-file source retires that source in
+    /// the same turn, so 音乐来源 never lists an entry that leads nowhere.
+    /// The change monitor is handed over to the remaining roots only when a
+    /// source is actually removed.
+    private func pruneUnusedFileSourcesAfterDeletion() async {
+        guard !isClosed, let reconciler = referencedSourceReconciler else { return }
+        let pending: [UUID]
+        do {
+            pending = try await reconciler.unusedFileSourceIDs()
+        } catch {
+            Log.warning(
+                "[LibrarySession] unused file source lookup failed: \(error.localizedDescription)",
+                category: .library
+            )
+            return
+        }
+        guard !pending.isEmpty else { return }
+        guard let libraryChangeMonitor else {
+            _ = try? await reconciler.pruneUnusedFileSources()
+            return
+        }
+        let originalRoots = (try? await reconciler.monitoredSourceRoots()) ?? [:]
+        await libraryChangeMonitor.stopAndWait()
+        _ = try? await reconciler.pruneUnusedFileSources()
+        do {
+            try await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: reconciler,
+                roots: try await reconciler.monitoredSourceRoots()
+            )
+        } catch {
+            Log.error(
+                "[LibrarySession] source monitor restart after file source cleanup failed: \(error.localizedDescription)",
+                category: .library
+            )
+            try? await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: reconciler,
+                roots: originalRoots
+            )
         }
     }
 
