@@ -14,7 +14,7 @@ import Foundation
 @Observable
 @MainActor
 final class CoverSearchCoordinator {
-    /// All candidates found from search, sorted by confidence and resolution.
+    /// All candidates found from search, with matches to the original query first.
     var candidates: [CoverCandidate] = []
 
     /// The candidate currently selected for preview (not yet persisted).
@@ -74,6 +74,9 @@ final class CoverSearchCoordinator {
         }
 
         let normalizedQuery = normalizeQuery(artist: artist, album: album)
+        let searchArtist = ManualMusicSearch.cleanArtist(artist)
+        let searchAlbum = ManualMusicSearch.cleanAlbum(album)
+        let variants = ManualMusicSearch.queries(title: cleanTitle ?? "", artist: searchArtist, album: searchAlbum)
 
         let task = Task {
             defer {
@@ -100,7 +103,23 @@ final class CoverSearchCoordinator {
                     }
                 }
 
-                if hasValidAlbum || hasValidArtist {
+                for variant in variants.dropFirst() where !variant.title.isEmpty {
+                    group.addTask {
+                        do {
+                            return try await withCoverLookupTimeout(CoverLookupConfiguration.appleMusicTimeout) {
+                                try await AutomaticCoverLookup.appleCandidates(
+                                    provider: "appleWeb", title: variant.title, artist: variant.artist,
+                                    album: variant.album, duration: duration
+                                )
+                            }
+                        } catch {
+                            Log.info("[CoverSearch] event=failed provider=appleWeb errorType=\(String(describing: type(of: error)))", category: .playback)
+                            return []
+                        }
+                    }
+                }
+
+                if hasValidAlbum {
                     group.addTask {
                         do {
                             let preferredCandidate = try await withCoverLookupTimeout(
@@ -117,21 +136,27 @@ final class CoverSearchCoordinator {
                             return []
                         }
                     }
+                }
 
-                    group.addTask {
-                        do {
-                            return try await withCoverLookupTimeout(
-                                CoverLookupConfiguration.netEaseCandidatesTimeout
-                            ) {
-                                try await self.netEaseCoverService.searchCoverCandidates(
-                                    artist: artist,
-                                    album: album,
-                                    limit: CoverLookupConfiguration.netEaseCandidateLimit
-                                )
+                let netEaseName = hasValidAlbum ? searchAlbum : (cleanTitle ?? "")
+                if !netEaseName.isEmpty {
+                    let artists = searchArtist.isEmpty ? [""] : [searchArtist, ""]
+                    for variantArtist in artists {
+                        group.addTask {
+                            do {
+                                return try await withCoverLookupTimeout(
+                                    CoverLookupConfiguration.netEaseCandidatesTimeout
+                                ) {
+                                    try await self.netEaseCoverService.searchCoverCandidates(
+                                        artist: variantArtist,
+                                        album: netEaseName,
+                                        limit: 8
+                                    )
+                                }
+                            } catch {
+                                Log.info("[CoverSearch] event=failed provider=NetEase errorType=\(String(describing: type(of: error)))", category: .playback)
+                                return []
                             }
-                        } catch {
-                            Log.info("[CoverSearch] event=failed provider=NetEase errorType=\(String(describing: type(of: error)))", category: .playback)
-                            return []
                         }
                     }
                 }
@@ -161,25 +186,36 @@ final class CoverSearchCoordinator {
                     }
                 }
 
-                if hasValidTitle || hasValidAlbum {
-                    group.addTask {
+                group.addTask {
+                    // The shared helper handles requests serially. Waiting for
+                    // each variant avoids timing out requests in its queue.
+                    for variant in variants {
+                        guard !Task.isCancelled else { break }
                         do {
-                            return try await withCoverLookupTimeout(
+                            let found = try await withCoverLookupTimeout(
                                 CoverLookupConfiguration.qqMusicCandidatesTimeout
                             ) {
                                 try await self.qqMusicCoverService.searchCoverCandidates(
-                                    title: title,
-                                    artist: artist,
-                                    album: album,
+                                    title: variant.title.isEmpty ? nil : variant.title,
+                                    artist: variant.artist,
+                                    album: variant.album,
                                     duration: duration,
-                                    limit: CoverLookupConfiguration.qqMusicCandidateLimit
+                                    limit: 8,
+                                    manualSuggestions: true
                                 )
                             }
+                            await self.publishPartialCandidates(
+                                found, generation: generation, title: cleanTitle,
+                                artist: searchArtist, album: searchAlbum
+                            )
+                        } catch QQMusicCoverError.noResults {
+                            continue
                         } catch {
                             Log.info("[CoverSearch] event=failed provider=QQMusic errorType=\(String(describing: type(of: error)))", category: .playback)
-                            return []
+                            break
                         }
                     }
+                    return []
                 }
 
                 for await partialCandidates in group {
@@ -187,7 +223,9 @@ final class CoverSearchCoordinator {
                     backgroundCandidates.append(contentsOf: partialCandidates)
                     self.publishMergedCandidates(
                         backgroundCandidates,
-                        preferExistingSelection: self.selectedForPreview != nil
+                        title: cleanTitle,
+                        artist: searchArtist,
+                        album: searchAlbum
                     )
                     if self.candidates.isEmpty == false {
                         self.error = nil
@@ -243,25 +281,50 @@ final class CoverSearchCoordinator {
 
     private func publishMergedCandidates(
         _ incomingCandidates: [CoverCandidate],
-        preferExistingSelection: Bool
+        title: String?, artist: String, album: String
     ) {
-        var merged = candidates
-        for candidate in incomingCandidates {
-            if !merged.contains(candidate) {
-                merged.append(candidate)
-            }
+        func rank(_ candidate: CoverCandidate) -> ManualMusicSearch.Rank {
+            ManualMusicSearch.rank(
+                title: title, artist: artist, album: album,
+                candidateTitle: candidate.matchedTitle, candidateArtist: candidate.matchedArtist,
+                candidateAlbum: candidate.matchedAlbum
+            )
+        }
+        func isBetter(_ lhs: CoverCandidate, than rhs: CoverCandidate) -> Bool {
+            let left = rank(lhs), right = rank(rhs)
+            if left != right { return left.isBetter(than: right) }
+            if lhs.confidence != rhs.confidence { return lhs.confidence > rhs.confidence }
+            if lhs.squarePixelSize != rhs.squarePixelSize { return lhs.squarePixelSize > rhs.squarePixelSize }
+            return lhs.id < rhs.id
         }
 
-        merged = CoverCandidateSorter.sorted(merged)
+        var unique: [String: CoverCandidate] = [:]
+        for candidate in candidates + incomingCandidates {
+            if let existing = unique[candidate.id], !isBetter(candidate, than: existing) {
+                continue
+            }
+            unique[candidate.id] = candidate
+        }
+        let merged = unique.values.sorted { isBetter($0, than: $1) }
         candidates = merged
 
-        if preferExistingSelection,
-           let currentSelection = selectedForPreview,
+        if let currentSelection = selectedForPreview,
            merged.contains(currentSelection) {
             return
         }
+        // Batch editing saves the preview immediately, so broadened suggestions
+        // must be selected explicitly unless the original metadata also matches.
+        selectedForPreview = merged.first {
+            ManualMusicSearch.canAutomaticallyPreview($0, title: title, artist: artist, album: album)
+        }
+    }
 
-        selectedForPreview = merged.first
+    private func publishPartialCandidates(
+        _ incomingCandidates: [CoverCandidate], generation: Int, title: String?, artist: String, album: String
+    ) {
+        guard searchGeneration == generation, !Task.isCancelled else { return }
+        publishMergedCandidates(incomingCandidates, title: title, artist: artist, album: album)
+        if !candidates.isEmpty { error = nil }
     }
 
 }

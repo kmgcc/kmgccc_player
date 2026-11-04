@@ -344,6 +344,11 @@ struct LDDCSearchSection: View {
             Divider()
 
             HStack(spacing: 10) {
+                if !hasSelectedSource {
+                    Text("请选择平台")
+                        .settingsDescriptionStyle()
+                }
+                Spacer()
                 Button {
                     forceRetryUnreliableSourcesForNextSearch = true
                     searchRequestID &+= 1
@@ -357,11 +362,6 @@ struct LDDCSearchSection: View {
                         || isSearching
                         || !hasSelectedSource
                 )
-
-                if !hasSelectedSource {
-                    Text("请选择平台")
-                        .settingsDescriptionStyle()
-                }
             }
         }
     }
@@ -692,7 +692,10 @@ struct LDDCSearchSection: View {
         activeSearchID = requestID
         resetSearchStateForNewRequest()
         isSearching = true
-        var lddcErrors: [String] = []
+        let queryTitle = searchTitle
+        let queryArtist = searchArtist
+        let queryAlbum = searchAlbum
+        var hasLDDCFailures = false
         var amlldbFailure: String?
 
         Self.logger.debug(
@@ -700,15 +703,17 @@ struct LDDCSearchSection: View {
         )
 
         let updates = cacheServices.lyricsSearchCoordinator.search(
-            title: searchTitle,
-            artist: searchArtist.isEmpty ? nil : searchArtist,
-            album: searchAlbum.isEmpty ? nil : searchAlbum,
+            title: queryTitle,
+            artist: queryArtist.isEmpty ? nil : queryArtist,
+            album: queryAlbum.isEmpty ? nil : queryAlbum,
             duration: duration > 0 ? duration : nil,
             lddcSources: selectedLDDCSources,
             enableAMLLDB: enableAMLLDB,
             mode: selectedMode,
             translation: includeTranslation,
-            sourcePolicy: forceRetryUnreliableSources ? .forceAll : .adaptive
+            amlldbLimit: 50,
+            sourcePolicy: forceRetryUnreliableSources ? .forceAll : .adaptive,
+            manualSuggestions: true
         )
 
         for await update in updates {
@@ -732,7 +737,7 @@ struct LDDCSearchSection: View {
 
             case .lddc(let outcome):
                 lddcResults.append(contentsOf: outcome.results)
-                lddcErrors.append(contentsOf: outcome.errors)
+                hasLDDCFailures = hasLDDCFailures || outcome.status != .completed || !outcome.errors.isEmpty
 
                 Self.logger.debug(
                     "[LyricsSearch] \(outcome.source.rawValue) returned \(outcome.results.count) results"
@@ -744,7 +749,10 @@ struct LDDCSearchSection: View {
                 }
             }
 
-            searchResults = mergeAndSortResults(amlldb: amlldbResults, lddc: lddcResults)
+            searchResults = LyricsSearchHelper.mergeManualSuggestions(
+                amlldb: amlldbResults, lddc: lddcResults,
+                title: queryTitle, artist: queryArtist, album: queryAlbum
+            )
         }
 
         guard !Task.isCancelled, activeSearchID == requestID else {
@@ -753,14 +761,13 @@ struct LDDCSearchSection: View {
 
         isUpdatingAMLLDBIndex = false
         isSearching = false
-
         if searchResults.isEmpty {
-            if amlldbFailure != nil || !lddcErrors.isEmpty {
+            if amlldbFailure != nil || hasLDDCFailures {
                 searchError = "歌词来源请求失败，请稍后重试"
             } else {
                 searchError = "未找到可用歌词"
             }
-        } else if amlldbFailure != nil || !lddcErrors.isEmpty {
+        } else if amlldbFailure != nil || hasLDDCFailures {
             searchWarning = "部分歌词来源暂时不可用，已显示其他来源结果"
         }
 
@@ -768,14 +775,6 @@ struct LDDCSearchSection: View {
             "[LyricsSearch] merged result count: \(searchResults.count) (AMLLDB: \(amlldbResults.count), LDDC: \(lddcResults.count))"
         )
         return true
-    }
-
-    // MARK: - Result Merging & Sorting
-
-    /// Merge AMLLDB and LDDC results with proper ranking.
-    /// Delegates to the shared LyricsSearchHelper for consistency with import flow.
-    private func mergeAndSortResults(amlldb: [LDDCCandidate], lddc: [LDDCCandidate]) -> [LDDCCandidate] {
-        LyricsSearchHelper.mergeAndSortResults(amlldb: amlldb, lddc: lddc)
     }
 
     private func processCandidateSelection(_ candidate: LDDCCandidate) async {

@@ -402,10 +402,13 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             externalMetadataStore: cacheServices.externalPlaybackMetadataStore,
             libraryTracksProvider: { [weak libraryViewModel] in libraryViewModel?.allTracks ?? [] }
         )
-        cacheServices.musicEnrichmentService.onSnapshot = { [weak libraryViewModel, weak libraryService] snapshot in
+        cacheServices.musicEnrichmentService.onSnapshot = { [weak libraryViewModel, weak libraryService, weak cacheServices] snapshot in
             var updatedTrackIDs: [UUID] = []
             defer {
-                if !updatedTrackIDs.isEmpty { libraryViewModel?.notifyTrackAuxiliaryDataChanged(trackIDs: updatedTrackIDs) }
+                if !updatedTrackIDs.isEmpty {
+                    libraryViewModel?.notifyTrackAuxiliaryDataChanged(trackIDs: updatedTrackIDs)
+                    cacheServices?.motionAlignmentSource?.invalidate(trackIDs: updatedTrackIDs)
+                }
             }
             let trackID = snapshot.record.query.key.hasPrefix("track:")
                 ? UUID(uuidString: String(snapshot.record.query.key.dropFirst(6))) : nil
@@ -438,10 +441,28 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         MotionArtworkSongClock.shared.source = { [weak playbackCoordinator] in
             playbackCoordinator.map { (time: $0.audiblePlaybackTime, duration: $0.presentation.duration) }
         }
-        cacheServices.musicEnrichmentService.onAlbumMotionChange = { [weak libraryViewModel, weak libraryService] identity, artwork in
+        let motionAlignment = cacheServices.motionAudioAlignment
+        libraryViewModel.onMotionAlignmentTracksChanged = { [weak cacheServices] ids in
+            cacheServices?.motionAlignmentSource?.invalidate(trackIDs: ids)
+        }
+        MotionArtworkSongClock.shared.alignment = motionAlignment
+        MotionArtworkSongClock.shared.localTrack = { [weak playbackCoordinator, weak playerViewModel] in
+            guard playbackCoordinator?.activeSource == .local else { return nil }
+            return playerViewModel?.currentTrack
+        }
+        cacheServices.musicEnrichmentService.onImportedMotion = { [weak libraryViewModel, weak cacheServices] query, _ in
+            guard query.key.hasPrefix("track:"),
+                  let id = UUID(uuidString: String(query.key.dropFirst(6))),
+                  let track = libraryViewModel?.allTracks.first(where: { $0.id == id }) else { return }
+            cacheServices?.motionAlignmentSource?.invalidate(trackIDs: [track.id])
+        }
+        cacheServices.musicEnrichmentService.onAlbumMotionChange = { [weak libraryViewModel, weak libraryService, weak cacheServices] identity, artwork in
             let updated = Self.applyAlbumMotion(artwork, identity: identity, excluding: nil,
                 tracks: libraryViewModel?.allTracks ?? [], libraryService: libraryService)
-            if !updated.isEmpty { libraryViewModel?.notifyTrackAuxiliaryDataChanged(trackIDs: updated) }
+            if !updated.isEmpty {
+                libraryViewModel?.notifyTrackAuxiliaryDataChanged(trackIDs: updated)
+                cacheServices?.motionAlignmentSource?.invalidate(trackIDs: updated)
+            }
         }
         let lyricsViewModel = LyricsViewModel(settings: AppSettings.shared)
         lyricsViewModel.setPlaybackSourceProvider { [weak playbackCoordinator] in

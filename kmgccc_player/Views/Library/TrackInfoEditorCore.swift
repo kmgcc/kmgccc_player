@@ -205,6 +205,7 @@ struct TrackInfoEditorCore: View {
                 rawReferenceSection(rawReference)
             }
             artworkSection
+            TrackInfoBasicsSection(title: $title, artist: $artist, album: $album, duration: duration)
             if let motionQuery {
                 SettingsSection("动态封面") {
                     MotionArtworkSearchSection(
@@ -218,7 +219,6 @@ struct TrackInfoEditorCore: View {
                     )
                 }
             }
-            TrackInfoBasicsSection(title: $title, artist: $artist, album: $album, duration: duration)
         case .details:
             detailsPage
         case .lyrics:
@@ -544,11 +544,13 @@ struct TrackInfoEditorCore: View {
                 album: album,
                 duration: duration
             )
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 self.metadataCandidates = candidates
             }
 
             let didApply = await onFetchMetadata()
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 isMetadataLookupInFlight = false
                 if didApply {
@@ -569,6 +571,7 @@ struct TrackInfoEditorCore: View {
 
         metadataFetchTask = Task {
             let didApply = await onSelectMetadataCandidate(songMid)
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 isMetadataLookupInFlight = false
                 metadataLookupMessage = didApply ? "已更新所选元数据" : "未发生更改"

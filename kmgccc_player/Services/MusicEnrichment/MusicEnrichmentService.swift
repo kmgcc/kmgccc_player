@@ -34,6 +34,7 @@ final class MusicEnrichmentService {
     var onSnapshot: ((MusicEnrichmentSnapshot) -> Void)?
     /// An album's artwork changed (nil: none); songs without their own choice follow it.
     var onAlbumMotionChange: ((MusicAlbumMotionIdentity, TrackMotionArtwork?) -> Void)?
+    var onImportedMotion: ((MusicEnrichmentQuery, MotionArtworkResource) -> Void)?
 
     private var currentSnapshot: MusicEnrichmentSnapshot?
     @ObservationIgnored let store: MusicEnrichmentStore
@@ -89,9 +90,65 @@ final class MusicEnrichmentService {
     func searchMotionCandidates(query: MusicEnrichmentQuery) async throws -> [MusicEnrichmentResult] {
         guard !isClosed else { throw CancellationError() }
         let client = client
-        let candidates = try await trackIndependent(Task { try await client.searchMotion(query: query) })
+        let variants = ManualMusicSearch.queries(title: query.title, artist: query.artist, album: query.album)
+        let candidates = try await trackIndependent(Task {
+            try await Self.searchMotionSuggestions(client: client, query: query, variants: variants)
+        })
         guard !isClosed, !Task.isCancelled else { throw CancellationError() }
         return candidates
+    }
+
+    private nonisolated static func searchMotionSuggestions(
+        client: any MusicEnrichmentFetching,
+        query: MusicEnrichmentQuery,
+        variants: [ManualMusicSearch.Query]
+    ) async throws -> [MusicEnrichmentResult] {
+        var suggestions: [(result: MusicEnrichmentResult, rank: ManualMusicSearch.Rank, order: Int)] = []
+        var firstError: (any Error)?
+        var successfulSearches = 0
+        await withTaskGroup(of: (Int, Result<[MusicEnrichmentResult], any Error>).self) { group in
+            for (index, variant) in variants.enumerated() {
+                group.addTask {
+                    var expanded = query
+                    expanded.title = variant.title
+                    expanded.artist = variant.artist
+                    expanded.album = variant.album
+                    do { return (index, .success(try await client.searchMotion(query: expanded))) }
+                    catch { return (index, .failure(error)) }
+                }
+            }
+            for await (index, outcome) in group {
+                switch outcome {
+                case .failure(let error):
+                    if firstError == nil { firstError = error }
+                case .success(let results):
+                    successfulSearches += 1
+                    for (position, result) in results.enumerated() where result.motion?.isEmpty == false {
+                        let album = result.attributes?["albumName"]?.text ?? result.attributes?["name"]?.text
+                        let song = result.resources?["song"]?.dictionary?["attributes"]?.dictionary?["name"]?.text
+                        let candidateTitle = ManualMusicSearch.exact(query.title, album) ? album : (song ?? album)
+                        let rank = ManualMusicSearch.rank(
+                            title: query.title, artist: query.artist, album: query.album,
+                            candidateTitle: candidateTitle,
+                            candidateArtist: result.attributes?["artistName"]?.text, candidateAlbum: album
+                        )
+                        suggestions.append((result, rank, index * 100 + position))
+                    }
+                }
+            }
+        }
+        try Task.checkCancellation()
+        if successfulSearches == 0, let firstError { throw firstError }
+        suggestions.sort {
+            if $0.rank != $1.rank { return $0.rank.isBetter(than: $1.rank) }
+            return $0.order < $1.order
+        }
+        var seen = Set<String>()
+        return suggestions.compactMap { suggestion in
+            let result = suggestion.result
+            let identity = result.albumID ?? result.songID ?? result.motion?.first?.url ?? ""
+            return !identity.isEmpty && seen.insert(identity).inserted ? result : nil
+        }
     }
 
     /// A library edit is independent of playback. Choosing artwork for another
@@ -223,6 +280,7 @@ final class MusicEnrichmentService {
         onChange = nil
         onSnapshot = nil
         onAlbumMotionChange = nil
+        onImportedMotion = nil
         await store.close()
     }
 

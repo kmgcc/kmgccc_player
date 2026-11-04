@@ -44,7 +44,8 @@ final class LyricsSearchCoordinator {
         translation: Bool,
         amlldbLimit: Int = 20,
         lddcLimitPerSource: Int = 20,
-        sourcePolicy: LDDCSourceSearchPolicy = .adaptive
+        sourcePolicy: LDDCSourceSearchPolicy = .adaptive,
+        manualSuggestions: Bool = false
     ) -> AsyncStream<LyricsSearchUpdate> {
         let (stream, continuation) = AsyncStream<LyricsSearchUpdate>.makeStream()
 
@@ -70,6 +71,7 @@ final class LyricsSearchCoordinator {
                     album: album,
                     duration: duration,
                     limit: amlldbLimit,
+                    allowFuzzy: manualSuggestions,
                     continuation: continuation
                 )
 
@@ -87,6 +89,7 @@ final class LyricsSearchCoordinator {
                     translation: translation,
                     limitPerSource: lddcLimitPerSource,
                     policy: sourcePolicy,
+                    manualSuggestions: manualSuggestions,
                     continuation: continuation
                 )
             } else {
@@ -98,6 +101,7 @@ final class LyricsSearchCoordinator {
                     album: album,
                     duration: duration,
                     limit: amlldbLimit,
+                    allowFuzzy: manualSuggestions,
                     continuation: continuation
                 )
                 async let lddcSearch: Void = Self.emitLDDCSearch(
@@ -109,6 +113,7 @@ final class LyricsSearchCoordinator {
                     translation: translation,
                     limitPerSource: lddcLimitPerSource,
                     policy: sourcePolicy,
+                    manualSuggestions: manualSuggestions,
                     continuation: continuation
                 )
 
@@ -134,6 +139,7 @@ final class LyricsSearchCoordinator {
         album: String?,
         duration: Double?,
         limit: Int,
+        allowFuzzy: Bool,
         continuation: AsyncStream<LyricsSearchUpdate>.Continuation
     ) async {
         guard enabled else { return }
@@ -144,6 +150,7 @@ final class LyricsSearchCoordinator {
             album: album,
             duration: duration,
             limit: limit,
+            allowFuzzy: allowFuzzy,
             continuation: continuation
         )
     }
@@ -157,23 +164,38 @@ final class LyricsSearchCoordinator {
         translation: Bool,
         limitPerSource: Int,
         policy: LDDCSourceSearchPolicy,
+        manualSuggestions: Bool,
         continuation: AsyncStream<LyricsSearchUpdate>.Continuation
     ) async {
         guard !sources.isEmpty else { return }
 
-        let updates = await client.searchBySource(
-            title: title,
-            artist: artist,
-            sources: sources,
-            mode: mode,
-            translation: translation,
-            limitPerSource: limitPerSource,
-            policy: policy
-        )
-
-        for await update in updates {
-            guard !Task.isCancelled else { return }
-            continuation.yield(.lddc(update))
+        let variants = manualSuggestions
+            ? ManualMusicSearch.queries(title: title, artist: artist, album: nil)
+            : [ManualMusicSearch.Query(title: title, artist: artist ?? "", album: "")]
+        await withTaskGroup(of: Void.self) { group in
+            for source in sources {
+                group.addTask {
+                    // Each source processes its own variants in order while
+                    // different sources remain independent and progressive.
+                    for variant in variants {
+                        guard !Task.isCancelled else { return }
+                        let updates = await client.searchBySource(
+                            title: variant.title,
+                            artist: variant.artist.isEmpty ? nil : variant.artist,
+                            sources: [source],
+                            mode: mode,
+                            translation: translation,
+                            limitPerSource: limitPerSource,
+                            policy: policy
+                        )
+                        for await update in updates {
+                            guard !Task.isCancelled else { return }
+                            continuation.yield(.lddc(update))
+                            if update.status != .completed || !update.errors.isEmpty { return }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -184,6 +206,7 @@ final class LyricsSearchCoordinator {
         album: String?,
         duration: Double?,
         limit: Int,
+        allowFuzzy: Bool,
         continuation: AsyncStream<LyricsSearchUpdate>.Continuation
     ) async {
         let initialStatus = service.getIndexStatus()
@@ -219,7 +242,8 @@ final class LyricsSearchCoordinator {
             artist: artist,
             album: album,
             duration: duration,
-            limit: limit
+            limit: limit,
+            allowFuzzy: allowFuzzy
         )
 
         guard !Task.isCancelled else { return }

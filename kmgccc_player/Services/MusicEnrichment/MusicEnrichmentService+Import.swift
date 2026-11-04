@@ -72,10 +72,17 @@ extension MusicEnrichmentService {
     func importMotionVideo(from url: URL, for query: MusicEnrichmentQuery, scope: MotionArtworkScope = .track) async throws -> MusicEnrichmentSnapshot {
         guard !isClosed else { throw CancellationError() }
         try Task.checkCancellation()
+        let snapshot: MusicEnrichmentSnapshot
         if scope == .album, try await importAlbumMotionVideo(from: url, for: query) {
-            return try await clearMotion(for: query, resumeAutomatic: true)
+            snapshot = try await clearMotion(for: query, resumeAutomatic: true)
+        } else {
+            snapshot = try await trackIndependent(Task { try await self.performMotionVideoImport(from: url, for: query) })
         }
-        return try await trackIndependent(Task { try await self.performMotionVideoImport(from: url, for: query) })
+        if let resource = snapshot.squareArtwork,
+           MotionAudioAligner.isMusicVideo(songDuration: query.duration, videoDuration: resource.duration) {
+            onImportedMotion?(query, resource)
+        }
+        return snapshot
     }
 
     private func performMotionVideoImport(from url: URL, for query: MusicEnrichmentQuery) async throws -> MusicEnrichmentSnapshot {

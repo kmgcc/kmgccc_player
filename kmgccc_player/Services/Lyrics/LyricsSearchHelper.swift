@@ -3,8 +3,7 @@
 //  myPlayer2
 //
 //  kmgccc_player - Shared Lyrics Search Helper
-//  Provides unified lyric search logic for both import-time and manual search flows.
-//  Ensures both flows use the same ranking, normalization, and merging behavior.
+//  Provides lyric search and result merging for automatic and manual flows.
 //
 
 import Foundation
@@ -145,7 +144,7 @@ struct LyricsSearchHelper {
     }
 
     /// Perform a full lyrics search using both AMLLDB and LDDC sources.
-    /// Returns merged and ranked results using the same logic as the manual search UI.
+    /// Returns merged and ranked results for automatic matching.
     /// - Parameters:
     ///   - title: Song title to search
     ///   - artist: Artist name (optional)
@@ -267,7 +266,6 @@ struct LyricsSearchHelper {
     /// Merge AMLLDB and LDDC results with proper ranking.
     /// High-confidence AMLLDB results (>=80%) are promoted to the top.
     /// All other results are sorted together by normalized score.
-    /// This is the EXACT same logic used in LDDCSearchSection.
     static func mergeAndSortResults(amlldb: [LDDCCandidate], lddc: [LDDCCandidate]) -> [LDDCCandidate] {
         // Separate AMLLDB results by confidence level
         let highConfidenceAMLLDB = amlldb.filter { $0.normalizedScore() >= 80.0 }
@@ -281,6 +279,53 @@ struct LyricsSearchHelper {
 
         // Final order: high-confidence AMLLDB first, then remaining sorted by score
         return highConfidenceAMLLDB + remainingResults
+    }
+
+    /// Rescore manual suggestions against the original query, not the relaxed
+    /// query that happened to find them. A provider ID is shown only once.
+    static func mergeManualSuggestions(
+        amlldb: [LDDCCandidate], lddc: [LDDCCandidate], title: String, artist: String?, album: String?
+    ) -> [LDDCCandidate] {
+        let cleanArtist = ManualMusicSearch.cleanArtist(artist)
+        let cleanAlbum = ManualMusicSearch.cleanAlbum(album)
+        var unique: [String: LDDCCandidate] = [:]
+        for candidate in amlldb + lddc {
+            let rank = ManualMusicSearch.rank(
+                title: title, artist: cleanArtist, album: cleanAlbum,
+                candidateTitle: candidate.title, candidateArtist: candidate.artist, candidateAlbum: candidate.album
+            )
+            let titleScore = candidate.title.isEmpty ? 0 : max(
+                AMLLDBTitleNormalizer.compareTitles(title, candidate.title),
+                ManualMusicSearch.similarity(title, candidate.title)
+            )
+            var weightedScore = titleScore * 70
+            var weight = 70.0
+            if !cleanArtist.isEmpty {
+                weightedScore += rank.artistSimilarity * 20
+                weight += 20
+            }
+            if !cleanAlbum.isEmpty, candidate.album?.isEmpty == false {
+                weightedScore += rank.albumSimilarity * 10
+                weight += 10
+            }
+            let score = weightedScore / weight * 100
+            let rescored = LDDCCandidate(
+                source: candidate.source, songId: candidate.songId,
+                score: candidate.source == "AMLLDB" ? score / 100 : score,
+                title: candidate.title, artist: candidate.artist, album: candidate.album,
+                durationMs: candidate.durationMs, extra: candidate.extra
+            )
+            if let existing = unique[rescored.id], existing.normalizedScore() >= rescored.normalizedScore() { continue }
+            unique[rescored.id] = rescored
+        }
+        return unique.values.sorted { lhs, rhs in
+            let leftExact = ManualMusicSearch.exact(title, lhs.title)
+            let rightExact = ManualMusicSearch.exact(title, rhs.title)
+            if leftExact != rightExact { return leftExact }
+            if lhs.normalizedScore() != rhs.normalizedScore() { return lhs.normalizedScore() > rhs.normalizedScore() }
+            if (lhs.source == "AMLLDB") != (rhs.source == "AMLLDB") { return lhs.source == "AMLLDB" }
+            return lhs.id < rhs.id
+        }
     }
 
     // MARK: - Lyrics Fetch

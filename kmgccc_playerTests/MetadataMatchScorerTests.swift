@@ -100,4 +100,121 @@ final class MetadataMatchScorerTests: XCTestCase {
         XCTAssertTrue(titleAccepted("Color", "Colour"))
         XCTAssertTrue(titleAccepted("Colors", "Colours"))
     }
+
+    func testManualSearchExpandsMetadataAndPreservesAlternateTitle() {
+        let queries = ManualMusicSearch.queries(title: "Song (Live)", artist: "Artist", album: "Album")
+        XCTAssertEqual(queries.first, .init(title: "Song (Live)", artist: "Artist", album: "Album"))
+        XCTAssertTrue(queries.contains(.init(title: "Song (Live)", artist: "Artist", album: "")))
+        XCTAssertTrue(queries.contains(.init(title: "song", artist: "Artist", album: "")))
+        XCTAssertTrue(queries.contains(.init(title: "song", artist: "", album: "")))
+
+        let alternate = ManualMusicSearch.queries(title: "故乡（Hometown）", artist: "Artist", album: nil)
+        XCTAssertTrue(alternate.contains(.init(title: "Hometown", artist: "Artist", album: "")))
+        XCTAssertFalse(queries.contains { $0.title.lowercased() == "live" })
+
+        let album = ManualMusicSearch.queries(title: "", artist: "Artist", album: "Album (Deluxe)")
+        XCTAssertTrue(album.contains(.init(title: "", artist: "", album: "album")))
+    }
+
+    func testFuzzyCoverSuggestionNeedsExplicitSelection() {
+        let fuzzy = CoverCandidate(imageData: Data(), source: .qqmusic, sourceItemId: "fuzzy",
+            width: 1200, height: 1200, confidence: 0.95, matchedTitle: "Closer", matchedArtist: "Artist")
+        let exact = CoverCandidate(imageData: Data(), source: .qqmusic, sourceItemId: "exact",
+            width: 1200, height: 1200, confidence: 0.95, matchedTitle: "Colors", matchedArtist: "Artist")
+        XCTAssertFalse(ManualMusicSearch.canAutomaticallyPreview(fuzzy, title: "Colors", artist: "Artist", album: ""))
+        XCTAssertTrue(ManualMusicSearch.canAutomaticallyPreview(exact, title: "Colors", artist: "Artist", album: ""))
+        XCTAssertFalse(ManualMusicSearch.canAutomaticallyPreview(exact, title: "Colors", artist: "Other", album: ""))
+        XCTAssertFalse(ManualMusicSearch.canAutomaticallyPreview(exact, title: "Colors", artist: "", album: ""))
+    }
+
+    func testMetadataSuggestionsPreferOriginalTitleAndDeduplicateSongIDs() {
+        func candidate(_ id: String, _ title: String) -> QQMusicArtworkCandidate {
+            QQMusicArtworkCandidate(source: "qqmusic", title: title, artist: "Artist", album: "Album",
+                artistName: nil, singerMid: nil, songMid: id, albumMid: nil, imageURL: nil,
+                duration: nil, confidence: 0.9)
+        }
+        let similar = candidate("2", "Closer")
+        let exact = candidate("1", "Colors")
+        let sorted = ManualMusicSearch.sortMetadataCandidates(
+            [similar, exact, similar], title: "Colors", artist: "Artist", album: "Album"
+        )
+        XCTAssertEqual(sorted.compactMap(\.songMid), ["1", "2"])
+    }
+
+    @MainActor
+    func testManualLyricsRescoreAndDeduplicateAgainstOriginalTitle() {
+        let similar = LDDCCandidate(source: "QM", songId: "2", score: 100, title: "Closer",
+            artist: "Artist", album: nil, durationMs: nil, extra: nil)
+        let exact = LDDCCandidate(source: "NE", songId: "1", score: 30, title: "Colors",
+            artist: "Artist", album: nil, durationMs: nil, extra: nil)
+        let results = LyricsSearchHelper.mergeManualSuggestions(
+            amlldb: [], lddc: [similar, exact, similar], title: "Colors", artist: "Artist", album: nil
+        )
+        XCTAssertEqual(results.map(\.id), [exact.id, similar.id])
+        XCTAssertGreaterThan(results[0].normalizedScore(), results[1].normalizedScore())
+        XCTAssertLessThan(results[1].normalizedScore(), 100)
+    }
+
+    @MainActor
+    func testAMLLDBOneCharacterToleranceIsManualOnly() {
+        let entry = AMLLDBRawIndexEntry(titles: ["Colours"], artists: ["Artist"], albums: [],
+            ncmMusicId: nil, qqMusicId: nil, appleMusicId: nil, spotifyId: nil,
+            rawLyricFile: "colours.ttml", durationMs: nil)
+        let params = AMLLDBSearchParams(title: "Colors", artists: ["Artist"])
+        XCTAssertTrue(AMLLDBSearcher.search(entries: [entry], params: params).isEmpty)
+        XCTAssertEqual(AMLLDBSearcher.search(entries: [entry], params: params, allowFuzzy: true).map(\.id), [entry.rawLyricFile])
+
+        let chinese = AMLLDBRawIndexEntry(titles: ["故郷"], artists: [], albums: [],
+            ncmMusicId: nil, qqMusicId: nil, appleMusicId: nil, spotifyId: nil,
+            rawLyricFile: "home.ttml", durationMs: nil)
+        XCTAssertEqual(AMLLDBSearcher.search(entries: [chinese], params: .init(title: "故乡"), allowFuzzy: true).map(\.id), [chinese.rawLyricFile])
+    }
+
+    @MainActor
+    func testAMLLDBKeepsExactTitlesAheadOfFuzzyMatchesBeforeTheLimit() {
+        let alternatives = (0..<510).map { index in
+            AMLLDBRawIndexEntry(titles: ["Colors Live \(index)"], artists: ["Artist"], albums: [],
+                ncmMusicId: nil, qqMusicId: nil, appleMusicId: nil, spotifyId: nil,
+                rawLyricFile: "\(index).ttml", durationMs: nil)
+        }
+        let exact = AMLLDBRawIndexEntry(titles: ["Colors"], artists: ["Other"], albums: [],
+            ncmMusicId: nil, qqMusicId: nil, appleMusicId: nil, spotifyId: nil,
+            rawLyricFile: "exact.ttml", durationMs: nil)
+        let results = AMLLDBSearcher.search(entries: alternatives + [exact],
+            params: .init(title: "Colors", artists: ["Artist"]), allowFuzzy: true)
+        XCTAssertEqual(results.first?.id, exact.rawLyricFile)
+    }
+
+    @MainActor
+    func testMotionSuggestionsMergeVariantsAndPreferOriginalName() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let client = MotionSuggestionClient()
+        let service = MusicEnrichmentService(store: MusicEnrichmentStore(rootURL: root), client: client)
+        let query = MusicEnrichmentQuery(key: "test", title: "Colors", artist: "Artist", album: "Wrong album", duration: 0)
+        let results = try await service.searchMotionCandidates(query: query)
+        XCTAssertEqual(results.compactMap(\.albumID), ["1", "2"])
+        let attempts = await client.queries
+        XCTAssertTrue(attempts.contains { $0.album.isEmpty && $0.artist.isEmpty })
+        await service.close()
+    }
+}
+
+private actor MotionSuggestionClient: MusicEnrichmentFetching {
+    private(set) var queries: [MusicEnrichmentQuery] = []
+
+    func fetch(provider: String, query: MusicEnrichmentQuery) async throws -> MusicEnrichmentResult? { nil }
+    func materialize(_ descriptor: MotionArtworkDescriptor, destination: URL) async throws -> MusicEnrichmentHelperClient.MaterializedMotion {
+        throw URLError(.unsupportedURL)
+    }
+    func searchMotion(query: MusicEnrichmentQuery) async throws -> [MusicEnrichmentResult] {
+        queries.append(query)
+        if !query.album.isEmpty { throw URLError(.timedOut) }
+        func result(_ id: String, title: String) -> MusicEnrichmentResult {
+            MusicEnrichmentResult(source: "appleWeb", albumID: id,
+                attributes: ["name": .string(title), "albumName": .string(title), "artistName": .string("Artist")],
+                motion: [.init(kind: "square", url: "https://example.com/\(id).m3u8")])
+        }
+        return [result("2", title: "Closer"), result("1", title: "Colors")]
+    }
 }

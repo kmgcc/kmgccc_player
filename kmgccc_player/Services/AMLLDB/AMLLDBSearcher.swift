@@ -36,7 +36,8 @@ struct AMLLDBSearcher {
     /// - Returns: Scored and ranked candidates
     static func search(
         entries: [AMLLDBRawIndexEntry],
-        params: AMLLDBSearchParams
+        params: AMLLDBSearchParams,
+        allowFuzzy: Bool = false
     ) -> [AMLLDBSearchCandidate] {
         let normalizedQuery = prepareQuery(params)
 
@@ -51,7 +52,8 @@ struct AMLLDBSearcher {
         // Step 1: Prefilter by title
         let candidates = prefilterByTitle(
             entries: entries,
-            query: normalizedQuery
+            query: normalizedQuery,
+            allowFuzzy: allowFuzzy
         )
 
         Self.logger.debug("[AMLLDB] Prefilter candidate count: \(candidates.count)")
@@ -64,13 +66,26 @@ struct AMLLDBSearcher {
         let scored = scoreCandidates(
             candidates: candidates,
             query: normalizedQuery,
-            params: params
+            params: params,
+            allowFuzzy: allowFuzzy
         )
 
         Self.logger.debug("[AMLLDB] Scored candidate count: \(scored.count)")
 
         // Step 3: Deduplicate and sort
         let deduplicated = deduplicateAndSort(scored)
+        let ordered: [AMLLDBSearchCandidate]
+        if allowFuzzy {
+            ordered = deduplicated.sorted { lhs, rhs in
+                let leftExact = lhs.entry.titles.contains { ManualMusicSearch.exact(params.title, $0) }
+                let rightExact = rhs.entry.titles.contains { ManualMusicSearch.exact(params.title, $0) }
+                if leftExact != rightExact { return leftExact }
+                if lhs.totalScore != rhs.totalScore { return lhs.totalScore > rhs.totalScore }
+                return lhs.id < rhs.id
+            }
+        } else {
+            ordered = deduplicated
+        }
 
         Self.logger.debug("[AMLLDB] Deduplicated result count: \(deduplicated.count)")
 
@@ -78,7 +93,7 @@ struct AMLLDBSearcher {
         logTopResults(Array(deduplicated.prefix(5)))
 
         // Step 5: Filter and limit
-        return Array(deduplicated
+        return Array(ordered
             .filter { $0.matchScore.totalScore >= minScoreThreshold }
             .prefix(maxResults))
     }
@@ -136,15 +151,22 @@ struct AMLLDBSearcher {
     /// Prefilter entries by title contains
     private static func prefilterByTitle(
         entries: [AMLLDBRawIndexEntry],
-        query: NormalizedQuery
+        query: NormalizedQuery,
+        allowFuzzy: Bool
     ) -> [AMLLDBRawIndexEntry] {
         var candidates: [AMLLDBRawIndexEntry] = []
         candidates.reserveCapacity(min(entries.count, maxPrefilterCandidates))
+        var exactCandidates: [AMLLDBRawIndexEntry] = []
+        var fuzzyCandidates: [AMLLDBRawIndexEntry] = []
+        let fuzzyTitle = AMLLDBTitleNormalizer.compactNormalize(query.strippedTitle)
+        let useFuzzy = allowFuzzy && (2...64).contains(fuzzyTitle.count)
 
         // Primary title search
         let primarySearch = query.normalizedTitle
 
         for entry in entries {
+            var matched = false
+            var fuzzyMatch = false
             // Check if any title contains the query
             for title in entry.titles {
                 let normalizedEntryTitle = AMLLDBTitleNormalizer.normalize(title)
@@ -152,7 +174,7 @@ struct AMLLDBSearcher {
                 // Loose contains check
                 if normalizedEntryTitle.contains(primarySearch) ||
                     primarySearch.contains(normalizedEntryTitle) {
-                    candidates.append(entry)
+                    matched = true
                     break
                 }
 
@@ -160,15 +182,35 @@ struct AMLLDBSearcher {
                 let compactEntry = AMLLDBTitleNormalizer.compactNormalize(title)
                 if compactEntry.contains(query.compactTitle) ||
                     query.compactTitle.contains(compactEntry) {
-                    candidates.append(entry)
+                    matched = true
                     break
+                }
+
+                if useFuzzy, fuzzyCandidates.count < maxPrefilterCandidates,
+                   Self.differsByAtMostOneCharacter(fuzzyTitle, compactEntry) {
+                    fuzzyMatch = true
                 }
             }
 
-            // Stop if we have enough candidates
-            if candidates.count >= maxPrefilterCandidates {
+            if matched {
+                if allowFuzzy, entry.titles.contains(where: { ManualMusicSearch.exact(query.originalTitle, $0) }) {
+                    if exactCandidates.count < maxPrefilterCandidates { exactCandidates.append(entry) }
+                } else if candidates.count < maxPrefilterCandidates {
+                    candidates.append(entry)
+                }
+            } else if fuzzyMatch {
+                fuzzyCandidates.append(entry)
+            }
+
+            // A manual search continues looking for exact titles even after
+            // the looser candidate limit has filled.
+            if !allowFuzzy && candidates.count >= maxPrefilterCandidates {
                 break
             }
+        }
+
+        if allowFuzzy {
+            candidates = Array((exactCandidates + candidates).prefix(maxPrefilterCandidates))
         }
 
         // If we don't have enough, try aliases
@@ -190,7 +232,32 @@ struct AMLLDBSearcher {
             }
         }
 
+        // Append one-character variants after the ordinary and alias matches.
+        if useFuzzy, candidates.count < maxPrefilterCandidates {
+            var seen = Set(candidates.map(\.rawLyricFile))
+            for entry in fuzzyCandidates {
+                if seen.insert(entry.rawLyricFile).inserted {
+                    candidates.append(entry)
+                    if candidates.count >= maxPrefilterCandidates { break }
+                }
+            }
+        }
+
         return candidates
+    }
+
+    private static func differsByAtMostOneCharacter(_ lhs: String, _ rhs: String) -> Bool {
+        let left = Array(lhs), right = Array(rhs)
+        guard !right.isEmpty, abs(left.count - right.count) <= 1 else { return false }
+        var i = 0, j = 0, differences = 0
+        while i < left.count && j < right.count {
+            if left[i] == right[j] { i += 1; j += 1; continue }
+            differences += 1
+            if differences > 1 { return false }
+            if left.count >= right.count { i += 1 }
+            if right.count >= left.count { j += 1 }
+        }
+        return differences + (i < left.count || j < right.count ? 1 : 0) <= 1
     }
 
     // MARK: - Scoring
@@ -199,10 +266,11 @@ struct AMLLDBSearcher {
     private static func scoreCandidates(
         candidates: [AMLLDBRawIndexEntry],
         query: NormalizedQuery,
-        params: AMLLDBSearchParams
+        params: AMLLDBSearchParams,
+        allowFuzzy: Bool
     ) -> [AMLLDBSearchCandidate] {
         candidates.map { entry in
-            let score = calculateScore(entry: entry, query: query, params: params)
+            let score = calculateScore(entry: entry, query: query, params: params, allowFuzzy: allowFuzzy)
             return AMLLDBSearchCandidate(
                 id: entry.rawLyricFile,
                 entry: entry,
@@ -215,13 +283,26 @@ struct AMLLDBSearcher {
     private static func calculateScore(
         entry: AMLLDBRawIndexEntry,
         query: NormalizedQuery,
-        params: AMLLDBSearchParams
+        params: AMLLDBSearchParams,
+        allowFuzzy: Bool
     ) -> AMLLDBMatchScore {
         // Title score (try all titles and aliases)
-        let titleScore = calculateTitleScore(
+        var titleScore = calculateTitleScore(
             entryTitles: entry.titles,
             query: query
         )
+        if allowFuzzy {
+            let fuzzyTitle = AMLLDBTitleNormalizer.compactNormalize(query.strippedTitle)
+            if (2...64).contains(fuzzyTitle.count) {
+                for title in entry.titles {
+                    let candidate = AMLLDBTitleNormalizer.compactNormalize(title)
+                    if differsByAtMostOneCharacter(fuzzyTitle, candidate) {
+                        let length = max(fuzzyTitle.count, candidate.count)
+                        titleScore = max(titleScore, 1 - 1 / Double(length))
+                    }
+                }
+            }
+        }
 
         // Artist score
         let artistScore = calculateArtistScore(

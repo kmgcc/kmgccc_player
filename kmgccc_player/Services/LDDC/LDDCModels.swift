@@ -95,7 +95,7 @@ struct LDDCSearchResponse: Codable, Sendable {
     let errors: [String]?
 }
 
-enum LDDCSourceSearchStatus: Sendable, Equatable {
+nonisolated enum LDDCSourceSearchStatus: Sendable, Equatable {
     case completed
     case failed
     case timedOut

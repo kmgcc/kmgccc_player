@@ -63,7 +63,7 @@ struct MotionArtworkView<Poster: View>: View {
         // A music video opened halfway through a song must first seek to the
         // audible position; a cached frame from its beginning would be wrong.
         if followsSong, MotionArtworkSongClock.shared.isMusicVideo(duration: resource.duration),
-           (MotionArtworkSongClock.shared.time ?? 0) > 0.2 { return nil }
+           (MotionArtworkSongClock.shared.time ?? 0) + abs(MotionArtworkSongClock.shared.offset(for: resource) ?? 0) > 0.2 { return nil }
         return cacheServices.motionArtworkFirstFrameCache.cachedFrame(for: resource)
     }
 
@@ -221,16 +221,22 @@ final class MotionArtworkSongClock {
     static let shared = MotionArtworkSongClock()
 
     var source: (() -> (time: Double, duration: Double)?)?
+    var localTrack: (() -> Track?)?
+    var alignment: MotionAudioAlignmentCoordinator?
 
     private init() {}
 
     var time: Double? { source?()?.time }
     var songDuration: Double? { source?()?.duration }
 
+    func offset(for resource: MotionArtworkResource) -> Double? {
+        guard let track = localTrack?() else { return nil }
+        return alignment?.offset(track: track, video: resource.url)
+    }
+
     func isMusicVideo(duration video: Double) -> Bool {
-        guard let song = songDuration, song.isFinite, song >= 30,
-              video.isFinite, video >= 60 else { return false }
-        return abs(video - song) <= max(20, song * 0.2)
+        guard let song = songDuration else { return false }
+        return MotionAudioAligner.isMusicVideo(songDuration: song, videoDuration: video)
     }
 }
 
@@ -278,6 +284,7 @@ private final class MotionArtworkPlayerView: NSView {
     private var looper: AVPlayerLooper?
     /// A music video plays once, on the song's timeline, instead of looping.
     private var isMusicVideo = false
+    private var lastSongOffset: Double?
     private var followsSong = true
     private var videoRange = CMTimeRange.invalid
     private var lastTimelineCheck: CFTimeInterval = 0
@@ -611,17 +618,20 @@ private final class MotionArtworkPlayerView: NSView {
 
     private func syncToSong(force: Bool) {
         guard isMusicVideo, !isSeeking, let player, let songTime = MotionArtworkSongClock.shared.time else { return }
-        let target = videoRange.start.seconds + songTime
+        let offset = resource.flatMap { MotionArtworkSongClock.shared.offset(for: $0) }
+        let offsetChanged = offset != lastSongOffset
+        lastSongOffset = offset
+        let target = songTime + (offset ?? videoRange.start.seconds)
         let end = videoRange.end.seconds
         // Past the video's end the last frame holds until the song seeks back.
-        let clamped = min(target, end - 0.05)
+        let clamped = max(videoRange.start.seconds, min(target, end - 0.05))
         let current = player.currentTime().seconds
-        if target >= end - 0.05 {
+        if target < videoRange.start.seconds || target >= end - 0.05 {
             if player.rate != 0 { player.pause() }
         } else if wantsPlayback, !defersPlayback, player.rate == 0 {
             player.play()
         }
-        guard force || !current.isFinite || abs(current - clamped) > 0.2 else { return }
+        guard force || offsetChanged || !current.isFinite || abs(current - clamped) > (offset == nil ? 0.2 : 0.08) else { return }
         isSeeking = true
         player.seek(to: CMTime(seconds: clamped, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak player] _ in
             Task { @MainActor [weak self, weak player] in
@@ -682,6 +692,7 @@ private final class MotionArtworkPlayerView: NSView {
         player?.removeAllItems()
         player = nil
         isMusicVideo = false
+        lastSongOffset = nil
         isSeeking = false
     }
 

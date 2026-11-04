@@ -26,6 +26,7 @@ final class LibraryCacheServices {
     let lyricsSearchCoordinator: LyricsSearchCoordinator
     let externalPlaybackMetadataStore: ExternalPlaybackMetadataStore
     let musicEnrichmentService: MusicEnrichmentService
+    let motionAudioAlignment = MotionAudioAlignmentCoordinator()
     let artworkDerivativeStore: ArtworkDerivativeCacheStore
     let playlistArtworkPipeline: PlaylistArtworkPipeline
 
@@ -40,6 +41,7 @@ final class LibraryCacheServices {
     @ObservationIgnored
     private(set) var pageThumbnailSource: PageThumbnailWorkSource?
     private(set) var metadataCompletionSource: MusicEnrichmentWorkSource?
+    private(set) var motionAlignmentSource: MotionAlignmentWorkSource?
     private(set) var artworkRenovationSource: ArtworkRenovationWorkSource?
 
     init(paths: LibraryPaths) {
@@ -202,7 +204,30 @@ final class LibraryCacheServices {
         scheduler.register(source)
     }
 
+    func attachMotionAlignmentSource(
+        scheduler: BackgroundWorkScheduler, owner: BackgroundWorkOwner, libraryID: UUID,
+        tracks: @escaping @MainActor () -> [Track], revision: @escaping @MainActor () -> Int
+    ) async {
+        if let existing = motionAlignmentSource {
+            scheduler.unregister(sourceID: existing.sourceID)
+            await existing.close()
+        }
+        let source = MotionAlignmentWorkSource(
+            libraryID: libraryID, owner: owner, rootURL: musicEnrichmentService.store.rootURL,
+            alignment: motionAudioAlignment, tracks: tracks, revision: revision,
+            wake: { [weak scheduler] in scheduler?.noteWorkAvailable() }
+        )
+        motionAlignmentSource = source
+        backgroundScheduler = scheduler
+        scheduler.register(source)
+    }
+
     func detachBackgroundSources() async {
+        if let source = motionAlignmentSource {
+            backgroundScheduler?.unregister(sourceID: source.sourceID)
+            await source.close()
+        }
+        motionAlignmentSource = nil
         if let source = artworkRenovationSource {
             source.close()
             backgroundScheduler?.unregister(sourceID: source.sourceID)

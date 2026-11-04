@@ -420,6 +420,7 @@ struct TrackEditSheet: View {
     @MainActor
     private func fetchMissingMetadataIntoDraft() async -> Bool {
         guard let detail = await libraryVM.fetchTrackMetadataDetail(track) else { return false }
+        guard !Task.isCancelled else { return false }
         guard detail.confidence >= 0.70 else { return false }
 
         var changed = false
@@ -460,6 +461,7 @@ struct TrackEditSheet: View {
             album: album,
             duration: track.duration
         ) else { return false }
+        guard !Task.isCancelled else { return false }
 
         var changed = false
         updateString(&album, with: detail.album, changed: &changed)
