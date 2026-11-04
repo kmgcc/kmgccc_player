@@ -177,61 +177,69 @@ struct AudioDSPSettingsView: View {
     private var contentHierarchy: some View {
         VStack(alignment: .leading, spacing: SettingsStyleTokens.sectionSpacing) {
             deviceSection
+                .settingsSearchAnchor("audio.device")
             linearNodeRackSection
+                .settingsSearchAnchor("audio.effects")
             diagnosticsSection
                 .disabled(isReadOnly)
                 .opacity(isReadOnly ? 0.5 : 1)
         }
     }
 
-    /// The device first, then the sound it plays.
+    /// The device at the left, the sound it plays at the right.
     private var deviceSection: some View {
         SettingsSection {
             VStack(alignment: .leading, spacing: 14) {
-                AudioDSPDevicePicker(
-                    devices: devices.devices,
-                    currentID: devices.currentDevice?.id,
-                    selectedID: $viewedDeviceID,
-                    presetName: { device in
-                        let id = devices.presetID(for: device)
-                        return controller.presets.first { $0.presetID == id }.map(displayName(for:)) ?? "草稿"
+                HStack(alignment: .center, spacing: 16) {
+                    AudioDSPDevicePicker(
+                        devices: devices.devices,
+                        currentID: devices.currentDevice?.id,
+                        selectedID: $viewedDeviceID,
+                        presetName: { device in
+                            let id = devices.presetID(for: device)
+                            return controller.presets.first { $0.presetID == id }.map(displayName(for:)) ?? "草稿"
+                        }
+                    )
+                    .frame(width: 140)
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        presetRow
+
+                        SettingsSwitchRow(
+                            title: "启用音效处理",
+                            isOn: configurationBinding(\.enabled)
+                        )
+
+                        if !isReadOnly, let notice = statusNotice {
+                            Label(notice, systemImage: "exclamationmark.circle")
+                                .settingsDescriptionStyle()
+                        }
+
+                        // Incompatible presets cannot be selected, so they keep
+                        // their own export and delete actions here.
+                        ForEach(incompatiblePresets) { preset in
+                            HStack(spacing: 8) {
+                                Text("“\(preset.name)”与当前版本不兼容")
+                                    .settingsDescriptionStyle()
+                                Spacer(minLength: 8)
+                                Button("导出") { exportPreset(preset) }
+                                    .audioDSPCapsuleButtonStyle()
+                                Button("删除") { presetPendingDeletion = preset }
+                                    .audioDSPCapsuleButtonStyle()
+                            }
+                        }
                     }
-                )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .disabled(isReadOnly)
+                    .opacity(isReadOnly ? 0.5 : 1)
+                }
 
                 if isReadOnly {
                     Text("请使用此设备播放以设置音效。")
                         .settingsDescriptionStyle()
                 }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    presetRow
-
-                    SettingsSwitchRow(
-                        title: "启用音效处理",
-                        isOn: configurationBinding(\.enabled)
-                    )
-
-                    if !isReadOnly, let notice = statusNotice {
-                        Label(notice, systemImage: "exclamationmark.circle")
-                            .settingsDescriptionStyle()
-                    }
-
-                    // Incompatible presets cannot be selected, so they keep their
-                    // own export and delete actions here.
-                    ForEach(incompatiblePresets) { preset in
-                        HStack(spacing: 8) {
-                            Text("“\(preset.name)”与当前版本不兼容")
-                                .settingsDescriptionStyle()
-                            Spacer(minLength: 8)
-                            Button("导出") { exportPreset(preset) }
-                                .audioDSPCapsuleButtonStyle()
-                            Button("删除") { presetPendingDeletion = preset }
-                                .audioDSPCapsuleButtonStyle()
-                        }
-                    }
-                }
-                .disabled(isReadOnly)
-                .opacity(isReadOnly ? 0.5 : 1)
             }
         }
     }
@@ -243,11 +251,6 @@ struct AudioDSPSettingsView: View {
             Spacer(minLength: 12)
 
             presetMenu
-
-            Button("新建", systemImage: "plus") {
-                beginPresetNameAction(.create)
-            }
-            .audioDSPCapsuleButtonStyle()
 
             presetActionsMenu
         }
@@ -297,6 +300,10 @@ struct AudioDSPSettingsView: View {
 
     private var presetActionsMenu: some View {
         Menu {
+            Button("新建", systemImage: "plus") {
+                beginPresetNameAction(.create)
+            }
+            Divider()
             Button("重命名", systemImage: "pencil") {
                 if let selectedPresetID { beginPresetNameAction(.rename(selectedPresetID)) }
             }

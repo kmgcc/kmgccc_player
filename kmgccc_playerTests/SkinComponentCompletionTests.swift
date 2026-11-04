@@ -5,6 +5,34 @@ import XCTest
 
 @MainActor
 final class SkinComponentCompletionTests: XCTestCase {
+    func testTrackDescriptionInheritsAlbumThenFirstArtist() {
+        let track = Track(title: "Song", artist: "Artist", userDescription: "  Song text\n", albumGroupKey: "album")
+        let now = Date()
+        var album = AlbumEntry(id: UUID(), canonicalKey: "album", displayTitle: "Album",
+                               primaryArtistCanonicalName: "artist", primaryArtistDisplayName: "Artist",
+                               description: "Album text", createdAt: now, updatedAt: now,
+                               trackCount: 1, totalDuration: 0, isOrphaned: false)
+        let artistKey = LibraryNormalization.artistComponents(for: track).first!.canonicalName
+        let artist = ArtistEntry(id: UUID(), canonicalName: artistKey, displayName: "Artist",
+                                 description: "Artist text", createdAt: now, updatedAt: now,
+                                 trackCount: 1, albumCount: 1, totalDuration: 0, isOrphaned: false)
+        func detail() -> TrackDetailContent { TrackDetailResolver.resolve(for: track, albums: [album], artists: [artist]) }
+
+        XCTAssertEqual(detail().text, "Song text")
+        XCTAssertEqual(detail().source, "track")
+        track.userDescription = " \n "
+        XCTAssertEqual(detail().text, "Album text")
+        XCTAssertEqual(detail().source, "album")
+        XCTAssertEqual(detail().attributionNote, "来自 Album")
+        album.description = " \n "
+        XCTAssertEqual(detail().text, "Artist text")
+        XCTAssertEqual(detail().source, "artist")
+        let empty = TrackDetailResolver.resolve(for: track, albums: [album], artists: [])
+        XCTAssertEqual(empty.text, "")
+        XCTAssertEqual(empty.source, "")
+        XCTAssertNil(empty.attributionNote)
+    }
+
     func testStandaloneCapsulesMayFormMultiplePairsAcrossContainers() {
         let root = SkinSceneNode(id: "scene", content: .overlay(children: [
             SkinSceneNode(id: "left", content: .row(children: [

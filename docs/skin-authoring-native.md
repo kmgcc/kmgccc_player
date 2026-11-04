@@ -58,11 +58,22 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 | 背景 | `background.host`、`background.unifiedMesh`、`background.amllMesh`、`background.coverGradientBlur`、`background.art`、`background.artworkBlur`、`background.dimming`、`transition.bokeh` |
 | 可视化 | `visualizer.capsuleSpectrum`、`visualizer.pillSpectrum`、`visualizer.led`、`visualizer.waveform`、`visualizer.progressSpectrum` |
 | 控制 | `control.miniPlayer`、`control.leadingCapsule`、`control.volumeCapsule`、`control.transport`、`control.playPause`、`control.skip`、`control.previous`、`control.next`、`control.progress`、`control.volume`、`control.expandableVolume`、`control.playbackMode`、`control.like`、`control.dislike`、`control.outputDevice`、`control.queue`、`control.lyricsToggle`、`control.fullscreen`、`control.settings`、`control.quickPanel`、`control.actionButton`、`control.glassButton`、`control.glassTriplePill` |
-| 文字 | `text.trackInfo`、`text.marquee` |
+| 文字 | `text.trackInfo`、`text.trackDescription`、`text.marquee` |
 | 面板 | `panel.queue`、`panel.quickAppearance`、`panel.trackDetail`、`sheet.trackEdit`、`sheet.externalInfo`、`sheet.settings`、`menu.trackContext`、`menu.player` |
 | 行为 | `behavior.autoHide`、`behavior.lyricsEndAutoHide`、`behavior.scrollVolume`、`behavior.pointerOcclusion`、`behavior.windowDrag` |
 
 窗口里的播放条由 App 固定提供，皮肤不能替换或移除；`control.miniPlayer`、`control.leadingCapsule` 与 `control.volumeCapsule` 只在全屏显示，写在窗口场景里不会出现。
+
+`text.trackDescription` 在节点的 `frame` 内显示完整歌曲介绍，内容超出时可滚动；`props` 支持 `fontSize`、`color` 和 `alignment`（`leading` 或 `center`）。本地歌曲按歌曲、专辑、首位艺人的顺序取第一段非空介绍；没有介绍或播放外部来源时留空。切歌时滚动位置重置。
+
+```json
+{
+  "type": "component",
+  "component": "text.trackDescription",
+  "frame": {"width": 320, "height": 240},
+  "props": {"fontSize": 14, "alignment": "leading"}
+}
+```
 
 `control.miniPlayer` 默认与全屏播放条等长，并在节点 `frame` 内居中。`props` 可调：`width` 为 1 倍尺寸下的总长度，`align` 为 leading、center 或 trailing；`showsLeading`、`showsVolume`、`showsTrackInfo`、`showsTransport`、`showsPlaybackMode`、`showsProgress` 与 `showsLyricsButton` 控制各部分显隐。隐去进度后，播放条按内容收紧。
 
@@ -95,6 +106,8 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 ## 数据与表达式
 
 以 `=` 开头的字符串是表达式，其他值是常量。支持算术、比较、布尔、条件表达式、成员与下标访问，以及固定函数表；没有任意函数调用、循环或网络。
+
+自定义排版可读取 `track.description`（完整介绍）、`track.descriptionSource`（`track`、`album`、`artist` 或空字符串）和 `track.descriptionAttribution`（继承时的来源说明）。它们与 `text.trackDescription` 使用相同的继承规则；没有可用介绍时均为空字符串。可将文字节点放入 `scroll` 以阅读较长内容。
 
 常用数据域：
 

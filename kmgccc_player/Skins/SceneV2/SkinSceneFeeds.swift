@@ -80,11 +80,15 @@ struct SkinSceneFeeds: View {
     private var values: [SkinDataDomain: [String: SkinValue]] {
         let p = playback.stablePresentation
         let track = snapshot.track
+        let _ = library.refreshTrigger
+        let detail = p.source == .local ? p.localTrack.map { TrackDetailResolver.resolve(for: $0, libraryVM: library) } : nil
         var result: [SkinDataDomain: [String: SkinValue]] = [:]
         result[.params] = parameters.mapValues(SkinValue.init)
         result[.track] = [
             "track.hasTrack": .boolean(p.hasTrack), "track.id": .text(track?.id.uuidString ?? p.externalStableKey ?? ""),
             "track.title": .text(p.title), "track.artist": .text(p.artist), "track.album": .text(p.album ?? ""),
+            "track.description": .text(detail?.text ?? ""), "track.descriptionSource": .text(detail?.source ?? ""),
+            "track.descriptionAttribution": .text(detail?.attributionNote ?? ""),
             "track.duration": .number(p.duration), "track.source": .text(String(describing: p.source)), "track.emptyTitleKey": .text(p.emptyTitleKey),
             "track.external.rawTitle": .text(p.externalRawTitle ?? ""), "track.external.rawArtist": .text(p.externalRawArtist ?? ""),
             "track.external.rawAlbum": .text(p.externalRawAlbum ?? ""), "track.external.effectiveTitle": .text(p.externalEffectiveTitle ?? ""),

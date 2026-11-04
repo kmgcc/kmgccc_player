@@ -406,6 +406,10 @@ final class LibraryTrackDragWindowSession {
     private func moveWindowDrag(at windowPoint: NSPoint? = nil) {
         guard let overlay, let window else { return }
         let point = windowPoint ?? window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        // Both drag events and the tracking-loop timer move the same overlay.
+        // Remember event-driven moves too, so the timer does not repeat the
+        // geometry and destination lookup for an already processed position.
+        lastPointerLocation = point
         let pointer = overlayPoint(fromWindow: point, in: overlay)
         presentation.frame.origin = CGPoint(x: pointer.x - grabOffset.x, y: pointer.y - grabOffset.y)
         setHoveredDestination(destination(atWindowPoint: point))
@@ -563,7 +567,6 @@ final class LibraryTrackDragWindowSession {
                 if NSEvent.pressedMouseButtons & 1 == 0 {
                     self.releaseWindowDrag(at: point)
                 } else if self.lastPointerLocation != point {
-                    self.lastPointerLocation = point
                     self.moveWindowDrag(at: point)
                 }
             }

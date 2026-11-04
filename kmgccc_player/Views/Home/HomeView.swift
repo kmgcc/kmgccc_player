@@ -514,19 +514,25 @@ struct HomeView: View {
 
     private func footer(theme: HomeThemeSnapshot) -> some View {
         VStack(spacing: 8) {
-            Text("\u{201C}Where words fail, music speaks.\u{201D}")
-                .font(.system(size: 20, weight: .ultraLight))
-                .foregroundStyle(theme.foregroundPalette.secondaryColor)
-            Text("\u{8A00}\u{6240}\u{4E0D}\u{53CA}\u{5904}\u{FF0C}\u{7B19}\u{7BAB}\u{76F8}\u{7EE7}\u{3002}")
-                .font(.system(.callout, weight: .ultraLight))
-                .foregroundStyle(theme.foregroundPalette.tertiaryColor)
-            Text("— Hans Christian Andersen")
-                .font(.system(.caption2, weight: .ultraLight))
-                .textCase(.uppercase)
-                .tracking(0.8)
-                .foregroundStyle(theme.foregroundPalette.quaternaryColor)
-                .padding(.top, 4)
+            if !settings.homeMottoText.isEmpty {
+                Text(verbatim: settings.homeMottoText)
+                    .font(.system(size: 20, weight: .ultraLight))
+                    .foregroundStyle(theme.foregroundPalette.secondaryColor)
+            }
+            if !settings.homeMottoTranslation.isEmpty {
+                Text(verbatim: settings.homeMottoTranslation)
+                    .font(.system(.callout, weight: .ultraLight))
+                    .foregroundStyle(theme.foregroundPalette.tertiaryColor)
+            }
+            if !settings.homeMottoNote.isEmpty {
+                Text(verbatim: settings.homeMottoNote)
+                    .font(.system(.caption2, weight: .ultraLight))
+                    .tracking(0.8)
+                    .foregroundStyle(theme.foregroundPalette.quaternaryColor)
+                    .padding(.top, 4)
+            }
         }
+        .multilineTextAlignment(.center)
         .padding(.top, 36)
         .padding(.bottom, 24)
     }

@@ -41,6 +41,7 @@ struct GeneralSettingsView: View {
                     .frame(maxWidth: .infinity)
                 }
             }
+            .settingsSearchAnchor("general.main")
 
             SettingsSection("数据共享") {
                 VStack(alignment: .leading, spacing: 16) {
@@ -56,6 +57,7 @@ struct GeneralSettingsView: View {
                     )
                 }
             }
+            .settingsSearchAnchor("general.privacy")
         }
         .onChange(of: automaticUpdatesEnabled) { _, enabled in
             UpdateCoordinator.shared.setAutomaticUpdatesEnabled(enabled)

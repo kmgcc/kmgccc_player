@@ -63,6 +63,7 @@ struct FullscreenSkinTabView: View {
                     )
                 }
             }
+            .settingsSearchAnchor("skin.select")
 
             let selectedSkin = SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID)
             // A package scene that draws the host backdrop gets the toggle built-in skins carry in their own options.
@@ -86,6 +87,7 @@ struct FullscreenSkinTabView: View {
                         }
                     }
                 }
+                .settingsSearchAnchor("skin.options")
             }
 
             if selectedSkin.scene == nil || selectedSkin.sceneComponents.contains("control.miniPlayer") {
@@ -96,7 +98,8 @@ struct FullscreenSkinTabView: View {
                             selection: Binding(
                                 get: { settings.fullscreen.miniPlayerVisualization },
                                 set: { settings.fullscreen.setMiniPlayerVisualization($0) }
-                            )
+                            ),
+                            showsLEDCount: false
                         )
 
                         miniPlayerAutoHidePicker
@@ -104,14 +107,16 @@ struct FullscreenSkinTabView: View {
                         miniPlayerMaterialPicker
                     }
                 }
+                .settingsSearchAnchor("skin.miniplayer")
             }
 
-            if supportsArtworkScaleControl(for: settings.fullscreen.skinID) {
+            if Self.supportsArtworkScaleControl(for: settings.fullscreen.skinID) {
                 SettingsSection("视觉效果") {
                     VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                         artworkScaleSection
                     }
                 }
+                .settingsSearchAnchor("skin.visual")
             }
         }
         .onAppear {
@@ -224,7 +229,7 @@ struct FullscreenSkinTabView: View {
         return 0.9...maxVal
     }
 
-    private func supportsArtworkScaleControl(for skinID: String) -> Bool {
+    static func supportsArtworkScaleControl(for skinID: String) -> Bool {
         let skin = SkinRegistry.fullscreenSkin(for: skinID)
         // Preset artwork in host layout follows the same scale setting.
         let usesPresetArtwork = skin.sceneComponents.contains { $0.hasPrefix("builtin.") && $0.hasSuffix(".artwork") }

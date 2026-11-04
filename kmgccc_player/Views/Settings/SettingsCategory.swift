@@ -8,7 +8,7 @@
 import SwiftUI
 
 /// Settings sidebar navigation categories.
-enum SettingsCategory: String, CaseIterable, Identifiable {
+nonisolated enum SettingsCategory: String, CaseIterable, Identifiable {
     case general
     case appearance
     case nowPlaying

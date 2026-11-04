@@ -408,6 +408,7 @@ extension EnvironmentValues {
 struct FullscreenSettingsContainerView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.settingsAppForegroundColors) private var appColors
+    @Environment(\.settingsSearchRequest) private var searchRequest
 
     let presentationStyle: FullscreenSettingsPresentationStyle
     let embedsScrollView: Bool
@@ -434,6 +435,9 @@ struct FullscreenSettingsContainerView: View {
             } else {
                 containerBody
             }
+        }
+        .onChange(of: searchRequest, initial: true) { _, request in
+            if request?.category == .fullscreen, let tab = request?.tab { selectedTab = tab }
         }
     }
 

@@ -1095,7 +1095,7 @@ final class FileImportService: FileImportServiceProtocol {
                 progressController.update(
                     stage: .enrichingMetadata,
                     progress: Self.progress(for: .enrichingMetadata, completed: 0, total: 0),
-                    detail: "所有歌曲已有歌词与封面，无需后台补全",
+                    detail: "所有歌曲已有歌词与封面",
                     completedCount: 0,
                     totalCount: 0
                 )

@@ -34,6 +34,7 @@ struct SidebarView: View {
     @EnvironmentObject private var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var currentColorScheme
+    @Environment(\.displayScale) private var displayScale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var configuredMotionPolicy
@@ -49,12 +50,15 @@ struct SidebarView: View {
     @State private var editingArtistEntry: ArtistEntry?
     @State private var editingAlbumEntry: AlbumEntry?
     @State private var isHoveringPlaylists = false
+    @State private var isHoveringPlaylistHeader = false
     @State private var dropTargetPlaylistID: UUID?
     @State private var isPlaylistsExpanded = true
     @State private var isPlaylistHeaderDropTargeted = false
     @State private var playlistHeaderExpandTask: Task<Void, Never>?
     @State private var isArtistsExpanded = false
     @State private var isAlbumsExpanded = false
+    @State private var artistSearchText = ""
+    @State private var albumSearchText = ""
 
     @State private var isHoveringArtists = false
     @State private var isHoveringAlbums = false
@@ -102,22 +106,15 @@ struct SidebarView: View {
                         Button {
                             handleSelection(.playlist(playlist.id))
                         } label: {
-                            HStack(spacing: 9) {
+                            sidebarCollectionRowLabel(
+                                title: playlist.name,
+                                isSelected: currentSelection == .playlist(playlist.id)
+                            ) {
                                 SidebarPlaylistThumbnail(
                                     playlistID: playlist.id,
                                     refreshToken: libraryVM.refreshTrigger
                                 )
-                                Text(playlist.name)
-                                    .lineLimit(1)
-                                Spacer()
                             }
-                            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(
-                                selectionFill(
-                                    isSelected: currentSelection == .playlist(playlist.id))
-                            )
                             .overlay {
                                 if dropTargetPlaylistID == playlist.id {
                                     RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -125,7 +122,6 @@ struct SidebarView: View {
                                         .allowsHitTesting(false)
                                 }
                             }
-                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .libraryTrackDropTarget(.playlist(playlist.id))
@@ -185,6 +181,7 @@ struct SidebarView: View {
                                     .font(.caption2.bold())
                                     .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                                     .rotationEffect(.degrees(isPlaylistsExpanded ? 90 : 0))
+                                    .opacity(isHoveringPlaylistHeader ? 1 : 0)
                             }
                             .contentShape(Rectangle())
                         }
@@ -208,6 +205,7 @@ struct SidebarView: View {
                     .padding(.horizontal, 4)
                     .padding(.bottom, 4)
                     .contentShape(Rectangle())
+                    .onHover { isHoveringPlaylistHeader = $0 }
                     .libraryTrackDropGroup(isExpanded: $isPlaylistsExpanded, notice: "请将歌曲拖到具体的播放列表")
                     .onDrop(
                         of: [UTType.fileURL.identifier, UTType.url.identifier],
@@ -220,6 +218,15 @@ struct SidebarView: View {
                 // Artists Section
                 Section {
                     if isArtistsExpanded {
+                        let artists = visibleArtistSections
+
+                        SidebarCollectionSearchField(
+                            text: $artistSearchText,
+                            placeholder: "搜索艺人"
+                        )
+                        .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
+                        .listRowBackground(Color.clear)
+
                         Button {
                             handleSelection(.allArtists)
                         } label: {
@@ -243,22 +250,19 @@ struct SidebarView: View {
                         .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                         .listRowBackground(Color.clear)
 
-                        ForEach(libraryVM.runtimeArtists) { artist in
+                        ForEach(artists) { artist in
                             Button {
                                 handleSelection(.artist(artist.key))
                             } label: {
-                                HStack {
-                                    Text(artist.name)
-                                    Spacer()
+                                sidebarCollectionRowLabel(
+                                    title: artist.name,
+                                    isSelected: currentSelection == .artist(artist.key)
+                                ) {
+                                    SidebarArtistThumbnail(
+                                        entry: libraryVM.artistEntry(for: artist),
+                                        refreshToken: libraryVM.refreshTrigger
+                                    )
                                 }
-                                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(
-                                    selectionFill(
-                                        isSelected: currentSelection == .artist(artist.key))
-                                )
-                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .libraryTrackDropTarget(.artist(artist.key))
@@ -287,6 +291,12 @@ struct SidebarView: View {
                                 }
                             }
                         }
+
+                        if artists.isEmpty, !normalizedArtistSearchText.isEmpty {
+                            SidebarCollectionSearchEmptyLabel(text: "没有找到艺人")
+                                .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+                                .listRowBackground(Color.clear)
+                        }
                     }
                 } header: {
                     Button {
@@ -294,16 +304,16 @@ struct SidebarView: View {
                             isArtistsExpanded.toggle()
                         }
                     } label: {
-                        HStack {
+                        HStack(spacing: 5) {
                             Text("sidebar.artists")
                                 .font(.caption.bold())
                                 .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                            Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.caption2.bold())
                                 .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                                 .rotationEffect(.degrees(isArtistsExpanded ? 90 : 0))
                                 .opacity(isHoveringArtists ? 1 : 0)
+                            Spacer()
                         }
                         .padding(.horizontal, 4)
                         .padding(.bottom, 4)
@@ -317,6 +327,15 @@ struct SidebarView: View {
                 // Albums Section
                 Section {
                     if isAlbumsExpanded {
+                        let albums = visibleAlbumSections
+
+                        SidebarCollectionSearchField(
+                            text: $albumSearchText,
+                            placeholder: "搜索专辑"
+                        )
+                        .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
+                        .listRowBackground(Color.clear)
+
                         Button {
                             handleSelection(.allAlbums)
                         } label: {
@@ -340,22 +359,20 @@ struct SidebarView: View {
                         .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                         .listRowBackground(Color.clear)
 
-                        ForEach(libraryVM.runtimeAlbums) { album in
+                        ForEach(albums) { album in
                             Button {
                                 handleSelection(.album(album.key))
                             } label: {
-                                HStack {
-                                    Text(album.name)
-                                    Spacer()
+                                sidebarCollectionRowLabel(
+                                    title: album.name,
+                                    isSelected: currentSelection == .album(album.key)
+                                ) {
+                                    SidebarAlbumThumbnail(
+                                        album: album,
+                                        entry: libraryVM.albumEntry(for: album),
+                                        refreshToken: libraryVM.refreshTrigger
+                                    )
                                 }
-                                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(
-                                    selectionFill(
-                                        isSelected: currentSelection == .album(album.key))
-                                )
-                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .libraryTrackDropTarget(.album(album.key))
@@ -384,6 +401,12 @@ struct SidebarView: View {
                                 }
                             }
                         }
+
+                        if albums.isEmpty, !normalizedAlbumSearchText.isEmpty {
+                            SidebarCollectionSearchEmptyLabel(text: "没有找到专辑")
+                                .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+                                .listRowBackground(Color.clear)
+                        }
                     }
                 } header: {
                     Button {
@@ -391,16 +414,16 @@ struct SidebarView: View {
                             isAlbumsExpanded.toggle()
                         }
                     } label: {
-                        HStack {
+                        HStack(spacing: 5) {
                             Text("sidebar.albums")
                                 .font(.caption.bold())
                                 .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                            Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.caption2.bold())
                                 .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                                 .rotationEffect(.degrees(isAlbumsExpanded ? 90 : 0))
                                 .opacity(isHoveringAlbums ? 1 : 0)
+                            Spacer()
                         }
                         .padding(.horizontal, 4)
                         .padding(.bottom, 4)
@@ -506,6 +529,8 @@ struct SidebarView: View {
         .onChange(of: appSession.activeLibraryBinding.context?.id) { _, _ in
             loadPlaylistsExpandedForActiveLibrary()
             ensureSelectedPlaylistGroupExpanded()
+            artistSearchText = ""
+            albumSearchText = ""
         }
         .onDisappear {
             crashReportTipTask?.cancel()
@@ -606,6 +631,10 @@ struct SidebarView: View {
             // Reuses the exact multi-track metadata editor from the library
             // list so failed enrichment items can be fixed by hand.
             BatchTrackEditSheet(tracks: request.tracks)
+        }
+        .dismissTextEditingOnOutsideClick()
+        .task(id: sidebarThumbnailPrefetchRevision) {
+            await prefetchSidebarThumbnails()
         }
     }
 
@@ -797,7 +826,7 @@ struct SidebarView: View {
             || activeLibraryImportTask != nil
             || !uiState.libraryImportFailureReports.isEmpty
             || backgroundLoudnessSidebarProgress != nil
-            || artworkRenovationSource != nil
+            || hasArtworkRenovationForSidebar
     }
 
     private var activeSessionForLoudness: LibrarySession? {
@@ -830,19 +859,8 @@ struct SidebarView: View {
 
     private var sidebarTaskProgressStack: some View {
         VStack(spacing: 6) {
-            if let source = artworkRenovationSource {
-                SidebarTaskProgressView(
-                    progress: SidebarTaskProgress(
-                        title: "正在翻新资料库封面",
-                        detail: "已检查 \(source.completed)/\(source.total) 首",
-                        fractionCompleted: source.isReady ? Double(source.completed) / Double(max(1, source.total)) : nil,
-                        state: .running,
-                        systemImage: "photo.badge.arrow.down"
-                    ),
-                    onShowDetails: { ArtworkRenovationDialogPresenter.present(source: source) }
-                )
+            SidebarArtworkRenovationRow()
                 .transition(.opacity)
-            }
             if let notice = uiState.sidebarNotice {
                 SidebarNoticeView(notice: notice) {
                     if activeLibraryImportTask != nil || !uiState.libraryImportFailureReports.isEmpty {
@@ -933,15 +951,14 @@ struct SidebarView: View {
         }
     }
 
-    private var artworkRenovationSource: ArtworkRenovationWorkSource? {
-        let scheduler = appSession.backgroundWorkScheduler
-        // Activity is stored outside Observation; its revision publishes
-        // starts, scheduler pauses, resumes and completions without polling.
-        _ = scheduler.activityRevision
+    /// Cheap gate for `hasSidebarTaskProgress`: does not read the scheduler's
+    /// activity revision, so a background unit starting or pausing does not
+    /// re-evaluate the whole sidebar. The progress row itself observes the
+    /// revision (see `SidebarArtworkRenovationRow`).
+    private var hasArtworkRenovationForSidebar: Bool {
         guard let source = appSession.activeLibraryBinding.activeSession?.cacheServices.artworkRenovationSource,
-              source.isVisible, !source.isPaused, source.lastError == nil,
-              scheduler.activity(of: .artworkRenovation).running > 0 else { return nil }
-        return source
+              source.isVisible, !source.isPaused, source.lastError == nil else { return false }
+        return appSession.backgroundWorkScheduler.activity(of: .artworkRenovation).running > 0
     }
 
     /// The latest running task the sidebar shows. Each task kind registers its
@@ -1458,6 +1475,129 @@ struct SidebarView: View {
         .motionAnimation(.microInteraction, value: isSelected)
     }
 
+    private var normalizedArtistSearchText: String {
+        artistSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var normalizedAlbumSearchText: String {
+        albumSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var visibleArtistSections: [ArtistSection] {
+        let artists = libraryVM.sortedArtistSectionsForDisplay()
+        let query = normalizedArtistSearchText
+        guard !query.isEmpty else { return artists }
+        return artists.filter {
+            $0.name.localizedStandardContains(query)
+                || $0.key.localizedStandardContains(query)
+        }
+    }
+
+    private var visibleAlbumSections: [AlbumSection] {
+        let albums = libraryVM.sortedAlbumSectionsForDisplay()
+        let query = normalizedAlbumSearchText
+        guard !query.isEmpty else { return albums }
+        return albums.filter {
+            $0.name.localizedStandardContains(query)
+                || $0.artistName.localizedStandardContains(query)
+        }
+    }
+
+    /// Sidebar covers are 24 pt; decoding more pixels than the display can
+    /// show only adds work.
+    private var sidebarThumbnailTargetPixelSize: CGSize {
+        let pixelSide = (24 * max(1, displayScale)).rounded(.up)
+        return CGSize(width: pixelSide, height: pixelSide)
+    }
+
+    /// Changes only when the expanded section's order, membership or display
+    /// scale changes, so ordinary library refreshes do not restart prefetch.
+    private var sidebarThumbnailPrefetchRevision: String {
+        var parts: [String] = []
+        let pixelSide = Int(sidebarThumbnailTargetPixelSize.width)
+        if isArtistsExpanded {
+            parts.append(
+                "artists:\(libraryVM.artistSortKey.rawValue):\(libraryVM.artistSortOrder.rawValue):\(libraryVM.runtimeArtists.count):\(libraryVM.artistEntries.count):\(libraryVM.collectionSortRevision):\(pixelSide)"
+            )
+        }
+        if isAlbumsExpanded {
+            parts.append(
+                "albums:\(libraryVM.albumSortKey.rawValue):\(libraryVM.albumSortOrder.rawValue):\(libraryVM.runtimeAlbums.count):\(libraryVM.albumEntries.count):\(libraryVM.collectionSortRevision):\(pixelSide)"
+            )
+        }
+        return parts.joined(separator: "|")
+    }
+
+    private func prefetchSidebarThumbnails() async {
+        let targetPixelSize = sidebarThumbnailTargetPixelSize
+        let derivativeStore = cacheServices.artworkDerivativeStore
+        // Roughly two sidebar viewports: cover a normal scroll without
+        // reading the whole library's artwork when the section opens.
+        let prefetchCount = 32
+
+        if isArtistsExpanded, normalizedArtistSearchText.isEmpty {
+            for artist in visibleArtistSections.prefix(prefetchCount) {
+                guard !Task.isCancelled else { return }
+                guard let request = SidebarThumbnailRequest.artist(
+                    entry: libraryVM.artistEntry(for: artist),
+                    targetPixelSize: targetPixelSize
+                ) else { continue }
+                _ = await SidebarThumbnailLoader.shared.image(
+                    for: request,
+                    derivativeStore: derivativeStore
+                )
+            }
+        }
+
+        if isAlbumsExpanded, normalizedAlbumSearchText.isEmpty {
+            for album in visibleAlbumSections.prefix(prefetchCount) {
+                guard !Task.isCancelled else { return }
+                guard let request = await SidebarThumbnailRequest.album(
+                    album: album,
+                    entry: libraryVM.albumEntry(for: album),
+                    libraryVM: libraryVM,
+                    targetPixelSize: targetPixelSize
+                ) else { continue }
+                _ = await SidebarThumbnailLoader.shared.image(
+                    for: request,
+                    derivativeStore: derivativeStore
+                )
+            }
+        }
+    }
+
+    /// Playlist, artist and album rows share one label so the selected row can
+    /// reuse the track-title marquee, feathered edges included.
+    private func sidebarCollectionRowLabel<Thumbnail: View>(
+        title: String,
+        isSelected: Bool,
+        @ViewBuilder thumbnail: () -> Thumbnail
+    ) -> some View {
+        HStack(spacing: 9) {
+            thumbnail()
+            if isSelected {
+                SeamlessMarqueeText(
+                    text: title,
+                    style: .body,
+                    fontWeight: .regular,
+                    color: themeStore.appForegroundPalette.primaryColor
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
+            } else {
+                Text(title)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+        }
+        .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(selectionFill(isSelected: isSelected))
+        .contentShape(Rectangle())
+    }
+
     private func play(_ playlist: Playlist) {
         playbackCoordinator.playRandomTracks(
             playlist.tracks,
@@ -1586,6 +1726,183 @@ private enum SidebarSelection: Hashable {
     case playlist(UUID)
     case artist(String)
     case album(String)
+}
+
+private struct SidebarCollectionSearchField: View {
+    @Binding var text: String
+    let placeholder: String
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清除搜索")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            themeStore.appForegroundPalette.secondaryColor.opacity(0.10),
+            in: Capsule(style: .continuous)
+        )
+        .contentShape(Capsule(style: .continuous))
+    }
+}
+
+private struct SidebarCollectionSearchEmptyLabel: View {
+    let text: String
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+    }
+}
+
+private struct SidebarArtistThumbnail: View {
+    let entry: ArtistEntry?
+    let refreshToken: Int
+
+    @State private var image: NSImage?
+    @Environment(LibraryCacheServices.self) private var cacheServices
+    @Environment(\.displayScale) private var displayScale
+
+    private let side: CGFloat = 24
+    private var targetPixelSize: CGSize {
+        let pixelSide = (side * max(1, displayScale)).rounded(.up)
+        return CGSize(width: pixelSide, height: pixelSide)
+    }
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            }
+        }
+        .frame(width: side, height: side)
+        .clipShape(Circle())
+        .task(id: artworkLoadIdentity) {
+            await loadArtwork()
+        }
+        .accessibilityHidden(true)
+    }
+
+    private var artworkLoadIdentity: String {
+        [
+            entry?.id.uuidString ?? "none",
+            String(entry?.updatedAt.timeIntervalSince1970 ?? 0),
+            entry?.artworkFileName ?? "",
+            String(entry?.artworkData?.count ?? 0),
+            String(Int(targetPixelSize.width)),
+            String(refreshToken)
+        ].joined(separator: ":")
+    }
+
+    private func loadArtwork() async {
+        guard !Task.isCancelled else { return }
+        guard let request = SidebarThumbnailRequest.artist(
+            entry: entry,
+            targetPixelSize: targetPixelSize
+        ) else {
+            image = nil
+            return
+        }
+        let loaded = await SidebarThumbnailLoader.shared.image(
+            for: request,
+            derivativeStore: cacheServices.artworkDerivativeStore
+        )
+        guard !Task.isCancelled else { return }
+        image = loaded
+    }
+}
+
+private struct SidebarAlbumThumbnail: View {
+    let album: AlbumSection
+    let entry: AlbumEntry?
+    let refreshToken: Int
+
+    @State private var image: NSImage?
+    @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
+    @Environment(\.displayScale) private var displayScale
+
+    private let side: CGFloat = 24
+    private let cornerRadius: CGFloat = 5
+    private var targetPixelSize: CGSize {
+        let pixelSide = (side * max(1, displayScale)).rounded(.up)
+        return CGSize(width: pixelSide, height: pixelSide)
+    }
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            }
+        }
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .task(id: artworkLoadIdentity) {
+            await loadArtwork()
+        }
+        .accessibilityHidden(true)
+    }
+
+    private var artworkLoadIdentity: String {
+        [
+            album.key,
+            entry?.id.uuidString ?? "none",
+            String(entry?.updatedAt.timeIntervalSince1970 ?? 0),
+            entry?.artworkFileName ?? "",
+            String(entry?.artworkData?.count ?? 0),
+            String(Int(targetPixelSize.width)),
+            String(refreshToken)
+        ].joined(separator: ":")
+    }
+
+    private func loadArtwork() async {
+        guard !Task.isCancelled else { return }
+        guard let request = await SidebarThumbnailRequest.album(
+            album: album,
+            entry: entry,
+            libraryVM: libraryVM,
+            targetPixelSize: targetPixelSize
+        ) else {
+            image = nil
+            return
+        }
+        guard !Task.isCancelled else { return }
+        let loaded = await SidebarThumbnailLoader.shared.image(
+            for: request,
+            derivativeStore: cacheServices.artworkDerivativeStore
+        )
+        guard !Task.isCancelled else { return }
+        image = loaded
+    }
 }
 
 private struct SidebarPlaylistThumbnail: View {
@@ -1943,6 +2260,44 @@ private struct SidebarNoticeCapsuleButtonStyle: ButtonStyle {
 }
 
 private typealias SidebarUpdateInstallButtonStyle = SidebarNoticeCapsuleButtonStyle
+
+/// Artwork renovation progress row.
+///
+/// Isolated on purpose: it reads the background scheduler's activity revision,
+/// which advances on every unit start, pause and resume. Reading that from
+/// `SidebarView.body` made the whole sidebar re-evaluate whenever background
+/// work advanced.
+private struct SidebarArtworkRenovationRow: View {
+    @EnvironmentObject private var appSession: AppSessionHost
+
+    var body: some View {
+        if let source = source {
+            SidebarTaskProgressView(
+                progress: SidebarTaskProgress(
+                    title: "正在翻新资料库封面",
+                    detail: "已检查 \(source.completed)/\(source.total) 首",
+                    fractionCompleted: source.isReady
+                        ? Double(source.completed) / Double(max(1, source.total))
+                        : nil,
+                    state: .running,
+                    systemImage: "photo.badge.arrow.down"
+                ),
+                onShowDetails: { ArtworkRenovationDialogPresenter.present(source: source) }
+            )
+        }
+    }
+
+    private var source: ArtworkRenovationWorkSource? {
+        let scheduler = appSession.backgroundWorkScheduler
+        // Activity is stored outside Observation; its revision publishes
+        // starts, scheduler pauses, resumes and completions without polling.
+        _ = scheduler.activityRevision
+        guard let source = appSession.activeLibraryBinding.activeSession?.cacheServices.artworkRenovationSource,
+              source.isVisible, !source.isPaused, source.lastError == nil,
+              scheduler.activity(of: .artworkRenovation).running > 0 else { return nil }
+        return source
+    }
+}
 
 private struct SidebarTaskProgressView: View {
     let progress: SidebarTaskProgress

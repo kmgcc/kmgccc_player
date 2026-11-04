@@ -2,7 +2,7 @@
 //  AudioDSPDeviceSettingsView.swift
 //  myPlayer2
 //
-//  Output device chooser at the top of 音效与设备. It picks whose sound the
+//  Output device chooser at the left of 音效与设备. It picks whose sound the
 //  page shows; only the device now playing can be edited.
 //
 
@@ -27,53 +27,47 @@ struct AudioDSPDevicePicker: View {
         Button {
             isOpen.toggle()
         } label: {
-            HStack(spacing: 12) {
-                AudioDSPDeviceIcon(symbolName: shown?.symbolName ?? "hifispeaker", size: 40)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(shown?.name ?? "未识别输出设备")
-                        .settingsRowLabelStyle()
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if let shown {
-                        Text(subtitle(for: shown))
-                            .settingsDescriptionStyle()
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 12)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
-                    .popover(isPresented: $isOpen, arrowEdge: .bottom) {
-                        AppPopupScrollRegion(height: min(320, CGFloat(devices.count) * 72 + 20)) {
-                            LazyVStack(alignment: .leading, spacing: AppPopupStyle().rowSpacing) {
-                                ForEach(devices) { device in
-                                    AudioDSPDevicePickerRow(
-                                        device: device,
-                                        subtitle: subtitle(for: device),
-                                        isSelected: device.id == shown?.id
-                                    ) {
-                                        selectedID = device.id == currentID ? nil : device.id
-                                        isOpen = false
-                                    }
-                                }
-                            }
-                        }
-                        .padding(AppPopupStyle().rowPadding)
-                        .frame(width: 340)
-                        .appPopupAppearance()
+            VStack(spacing: 8) {
+                AudioDSPDeviceIcon(symbolName: shown?.symbolName ?? "hifispeaker", size: 56)
+                // The padding keeps the name centered while reserving room for
+                // the chevron at its trailing edge.
+                Text(shown?.name ?? "未识别输出设备")
+                    .settingsRowLabelStyle()
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 14)
+                    .overlay(alignment: .trailing) {
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
                     }
             }
+            .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(devices.isEmpty)
+        .popover(isPresented: $isOpen, arrowEdge: .bottom) {
+            AppPopupScrollRegion(height: min(320, CGFloat(devices.count) * 72 + 20)) {
+                LazyVStack(alignment: .leading, spacing: AppPopupStyle().rowSpacing) {
+                    ForEach(devices) { device in
+                        AudioDSPDevicePickerRow(
+                            device: device,
+                            subtitle: presetName(device),
+                            isSelected: device.id == shown?.id
+                        ) {
+                            selectedID = device.id == currentID ? nil : device.id
+                            isOpen = false
+                        }
+                    }
+                }
+            }
+            .padding(AppPopupStyle().rowPadding)
+            .frame(width: 340)
+            .appPopupAppearance()
+        }
         .accessibilityLabel("输出设备")
         .accessibilityValue(shown?.name ?? "")
-    }
-
-    private func subtitle(for device: DSPOutputDevice) -> String {
-        device.id == currentID ? "正在播放：\(presetName(device))" : presetName(device)
     }
 }
 

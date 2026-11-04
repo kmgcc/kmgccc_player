@@ -43,6 +43,7 @@ enum SkinDataSchema {
         add("track@1", .track, .change, [
             ("track.hasTrack", .boolean), ("track.id", .text), ("track.title", .text), ("track.artist", .text),
             ("track.album", .text), ("track.duration", .number), ("track.source", .text), ("track.emptyTitleKey", .text),
+            ("track.description", .text), ("track.descriptionSource", .text), ("track.descriptionAttribution", .text),
             ("track.external.rawTitle", .text), ("track.external.rawArtist", .text), ("track.external.rawAlbum", .text),
             ("track.external.effectiveTitle", .text), ("track.external.effectiveArtist", .text),
             ("track.external.effectiveAlbum", .text), ("track.external.usesOverride", .boolean),

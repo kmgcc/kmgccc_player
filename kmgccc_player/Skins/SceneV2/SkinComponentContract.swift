@@ -47,7 +47,7 @@ enum SkinComponentContract {
         "artwork.classicFrame", "artwork.appleStyle", "artwork.rotatingDisc", "artwork.coverGradientBlur",
         "cassette.shell", "cassette.label", "cassette.reels", "cassette.waveform", "cassette.overlay", "cassette.kmgLook",
         "background.host", "background.unifiedMesh", "background.amllMesh", "background.coverGradientBlur", "background.art", "background.artworkBlur", "background.dimming",
-        "text.marquee", "panel.queue", "panel.quickAppearance", "panel.trackDetail", "sheet.trackEdit", "sheet.externalInfo", "sheet.settings",
+        "text.marquee", "text.trackDescription", "panel.queue", "panel.quickAppearance", "panel.trackDetail", "sheet.trackEdit", "sheet.externalInfo", "sheet.settings",
         "control.playPause", "control.previous", "control.next", "control.skip", "control.expandableVolume", "control.actionButton", "control.glassButton", "control.glassTriplePill", "transition.bokeh",
         "behavior.autoHide", "behavior.lyricsEndAutoHide", "behavior.scrollVolume", "behavior.pointerOcclusion", "behavior.windowDrag", "menu.trackContext", "menu.player",
         "control.dislike", "control.outputDevice",
@@ -105,6 +105,7 @@ enum SkinComponentContract {
         catalog.register("text.marquee") { snapshot, config in
             SeamlessMarqueeText(text: config.text("text", fallback: snapshot.track?.title ?? ""), style: .custom(fontSize: config.number("fontSize", fallback: 24)), fontWeight: .regular, color: config.color(fallback: snapshot.theme.accentColor), speed: config.number("speed", fallback: 24))
         }
+        catalog.register("text.trackDescription", isInteractive: true) { _, config in SkinTrackDescriptionComponent(configuration: config) }
         catalog.register("panel.queue", isInteractive: true) { _, _ in WindowPlaybackQueuePanelView() }
         for (id, action) in [("panel.quickAppearance", "quickPanel"), ("panel.trackDetail", "detail"), ("sheet.trackEdit", "edit"), ("sheet.externalInfo", "external"), ("sheet.settings", "settings")] {
             catalog.register(id, isInteractive: true) { _, config in SkinPanelLauncher(action: action, configuration: config) }

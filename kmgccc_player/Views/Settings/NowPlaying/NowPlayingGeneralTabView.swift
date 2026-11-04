@@ -40,6 +40,7 @@ struct NowPlayingGeneralTabView: View {
                     )
                 }
             }
+            .settingsSearchAnchor("skin.select")
 
             if showsArtBackgroundOption || hasSkinOptions {
                 SettingsSection(String(format: NSLocalizedString("settings.now_playing.skin_options", comment: ""), selectedSkin.name)) {
@@ -57,6 +58,7 @@ struct NowPlayingGeneralTabView: View {
                         }
                     }
                 }
+                .settingsSearchAnchor("skin.options")
             }
 
             if selectedSkin.scene == nil {
@@ -78,9 +80,11 @@ struct NowPlayingGeneralTabView: View {
                                 )
                                 playerVM.refreshLedMeterStateFromSettings()
                             }
-                        )
+                        ),
+                        showsLEDCount: false
                     )
                 }
+                .settingsSearchAnchor("skin.miniplayer")
             }
         }
         .onAppear {

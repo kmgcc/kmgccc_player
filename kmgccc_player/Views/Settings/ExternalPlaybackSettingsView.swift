@@ -90,6 +90,7 @@ struct ExternalPlaybackSettingsView: View {
             SettingsSection {
                 SettingsSwitchRow(title: "从外部播放", isOn: $showPlaybackSourceSwitcher)
             }
+            .settingsSearchAnchor("external.main")
 
             SettingsSection("Apple Music") {
                 permissionRow(
@@ -102,6 +103,7 @@ struct ExternalPlaybackSettingsView: View {
                     }
                 }
             }
+            .settingsSearchAnchor("external.apple")
 
             SettingsSection("其他播放器") {
                 VStack(alignment: .leading, spacing: 14) {
@@ -123,6 +125,7 @@ struct ExternalPlaybackSettingsView: View {
                     sourcePriorityEditor
                 }
             }
+            .settingsSearchAnchor("external.other")
 
             SettingsSection {
                 VStack(alignment: .leading, spacing: 12) {
@@ -144,6 +147,7 @@ struct ExternalPlaybackSettingsView: View {
                         .settingsDescriptionStyle()
                 }
             }
+            .settingsSearchAnchor("external.cache")
         }
         .onAppear {
             showPlaybackSourceSwitcher = settings.showPlaybackSourceSwitcher

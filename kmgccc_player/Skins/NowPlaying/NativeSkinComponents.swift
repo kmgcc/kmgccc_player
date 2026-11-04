@@ -107,6 +107,31 @@ private struct SkinTrackInfoComponent: View {
     }
 }
 
+/// A full, scrollable description, using the same inheritance as the detail sheet.
+struct SkinTrackDescriptionComponent: View {
+    let configuration: SkinComponentConfiguration
+    @Environment(PlaybackCoordinator.self) private var playback
+    @Environment(LibraryViewModel.self) private var library
+
+    var body: some View {
+        let _ = library.refreshTrigger
+        let presentation = playback.stablePresentation
+        let detail = presentation.source == .local ? presentation.localTrack.map {
+            TrackDetailResolver.resolve(for: $0, libraryVM: library)
+        } : nil
+        let centered = configuration.text("alignment", fallback: "leading") == "center"
+        ScrollView {
+            Text(detail?.text ?? "")
+                .font(.system(size: configuration.number("fontSize", fallback: 14)))
+                .foregroundStyle(configuration.color(fallback: .primary))
+                .multilineTextAlignment(centered ? .center : .leading)
+                .frame(maxWidth: .infinity, alignment: centered ? .center : .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .id(presentation.localTrack?.id)
+    }
+}
+
 private struct SkinImageComponent: View {
     let configuration: SkinComponentConfiguration
     @Environment(\.skinPackageResources) private var resources

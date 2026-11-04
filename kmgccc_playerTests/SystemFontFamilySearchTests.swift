@@ -114,3 +114,82 @@ final class SystemFontFamilySearchTests: XCTestCase {
         }
     }
 }
+
+@MainActor
+final class SettingsSearchIndexTests: XCTestCase {
+    func testChinesePinyinInitialsAndSubsequenceFindTheSameSetting() {
+        let entry = SettingsSearchEntry(
+            "歌词字体", category: .nowPlaying, tab: 1, tabTitle: "歌词",
+            anchor: "lyrics.fonts", keywords: "字体大小 中文 英文"
+        )
+        for query in ["歌词字体", "歌字", "geciziti", "gczt", "字体 大小", "歌词字休"] {
+            XCTAssertEqual(SettingsSearchIndex.results(for: query, entries: [entry]).map(\.id), [entry.id], query)
+        }
+        XCTAssertTrue(SettingsSearchIndex.results(for: "字体歌词", entries: [entry]).isEmpty)
+    }
+
+    func testOneTypoOrAdjacentLetterSwapCanMatch() {
+        let entries = [SettingsSearchEntry("音量均衡", category: .audio),
+                       SettingsSearchEntry("inter", category: .general)]
+        XCTAssertEqual(SettingsSearchIndex.results(for: "音量军衡", entries: entries).first?.title, "音量均衡")
+        XCTAssertEqual(SettingsSearchIndex.results(for: "itner", entries: entries).first?.title, "inter")
+        XCTAssertTrue(SettingsSearchIndex.results(for: "音乐军衡", entries: entries).isEmpty)
+    }
+
+    func testExactTitlesRankAheadOfPrefixesSubstringsAndFuzzyMatches() {
+        let entries = [
+            SettingsSearchEntry("Ink Type Era", category: .general),
+            SettingsSearchEntry("Winter Text", category: .general),
+            SettingsSearchEntry("Inter UI", category: .general),
+            SettingsSearchEntry("Inter", category: .general),
+        ]
+        XCTAssertEqual(
+            SettingsSearchIndex.results(for: "ｉｎｔｅｒ", entries: entries).map(\.title),
+            ["Inter", "Inter UI", "Winter Text", "Ink Type Era"]
+        )
+    }
+
+    func testAllWordsMustMatchAndCanUsePathAndAliases() {
+        let entry = SettingsSearchEntry(
+            "目标响度", category: .audio, tab: 0, tabTitle: "常规",
+            anchor: "audio.loudness", keywords: "LUFS 音量均衡"
+        )
+        XCTAssertEqual(SettingsSearchIndex.results(for: "音频 LUFS", entries: [entry]).map(\.id), [entry.id])
+        XCTAssertTrue(SettingsSearchIndex.results(for: "音频 missing", entries: [entry]).isEmpty)
+        XCTAssertTrue(SettingsSearchIndex.results(for: " ", entries: [entry]).isEmpty)
+    }
+
+    func testCatalogueKeepsDistinctWindowAndFullscreenDestinations() {
+        let results = SettingsSearchIndex.results(for: "歌词字体", entries: SettingsSearchIndex.entries)
+            .filter { $0.title == "歌词字体" }
+        XCTAssertEqual(results.map(\.category), [.nowPlaying, .fullscreen])
+        XCTAssertTrue(results.allSatisfy { $0.tab == 1 && $0.anchor == "lyrics.fonts" })
+        XCTAssertEqual(Set(SettingsSearchIndex.entries.map(\.id)).count, SettingsSearchIndex.entries.count)
+    }
+
+    func testVisibleSkinParametersFollowCurrentValuesAndSurface() throws {
+        let suiteName = "SettingsSearchIndexTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = SkinParameterStore(defaults: defaults)
+        let enabled = SkinParameterDefinition(
+            id: "enabled", title: "Enabled", defaultValue: .boolean(false), control: .toggle,
+            isUserVisible: true
+        )
+        let detail = SkinParameterDefinition(
+            id: "detail", title: "Detail", defaultValue: .boolean(false), control: .toggle,
+            surfaces: [.window], isUserVisible: true, visibleWhen: "params.enabled"
+        )
+        let definitions = [enabled, detail]
+        func visible(_ surface: SkinSurface) -> [String] {
+            SkinParameterSettingsView.visibleDefinitions(
+                skinID: "test.search", surface: surface, definitions: definitions, store: store
+            ).map(\.id)
+        }
+
+        XCTAssertEqual(visible(.window), ["enabled"])
+        store.set(skinID: "test.search", surface: .window, definition: enabled, value: .boolean(true))
+        XCTAssertEqual(visible(.window), ["enabled", "detail"])
+        XCTAssertEqual(visible(.fullscreen), ["enabled"])
+    }
+}
