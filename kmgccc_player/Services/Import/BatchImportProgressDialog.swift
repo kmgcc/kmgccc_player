@@ -80,6 +80,7 @@ nonisolated enum BatchImportStage {
     case importingFiles
     case enrichingMetadata
     case savingLibrary
+    case orderingAlbums
     case cancelling
     case cancelled
     case completed
@@ -100,6 +101,8 @@ nonisolated enum BatchImportStage {
             return "正在补全导入信息"
         case .savingLibrary:
             return "正在保存到资料库"
+        case .orderingAlbums:
+            return "正在整理专辑曲序"
         case .cancelling:
             return "正在取消导入"
         case .cancelled:
@@ -124,9 +127,11 @@ nonisolated enum BatchImportStage {
         case .enrichingMetadata:
             return 0.82...0.96
         case .savingLibrary:
-            return 0.96...0.995
+            return 0.96...0.99
+        case .orderingAlbums:
+            return 0.99...0.998
         case .cancelling:
-            return 0.995...1.0
+            return 0.998...1.0
         case .cancelled:
             return 1.0...1.0
         case .completed:

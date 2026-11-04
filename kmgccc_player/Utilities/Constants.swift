@@ -51,6 +51,11 @@ nonisolated enum Constants {
             static let artworkCornerRadius: CGFloat = 7
             static let trailingMenuGlyphSize: CGFloat = 14
             static let trailingMenuHitSize: CGFloat = 30
+            /// Album pages reserve this leading column for the track number.
+            /// The number is centered in the column; the row's own content
+            /// shifts right instead of growing wider.
+            static let indexColumnWidth: CGFloat = 22
+            static let indexColumnSpacing: CGFloat = 10
         }
 
         static let trackRowHeight: CGFloat = TrackRow.height

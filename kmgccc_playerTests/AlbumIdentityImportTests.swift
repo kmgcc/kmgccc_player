@@ -201,6 +201,33 @@ final class AlbumIdentityImportTests: XCTestCase {
         XCTAssertEqual(merged.count, 2, "Re-running the pass must not duplicate stored suggestions")
     }
 
+    /// Album identity is artist + title even when one sibling lost its
+    /// album-artist tag. The untagged sibling follows its track artist rather
+    /// than merging the two albums.
+    func testPartialAlbumArtistCoverageStillSplitsSameTitleAlbums() {
+        let alphaOne = Track(title: "A1", artist: "Alpha", album: "Greatest Hits")
+        alphaOne.albumArtist = "Alpha"
+        let alphaTwo = Track(title: "A2", artist: "Alpha", album: "Greatest Hits")
+        alphaTwo.albumArtist = "Alpha"
+        let betaOne = Track(title: "B1", artist: "Beta", album: "Greatest Hits")
+        betaOne.albumArtist = "Beta"
+        let betaTwo = Track(title: "B2", artist: "Beta", album: "Greatest Hits")
+        betaTwo.albumArtist = "Beta"
+        let untagged = Track(title: "A3", artist: "Alpha", album: "Greatest Hits")
+
+        let grouping = LibraryNormalization.buildAlbumGrouping(
+            tracks: [alphaOne, alphaTwo, betaOne, betaTwo, untagged]
+        )
+
+        let alphaKey = grouping.albumKeyByTrackID[alphaOne.id]
+        let betaKey = grouping.albumKeyByTrackID[betaOne.id]
+        XCTAssertNotNil(alphaKey)
+        XCTAssertNotNil(betaKey)
+        XCTAssertNotEqual(alphaKey, betaKey)
+        XCTAssertEqual(grouping.albumKeyByTrackID[untagged.id], alphaKey)
+        XCTAssertEqual(grouping.sections.count, 2)
+    }
+
     func testFolderInferenceSkipsExplicitMarkerAndUniformArtists() {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Tagged", isDirectory: true)
         let explicitlyTagged = [

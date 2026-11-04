@@ -25,6 +25,10 @@ struct AlbumEntry: Identifiable {
     var language: String
     var labelOrCompany: String
     var qqMusicAlbumMid: String?
+    /// Absolute catalog positions (1-based, with gaps for catalog tracks the
+    /// library does not contain) keyed by local track id. Nil means sequential
+    /// album-page numbering.
+    var catalogTrackNumbers: [UUID: Int]?
     var metadataSource: String?
     var metadataFetchedAt: Date?
     var metadataConfidence: Double?
@@ -86,6 +90,7 @@ struct AlbumEntry: Identifiable {
         language: String = "",
         labelOrCompany: String = "",
         qqMusicAlbumMid: String? = nil,
+        catalogTrackNumbers: [UUID: Int]? = nil,
         metadataSource: String? = nil,
         metadataFetchedAt: Date? = nil,
         metadataConfidence: Double? = nil,
@@ -116,6 +121,7 @@ struct AlbumEntry: Identifiable {
         self.language = language
         self.labelOrCompany = labelOrCompany
         self.qqMusicAlbumMid = qqMusicAlbumMid
+        self.catalogTrackNumbers = catalogTrackNumbers
         self.metadataSource = metadataSource
         self.metadataFetchedAt = metadataFetchedAt
         self.metadataConfidence = metadataConfidence

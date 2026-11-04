@@ -159,6 +159,11 @@ final class UIStateViewModel {
     /// settings page that has no error details.
     private(set) var libraryImportFailureReports: [LibraryImportFailureReport] = []
 
+    /// Album-order failures from the most recent import or manual action.
+    /// They stay available until the listener retries, opens the album, or
+    /// dismisses the notice.
+    private(set) var albumOrderingFailures: [AlbumOrderingFailure] = []
+
     func recordLibraryImportFailures(
         _ failures: [ImportInputFailure],
         origin: LibraryImportOrigin
@@ -176,6 +181,34 @@ final class UIStateViewModel {
 
     func clearLibraryImportFailureReports() {
         libraryImportFailureReports.removeAll()
+    }
+
+    /// Applies one ordering pass. Successful albums clear older failures;
+    /// current failures replace the same album's stale detail.
+    func applyAlbumOrderingOutcome(_ outcome: AlbumOrderingOutcome) {
+        guard !outcome.updatedAlbumKeys.isEmpty || !outcome.failures.isEmpty else { return }
+        let updated = Set(outcome.updatedAlbumKeys)
+        if !updated.isEmpty {
+            albumOrderingFailures.removeAll { updated.contains($0.albumKey) }
+        }
+        for failure in outcome.failures {
+            if let index = albumOrderingFailures.firstIndex(where: { $0.albumKey == failure.albumKey }) {
+                albumOrderingFailures[index] = failure
+            } else {
+                albumOrderingFailures.append(failure)
+            }
+        }
+        if albumOrderingFailures.count > 20 {
+            albumOrderingFailures.removeFirst(albumOrderingFailures.count - 20)
+        }
+    }
+
+    func removeAlbumOrderingFailure(albumKey: String) {
+        albumOrderingFailures.removeAll { $0.albumKey == albumKey }
+    }
+
+    func clearAlbumOrderingFailures() {
+        albumOrderingFailures.removeAll()
     }
 
     func showSidebarNotice(

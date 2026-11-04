@@ -1250,6 +1250,8 @@ struct AlbumInfoEditSheet: View {
     @State private var isImportingArtwork = false
     @State private var isMetadataLookupInFlight = false
     @State private var metadataMessage: String?
+    @State private var isOrderingInFlight = false
+    @State private var orderingMessage: String?
     @State private var isArtworkGenerationInFlight = false
     @State private var coverCoordinator: CoverSearchCoordinator?
     @State private var loudnessUnified = false
@@ -1311,6 +1313,8 @@ struct AlbumInfoEditSheet: View {
                 }
                 labeledEditor("介绍", prompt: "添加专辑介绍…", text: $description)
             case .details:
+                trackOrderSection
+
                 metadataLookupButton(
                     isLoading: isMetadataLookupInFlight, message: metadataMessage,
                     info: "联网查找这张专辑，补全介绍、类型与发行信息。"
@@ -1447,6 +1451,58 @@ struct AlbumInfoEditSheet: View {
             draft.artworkFileName = "artwork.png"
         }
         return draft
+    }
+
+    private var trackOrderSection: some View {
+        SettingsSection(
+            "曲序",
+            info: "按 QQ 音乐的专辑曲序排列歌曲；联网整理后，歌曲前的数字会显示专辑内的实际轨号。"
+        ) {
+            HStack(spacing: 8) {
+                Button {
+                    organizeTrackOrder()
+                } label: {
+                    Label("联网整理曲序", systemImage: "arrow.up.arrow.down")
+                }
+                .buttonStyle(AppPanelButtonStyle())
+                .font(.system(size: SettingsStyleTokens.rowFontSize, weight: .medium))
+                .disabled(isOrderingInFlight)
+
+                if isOrderingInFlight {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                if let orderingMessage {
+                    Text(orderingMessage)
+                        .settingsDescriptionStyle()
+                }
+            }
+        }
+    }
+
+    private func organizeTrackOrder() {
+        guard !isOrderingInFlight else { return }
+        guard displayTitle.trimmingCharacters(in: .whitespacesAndNewlines) == entry.displayTitle else {
+            orderingMessage = "请先保存专辑名称"
+            return
+        }
+        isOrderingInFlight = true
+        orderingMessage = nil
+        Task {
+            let outcome = await libraryVM.organizeAlbumTrackOrder(albumKey: entry.canonicalKey)
+            if outcome.updatedAlbumCount > 0 {
+                await libraryVM.syncVisibleStateFromRepositoryAfterImport()
+            }
+            isOrderingInFlight = false
+            if outcome.updatedAlbumCount > 0 {
+                orderingMessage = "已按专辑曲序排列"
+            } else if let failure = outcome.failures.first {
+                orderingMessage = failure.detail
+            } else {
+                orderingMessage = "曲序已是最新"
+            }
+        }
     }
 
     private func fetchMetadata() {

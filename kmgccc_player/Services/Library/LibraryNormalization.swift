@@ -585,22 +585,37 @@ nonisolated enum LibraryNormalization {
             trustedAlbumArtistGroups[artistKey, default: []].append(track)
         }
 
-        if trustedAlbumArtistGroups.count > 1
-            && trustedAlbumArtistGroups.values.flatMap({ $0 }).count == tracks.count
-        {
-            return trustedAlbumArtistGroups
-                .sorted { $0.key < $1.key }
-                .map { artistKey, groupedTracks in
-                    (
-                        key: composeAlbumKey(
-                            album: groupedTracks.first?.album,
-                            disambiguation: .albumArtist(artistKey)
-                        ),
-                        tracks: groupedTracks,
-                        preferredArtistCanonicalName: artistKey,
-                        memberArtistCanonicalNames: memberArtistCanonicalNames(for: groupedTracks)
-                    )
-                }
+        if trustedAlbumArtistGroups.count > 1 {
+            var groups = trustedAlbumArtistGroups
+            var assignedIDs = Set(groups.values.flatMap { $0.map(\.id) })
+            for track in tracks where !assignedIDs.contains(track.id) {
+                let targetKey = primaryArtistClusterKey(for: track)
+                    .flatMap { groups[$0] != nil ? $0 : nil }
+                    ?? groups.max { lhs, rhs in
+                        if lhs.value.count == rhs.value.count {
+                            return lhs.key > rhs.key
+                        }
+                        return lhs.value.count < rhs.value.count
+                    }?.key
+                guard let targetKey else { continue }
+                groups[targetKey, default: []].append(track)
+                assignedIDs.insert(track.id)
+            }
+            if groups.values.flatMap({ $0 }).count == tracks.count {
+                return groups
+                    .sorted { $0.key < $1.key }
+                    .map { artistKey, groupedTracks in
+                        (
+                            key: composeAlbumKey(
+                                album: groupedTracks.first?.album,
+                                disambiguation: .albumArtist(artistKey)
+                            ),
+                            tracks: groupedTracks,
+                            preferredArtistCanonicalName: artistKey,
+                            memberArtistCanonicalNames: memberArtistCanonicalNames(for: groupedTracks)
+                        )
+                    }
+            }
         }
 
         var trustedTrackArtistGroups: [String: [Track]] = [:]

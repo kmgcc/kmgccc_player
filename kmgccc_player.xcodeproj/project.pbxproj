@@ -73,6 +73,7 @@
 		C31000000000000000000001 /* kmgccc_playerTests/SeamlessMarqueeTimingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C31000000000000000000002 /* kmgccc_playerTests/SeamlessMarqueeTimingTests.swift */; };
 		C32000000000000000000001 /* kmgccc_playerTests/SystemFontFamilySearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C32000000000000000000011 /* kmgccc_playerTests/SystemFontFamilySearchTests.swift */; };
 		C33000000000000000000001 /* kmgccc_playerTests/NowPlayingPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C33000000000000000000011 /* kmgccc_playerTests/NowPlayingPresentationTests.swift */; };
+		C34000000000000000000001 /* kmgccc_playerTests/AlbumTrackOrderResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C34000000000000000000011 /* kmgccc_playerTests/AlbumTrackOrderResolverTests.swift */; };
 		C3A000000000000000000201 /* LocalLyricsFormatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A000000000000000000202 /* LocalLyricsFormatTests.swift */; };
 		C3F000000000000000000001 /* PlaybackOutputGainControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F000000000000000000101 /* PlaybackOutputGainControllerTests.swift */; };
 		C3F000000000000000000002 /* AudioProcessingGlobalsControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F000000000000000000102 /* AudioProcessingGlobalsControllerTests.swift */; };
@@ -204,6 +205,7 @@
 		C31000000000000000000002 /* kmgccc_playerTests/SeamlessMarqueeTimingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/SeamlessMarqueeTimingTests.swift; sourceTree = "<group>"; };
 		C32000000000000000000011 /* kmgccc_playerTests/SystemFontFamilySearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/SystemFontFamilySearchTests.swift; sourceTree = "<group>"; };
 		C33000000000000000000011 /* kmgccc_playerTests/NowPlayingPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/NowPlayingPresentationTests.swift; sourceTree = "<group>"; };
+		C34000000000000000000011 /* kmgccc_playerTests/AlbumTrackOrderResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/AlbumTrackOrderResolverTests.swift; sourceTree = "<group>"; };
 		C3A000000000000000000202 /* LocalLyricsFormatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LocalLyricsFormatTests.swift; path = kmgccc_playerTests/LocalLyricsFormatTests.swift; sourceTree = "<group>"; };
 		C3F000000000000000000101 /* PlaybackOutputGainControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackOutputGainControllerTests.swift; path = kmgccc_playerTests/PlaybackOutputGainControllerTests.swift; sourceTree = "<group>"; };
 		C3F000000000000000000102 /* AudioProcessingGlobalsControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioProcessingGlobalsControllerTests.swift; path = kmgccc_playerTests/AudioProcessingGlobalsControllerTests.swift; sourceTree = "<group>"; };
@@ -466,6 +468,7 @@
 				C20000000000000000000014 /* RendererPlaybackPipeline.swift */,
 				C21000000000000000000011 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift */,
 				C33000000000000000000011 /* kmgccc_playerTests/NowPlayingPresentationTests.swift */,
+				C34000000000000000000011 /* kmgccc_playerTests/AlbumTrackOrderResolverTests.swift */,
 				D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */,
 				D40000000000000000000011 /* kmgccc_playerTests/DisplayHDRCapabilityTests.swift */,
 				C31000000000000000000002 /* kmgccc_playerTests/SeamlessMarqueeTimingTests.swift */,
@@ -832,6 +835,7 @@
 				C2D000000000000000000004 /* AudioDSPProcessorTests.swift in Sources */,
 				C21000000000000000000001 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift in Sources */,
 				C33000000000000000000001 /* kmgccc_playerTests/NowPlayingPresentationTests.swift in Sources */,
+				C34000000000000000000001 /* kmgccc_playerTests/AlbumTrackOrderResolverTests.swift in Sources */,
 				D30000000000000000000001 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift in Sources */,
 				D40000000000000000000001 /* kmgccc_playerTests/DisplayHDRCapabilityTests.swift in Sources */,
 				C31000000000000000000001 /* kmgccc_playerTests/SeamlessMarqueeTimingTests.swift in Sources */,

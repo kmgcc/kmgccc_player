@@ -833,6 +833,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         albumEntries
     }
 
+    func updateAlbumCatalogTrackNumbers(albumKey: String, numbers: [UUID: Int]) async {
+        guard let index = albumEntries.firstIndex(where: { $0.canonicalKey == albumKey }) else {
+            return
+        }
+        albumEntries[index].catalogTrackNumbers = numbers
+    }
+
     @discardableResult
     func updateArtistEntry(_ entry: ArtistEntry) async throws -> ArtistEntry {
         let canonicalName = entry.canonicalName
@@ -1605,6 +1612,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             manuallyEditedFields: entry.manuallyEditedFields,
             createdAt: entry.createdAt,
             updatedAt: entry.updatedAt,
+            catalogTrackNumbers: entry.catalogTrackNumbers,
             loudnessUnified: entry.loudnessUnifiedOverride
         )
         let destinationArtworkURL = entry.artworkFileName.map {
@@ -1704,6 +1712,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             language: preferred.language.isEmpty ? fallback.language : preferred.language,
             labelOrCompany: preferred.labelOrCompany.isEmpty ? fallback.labelOrCompany : preferred.labelOrCompany,
             qqMusicAlbumMid: preferred.qqMusicAlbumMid ?? fallback.qqMusicAlbumMid,
+            catalogTrackNumbers: preferred.catalogTrackNumbers ?? fallback.catalogTrackNumbers,
             metadataSource: preferred.metadataSource ?? fallback.metadataSource,
             metadataFetchedAt: preferred.metadataFetchedAt ?? fallback.metadataFetchedAt,
             metadataConfidence: preferred.metadataConfidence ?? fallback.metadataConfidence,

@@ -185,6 +185,10 @@ protocol LibraryRepositoryProtocol: AnyObject {
     func deleteArtist(_ entry: ArtistEntry) async throws
     func deleteAlbum(_ entry: AlbumEntry) async throws
 
+    /// Keeps the in-memory album projection in step with a sidecar written by
+    /// the online ordering pass, without a full library reload.
+    func updateAlbumCatalogTrackNumbers(albumKey: String, numbers: [UUID: Int]) async
+
     // MARK: - Playlist Description
 
     func updatePlaylistDescription(_ playlist: Playlist, description: String) async throws

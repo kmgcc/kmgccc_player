@@ -2174,6 +2174,7 @@ final class LocalLibraryService {
             persistedSidecar.trackSortKey = sidecar.trackSortKey ?? existing?.trackSortKey
             persistedSidecar.trackSortOrder = sidecar.trackSortOrder ?? existing?.trackSortOrder
             persistedSidecar.customTrackOrder = sidecar.customTrackOrder ?? existing?.customTrackOrder
+            persistedSidecar.catalogTrackNumbers = sidecar.catalogTrackNumbers ?? existing?.catalogTrackNumbers
             // Writers that do not carry the album's loudness switch keep it;
             // `setAlbumLoudnessOverride` is the one place that clears it.
             persistedSidecar.loudnessUnified = sidecar.loudnessUnified ?? existing?.loudnessUnified
@@ -2284,7 +2285,8 @@ final class LocalLibraryService {
         albumID: UUID,
         orderedTrackIDs: [UUID],
         sortOrder: String,
-        availableTrackIDs: [UUID]
+        availableTrackIDs: [UUID],
+        catalogTrackNumbers: [UUID: Int]? = nil
     ) -> Bool {
         guard var sidecar = loadAlbumSidecar(albumID: albumID) else { return false }
         sidecar.trackSortKey = "custom"
@@ -2293,6 +2295,10 @@ final class LocalLibraryService {
             orderedTrackIDs,
             availableIDs: availableTrackIDs
         )
+        if let catalogTrackNumbers {
+            let available = Set(availableTrackIDs)
+            sidecar.catalogTrackNumbers = catalogTrackNumbers.filter { available.contains($0.key) }
+        }
         do {
             try writeAlbumSidecar(sidecar, artworkData: nil)
             return true

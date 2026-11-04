@@ -21,6 +21,17 @@ nonisolated struct QQMusicArtworkCandidate: Codable, Equatable, Sendable {
     var confidence: Double?
 }
 
+/// One row of the catalog album's track list, already in disc/track order.
+nonisolated struct QQMusicAlbumSong: Codable, Equatable, Sendable {
+    var songMid: String?
+    var title: String?
+    var artist: String?
+    var album: String?
+    var duration: Int?
+    var discNumber: Int?
+    var trackNumber: Int?
+}
+
 nonisolated enum MetadataDetailSource: String, Codable, Sendable {
     case qqmusic
     case musicbrainz
@@ -678,6 +689,7 @@ actor QQMusicHelperProcess {
         let ok: Bool
         let candidates: [QQMusicArtworkCandidate]?
         let detail: QQMusicMetadataDetail?
+        let songs: [QQMusicAlbumSong]?
         let error: String?
     }
 
@@ -717,6 +729,12 @@ actor QQMusicHelperProcess {
         let album: String?
         let songMid: String?
         let duration: Int?
+    }
+
+    private struct AlbumSongsParams: Encodable, Sendable {
+        let album: String?
+        let artist: String?
+        let albumMid: String?
     }
 
     private let requestTimeout: TimeInterval = 15
@@ -830,19 +848,48 @@ actor QQMusicHelperProcess {
         )
     }
 
+    /// The catalog's own track order, sorted by disc and track number.
+    func fetchAlbumSongs(
+        album: String? = nil,
+        artist: String? = nil,
+        albumMid: String? = nil
+    ) async throws -> [QQMusicAlbumSong] {
+        let startedAt = Date()
+        let reply = try await perform(
+            method: "fetch_album_songs",
+            params: AlbumSongsParams(
+                album: trimmedOptional(album),
+                artist: trimmedOptional(artist),
+                albumMid: trimmedOptional(albumMid)
+            )
+        )
+        let songs = reply.response.songs ?? []
+        recordSuccess()
+        let durationMs = Int(Date().timeIntervalSince(startedAt) * 1_000)
+        Log.info(
+            "[QQMusicHelperProcess] response id=\(reply.id) method=fetch_album_songs songs=\(songs.count) durationMs=\(durationMs)",
+            category: .import
+        )
+        return songs
+    }
+
     func terminate() {
         stopProcess(failingPendingWith: QQMusicHelperError.cancelled)
     }
 
-    private func request<Params: Encodable & Sendable>(
+    private struct HelperReply: Sendable {
+        let id: String
+        let response: QQMusicHelperResponse
+    }
+
+    private func perform<Params: Encodable & Sendable>(
         method: String,
         params: Params
-    ) async throws -> [QQMusicArtworkCandidate] {
+    ) async throws -> HelperReply {
         try checkCircuitBreaker()
         try await ensureRunning()
 
         let id = UUID().uuidString
-        let startedAt = Date()
         let query = querySummary(params)
         Log.info("[QQMusicHelperProcess] request id=\(id) method=\(method) query=\(query)", category: .import)
 
@@ -874,11 +921,20 @@ actor QQMusicHelperProcess {
             throw QQMusicHelperError.requestFailed(message)
         }
 
-        let candidates = response.candidates ?? []
+        return HelperReply(id: id, response: response)
+    }
+
+    private func request<Params: Encodable & Sendable>(
+        method: String,
+        params: Params
+    ) async throws -> [QQMusicArtworkCandidate] {
+        let startedAt = Date()
+        let reply = try await perform(method: method, params: params)
+        let candidates = reply.response.candidates ?? []
         recordSuccess()
         let durationMs = Int(Date().timeIntervalSince(startedAt) * 1_000)
         let topConfidence = candidates.compactMap(\.confidence).max() ?? 0
-        Log.info("[QQMusicHelperProcess] response id=\(id) method=\(method) candidates=\(candidates.count) topConfidence=\(String(format: "%.2f", topConfidence)) durationMs=\(durationMs)", category: .import)
+        Log.info("[QQMusicHelperProcess] response id=\(reply.id) method=\(method) candidates=\(candidates.count) topConfidence=\(String(format: "%.2f", topConfidence)) durationMs=\(durationMs)", category: .import)
         return candidates
     }
 
@@ -886,53 +942,18 @@ actor QQMusicHelperProcess {
         method: String,
         params: Params
     ) async throws -> QQMusicMetadataDetail {
-        try checkCircuitBreaker()
-        try await ensureRunning()
-
-        let id = UUID().uuidString
         let startedAt = Date()
-        let query = querySummary(params)
-        Log.info("[QQMusicHelperProcess] request id=\(id) method=\(method) query=\(query)", category: .import)
-
-        let response: QQMusicHelperResponse
-        do {
-            response = try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
-                    self.enqueueRequest(
-                        id: id,
-                        method: method,
-                        params: params,
-                        continuation: continuation
-                    )
-                }
-            } onCancel: {
-                Task {
-                    await self.failPendingRequest(id: id, error: QQMusicHelperError.cancelled)
-                }
-            }
-        } catch {
-            Log.warning("[QQMusicHelperProcess] request failed id=\(id) method=\(method) reason=\(error)", category: .import)
-            throw error
-        }
-
-        guard response.ok else {
-            let message = response.error ?? "unknown helper error"
-            recordFailure(reason: message)
-            Log.warning("[QQMusicHelperProcess] request failed id=\(id) method=\(method) reason=\(message)", category: .import)
-            throw QQMusicHelperError.requestFailed(message)
-        }
-
-        guard let detail = response.detail else {
+        let reply = try await perform(method: method, params: params)
+        guard let detail = reply.response.detail else {
             let message = "missing metadata detail"
             recordFailure(reason: message)
-            Log.warning("[QQMusicHelperProcess] request failed id=\(id) method=\(method) reason=\(message)", category: .import)
+            Log.warning("[QQMusicHelperProcess] request failed id=\(reply.id) method=\(method) reason=\(message)", category: .import)
             throw QQMusicHelperError.invalidResponse(message)
         }
-
         recordSuccess()
         let durationMs = Int(Date().timeIntervalSince(startedAt) * 1_000)
         let confidence = detail.confidence ?? detail.metadataConfidence ?? 0
-        Log.info("[QQMusicHelperProcess] response id=\(id) method=\(method) detail=1 confidence=\(String(format: "%.2f", confidence)) durationMs=\(durationMs)", category: .import)
+        Log.info("[QQMusicHelperProcess] response id=\(reply.id) method=\(method) detail=1 confidence=\(String(format: "%.2f", confidence)) durationMs=\(durationMs)", category: .import)
         return detail
     }
 

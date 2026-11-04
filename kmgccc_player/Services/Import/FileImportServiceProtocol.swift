@@ -46,6 +46,9 @@ protocol FileImportServiceProtocol: AnyObject {
 
     /// Cancel background enrichment work and release strong references for deleted tracks.
     func cancelEnrichment(for trackIDs: Set<UUID>) async
+
+    /// Explicit online ordering action for one album.
+    func organizeAlbumTrackOrder(albumKey: String) async -> AlbumOrderingOutcome
 }
 
 extension FileImportServiceProtocol {

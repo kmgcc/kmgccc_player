@@ -405,6 +405,7 @@ final class LibraryViewModel {
         didSet {
             albumKeyFirstTrackMap = nil
             tracksRevision &+= 1
+            onMotionAlignmentTracksChanged?(nil)
         }
     }
 
@@ -683,6 +684,10 @@ final class LibraryViewModel {
     private var importService: FileImportServiceProtocol?
     var currentTrackIDProvider: (() -> UUID?)?
     var onTracksDeleted: ((Set<UUID>) -> Void)?
+    /// Runs once the deletion is durable. Referenced libraries use it to
+    /// retire single-file sources that no longer contribute a song.
+    var afterTracksDeleted: (() async -> Void)?
+    var onMotionAlignmentTracksChanged: (([UUID]?) -> Void)?
     var onPlaylistDeleted: ((UUID) async -> Void)?
     /// Session-owned transaction for deleting a playlist and its referenced
     /// source/membership projections. The supplied closure is the final
@@ -829,7 +834,7 @@ final class LibraryViewModel {
                 rawValue: persistedOrdering.allAlbums?.sortKey
                     ?? legacyAlbumSortKey
                     ?? ""
-            ) ?? .title
+            ) ?? .updatedAt
         self.albumSortOrder = TrackSortOrder(
             rawValue: persistedOrdering.allAlbums?.sortOrder
                 ?? legacyTrackSortOrder
@@ -840,7 +845,7 @@ final class LibraryViewModel {
                 rawValue: persistedOrdering.allArtists?.sortKey
                     ?? legacyArtistSortKey
                     ?? ""
-            ) ?? .name
+            ) ?? .updatedAt
         self.artistSortOrder = TrackSortOrder(
             rawValue: persistedOrdering.allArtists?.sortOrder
                 ?? legacyTrackSortOrder
@@ -951,6 +956,28 @@ final class LibraryViewModel {
     func setImportService(_ service: FileImportServiceProtocol) {
         self.importService = service
         Log.debug("Import service set", category: .library)
+    }
+
+    /// Manual online ordering from the album editor. The result is published
+    /// through the same hook as the import-time pass.
+    func organizeAlbumTrackOrder(albumKey: String) async -> AlbumOrderingOutcome {
+        guard let importService else { return .empty }
+        let outcome = await importService.organizeAlbumTrackOrder(albumKey: albumKey)
+        if outcome.updatedAlbumCount > 0 {
+            refreshAlbumOrderingMetadata(albumKey: albumKey)
+        }
+        return outcome
+    }
+
+    /// Re-reads only the album's ordering metadata after a manual catalog pass.
+    /// The repository's in-memory album projection is otherwise refreshed by a
+    /// full library reload.
+    func refreshAlbumOrderingMetadata(albumKey: String) {
+        guard let sidecar = libraryService.loadAlbumSidecar(canonicalKey: albumKey),
+              let index = albumEntries.firstIndex(where: { $0.canonicalKey == albumKey })
+        else { return }
+        albumEntries[index].catalogTrackNumbers = sidecar.catalogTrackNumbers
+        markRefreshTrigger(affectsHome: false)
     }
 
     func preferenceStats(for trackID: UUID) -> TrackPreferenceStats {
@@ -1080,6 +1107,39 @@ final class LibraryViewModel {
         return tracks.sorted { sortTrack($0, $1) }
     }
 
+    /// Album members in the order the album page shows them, including the
+    /// catalog order stored after import. Falls back to library order when the
+    /// album has no custom order.
+    func tracksForAlbumInDisplayOrder(_ albumKey: String) -> [Track] {
+        let tracks = allTracks.filter { $0.albumGroupKey == albumKey }
+        guard let sidecar = albumSidecar(for: albumKey),
+              sidecar.trackSortKey == TrackSortKey.custom.rawValue,
+              let customOrder = sidecar.customTrackOrder
+        else { return tracks }
+        let rank = Dictionary(
+            customOrder.enumerated().map { ($0.element, $0.offset) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let sourceIndex = Dictionary(
+            uniqueKeysWithValues: tracks.enumerated().map { ($0.element.id, $0.offset) }
+        )
+        return tracks.sorted { lhs, rhs in
+            switch (rank[lhs.id], rank[rhs.id]) {
+            case let (lhsRank?, rhsRank?):
+                return lhsRank < rhsRank
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            case (nil, nil):
+                let lhsSource = sourceIndex[lhs.id] ?? Int.max
+                let rhsSource = sourceIndex[rhs.id] ?? Int.max
+                if lhsSource != rhsSource { return lhsSource < rhsSource }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+        }
+    }
+
     func sortedPlaylistsForDisplay(_ source: [Playlist]? = nil) -> [Playlist] {
         _ = collectionSortRevision
         let playlistsToSort = source ?? playlists
@@ -1149,10 +1209,7 @@ final class LibraryViewModel {
             return sortByCustomCollectionOrder(artistsToSort, customOrderIDs: order)
         }
 
-        let aggregateStats = LibraryAggregateStats(
-            tracks: allTracks,
-            preferenceStatsService: preferenceStatsService
-        )
+        let aggregateStats = aggregateStatsIfNeeded(for: artistSortKey)
         return artistsToSort.sorted {
             compareArtists($0, $1, aggregateStats: aggregateStats, customOrderIDs: order)
         }
@@ -1169,13 +1226,68 @@ final class LibraryViewModel {
             return sortByCustomCollectionOrder(albumsToSort, customOrderIDs: order)
         }
 
-        let aggregateStats = LibraryAggregateStats(
-            tracks: allTracks,
-            preferenceStatsService: preferenceStatsService
-        )
+        let aggregateStats = aggregateStatsIfNeeded(for: albumSortKey)
         return albumsToSort.sorted {
             compareAlbums($0, $1, aggregateStats: aggregateStats, customOrderIDs: order)
         }
+    }
+
+    /// Sidebar artists in the same order as the All Artists page. Entries carry
+    /// the sortable metadata; runtime sections carry the visible rows, so the
+    /// entry order is projected onto the section keys.
+    func sortedArtistSectionsForDisplay(_ source: [ArtistSection]? = nil) -> [ArtistSection] {
+        _ = collectionSortRevision
+        let sections = source ?? runtimeArtists
+        guard !sections.isEmpty else { return [] }
+
+        var rankByKey: [String: Int] = [:]
+        rankByKey.reserveCapacity(artistEntries.count)
+        for (index, entry) in sortedArtistEntriesForDisplay().enumerated()
+        where rankByKey[entry.canonicalName] == nil {
+            rankByKey[entry.canonicalName] = index
+        }
+        return sections.enumerated().sorted { lhs, rhs in
+            let lhsRank = rankByKey[lhs.element.key] ?? Int.max
+            let rhsRank = rankByKey[rhs.element.key] ?? Int.max
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            return lhs.offset < rhs.offset
+        }.map { $0.element }
+    }
+
+    /// Sidebar albums in the same order as the All Albums page.
+    func sortedAlbumSectionsForDisplay(_ source: [AlbumSection]? = nil) -> [AlbumSection] {
+        _ = collectionSortRevision
+        let sections = source ?? runtimeAlbums
+        guard !sections.isEmpty else { return [] }
+
+        var rankByKey: [String: Int] = [:]
+        rankByKey.reserveCapacity(albumEntries.count)
+        for (index, entry) in sortedAlbumEntriesForDisplay().enumerated()
+        where rankByKey[entry.canonicalKey] == nil {
+            rankByKey[entry.canonicalKey] = index
+        }
+        return sections.enumerated().sorted { lhs, rhs in
+            let lhsRank = rankByKey[lhs.element.key] ?? Int.max
+            let rhsRank = rankByKey[rhs.element.key] ?? Int.max
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            return lhs.offset < rhs.offset
+        }.map { $0.element }
+    }
+
+    private func aggregateStatsIfNeeded(for artistKey: ArtistSortKey) -> LibraryAggregateStats? {
+        guard artistKey == .playCountTotal || artistKey == .preferenceTotal else { return nil }
+        return LibraryAggregateStats(
+            tracks: allTracks,
+            preferenceStatsService: preferenceStatsService
+        )
+    }
+
+    private func aggregateStatsIfNeeded(for albumKey: AlbumSortKey) -> LibraryAggregateStats? {
+        guard albumKey == .playCountTotal || albumKey == .preferenceTotal else { return nil }
+        return LibraryAggregateStats(
+            tracks: allTracks,
+            preferenceStatsService: preferenceStatsService
+        )
     }
 
     func supportsCustomTrackOrder(for selection: LibrarySelection? = nil) -> Bool {
@@ -1431,6 +1543,8 @@ final class LibraryViewModel {
     func notifyTrackAuxiliaryDataChanged(trackIDs: [UUID]) {
         let uniqueTrackIDs = Array(Set(trackIDs)).sorted { $0.uuidString < $1.uuidString }
         guard !uniqueTrackIDs.isEmpty else { return }
+
+        onMotionAlignmentTracksChanged?(uniqueTrackIDs)
 
         markRefreshTrigger(affectsHome: false)
 
@@ -3047,6 +3161,7 @@ final class LibraryViewModel {
             reason: "trackDelete",
             invalidatedSelectionIdentities: invalidatedSelectionIdentities
         )
+        await afterTracksDeleted?()
     }
 
     // MARK: - Artist/Album Entry Lookups
@@ -3821,21 +3936,29 @@ final class LibraryViewModel {
         duration: Double?
     ) async -> [QQMusicArtworkCandidate] {
         let durationInt = duration.map { Int($0.rounded()) }
-        do {
-            return try await QQMusicHelperProcess.shared.searchTrackArtwork(
-                title: title,
-                artist: artist,
-                album: album,
-                duration: durationInt,
-                limit: 5
-            )
-        } catch {
-            Log.warning(
-                "[MetadataDetail] search metadata candidates failed title=\(title) reason=\(error)",
-                category: .library
-            )
-            return []
+        let variants = ManualMusicSearch.queries(title: title, artist: artist, album: album)
+        var candidates: [QQMusicArtworkCandidate] = []
+        for variant in variants {
+            guard !Task.isCancelled else { return [] }
+            do {
+                let found = try await QQMusicHelperProcess.shared.searchTrackArtwork(
+                    title: variant.title,
+                    artist: variant.artist,
+                    album: variant.album,
+                    duration: durationInt,
+                    limit: 10
+                )
+                candidates.append(contentsOf: found)
+            } catch {
+                Log.warning(
+                    "[MetadataDetail] search metadata candidates failed title=\(title) reason=\(error)",
+                    category: .library
+                )
+                break
+            }
         }
+        guard !Task.isCancelled else { return [] }
+        return ManualMusicSearch.sortMetadataCandidates(candidates, title: title, artist: artist, album: album)
     }
 
     func searchTrackMetadataCandidatesForAutomation(
@@ -4627,7 +4750,7 @@ final class LibraryViewModel {
     private func compareArtists(
         _ lhs: ArtistEntry,
         _ rhs: ArtistEntry,
-        aggregateStats: LibraryAggregateStats,
+        aggregateStats: LibraryAggregateStats?,
         customOrderIDs: [UUID]?
     ) -> Bool {
         let result: ComparisonResult
@@ -4640,13 +4763,13 @@ final class LibraryViewModel {
             result = compareInts(lhs.albumCount, rhs.albumCount)
         case .playCountTotal:
             result = compareAggregateMetric(
-                aggregateStats.artistPlayCount(for: lhs),
-                aggregateStats.artistPlayCount(for: rhs)
+                aggregateStats?.artistPlayCount(for: lhs) ?? LibraryAggregateStats.Metric(),
+                aggregateStats?.artistPlayCount(for: rhs) ?? LibraryAggregateStats.Metric()
             )
         case .preferenceTotal:
             result = compareAggregateMetric(
-                aggregateStats.artistPreferenceScore(for: lhs),
-                aggregateStats.artistPreferenceScore(for: rhs)
+                aggregateStats?.artistPreferenceScore(for: lhs) ?? LibraryAggregateStats.Metric(),
+                aggregateStats?.artistPreferenceScore(for: rhs) ?? LibraryAggregateStats.Metric()
             )
         case .totalDuration:
             result = compareDoubles(lhs.totalDuration, rhs.totalDuration)
@@ -4670,7 +4793,7 @@ final class LibraryViewModel {
     private func compareAlbums(
         _ lhs: AlbumEntry,
         _ rhs: AlbumEntry,
-        aggregateStats: LibraryAggregateStats,
+        aggregateStats: LibraryAggregateStats?,
         customOrderIDs: [UUID]?
     ) -> Bool {
         let result: ComparisonResult
@@ -4688,14 +4811,14 @@ final class LibraryViewModel {
             useNaturalDescending = false
         case .playCountTotal:
             result = compareAggregateMetric(
-                aggregateStats.albumPlayCount(for: lhs),
-                aggregateStats.albumPlayCount(for: rhs)
+                aggregateStats?.albumPlayCount(for: lhs) ?? LibraryAggregateStats.Metric(),
+                aggregateStats?.albumPlayCount(for: rhs) ?? LibraryAggregateStats.Metric()
             )
             useNaturalDescending = true
         case .preferenceTotal:
             result = compareAggregateMetric(
-                aggregateStats.albumPreferenceScore(for: lhs),
-                aggregateStats.albumPreferenceScore(for: rhs)
+                aggregateStats?.albumPreferenceScore(for: lhs) ?? LibraryAggregateStats.Metric(),
+                aggregateStats?.albumPreferenceScore(for: rhs) ?? LibraryAggregateStats.Metric()
             )
             useNaturalDescending = true
         case .totalDuration:

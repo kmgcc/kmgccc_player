@@ -57,7 +57,8 @@ struct PlaylistTrackRowsSection: View {
     }
 
     private var swiftUIRows: some View {
-        ReorderableMultiselectRowsSection(
+        let trackNumbers = albumRowNumbers
+        return ReorderableMultiselectRowsSection(
             rows: rows,
             isMultiselectMode: pageController.isMultiselectMode,
             selectedIDs: pageController.selectedTrackIDs,
@@ -93,15 +94,21 @@ struct PlaylistTrackRowsSection: View {
                 )
             },
             rowContent: { row, isSelected, continuity in
-                trackRow(row, isSelected: isSelected, selectionContinuity: continuity)
+                trackRow(
+                    row,
+                    isSelected: isSelected,
+                    selectionContinuity: continuity,
+                    leadingIndexText: trackNumbers?[row.id]
+                )
             },
             floatingContent: { row in
-                floatingTrackCard(row)
+                floatingTrackCard(row, leadingIndexText: trackNumbers?[row.id])
             }
         )
     }
 
     private var appKitRows: some View {
+        let trackNumbers = albumRowNumbers
         var rowIDsHasher = Hasher()
         rowIDsHasher.combine(rows.count)
         for row in rows {
@@ -155,7 +162,12 @@ struct PlaylistTrackRowsSection: View {
                 presentation: presentation,
                 rowHeight: rowHeight(for:),
                 rowContent: { row in
-                    trackRow(row, isSelected: false, selectionContinuity: .isolated)
+                    trackRow(
+                        row,
+                        isSelected: false,
+                        selectionContinuity: .isolated,
+                        leadingIndexText: trackNumbers?[row.id]
+                    )
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .frame(height: rowHeight(for: row), alignment: .leading)
                 },
@@ -171,7 +183,8 @@ struct PlaylistTrackRowsSection: View {
     private func trackRow(
         _ row: PlaylistPageRowModel,
         isSelected: Bool,
-        selectionContinuity: TrackRowSelectionContinuity
+        selectionContinuity: TrackRowSelectionContinuity,
+        leadingIndexText: String?
     ) -> some View {
         TrackRowView(
             model: row.trackRowModel,
@@ -182,6 +195,8 @@ struct PlaylistTrackRowsSection: View {
             enableSecondaryInteractions: pageController.areRowSecondaryInteractionsEnabled,
             enableArtworkLoading: pageController.areRowArtworkLoadsEnabled,
             revealHighlight: pageController.revealHighlightTrackID == row.id,
+            leadingIndexText: leadingIndexText,
+            showsArtwork: showsTrackArtwork,
             onTap: { isShiftPressed in
                 if LibraryRowInput.selectionModifiersHeld { pageController.updateSelectionModifiers(held: true) }
                 if pageController.isMultiselectMode {
@@ -251,7 +266,7 @@ struct PlaylistTrackRowsSection: View {
                       pageController.toolbarSelectionIdentity == selectionIdentity else { return }
                 pageController.clearMultiselectState()
             },
-            previewContent: AnyView(floatingTrackCard(row)),
+            previewContent: AnyView(floatingTrackCard(row, leadingIndexText: leadingIndexText)),
             previewHeight: rowHeight(for: row)
         ) {
             LibraryTrackDragPayload(
@@ -280,13 +295,18 @@ struct PlaylistTrackRowsSection: View {
         .environment(\.motionPolicy, motionPolicy)
     }
 
-    private func floatingTrackCard(_ row: PlaylistPageRowModel) -> some View {
+    private func floatingTrackCard(
+        _ row: PlaylistPageRowModel,
+        leadingIndexText: String?
+    ) -> some View {
         TrackRowView(
             model: row.trackRowModel,
             isPlaying: currentTrackID == row.id,
             isSelected: true,
             enableSecondaryInteractions: false,
             enableArtworkLoading: pageController.areRowArtworkLoadsEnabled,
+            leadingIndexText: leadingIndexText,
+            showsArtwork: showsTrackArtwork,
             onTap: { _ in },
             rowPrimaryColor: rowPrimaryColor,
             rowSecondaryColor: rowSecondaryColor,
@@ -305,6 +325,39 @@ struct PlaylistTrackRowsSection: View {
         .environment(\.colorScheme, colorScheme)
         .environment(\.motionTokens, motionTokens)
         .environment(\.motionPolicy, motionPolicy)
+    }
+
+    /// Album pages use the catalog position as the row's identifying mark.
+    /// Repeating the album cover on every row adds no information there, so
+    /// the shared row leaves that column to the number.
+    private var showsTrackArtwork: Bool {
+        if case .album = selection { return false }
+        return true
+    }
+
+    /// Album pages number their rows. After an online catalog lookup the
+    /// number is the absolute catalog position, so missing tracks leave gaps;
+    /// an album that never consulted the catalog uses 1...n without gaps.
+    private var albumRowNumbers: [UUID: String]? {
+        guard case .album(let key) = selection else { return nil }
+        if libraryVM.trackSortKey == .custom,
+           let entry = libraryVM.albumEntries.first(where: { $0.canonicalKey == key }),
+           let catalogNumbers = entry.catalogTrackNumbers,
+           !catalogNumbers.isEmpty {
+            var numbers: [UUID: String] = [:]
+            numbers.reserveCapacity(queueTracks.count)
+            for track in queueTracks {
+                numbers[track.id] = catalogNumbers[track.id].map(String.init) ?? "–"
+            }
+            return numbers
+        }
+
+        var numbers: [UUID: String] = [:]
+        numbers.reserveCapacity(queueTracks.count)
+        for (index, track) in queueTracks.enumerated() {
+            numbers[track.id] = String(index + 1)
+        }
+        return numbers
     }
 
     private func rowHeight(for row: PlaylistPageRowModel) -> CGFloat {

@@ -39,6 +39,13 @@ struct PlaylistDetailSkeletonView: View {
         return false
     }
 
+    /// Album rows identify tracks by catalog position instead of a repeated
+    /// cover, so the loading skeleton reserves the number column only.
+    private var showsArtwork: Bool {
+        if case .album = libraryVM.currentSelection { return false }
+        return true
+    }
+
     var body: some View {
         GeometryReader { geometry in
             let contentWidth = max(0, geometry.size.width - Constants.Layout.listHorizontalPadding * 2)
@@ -116,15 +123,20 @@ struct PlaylistDetailSkeletonView: View {
         return VStack(spacing: 0) {
             ForEach(0..<10, id: \.self) { index in
                 HStack(spacing: Constants.Layout.TrackRow.horizontalSpacing) {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(placeholderHighlightColor)
-                        .frame(
-                            width: Constants.Layout.artworkSmallSize,
-                            height: Constants.Layout.artworkSmallSize
-                        )
-                        .clipShape(
-                            RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.artworkCornerRadius)
-                        )
+                    if showsArtwork {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(placeholderHighlightColor)
+                            .frame(
+                                width: Constants.Layout.artworkSmallSize,
+                                height: Constants.Layout.artworkSmallSize
+                            )
+                            .clipShape(
+                                RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.artworkCornerRadius)
+                            )
+                    } else {
+                        Color.clear
+                            .frame(width: Constants.Layout.TrackRow.indexColumnWidth)
+                    }
 
                     HStack(spacing: Constants.Layout.TrackRow.textColumnSpacing) {
                         VStack(alignment: .leading, spacing: Constants.Layout.TrackRow.textVerticalSpacing) {

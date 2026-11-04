@@ -146,6 +146,7 @@ final class FileImportService: FileImportServiceProtocol {
     private let ncmConversionPipeline: ManagedNCMConversionPipeline
     private let planner: ImportPlanner
     private let committer: ImportCommitter
+    private let albumTrackOrderingService: AlbumTrackOrderingService
     /// Main-actor queue state. The queue deliberately does not use
     /// `Task<[Track], Never>`: SwiftData `Track` objects are main-actor
     /// persistent models and cannot cross a task's Sendable result boundary.
@@ -168,6 +169,9 @@ final class FileImportService: FileImportServiceProtocol {
     /// Main-actor UI hook.  The service remains independent of presentation;
     /// AppSessionHost stores the failures in UI state for the sidebar report.
     var onImportFailures: (@MainActor ([ImportInputFailure], LibraryImportOrigin) -> Void)?
+    /// Album-order outcomes are reported after the import task finishes so the
+    /// UI can collect every failure in one place.
+    var onAlbumOrderingResult: (@MainActor (AlbumOrderingOutcome) -> Void)?
 
     init(
         repository: LibraryRepositoryProtocol,
@@ -229,6 +233,10 @@ final class FileImportService: FileImportServiceProtocol {
             importEnrichmentService: importEnrichmentService,
             referencedNCMConversionService: referencedNCMConversionService
         )
+        self.albumTrackOrderingService = AlbumTrackOrderingService(
+            libraryService: libraryService,
+            repository: repository
+        )
         Log.debug("FileImportService initialized", category: .import)
     }
 
@@ -236,6 +244,18 @@ final class FileImportService: FileImportServiceProtocol {
 
     func cancelEnrichment(for trackIDs: Set<UUID>) async {
         await importEnrichmentService.cancelEnrichment(for: trackIDs)
+    }
+
+    /// Explicit listener action from the album editor. It overrides an
+    /// automatic sort preference on purpose, then reports the same outcome
+    /// shape as the import pass.
+    func organizeAlbumTrackOrder(albumKey: String) async -> AlbumOrderingOutcome {
+        let outcome = await albumTrackOrderingService.applyCatalogOrder(
+            toAlbumKeys: [albumKey],
+            force: true
+        )
+        onAlbumOrderingResult?(outcome)
+        return outcome
     }
 
     /// Stops accepting new imports and waits for the service-owned import
@@ -1179,6 +1199,46 @@ final class FileImportService: FileImportServiceProtocol {
             completedCount: 2,
             totalCount: 2
         )
+
+        if enrichmentMode != .skipped, !persistedTracks.isEmpty {
+            progressController.update(
+                stage: .orderingAlbums,
+                progress: Self.progress(for: .orderingAlbums, completed: 0, total: 1),
+                detail: "正在查询本次导入的专辑",
+                completedCount: 0,
+                totalCount: 0
+            )
+            let orderingOutcome = await albumTrackOrderingService.applyCatalogOrder(
+                toImportedTracks: persistedTracks,
+                isCancelled: { progressController.isCancellationRequested }
+            ) { completed, total, albumTitle in
+                progressController.update(
+                    stage: .orderingAlbums,
+                    progress: Self.progress(for: .orderingAlbums, completed: completed, total: total),
+                    detail: "正在整理“\(albumTitle)”的曲序",
+                    completedCount: completed,
+                    totalCount: total
+                )
+            }
+            Log.info(
+                "[Import] album ordering albums=\(orderingOutcome.updatedAlbumCount) tracks=\(orderingOutcome.orderedTrackCount) failures=\(orderingOutcome.failures.count)",
+                category: .import
+            )
+            if !progressController.isCancellationRequested {
+                onAlbumOrderingResult?(orderingOutcome)
+            }
+            if await isImportCancellationRequested(progressController, cancellationToken) {
+                return await finishCancelledImportOutcome(
+                    session: importSession,
+                    importedRecords: importedRecords,
+                    createdTrackIDs: importBatch.createdTrackIDs,
+                    to: playlist,
+                    progressController: progressController,
+                    totalCount: finalCandidates.count,
+                    fileTrackMappings: fileTrackMappings
+                )
+            }
+        }
 
         progressController.update(
             stage: .completed,

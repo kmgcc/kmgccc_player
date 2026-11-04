@@ -154,13 +154,19 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
 
     func track(matching fingerprint: ReferencedFileFingerprint) async -> Track? {
         let key = ReferencedPhysicalIdentityKey(fingerprint)
-        return allTracks.first { track in
-            guard case let .referenced(locator) = track.mediaLocator else { return false }
-            return locator.locations.contains { location in
-                guard let existing = location.fingerprint else { return false }
-                return ReferencedPhysicalIdentityKey(existing) == key
+        var physicalMatch: Track?
+        for track in allTracks {
+            guard case let .referenced(locator) = track.mediaLocator else { continue }
+            for location in locator.locations {
+                if let source = location.videoSource,
+                   TrackIdentityResolver.samePhysicalIdentity(source.fingerprint, fingerprint) { return track }
+                if physicalMatch == nil, let existing = location.fingerprint,
+                   ReferencedPhysicalIdentityKey(existing) == key {
+                    physicalMatch = track
+                }
             }
         }
+        return physicalMatch
     }
 
     func mergeReferencedLocator(_ incoming: ReferencedFileLocator, into track: Track) async throws {
@@ -328,6 +334,7 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
     func applyAlbumEdits(original _: AlbumEntry, updated _: AlbumEntry) async throws {}
     func deleteArtist(_ entry: ArtistEntry) async throws {}
     func deleteAlbum(_ entry: AlbumEntry) async throws {}
+    func updateAlbumCatalogTrackNumbers(albumKey _: String, numbers _: [UUID: Int]) async {}
     func updatePlaylistDescription(_ playlist: Playlist, description: String) async throws {}
 
     // MARK: - Fake Data Setup

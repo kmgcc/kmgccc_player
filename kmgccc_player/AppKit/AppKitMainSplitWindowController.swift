@@ -22,6 +22,7 @@
 
 import AppKit
 import MotionKit
+import Observation
 import SwiftUI
 
 @MainActor
@@ -489,6 +490,7 @@ private final class AppKitMainRootViewController: NSViewController {
     private let backgroundController: NSHostingController<AppKitMainWindowArtBackgroundLayer>
     private let homeFullWindowHost: PassthroughHostingView<HomeFullWindowRoot>
     private let fileDropOverlayHost: PassthroughHostingView<AppDialogDropImportOverlay>
+    private let albumOrderingToastHost: NSHostingView<AnyView>
     private var didApplyPaneGlassBlendingMode = false
     private var fileDropOverlayHideTask: Task<Void, Never>?
 
@@ -514,6 +516,18 @@ private final class AppKitMainRootViewController: NSViewController {
         )
         fileDropOverlayHost.shouldAcceptHitTest = { false }
         self.fileDropOverlayHost = fileDropOverlayHost
+        let toastRoot = AlbumOrderingFailureToast(uiState: appSession.uiState) {
+            AlbumOrderingFailureDialogPresenter.present(
+                uiState: appSession.uiState,
+                appSession: appSession
+            )
+        }
+        .environmentObject(ThemeStore.shared)
+        let albumOrderingToastHost = NSHostingView(rootView: AnyView(toastRoot))
+        albumOrderingToastHost.isHidden = true
+        albumOrderingToastHost.wantsLayer = true
+        albumOrderingToastHost.layer?.backgroundColor = NSColor.clear.cgColor
+        self.albumOrderingToastHost = albumOrderingToastHost
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -581,6 +595,7 @@ private final class AppKitMainRootViewController: NSViewController {
         view.addSubview(homeFullWindowHost)
         view.addSubview(splitView)
         view.addSubview(fileDropOverlayHost)
+        view.addSubview(albumOrderingToastHost)
 
         if let routingRoot = view as? HomeRoutingRootView {
             routingRoot.splitViewRef = splitView
@@ -597,10 +612,13 @@ private final class AppKitMainRootViewController: NSViewController {
         homeFullWindowHost.frame = view.bounds
         splitView.frame = view.bounds
         fileDropOverlayHost.frame = view.bounds
+        albumOrderingToastHost.frame = albumOrderingToastFrame(in: view.bounds)
         backgroundView.autoresizingMask = [.width, .height]
         homeFullWindowHost.autoresizingMask = [.width, .height]
         splitView.autoresizingMask = [.width, .height]
         fileDropOverlayHost.autoresizingMask = [.width, .height]
+        albumOrderingToastHost.autoresizingMask = [.minXMargin, .maxYMargin]
+        observeAlbumOrderingFailures()
     }
 
     override func viewDidLayout() {
@@ -609,6 +627,7 @@ private final class AppKitMainRootViewController: NSViewController {
         homeFullWindowHost.frame = view.bounds
         splitViewController.view.frame = view.bounds
         fileDropOverlayHost.frame = view.bounds
+        albumOrderingToastHost.frame = albumOrderingToastFrame(in: view.bounds)
 
         splitViewController.publishHomeLayoutGeometry(windowSize: view.bounds.size)
 
@@ -689,6 +708,33 @@ private final class AppKitMainRootViewController: NSViewController {
             if let effect = nested as? NSVisualEffectView { effects.append(effect) }
         }
         return effects
+    }
+
+    private func albumOrderingToastFrame(in bounds: NSRect) -> NSRect {
+        let size = NSSize(width: 316, height: 76)
+        return NSRect(
+            x: bounds.maxX - size.width - 16,
+            y: 16,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    private func observeAlbumOrderingFailures() {
+        updateAlbumOrderingToastVisibility()
+        withObservationTracking {
+            _ = appSession.uiState.albumOrderingFailures
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.updateAlbumOrderingToastVisibility()
+                self.observeAlbumOrderingFailures()
+            }
+        }
+    }
+
+    private func updateAlbumOrderingToastVisibility() {
+        albumOrderingToastHost.isHidden = appSession.uiState.albumOrderingFailures.isEmpty
     }
 
     private func handleHomeModeChange(_ isHome: Bool) {

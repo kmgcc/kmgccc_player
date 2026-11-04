@@ -276,6 +276,7 @@ final class LibraryMetadataSync {
                 || sidecar.trackSortKey != nil
                 || sidecar.trackSortOrder != nil
                 || sidecar.customTrackOrder != nil
+                || sidecar.catalogTrackNumbers != nil
             if hasUserContent {
                 result.append(AlbumEntry(
                     id: sidecar.id,
@@ -296,6 +297,7 @@ final class LibraryMetadataSync {
                     language: sidecar.language ?? "",
                     labelOrCompany: sidecar.labelOrCompany ?? "",
                     qqMusicAlbumMid: sidecar.qqMusicAlbumMid,
+                    catalogTrackNumbers: sidecar.catalogTrackNumbers,
                     metadataSource: sidecar.metadataSource,
                     metadataFetchedAt: sidecar.metadataFetchedAt,
                     metadataConfidence: sidecar.metadataConfidence,
@@ -499,6 +501,7 @@ final class LibraryMetadataSync {
         if candidate.sidecar.metadataSource != nil { score += 1 }
         if candidate.sidecar.trackSortKey != nil || candidate.sidecar.trackSortOrder != nil { score += 4 }
         if candidate.sidecar.customTrackOrder != nil { score += 6 }
+        if candidate.sidecar.catalogTrackNumbers != nil { score += 3 }
         return score
     }
 
@@ -587,6 +590,7 @@ final class LibraryMetadataSync {
             trackSortKey: firstNonEmpty(candidates.map(\.sidecar.trackSortKey)),
             trackSortOrder: firstNonEmpty(candidates.map(\.sidecar.trackSortOrder)),
             customTrackOrder: firstNonEmptyUUIDArray(candidates.map(\.sidecar.customTrackOrder)),
+            catalogTrackNumbers: firstNonEmptyCatalogTrackNumbers(candidates.map(\.sidecar.catalogTrackNumbers)),
             loudnessUnified: keeper.sidecar.loudnessUnified ?? candidates.compactMap(\.sidecar.loudnessUnified).first
         ).preservingManualMetadata(from: candidates.map(\.sidecar))
     }
@@ -606,6 +610,17 @@ final class LibraryMetadataSync {
     }
 
     private func firstNonEmptyUUIDArray(_ values: [[UUID]?]) -> [UUID]? {
+        for value in values {
+            if let value, !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private func firstNonEmptyCatalogTrackNumbers(
+        _ values: [[UUID: Int]?]
+    ) -> [UUID: Int]? {
         for value in values {
             if let value, !value.isEmpty {
                 return value
@@ -654,6 +669,7 @@ final class LibraryMetadataSync {
                 || lhs.sidecar.trackSortKey != nil
                 || lhs.sidecar.trackSortOrder != nil
                 || lhs.sidecar.customTrackOrder != nil
+                || lhs.sidecar.catalogTrackNumbers != nil
             let rhsHasUserContent =
                 !rhs.sidecar.manuallyEditedFields.isEmpty
                 || !(rhs.sidecar.description ?? "").isEmpty
@@ -670,6 +686,7 @@ final class LibraryMetadataSync {
                 || rhs.sidecar.trackSortKey != nil
                 || rhs.sidecar.trackSortOrder != nil
                 || rhs.sidecar.customTrackOrder != nil
+                || rhs.sidecar.catalogTrackNumbers != nil
 
             if lhsHasUserContent != rhsHasUserContent {
                 return lhsHasUserContent && !rhsHasUserContent
@@ -719,6 +736,9 @@ final class LibraryMetadataSync {
         let mergedCustomTrackOrder = firstNonEmptyUUIDArray(
             sortedCandidates.map { $0.sidecar.customTrackOrder }
         )
+        let mergedCatalogTrackNumbers = firstNonEmptyCatalogTrackNumbers(
+            sortedCandidates.map { $0.sidecar.catalogTrackNumbers }
+        )
 
         let hasMergedCandidates = sortedCandidates.count > 1
         let candidateSidecar = AlbumSidecar(
@@ -743,7 +763,8 @@ final class LibraryMetadataSync {
             updatedAt: keeper.sidecar.updatedAt,
             trackSortKey: mergedTrackSortKey,
             trackSortOrder: mergedTrackSortOrder,
-            customTrackOrder: mergedCustomTrackOrder
+            customTrackOrder: mergedCustomTrackOrder,
+            catalogTrackNumbers: mergedCatalogTrackNumbers
         ).preservingManualMetadata(from: sortedCandidates.map(\.sidecar))
         let needsArtworkCopy: Bool
         if let artworkSourceURL,
@@ -778,6 +799,7 @@ final class LibraryMetadataSync {
             || keeper.sidecar.trackSortKey != candidateSidecar.trackSortKey
             || keeper.sidecar.trackSortOrder != candidateSidecar.trackSortOrder
             || keeper.sidecar.customTrackOrder != candidateSidecar.customTrackOrder
+            || keeper.sidecar.catalogTrackNumbers != candidateSidecar.catalogTrackNumbers
             || keeper.sidecar.createdAt != candidateSidecar.createdAt
             || needsArtworkCopy
 
@@ -808,6 +830,7 @@ final class LibraryMetadataSync {
                 trackSortKey: candidateSidecar.trackSortKey,
                 trackSortOrder: candidateSidecar.trackSortOrder,
                 customTrackOrder: candidateSidecar.customTrackOrder,
+                catalogTrackNumbers: candidateSidecar.catalogTrackNumbers,
                 loudnessUnified: sortedCandidates.compactMap(\.sidecar.loudnessUnified).first
             )
             let artworkDataToPersist = needsArtworkCopy
@@ -844,6 +867,7 @@ final class LibraryMetadataSync {
             language: mergedSidecar.language ?? "",
             labelOrCompany: mergedSidecar.labelOrCompany ?? "",
             qqMusicAlbumMid: mergedSidecar.qqMusicAlbumMid,
+            catalogTrackNumbers: mergedSidecar.catalogTrackNumbers,
             metadataSource: mergedSidecar.metadataSource,
             metadataFetchedAt: mergedSidecar.metadataFetchedAt,
             metadataConfidence: mergedSidecar.metadataConfidence,
