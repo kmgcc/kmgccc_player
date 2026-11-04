@@ -531,11 +531,42 @@ private enum MCPProtocolError: Error, LocalizedError {
     }
 }
 
+/// Which part of the shared catalog a stdio session exposes.
+///
+/// The full surface serializes every tool schema, which costs tens of
+/// thousands of context tokens in the client before the first request. The
+/// core profile keeps the daily operations and leaves the rest reachable by
+/// widening the profile; dispatch still accepts any catalog method.
+enum MCPToolProfile: String, Sendable {
+    case full
+    case core
+
+    static let corePrefixes = ["system.", "playback.", "queue.", "jobs."]
+    static let coreLibraryMethods: Set<String> = [
+        "library.list",
+        "library.get",
+        "library.tracks",
+        "library.stats",
+        "library.import"
+    ]
+
+    func includes(_ methodName: String) -> Bool {
+        switch self {
+        case .full:
+            return true
+        case .core:
+            return Self.corePrefixes.contains { methodName.hasPrefix($0) }
+                || Self.coreLibraryMethods.contains(methodName)
+        }
+    }
+}
+
 struct AutomationMCPStdioOptions: Sendable {
     let socketPath: String
     let noLaunch: Bool
     let timeout: TimeInterval
     let timeoutWasSet: Bool
+    let profile: MCPToolProfile
 }
 
 struct AutomationMCPStdioServer: Sendable {
@@ -1207,7 +1238,11 @@ struct AutomationMCPStdioServer: Sendable {
 
     private func toolsListResult(modern: Bool) -> AutomationJSONValue {
         .object([
-            "tools": .array(AutomationToolCatalog.all.map { toolValue($0, modern: modern) })
+            "tools": .array(
+                AutomationToolCatalog.all
+                    .filter { options.profile.includes($0.name) }
+                    .map { toolValue($0, modern: modern) }
+            )
         ])
     }
 

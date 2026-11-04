@@ -310,6 +310,21 @@ player-automation metadata import --params-file import-request.json --confirm --
 稳定 exit code：`0` 成功，`2` usage/contract，`3` endpoint/App 不可用，`4` 内部错误，
 `5` authorization，`6` revision conflict，`7` App interaction cancelled/required。
 
+## Agent 技能
+
+`skill` 命令组只做本机文件操作，不连接 App：
+
+```sh
+player-automation skill list
+player-automation skill status
+player-automation skill install [--target claude|codex|dsh]
+player-automation skill uninstall [--target claude|codex|dsh]
+player-automation skill path
+```
+
+App 启动和打开设置页时会把随包技能同步到
+`~/Library/Application Support/<bundle-id>/Automation/skill`，这个目录是安装的唯一源，也供其他 Agent 工具直接读取。`skill install` 是幂等的：重复执行即覆盖更新；已安装内容被改动时会先移到 `kmgccc-player-automation.backup-<timestamp>` 再写入。不带 `--target` 时只写入本机已存在的技能目录。
+
 ## Source creation
 
 `source create [path]` 可以提供一个提示路径，但它不能代替用户选择文件/文件夹。用

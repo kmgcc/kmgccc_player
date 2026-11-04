@@ -1,4 +1,5 @@
 import AppKit
+import PlayerAutomationProtocol
 import SwiftUI
 
 /// Settings for the local automation control planes. The business
@@ -12,6 +13,10 @@ struct AutomationSettingsView: View {
     @State private var isDiagnosticsExpanded = false
     @State private var didCopyMCPConfiguration = false
     @State private var didCopyCLICommand = false
+    @State private var didCopySkillPath = false
+    @State private var didCopySkillPrompt = false
+    @State private var skillTargets: [AutomationSkillInstaller.Target] = []
+    @State private var skillStatuses: [String: AutomationSkillInstaller.Status] = [:]
 
     private struct MCPServerConfiguration: Encodable {
         let command: String
@@ -35,12 +40,13 @@ struct AutomationSettingsView: View {
                     )
                 }
             }
+            .settingsSearchAnchor("automation.general")
 
             SettingsSection("MCP 接入") {
                 VStack(alignment: .leading, spacing: 14) {
                     commandBlock(
                         title: "MCP stdio",
-                        command: "player-automation mcp-stdio",
+                        command: "player-automation mcp-stdio --profile core",
                         buttonTitle: didCopyMCPConfiguration ? "已复制" : "复制 MCP 配置",
                         buttonSystemImage: didCopyMCPConfiguration ? "checkmark" : "doc.on.doc",
                         action: copyMCPConfiguration
@@ -60,8 +66,55 @@ struct AutomationSettingsView: View {
                     )
                 }
             }
+            .settingsSearchAnchor("automation.mcp")
+
+            SettingsSection("Agent 技能") {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("安装到本机 Agent 的技能目录，按需加载。")
+                        .settingsDescriptionStyle()
+
+                    if skillTargets.isEmpty {
+                        Text("未检测到 Agent 技能目录。")
+                            .settingsDescriptionStyle()
+                    } else {
+                        ForEach(skillTargets) { target in
+                            skillRow(target)
+                        }
+                    }
+
+                    Divider()
+
+                    commandBlock(
+                        title: "技能目录",
+                        command: AutomationSkillInstaller.exportDirectory().path,
+                        buttonTitle: didCopySkillPath ? "已复制" : "复制路径",
+                        buttonSystemImage: didCopySkillPath ? "checkmark" : "doc.on.doc",
+                        action: copySkillPath
+                    )
+
+                    HStack(spacing: 10) {
+                        Text("其他 Agent 工具可读取该目录自行安装。")
+                            .settingsDescriptionStyle()
+
+                        Spacer(minLength: 12)
+
+                        Button {
+                            copySkillPrompt()
+                        } label: {
+                            Label(
+                                didCopySkillPrompt ? "已复制" : "复制安装指令",
+                                systemImage: didCopySkillPrompt ? "checkmark" : "doc.on.doc"
+                            )
+                        }
+                        .buttonStyle(AppPanelButtonStyle())
+                    }
+                }
+            }
+            .settingsSearchAnchor("automation.skill")
+            .task { refreshAgentSkills() }
 
             TrustedAudioRootSettingsSection()
+                .settingsSearchAnchor("automation.trusted")
 
             SettingsSection("运行状态") {
                 VStack(alignment: .leading, spacing: 14) {
@@ -98,6 +151,7 @@ struct AutomationSettingsView: View {
                     }
                 }
             }
+            .settingsSearchAnchor("automation.status")
 
             // SettingsSection("内置 AI") {
             //     Text("内置 AI 尚未启用。")
@@ -143,10 +197,7 @@ struct AutomationSettingsView: View {
                 Button(action: action) {
                     Label(buttonTitle, systemImage: buttonSystemImage)
                 }
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.capsule)
-                .clipShape(Capsule())
-                .controlSize(.small)
+                .buttonStyle(AppPanelButtonStyle())
             }
         }
     }
@@ -178,7 +229,7 @@ struct AutomationSettingsView: View {
             mcpServers: [
                 "kmgccc_player": MCPServerConfiguration(
                     command: bundledAutomationExecutableURL.path,
-                    args: ["mcp-stdio"]
+                    args: ["mcp-stdio", "--profile", "core"]
                 )
             ]
         )
@@ -206,6 +257,67 @@ struct AutomationSettingsView: View {
     private func copyToPasteboard(_ value: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    private func skillRow(_ target: AutomationSkillInstaller.Target) -> some View {
+        let status = skillStatuses[target.id] ?? .notInstalled
+        return HStack(spacing: 10) {
+            Text(target.displayName)
+                .settingsRowLabelStyle()
+            Spacer(minLength: 12)
+            Text(skillStatusTitle(status))
+                .settingsDescriptionStyle()
+            if status != .current {
+                Button(status == .notInstalled ? "安装" : "更新") {
+                    installSkill(target)
+                }
+                .buttonStyle(AppPanelButtonStyle())
+            }
+        }
+    }
+
+    private func skillStatusTitle(_ status: AutomationSkillInstaller.Status) -> String {
+        switch status {
+        case .notInstalled: return "未安装"
+        case .current: return "已安装"
+        case .updateAvailable: return "可更新"
+        case .modified: return "已修改"
+        }
+    }
+
+    private func refreshAgentSkills() {
+        if let executable = AutomationSkillInstaller.automationExecutableURL {
+            try? AutomationSkillInstaller.syncExport(executableURL: executable)
+        }
+        let targets = AutomationSkillInstaller.availableTargets()
+        skillTargets = targets
+        var statuses: [String: AutomationSkillInstaller.Status] = [:]
+        for target in targets {
+            statuses[target.id] = AutomationSkillInstaller.status(for: target)
+        }
+        skillStatuses = statuses
+    }
+
+    private func installSkill(_ target: AutomationSkillInstaller.Target) {
+        guard let executable = AutomationSkillInstaller.automationExecutableURL,
+              let status = try? AutomationSkillInstaller.install(
+                  target,
+                  executableURL: executable
+              ) else {
+            refreshAgentSkills()
+            return
+        }
+        skillStatuses[target.id] = status
+    }
+
+    private func copySkillPath() {
+        copyToPasteboard(AutomationSkillInstaller.exportDirectory().path)
+        didCopySkillPath = true
+    }
+
+    private func copySkillPrompt() {
+        copyToPasteboard(AutomationSkillInstaller.installPrompt())
+        didCopySkillPrompt = true
     }
 }
 

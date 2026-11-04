@@ -47,6 +47,8 @@ private struct CLIOptions {
     var dryRun = false
     var confirm = false
     var force = false
+    var skillTarget: String?
+    var mcpProfile = MCPToolProfile.full
 }
 
 enum AutomationToolDefaults {
@@ -178,10 +180,15 @@ private struct AutomationCLI {
                     socketPath: options.socketPath,
                     noLaunch: options.noLaunch,
                     timeout: options.timeout,
-                    timeoutWasSet: options.timeoutWasSet
+                    timeoutWasSet: options.timeoutWasSet,
+                    profile: options.mcpProfile
                 )
             ).run()
             return AutomationCLIExitCode(rawValue: mcpExitCode) ?? .internalError
+        }
+
+        if command == "skill" {
+            return runSkillCommand(args, options: options)
         }
 
         let method: String
@@ -1651,6 +1658,17 @@ private struct AutomationCLI {
             case "--no-launch":
                 options.noLaunch = true
                 args.remove(at: index)
+            case "--target":
+                guard index + 1 < args.count else { throw CLIError.missingValue("--target") }
+                options.skillTarget = args[index + 1]
+                args.removeSubrange(index...(index + 1))
+            case "--profile":
+                guard index + 1 < args.count,
+                      let profile = MCPToolProfile(rawValue: args[index + 1].lowercased()) else {
+                    throw CLIError.invalidValue("--profile")
+                }
+                options.mcpProfile = profile
+                args.removeSubrange(index...(index + 1))
             case "--socket":
                 guard index + 1 < args.count else { throw CLIError.missingValue("--socket") }
                 options.socketPath = args[index + 1]
@@ -1880,6 +1898,10 @@ private struct AutomationCLI {
         player-automation [cli] <command> [options]
 
         Commands:
+          mcp-stdio [--profile core|full]
+                                   Serve MCP over stdio; core exposes daily tools only
+          skill install|status|list|uninstall|path
+                                   Install the Agent skill for --target claude|codex|dsh
           automation capabilities  List the shared capability catalog
           automation scopes        Show granted and denied scopes
           automation call <method> Call any catalog method with --params-json
@@ -2034,6 +2056,91 @@ private struct AutomationCLI {
             FileHandle.standardOutput.write(Data([0x0A]))
         } catch {
             writeDiagnostic("failed to encode JSON: \(error.localizedDescription)")
+        }
+    }
+
+    /// Installs the bundled Agent skill into local agent skill directories.
+    /// Everything is local file work, so this never connects to the App.
+    private func runSkillCommand(_ args: [String], options: CLIOptions) -> AutomationCLIExitCode {
+        guard let action = args.first else {
+            writeDiagnostic("usage error: skill requires list, status, install, uninstall or path")
+            return .usage
+        }
+        guard args.count == 1 else {
+            writeDiagnostic("usage error: skill \(action) does not accept positional arguments")
+            return .usage
+        }
+        if action == "path" {
+            print(AutomationSkillInstaller.exportDirectory().path)
+            return .success
+        }
+        guard ["list", "status", "install", "uninstall"].contains(action) else {
+            writeDiagnostic("usage error: unknown skill action \(action)")
+            return .usage
+        }
+        guard let executable = AutomationSkillInstaller.automationExecutableURL else {
+            writeDiagnostic("error: could not locate the bundled player-automation executable")
+            return .unavailable
+        }
+        let available = AutomationSkillInstaller.availableTargets()
+        let targets: [AutomationSkillInstaller.Target]
+        if let requested = options.skillTarget {
+            guard let target = AutomationSkillInstaller.target(id: requested) else {
+                writeDiagnostic("usage error: unknown skill target \(requested)")
+                return .usage
+            }
+            targets = [target]
+        } else {
+            targets = available
+        }
+
+        switch action {
+        case "list", "status":
+            try? AutomationSkillInstaller.syncExport(executableURL: executable)
+            let listed = options.skillTarget == nil ? AutomationSkillInstaller.targetCandidates() : targets
+            for target in listed {
+                let state = target.isAvailable
+                    ? AutomationSkillInstaller.status(for: target).rawValue
+                    : "unavailable"
+                print("\(target.id)\t\(target.displayName)\t\(state)\t\(target.skillDirectory.path)")
+            }
+            return .success
+        case "install":
+            guard !targets.isEmpty else {
+                writeDiagnostic("error: no agent skill directories found; pass --target claude|codex|dsh")
+                return .unavailable
+            }
+            do {
+                try AutomationSkillInstaller.syncExport(executableURL: executable)
+            } catch {
+                writeDiagnostic("error: \(error.localizedDescription)")
+                return .internalError
+            }
+            for target in targets {
+                do {
+                    let state = try AutomationSkillInstaller.install(target, executableURL: executable)
+                    print("\(target.id)\t\(state.rawValue)\t\(target.skillDirectory.path)")
+                } catch {
+                    writeDiagnostic("error: \(target.id): \(error.localizedDescription)")
+                    return .internalError
+                }
+            }
+            return .success
+        default:
+            guard !targets.isEmpty else {
+                writeDiagnostic("error: no agent skill directories found; pass --target claude|codex|dsh")
+                return .unavailable
+            }
+            for target in targets {
+                do {
+                    try AutomationSkillInstaller.uninstall(target)
+                    print("\(target.id)\tremoved")
+                } catch {
+                    writeDiagnostic("error: \(target.id): \(error.localizedDescription)")
+                    return .internalError
+                }
+            }
+            return .success
         }
     }
 

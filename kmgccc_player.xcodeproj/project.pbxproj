@@ -503,6 +503,7 @@
 				93D91A122FA5000000010001 /* Copy QQMusic helper */,
 				93D91A132FA5000000010002 /* Copy SACAD helper */,
 				93D91A152FA5000000010004 /* Build and embed Player Automation CLI */,
+				93D91A162FA5000000010005 /* Copy Agent Skill */,
 				93D91A142FA5000000010003 /* Run Optional Build Hook */,
 			);
 			buildRules = (
@@ -770,6 +771,26 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
 			shellScript = "set -euo pipefail\nPACKAGE_ROOT=\"${PROJECT_DIR}/Dependencies/PlayerAutomation\"\nSCRATCH_PATH=\"${DERIVED_FILE_DIR}/PlayerAutomation\"\nCONFIGURATION_LOWER=$(printf '%s' \"${CONFIGURATION}\" | tr '[:upper:]' '[:lower:]')\n/usr/bin/xcrun swift build --package-path \"${PACKAGE_ROOT}\" --scratch-path \"${SCRATCH_PATH}\" --configuration \"${CONFIGURATION_LOWER}\" --product player-automation\nBIN_DIR=$(/usr/bin/xcrun swift build --package-path \"${PACKAGE_ROOT}\" --scratch-path \"${SCRATCH_PATH}\" --configuration \"${CONFIGURATION_LOWER}\" --show-bin-path)\nSRC=\"${BIN_DIR}/player-automation\"\nDST_DIR=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools\"\nDST=\"${DST_DIR}/player-automation\"\nif [ ! -x \"${SRC}\" ]; then\n  echo \"error: Missing Player Automation CLI build product at ${SRC}.\"\n  exit 1\nfi\nmkdir -p \"${DST_DIR}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}\" \"${DST}\"\n/usr/bin/xattr -cr \"${DST}\" 2>/dev/null || true\nchmod 755 \"${DST}\"\nif [ \"${CODE_SIGNING_ALLOWED:-NO}\" = \"YES\" ] && [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ] && [ \"${EXPANDED_CODE_SIGN_IDENTITY}\" != \"-\" ]; then\n  /usr/bin/codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" --timestamp=none \"${DST}\"\nfi\n";
+		};
+		93D91A162FA5000000010005 /* Copy Agent Skill */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/docs/skills/kmgccc-player-automation",
+			);
+			name = "Copy Agent Skill";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/docs/skills/kmgccc-player-automation\"\nDST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Skills/kmgccc-player-automation\"\nif [ ! -f \"${SRC}/SKILL.md\" ]; then\n  echo \"error: Missing Agent skill at ${SRC}.\"\n  exit 1\nfi\nrm -rf \"${DST}\"\nmkdir -p \"$(dirname \"${DST}\")\"\nCOPYFILE_DISABLE=1 /usr/bin/ditto \"${SRC}\" \"${DST}\"\n/usr/bin/xattr -cr \"${DST}\" 2>/dev/null || true\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
