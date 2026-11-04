@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_FILE="$REPO_ROOT/kmgccc_player.xcodeproj/project.pbxproj"
 RESOLVED_FILE="$REPO_ROOT/kmgccc_player.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
-LOCAL_PACKAGE_PATH="${MELISMAKIT_LOCAL_PATH:-$REPO_ROOT/../NativeLyrics}"
+LOCAL_PACKAGE_PATH="${MELISMAKIT_LOCAL_PATH:-$REPO_ROOT/../MelismaKit}"
 EXPECTED_SOURCE="local"
 BUILD_LOG=""
 
@@ -12,7 +12,7 @@ usage() {
     printf '%s\n' \
         "Usage: ./scripts/check-melismakit-dependency.sh [--require-local|--require-remote] [--build-log path]" \
         "" \
-        "The default test-build policy requires the local NativeLyrics checkout." \
+        "The default test-build policy requires the local MelismaKit checkout." \
         "Use --require-remote only for an explicitly remote dependency build."
 }
 
@@ -55,9 +55,13 @@ has_local_reference=0
 if rg -q 'XCRemoteSwiftPackageReference "melismakit"' "$PROJECT_FILE"; then
     has_remote_reference=1
 fi
-if rg -q 'XCLocalSwiftPackageReference "[^"]*(melismakit|NativeLyrics)' "$PROJECT_FILE" ||
-   rg -q 'relativePath = "[^"]*NativeLyrics' "$PROJECT_FILE"; then
+if rg -q 'XCLocalSwiftPackageReference "[^"]*(melismakit|MelismaKit)' "$PROJECT_FILE" ||
+   rg -q 'relativePath = "[^"]*MelismaKit' "$PROJECT_FILE"; then
     has_local_reference=1
+fi
+if rg -q 'XCLocalSwiftPackageReference "[^"]*NativeLyrics' "$PROJECT_FILE" ||
+   rg -q 'relativePath = "[^"]*NativeLyrics' "$PROJECT_FILE"; then
+    fail "the Xcode project still references the old NativeLyrics checkout; point it at ../MelismaKit"
 fi
 
 resolved_pin="$(rg -n -A8 '"identity" : "melismakit"' "$RESOLVED_FILE" || true)"
@@ -68,9 +72,9 @@ if [[ "$EXPECTED_SOURCE" == "local" ]]; then
     [[ -f "$LOCAL_PACKAGE_PATH/Package.swift" ]] ||
         fail "local checkout has no Package.swift: $LOCAL_PACKAGE_PATH"
     ((has_remote_reference == 0)) ||
-        fail "the Xcode project still points MelismaKit to a remote package; switch the project dependency to the local NativeLyrics checkout before testing"
+        fail "the Xcode project still points MelismaKit to a remote package; switch the project dependency to the local MelismaKit checkout before testing"
     ((has_local_reference == 1)) ||
-        fail "the Xcode project does not expose a local NativeLyrics/MelismaKit package reference"
+        fail "the Xcode project does not expose a local MelismaKit package reference"
 
     if [[ -n "$resolved_pin" ]]; then
         printf 'DEPENDENCY-REVIEW: Package.resolved still contains a remote MelismaKit pin; the local project reference remains authoritative:\n%s\n' "$resolved_pin" >&2
@@ -78,16 +82,19 @@ if [[ "$EXPECTED_SOURCE" == "local" ]]; then
 
     if [[ -n "$BUILD_LOG" ]]; then
         [[ -f "$BUILD_LOG" ]] || fail "build log not found: $BUILD_LOG"
-        rg -q 'NativeLyrics/Sources/MelismaKit|NativeLyrics[/\\]Sources[/\\]MelismaKit' "$BUILD_LOG" ||
-            fail "build log does not show compiler input from the local NativeLyrics/Sources/MelismaKit path"
+        rg -q 'MelismaKit/Sources/MelismaKit|MelismaKit[/\\]Sources[/\\]MelismaKit' "$BUILD_LOG" ||
+            fail "build log does not show compiler input from the local MelismaKit/Sources/MelismaKit path"
+        if rg -q 'NativeLyrics[/\\]Sources[/\\]MelismaKit' "$BUILD_LOG"; then
+            fail "build log still references the old NativeLyrics checkout path"
+        fi
         if rg -q 'SourcePackages[/\\]checkouts[/\\]melismakit' "$BUILD_LOG"; then
             fail "build log still contains the remote SourcePackages/checkouts/melismakit path"
         fi
     fi
 
     local_revision="$(git -C "$LOCAL_PACKAGE_PATH" rev-parse --short HEAD 2>/dev/null || true)"
-    [[ -n "$local_revision" ]] || fail "local NativeLyrics checkout is not a readable Git worktree"
-    printf 'DEPENDENCY-PASS: local MelismaKit source at %s (NativeLyrics %s)\n' \
+    [[ -n "$local_revision" ]] || fail "local MelismaKit checkout is not a readable Git worktree"
+    printf 'DEPENDENCY-PASS: local MelismaKit source at %s (%s)\n' \
         "$LOCAL_PACKAGE_PATH" "$local_revision"
     exit 0
 fi

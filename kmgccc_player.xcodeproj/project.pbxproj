@@ -587,7 +587,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				D60000000000000000000003 /* XCLocalSwiftPackageReference "Tools/PopupLab" */,
-				D20000000000000000000002 /* XCLocalSwiftPackageReference "../NativeLyrics" */,
+				D20000000000000000000002 /* XCLocalSwiftPackageReference "../MelismaKit" */,
 				AA0000000000000000000001 /* XCRemoteSwiftPackageReference "WhatsNewKit" */,
 				AA0000000000000000000003 /* XCRemoteSwiftPackageReference "plcrashreporter" */,
 				AA0000000000000000000005 /* XCRemoteSwiftPackageReference "Sparkle" */,
@@ -1201,9 +1201,9 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Dependencies/PlayerAutomation;
 		};
-		D20000000000000000000002 /* XCLocalSwiftPackageReference "../NativeLyrics" */ = {
+		D20000000000000000000002 /* XCLocalSwiftPackageReference "../MelismaKit" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ../NativeLyrics;
+			relativePath = ../MelismaKit;
 		};
 		D50000000000000000000003 /* XCLocalSwiftPackageReference "Dependencies/MotionKit" */ = {
 			isa = XCLocalSwiftPackageReference;
@@ -1270,7 +1270,7 @@
 		};
 		D20000000000000000000003 /* MelismaKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = D20000000000000000000002 /* XCLocalSwiftPackageReference "../NativeLyrics" */;
+			package = D20000000000000000000002 /* XCLocalSwiftPackageReference "../MelismaKit" */;
 			productName = MelismaKit;
 		};
 		D50000000000000000000002 /* MotionKit */ = {
