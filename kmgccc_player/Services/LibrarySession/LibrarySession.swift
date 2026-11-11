@@ -217,9 +217,15 @@ final class LibrarySession: LibrarySessionLifecycle {
     private let playbackService: AVAudioPlaybackService
     private let operationCoordinator: LibraryOperationCoordinator
     private let mutationCoordinator: LibraryMutationCoordinator
+    private let mutationJournal: LibraryMutationJournal
     private var isLoaded = false
     private var isClosed = false
+    private var onSlowQuiescenceStage: (@MainActor (String) -> Void)?
     private(set) var initialReconcileOutcome: InitialReconcileOutcome?
+    private(set) var unresolvedMutationIntents: [LibraryMutationIntent] = []
+    var unresolvedMutationCount = 0
+    var ncmRecoveryService: ReferencedNCMConversionService?
+    private var onUnresolvedMutation: (@MainActor () -> Void)?
 
     init(
         context: LibraryContext,
@@ -240,6 +246,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         fileImportService: FileImportService,
         operationCoordinator: LibraryOperationCoordinator,
         mutationCoordinator: LibraryMutationCoordinator,
+        mutationJournal: LibraryMutationJournal,
         storageBackend: any LibraryStorageBackend,
         referencedSourceStore: ReferencedSourceStore?,
         referencedSourceScope: ReferencedSourceScope?,
@@ -271,6 +278,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         self.fileImportService = fileImportService
         self.operationCoordinator = operationCoordinator
         self.mutationCoordinator = mutationCoordinator
+        self.mutationJournal = mutationJournal
         self.storageBackend = storageBackend
         self.referencedSourceStore = referencedSourceStore
         self.referencedSourceScope = referencedSourceScope
@@ -282,6 +290,9 @@ final class LibrarySession: LibrarySessionLifecycle {
         self.playbackCoordinator = playbackCoordinator
         self.lyricsViewModel = lyricsViewModel
         self.ledMeterProvider = ledMeterProvider
+        mutationCoordinator.onUnresolvedMutation = { [weak self] intent in
+            self?.noteUnresolvedMutation(intent)
+        }
     }
 
     func load() async throws {
@@ -290,6 +301,24 @@ final class LibrarySession: LibrarySessionLifecycle {
         try context.paths.createRequiredDirectories()
         await libraryViewModel.reloadLibrary()
         try Task.checkCancellation()
+        if let ncmRecoveryService {
+            let candidates = libraryViewModel.allTracks.compactMap { track in
+                track.ncmConversionAssociation.map { (trackID: track.id, association: $0) }
+            }
+            await ncmRecoveryService.recoverCommittedAssociations(candidates)
+            var locationsByTrack: [UUID: [ReferencedTrackLocation]] = [:]
+            for track in libraryViewModel.allTracks {
+                if let locator = track.mediaLocator.referencedFile {
+                    locationsByTrack[track.id] = locator.locations
+                }
+            }
+            await ncmRecoveryService.recoverCommittedLocations(locationsByTrack)
+        }
+        // The journal only records that a commit was interrupted. Establish
+        // whether its durable projection is actually consistent before any
+        // writer is allowed to touch the same targets. NCM recovery runs
+        // first so an association it can finish is visible to the verifier.
+        await recoverPendingMutations()
         if let referencedSourceReconciler {
             initialReconcileOutcome = try await Self.runInitialReconcile(
                 reconciler: referencedSourceReconciler,
@@ -482,6 +511,111 @@ final class LibrarySession: LibrarySessionLifecycle {
     /// instead of polling task state.
     func bindLibraryTaskStateObserver(_ onChange: (@MainActor () -> Void)?) {
         operationCoordinator.onTasksDidChange = onChange
+    }
+
+    func bindUnresolvedMutationObserver(_ onChange: (@MainActor () -> Void)?) {
+        onUnresolvedMutation = onChange
+    }
+
+    /// Re-examines pending intents against the durable projections. Called on
+    /// load and from the repair surface after the user reviews the records.
+    /// Returns the number of intents that remain unresolved.
+    @discardableResult
+    func recoverPendingMutations() async -> Int {
+        let paths = context.paths
+        let intents: [LibraryMutationIntent]
+        do {
+            intents = try await mutationJournal.pendingIntents()
+        } catch {
+            Log.error("[LibraryMutation] cannot inspect pending records: \(error)", category: .library)
+            return unresolvedMutationCount
+        }
+        guard !intents.isEmpty else {
+            applyUnresolvedMutations([])
+            return 0
+        }
+        let snapshot = await Task.detached(priority: .utility) {
+            LibraryMutationProjectionReader.read(paths: paths)
+        }.value
+        var unresolved: [LibraryMutationIntent] = []
+        for intent in intents {
+            let verdict = LibraryMutationVerifier.verify(intent, snapshot: snapshot)
+            guard verdict.isResolved else {
+                unresolved.append(intent)
+                continue
+            }
+            do {
+                _ = try await mutationJournal.markResolved(
+                    intentID: intent.id,
+                    summary: verdict.summary
+                )
+                Log.warning(
+                    "[LibraryMutation] verified interrupted \(intent.kind.rawValue) intent \(intent.id): \(verdict.summary)",
+                    category: .library
+                )
+            } catch {
+                Log.error(
+                    "[LibraryMutation] failed to archive verified intent \(intent.id): \(error)",
+                    category: .library
+                )
+                unresolved.append(intent)
+            }
+        }
+        applyUnresolvedMutations(unresolved)
+        return unresolved.count
+    }
+
+    /// Archives every currently unresolved intent after the user reviewed the
+    /// records. Nothing in the library is modified and no recovery is claimed.
+    @discardableResult
+    func archiveUnresolvedMutations() async -> Int {
+        // A record that a verifier can still resolve must be recovered rather
+        // than filed as reviewed, even when the user came here to archive.
+        await recoverPendingMutations()
+        var archived = 0
+        for intent in unresolvedMutationIntents {
+            do {
+                _ = try await mutationJournal.archiveUnresolved(
+                    intentID: intent.id,
+                    summary: "reviewed by the user; no automatic verifier applies"
+                )
+                archived += 1
+            } catch {
+                Log.error(
+                    "[LibraryMutation] failed to archive reviewed intent \(intent.id): \(error)",
+                    category: .library
+                )
+            }
+        }
+        await recoverPendingMutations()
+        return archived
+    }
+
+    private func noteUnresolvedMutation(_ intent: LibraryMutationIntent) {
+        if let index = unresolvedMutationIntents.firstIndex(where: { $0.id == intent.id }) {
+            unresolvedMutationIntents[index] = intent
+        } else {
+            unresolvedMutationIntents.append(intent)
+        }
+        unresolvedMutationCount = unresolvedMutationIntents.count
+        mutationCoordinator.isolateTargets(intent.targetIDs)
+        onUnresolvedMutation?()
+    }
+
+    private func applyUnresolvedMutations(_ intents: [LibraryMutationIntent]) {
+        unresolvedMutationIntents = intents
+        unresolvedMutationCount = intents.count
+        mutationCoordinator.replaceIsolatedTargets(Set(intents.flatMap(\.targetIDs)))
+    }
+
+    func bindSlowQuiescenceObserver(
+        tasks: (@MainActor ([LibraryTaskKind]) -> Void)?,
+        commits: (@MainActor (Int) -> Void)?,
+        stage: (@MainActor (String) -> Void)?
+    ) {
+        operationCoordinator.onSlowQuiescence = tasks
+        mutationCoordinator.onSlowQuiescence = commits
+        onSlowQuiescenceStage = stage
     }
 
     /// Current live task descriptors for hosts that surface session-wide
@@ -813,7 +947,7 @@ final class LibrarySession: LibrarySessionLifecycle {
                 conflicted: false,
                 currentQuality: currentQuality,
                 candidateQuality: candidateQuality,
-                message: "kept current lyrics because the candidate is not better"
+                message: "Kept the current lyrics: candidate quality \(candidateQuality) does not beat the current \(currentQuality). Pass force=true to replace them anyway."
             )
         }
         track.ttmlLyricText = ttml
@@ -1845,6 +1979,17 @@ final class LibrarySession: LibrarySessionLifecycle {
         )
     }
 
+    private func waitForQuiescenceStage(_ label: String, work: @MainActor () async -> Void) async {
+        let warning = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(15)) }
+            catch { return }
+            Log.warning("[LibrarySession] waiting for \(label) to finish", category: .library)
+            self?.onSlowQuiescenceStage?(label)
+        }
+        defer { warning.cancel() }
+        await work()
+    }
+
     func quiesce() async {
         guard !isClosed else { return }
         operationCoordinator.stopAcceptingNewOperations()
@@ -1853,13 +1998,13 @@ final class LibrarySession: LibrarySessionLifecycle {
         revokeBackgroundWork()
         playbackService.unbindAudioProcessingGlobals()
         playbackService.unbindAudioDSPDevices()
-        await libraryChangeMonitor?.stopAndWait()
+        await waitForQuiescenceStage("文件监控") { _ = await libraryChangeMonitor?.stopAndWait() }
         await operationCoordinator.cancelAndWait()
-        await fileImportService.quiesce()
+        await waitForQuiescenceStage("文件导入") { await fileImportService.quiesce() }
         playerViewModel.stop()
         playerViewModel.stopLevelMeter()
-        await importEnrichmentService.quiesce()
-        await libraryService.quiesceAndWaitForBackgroundWrites()
+        await waitForQuiescenceStage("信息补全") { await importEnrichmentService.quiesce() }
+        await waitForQuiescenceStage("后台写入") { await libraryService.quiesceAndWaitForBackgroundWrites() }
         mutationCoordinator.stopAcceptingNewMutations()
         await mutationCoordinator.waitForDrain()
         libraryViewModel.prepareForSessionClose()

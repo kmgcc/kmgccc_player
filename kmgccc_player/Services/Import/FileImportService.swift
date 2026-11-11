@@ -33,11 +33,14 @@ nonisolated enum AudioImportError: LocalizedError, Sendable {
 
 nonisolated enum ImportEffectCommitError: LocalizedError, Sendable {
     case missingReusedTrack(UUID)
+    case tracksNotCommitted
 
     var errorDescription: String? {
         switch self {
         case .missingReusedTrack(let trackID):
             return "复用歌曲在提交前已不存在（\(trackID.uuidString)）"
+        case .tracksNotCommitted:
+            return "导入文件未完成提交，请检查资料库后重试。"
         }
     }
 }
@@ -412,6 +415,14 @@ final class FileImportService: FileImportServiceProtocol {
     /// Production entry used by referenced-source reconciliation. It uses the same
     /// metadata, sidecar, and visibility pipeline without presenting AppKit UI.
     func importAutomatically(_ urls: [URL]) async -> [Track] {
+        // A monitor event can surface a file that is still being copied. Wait
+        // for each write to finish before fingerprints and content digests are
+        // taken: a half-written file either fails the decode probe or, worse,
+        // hashes to something the complete file never matches, which turns one
+        // recording into a second Track.
+        for url in urls {
+            _ = await PerAudioFileImportTask.waitForFileToSettle(url)
+        }
         let importOutcome = await importURLs(
             urls,
             to: nil,
@@ -1431,6 +1442,9 @@ final class FileImportService: FileImportServiceProtocol {
                                 "[Import] referenced NCM duplicate commit failed operation=\(operationID.uuidString) track=\(trackID.uuidString): \(error.localizedDescription)",
                                 category: .import
                             )
+                            mutationCoordinator?.recordUnresolved(
+                                "Referenced NCM association was not committed for track \(trackID.uuidString), operation \(operationID.uuidString)."
+                            )
                         }
                     }
                 }
@@ -1458,18 +1472,39 @@ final class FileImportService: FileImportServiceProtocol {
     ) async -> [Track]? {
         do {
             if let mutationCoordinator {
-                let savedIDs: [UUID]? = try await mutationCoordinator.run(
+                let savedIDs: [UUID] = try await mutationCoordinator.run(
                     kind: .importCommit,
-                    targetIDs: tracks.map { $0.id.uuidString }
+                    targetIDs: tracks.map { $0.id.uuidString },
+                    stepIDs: ["audio", "track_metadata", "ncm_associations"]
                 ) {
-                    await self.committer.saveImportedTracks(
+                    guard let saved = await self.committer.saveImportedTracks(
                         tracks,
                         progressController: progressController,
                         session: session,
-                        cancellationToken: cancellationToken
-                    )?.map(\.id)
+                        cancellationToken: cancellationToken,
+                        didCommitAudio: { try await mutationCoordinator.recordCompletedStep("audio") },
+                        didCommitTracks: { savedIDs in
+                            guard Set(savedIDs) == Set(tracks.map(\.id)) else { return }
+                            do {
+                                try await mutationCoordinator.recordCompletedStep("track_metadata")
+                                try await mutationCoordinator.recordCompletedStep("ncm_associations")
+                            } catch {
+                                mutationCoordinator.recordUnresolved("Unable to record completed import steps: \(error)")
+                            }
+                        }
+                    ) else {
+                        if await cancellationToken.isCancelled || Task.isCancelled { throw CancellationError() }
+                        throw ImportEffectCommitError.tracksNotCommitted
+                    }
+                    let expectedIDs = Set(tracks.map(\.id))
+                    let savedIDs = Set(saved.map(\.id))
+                    if savedIDs != expectedIDs {
+                        mutationCoordinator.recordUnresolved(
+                            "Import saved \(savedIDs.count) of \(expectedIDs.count) requested tracks."
+                        )
+                    }
+                    return saved.map(\.id)
                 }
-                guard let savedIDs else { return nil }
                 let savedByID = Dictionary(
                     await repository.fetchTracks(ids: savedIDs).map { ($0.id, $0) },
                     uniquingKeysWith: { existing, _ in existing }
@@ -1482,6 +1517,8 @@ final class FileImportService: FileImportServiceProtocol {
                 session: session,
                 cancellationToken: cancellationToken
             )
+        } catch is CancellationError {
+            return nil
         } catch {
             lastImportFailures.append(.init(
                 url: failureURL,
@@ -1603,8 +1640,22 @@ final class FileImportService: FileImportServiceProtocol {
                 let incomingIsPlayable = await AudioFilePreparationActor.canOpenForPlayback(
                     candidate.fileURL
                 )
-                var mergedLocator = incomingIsPlayable ? incomingLocator : previousLocator
-                let locationsToMerge = incomingIsPlayable
+                // A playable copy must not take over a Track that is still
+                // healthy where it is: deleting the copy would then strand a
+                // Track the user never moved, and the Album would point into
+                // the folder the copy came from. It joins as an alternate
+                // location instead. A Track that is missing, or whose recording
+                // is gone, still follows the copy. An NCM output is the
+                // exception: it was produced on purpose from the same source,
+                // so the freshest product stays first.
+                let recordingIsPresent = !previousLocator.lastKnownPath.isEmpty
+                    && FileManager.default.fileExists(atPath: previousLocator.lastKnownPath)
+                let preferIncoming = incomingIsPlayable
+                    && (candidate.ncmLocator != nil
+                        || existingTrack.availability != .available
+                        || !recordingIsPresent)
+                var mergedLocator = preferIncoming ? incomingLocator : previousLocator
+                let locationsToMerge = preferIncoming
                     ? previousLocator.locations
                     : incomingLocator.locations
                 for location in locationsToMerge {
@@ -1613,6 +1664,11 @@ final class FileImportService: FileImportServiceProtocol {
                 if !incomingIsPlayable {
                     Log.warning(
                         "[Import] duplicate copy could not be decoded; preserving the existing playable location first track=\(existingTrackID.uuidString)",
+                        category: .import
+                    )
+                } else if !preferIncoming {
+                    Log.info(
+                        "[Import] duplicate copy linked as an alternate location; the existing recording stays primary track=\(existingTrackID.uuidString)",
                         category: .import
                     )
                 }

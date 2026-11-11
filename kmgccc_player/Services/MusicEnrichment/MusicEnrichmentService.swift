@@ -159,8 +159,14 @@ final class MusicEnrichmentService {
         guard candidate.motion?.isEmpty == false else {
             throw MusicEnrichmentHelperError.invalidResponse
         }
-        if scope == .album, try await setAlbumMotion(candidate, for: query) {
-            return try await clearMotion(for: query, resumeAutomatic: true)
+        if scope == .album {
+            do {
+                if try await setAlbumMotion(candidate, for: query) {
+                    return try await clearMotion(for: query, resumeAutomatic: true)
+                }
+            } catch MotionVideoImportError.musicVideoNotAllowedForAlbum {
+                // An MV cannot be used as an album dynamic cover; fall back to track selection.
+            }
         }
         selectionTasks[query.key]?.cancel()
         let id = UUID()

@@ -1422,7 +1422,7 @@ struct AutomationLibraryHandler {
                 return failure(.invalidRequest, "The registered library failed validation and was not moved.")
             case .securityScopeDenied:
                 return failure(.permissionDenied, "The App could not authorize the library or destination location.")
-            case .transactionInProgress, .pendingRepair, .recoveryConflict:
+            case .transactionInProgress, .pendingRepair, .recoveryConflict, .pendingMutations:
                 return failure(.conflict, "The library has an unfinished lifecycle transaction; repair or retry after the App reports it is ready.", retryable: true)
             case .closeFailed, .copyFailed, .publicationFailed, .newSessionFailed,
                  .registryCommitFailed, .recoveryFailed:
@@ -1435,7 +1435,7 @@ struct AutomationLibraryHandler {
                 return failure(.invalidRequest, "The requested library is not a valid registered library.")
             case .securityScopeDenied:
                 return failure(.permissionDenied, "The App could not authorize the library location.")
-            case .transactionInProgress, .pendingRepair:
+            case .transactionInProgress, .pendingRepair, .pendingMutations:
                 return failure(.conflict, "The library has an unfinished removal transaction; repair or retry after the App reports it is ready.", retryable: true)
             case .closeFailed, .recycleFailed, .intentWriteFailed, .recoveryFailed:
                 return failure(.internalError, "The library could not be moved to the macOS Trash safely; the App preserved its recovery boundary.", retryable: true)

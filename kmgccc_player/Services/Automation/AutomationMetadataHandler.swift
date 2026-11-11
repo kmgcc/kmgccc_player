@@ -1066,9 +1066,9 @@ struct AutomationMetadataHandler {
                         updatedTrackIDs: outcome.updatedTrackIDs,
                         skippedTrackIDs: outcome.skippedTrackIDs,
                         conflictedTrackIDs: outcome.conflictedTrackIDs,
-                        message: outcome.conflictedTrackIDs.isEmpty
-                            ? "App metadata updated; original file tags were not changed."
-                            : "Some Tracks changed after the query and were left untouched."
+                        message: Self.metadataPatchMessage(
+                            conflicted: !outcome.conflictedTrackIDs.isEmpty
+                        )
                     ),
                     for: request
                 )
@@ -1079,6 +1079,14 @@ struct AutomationMetadataHandler {
         default:
             return AutomationResponseSupport.unsupportedMethod(for: request)
         }
+    }
+
+    /// A conflicted Track was not written. Saying it was updated makes callers
+    /// keep stale expectations and retry against the wrong revision.
+    private static func metadataPatchMessage(conflicted: Bool) -> String {
+        conflicted
+            ? "Some Tracks changed after the query and were left untouched."
+            : "App metadata updated; original file tags were not changed."
     }
 
     private enum MetadataTarget {
@@ -1623,7 +1631,9 @@ struct AutomationMetadataHandler {
                     updatedTrackIDs: outcome.updatedTrackIDs,
                     skippedTrackIDs: outcome.skippedTrackIDs,
                     conflictedTrackIDs: outcome.conflictedTrackIDs,
-                    message: "App metadata updated; original file tags were not changed."
+                    message: Self.metadataPatchMessage(
+                        conflicted: !outcome.conflictedTrackIDs.isEmpty
+                    )
                 ),
                 for: request
             )

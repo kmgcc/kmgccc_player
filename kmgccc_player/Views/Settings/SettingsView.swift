@@ -15,6 +15,8 @@ import SwiftUI
 @MainActor
 struct SettingsView: View {
     var hasActiveLibrarySession = false
+    var initialCategory: SettingsCategory?
+    var initialAnchor: String?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -27,7 +29,7 @@ struct SettingsView: View {
 
     // MARK: - Navigation State
 
-    @State private var selection: SettingsCategory = .general
+    @State private var selection: SettingsCategory
     @State private var columnVisibility = NavigationSplitViewVisibility.all
     @State private var subpagePath: [SettingsSubpage] = []
     @State private var searchText = ""
@@ -36,6 +38,17 @@ struct SettingsView: View {
     /// Applied only after the sheet closes: switching the app appearance while
     /// SwiftUI is still drawing this sheet leaves it in a mixed state.
     @State private var pendingAppearanceMode: AppSettings.AppearanceMode?
+
+    init(
+        hasActiveLibrarySession: Bool = false,
+        initialCategory: SettingsCategory? = nil,
+        initialAnchor: String? = nil
+    ) {
+        self.hasActiveLibrarySession = hasActiveLibrarySession
+        self.initialCategory = initialCategory
+        self.initialAnchor = initialAnchor
+        _selection = State(initialValue: initialCategory ?? .general)
+    }
 
     private var currentSubpage: SettingsSubpage? { subpagePath.last }
 
@@ -159,6 +172,16 @@ struct SettingsView: View {
         .foregroundStyle(appForegroundColors.primary)
         .onAppear {
             settings.fullscreen.normalizeConfiguration()
+            if let initialAnchor {
+                // Deep link from a sidebar notice: select the requested tab
+                // and reuse the search-anchor scroll path.
+                subpagePath = []
+                searchRequest = SettingsSearchRequest(
+                    category: selection,
+                    tab: nil,
+                    anchor: initialAnchor
+                )
+            }
         }
         .onDisappear {
             guard let mode = pendingAppearanceMode else { return }

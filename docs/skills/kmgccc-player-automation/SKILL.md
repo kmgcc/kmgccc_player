@@ -7,6 +7,21 @@ description: Operate kmgccc_player through its shared CLI/MCP automation contrac
 
 Use the App-owned automation capability catalog before inventing a workflow.
 
+## Running commands
+
+The CLI ships inside the App and reaches it through a local socket, so start kmgccc_player first.
+
+    CLI="$HOME/Library/Application Support/kmgccc.player/Automation/bin/player-automation"
+
+List the methods with `"$CLI" automation tools`, read the parameters of one with
+`"$CLI" automation describe <method>`, then call it:
+
+    "$CLI" library tracks --limit 20
+    "$CLI" automation call metadata.patch --params-json '{"trackIDs":["…"],"title":"…"}'
+
+Add `--json` for the raw response. Hosts that speak MCP can run `"$CLI" mcp-stdio --profile core`
+and reach the same methods through `tools/call`.
+
 ## New audio import
 
 Use `library.import` with `filePaths` and optional `targetPlaylistID` for files/folders in
@@ -42,7 +57,8 @@ artwork or distinct metadata through `operations.batch`; shared values continue 
 
 ## Workflow
 
-1. Discover with `automation capabilities`/MCP `tools/list` and inspect with query or diagnostics.
+1. Discover with `automation tools` and `automation describe` (or MCP `tools/list`), and inspect with
+   query or diagnostics. Reach for `automation capabilities` only when the whole catalog is needed.
 2. For an explicit library-management request, use `library.list` then preview
    `library.create/open/switch/rename/relocate/remove`; paths are picker hints, not authorization.
    `library.remove` needs the separately granted `library.delete` scope.

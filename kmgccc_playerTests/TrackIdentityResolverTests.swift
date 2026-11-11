@@ -71,6 +71,39 @@ final class TrackIdentityResolverTests: XCTestCase {
         }
     }
 
+    func testExactFingerprintToleratesOneULPModificationTimeDrift() {
+        let identity = kmgccc_player.ReferencedFileIdentity(
+            volumeUUID: "VOL-1",
+            resourceIdentifierArchive: Data("inode-1".utf8)
+        )
+        // Foundation reported one unaffected file's modification time one ULP
+        // apart across two reads, which made the NCM registry miss its own
+        // committed record and convert the same source twice.
+        let recorded = kmgccc_player.ReferencedFileFingerprint(
+            identity: identity,
+            fileSize: 10_002_604,
+            modifiedAt: 1_794_125_694.2732697
+        )
+        let reread = kmgccc_player.ReferencedFileFingerprint(
+            identity: identity,
+            fileSize: 10_002_604,
+            modifiedAt: 1_794_125_694.2732694
+        )
+        XCTAssertTrue(kmgccc_player.TrackIdentityResolver.sameExactFingerprint(recorded, reread))
+        XCTAssertTrue(kmgccc_player.NCMConversionRegistry.sameFingerprint(recorded, reread))
+        XCTAssertTrue(kmgccc_player.NCMGeneratedOutputMarkerStore.sameExactFingerprint(recorded, reread))
+
+        let touchedInPlace = kmgccc_player.ReferencedFileFingerprint(
+            identity: identity,
+            fileSize: 10_002_604,
+            modifiedAt: 1_794_125_695.2732694
+        )
+        XCTAssertFalse(
+            kmgccc_player.TrackIdentityResolver.sameExactFingerprint(recorded, touchedInPlace),
+            "a touched-in-place source must not reuse its old conversion product"
+        )
+    }
+
     func testPhysicalIdentityKeySemanticsPreservedThroughResolver() {
         let identity = kmgccc_player.ReferencedFileIdentity(
             volumeUUID: "VOL-1",

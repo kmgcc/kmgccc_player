@@ -238,6 +238,11 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                 motionArtwork(size: geometry.size, centered: settledCenteredLayerOpacity > 0.5,
                               mountsCenteredBackground: shouldMountCenteredBackground)
                     .zIndex(1.5)
+                    .motionArtworkFullscreenSource(
+                        context: context,
+                        cornerRadius: 0,
+                        handoffStyle: .maskedCrossfade
+                    )
 
                 if shouldMountTransitionBackground {
                     transitionBackground(size: geometry.size)

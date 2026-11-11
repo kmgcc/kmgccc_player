@@ -581,7 +581,11 @@ nonisolated enum CacheManager {
                     )) ?? []
                     let isEmpty = nested.isEmpty
                     let modified = values?.contentModificationDate ?? .distantPast
-                    guard isEmpty || modified < cutoff else { continue }
+                    // An empty directory holds no user content. A non-empty
+                    // one is deleted only when its own marker proves it was
+                    // created by an import session with this identifier.
+                    let owned = isOwnedImportStagingDirectory(url, fileManager: fileManager)
+                    guard isEmpty || (owned && modified < cutoff) else { continue }
 
                     do {
                         try fileManager.removeItem(at: url)
@@ -598,6 +602,20 @@ nonisolated enum CacheManager {
             )
             return (deleted, failed)
         }.value
+    }
+
+    private static func isOwnedImportStagingDirectory(
+        _ url: URL,
+        fileManager: FileManager
+    ) -> Bool {
+        guard let sessionID = UUID(uuidString: url.lastPathComponent) else { return false }
+        let markerURL = url.appendingPathComponent(ImportStagingMarker.fileName)
+        guard let data = try? Data(contentsOf: markerURL) else { return false }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let marker = try? decoder.decode(ImportStagingMarker.self, from: data) else { return false }
+        return marker.schemaVersion == ImportStagingMarker.schemaVersion
+            && marker.sessionID == sessionID
     }
 
     private static func removeUnregisteredCacheItems(in storage: LibraryStorageLocations) async {

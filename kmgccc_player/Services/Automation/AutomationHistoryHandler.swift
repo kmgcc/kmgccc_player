@@ -146,11 +146,11 @@ struct AutomationHistoryHandler {
                     }.prefix(limit).map { $0 }
                 }
                 let trackStats = dimension == "all" || dimension == "track"
-                    ? aggregates(\.title, unknown: "Unknown Track") : []
+                    ? aggregates(\.title, unknown: LibraryNormalization.unknownTitle) : []
                 let artistStats = dimension == "all" || dimension == "artist"
-                    ? aggregates(\.artist, unknown: "Unknown Artist") : []
+                    ? aggregates(\.artist, unknown: LibraryNormalization.unknownArtist) : []
                 let albumStats = dimension == "all" || dimension == "album"
-                    ? aggregates(\.album, unknown: "Unknown Album") : []
+                    ? aggregates(\.album, unknown: LibraryNormalization.unknownAlbum) : []
                 return AutomationResponseSupport.encodeResult(AutomationHistoryStatsResult(
                     from: from, to: to, playCount: items.count,
                     distinctTrackCount: Set(items.map(\.trackID)).count,

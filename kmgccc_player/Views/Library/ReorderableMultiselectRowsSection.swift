@@ -121,12 +121,14 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
                             // same height contract.
                             .frame(height: rowHeight(row), alignment: .leading)
                             .contentShape(Rectangle())
+                            .id(row.id)
                     }
                 } else {
                     ForEach(displayRows(in: order)) { row in
                         rowContainer(row, order: order, indices: indices, draggedSet: draggedSet)
                             .frame(height: rowHeight(row), alignment: .topLeading)
                             .background(rowFrameReporter(for: row.id))
+                            .id(row.id)
                     }
                 }
                 Color.clear.frame(height: bottomSpacerHeight)

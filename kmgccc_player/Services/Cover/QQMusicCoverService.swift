@@ -57,8 +57,10 @@ actor QQMusicCoverService {
     ) async throws -> [CoverCandidate] {
         let query = CoverQuery(
             title: trimmed(title),
-            artist: trimmed(artist) ?? "",
-            album: trimmed(album) ?? "",
+            // Placeholder identities narrow the query to nothing and then
+            // veto every candidate during scoring; search without them.
+            artist: LibraryNormalization.searchSeedArtist(artist),
+            album: LibraryNormalization.searchSeedAlbum(album),
             duration: duration,
             limit: limit
         )
@@ -607,13 +609,33 @@ actor QQMusicCoverService {
             }
 
             let sourceArtist = ExternalPlaybackTextNormalizer.normalizeArtist(query.artist)
-            let candidateArtist = ExternalPlaybackTextNormalizer.normalizeArtist(
-                candidate.artist ?? candidate.artistName
-            )
-            let artistScore = ExternalPlaybackTextNormalizer.artistSimilarity(sourceArtist, candidateArtist)
-            guard artistScore >= 0.22 else {
-                rejectReason = "artist mismatch: score=\(String(format: "%.2f", artistScore)) query=\"\(query.artist)\" candidate=\"\(candidate.artist ?? candidate.artistName ?? "-")\""
-                return nil
+            let artistIsUnknown = LibraryNormalization.isUnknownArtist(query.artist)
+            if artistIsUnknown,
+               query.title?.isEmpty == false,
+               let sourceDuration = query.duration,
+               sourceDuration > 0
+            {
+                // No artist to confirm the match, so the duration must.
+                guard ExternalPlaybackTextNormalizer.durationSupportsArtistlessMatch(
+                    source: sourceDuration,
+                    candidate: Double(candidate.duration ?? 0)
+                ) else {
+                    rejectReason = "unknown artist and duration mismatch: source=\(sourceDuration) candidate=\(candidate.duration ?? 0)"
+                    return nil
+                }
+            }
+            let artistScore: Double
+            if artistIsUnknown {
+                artistScore = 0.5
+            } else {
+                let candidateArtist = ExternalPlaybackTextNormalizer.normalizeArtist(
+                    candidate.artist ?? candidate.artistName
+                )
+                artistScore = ExternalPlaybackTextNormalizer.artistSimilarity(sourceArtist, candidateArtist)
+                guard artistScore >= 0.22 else {
+                    rejectReason = "artist mismatch: score=\(String(format: "%.2f", artistScore)) query=\"\(query.artist)\" candidate=\"\(candidate.artist ?? candidate.artistName ?? "-")\""
+                    return nil
+                }
             }
 
             let candidateDuration = Double(candidate.duration ?? 0)

@@ -144,6 +144,13 @@ nonisolated enum ImportArtistMetadataOutcome: Sendable {
     case failed(String)
 }
 
+/// One lookup per credited artist: a joined credit such as "A, B" owns one
+/// artist entry per name, so each name is searched and stored on its own.
+nonisolated struct ImportArtistMetadataResult: Sendable {
+    let name: String
+    let outcome: ImportArtistMetadataOutcome
+}
+
 nonisolated enum ImportAlbumMetadataOutcome: Sendable {
     case completed(AlbumMetadataDetail)
     case noResults
@@ -154,6 +161,13 @@ nonisolated enum ImportArtistArtworkOutcome: Sendable {
     case completed(Data)
     case noResults
     case failed(String)
+}
+
+/// One lookup per credited artist: a joined credit such as "A, B" owns one
+/// artist entry per name, so each name is searched and stored on its own.
+nonisolated struct ImportArtistArtworkResult: Sendable {
+    let name: String
+    let outcome: ImportArtistArtworkOutcome
 }
 
 nonisolated enum ImportAlbumArtworkOutcome: Sendable {

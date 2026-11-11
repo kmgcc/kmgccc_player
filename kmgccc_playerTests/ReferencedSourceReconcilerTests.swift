@@ -289,7 +289,7 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
             from: staged, beside: movie, in: fixture.sourceRoot, source: videoSource
         )
         let locator = ReferencedFileLocator(
-            fileBookmarkData: try SystemBookmarkResolver().refreshBookmark(for: audio),
+            fileBookmarkData: try ReconcileBookmarkResolver().refreshBookmark(for: audio),
             sourceMemberships: [.init(
                 sourceID: fixture.sourceID,
                 relativePath: movie.lastPathComponent
@@ -318,11 +318,11 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         )
 
         let preparation = await deletion.prepareForAuthorityDeletion([track])
-        XCTAssertEqual(preparation.approvedTrackIDs, Set([track.id]))
-        XCTAssertTrue(preparation.failures.isEmpty)
+        XCTAssertEqual(preparation.approvedTrackIDs, Set([track.id]), "\(preparation.failures)")
+        XCTAssertTrue(preparation.failures.isEmpty, "\(preparation.failures)")
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: audio.path),
-            "The extracted audio is a derivative of the movie"
+            "The extracted audio is a derivative of the movie: \(preparation.failures)"
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: movie.path))
         let movieIgnored = try await fixture.ignoredItemsStore.contains(videoSource.fingerprint)
@@ -528,6 +528,43 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         playlists = await fixture.repository.fetchPlaylists()
         initialPlaylist = try XCTUnwrap(playlists.first { $0.id == playlist.id })
         XCTAssertEqual(initialPlaylist.tracks.map(\.id), [imported.id])
+    }
+
+    func testMissingTrackRecoversWhenItsFileReturnsToTheManifestBoundPath() async throws {
+        let fixture = try await ReconcileFixture()
+        defer { fixture.cleanup() }
+        let song = fixture.sourceRoot.appendingPathComponent("song.mp3")
+        try Data("source-audio".utf8).write(to: song)
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        let fetchedTracks = await fixture.repository.fetchTracks(in: nil)
+        let imported = try XCTUnwrap(fetchedTracks.first)
+
+        // An earlier move cleared the membership while the recording stayed
+        // where it was. The next scan sees no change for that path, so the
+        // Track used to stay missing forever.
+        var locator = try XCTUnwrap(imported.mediaLocator.referencedFile)
+        for membership in locator.sourceMemberships {
+            locator.removeSourceMembership(
+                sourceID: membership.sourceID,
+                relativePath: membership.relativePath
+            )
+        }
+        locator.primarySourceID = nil
+        imported.mediaLocator = .referenced(locator)
+        imported.availability = .missing
+        await fixture.repository.persistTrackMetaOnly(imported, reason: "testClearedMembership")
+
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+
+        let tracks = await fixture.repository.fetchTracks(in: nil)
+        XCTAssertEqual(tracks.count, 1)
+        let recovered = try XCTUnwrap(tracks.first)
+        XCTAssertEqual(recovered.id, imported.id)
+        XCTAssertEqual(recovered.availability, .available)
+        XCTAssertEqual(
+            recovered.mediaLocator.referencedFile?.sourceMemberships,
+            [.init(sourceID: fixture.sourceID, relativePath: "song.mp3")]
+        )
     }
 
     func testOnlyLibraryRemovalDoesNotResurrectAndNewPhysicalIdentityAtSamePathImports() async throws {
@@ -1083,6 +1120,7 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         )
         let registry = NCMConversionRegistry(paths: fixture.paths)
         let operationID = UUID()
+        let trackID = UUID()
         try await registry.reserve(NCMConversionRecord(
             id: operationID,
             sourceIdentity: sourceFingerprint.identity,
@@ -1099,13 +1137,13 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
             outputFormat: .mp3,
             outputMetadata: metadata,
             outputCoverData: nil,
-            trackID: UUID(),
+            trackID: trackID,
             state: .outputReady,
             errorSummary: nil,
             createdAt: Date(),
             updatedAt: Date()
         ))
-        try await registry.markCommitted(operationID: operationID, trackID: UUID())
+        try await registry.markCommitted(operationID: operationID, trackID: trackID)
 
         let scanner = ReferencedSourceScanner(
             paths: fixture.paths,

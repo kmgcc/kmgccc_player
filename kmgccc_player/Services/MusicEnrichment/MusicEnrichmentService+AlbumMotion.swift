@@ -61,10 +61,12 @@ extension MusicEnrichmentService {
             defer { try? FileManager.default.removeItem(at: directory) }
             let materialized = try await client.materialize(descriptor, destination: directory.appendingPathComponent("artwork.mp4"))
             try Task.checkCancellation()
+            let isMV = record.query.duration > 0 && MotionAudioAligner.isMusicVideo(songDuration: record.query.duration, videoDuration: materialized.duration)
+            let targetAlbumIdentity = isMV ? nil : identity
             guard let asset = try await store.importMotion(from: URL(fileURLWithPath: materialized.path), descriptor: descriptor,
                 startTime: materialized.startTime, duration: materialized.duration,
-                queryKey: record.query.key, albumIdentity: identity) else { return nil }
-            if identity != nil { try await store.saveAlbumMotion(asset, for: record) }
+                queryKey: record.query.key, albumIdentity: targetAlbumIdentity) else { return nil }
+            if targetAlbumIdentity != nil { try await store.saveAlbumMotion(asset, for: record) }
             return asset
         }
         albumMotionTasks[key] = operation
@@ -94,7 +96,11 @@ extension MusicEnrichmentService {
     /// The album's own square artwork as a local file, for the album page.
     func albumMotionResource(for query: MusicEnrichmentQuery) async throws -> MotionArtworkResource? {
         let base = try await albumBaseRecord(for: query)
-        return await store.snapshot(base).squareArtwork
+        guard let artwork = await store.snapshot(base).squareArtwork else { return nil }
+        if query.duration > 0, MotionAudioAligner.isMusicVideo(songDuration: query.duration, videoDuration: artwork.duration) {
+            return nil
+        }
+        return artwork
     }
 
     /// Downloads a search result into the album. Returns false when the song
@@ -116,9 +122,13 @@ extension MusicEnrichmentService {
                     group.addTask {
                         do {
                             let materialized = try await client.materialize(descriptor, destination: directory.appendingPathComponent("\(descriptor.kind).mp4"))
+                            if query.duration > 0, MotionAudioAligner.isMusicVideo(songDuration: query.duration, videoDuration: materialized.duration) {
+                                throw MotionVideoImportError.musicVideoNotAllowedForAlbum
+                            }
                             return try await store.importMotion(from: URL(fileURLWithPath: materialized.path), descriptor: descriptor,
                                 startTime: materialized.startTime, duration: materialized.duration, albumIdentity: albumKey)
                         } catch is CancellationError { throw CancellationError() }
+                        catch let error as MotionVideoImportError { throw error }
                         catch { return nil }
                     }
                 }
@@ -142,6 +152,9 @@ extension MusicEnrichmentService {
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let validated = try await validateMotionVideo(from: url)
         try Task.checkCancellation()
+        if query.duration > 0, MotionAudioAligner.isMusicVideo(songDuration: query.duration, videoDuration: validated.duration) {
+            throw MotionVideoImportError.musicVideoNotAllowedForAlbum
+        }
         let descriptor = MotionArtworkDescriptor(kind: "square", url: "importedVideo:\(UUID().uuidString)",
             width: validated.width, height: validated.height)
         guard let square = try await store.importMotion(from: url, descriptor: descriptor, startTime: 0,
@@ -187,9 +200,9 @@ extension MusicEnrichmentService {
             if let state = try await store.albumMotionState(for: base), state.isUserSelected || !state.assets.isEmpty { return true }
             if let loaded = try await store.load(key: query.key), loaded.manualMotionSelection != nil { continue }
             do {
-                let snapshot = try await completeIndependently(query: query, includeMotion: true,
+                _ = try await completeIndependently(query: query, includeMotion: true,
                     providers: ["appleCache", "appleWeb"], context: context)
-                if snapshot.squareArtwork != nil || snapshot.tallArtwork != nil { return true }
+                if let state = try await store.albumMotionState(for: base), state.isUserSelected || !state.assets.isEmpty { return true }
             } catch is CancellationError { throw CancellationError() }
             catch { lastError = error }
         }

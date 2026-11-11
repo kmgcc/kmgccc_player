@@ -43,6 +43,15 @@ struct SkinArtworkComponent: View {
             .blur(radius: configuration.number("blur", fallback: 0))
             .opacity(configuration.number("opacity", fallback: 1))
             .frame(width: proxy.size.width, height: proxy.size.height)
+            .motionArtworkFullscreenSource(
+                context: snapshot.context,
+                cornerRadius: configuration.number("cornerRadius", fallback: 12),
+                handoffStyle: (
+                    configuration.boolean("artisticEdge", fallback: false)
+                        || configuration.number("blur", fallback: 0) > 0
+                        || configuration.number("opacity", fallback: 1) < 0.999
+                ) ? .maskedCrossfade : .directLiftOff
+            )
         }
     }
 

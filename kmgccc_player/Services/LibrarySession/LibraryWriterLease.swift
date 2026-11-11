@@ -64,10 +64,24 @@ nonisolated final class LibraryWriterLease: @unchecked Sendable {
         processID: Int32 = getpid()
     ) throws -> LibraryWriterLease {
         do {
-            try fileManager.createDirectory(
-                at: paths.settingsRootURL,
-                withIntermediateDirectories: true
-            )
+            var rootIsDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: paths.rootURL.path, isDirectory: &rootIsDirectory),
+                  rootIsDirectory.boolValue else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            var settingsIsDirectory: ObjCBool = false
+            if !fileManager.fileExists(atPath: paths.settingsRootURL.path, isDirectory: &settingsIsDirectory) {
+                do {
+                    // Never recreate a missing library root while preparing
+                    // the lock. Another process may have moved or removed it.
+                    try fileManager.createDirectory(at: paths.settingsRootURL, withIntermediateDirectories: false)
+                } catch {
+                    guard fileManager.fileExists(atPath: paths.settingsRootURL.path, isDirectory: &settingsIsDirectory),
+                          settingsIsDirectory.boolValue else { throw error }
+                }
+            } else if !settingsIsDirectory.boolValue {
+                throw CocoaError(.fileWriteFileExists)
+            }
         } catch {
             throw LibraryWriterLeaseError.cannotPrepareLockDirectory(
                 error.localizedDescription
@@ -76,20 +90,28 @@ nonisolated final class LibraryWriterLease: @unchecked Sendable {
 
         let path = paths.writerLockURL.path
         let registryKey = paths.writerLockURL.resolvingSymlinksInPath().standardizedFileURL.path
-        let alreadyActive = activeLockPaths.withLock { $0.contains(registryKey) }
-        guard !alreadyActive else {
+        let reserved = activeLockPaths.withLock { $0.insert(registryKey).inserted }
+        guard reserved else {
             throw LibraryWriterLeaseError.libraryInUse(paths.writerLockURL)
         }
         let descriptor = Darwin.open(
             path,
-            O_RDWR | O_CREAT | O_CLOEXEC,
+            O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
             mode_t(S_IRUSR | S_IWUSR)
         )
         guard descriptor >= 0 else {
+            activeLockPaths.withLock { _ = $0.remove(registryKey) }
             throw LibraryWriterLeaseError.cannotOpenLockFile(path, errno)
         }
 
         do {
+            var lockInfo = stat()
+            guard fstat(descriptor, &lockInfo) == 0 else {
+                throw LibraryWriterLeaseError.cannotOpenLockFile(path, errno)
+            }
+            guard lockInfo.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else {
+                throw LibraryWriterLeaseError.cannotOpenLockFile(path, EINVAL)
+            }
             guard Darwin.fchmod(descriptor, mode_t(S_IRUSR | S_IWUSR)) == 0 else {
                 throw LibraryWriterLeaseError.cannotOpenLockFile(path, errno)
             }
@@ -98,7 +120,6 @@ nonisolated final class LibraryWriterLease: @unchecked Sendable {
             // startup: Xcode's injected debug runtime can make that probe
             // fail or hang even when the lock itself works correctly.
             try acquireExclusiveLock(descriptor: descriptor, lockURL: paths.writerLockURL)
-            activeLockPaths.withLock { _ = $0.insert(registryKey) }
             try writeDiagnostic(
                 descriptor: descriptor,
                 libraryRoot: paths.rootURL,

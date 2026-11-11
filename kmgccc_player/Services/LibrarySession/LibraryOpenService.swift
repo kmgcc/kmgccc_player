@@ -62,6 +62,20 @@ nonisolated enum LibraryOpenFailure {
             }
         }
         if let error = error as? LibraryWriterLeaseError { return error.localizedDescription }
+        if let error = error as? LibraryMetadataReadError { return error.localizedDescription }
+        if let error = error as? MusicLibraryRegistryError { return error.localizedDescription }
+        if let error = error as? LibraryRelocationError {
+            switch error {
+            case .pendingRepair, .recoveryConflict, .recoveryFailed:
+                return "资料库迁移需要处理，请检查原位置和目标位置的资料库。"
+            case .pendingMutations:
+                return error.localizedDescription
+            default: break
+            }
+        }
+        if let error = error as? LibraryRemovalError {
+            return error.localizedDescription
+        }
         if error is LibraryLifecycleTransactionGateError {
             return message(for: LibraryOpenError.transactionInProgress)
         }
@@ -90,6 +104,7 @@ final class LibraryOpenService {
     private let fileOperator: any LibraryLifecycleFileOperating
     private let gate: LibraryLifecycleTransactionGate
     private let requiresSecurityScope: Bool
+    private let recoveryStateStore: LibraryRecoveryStateStore
     private var generation: UInt64
 
     init(
@@ -107,6 +122,10 @@ final class LibraryOpenService {
         self.fileOperator = fileOperator
         self.gate = gate
         self.requiresSecurityScope = requiresSecurityScope
+        self.recoveryStateStore = LibraryRecoveryStateStore(
+            fileURL: registryStore.fileURL.deletingLastPathComponent()
+                .appendingPathComponent("LibraryRecoveryState.json")
+        )
         self.generation = initialGeneration
     }
 
@@ -141,12 +160,22 @@ final class LibraryOpenService {
                 // Libraries migrated from the pre-manifest layout can miss
                 // scaffolding (directories, scoped settings). Repair once and
                 // revalidate; genuinely invalid libraries still fail.
+                let active = sessionController.activeLibraryContext
+                let repairLease: LibraryWriterLease?
+                if active?.id == manifest.libraryID && active?.rootURL == root {
+                    repairLease = nil // The active session already owns the lease.
+                } else {
+                    repairLease = try LibraryWriterLease.acquire(paths: LibraryPaths(rootURL: root))
+                }
+                defer { repairLease?.release() }
                 try await fileOperator.repairLibraryScaffolding(at: root)
                 try await fileOperator.validateLibrary(at: root, expectedID: manifest.libraryID, expectedMode: manifest.mode)
             }
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as LibraryOpenError {
+            throw error
+        } catch let error as LibraryWriterLeaseError {
             throw error
         } catch {
             Log.error("[LibraryOpen] inspection failed root=\(root.path): \(error)", category: .library)
@@ -308,7 +337,7 @@ final class LibraryOpenService {
                 }
                 // Repair only the registry row. The root remains in place and
                 // is registered under the manifest identity below.
-                try await registryStore.remove(libraryID: staleID)
+                try await registryStore.remove(libraryID: staleID, idempotent: true)
             }
             try await registryStore.register(inspection.descriptor)
             try Task.checkCancellation()
@@ -319,6 +348,8 @@ final class LibraryOpenService {
             try await registryStore.setActiveLibrary(id: inspection.context.id, manifestMode: inspection.context.mode)
         } catch {
             Log.error("[LibraryOpen] activation failed library=\(inspection.context.id) stage=\(failure): \(error)", category: .library)
+            let registryConflict = (error as? MusicLibraryRegistryError) == .externalModification
+                || (error as? MusicLibraryRegistryError) == .registryLocked
             let didRecover = await Task { @MainActor in
                 var recovered = true
                 do {
@@ -330,11 +361,21 @@ final class LibraryOpenService {
                     recovered = false
                     Log.error("[LibraryOpen] session rollback failed: \(error)", category: .library)
                 }
-                // Always attempt the index rollback, even if session recovery
-                // failed. Do not leave a failed target registered as active.
+                // If recovery left a live session, keep its registry row and
+                // publish that actual selection instead of restoring a stale
+                // active ID for a different library.
                 do {
-                    if await self.registryStore.snapshot() != beforeRegistry {
-                        try await self.registryStore.replaceSnapshot(beforeRegistry)
+                    if registryConflict {
+                        // Another process owns a newer state; never replace it
+                        // with the snapshot taken before this activation.
+                    } else if !recovered, let active = self.sessionController.activeLibraryContext {
+                        try await self.registryStore.setActiveLibrary(id: active.id, manifestMode: active.mode)
+                    } else {
+                        try await self.registryStore.rollbackActivation(
+                            before: beforeRegistry,
+                            target: inspection.descriptor,
+                            staleID: inspection.stalePathConflictLibraryID
+                        )
                     }
                 } catch {
                     recovered = false
@@ -342,12 +383,31 @@ final class LibraryOpenService {
                 }
                 return recovered
             }.value
-            guard didRecover else { throw LibraryOpenError.recoveryFailed }
+            guard didRecover else {
+                // Persist the failed adjudication instead of leaving only a
+                // transient error. The live session (if any) and the durable
+                // selection are recorded together so the next launch reports
+                // the same state even when they disagree.
+                let live = sessionController.activeLibraryContext
+                let snapshot = await registryStore.snapshot()
+                recoveryStateStore.save(
+                    LibraryRecoveryState(
+                        message: LibraryOpenFailure.message(for: error),
+                        intendedLibraryID: previousSession?.id ?? inspection.context.id,
+                        activeLibraryID: live?.id ?? snapshot.activeLibraryID,
+                        hasLiveSession: live != nil
+                    )
+                )
+                throw LibraryOpenError.recoveryFailed
+            }
             if error is CancellationError { throw CancellationError() }
             if let error = error as? LibraryOpenError { throw error }
             if let error = error as? LibraryWriterLeaseError { throw error }
+            if let error = error as? LibraryMetadataReadError { throw error }
+            if let error = error as? MusicLibraryRegistryError { throw error }
             throw failure
         }
+        recoveryStateStore.clear()
         return LibraryOpenResult(
             context: sessionController.activeLibraryContext ?? inspection.context,
             didRegister: beforeRegistry.library(id: inspection.context.id) == nil,

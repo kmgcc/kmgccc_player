@@ -133,11 +133,13 @@ struct MusicSourceSettingsRow: View {
                     .background(statusColor.opacity(0.11), in: Capsule(style: .continuous))
             }
 
+            if status != .available || scanFailed {
+                Button("重新连接", action: onReconnect)
+                    .audioDSPCapsuleButtonStyle()
+            }
+
             Menu {
                 Button("重新扫描", action: onRescan)
-                if status != .available || scanFailed {
-                    Button("重新连接…", action: onReconnect)
-                }
                 Divider()
                 Button("移除来源…", role: .destructive, action: onRemove)
             } label: {

@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import CoreImage
 import MotionKit
+import QuartzCore
 import SwiftUI
 
 /// Displays a library-owned video's first frame with a static fallback. Fetching and
@@ -21,6 +22,7 @@ struct MotionArtworkView<Poster: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionPolicy) private var configuredMotionPolicy
     @Environment(\.skinSceneIsActive) private var skinSceneIsActive
+    @Environment(\.motionArtworkFullscreenCoordinator) private var fullscreenCoordinator
     /// Observed here so the switch applies instantly to every surface that
     /// hosts this leaf, including skins and library previews. Stored assets
     /// are untouched; the poster underneath simply stays visible.
@@ -67,23 +69,74 @@ struct MotionArtworkView<Poster: View>: View {
         return cacheServices.motionArtworkFirstFrameCache.cachedFrame(for: resource)
     }
 
+    private func preparedUncroppedFrame(for resource: MotionArtworkResource) -> CGImage? {
+        if followsSong, MotionArtworkSongClock.shared.isMusicVideo(duration: resource.duration),
+           (MotionArtworkSongClock.shared.time ?? 0) + abs(MotionArtworkSongClock.shared.offset(for: resource) ?? 0) > 0.2 { return nil }
+        return cacheServices.motionArtworkFirstFrameCache.cachedUncroppedFrame(for: resource)
+    }
+
+    private var shouldHideStationaryVisual: Bool {
+        guard frameProcessor == nil, let fullscreenCoordinator else { return false }
+        return fullscreenCoordinator.shouldHideStationaryCoverVisual(for: activeResource)
+    }
+
+    /// The fullscreen video layer owns the picture while the cover is hidden.
+    /// Stopping the SwiftUI image state here keeps a transparent cover from
+    /// rebuilding and uploading a second copy of every frame.
+    private var suppressesVideoRendering: Bool {
+        guard let fullscreenCoordinator, fullscreenCoordinator.isActive else { return false }
+        switch fullscreenCoordinator.sourceGeometry?.handoffStyle ?? .directLiftOff {
+        case .directLiftOff:
+            // Resume the hidden cover while it shrinks, so the handoff frame
+            // is current even when playback is paused.
+            return fullscreenCoordinator.phase != .exiting
+        case .maskedCrossfade:
+            return fullscreenCoordinator.phase == .active
+        }
+    }
+
     var body: some View {
         poster
             // A valid motion resource owns the picture from the start. Keep
             // layout, but never expose the new static poster while it prepares.
-            .opacity(activeResource == nil ? 1 : 0)
+            .opacity((activeResource == nil && !shouldHideStationaryVisual) ? 1 : 0)
             .transaction { $0.animation = nil }
             .overlay {
                 if let resource = activeResource {
                     MotionArtworkFrameSurface(
-                        resource: resource, isPlaying: isPlaying, defersPlayback: isSettling && frameProcessor != nil,
+                        resource: resource, isPlaying: isPlaying,
+                        defersPlayback: isSettling && frameProcessor != nil
+                            && fullscreenCoordinator?.isActive != true,
                         followsSong: followsSong, processor: frameProcessor,
-                        firstFrame: preparedFrame(for: resource), frameOpacity: frameOpacity,
+                        firstFrame: preparedFrame(for: resource),
+                        uncroppedFirstFrame: preparedUncroppedFrame(for: resource),
+                        frameOpacity: shouldHideStationaryVisual ? 0 : frameOpacity,
+                        displaysFrames: !suppressesVideoRendering,
+                        keepsPlayingInHierarchy: fullscreenCoordinator != nil,
+                        onUncroppedFrame: { uncropped in
+                            fullscreenCoordinator?.publishFrame(uncropped, for: resource)
+                        },
                         onFrame: onFrame, onFailure: { failedResource = resource }
                     )
                         .transition(.identity)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
+                        .onAppear {
+                            fullscreenCoordinator?.registerActivePlayer(
+                                for: resource,
+                                seedFrame: preparedUncroppedFrame(for: resource) ?? preparedFrame(for: resource)
+                            )
+                        }
+                        .onChange(of: resource) { oldValue, newValue in
+                            fullscreenCoordinator?.unregisterActivePlayer(for: oldValue)
+                            fullscreenCoordinator?.registerActivePlayer(
+                                for: newValue,
+                                seedFrame: preparedUncroppedFrame(for: newValue) ?? preparedFrame(for: newValue)
+                            )
+                        }
+                        .onDisappear {
+                            fullscreenCoordinator?.unregisterActivePlayer(for: resource)
+                        }
                 }
             }
             .onChange(of: resource, initial: true) { _, newValue in
@@ -127,13 +180,20 @@ private struct MotionArtworkFrameSurface: View {
     let followsSong: Bool
     let processor: MotionArtworkFrameProcessor?
     let firstFrame: CGImage?
+    let uncroppedFirstFrame: CGImage?
     let frameOpacity: Double
+    let displaysFrames: Bool
+    let keepsPlayingInHierarchy: Bool
+    let onUncroppedFrame: ((CGImage) -> Void)?
     let onFrame: ((CGImage) -> Void)?
     let onFailure: () -> Void
     @State private var frame: CGImage?
+    @State private var latestCapture = MotionArtworkFrameCapture()
 
     init(resource: MotionArtworkResource, isPlaying: Bool, defersPlayback: Bool, followsSong: Bool,
-         processor: MotionArtworkFrameProcessor?, firstFrame: CGImage?, frameOpacity: Double,
+         processor: MotionArtworkFrameProcessor?, firstFrame: CGImage?, uncroppedFirstFrame: CGImage? = nil,
+         frameOpacity: Double, displaysFrames: Bool = true, keepsPlayingInHierarchy: Bool = false,
+         onUncroppedFrame: ((CGImage) -> Void)? = nil,
          onFrame: ((CGImage) -> Void)?, onFailure: @escaping () -> Void) {
         self.resource = resource
         self.isPlaying = isPlaying
@@ -141,7 +201,11 @@ private struct MotionArtworkFrameSurface: View {
         self.followsSong = followsSong
         self.processor = processor
         self.firstFrame = firstFrame
+        self.uncroppedFirstFrame = uncroppedFirstFrame
         self.frameOpacity = frameOpacity
+        self.displaysFrames = displaysFrames
+        self.keepsPlayingInHierarchy = keepsPlayingInHierarchy
+        self.onUncroppedFrame = onUncroppedFrame
         self.onFrame = onFrame
         self.onFailure = onFailure
         _frame = State(initialValue: processor == nil ? firstFrame : nil)
@@ -153,10 +217,18 @@ private struct MotionArtworkFrameSurface: View {
                 // This transparent AppKit leaf owns playback and visibility.
                 // The resulting SwiftUI image participates in masks, transforms,
                 // artistic frames and compositing groups on every skin.
-                MotionArtworkPlayerSurface(resource: resource, isPlaying: isPlaying, defersPlayback: defersPlayback,
-                    followsSong: followsSong, processor: processor, firstFrame: firstFrame, onFailure: onFailure) { raw, rendered in
+                MotionArtworkPlayerSurface(
+                    resource: resource, isPlaying: isPlaying, defersPlayback: defersPlayback,
+                    followsSong: followsSong, processor: processor,
+                    firstFrame: uncroppedFirstFrame ?? firstFrame,
+                    keepsPlayingInHierarchy: keepsPlayingInHierarchy,
+                    onFailure: onFailure
+                ) { uncropped, raw, rendered in
+                    latestCapture.resource = resource
+                    latestCapture.image = rendered
+                    onUncroppedFrame?(uncropped)
                     onFrame?(raw)
-                    frame = rendered
+                    if displaysFrames { frame = rendered }
                 }
                 if let frame {
                     Image(decorative: frame, scale: 1)
@@ -170,6 +242,12 @@ private struct MotionArtworkFrameSurface: View {
         }
         // Keep the last video frame until a frame of the new resource arrives.
         // The AppKit generation gate discards any late old-resource render.
+        .onChange(of: displaysFrames) { _, displays in
+            // A paused clip has no next frame to deliver; restore the exact
+            // frame the fullscreen layer was showing.
+            guard displays, let image = latestCapture.image else { return }
+            frame = image
+        }
     }
 }
 
@@ -180,14 +258,16 @@ private struct MotionArtworkPlayerSurface: NSViewRepresentable {
     let followsSong: Bool
     let processor: MotionArtworkFrameProcessor?
     let firstFrame: CGImage?
+    var keepsPlayingInHierarchy: Bool = false
     let onFailure: () -> Void
-    let onFrame: (CGImage, CGImage) -> Void
+    let onFrame: (CGImage, CGImage, CGImage) -> Void
 
     func makeNSView(context: Context) -> MotionArtworkPlayerView { MotionArtworkPlayerView() }
 
     func updateNSView(_ nsView: MotionArtworkPlayerView, context: Context) {
         nsView.update(resource: resource, isPlaying: isPlaying, defersPlayback: defersPlayback,
                       followsSong: followsSong, processor: processor, firstFrame: firstFrame,
+                      keepsPlayingInHierarchy: keepsPlayingInHierarchy,
                       onFailure: onFailure, onFrame: onFrame)
     }
 
@@ -275,11 +355,20 @@ private final class MotionArtworkPlayerView: NSView {
     private var pendingProcessorRedraw: CGImage?
     private var frameGeneration = UUID()
     private var preferredTransform = CGAffineTransform.identity
+    private var latestUncroppedFrame: CGImage?
     private var latestRawFrame: CGImage?
     private var frameProcessor: MotionArtworkFrameProcessor?
-    private var onFrame: ((CGImage, CGImage) -> Void)?
+    private var onFrame: ((CGImage, CGImage, CGImage) -> Void)?
     private var onFailure: (() -> Void)?
+    private var keepsPlayingInHierarchy = false
     private nonisolated static let imageContext = CIContext(options: [.cacheIntermediates: false])
+
+    /// Color space CoreVideo attached while decoding; untagged streams are read as Rec.709.
+    private nonisolated static func frameColorSpace(of buffer: CVPixelBuffer) -> CGColorSpace {
+        CVImageBufferGetColorSpace(buffer)?.takeUnretainedValue()
+            ?? CGColorSpace(name: CGColorSpace.itur_709)
+            ?? CGColorSpace(name: CGColorSpace.sRGB)!
+    }
     private var player: AVQueuePlayer?
     private var looper: AVPlayerLooper?
     /// A music video plays once, on the song's timeline, instead of looping.
@@ -325,11 +414,13 @@ private final class MotionArtworkPlayerView: NSView {
 
     func update(resource: MotionArtworkResource, isPlaying: Bool, defersPlayback: Bool, followsSong: Bool,
                 processor: MotionArtworkFrameProcessor?, firstFrame: CGImage?,
-                onFailure: @escaping () -> Void, onFrame: @escaping (CGImage, CGImage) -> Void) {
+                keepsPlayingInHierarchy: Bool = false,
+                onFailure: @escaping () -> Void, onFrame: @escaping (CGImage, CGImage, CGImage) -> Void) {
         self.onFrame = onFrame
         self.onFailure = onFailure
         self.followsSong = followsSong
         self.defersPlayback = defersPlayback
+        self.keepsPlayingInHierarchy = keepsPlayingInHierarchy
         let processorChanged = frameProcessor?.identity != processor?.identity
         if processorChanged {
             frameGeneration = UUID()
@@ -339,6 +430,7 @@ private final class MotionArtworkPlayerView: NSView {
         if self.resource != resource {
             stopPlayer()
             self.resource = resource
+            latestUncroppedFrame = nil
             latestRawFrame = nil
             failedResource = nil
         }
@@ -357,7 +449,7 @@ private final class MotionArtworkPlayerView: NSView {
             processFrame(.image(firstFrame))
         }
         reconcilePlayback()
-        if processorChanged, let latestRawFrame { processFrame(.image(latestRawFrame)) }
+        if processorChanged, let latest = latestUncroppedFrame ?? latestRawFrame { processFrame(.image(latest)) }
     }
 
     override func layout() {
@@ -385,7 +477,7 @@ private final class MotionArtworkPlayerView: NSView {
         guard let window else { return false }
         return window.isVisible && !window.isMiniaturized
             && window.occlusionState.contains(.visible)
-            && !isHiddenOrHasHiddenAncestor && !visibleRect.isEmpty
+            && (keepsPlayingInHierarchy || (!isHiddenOrHasHiddenAncestor && !visibleRect.isEmpty))
     }
 
     private func reconcilePlayback() {
@@ -442,30 +534,35 @@ private final class MotionArtworkPlayerView: NSView {
             autoreleasepool {
                 let started = CACurrentMediaTime()
                 guard !Task.isCancelled else { return nil }
-                // Motion artwork is displayed as a square cover everywhere.
-                // Imported videos are not guaranteed to be square, and the
-                // surrounding geometry assumes a square source.
+                // Keep the full oriented frame for fullscreen video playback while
+                // providing the center-square crop to square cover skins and processors.
+                let uncropped: CGImage
                 let square: CGImage
                 switch input {
                 case .buffer(let buffer, _):
                     let image = MotionArtworkFrameOrientation.apply(CIImage(cvPixelBuffer: buffer), preferredTransform: transform)
-                    // Crop before rasterization so every frame avoids converting
-                    // the offscreen bands of non-square video.
-                    let croppedImage = MotionArtworkFrameGeometry.centerSquareCrop(image)
+                    // Keep the stream's own color space on the frame, as the
+                    // first-frame poster does. An untagged image skips ColorSync,
+                    // so wide-gamut displays would oversaturate Rec.709 video.
+                    let frameSpace = Self.frameColorSpace(of: buffer)
                     guard !Task.isCancelled,
                           let decoded = Self.imageContext.createCGImage(
-                            croppedImage,
-                            from: croppedImage.extent
+                            image,
+                            from: image.extent,
+                            format: .BGRA8,
+                            colorSpace: frameSpace
                           ) else { return nil }
-                    square = decoded
+                    uncropped = decoded
+                    square = MotionArtworkFrameGeometry.centerSquareCrop(decoded)
                 case .image(let image):
+                    uncropped = image
                     square = MotionArtworkFrameGeometry.centerSquareCrop(image)
                 }
                 guard !Task.isCancelled else { return nil }
                 let result = processor == nil ? square : processor?.process(square)
                 guard !Task.isCancelled, let rendered = result else { return nil }
                 return MotionArtworkRenderedFrame(
-                    raw: square, rendered: rendered,
+                    uncropped: uncropped, raw: square, rendered: rendered,
                     processingMilliseconds: (CACurrentMediaTime() - started) * 1000
                 )
             }
@@ -478,8 +575,9 @@ private final class MotionArtworkPlayerView: NSView {
             self.pendingProcessorRedraw = nil
             if self.frameGeneration == generation, !Task.isCancelled, let frame {
                 let isFirstFrame = self.latestRawFrame == nil
+                self.latestUncroppedFrame = frame.uncropped
                 self.latestRawFrame = frame.raw
-                self.onFrame?(frame.raw, frame.rendered)
+                self.onFrame?(frame.uncropped, frame.raw, frame.rendered)
                 if isFirstFrame { self.reconcilePlayback() }
                 if case .buffer(_, let captureMilliseconds) = input, self.wantsPlayback {
                     let handoffMilliseconds = max(
@@ -719,6 +817,7 @@ private final class MotionArtworkPlayerView: NSView {
     func releaseResources() {
         wantsPlayback = false
         resource = nil
+        latestUncroppedFrame = nil
         latestRawFrame = nil
         onFrame = nil
         onFailure = nil
@@ -733,6 +832,7 @@ private nonisolated enum MotionArtworkFrameInput: @unchecked Sendable {
     case image(CGImage)
 }
 private nonisolated struct MotionArtworkRenderedFrame: @unchecked Sendable {
+    let uncropped: CGImage
     let raw: CGImage
     let rendered: CGImage
     let processingMilliseconds: Double
@@ -780,5 +880,840 @@ nonisolated enum MotionArtworkFrameGeometry {
             height: side
         )
         return image.cropping(to: rect) ?? image
+    }
+}
+
+// MARK: - Dynamic Cover Fullscreen Video Mode
+
+enum FullscreenVideoCoordinateSpace {
+    nonisolated static let name = "kmgccc.fullscreenPlayerViewport"
+}
+
+enum MotionArtworkFullscreenHandoffStyle: Equatable {
+    case directLiftOff
+    case maskedCrossfade
+}
+
+struct MotionArtworkCoverSourceGeometry: Equatable {
+    var frame: CGRect
+    var cornerRadius: CGFloat
+    var handoffStyle: MotionArtworkFullscreenHandoffStyle
+}
+
+@Observable
+@MainActor
+final class MotionArtworkFullscreenCoordinator {
+    enum Phase: Equatable {
+        case idle
+        case entering
+        case active
+        case exiting
+    }
+
+    private(set) var phase: Phase = .idle
+    private(set) var sourceGeometry: MotionArtworkCoverSourceGeometry?
+    /// Pixel dimensions of the playing video. It is the only per-resource
+    /// value the SwiftUI overlay reads, and it changes at most once per clip.
+    private(set) var mediaSize: CGSize = .zero
+    private(set) var latestFrameResource: MotionArtworkResource?
+    private(set) var fallbackPoster: NSImage?
+    private(set) var activeResourcePlayerCounts: [MotionArtworkResource: Int] = [:]
+
+    /// Frames are delivered straight to the overlay's CALayer. Keeping them
+    /// out of Observation avoids one SwiftUI update per video frame.
+    @ObservationIgnored private(set) var latestUncroppedFrame: CGImage?
+    @ObservationIgnored private var frameSinkID: UUID?
+    @ObservationIgnored private var frameSink: ((CGImage) -> Void)?
+    @ObservationIgnored private var phaseTask: Task<Void, Never>?
+
+    var isActive: Bool { phase != .idle }
+
+    func canEnter(
+        for resource: MotionArtworkResource?,
+        motionArtworkEnabled: Bool = true,
+        motionPolicy: MotionPolicy
+    ) -> Bool {
+        guard motionArtworkEnabled,
+              motionPolicy == .full,
+              let resource,
+              resource.url.isFileURL else {
+            return false
+        }
+        return true
+    }
+
+    func shouldHideStationaryCoverVisual(for resource: MotionArtworkResource?) -> Bool {
+        guard phase != .idle,
+              sourceGeometry?.handoffStyle == .directLiftOff,
+              let resource,
+              latestFrameResource == resource else {
+            return false
+        }
+        return true
+    }
+
+    func registerActivePlayer(for resource: MotionArtworkResource, seedFrame: CGImage?) {
+        activeResourcePlayerCounts[resource, default: 0] += 1
+        if let seedFrame, latestFrameResource != resource {
+            publishFrame(seedFrame, for: resource)
+        }
+    }
+
+    func unregisterActivePlayer(for resource: MotionArtworkResource?) {
+        guard let resource else { return }
+        let next = (activeResourcePlayerCounts[resource] ?? 0) - 1
+        if next <= 0 {
+            activeResourcePlayerCounts.removeValue(forKey: resource)
+        } else {
+            activeResourcePlayerCounts[resource] = next
+        }
+    }
+
+    var hasAnyActivePlayer: Bool {
+        !activeResourcePlayerCounts.isEmpty
+    }
+
+    func publishFrame(_ frame: CGImage, for resource: MotionArtworkResource) {
+        latestUncroppedFrame = frame
+        if latestFrameResource != resource {
+            latestFrameResource = resource
+        }
+        let size = CGSize(width: frame.width, height: frame.height)
+        if mediaSize != size {
+            mediaSize = size
+        }
+        frameSink?(frame)
+    }
+
+    func installFrameSink(
+        id: UUID,
+        sink: @escaping (CGImage) -> Void
+    ) {
+        frameSinkID = id
+        frameSink = sink
+        if let latestUncroppedFrame {
+            sink(latestUncroppedFrame)
+        }
+    }
+
+    func removeFrameSink(id: UUID) {
+        guard frameSinkID == id else { return }
+        frameSinkID = nil
+        frameSink = nil
+    }
+
+    func updateSourceGeometry(_ geometry: MotionArtworkCoverSourceGeometry) {
+        guard sourceGeometry != geometry else { return }
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            sourceGeometry = geometry
+        }
+    }
+
+    func enter(
+        resource: MotionArtworkResource?,
+        fallbackPoster: NSImage?,
+        motionArtworkEnabled: Bool = true,
+        motionPolicy: MotionPolicy,
+        motionTokens: MotionTokens
+    ) {
+        guard canEnter(
+            for: resource,
+            motionArtworkEnabled: motionArtworkEnabled,
+            motionPolicy: motionPolicy
+        ), phase == .idle else { return }
+
+        phaseTask?.cancel()
+        phaseTask = nil
+        if let fallbackPoster {
+            self.fallbackPoster = fallbackPoster
+        }
+        if latestFrameResource == resource, let frame = latestUncroppedFrame {
+            let size = CGSize(width: frame.width, height: frame.height)
+            if mediaSize != size {
+                mediaSize = size
+            }
+        } else {
+            // A frame from another resource says nothing about this clip's
+            // aspect ratio or content; wait for the first current frame.
+            mediaSize = .zero
+            latestUncroppedFrame = nil
+        }
+
+        let spec = motionTokens[.emphasis]
+        let delay = motionPolicy.visualCompletionDelay(for: spec)
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            phase = delay > 0 ? .entering : .active
+        }
+
+        guard delay > 0 else { return }
+        phaseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay + 0.15))
+            guard !Task.isCancelled, let self, self.phase == .entering else { return }
+            var finish = Transaction()
+            finish.animation = nil
+            withTransaction(finish) {
+                self.phase = .active
+            }
+        }
+    }
+
+    func exit(motionPolicy: MotionPolicy, motionTokens: MotionTokens) {
+        guard phase == .entering || phase == .active else { return }
+        phaseTask?.cancel()
+        phaseTask = nil
+
+        let spec = motionTokens[.emphasis]
+        let delay = motionPolicy.visualCompletionDelay(for: spec)
+        if delay <= 0 {
+            finishExit()
+            return
+        }
+
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            phase = .exiting
+        }
+        phaseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay + 0.15))
+            guard !Task.isCancelled, let self, self.phase == .exiting else { return }
+            self.finishExit()
+        }
+    }
+
+    private func finishExit() {
+        guard phase == .entering || phase == .active || phase == .exiting else { return }
+        phaseTask?.cancel()
+        phaseTask = nil
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            phase = .idle
+            fallbackPoster = nil
+        }
+    }
+
+    func resetImmediately() {
+        phaseTask?.cancel()
+        phaseTask = nil
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            phase = .idle
+            sourceGeometry = nil
+            mediaSize = .zero
+            latestUncroppedFrame = nil
+            latestFrameResource = nil
+            fallbackPoster = nil
+        }
+    }
+}
+
+extension EnvironmentValues {
+    @Entry var motionArtworkFullscreenCoordinator: MotionArtworkFullscreenCoordinator? = nil
+}
+
+private nonisolated struct MotionArtworkFullscreenSourceProbe: Equatable, Sendable {
+    var viewportFrame: CGRect
+    var localSize: CGSize
+}
+
+struct MotionArtworkFullscreenSourceModifier: ViewModifier {
+    let context: SkinContext
+    var cornerRadius: CGFloat = 12
+    var insetScale: CGFloat = 1.0
+    var handoffStyle: MotionArtworkFullscreenHandoffStyle = .directLiftOff
+
+    @Environment(\.motionArtworkFullscreenCoordinator) private var coordinator
+    @State private var lastProbe: MotionArtworkFullscreenSourceProbe?
+
+    private var hidesSourceVisual: Bool {
+        // Keep the skin artwork (glow, frame, shell) under the growing video
+        // during both handoffs. It is hidden only while the video owns the
+        // screen, so no decoration pops at the moment the zoom begins.
+        guard let coordinator, coordinator.isActive else { return false }
+        return coordinator.phase == .active
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(hidesSourceVisual ? 0 : 1)
+            .onGeometryChange(for: MotionArtworkFullscreenSourceProbe.self) { proxy in
+                MotionArtworkFullscreenSourceProbe(
+                    viewportFrame: proxy.frame(in: .named(FullscreenVideoCoordinateSpace.name)),
+                    localSize: proxy.size
+                )
+            } action: { probe in
+                lastProbe = probe
+                publishGeometry(probe)
+            }
+            .onChange(of: handoffStyle) { _, _ in
+                if let lastProbe {
+                    publishGeometry(lastProbe)
+                }
+            }
+            .onChange(of: insetScale) { _, _ in
+                if let lastProbe {
+                    publishGeometry(lastProbe)
+                }
+            }
+    }
+
+    private func publishGeometry(_ probe: MotionArtworkFullscreenSourceProbe) {
+        guard let coordinator,
+              probe.viewportFrame.width > 1,
+              probe.viewportFrame.height > 1 else {
+            return
+        }
+        let clampedScale = max(0.1, min(1.5, insetScale))
+        let insetWidth = probe.viewportFrame.width * clampedScale
+        let insetHeight = probe.viewportFrame.height * clampedScale
+        let resolvedFrame = CGRect(
+            x: probe.viewportFrame.midX - insetWidth * 0.5,
+            y: probe.viewportFrame.midY - insetHeight * 0.5,
+            width: insetWidth,
+            height: insetHeight
+        )
+        let scaleFactor = probe.localSize.width > 1
+            ? (probe.viewportFrame.width / probe.localSize.width)
+            : 1.0
+        let resolvedCornerRadius = max(0, cornerRadius * scaleFactor)
+        coordinator.updateSourceGeometry(
+            MotionArtworkCoverSourceGeometry(
+                frame: resolvedFrame,
+                cornerRadius: resolvedCornerRadius,
+                handoffStyle: handoffStyle
+            )
+        )
+    }
+}
+
+extension View {
+    func motionArtworkFullscreenSource(
+        context: SkinContext,
+        cornerRadius: CGFloat = 12,
+        insetScale: CGFloat = 1.0,
+        handoffStyle: MotionArtworkFullscreenHandoffStyle = .directLiftOff
+    ) -> some View {
+        modifier(
+            MotionArtworkFullscreenSourceModifier(
+                context: context,
+                cornerRadius: cornerRadius,
+                insetScale: insetScale,
+                handoffStyle: handoffStyle
+            )
+        )
+    }
+}
+
+struct FullscreenMotionArtworkVideoOverlay: View {
+    let coordinator: MotionArtworkFullscreenCoordinator
+    let resource: MotionArtworkResource?
+    let isPlaying: Bool
+    let fallbackPoster: NSImage?
+    let viewportSize: CGSize
+    let fallbackSourceRect: CGRect
+    let motionPolicy: MotionPolicy
+    let motionTokens: MotionTokens
+
+    init(
+        coordinator: MotionArtworkFullscreenCoordinator,
+        resource: MotionArtworkResource?,
+        isPlaying: Bool,
+        fallbackPoster: NSImage? = nil,
+        viewportSize: CGSize,
+        fallbackSourceRect: CGRect = .zero,
+        motionPolicy: MotionPolicy,
+        motionTokens: MotionTokens
+    ) {
+        self.coordinator = coordinator
+        self.resource = resource
+        self.isPlaying = isPlaying
+        self.fallbackPoster = fallbackPoster
+        self.viewportSize = viewportSize
+        self.fallbackSourceRect = fallbackSourceRect
+        self.motionPolicy = motionPolicy
+        self.motionTokens = motionTokens
+    }
+
+    @Environment(LibraryCacheServices.self) private var cacheServices
+    @AppStorage(AppSettings.motionArtworkEnabledDefaultsKey) private var motionArtworkEnabled = true
+
+    private var activeResource: MotionArtworkResource? {
+        guard motionArtworkEnabled,
+              motionPolicy == .full,
+              let resource,
+              resource.url.isFileURL else {
+            return nil
+        }
+        return resource
+    }
+
+    private var needsStandaloneFeeder: Bool {
+        guard activeResource != nil else { return false }
+        return !coordinator.hasAnyActivePlayer
+    }
+
+    private var resolvedSourceGeometry: MotionArtworkCoverSourceGeometry? {
+        if let geometry = coordinator.sourceGeometry,
+           geometry.frame.width > 1,
+           geometry.frame.height > 1 {
+            return geometry
+        }
+        if fallbackSourceRect.width > 1, fallbackSourceRect.height > 1 {
+            return MotionArtworkCoverSourceGeometry(
+                frame: fallbackSourceRect,
+                cornerRadius: 12,
+                handoffStyle: .directLiftOff
+            )
+        }
+        let side = max(1, min(viewportSize.width, viewportSize.height) * 0.5)
+        guard viewportSize.width > 1, viewportSize.height > 1 else { return nil }
+        return MotionArtworkCoverSourceGeometry(
+            frame: CGRect(
+                x: (viewportSize.width - side) * 0.5,
+                y: (viewportSize.height - side) * 0.5,
+                width: side,
+                height: side
+            ),
+            cornerRadius: 12,
+            handoffStyle: .directLiftOff
+        )
+    }
+
+    private var targetRect: CGRect {
+        let mediaSize: CGSize = {
+            if coordinator.mediaSize.width > 0, coordinator.mediaSize.height > 0 {
+                return coordinator.mediaSize
+            }
+            if let poster = fallbackPoster ?? coordinator.fallbackPoster,
+               poster.size.width > 0, poster.size.height > 0 {
+                return poster.size
+            }
+            return CGSize(width: 1, height: 1)
+        }()
+        return Self.fittedVideoRect(in: viewportSize, mediaSize: mediaSize)
+    }
+
+    var body: some View {
+        ZStack {
+            if let activeResource, needsStandaloneFeeder {
+                MotionArtworkPlayerSurface(
+                    resource: activeResource,
+                    isPlaying: isPlaying,
+                    defersPlayback: false,
+                    followsSong: true,
+                    processor: nil,
+                    firstFrame: cacheServices.motionArtworkFirstFrameCache.cachedUncroppedFrame(for: activeResource)
+                        ?? cacheServices.motionArtworkFirstFrameCache.cachedFrame(for: activeResource),
+                    keepsPlayingInHierarchy: true,
+                    onFailure: {},
+                    onFrame: { uncropped, _, _ in
+                        coordinator.publishFrame(uncropped, for: activeResource)
+                    }
+                )
+                .frame(width: 1, height: 1)
+                .opacity(0.001)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+
+            if coordinator.phase != .idle, activeResource != nil, let source = resolvedSourceGeometry {
+                MotionArtworkFullscreenVideoLayer(
+                    coordinator: coordinator,
+                    viewportSize: viewportSize,
+                    sourceRect: source.frame,
+                    sourceCornerRadius: source.cornerRadius,
+                    targetRect: targetRect,
+                    handoffStyle: source.handoffStyle,
+                    phase: coordinator.phase,
+                    motionPolicy: motionPolicy,
+                    motionTokens: motionTokens
+                )
+                .frame(width: viewportSize.width, height: viewportSize.height)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+
+                if coordinator.phase == .active {
+                    Color.clear
+                        .frame(width: viewportSize.width, height: viewportSize.height)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            coordinator.exit(motionPolicy: motionPolicy, motionTokens: motionTokens)
+                        }
+                        .accessibilityLabel("退出视频全屏")
+                        .accessibilityAddTraits(.isButton)
+                }
+            }
+        }
+        .frame(width: viewportSize.width, height: viewportSize.height)
+    }
+
+    static func fittedVideoRect(in viewportSize: CGSize, mediaSize: CGSize) -> CGRect {
+        guard viewportSize.width > 1, viewportSize.height > 1 else { return .zero }
+        let aspect = (mediaSize.width > 0 && mediaSize.height > 0)
+            ? (mediaSize.width / mediaSize.height)
+            : 1.0
+        let viewportAspect = viewportSize.width / viewportSize.height
+        let width: CGFloat
+        let height: CGFloat
+        if aspect >= viewportAspect {
+            width = viewportSize.width
+            height = viewportSize.width / max(0.01, aspect)
+        } else {
+            height = viewportSize.height
+            width = viewportSize.height * aspect
+        }
+        return CGRect(
+            x: (viewportSize.width - width) * 0.5,
+            y: (viewportSize.height - height) * 0.5,
+            width: width,
+            height: height
+        )
+    }
+}
+
+// MARK: - Fullscreen Video Layer
+
+/// The video is drawn by one Core Animation layer instead of a SwiftUI image.
+/// Layout stays fixed for the whole transition; only `bounds`, `position`,
+/// `cornerRadius` and `opacity` are animated with MotionKit springs. Frames
+/// keep arriving through the coordinator's sink while the layer moves, so the
+/// clip never freezes mid-flight.
+private struct MotionArtworkFullscreenVideoLayer: NSViewRepresentable {
+    let coordinator: MotionArtworkFullscreenCoordinator
+    let viewportSize: CGSize
+    let sourceRect: CGRect
+    let sourceCornerRadius: CGFloat
+    let targetRect: CGRect
+    let handoffStyle: MotionArtworkFullscreenHandoffStyle
+    let phase: MotionArtworkFullscreenCoordinator.Phase
+    let motionPolicy: MotionPolicy
+    let motionTokens: MotionTokens
+
+    func makeNSView(context: Context) -> MotionArtworkFullscreenVideoLayerView {
+        MotionArtworkFullscreenVideoLayerView()
+    }
+
+    func updateNSView(_ nsView: MotionArtworkFullscreenVideoLayerView, context: Context) {
+        let emphasis = motionTokens[.emphasis]
+        nsView.apply(
+            coordinator: coordinator,
+            viewportSize: viewportSize,
+            sourceRect: sourceRect,
+            sourceCornerRadius: sourceCornerRadius,
+            targetRect: targetRect,
+            handoffStyle: handoffStyle,
+            phase: phase,
+            motionPolicy: motionPolicy,
+            spec: emphasis,
+            opacitySpec: motionTokens.phaseSpec(
+                for: .emphasis,
+                duration: emphasis.duration,
+                bounce: 0
+            )
+        )
+    }
+
+    static func dismantleNSView(_ nsView: MotionArtworkFullscreenVideoLayerView, coordinator: ()) {
+        nsView.detach()
+    }
+}
+
+private final class MotionArtworkFullscreenVideoLayerView: NSView {
+    private enum AnimationKey {
+        static let bounds = "kmgccc.videoFullscreen.bounds"
+        static let position = "kmgccc.videoFullscreen.position"
+        static let cornerRadius = "kmgccc.videoFullscreen.cornerRadius"
+        static let opacity = "kmgccc.videoFullscreen.opacity"
+    }
+
+    private let videoLayer = CALayer()
+    private weak var coordinator: MotionArtworkFullscreenCoordinator?
+    private var sinkID = UUID()
+    private var configured = false
+    private var appliedPhase: MotionArtworkFullscreenCoordinator.Phase = .idle
+    private var viewportSize: CGSize = .zero
+    private var sourceRect: CGRect = .zero
+    private var sourceCornerRadius: CGFloat = 0
+    private var targetRect: CGRect = .zero
+    private var handoffStyle: MotionArtworkFullscreenHandoffStyle = .directLiftOff
+    private var motionPolicy: MotionPolicy = .full
+    private var motionSpec = MotionTokens.standard[.emphasis]
+    private var opacitySpec = MotionTokens.standard.phaseSpec(
+        for: .emphasis,
+        duration: MotionTokens.standard[.emphasis].duration,
+        bounce: 0
+    )
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        // Layer-hosting in AppKit's normal bottom-left geometry. SwiftUI's
+        // top-left source and target rectangles are converted per frame.
+        let root = CALayer()
+        layer = root
+        wantsLayer = true
+        root.masksToBounds = false
+
+        videoLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        videoLayer.bounds = .zero
+        videoLayer.contentsGravity = .resizeAspectFill
+        videoLayer.masksToBounds = true
+        videoLayer.cornerCurve = .continuous
+        videoLayer.minificationFilter = .trilinear
+        videoLayer.magnificationFilter = .linear
+        videoLayer.allowsEdgeAntialiasing = true
+        root.addSublayer(videoLayer)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { return nil }
+
+    override var isOpaque: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateContentsScale()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateContentsScale()
+    }
+
+    private func updateContentsScale() {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        guard videoLayer.contentsScale != scale else { return }
+        videoLayer.contentsScale = scale
+    }
+
+    func apply(
+        coordinator: MotionArtworkFullscreenCoordinator,
+        viewportSize: CGSize,
+        sourceRect: CGRect,
+        sourceCornerRadius: CGFloat,
+        targetRect: CGRect,
+        handoffStyle: MotionArtworkFullscreenHandoffStyle,
+        phase: MotionArtworkFullscreenCoordinator.Phase,
+        motionPolicy: MotionPolicy,
+        spec: MotionSpec,
+        opacitySpec: MotionSpec
+    ) {
+        if self.coordinator !== coordinator {
+            self.coordinator?.removeFrameSink(id: sinkID)
+            self.coordinator = coordinator
+            sinkID = UUID()
+            coordinator.installFrameSink(id: sinkID) { [weak self] image in
+                self?.setImage(image)
+            }
+        }
+
+        let viewportChanged = self.viewportSize != viewportSize
+        let targetChanged = self.targetRect != targetRect
+        let sourceChanged = self.sourceRect != sourceRect
+
+        self.viewportSize = viewportSize
+        self.sourceRect = sourceRect
+        self.sourceCornerRadius = sourceCornerRadius
+        self.targetRect = targetRect
+        self.handoffStyle = handoffStyle
+        self.motionPolicy = motionPolicy
+        motionSpec = spec
+        self.opacitySpec = opacitySpec
+
+        guard !configured else {
+            if phase != appliedPhase {
+                appliedPhase = phase
+                switch phase {
+                case .entering:
+                    setFrame(sourceRect, cornerRadius: sourceCornerRadius, opacity: startOpacity)
+                    animate(to: targetRect, cornerRadius: 0, opacity: 1)
+                case .active:
+                    // A menu-triggered enter can report active before the
+                    // spring has physically settled. Let the running spring
+                    // finish instead of snapping it to its endpoint.
+                    if videoLayer.animation(forKey: AnimationKey.bounds) == nil {
+                        setFrame(targetRect, cornerRadius: 0, opacity: 1)
+                    }
+                case .exiting:
+                    animate(to: sourceRect, cornerRadius: sourceCornerRadius, opacity: endOpacity)
+                case .idle:
+                    break
+                }
+                return
+            }
+
+            switch phase {
+            case .active:
+                if viewportChanged || targetChanged,
+                   videoLayer.animation(forKey: AnimationKey.bounds) == nil {
+                    setFrame(targetRect, cornerRadius: 0, opacity: 1)
+                }
+            case .entering:
+                if targetChanged {
+                    animate(to: targetRect, cornerRadius: 0, opacity: 1)
+                }
+            case .exiting:
+                if sourceChanged || viewportChanged {
+                    animate(to: sourceRect, cornerRadius: sourceCornerRadius, opacity: endOpacity)
+                }
+            case .idle:
+                break
+            }
+            return
+        }
+
+        configured = true
+        appliedPhase = phase
+        switch phase {
+        case .entering:
+            setFrame(sourceRect, cornerRadius: sourceCornerRadius, opacity: startOpacity)
+            animate(to: targetRect, cornerRadius: 0, opacity: 1, fromSource: true)
+        case .active:
+            setFrame(targetRect, cornerRadius: 0, opacity: 1)
+        case .exiting:
+            setFrame(sourceRect, cornerRadius: sourceCornerRadius, opacity: endOpacity)
+        case .idle:
+            break
+        }
+    }
+
+    func detach() {
+        coordinator?.removeFrameSink(id: sinkID)
+        coordinator = nil
+        videoLayer.removeAllAnimations()
+        videoLayer.contents = nil
+    }
+
+    private var startOpacity: Float {
+        handoffStyle == .maskedCrossfade ? 0 : 1
+    }
+
+    private var endOpacity: Float {
+        handoffStyle == .maskedCrossfade ? 0 : 1
+    }
+
+    private func setImage(_ image: CGImage) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        videoLayer.contents = image
+        CATransaction.commit()
+    }
+
+    private func setFrame(_ rect: CGRect, cornerRadius: CGFloat, opacity: Float) {
+        let layerFrame = layerRect(for: rect)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        videoLayer.removeAllAnimations()
+        videoLayer.bounds = CGRect(origin: .zero, size: layerFrame.size)
+        videoLayer.position = CGPoint(x: layerFrame.midX, y: layerFrame.midY)
+        videoLayer.cornerRadius = cornerRadius
+        videoLayer.opacity = opacity
+        CATransaction.commit()
+    }
+
+    /// SwiftUI source and target rectangles use a top-left origin; the layer
+    /// tree uses AppKit's bottom-left origin.
+    private func layerRect(for rect: CGRect) -> CGRect {
+        let height = viewportSize.height > 1 ? viewportSize.height : bounds.height
+        return CGRect(
+            x: rect.minX,
+            y: height - rect.maxY,
+            width: rect.width,
+            height: rect.height
+        )
+    }
+
+    private func animate(
+        to target: CGRect,
+        cornerRadius: CGFloat,
+        opacity: Float,
+        fromSource: Bool = false
+    ) {
+        let current = fromSource ? nil : videoLayer.presentation()
+        let fromRect: CGRect
+        let fromCornerRadius: CGFloat
+        let fromOpacity: Float
+        if let current {
+            let size = current.bounds.size
+            fromRect = CGRect(
+                x: current.position.x - size.width * 0.5,
+                y: current.position.y - size.height * 0.5,
+                width: size.width,
+                height: size.height
+            )
+            fromCornerRadius = current.cornerRadius
+            fromOpacity = current.opacity
+        } else {
+            fromRect = layerRect(for: sourceRect)
+            fromCornerRadius = sourceCornerRadius
+            fromOpacity = startOpacity
+        }
+
+        guard motionPolicy.resolve(motionSpec) != nil else {
+            setFrame(target, cornerRadius: cornerRadius, opacity: opacity)
+            return
+        }
+
+        videoLayer.removeAllAnimations()
+        let targetLayerRect = layerRect(for: target)
+        let targetBounds = CGRect(origin: .zero, size: targetLayerRect.size)
+        let fromBounds = CGRect(origin: .zero, size: fromRect.size)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        videoLayer.bounds = targetBounds
+        videoLayer.position = CGPoint(x: targetLayerRect.midX, y: targetLayerRect.midY)
+        videoLayer.cornerRadius = cornerRadius
+        videoLayer.opacity = opacity
+        addSpring(
+            keyPath: "bounds",
+            from: NSValue(rect: fromBounds),
+            to: NSValue(rect: targetBounds),
+            key: AnimationKey.bounds,
+            spec: motionSpec
+        )
+        addSpring(
+            keyPath: "position",
+            from: NSValue(point: CGPoint(x: fromRect.midX, y: fromRect.midY)),
+            to: NSValue(point: CGPoint(x: targetLayerRect.midX, y: targetLayerRect.midY)),
+            key: AnimationKey.position,
+            spec: motionSpec
+        )
+        addSpring(
+            keyPath: "cornerRadius",
+            from: NSNumber(value: Double(fromCornerRadius)),
+            to: NSNumber(value: Double(cornerRadius)),
+            key: AnimationKey.cornerRadius,
+            spec: motionSpec
+        )
+        if handoffStyle == .maskedCrossfade {
+            addSpring(
+                keyPath: "opacity",
+                from: NSNumber(value: fromOpacity),
+                to: NSNumber(value: opacity),
+                key: AnimationKey.opacity,
+                spec: opacitySpec
+            )
+        }
+        CATransaction.commit()
+    }
+
+    private func addSpring(keyPath: String, from: Any, to: Any, key: String, spec: MotionSpec) {
+        _ = MotionLayerAnimator.animate(
+            layer: videoLayer,
+            keyPath: keyPath,
+            fromValue: from,
+            toValue: to,
+            spec: spec,
+            policy: motionPolicy,
+            animationKey: key
+        )
     }
 }

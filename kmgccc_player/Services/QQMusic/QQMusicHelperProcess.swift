@@ -438,11 +438,29 @@ actor QQMusicMetadataProvider: MetadataDetailProvider {
                     candidate: candidateTitle
                 ) else { continue }
 
-                // 2. Artist validation
+                // 2. Artist validation. 未知艺人 / 群星 name no one, so the
+                // title and duration decide. The duration has to confirm the
+                // match: without an artist it is the only disambiguator.
                 let sourceArtist = ExternalPlaybackTextNormalizer.normalizeArtist(artist)
-                let candidateArtist = ExternalPlaybackTextNormalizer.normalizeArtist(candidate.artist ?? candidate.artistName)
-                let artistScore = ExternalPlaybackTextNormalizer.artistSimilarity(sourceArtist, candidateArtist)
-                guard artistScore >= 0.22 else { continue }
+                let artistScore: Double
+                if LibraryNormalization.isUnknownArtist(artist) {
+                    if let duration, duration > 0 {
+                        guard ExternalPlaybackTextNormalizer.durationSupportsArtistlessMatch(
+                            source: Double(duration),
+                            candidate: Double(candidate.duration ?? 0)
+                        ) else { continue }
+                    }
+                    artistScore = 0.5
+                } else {
+                    let candidateArtist = ExternalPlaybackTextNormalizer.normalizeArtist(
+                        candidate.artist ?? candidate.artistName
+                    )
+                    artistScore = ExternalPlaybackTextNormalizer.artistSimilarity(
+                        sourceArtist,
+                        candidateArtist
+                    )
+                    guard artistScore >= 0.22 else { continue }
+                }
 
                 // 3. Duration/obvious conflict validation
                 if let duration, duration > 0, let candDuration = candidate.duration, candDuration > 0 {
@@ -547,7 +565,7 @@ final class MetadataDetailCoordinator {
     }
 
     func fetchArtistDetail(name: String, singerMid: String? = nil) async throws -> ArtistMetadataDetail {
-        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = LibraryNormalization.searchSeedArtist(name)
         guard !name.isEmpty || (singerMid?.isEmpty == false) else {
             throw MetadataDetailError.noResults
         }
@@ -560,8 +578,8 @@ final class MetadataDetailCoordinator {
     }
 
     func fetchAlbumDetail(album: String, artist: String, albumMid: String? = nil) async throws -> AlbumMetadataDetail {
-        let album = album.trimmingCharacters(in: .whitespacesAndNewlines)
-        let artist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        let album = LibraryNormalization.searchSeedAlbum(album)
+        let artist = LibraryNormalization.searchSeedArtist(artist)
         guard !album.isEmpty || (albumMid?.isEmpty == false) else {
             throw MetadataDetailError.noResults
         }
@@ -581,8 +599,11 @@ final class MetadataDetailCoordinator {
         duration: Int? = nil
     ) async throws -> TrackMetadataDetail {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let artist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
-        let album = album.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 未知艺人 / 群星 / 未知专辑 name nothing: a query carrying them
+        // narrows the search and lets the mismatch checks reject the right
+        // song. Drop them here so every caller searches the same way.
+        let artist = LibraryNormalization.searchSeedArtist(artist)
+        let album = LibraryNormalization.searchSeedAlbum(album)
         guard !title.isEmpty || (songMid?.isEmpty == false) else {
             throw MetadataDetailError.noResults
         }

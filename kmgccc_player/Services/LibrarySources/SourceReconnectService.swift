@@ -390,7 +390,7 @@ final class SourceReconnectService {
     }
 
     private func acquireAccess(to url: URL) throws -> SecurityScopedResourceLease {
-        let didStart = bookmarkResolver.startAccessing(url)
+        let didStart = requiresSecurityScope && bookmarkResolver.startAccessing(url)
         guard didStart || (!requiresSecurityScope && FileManager.default.isReadableFile(atPath: url.path)) else {
             throw SourceReconnectServiceError.authorizationFailed(url.path)
         }

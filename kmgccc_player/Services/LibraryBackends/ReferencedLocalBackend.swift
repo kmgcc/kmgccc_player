@@ -132,14 +132,19 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
                 // remove.
                 return !coveredBySource && !sourceScope.isTrustedAutomationPath(root)
             }
+        // Pools exist to share one parent-directory grant among the selected
+        // files. An unsandboxed build reads those directories directly, so it
+        // takes no grant and the selections below stay lease-free.
         var authorizationPools: [String: SecurityScopedResourceLeasePool] = [:]
-        for root in groupedAuthorizationRoots {
-            let didStart = bookmarkResolver.startAccessing(root)
-            guard didStart else { continue }
-            let lease = SecurityScopedResourceLease { [bookmarkResolver] in
-                bookmarkResolver.stopAccessing(root)
+        if requiresSecurityScope {
+            for root in groupedAuthorizationRoots {
+                let didStart = bookmarkResolver.startAccessing(root)
+                guard didStart else { continue }
+                let lease = SecurityScopedResourceLease { [bookmarkResolver] in
+                    bookmarkResolver.stopAccessing(root)
+                }
+                authorizationPools[canonicalPath(root)] = SecurityScopedResourceLeasePool(rootLease: lease)
             }
-            authorizationPools[canonicalPath(root)] = SecurityScopedResourceLeasePool(rootLease: lease)
         }
 
         for selected in uniqueSelections {

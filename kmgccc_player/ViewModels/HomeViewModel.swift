@@ -278,19 +278,19 @@ final class HomeViewModel {
 
         refreshHeroReference(in: allTracks)
 
-        let newPlaylistSignature = makePlaylistSignature(libraryVM.playlists)
+        let newPlaylistSignature = makePlaylistSignature(libraryVM)
         if newPlaylistSignature != playlistSignature {
             playlists = topPlaylists(from: libraryVM)
             playlistSignature = newPlaylistSignature
         }
 
-        let newArtistSignature = makeArtistSignature(libraryVM.artistEntries)
+        let newArtistSignature = makeArtistSignature(libraryVM)
         if newArtistSignature != artistSignature {
             artists = topArtists(from: libraryVM)
             artistSignature = newArtistSignature
         }
 
-        let newAlbumSignature = makeAlbumSignature(libraryVM.albumEntries)
+        let newAlbumSignature = makeAlbumSignature(libraryVM)
         if newAlbumSignature != albumSignature {
             albums = topAlbums(from: libraryVM)
             albumSignature = newAlbumSignature
@@ -335,13 +335,13 @@ final class HomeViewModel {
             refreshStats(from: libraryVM, allTracks: allTracks)
         }
 
-        let newArtistSignature = makeArtistSignature(libraryVM.artistEntries)
+        let newArtistSignature = makeArtistSignature(libraryVM)
         if newArtistSignature != artistSignature {
             artists = topArtists(from: libraryVM)
             artistSignature = newArtistSignature
         }
 
-        let newAlbumSignature = makeAlbumSignature(libraryVM.albumEntries)
+        let newAlbumSignature = makeAlbumSignature(libraryVM)
         if newAlbumSignature != albumSignature {
             albums = topAlbums(from: libraryVM)
             albumSignature = newAlbumSignature
@@ -356,9 +356,9 @@ final class HomeViewModel {
     }
 
     func refreshArtistAlbumSort(from libraryVM: LibraryViewModel) {
-        let nextArtistSignature = makeArtistSignature(libraryVM.artistEntries)
-        let nextAlbumSignature = makeAlbumSignature(libraryVM.albumEntries)
-        let nextPlaylistSignature = makePlaylistSignature(libraryVM.playlists)
+        let nextArtistSignature = makeArtistSignature(libraryVM)
+        let nextAlbumSignature = makeAlbumSignature(libraryVM)
+        let nextPlaylistSignature = makePlaylistSignature(libraryVM)
         let changed = nextArtistSignature != artistSignature
             || nextAlbumSignature != albumSignature
             || nextPlaylistSignature != playlistSignature
@@ -719,9 +719,9 @@ final class HomeViewModel {
     private func updateCachedSignatures(from libraryVM: LibraryViewModel, allTracks: [Track]) {
         trackIdentitySignature = makeTrackIdentitySignature(allTracks)
         trackMetadataSignature = makeTrackMetadataSignature(allTracks)
-        playlistSignature = makePlaylistSignature(libraryVM.playlists)
-        artistSignature = makeArtistSignature(libraryVM.artistEntries)
-        albumSignature = makeAlbumSignature(libraryVM.albumEntries)
+        playlistSignature = makePlaylistSignature(libraryVM)
+        artistSignature = makeArtistSignature(libraryVM)
+        albumSignature = makeAlbumSignature(libraryVM)
     }
 
     private func makeTrackIdentitySignature(_ tracks: [Track]) -> Int {
@@ -747,8 +747,18 @@ final class HomeViewModel {
         return hasher.finalize()
     }
 
-    private func makePlaylistSignature(_ playlists: [Playlist]) -> Int {
+    /// Home stores its own ordered snapshot of these collections. The list
+    /// pages are the only places that change their sort, and they unmount
+    /// Home while doing so — a sort-only change would otherwise look like
+    /// "same items, nothing to do" and leave the Home rails in the previous
+    /// order. Folding the sort state into each signature makes the snapshot
+    /// invalidate exactly when the visible order can change.
+    private func makePlaylistSignature(_ libraryVM: LibraryViewModel) -> Int {
         var hasher = Hasher()
+        hasher.combine(libraryVM.playlistSortKey.rawValue)
+        hasher.combine(libraryVM.playlistSortOrder.rawValue)
+        hasher.combine(libraryVM.collectionSortRevision)
+        let playlists = libraryVM.playlists
         hasher.combine(playlists.count)
         for playlist in playlists {
             hasher.combine(playlist.id)
@@ -762,8 +772,12 @@ final class HomeViewModel {
         return hasher.finalize()
     }
 
-    private func makeArtistSignature(_ artists: [ArtistEntry]) -> Int {
+    private func makeArtistSignature(_ libraryVM: LibraryViewModel) -> Int {
         var hasher = Hasher()
+        hasher.combine(libraryVM.artistSortKey.rawValue)
+        hasher.combine(libraryVM.artistSortOrder.rawValue)
+        hasher.combine(libraryVM.collectionSortRevision)
+        let artists = libraryVM.artistEntries
         hasher.combine(artists.count)
         for artist in artists {
             hasher.combine(artist.id)
@@ -776,8 +790,12 @@ final class HomeViewModel {
         return hasher.finalize()
     }
 
-    private func makeAlbumSignature(_ albums: [AlbumEntry]) -> Int {
+    private func makeAlbumSignature(_ libraryVM: LibraryViewModel) -> Int {
         var hasher = Hasher()
+        hasher.combine(libraryVM.albumSortKey.rawValue)
+        hasher.combine(libraryVM.albumSortOrder.rawValue)
+        hasher.combine(libraryVM.collectionSortRevision)
+        let albums = libraryVM.albumEntries
         hasher.combine(albums.count)
         for album in albums {
             hasher.combine(album.id)

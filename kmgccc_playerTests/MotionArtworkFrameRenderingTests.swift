@@ -102,6 +102,36 @@ final class MotionArtworkFrameRenderingTests: XCTestCase {
         XCTAssertGreaterThan(second.blue, second.red)
     }
 
+    func testFittedVideoRectAspectCalculations() {
+        let viewport = CGSize(width: 1920, height: 1080)
+        let fitted16_9 = FullscreenMotionArtworkVideoOverlay.fittedVideoRect(
+            in: viewport,
+            mediaSize: CGSize(width: 1920, height: 1080)
+        )
+        XCTAssertEqual(fitted16_9.origin.x, 0, accuracy: 0.1)
+        XCTAssertEqual(fitted16_9.origin.y, 0, accuracy: 0.1)
+        XCTAssertEqual(fitted16_9.size.width, 1920, accuracy: 0.1)
+        XCTAssertEqual(fitted16_9.size.height, 1080, accuracy: 0.1)
+
+        let fitted1_1 = FullscreenMotionArtworkVideoOverlay.fittedVideoRect(
+            in: viewport,
+            mediaSize: CGSize(width: 1000, height: 1000)
+        )
+        XCTAssertEqual(fitted1_1.size.height, 1080, accuracy: 0.1)
+        XCTAssertEqual(fitted1_1.size.width, 1080, accuracy: 0.1)
+        XCTAssertEqual(fitted1_1.origin.x, (1920 - 1080) / 2, accuracy: 0.1)
+        XCTAssertEqual(fitted1_1.origin.y, 0, accuracy: 0.1)
+
+        let fitted21_9 = FullscreenMotionArtworkVideoOverlay.fittedVideoRect(
+            in: viewport,
+            mediaSize: CGSize(width: 21, height: 9)
+        )
+        XCTAssertEqual(fitted21_9.size.width, 1920, accuracy: 0.1)
+        XCTAssertEqual(fitted21_9.size.height, 1920 * (9.0 / 21.0), accuracy: 0.1)
+        XCTAssertEqual(fitted21_9.origin.x, 0, accuracy: 0.1)
+        XCTAssertEqual(fitted21_9.origin.y, (1080 - (1920 * 9.0 / 21.0)) / 2, accuracy: 0.1)
+    }
+
     private func solidFrame(red: CGFloat, blue: CGFloat) throws -> CGImage {
         let context = try XCTUnwrap(CGContext(data: nil, width: 512, height: 512,
             bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),

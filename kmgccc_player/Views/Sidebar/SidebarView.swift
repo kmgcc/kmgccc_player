@@ -66,6 +66,8 @@ struct SidebarView: View {
     @State private var appearanceRotateTrigger = 0
     @State private var scrollFadeState = ScrollEdgeFadeState()
     @State private var showingLibraryImportStatus = false
+    @State private var settingsInitialCategory: SettingsCategory?
+    @State private var settingsInitialAnchor: String?
     @State private var updateReleaseNotesToShow: UpdateReleaseNotesNotice?
 
     private let scrollFadeHeight: CGFloat = 28
@@ -565,7 +567,11 @@ struct SidebarView: View {
         .sheet(isPresented: $showSettings, onDismiss: {
             FeatureTipPresentationCoordinator.shared.setSuspended(false, reason: .settingsSheet)
         }) {
-            SettingsView(hasActiveLibrarySession: true)
+            SettingsView(
+                hasActiveLibrarySession: true,
+                initialCategory: settingsInitialCategory,
+                initialAnchor: settingsInitialAnchor
+            )
                 .environment(settings)
                 .environment(uiState)
                 .environment(libraryVM)
@@ -862,13 +868,11 @@ struct SidebarView: View {
             SidebarArtworkRenovationRow()
                 .transition(.opacity)
             if let notice = uiState.sidebarNotice {
-                SidebarNoticeView(notice: notice) {
-                    if activeLibraryImportTask != nil || !uiState.libraryImportFailureReports.isEmpty {
-                        showingLibraryImportStatus = true
-                    } else {
-                        openSettings()
-                    }
-                }
+                SidebarNoticeView(
+                    notice: notice,
+                    onDismiss: { uiState.dismissSidebarNotice() },
+                    onAction: { handleSidebarNoticeAction(notice) }
+                )
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
@@ -929,17 +933,16 @@ struct SidebarView: View {
             }
 
             if importEnrichmentService.hasOutstandingWork {
-                // A few songs fill in quietly; only a large batch interrupts.
-                if importEnrichmentService.progress.totalEnqueued >= SidebarTaskVisibility.largeBatchCount {
-                    Button {
-                        EnrichmentStatusDialogPresenter.present(service: importEnrichmentService)
-                    } label: {
-                        SidebarTaskProgressView(progress: importEnrichmentSidebarProgress)
-                    }
-                    .buttonStyle(.plain)
-                    .help("点击查看每首歌曲的补全状态")
-                    .transition(.opacity)
+                // Deferred enrichment runs after the import sheet closes, so
+                // this card is the only place its progress appears.
+                Button {
+                    EnrichmentStatusDialogPresenter.present(service: importEnrichmentService)
+                } label: {
+                    SidebarTaskProgressView(progress: importEnrichmentSidebarProgress)
                 }
+                .buttonStyle(.plain)
+                .help("点击查看每首歌曲的补全状态")
+                .transition(.opacity)
             } else if let summary = importEnrichmentService.completionSummary {
                 SidebarEnrichmentCompletionNotice(
                     summary: summary,
@@ -1117,9 +1120,38 @@ struct SidebarView: View {
     }
 
     private func openSettings() {
+        openSettings(category: nil, anchor: nil)
+    }
+
+    private func openSettings(category: SettingsCategory?, anchor: String?) {
+        settingsInitialCategory = category
+        settingsInitialAnchor = anchor
         FeatureTipPresentationCoordinator.shared.setSuspended(true, reason: .settingsSheet)
         settingsRotateTrigger += 1
         showSettings = true
+    }
+
+    /// Routes a notice action to the place that can resolve it. Notices
+    /// without an explicit destination keep the historical fallback.
+    private func handleSidebarNoticeAction(_ notice: SidebarNotice) {
+        switch notice.destination {
+        case .libraryImportStatus:
+            showingLibraryImportStatus = true
+        case .librarySettings(let anchor):
+            openSettings(category: .library, anchor: anchor)
+        case .libraryRepair:
+            appSession.presentLibraryRepair()
+        case .revealPath(let path):
+            if !FinderRevealHelper.reveal(path: path) {
+                uiState.showSidebarNotice("无法打开文件位置", style: .warning)
+            }
+        case nil:
+            if activeLibraryImportTask != nil || !uiState.libraryImportFailureReports.isEmpty {
+                showingLibraryImportStatus = true
+            } else {
+                openSettings()
+            }
+        }
     }
 
     private func finishCrashReportTipPresentation() {
@@ -1647,9 +1679,9 @@ private struct FailedEnrichmentEditRequest: Identifiable {
     let tracks: [Track]
 }
 
-/// Persistent green notice shown after all background enrichment finishes.
-/// Stays until the user dismisses it; taps open the multi-track metadata
-/// editor prefilled with the failed songs when any part failed.
+/// Notice shown after all background enrichment finishes.
+/// Automatically dismisses after 6 seconds when all tracks succeed; stays
+/// until dismissed when any part failed, allowing the user to inspect failures.
 private struct SidebarEnrichmentCompletionNotice: View {
     let summary: ImportEnrichmentCompletionSummary
     let onShowFailures: () -> Void
@@ -2028,6 +2060,7 @@ private struct SidebarPlaylistThumbnail: View {
 
 private struct SidebarNoticeView: View {
     let notice: SidebarNotice
+    let onDismiss: () -> Void
     let onAction: () -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
@@ -2045,6 +2078,18 @@ private struct SidebarNoticeView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 0)
+
+                if notice.isSticky {
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("关闭")
+                }
             }
 
             if let actionTitle = notice.actionTitle {

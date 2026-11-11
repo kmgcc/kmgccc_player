@@ -88,10 +88,26 @@ nonisolated enum PerAudioFileImportTask {
             }
             let audioURL = videoMusic?.audioURL ?? candidate.fileURL
             let duration = videoMusic?.duration ?? candidate.metadata.duration
-            try Self.ensureAudioIsDecodable(
-                audioURL,
-                knownDuration: duration
-            )
+            do {
+                try Self.ensureAudioIsDecodable(
+                    audioURL,
+                    knownDuration: duration
+                )
+            } catch {
+                // A file that is still being copied into a monitored folder can
+                // fail the decode probe and read cleanly a moment later. Wait
+                // for the write to settle and probe once more, instead of
+                // telling the user that a healthy song cannot be decoded.
+                let before = Self.fileState(audioURL)
+                guard await Self.waitForFileToSettle(audioURL),
+                      Self.fileState(audioURL) != before else {
+                    throw error
+                }
+                try Self.ensureAudioIsDecodable(
+                    audioURL,
+                    knownDuration: duration
+                )
+            }
             try await cancellationToken.checkCancellation()
 
             let embeddedArtworkData = await extractedArtworkTask
@@ -247,6 +263,40 @@ nonisolated enum PerAudioFileImportTask {
                 errorDescription: error.localizedDescription
             )
         }
+    }
+
+    /// Size and modification date of a file. Two reads are compared to tell a
+    /// finished copy from one that is still being written.
+    nonisolated static func fileState(_ url: URL) -> FileState? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? Int64,
+              let modifiedAt = attributes[.modificationDate] as? Date else {
+            return nil
+        }
+        return FileState(size: size, modifiedAt: modifiedAt)
+    }
+
+    nonisolated struct FileState: Equatable, Sendable {
+        let size: Int64
+        let modifiedAt: Date
+    }
+
+    /// Waits until two consecutive reads agree. Bounded, so a file that is
+    /// genuinely unreadable is still reported instead of blocking the import.
+    nonisolated static func waitForFileToSettle(
+        _ url: URL,
+        timeout: TimeInterval = 3,
+        pollInterval: UInt64 = 150_000_000
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        var previous = fileState(url)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: pollInterval)
+            let current = fileState(url)
+            if let current, current == previous { return true }
+            previous = current
+        }
+        return false
     }
 
     /// Probe the same decoder used by playback, including a small PCM read.

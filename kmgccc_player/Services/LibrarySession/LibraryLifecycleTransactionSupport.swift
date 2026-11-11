@@ -168,7 +168,8 @@ nonisolated enum LibraryStartupResolution: Sendable, Equatable {
 /// activating a second empty library at an alternate path.
 nonisolated enum LibraryStartupFailurePolicy {
     static func permitsFactoryDefaultFallback(after error: any Error) -> Bool {
-        if error is LibraryWriterLeaseError || error is CancellationError
+        if error is LibraryWriterLeaseError || error is LibraryMetadataReadError
+            || error is MusicLibraryRegistryError || error is CancellationError
             || error is LibraryLifecycleTransactionGateError {
             return false
         }

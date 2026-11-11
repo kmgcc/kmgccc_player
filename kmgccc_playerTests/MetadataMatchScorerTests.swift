@@ -218,3 +218,59 @@ private actor MotionSuggestionClient: MusicEnrichmentFetching {
         return [result("2", title: "Closer"), result("1", title: "Colors")]
     }
 }
+
+/// Placeholder identities (未知艺人 / 群星 / 未知专辑) must not become provider
+/// seeds, and a match made without an artist has to be confirmed by duration.
+final class PlaceholderIdentitySeedTests: XCTestCase {
+    func testDetectsPlaceholderArtists() {
+        for value in [
+            "未知艺人", "未知歌手", "未知", "群星", "合辑",
+            "Unknown Artist", "unknown", "UNKOWN", "Various Artists", "V.A.", "VA",
+            "未知艺人 (Unknown)", "Various Artists [Compilation]", "",
+        ] {
+            XCTAssertTrue(
+                LibraryNormalization.isUnknownArtist(value),
+                "\(value) should read as a placeholder artist"
+            )
+        }
+    }
+
+    func testDetectsPlaceholderAlbums() {
+        for value in ["未知专辑", "未知专辑、、、", "未知唱片", "未命名专辑", "Unknown Album", ""] {
+            XCTAssertTrue(
+                LibraryNormalization.isUnknownAlbum(value),
+                "\(value) should read as a placeholder album"
+            )
+        }
+    }
+
+    func testKeepsRealNames() {
+        for value in ["福梦", "福梦 (FUMON)", "DOUDOU", "司南", "AURORA & Bear McCreary"] {
+            XCTAssertFalse(LibraryNormalization.isUnknownArtist(value), value)
+        }
+        for value in ["苦难里的祝福", "天空"] {
+            XCTAssertFalse(LibraryNormalization.isUnknownAlbum(value), value)
+        }
+    }
+
+    func testPlaceholdersNeverBecomeSeeds() {
+        XCTAssertEqual(LibraryNormalization.searchSeedArtist("未知艺人"), "")
+        XCTAssertEqual(LibraryNormalization.searchSeedArtist("群星"), "")
+        XCTAssertEqual(LibraryNormalization.searchSeedAlbum("未知专辑"), "")
+        XCTAssertEqual(LibraryNormalization.searchSeedArtist("  福梦  "), "福梦")
+        XCTAssertEqual(LibraryNormalization.searchSeedAlbum("苦难里的祝福"), "苦难里的祝福")
+    }
+
+    func testArtistlessMatchNeedsTheDurationToAgree() {
+        // 背叛 runs 291s; the 曹格 version runs 321s.
+        XCTAssertTrue(
+            ExternalPlaybackTextNormalizer.durationSupportsArtistlessMatch(source: 291, candidate: 291)
+        )
+        XCTAssertFalse(
+            ExternalPlaybackTextNormalizer.durationSupportsArtistlessMatch(source: 291, candidate: 321)
+        )
+        XCTAssertFalse(
+            ExternalPlaybackTextNormalizer.durationSupportsArtistlessMatch(source: 291, candidate: 0)
+        )
+    }
+}

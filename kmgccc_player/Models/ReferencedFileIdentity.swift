@@ -459,6 +459,51 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
         }
     }
 
+    /// Makes a readable alternate location the primary one when the preferred
+    /// recording is gone. Memberships are not lost: the dead location keeps
+    /// its own memberships and stays as a fallback, so the Track stops
+    /// advertising a deleted copy as its file while another copy still plays.
+    @discardableResult
+    mutating func promoteFirstExistingLocation(
+        fileExists: (String) -> Bool
+    ) -> Bool {
+        guard !lastKnownPath.isEmpty, !fileExists(lastKnownPath) else { return false }
+        guard let index = alternateLocations.firstIndex(where: { fileExists($0.lastKnownPath) }) else {
+            return false
+        }
+        let promoted = alternateLocations.remove(at: index)
+        let demoted = ReferencedTrackLocation(
+            id: primaryLocationID,
+            fileBookmarkData: fileBookmarkData,
+            sourceMemberships: sourceMemberships,
+            lastKnownPath: lastKnownPath,
+            fingerprint: fingerprint,
+            ncmSourceIdentity: ncmSourceIdentity,
+            videoSource: videoSource,
+            audioProperties: primaryAudioProperties,
+            contentDigest: primaryContentDigest,
+            availabilityRaw: primaryAvailabilityRaw
+        )
+        primaryLocationID = promoted.id
+        fileBookmarkData = promoted.fileBookmarkData
+        sourceMemberships = promoted.sourceMemberships
+        lastKnownPath = promoted.lastKnownPath
+        fingerprint = promoted.fingerprint
+        ncmSourceIdentity = promoted.ncmSourceIdentity
+        videoSource = promoted.videoSource
+        primaryAudioProperties = promoted.audioProperties
+        primaryContentDigest = promoted.contentDigest
+        primaryAvailabilityRaw = promoted.availabilityRaw
+        primarySourceID = sourceMemberships.min {
+            if $0.relativePath.count != $1.relativePath.count {
+                return $0.relativePath.count < $1.relativePath.count
+            }
+            return $0.sourceID.uuidString < $1.sourceID.uuidString
+        }?.sourceID
+        alternateLocations.append(demoted)
+        return true
+    }
+
     /// Persists an on-demand content digest onto the location with the given
     /// id. Returns false when no location carries that id.
     mutating func setContentDigest(_ digest: String, atLocationID locationID: UUID) -> Bool {

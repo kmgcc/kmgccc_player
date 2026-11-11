@@ -47,12 +47,14 @@ private struct CLIOptions {
     var dryRun = false
     var confirm = false
     var force = false
-    var skillTarget: String?
     var mcpProfile = MCPToolProfile.full
 }
 
 enum AutomationToolDefaults {
     static let defaultConnectionTimeout: TimeInterval = 10
+    /// Mutations can queue behind library work in the App; a slow reply must
+    /// not look like a failed request, because retrying duplicates the write.
+    static let mutationTimeout: TimeInterval = 30
     static let maximumTimeout: TimeInterval = 120
 
     static var socketPath: String {
@@ -93,6 +95,11 @@ enum AutomationToolDefaults {
         var budget = !timeoutWasSet && (slowMethods.contains(request.method) || waitsForInteraction)
             ? maximumTimeout
             : configuredTimeout
+
+        if !timeoutWasSet,
+           AutomationToolCatalog.descriptor(for: request.method)?.readOnly == false {
+            budget = max(budget, mutationTimeout)
+        }
 
         if ["jobs.wait", AutomationMethod.dspWait].contains(request.method), !timeoutWasSet {
             let waitSeconds: TimeInterval
@@ -187,20 +194,28 @@ private struct AutomationCLI {
             return AutomationCLIExitCode(rawValue: mcpExitCode) ?? .internalError
         }
 
-        if command == "skill" {
-            return runSkillCommand(args, options: options)
-        }
-
         let method: String
         var params: AutomationJSONValue?
         switch command {
         case "automation":
             guard let action = args.first else {
-                writeDiagnostic("usage error: automation requires capabilities, scopes or call")
+                writeDiagnostic("usage error: automation requires tools, describe, capabilities, scopes or call")
                 return .usage
             }
             args.removeFirst()
             switch action {
+            case "tools":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: automation tools does not accept positional arguments")
+                    return .usage
+                }
+                return listTools()
+            case "describe":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: automation describe requires exactly one method name")
+                    return .usage
+                }
+                return describeTool(args[0])
             case "capabilities":
                 guard args.isEmpty else {
                     writeDiagnostic("usage error: automation capabilities does not accept positional arguments")
@@ -1658,10 +1673,6 @@ private struct AutomationCLI {
             case "--no-launch":
                 options.noLaunch = true
                 args.remove(at: index)
-            case "--target":
-                guard index + 1 < args.count else { throw CLIError.missingValue("--target") }
-                options.skillTarget = args[index + 1]
-                args.removeSubrange(index...(index + 1))
             case "--profile":
                 guard index + 1 < args.count,
                       let profile = MCPToolProfile(rawValue: args[index + 1].lowercased()) else {
@@ -1871,6 +1882,10 @@ private struct AutomationCLI {
             print("\(method): ok")
             return
         }
+        if method == AutomationMethod.automationCapabilities {
+            renderCapabilities(result)
+            return
+        }
         switch result {
         case .object(let values):
             for key in values.keys.sorted() {
@@ -1881,11 +1896,39 @@ private struct AutomationCLI {
         }
     }
 
+    /// The full descriptor list is what `automation tools` and
+    /// `automation describe` already serve; printing it here would bury the
+    /// scopes and notes under a hundred kilobytes.
+    private func renderCapabilities(_ result: AutomationJSONValue) {
+        guard case .object(let values) = result else {
+            print(render(value: result))
+            return
+        }
+        for key in values.keys.sorted() where key != "tools" {
+            print("\(key): \(render(value: values[key]!))")
+        }
+        guard case .array(let tools) = values["tools"] else { return }
+        print("tools: \(tools.count)")
+        for tool in tools {
+            guard case .object(let fields) = tool,
+                  case .string(let name) = fields["name"] else { continue }
+            if case .string(let title) = fields["title"] {
+                print("\(name)\t\(title)")
+            } else {
+                print(name)
+            }
+        }
+    }
+
     private func render(value: AutomationJSONValue) -> String {
         switch value {
         case .null: return "null"
         case .boolean(let value): return value ? "true" : "false"
-        case .number(let value): return String(value)
+        case .number(let value):
+            if value.rounded() == value, abs(value) < 1e15 {
+                return String(Int64(value))
+            }
+            return String(value)
         case .string(let value): return value
         case .array(let values): return "[\(values.map(render(value:)).joined(separator: ", "))]"
         case .object(let values):
@@ -1900,9 +1943,10 @@ private struct AutomationCLI {
         Commands:
           mcp-stdio [--profile core|full]
                                    Serve MCP over stdio; core exposes daily tools only
-          skill install|status|list|uninstall|path
-                                   Install the Agent skill for --target claude|codex|dsh
-          automation capabilities  List the shared capability catalog
+          automation tools        List method names with one-line titles
+          automation describe <method>
+                                   Read one method's parameters and input schema
+          automation capabilities Show the full catalog with scopes and notes
           automation scopes        Show granted and denied scopes
           automation call <method> Call any catalog method with --params-json
           system ping             Check the App automation socket
@@ -2059,89 +2103,45 @@ private struct AutomationCLI {
         }
     }
 
-    /// Installs the bundled Agent skill into local agent skill directories.
-    /// Everything is local file work, so this never connects to the App.
-    private func runSkillCommand(_ args: [String], options: CLIOptions) -> AutomationCLIExitCode {
-        guard let action = args.first else {
-            writeDiagnostic("usage error: skill requires list, status, install, uninstall or path")
-            return .usage
+    /// One line per method so an Agent can pick a target without loading the
+    /// whole catalog. The catalog is compiled into the CLI, so this answers
+    /// without a running App.
+    private func listTools() -> AutomationCLIExitCode {
+        for tool in AutomationToolCatalog.all {
+            print("\(tool.name)\t\(tool.title)")
         }
-        guard args.count == 1 else {
-            writeDiagnostic("usage error: skill \(action) does not accept positional arguments")
-            return .usage
-        }
-        if action == "path" {
-            print(AutomationSkillInstaller.exportDirectory().path)
-            return .success
-        }
-        guard ["list", "status", "install", "uninstall"].contains(action) else {
-            writeDiagnostic("usage error: unknown skill action \(action)")
-            return .usage
-        }
-        guard let executable = AutomationSkillInstaller.automationExecutableURL else {
-            writeDiagnostic("error: could not locate the bundled player-automation executable")
-            return .unavailable
-        }
-        let available = AutomationSkillInstaller.availableTargets()
-        let targets: [AutomationSkillInstaller.Target]
-        if let requested = options.skillTarget {
-            guard let target = AutomationSkillInstaller.target(id: requested) else {
-                writeDiagnostic("usage error: unknown skill target \(requested)")
-                return .usage
-            }
-            targets = [target]
-        } else {
-            targets = available
-        }
+        return .success
+    }
 
-        switch action {
-        case "list", "status":
-            try? AutomationSkillInstaller.syncExport(executableURL: executable)
-            let listed = options.skillTarget == nil ? AutomationSkillInstaller.targetCandidates() : targets
-            for target in listed {
-                let state = target.isAvailable
-                    ? AutomationSkillInstaller.status(for: target).rawValue
-                    : "unavailable"
-                print("\(target.id)\t\(target.displayName)\t\(state)\t\(target.skillDirectory.path)")
-            }
-            return .success
-        case "install":
-            guard !targets.isEmpty else {
-                writeDiagnostic("error: no agent skill directories found; pass --target claude|codex|dsh")
-                return .unavailable
-            }
-            do {
-                try AutomationSkillInstaller.syncExport(executableURL: executable)
-            } catch {
-                writeDiagnostic("error: \(error.localizedDescription)")
-                return .internalError
-            }
-            for target in targets {
-                do {
-                    let state = try AutomationSkillInstaller.install(target, executableURL: executable)
-                    print("\(target.id)\t\(state.rawValue)\t\(target.skillDirectory.path)")
-                } catch {
-                    writeDiagnostic("error: \(target.id): \(error.localizedDescription)")
-                    return .internalError
-                }
-            }
-            return .success
-        default:
-            guard !targets.isEmpty else {
-                writeDiagnostic("error: no agent skill directories found; pass --target claude|codex|dsh")
-                return .unavailable
-            }
-            for target in targets {
-                do {
-                    try AutomationSkillInstaller.uninstall(target)
-                    print("\(target.id)\tremoved")
-                } catch {
-                    writeDiagnostic("error: \(target.id): \(error.localizedDescription)")
-                    return .internalError
-                }
-            }
-            return .success
+    private func describeTool(_ name: String) -> AutomationCLIExitCode {
+        guard let tool = AutomationToolCatalog.descriptor(for: name) else {
+            let suggestions = AutomationToolCatalog.suggestions(for: name)
+            let hint = suggestions.isEmpty ? "" : "; did you mean \(suggestions.joined(separator: ", "))?"
+            writeDiagnostic("usage error: unknown method \(name)\(hint)")
+            return .usage
         }
+        print("\(tool.name)  \(tool.title)")
+        print(
+            "readOnly: \(tool.readOnly)  risk: \(tool.risk.rawValue)"
+                + "  dryRun: \(tool.supportsDryRun)  confirmation: \(tool.requiresConfirmation)"
+        )
+        if !tool.scopes.isEmpty {
+            print("scopes: \(tool.scopes.map(\.rawValue).joined(separator: ", "))")
+        }
+        print(tool.description)
+        print("input schema:")
+        print(schemaText(tool.inputSchema))
+        return .success
+    }
+
+    private func schemaText(_ schema: AutomationJSONValue) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(schema),
+              let text = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return text
     }
 
     private func writeDiagnostic(_ message: String) {

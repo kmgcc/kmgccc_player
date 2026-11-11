@@ -14,7 +14,7 @@ nonisolated enum LibraryRemovalReplayResult: Sendable, Equatable {
 nonisolated enum LibraryRemovalError: Error, Equatable, LocalizedError {
     case libraryNotRegistered, manifestMismatch, closeFailed, recycleFailed
     case intentWriteFailed, pendingRepair, recoveryFailed
-    case transactionInProgress, securityScopeDenied
+    case transactionInProgress, securityScopeDenied, pendingMutations
 
     var errorDescription: String? {
         switch self {
@@ -36,6 +36,8 @@ nonisolated enum LibraryRemovalError: Error, Equatable, LocalizedError {
             return "有其他资料库操作正在进行，请稍后再试。"
         case .securityScopeDenied:
             return "没有访问资料库所在文件夹的权限。"
+        case .pendingMutations:
+            return "资料库还有未完成的写操作，请先在资料库检查中核对记录。"
         }
     }
 }
@@ -131,13 +133,14 @@ final class LibraryRemovalService {
                 return .cancelled
             }
         }
-        let snapshot = await registryStore.snapshot()
+        let snapshot = try await registryStore.reload()
         if snapshot.library(id: intent.libraryID) != nil {
             do {
                 try await registryStore.remove(
                     libraryID: intent.libraryID,
                     requireFactoryDefaultReplacement: intent.registryBefore.library(id: intent.libraryID)
-                            .map { LibraryRootLocationPolicy.isFactoryDefaultRegistration($0) } == true
+                            .map { LibraryRootLocationPolicy.isFactoryDefaultRegistration($0) } == true,
+                    idempotent: true
                 )
             }
             catch { throw LibraryRemovalError.pendingRepair }
@@ -168,7 +171,7 @@ final class LibraryRemovalService {
             } catch let error as LibraryRemovalError { throw error }
             catch { throw LibraryRemovalError.pendingRepair }
         }
-        let registry = await registryStore.snapshot()
+        let registry = try await registryStore.reload()
         guard let descriptor = registry.library(id: libraryID) else { throw LibraryRemovalError.libraryNotRegistered }
         let lease: LibraryRootAccessLease
         do {
@@ -181,11 +184,38 @@ final class LibraryRemovalService {
         guard manifest.libraryID == libraryID, manifest.mode == descriptor.modeProjection else {
             throw LibraryRemovalError.manifestMismatch
         }
+        guard !LibraryMutationJournal.hasPendingRecords(paths: LibraryPaths(rootURL: root)) else {
+            throw LibraryRemovalError.pendingMutations
+        }
         let previousSession = sessionController.activeLibraryContext
         let wasActive = previousSession?.id == libraryID
         if wasActive {
             do { try await sessionController.closeActiveSession() }
             catch { throw LibraryRemovalError.closeFailed }
+        }
+
+        let writerLease: LibraryWriterLease
+        do { writerLease = try LibraryWriterLease.acquire(paths: LibraryPaths(rootURL: root)) }
+        catch {
+            if wasActive {
+                do { try await restoreLifecycleSession(previousSession, using: sessionController) }
+                catch { throw LibraryRemovalError.recoveryFailed }
+            }
+            throw error
+        }
+        defer { writerLease.release() }
+        do {
+            let lockedManifest = try MusicLibraryManifest.read(from: LibraryPaths(rootURL: root).manifestURL)
+            guard lockedManifest.libraryID == manifest.libraryID, lockedManifest.mode == manifest.mode else {
+                throw LibraryRemovalError.manifestMismatch
+            }
+        } catch {
+            writerLease.release()
+            if wasActive {
+                do { try await restoreLifecycleSession(previousSession, using: sessionController) }
+                catch { throw LibraryRemovalError.recoveryFailed }
+            }
+            throw LibraryRemovalError.manifestMismatch
         }
 
         do {
@@ -200,6 +230,7 @@ final class LibraryRemovalService {
             )
         }
         catch {
+            writerLease.release()
             if wasActive {
                 do { try await restoreLifecycleSession(previousSession, using: sessionController) }
                 catch { throw LibraryRemovalError.recoveryFailed }
@@ -209,7 +240,8 @@ final class LibraryRemovalService {
         do { try await recycler.recycle(root) }
         catch {
             try? LibraryRemovalRepairIntentFile.remove(at: intentURL)
-            do { try await restoreLifecycleSession(previousSession, using: sessionController) }
+            writerLease.release()
+            do { if wasActive { try await restoreLifecycleSession(previousSession, using: sessionController) } }
             catch { throw LibraryRemovalError.recoveryFailed }
             throw LibraryRemovalError.recycleFailed
         }
@@ -238,12 +270,20 @@ final class LibraryRemovalService {
         defer { gate.release() }
         let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw LibraryDisplayNameUpdateError.invalidDisplayName }
-        let registry = await registryStore.snapshot()
+        let registry = try await registryStore.reload()
         guard let descriptor = registry.library(id: libraryID) else { throw LibraryDisplayNameUpdateError.libraryNotRegistered }
         let lease: LibraryRootAccessLease
         do {
             lease = try LibraryRootAccessLease(descriptor: descriptor, resolver: bookmarkResolver, requiresSecurityScope: requiresSecurityScope)
         } catch { throw LibraryDisplayNameUpdateError.securityScopeDenied }
+        let active = sessionController.activeLibraryContext
+        let writerLease: LibraryWriterLease?
+        if active?.id == libraryID && active?.rootURL == lease.rootURL {
+            writerLease = nil
+        } else {
+            writerLease = try LibraryWriterLease.acquire(paths: LibraryPaths(rootURL: lease.rootURL))
+        }
+        defer { writerLease?.release() }
         let manifestURL = LibraryPaths(rootURL: lease.rootURL).manifestURL
         let original: MusicLibraryManifest
         do { original = try MusicLibraryManifest.read(from: manifestURL) }
@@ -269,7 +309,7 @@ final class LibraryRemovalService {
         registryAfter.libraries[index].lastKnownPath = lease.rootURL.path
         do { try updated.write(to: manifestURL) }
         catch { throw LibraryDisplayNameUpdateError.manifestWriteFailed }
-        do { try await registryStore.replaceSnapshot(registryAfter) }
+        do { try await registryStore.replaceDescriptor(expected: descriptor, with: registryAfter.libraries[index]) }
         catch {
             do { try original.write(to: manifestURL) }
             catch { throw LibraryDisplayNameUpdateError.registryWriteFailedRollbackFailed }
@@ -323,7 +363,7 @@ final class LibraryRemovalService {
                 } catch {
                     // Keep the post-removal registry honest if opening this
                     // particular candidate fails after the pointer commit.
-                    try? await registryStore.replaceSnapshot(updated)
+                    try? await registryStore.rollbackSelection(ifActive: context.id, previous: updated)
                     throw error
                 }
                 return .activated(context)

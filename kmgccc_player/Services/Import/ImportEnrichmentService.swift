@@ -328,8 +328,11 @@ final class ImportEnrichmentService {
 
     private(set) var enrichmentRows: [ImportEnrichmentRowSnapshot] = []
     private(set) var completionSummary: ImportEnrichmentCompletionSummary?
+    @ObservationIgnored private var completionSummaryDismissTask: Task<Void, Never>?
 
     func dismissCompletionSummary() {
+        completionSummaryDismissTask?.cancel()
+        completionSummaryDismissTask = nil
         completionSummary = nil
     }
 
@@ -355,6 +358,7 @@ final class ImportEnrichmentService {
     }
 
     deinit {
+        completionSummaryDismissTask?.cancel()
         Log.info("[ImportEnrichment] service deinit", category: .import)
     }
 
@@ -423,7 +427,7 @@ final class ImportEnrichmentService {
     }
 
     func enqueueTracks(_ tracks: [Track]) async {
-        completionSummary = nil
+        dismissCompletionSummary()
         if hasOutstandingWork == false {
             resetProgressIfIdle()
         }
@@ -488,11 +492,14 @@ final class ImportEnrichmentService {
                 )
             }
 
-            // Artist metadata (dedup across batch)
-            let artistCanonical = LibraryNormalization.normalizeArtist(track.artist)
+            // Artist metadata (dedup across batch, per credited artist)
+            let metadataTargetKeys = Self.artistMetadataTargets(
+                for: track,
+                entriesByCanonical: artistEntriesByCanonical
+            ).map(\.canonicalName)
             if itemState.state(for: .artistMetadata) == .pending,
-               !enqueuedArtistMetadata.contains(artistCanonical) {
-                enqueuedArtistMetadata.insert(artistCanonical)
+               metadataTargetKeys.contains(where: { !enqueuedArtistMetadata.contains($0) }) {
+                enqueuedArtistMetadata.formUnion(metadataTargetKeys)
                 enqueuePart(.artistMetadata, for: track.id)
             } else if var state = itemStates[track.id] {
                 state.setState(.skipped, for: .artistMetadata)
@@ -500,6 +507,7 @@ final class ImportEnrichmentService {
             }
 
             // Album metadata (dedup across batch)
+            let artistCanonical = LibraryNormalization.normalizeArtist(track.artist)
             let albumCanonical = LibraryNormalization.normalizedAlbumKey(album: track.album)
             let albumDedupKey = "\(artistCanonical)•\(albumCanonical)"
             if itemState.state(for: .albumMetadata) == .pending,
@@ -511,10 +519,14 @@ final class ImportEnrichmentService {
                 itemStates[track.id] = state
             }
 
-            // Artist artwork (dedup across batch)
+            // Artist artwork (dedup across batch, per credited artist)
+            let artworkTargetKeys = Self.artistArtworkTargets(
+                for: track,
+                entriesByCanonical: artistEntriesByCanonical
+            ).map(\.canonicalName)
             if itemState.state(for: .artistArtwork) == .pending,
-               !enqueuedArtistArtwork.contains(artistCanonical) {
-                enqueuedArtistArtwork.insert(artistCanonical)
+               artworkTargetKeys.contains(where: { !enqueuedArtistArtwork.contains($0) }) {
+                enqueuedArtistArtwork.formUnion(artworkTargetKeys)
                 enqueuePart(.artistArtwork, for: track.id)
             } else if var state = itemStates[track.id] {
                 state.setState(.skipped, for: .artistArtwork)
@@ -554,18 +566,18 @@ final class ImportEnrichmentService {
         let needsLyrics = track.allowsAutomaticLyrics && track.ttmlLyricText == nil
         let needsCover = !track.hasArtwork || track.artworkNeedsUpgrade
         let needsTrackMetadata = trackMetadataIsMissing(track)
-        let needsArtistMetadata = Self.artistMetadataNeedsEnrichment(
-            artist: track.artist,
+        let needsArtistMetadata = !Self.artistMetadataTargets(
+            for: track,
             entriesByCanonical: artistEntriesByCanonical
-        )
+        ).isEmpty
         let needsAlbumMetadata = Self.albumMetadataNeedsEnrichment(
             album: track.album,
             entriesByCanonical: albumEntriesByCanonical
         )
-        let needsArtistArtwork = Self.artistArtworkNeedsEnrichment(
-            artist: track.artist,
+        let needsArtistArtwork = !Self.artistArtworkTargets(
+            for: track,
             entriesByCanonical: artistEntriesByCanonical
-        )
+        ).isEmpty
         let needsAlbumArtwork = Self.albumArtworkNeedsEnrichment(
             album: track.album,
             entriesByCanonical: albumEntriesByCanonical
@@ -617,17 +629,36 @@ final class ImportEnrichmentService {
         return result
     }
 
-    static func artistMetadataNeedsEnrichment(
-        artist: String,
-        entriesByCanonical: [String: ArtistEntry]
-    ) -> Bool {
-        let canonical = LibraryNormalization.normalizeArtist(artist)
-        guard canonical != LibraryNormalization.normalizeArtist(nil) else { return false }
-        guard let entry = entriesByCanonical[canonical] else { return true }
+    static func artistMetadataEntryNeedsEnrichment(_ entry: ArtistEntry?) -> Bool {
+        guard let entry else { return true }
         return (!entry.manuallyEditedFields.contains("description") && entry.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             || (!entry.manuallyEditedFields.contains("genreTags") && entry.genreTags.isEmpty)
             || (!entry.manuallyEditedFields.contains("region") && entry.region.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             || (!entry.manuallyEditedFields.contains("foreignName") && entry.foreignName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    static func artistMetadataNeedsEnrichment(
+        artist: String,
+        entriesByCanonical: [String: ArtistEntry]
+    ) -> Bool {
+        let components = LibraryNormalization.artistComponents(artist)
+        guard !components.isEmpty else { return false }
+        return components.contains { component in
+            guard !LibraryNormalization.isUnknownArtist(component.displayName) else { return false }
+            return artistMetadataEntryNeedsEnrichment(entriesByCanonical[component.canonicalName])
+        }
+    }
+
+    /// Credited artists of the track that still lack metadata. Entries exist per
+    /// name, so a joined credit is resolved name by name.
+    static func artistMetadataTargets(
+        for track: Track,
+        entriesByCanonical: [String: ArtistEntry]
+    ) -> [(canonicalName: String, displayName: String)] {
+        LibraryNormalization.artistComponents(for: track).filter { component in
+            guard !LibraryNormalization.isUnknownArtist(component.displayName) else { return false }
+            return artistMetadataEntryNeedsEnrichment(entriesByCanonical[component.canonicalName])
+        }
     }
 
     static func artistArtworkNeedsEnrichment(
@@ -638,6 +669,19 @@ final class ImportEnrichmentService {
         guard canonical != LibraryNormalization.normalizeArtist(nil) else { return false }
         guard let entry = entriesByCanonical[canonical] else { return true }
         return !entry.hasArtwork
+    }
+
+    /// Credited artists of the track that still lack a cover. Entries exist per
+    /// name, so a joined credit is resolved name by name.
+    static func artistArtworkTargets(
+        for track: Track,
+        entriesByCanonical: [String: ArtistEntry]
+    ) -> [(canonicalName: String, displayName: String)] {
+        LibraryNormalization.artistComponents(for: track).filter { component in
+            guard !LibraryNormalization.isUnknownArtist(component.displayName) else { return false }
+            guard let entry = entriesByCanonical[component.canonicalName] else { return true }
+            return !entry.hasArtwork
+        }
     }
 
     static func albumMetadataNeedsEnrichment(
@@ -1107,17 +1151,29 @@ final class ImportEnrichmentService {
                 )
                 await self.completeTrackMetadata(request: request, outcome: outcome)
             case .artistMetadata:
-                let outcome = await MetadataEnrichmentWorker.fetchArtistMetadata(name: artist)
-                await self.completeArtistMetadata(request: request, outcome: outcome)
+                let entries = Self.artistEntriesByCanonical(await self.repository.fetchArtistEntries())
+                var results: [ImportArtistMetadataResult] = []
+                for target in Self.artistMetadataTargets(for: track, entriesByCanonical: entries) {
+                    guard !Task.isCancelled else { break }
+                    let outcome = await MetadataEnrichmentWorker.fetchArtistMetadata(name: target.displayName)
+                    results.append(ImportArtistMetadataResult(name: target.displayName, outcome: outcome))
+                }
+                await self.completeArtistMetadata(request: request, results: results)
             case .albumMetadata:
                 let outcome = await MetadataEnrichmentWorker.fetchAlbumMetadata(album: album, artist: artist)
                 await self.completeAlbumMetadata(request: request, outcome: outcome)
             case .artistArtwork:
-                let outcome = await MetadataEnrichmentWorker.fetchArtistArtwork(
-                    artist: artist,
-                    artistArtworkProviderCoordinator: self.artistArtworkProviderCoordinator
-                )
-                await self.completeArtistArtwork(request: request, outcome: outcome)
+                let entries = Self.artistEntriesByCanonical(await self.repository.fetchArtistEntries())
+                var results: [ImportArtistArtworkResult] = []
+                for target in Self.artistArtworkTargets(for: track, entriesByCanonical: entries) {
+                    guard !Task.isCancelled else { break }
+                    let outcome = await MetadataEnrichmentWorker.fetchArtistArtwork(
+                        artist: target.displayName,
+                        artistArtworkProviderCoordinator: self.artistArtworkProviderCoordinator
+                    )
+                    results.append(ImportArtistArtworkResult(name: target.displayName, outcome: outcome))
+                }
+                await self.completeArtistArtwork(request: request, results: results)
             case .albumArtwork:
                 let outcome = await MetadataEnrichmentWorker.fetchAlbumArtwork(
                     album: album,
@@ -1401,7 +1457,7 @@ final class ImportEnrichmentService {
 
     private func completeArtistMetadata(
         request: ImportEnrichmentPartRequest,
-        outcome: ImportArtistMetadataOutcome
+        results: [ImportArtistMetadataResult]
     ) async {
         guard !isClosed, !Task.isCancelled else {
             finish(request)
@@ -1412,28 +1468,37 @@ final class ImportEnrichmentService {
             return
         }
 
-        var shouldRequeue = false
-        switch outcome {
-        case .completed(let detail):
-            if await applyArtistMetadataDetail(detail, artist: state.artist) {
-                Log.info(
-                    "[ImportEnrichment] artistMetadata applied \(state.artist)",
+        var hasCompleted = false
+        var failureMessage: String?
+        for result in results {
+            switch result.outcome {
+            case .completed(let detail):
+                hasCompleted = true
+                if await applyArtistMetadataDetail(detail, artist: result.name) {
+                    Log.info(
+                        "[ImportEnrichment] artistMetadata applied \(result.name)",
+                        category: .import
+                    )
+                } else {
+                    Log.info(
+                        "[ImportEnrichment] artistMetadata skipped \(result.name) | no fields to fill",
+                        category: .import
+                    )
+                }
+            case .noResults:
+                Log.warning(
+                    "[ImportEnrichment] artistMetadata no-results \(result.name)",
                     category: .import
                 )
-            } else {
-                Log.info(
-                    "[ImportEnrichment] artistMetadata skipped \(state.artist) | no fields to fill",
-                    category: .import
-                )
+            case .failed(let message):
+                failureMessage = message
             }
+        }
+
+        var shouldRequeue = false
+        if results.isEmpty || hasCompleted {
             state.setState(.completed, for: .artistMetadata)
-        case .noResults:
-            state.setState(.noResults, for: .artistMetadata)
-            Log.warning(
-                "[ImportEnrichment] artistMetadata no-results \(state.artist)",
-                category: .import
-            )
-        case .failed(let message):
+        } else if let message = failureMessage {
             shouldRequeue = shouldRetry(part: .artistMetadata, state: state)
             if shouldRequeue {
                 state.setState(.pending, for: .artistMetadata)
@@ -1448,6 +1513,8 @@ final class ImportEnrichmentService {
                     category: .import
                 )
             }
+        } else {
+            state.setState(.noResults, for: .artistMetadata)
         }
 
         itemStates[request.trackID] = state
@@ -1511,7 +1578,7 @@ final class ImportEnrichmentService {
 
     private func completeArtistArtwork(
         request: ImportEnrichmentPartRequest,
-        outcome: ImportArtistArtworkOutcome
+        results: [ImportArtistArtworkResult]
     ) async {
         guard !isClosed, !Task.isCancelled else {
             finish(request)
@@ -1522,28 +1589,38 @@ final class ImportEnrichmentService {
             return
         }
 
-        var shouldRequeue = false
-        switch outcome {
-        case .completed(let data):
-            if await applyArtistArtworkData(data, artist: state.artist) {
-                Log.info(
-                    "[ImportEnrichment] artistArtwork applied \(state.artist)",
+        var hasCompleted = false
+        var failureMessage: String?
+        for result in results {
+            switch result.outcome {
+            case .completed(let data):
+                hasCompleted = true
+                if await applyArtistArtworkData(data, artist: result.name) {
+                    Log.info(
+                        "[ImportEnrichment] artistArtwork applied \(result.name)",
+                        category: .import
+                    )
+                } else {
+                    Log.info(
+                        "[ImportEnrichment] artistArtwork skipped \(result.name) | already present",
+                        category: .import
+                    )
+                }
+            case .noResults:
+                Log.warning(
+                    "[ImportEnrichment] artistArtwork no-results \(result.name)",
                     category: .import
                 )
-            } else {
-                Log.info(
-                    "[ImportEnrichment] artistArtwork skipped \(state.artist) | already present",
-                    category: .import
-                )
+            case .failed(let message):
+                failureMessage = message
             }
+        }
+
+        var shouldRequeue = false
+        if results.isEmpty || hasCompleted {
             state.setState(.completed, for: .artistArtwork)
-        case .noResults:
-            state.setState(.noResults, for: .artistArtwork)
-            Log.warning(
-                "[ImportEnrichment] artistArtwork no-results \(state.artist)",
-                category: .import
-            )
-        case .failed(let message):
+        } else if let message = failureMessage {
+            // Only transient failures retry; a miss for every name is final.
             shouldRequeue = shouldRetry(part: .artistArtwork, state: state)
             if shouldRequeue {
                 state.setState(.pending, for: .artistArtwork)
@@ -1558,6 +1635,8 @@ final class ImportEnrichmentService {
                     category: .import
                 )
             }
+        } else {
+            state.setState(.noResults, for: .artistArtwork)
         }
 
         itemStates[request.trackID] = state
@@ -2247,11 +2326,13 @@ final class ImportEnrichmentService {
                 ($0.trackID, Self.enrichmentWarnings(for: $0))
             })
             let failedTrackIDs = finishedStates.filter(\.hasTerminalFailure).map(\.trackID)
-            completionSummary = ImportEnrichmentCompletionSummary(
+            let summary = ImportEnrichmentCompletionSummary(
                 totalCount: finishedStates.count,
                 failedCount: failedTrackIDs.count,
                 failedTrackIDs: failedTrackIDs
             )
+            completionSummary = summary
+            scheduleCompletionSummaryDismiss(for: summary)
         }
         itemStates.removeAll()
         enrichmentRows = []
@@ -2270,6 +2351,22 @@ final class ImportEnrichmentService {
             flushPendingCount: 0
         )
         Log.info("[ImportEnrichment] idle session released", category: .import)
+    }
+
+    private func scheduleCompletionSummaryDismiss(for summary: ImportEnrichmentCompletionSummary) {
+        completionSummaryDismissTask?.cancel()
+        completionSummaryDismissTask = nil
+
+        // If any song failed, keep the notice persistent so the user can inspect failures.
+        guard summary.failedCount == 0 else { return }
+
+        completionSummaryDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled else { return }
+            if self?.completionSummary == summary {
+                self?.completionSummary = nil
+            }
+        }
     }
 
     private func diagnoseStalledQueue(context: String) {

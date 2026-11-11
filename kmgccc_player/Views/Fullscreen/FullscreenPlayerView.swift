@@ -99,6 +99,7 @@ struct FullscreenPlayerView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var configuredMotionPolicy
+    @AppStorage(AppSettings.motionArtworkEnabledDefaultsKey) private var motionArtworkEnabled = true
     @EnvironmentObject private var themeStore: ThemeStore
     @StateObject private var bkController = BKArtBackgroundController()
     @State private var skinSession = SkinSession()
@@ -118,6 +119,8 @@ struct FullscreenPlayerView: View {
     @State private var preparedArtworkTaskKey: String?
     @State private var embeddedPresentationComplete = false
     @State private var bottomControls = FullscreenBottomControlsCoordinator()
+    @State private var motionFullscreenCoordinator = MotionArtworkFullscreenCoordinator()
+    @State private var lastRightPanelStateBeforeVideoFullscreen: RightPanelDisplayState? = nil
     @State private var isDetailReaderPanelPresented = false
     @State private var detailReaderTrack: Track? = nil
     /// Cover Blur fullscreen background readability maps, written by the skin
@@ -379,6 +382,9 @@ struct FullscreenPlayerView: View {
             DebugUIHooks.record("fullscreen-lyrics host=\(hostContext.rawValue) visible=\(isShowingLyricsPanel)")
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleQueuePanel)) { _ in
+            // The video keeps the right panel out of the composition; its
+            // cycle would otherwise pass through lyrics while the clip plays.
+            guard !motionFullscreenCoordinator.isActive else { return }
             // Cycle through right panel states: lyrics -> queue -> hidden -> lyrics
             let nextState: RightPanelDisplayState
             switch rightPanelDisplayState {
@@ -403,6 +409,30 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: settings.fullscreenMiniPlayerAutoHideSeconds) { _, _ in
             resetFullscreenBottomControlsAutoHideState()
+        }
+        .onChange(of: motionFullscreenCoordinator.isActive) { _, isActive in
+            if isActive {
+                lastRightPanelStateBeforeVideoFullscreen = rightPanelDisplayState
+                if motionFullscreenCoordinator.phase == .active {
+                    hideLyricsForVideoFullscreen()
+                }
+                resetFullscreenBottomControlsAutoHideState()
+            } else {
+                restoreLyricsAfterVideoFullscreen()
+                resetFullscreenBottomControlsAutoHideState()
+            }
+        }
+        .onChange(of: motionFullscreenCoordinator.phase) { oldPhase, newPhase in
+            if newPhase == .active, oldPhase != .active {
+                hideLyricsForVideoFullscreen()
+            }
+            if newPhase == .exiting {
+                // The mini player is part of the exit affordance. Keep it and
+                // the artwork's control-visible position stable until the
+                // video layer is gone, even if its two-second timer elapsed.
+                cancelFullscreenBottomControlsAutoHide()
+                setFullscreenBottomControlsVisible(true)
+            }
         }
         .onChange(of: bkController.lyricsColorSampleRevision) { _, _ in
             guard lyricsCoordinator.pendingBackgroundCapture else { return }
@@ -554,6 +584,13 @@ struct FullscreenPlayerView: View {
         setLeftActionsExpanded(false, reason: "fullscreen-disappear")
         setVolumeExpanded(false, reason: "fullscreen-disappear")
         clearFullscreenLyricsTheme()
+        if motionFullscreenCoordinator.isActive {
+            motionFullscreenCoordinator.resetImmediately()
+            if lastRightPanelStateBeforeVideoFullscreen == .lyrics {
+                setRightPanelDisplayState(.lyrics)
+            }
+            lastRightPanelStateBeforeVideoFullscreen = nil
+        }
         skinSession.deactivate()
 
         // Embedded fullscreen shares the current track with the still-mounted
@@ -651,8 +688,53 @@ struct FullscreenPlayerView: View {
         }
     }
 
+    private var videoFullscreenAction: (() -> Void)? {
+        guard !motionFullscreenCoordinator.isActive,
+              motionFullscreenCoordinator.canEnter(
+                for: playbackCoordinator.stablePresentation.motionArtwork
+                    ?? playbackCoordinator.stablePresentation.tallMotionArtwork,
+                motionArtworkEnabled: motionArtworkEnabled,
+                motionPolicy: motionPolicy
+              ) else {
+            return nil
+        }
+        let resource = playbackCoordinator.stablePresentation.motionArtwork
+            ?? playbackCoordinator.stablePresentation.tallMotionArtwork
+        let poster = artworkSnapshot?.fullImage
+        let policy = motionPolicy
+        let tokens = motionTokens
+        let enabled = motionArtworkEnabled
+        return { [weak coordinator = motionFullscreenCoordinator] in
+            coordinator?.enter(
+                resource: resource,
+                fallbackPoster: poster,
+                motionArtworkEnabled: enabled,
+                motionPolicy: policy,
+                motionTokens: tokens
+            )
+        }
+    }
+
+    /// Lyrics leave only after the zoom has settled, so the artwork does not
+    /// reflow underneath a transition that is still measuring the cover.
+    private func hideLyricsForVideoFullscreen() {
+        guard motionFullscreenCoordinator.isActive,
+              lastRightPanelStateBeforeVideoFullscreen == .lyrics,
+              rightPanelDisplayState == .lyrics else { return }
+        setRightPanelDisplayState(.hidden)
+    }
+
+    private func restoreLyricsAfterVideoFullscreen() {
+        guard lastRightPanelStateBeforeVideoFullscreen != nil else { return }
+        if lastRightPanelStateBeforeVideoFullscreen == .lyrics {
+            setRightPanelDisplayState(.lyrics)
+        }
+        lastRightPanelStateBeforeVideoFullscreen = nil
+    }
+
     private func fullscreenContextMenu() -> some View {
         FullscreenSkinContextMenu(
+            onEnterVideoFullscreen: videoFullscreenAction,
             onShowDetails: {
                 showDetailReader(for: playbackCoordinator.presentation.localTrack)
             },
@@ -770,6 +852,30 @@ struct FullscreenPlayerView: View {
                     )
                     .id(skinIdentity)
                     .modifier(SkinSceneSwitchTransition())
+
+                    FullscreenMotionArtworkVideoOverlay(
+                        coordinator: motionFullscreenCoordinator,
+                        resource: playbackCoordinator.stablePresentation.motionArtwork ?? playbackCoordinator.stablePresentation.tallMotionArtwork,
+                        isPlaying: playbackCoordinator.stablePresentation.isPlaying,
+                        fallbackPoster: artworkSnapshot?.fullImage,
+                        viewportSize: proxy.size,
+                        motionPolicy: motionPolicy,
+                        motionTokens: motionTokens
+                    )
+
+                    // Scene skins draw their own mini player inside the scene,
+                    // beneath the video layer. While the video owns the screen,
+                    // the shared mini player must stay above it for the auto-hide
+                    // exit affordance and the rest of the transport controls.
+                    if motionFullscreenCoordinator.isActive {
+                        fullscreenBottomBarLayer(
+                            scale: scale,
+                            screenWidth: proxy.size.width,
+                            screenHeight: proxy.size.height
+                        )
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .id("\(skinIdentity)_videoControls")
+                    }
                 } else {
                     fullscreenBackgroundLayer(
                         selectedSkin: selectedSkin,
@@ -837,6 +943,16 @@ struct FullscreenPlayerView: View {
                             .onDisappear { FSDiagnostics.emit("skinScaled onDisappear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
                     }
 
+                    FullscreenMotionArtworkVideoOverlay(
+                        coordinator: motionFullscreenCoordinator,
+                        resource: playbackCoordinator.stablePresentation.motionArtwork ?? playbackCoordinator.stablePresentation.tallMotionArtwork,
+                        isPlaying: playbackCoordinator.stablePresentation.isPlaying,
+                        fallbackPoster: artworkSnapshot?.fullImage,
+                        viewportSize: proxy.size,
+                        motionPolicy: motionPolicy,
+                        motionTokens: motionTokens
+                    )
+
                     // Layer 3: Bottom bar at actual resolution - on top
                     fullscreenBottomBarLayer(
                         scale: scale,
@@ -885,6 +1001,8 @@ struct FullscreenPlayerView: View {
             }
         }
         .frame(width: proxy.size.width, height: proxy.size.height)
+        .coordinateSpace(.named(FullscreenVideoCoordinateSpace.name))
+        .environment(\.motionArtworkFullscreenCoordinator, motionFullscreenCoordinator)
         .motionAnimation(.navigation, value: isDetailReaderPanelPresented)
         .onAppear {
             currentFullscreenScale = scale
@@ -1032,7 +1150,10 @@ struct FullscreenPlayerView: View {
     private func fullscreenScaledContainer(selectedSkin: any NowPlayingSkin, scale: CGFloat) -> some View {
         FullscreenScaledArtworkContainer(
             movesArtworkWithControls: isCoverSkinWithMiniplayerMotion,
-            areControlsVisible: bottomControls.isVisible,
+            // Keep the artwork at the control-visible position for the whole
+            // video transition, including while the mini player auto-hides,
+            // so the cover handoff cannot chase a moving layout.
+            areControlsVisible: bottomControls.isVisible || motionFullscreenCoordinator.isActive,
             horizontalPadding: topContentHorizontalPadding,
             controlsBottomPadding: fullscreenControlsBottomPadding,
             controlButtonSize: fullscreenControlButtonSize
@@ -1537,9 +1658,16 @@ struct FullscreenPlayerView: View {
         scheduleFullscreenBottomControlsAutoHideIfNeeded()
     }
 
+    private var fullscreenMiniPlayerEffectiveAutoHideSeconds: Double {
+        if motionFullscreenCoordinator.isActive {
+            return 2.0
+        }
+        return settings.fullscreenMiniPlayerAutoHideSeconds
+    }
+
     private func scheduleFullscreenBottomControlsAutoHideIfNeeded() {
         bottomControls.scheduleAutoHide(
-            after: settings.fullscreenMiniPlayerAutoHideSeconds,
+            after: fullscreenMiniPlayerEffectiveAutoHideSeconds,
             shouldBlock: { shouldBlockFullscreenBottomControlsAutoHide },
             setVisible: { setFullscreenBottomControlsVisible($0) },
             setLeftActionsExpanded: { setLeftActionsExpanded($0, reason: $1) },
@@ -1634,11 +1762,15 @@ struct FullscreenPlayerView: View {
                 isVolumeControlEnabled: playbackCoordinator.stablePresentation.isVolumeControlEnabled,
                 usesAdaptiveVolumeForeground:
                     fullscreenSkinDescriptor.presentation.controlForeground == .artworkAdaptive,
-                showsPlaybackModeRetapTip: showPlaybackModeRetapTip
+                showsPlaybackModeRetapTip: showPlaybackModeRetapTip,
+                isMotionArtworkFullscreenActive: motionFullscreenCoordinator.isActive
             ),
             actions: FullscreenBottomBarActions(
                 exitFullscreen: { onExitFullscreen?() },
                 toggleLyrics: { handleLyricsButtonTap() },
+                exitMotionArtworkFullscreen: { [weak coordinator = motionFullscreenCoordinator] in
+                    coordinator?.exit(motionPolicy: motionPolicy, motionTokens: motionTokens)
+                },
                 setQuickAppearancePanelPresented: setQuickAppearancePanelPresented,
                 hotZoneHoverChanged: { updateFullscreenBottomControlsHoverGate(hotZone: $0) },
                 centerHoverChanged: { hovering in
@@ -2351,6 +2483,7 @@ struct FullscreenPlayerView: View {
             guard currentDisplayContext.trackID == trackID else {
                 return
             }
+            guard !motionFullscreenCoordinator.isActive else { return }
             guard rightPanelDisplayState == .hidden else {
                 return
             }
@@ -2370,6 +2503,7 @@ struct FullscreenPlayerView: View {
                 guard currentDisplayContext.trackID == trackID else {
                     return
                 }
+                guard !motionFullscreenCoordinator.isActive else { return }
                 guard rightPanelDisplayState == .hidden else {
                     return
                 }
@@ -2468,6 +2602,9 @@ struct FullscreenPlayerView: View {
     }
 
     private func handleLyricsButtonTap(isAutomatic: Bool = false) {
+        // The video owns the screen here. Automatic lyric hide/restore and any
+        // remaining shortcut must not remount the panel behind the clip.
+        guard !motionFullscreenCoordinator.isActive else { return }
         lyricsCoordinator.prepareForLyricsButtonTap(
             isAutomatic: isAutomatic,
             trackID: currentDisplayContext.trackID
@@ -2641,6 +2778,8 @@ struct FullscreenPlayerView: View {
 
     private func handleCurrentPlaybackModeRetap(_ currentMode: PlaybackOrderMode) {
         guard currentMode == currentPlaybackMode else { return }
+        // Its panel cycle reaches the lyrics column, which this mode keeps out.
+        guard !motionFullscreenCoordinator.isActive else { return }
 
         let nextState: RightPanelDisplayState
         switch rightPanelDisplayState {
@@ -2845,6 +2984,13 @@ struct FullscreenPlayerView: View {
 
     private func handlePresentationTrackIdentityChange(_ oldId: String?, _ newId: String?) {
         guard oldId != newId else { return }
+        if motionFullscreenCoordinator.isActive {
+            motionFullscreenCoordinator.resetImmediately()
+            if lastRightPanelStateBeforeVideoFullscreen == .lyrics {
+                setRightPanelDisplayState(.lyrics)
+            }
+            lastRightPanelStateBeforeVideoFullscreen = nil
+        }
         cancelPendingFullscreenLyricsThemeWork()
         lyricsCoordinator.coverBlurTheme = nil
         // The fullscreen art background samples its new surface after the

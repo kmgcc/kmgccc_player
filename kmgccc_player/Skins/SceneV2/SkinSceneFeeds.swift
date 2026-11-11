@@ -27,6 +27,7 @@ struct SkinSceneFeeds: View {
     @Environment(\.skinSceneIsActive) private var active
     @Environment(\.skinSceneLyricsVisible) private var lyricsVisible
     @Environment(\.skinScenePresentation) private var presentation
+    @Environment(\.motionArtworkFullscreenCoordinator) private var motionFullscreen
 
     var body: some View {
         let domains = values
@@ -166,10 +167,13 @@ struct SkinSceneFeeds: View {
                          "host.queueVisible": .boolean(ui.isWindowPlaybackQueueVisible),
                          "host.layout": SkinHostLayout.value(layout)]
         let fullscreen = viewport.surface == .fullscreen
+        let effectiveAutoHide = fullscreen
+            ? (motionFullscreen?.isActive == true ? 2.0 : settings.fullscreenMiniPlayerAutoHideSeconds)
+            : 0
         result[.prefs] = ["prefs.fullscreenDimming": .number(settings.fullscreenDimmingIntensity),
                           "prefs.artBackgroundEnabled": .boolean(fullscreen ? settings.fullscreenArtBackgroundEnabled : settings.nowPlayingArtBackgroundEnabled),
                           "prefs.artworkScale": .number(fullscreen ? settings.fullscreenArtworkScale : 1),
-                          "prefs.miniPlayerAutoHide": .number(fullscreen ? settings.fullscreenMiniPlayerAutoHideSeconds : 0),
+                          "prefs.miniPlayerAutoHide": .number(effectiveAutoHide),
                           "prefs.lyricsRenderQuality": .text(String(settings.amllLyricsRenderQualityScale)),
                           "prefs.miniPlayerGlass": .text(settings.fullscreenMiniPlayerGlassMaterial == .normal ? "normal" : "clear"),
                           "prefs.cassetteKmgLook": .boolean(UserDefaults.standard.bool(forKey: "skin.kmgcccCassette.showKmgLook"))]

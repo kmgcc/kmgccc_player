@@ -35,6 +35,10 @@ struct AllAlbumsView: View {
 
     @State private var deletionRequest: AlbumDeletionRequest?
     @State private var editingAlbum: AlbumEntry?
+    @State private var toolbarTopInset: CGFloat = 0
+    @State private var scrollPositionID: UUID?
+    @State private var isUserScrollActive = false
+    @State private var pendingUserPosition: UUID?
 
     var body: some View {
         // Resolve once per ThemeStore tick so AlbumListRow receives plain
@@ -123,6 +127,16 @@ struct AllAlbumsView: View {
             AlbumInfoEditSheet(entry: entry) {}
                 .presentationSizing(.page)
         }
+        .background(
+            PlaylistTopChromeInsetReader(topInset: $toolbarTopInset)
+                .allowsHitTesting(false)
+        )
+        .task {
+            guard let savedID = pageController.collectionScrollPosition(for: .allAlbums) else { return }
+            try? await Task.sleep(for: .milliseconds(40))
+            guard !Task.isCancelled else { return }
+            scrollPositionID = savedID
+        }
     }
 
     // MARK: List
@@ -133,62 +147,100 @@ struct AllAlbumsView: View {
         secondary: Color,
         tertiary: Color
     ) -> some View {
-        ScrollView(.vertical) {
-            ReorderableMultiselectRowsSection(
-                rows: albums,
-                isMultiselectMode: pageController.isMultiselectMode,
-                selectedIDs: pageController.selectedTrackIDs,
-                canReorder: pageController.canManuallyReorderCurrentCollection,
-                isSearchFiltering: isFiltering,
-                coordinateSpaceName: "albumCollectionReorderSpace",
-                rowCornerRadius: 12,
-                bottomSpacerHeight: 120,
-                badgeText: { "\($0)" },
-                rowHeight: { _ in 76 },
-                onClearSelection: {
-                    pageController.clearMultiselectState()
-                },
-                onBeginReorder: {
-                    pageController.beginManualTrackReorderInteraction()
-                },
-                onEndReorder: {
-                    pageController.endManualTrackReorderInteraction()
-                },
-                onCommitOrder: { orderedIDs in
-                    pageController.commitManualCollectionOrder(
-                        orderedItemIDs: orderedIDs,
-                        reason: "manual-album-reorder"
-                    )
-                },
-                rowContent: { album, _, _ in
-                    AlbumListRow(
-                        album: album,
-                        trackCount: trackCount(for: album),
-                        titleColor: primary,
-                        subtitleColor: secondary,
-                        metaColor: tertiary,
-                        onOpen: { handleRowTap(album) },
-                        onEdit: { editingAlbum = album },
-                        onDelete: { requestDelete(album) }
-                    )
-                    .libraryTrackDropTarget(.album(album.canonicalKey), cornerRadius: 12)
-                },
-                floatingContent: { album in
-                    AlbumListRow(
-                        album: album,
-                        trackCount: trackCount(for: album),
-                        titleColor: primary,
-                        subtitleColor: secondary,
-                        metaColor: tertiary,
-                        enableSecondaryInteractions: false,
-                        onOpen: {},
-                        onEdit: {},
-                        onDelete: {}
-                    )
-                }
+        GeometryReader { proxy in
+            ScrollView(.vertical) {
+                ReorderableMultiselectRowsSection(
+                    rows: albums,
+                    isMultiselectMode: pageController.isMultiselectMode,
+                    selectedIDs: pageController.selectedTrackIDs,
+                    canReorder: pageController.canManuallyReorderCurrentCollection,
+                    isSearchFiltering: isFiltering,
+                    coordinateSpaceName: "albumCollectionReorderSpace",
+                    rowCornerRadius: 12,
+                    bottomSpacerHeight: 120,
+                    badgeText: { "\($0)" },
+                    rowHeight: { _ in 76 },
+                    onClearSelection: {
+                        pageController.clearMultiselectState()
+                    },
+                    onBeginReorder: {
+                        pageController.beginManualTrackReorderInteraction()
+                    },
+                    onEndReorder: {
+                        pageController.endManualTrackReorderInteraction()
+                    },
+                    onCommitOrder: { orderedIDs in
+                        pageController.commitManualCollectionOrder(
+                            orderedItemIDs: orderedIDs,
+                            reason: "manual-album-reorder"
+                        )
+                    },
+                    rowContent: { album, _, _ in
+                        AlbumListRow(
+                            album: album,
+                            trackCount: trackCount(for: album),
+                            titleColor: primary,
+                            subtitleColor: secondary,
+                            metaColor: tertiary,
+                            onOpen: { handleRowTap(album) },
+                            onEdit: { editingAlbum = album },
+                            onDelete: { requestDelete(album) }
+                        )
+                        .libraryTrackDropTarget(.album(album.canonicalKey), cornerRadius: 12)
+                    },
+                    floatingContent: { album in
+                        AlbumListRow(
+                            album: album,
+                            trackCount: trackCount(for: album),
+                            titleColor: primary,
+                            subtitleColor: secondary,
+                            metaColor: tertiary,
+                            enableSecondaryInteractions: false,
+                            onOpen: {},
+                            onEdit: {},
+                            onDelete: {}
+                        )
+                    }
+                )
+                .padding(.horizontal, Constants.Layout.listHorizontalPadding)
+                .padding(.top, 16 + toolbarTopInset)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height + toolbarTopInset, alignment: .topLeading)
+            .modifier(
+                ScrollEdgeFadeTrackingMask(
+                    topFadeHeight: 32,
+                    bottomFadeHeight: 32,
+                    topChromeInset: toolbarTopInset
+                )
             )
-            .padding(.horizontal, Constants.Layout.listHorizontalPadding)
-            .padding(.top, 16)
+            .offset(y: -toolbarTopInset)
+            .scrollPosition(
+                id: Binding<UUID?>(
+                    get: {
+                        guard !isUserScrollActive else { return nil }
+                        return scrollPositionID
+                    },
+                    set: { newValue in
+                        if isUserScrollActive {
+                            pendingUserPosition = newValue
+                        }
+                    }
+                ),
+                anchor: .top
+            )
+            .onScrollPhaseChange { oldPhase, newPhase in
+                let wasUserActive = oldPhase == .tracking || oldPhase == .interacting || oldPhase == .decelerating
+                let isUserActive = newPhase == .tracking || newPhase == .interacting || newPhase == .decelerating
+                self.isUserScrollActive = isUserActive
+                if isUserActive {
+                    scrollPositionID = nil
+                }
+                if newPhase == .idle && wasUserActive {
+                    if let pending = pendingUserPosition {
+                        pageController.updateCollectionScrollPosition(pending, for: .allAlbums)
+                    }
+                }
+            }
         }
     }
 
@@ -251,6 +303,8 @@ struct AllAlbumsView: View {
     }
 
     private func open(_ album: AlbumEntry) {
+        let targetID = pendingUserPosition ?? album.id
+        pageController.updateCollectionScrollPosition(targetID, for: .allAlbums)
         libraryVM.selectedAlbumName = album.displayTitle
         uiState.pushSelectionInHomeContext(
             .album(album.canonicalKey),

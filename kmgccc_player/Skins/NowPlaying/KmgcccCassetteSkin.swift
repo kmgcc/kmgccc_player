@@ -526,6 +526,12 @@ private struct CassetteArtwork: View, Equatable {
         .overlay { if isolatedPart == nil || isolatedPart == "reels" { HolesOverlay(context: context, tint: tint) } }
         .overlay { if isolatedPart == nil || isolatedPart == "waveform" { WaveformCapsulesLayer(context: context).zIndex(999) } }
         .frame(width: size.width, height: size.height)
+        .motionArtworkFullscreenSource(
+            context: context,
+            cornerRadius: 16,
+            insetScale: 0.90,
+            handoffStyle: .maskedCrossfade
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .offset(x: horizontalOffset, y: centeredYOffset)
         .onAppear {

@@ -54,6 +54,16 @@ nonisolated struct LibraryPaths: Sendable, Equatable {
         transactionsRootURL.appendingPathComponent("Completed", isDirectory: true)
     }
 
+    /// Quarantined records moved aside by an explicit repair action. Created
+    /// only when a repair runs; never part of normal library scaffolding.
+    var recoveryRootURL: URL { directory("Recovery") }
+    var recoverySourcesRootURL: URL {
+        recoveryRootURL.appendingPathComponent("Sources", isDirectory: true)
+    }
+    var recoveryTransactionsRootURL: URL {
+        recoveryRootURL.appendingPathComponent("Transactions", isDirectory: true)
+    }
+
     var tracksRootURL: URL { directory("Tracks") }
     var sourcesRootURL: URL { directory("Sources") }
     var playlistsRootURL: URL { directory("Playlists") }

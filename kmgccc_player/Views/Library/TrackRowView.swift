@@ -328,6 +328,11 @@ struct TrackRowView<MenuContent: View>: View {
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
+                // Name the control explicitly. Left to the system, the menu
+                // button and its indicator both surface as "更多", which doubles
+                // the row's accessibility tree and makes VoiceOver announce the
+                // same action twice.
+                .accessibilityLabel(Text("更多操作"))
                 .frame(
                     width: Constants.Layout.TrackRow.trailingMenuHitSize,
                     height: Constants.Layout.TrackRow.trailingMenuHitSize
@@ -336,6 +341,7 @@ struct TrackRowView<MenuContent: View>: View {
                 trailingMenuGlyph
                     .opacity(0.72)
                     .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
         }
         .padding(.vertical, Constants.Layout.TrackRow.verticalPadding)

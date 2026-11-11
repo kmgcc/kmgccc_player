@@ -37,7 +37,10 @@ final class LibrarySessionController {
     private var destructiveTransactionGeneration: UInt64?
     private var recoveryContext: LibraryContext?
 
-    private(set) var state: State = .idle
+    private(set) var state: State = .idle {
+        didSet { if state != oldValue { onStateChange?(state) } }
+    }
+    var onStateChange: (@MainActor (State) -> Void)?
     private(set) var activeSession: (any LibrarySessionLifecycle)?
 
     var activeLibraryContext: LibraryContext? { activeSession?.context }

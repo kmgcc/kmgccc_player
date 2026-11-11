@@ -94,7 +94,7 @@ final class CoverSearchCoordinator {
                         do {
                             return try await withCoverLookupTimeout(CoverLookupConfiguration.appleMusicTimeout) {
                                 try await AutomaticCoverLookup.appleCandidates(provider: provider, title: cleanTitle,
-                                    artist: artist, album: album, duration: duration)
+                                    artist: searchArtist, album: searchAlbum, duration: duration)
                             }
                         } catch {
                             Log.info("[CoverSearch] event=failed provider=\(provider) errorType=\(String(describing: type(of: error)))", category: .playback)

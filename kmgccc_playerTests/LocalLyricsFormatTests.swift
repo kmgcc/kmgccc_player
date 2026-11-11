@@ -239,6 +239,22 @@ final class LocalLyricsFormatTests: XCTestCase {
         XCTAssertTrue(fromYRC?.contains("From YRC") == true)
     }
 
+    func testNormalizationStripsLeadingWhitespaceFromWords() {
+        let rawWords = [
+            ParsedLyrics.Word(text: "  Hello", startMs: 1000, endMs: 1500),
+            ParsedLyrics.Word(text: " World", startMs: 1500, endMs: 2000),
+            ParsedLyrics.Word(text: " End  ", startMs: 2000, endMs: 2500)
+        ]
+        let line = ParsedLyrics.Line(words: rawWords, startMs: 1000, endMs: 2500)
+        let normalized = ParsedLyrics(lines: [line]).normalized()
+        guard let normalizedLine = normalized.lines.first else {
+            return XCTFail("Expected normalized line")
+        }
+        XCTAssertEqual(normalizedLine.words[0].text, "Hello ")
+        XCTAssertEqual(normalizedLine.words[1].text, "World")
+        XCTAssertEqual(normalizedLine.words[2].text, "End")
+    }
+
     // MARK: - Helpers
 
     private func assertConversionFails(

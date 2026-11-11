@@ -137,10 +137,19 @@ nonisolated struct TrackIdentityResolver: Sendable {
     // MARK: Fingerprint predicates
 
     /// Strict "same file state" equality shared by the NCM conversion registry
-    /// and the generated-output marker store. Stable identities must match
-    /// exactly including size and modification time — a touched-in-place NCM
-    /// must not silently reuse an old conversion product. Unstable identities
-    /// fall back to size + modification time.
+    /// and the generated-output marker store. Stable identities must match by
+    /// size and modification time — a touched-in-place NCM must not silently
+    /// reuse an old conversion product. Unstable identities fall back to size
+    /// + modification time.
+    ///
+    /// Modification time gets a microsecond of slack: Foundation reports it as
+    /// a `Double` of seconds, and the epoch conversions used by resource
+    /// values, file attributes and JSON round-trips can land one ULP (about
+    /// 2.4e-7 s at current dates) apart for the same untouched file. That was
+    /// enough for the NCM registry to miss its own committed record and
+    /// convert the same source twice. A real edit moves the timestamp by
+    /// milliseconds or more, so the guard against reusing a stale product
+    /// still holds.
     nonisolated static func sameExactFingerprint(
         _ lhs: ReferencedFileFingerprint,
         _ rhs: ReferencedFileFingerprint
@@ -151,12 +160,23 @@ nonisolated struct TrackIdentityResolver: Sendable {
         case let (.some(left), .some(right)):
             return left == right
                 && lhs.fileSize == rhs.fileSize
-                && lhs.modifiedAt == rhs.modifiedAt
+                && sameModificationTime(lhs.modifiedAt, rhs.modifiedAt)
         case (.some, .none), (.none, .some):
             return false
         case (.none, .none):
-            return lhs.fileSize == rhs.fileSize && lhs.modifiedAt == rhs.modifiedAt
+            return lhs.fileSize == rhs.fileSize
+                && sameModificationTime(lhs.modifiedAt, rhs.modifiedAt)
         }
+    }
+
+    /// One microsecond. See `sameExactFingerprint` for why this is not zero.
+    nonisolated private static let modificationTimeTolerance: TimeInterval = 1e-6
+
+    nonisolated private static func sameModificationTime(
+        _ lhs: TimeInterval,
+        _ rhs: TimeInterval
+    ) -> Bool {
+        lhs == rhs || abs(lhs - rhs) <= modificationTimeTolerance
     }
 
     /// Physical-identity equality: stable volume+resource identity when both

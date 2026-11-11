@@ -23,6 +23,7 @@ struct FullscreenBottomBarPresentation {
     let isVolumeControlEnabled: Bool
     let usesAdaptiveVolumeForeground: Bool
     let showsPlaybackModeRetapTip: Bool
+    var isMotionArtworkFullscreenActive: Bool = false
 
     var quickPanelForegroundProfile: FullscreenOverlayForegroundProfile {
         miniPlayerForegroundProfile.quickPanelForegroundProfile
@@ -32,6 +33,7 @@ struct FullscreenBottomBarPresentation {
 struct FullscreenBottomBarActions {
     let exitFullscreen: () -> Void
     let toggleLyrics: () -> Void
+    var exitMotionArtworkFullscreen: () -> Void = {}
     let setQuickAppearancePanelPresented: (Bool) -> Void
     let hotZoneHoverChanged: (Bool) -> Void
     let centerHoverChanged: (Bool) -> Void

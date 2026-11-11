@@ -1,9 +1,25 @@
 import Foundation
 
-nonisolated enum MusicEnrichmentHelperError: Error {
+nonisolated enum MusicEnrichmentHelperError: Error, LocalizedError {
     case unavailable, failed(String), invalidResponse
     /// Network trouble a later attempt may get past.
     case network(String)
+
+    /// The completion queue shows this text directly. Without a description it
+    /// reported "MusicEnrichmentHelperError 错误 1", which says nothing about
+    /// what happened or whether another attempt is coming.
+    var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            return "补全组件暂时不可用，稍后会自动重试。"
+        case .invalidResponse:
+            return "补全服务返回的数据无法解析。"
+        case .failed(let message):
+            return message.isEmpty ? "补全服务返回了错误。" : message
+        case .network(let message):
+            return message.isEmpty ? "网络请求失败，稍后会自动重试。" : "网络请求失败：\(message)"
+        }
+    }
 
     /// Whether the background pass should try again later rather than give up.
     static func isRetryable(_ error: Error) -> Bool {

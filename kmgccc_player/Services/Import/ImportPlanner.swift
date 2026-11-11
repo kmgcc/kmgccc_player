@@ -299,7 +299,23 @@ final class ImportPlanner {
                     }
                     let existingLocator = referencedReuseLocators[reuseTarget.id]
                         ?? reuseTarget.mediaLocator.referencedFile
-                    if let existingLocator {
+                    // A byte-identical copy is an additional location, not a
+                    // new home: keep the Track's recorded path first while it
+                    // is still there, so deleting the copy cannot strand a
+                    // Track the user never moved. A missing Track still moves
+                    // onto the file that was actually found.
+                    let recordingIsPresent = existingLocator.map {
+                        !$0.lastKnownPath.isEmpty
+                            && FileManager.default.fileExists(atPath: $0.lastKnownPath)
+                    } ?? false
+                    if reuseTarget.availability == .available,
+                       recordingIsPresent,
+                       var base = existingLocator {
+                        for location in locator.locations {
+                            base.mergeLocation(location)
+                        }
+                        locator = base
+                    } else if let existingLocator {
                         for location in existingLocator.locations {
                             locator.mergeLocation(location)
                         }
@@ -1213,19 +1229,28 @@ final class ImportPlanner {
                 )
         }
 
-        // §10.1 projection: the extracted tag values form the 文件标签
-            // layer; filename fallback stays tier 4. With no other layers
-            // present this reproduces today's preview byte-for-byte. The
-            // fallback mirrors extractMetadata's own extension-stripped
-            // default so the no-tag path stays identical.
+            // §10.1 projection: the extracted tag values form the 文件标签
+            // layer; filename fallback stays tier 4. A file that carries no
+            // identity tags at all names its song in `歌手 - 歌名` form, so
+            // both fields come from there. Searching, artist pages and the
+            // library otherwise disagree: the title keeps the artist inside
+            // it while every lookup runs against 未知艺人.
             embeddedSnapshot = Self.embeddedSnapshot(from: raw.tagFields, durationSeconds: raw.duration)
+            let fileName = file.fileURL.deletingPathExtension().lastPathComponent
+            let hasEmbeddedIdentity = embeddedSnapshot?.title != nil
+                || embeddedSnapshot?.artistDisplay != nil
+            let fileNameHints = hasEmbeddedIdentity
+                ? ImportMetadataExtractor.FileNameMetadataHints.none
+                : ImportMetadataExtractor.FileNameMetadataHints.hints(from: fileName)
             let projected = EffectiveMetadata.project(
                 embedded: embeddedSnapshot,
-                fileNameFallback: file.fileURL.deletingPathExtension().lastPathComponent
+                fileNameFallback: fileNameHints.title ?? fileName
             )
             preview = ImportPreview(
                 title: projected.title,
-                artist: projected.artistDisplay ?? NSLocalizedString("library.unknown_artist", comment: ""),
+                artist: projected.artistDisplay
+                    ?? fileNameHints.artist
+                    ?? NSLocalizedString("library.unknown_artist", comment: ""),
                 album: projected.album ?? "",
                 albumArtist: raw.albumArtist,
                 duration: raw.duration,

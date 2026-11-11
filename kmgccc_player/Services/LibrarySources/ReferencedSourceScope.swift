@@ -221,19 +221,35 @@ final class ReferencedSourceScope {
             return issues
         }
 
-        let didStart = bookmarkResolver.startAccessing(resolved.url)
-        guard didStart || (!requiresSecurityScope && FileManager.default.isReadableFile(atPath: resolved.url.path)) else {
-            issues.append(contentsOf: await persistFailureStatus(
-                sourceID: descriptor.id,
-                status: .permissionDenied,
-                issue: .permissionDenied(descriptor.id),
-                store: store
-            ))
-            return issues
+        // A security scope is only required inside a sandbox. An unsandboxed
+        // build can read the root directly, and starting a scope anyway keeps
+        // the root's path chain of file descriptors open for every referenced
+        // source until the session ends — which exhausts the process budget
+        // for a library with dozens of referenced files.
+        let lease: SecurityScopedResourceLease
+        if requiresSecurityScope {
+            guard bookmarkResolver.startAccessing(resolved.url) else {
+                issues.append(contentsOf: await persistFailureStatus(
+                    sourceID: descriptor.id,
+                    status: .permissionDenied,
+                    issue: .permissionDenied(descriptor.id),
+                    store: store
+                ))
+                return issues
+            }
+            lease = SecurityScopedResourceLease { bookmarkResolver.stopAccessing(resolved.url) }
+        } else {
+            guard FileManager.default.isReadableFile(atPath: resolved.url.path) else {
+                issues.append(contentsOf: await persistFailureStatus(
+                    sourceID: descriptor.id,
+                    status: .permissionDenied,
+                    issue: .permissionDenied(descriptor.id),
+                    store: store
+                ))
+                return issues
+            }
+            lease = .none
         }
-        let lease = didStart
-            ? SecurityScopedResourceLease { bookmarkResolver.stopAccessing(resolved.url) }
-            : .none
 
         if resolved.isStale {
             do {

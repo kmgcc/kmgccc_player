@@ -45,6 +45,8 @@ struct AppKitMainSidebarPaneRoot: View {
                 .tint(ThemeStore.shared.accentColor)
                 .accentColor(ThemeStore.shared.accentColor)
                 .preferredColorScheme(AppSettings.shared.colorScheme)
+        } else if appSession.isLibraryTransitioning {
+            LibraryLoadingIndicator()
         } else if appSession.hasCompletedInitialSetup {
             // Setup finished without an active library: keep the sidebar and
             // content pane in the same explicit recovery state instead of
@@ -57,6 +59,13 @@ struct AppKitMainSidebarPaneRoot: View {
     }
 }
 
+private struct LibraryLoadingIndicator: View {
+    var body: some View {
+        ProgressView("正在加载音乐资料库")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 /// Recovery state shown only while the lifecycle owner is repairing the active
 /// library. A normal empty library is rendered by HomeView and is never
 /// represented as "没有音乐资料库".
@@ -66,39 +75,66 @@ private struct NoLibraryContentPane: View {
     var body: some View {
         ZStack {
             ThemedBaseBackgroundColorView()
-            if appSession.hasCompletedInitialSetup {
-                emptyState
+            if appSession.isLibraryTransitioning {
+                LibraryLoadingIndicator()
+            } else if appSession.hasCompletedInitialSetup {
+                recoveryState
             } else {
                 ProgressView("正在打开资料库…")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .preferredColorScheme(AppSettings.shared.colorScheme)
         .task { appSession.autoPresentLibrarySetupIfNeeded() }
     }
 
-    private var emptyState: some View {
-        ContentUnavailableView {
-            Label("资料库暂时无法打开", systemImage: "externaldrive.badge.xmark")
-        } description: {
-            Text("重试，或打开一个已有资料库。")
-        } actions: {
-            HStack(spacing: 12) {
-                if appSession.isRetryingLibraryStartup {
+    /// Laid out explicitly rather than with `ContentUnavailableView`: the
+    /// failure reason is the only explanation the user gets for a library that
+    /// could not open, so it has to render in every appearance and system
+    /// version.
+    private var recoveryState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "externaldrive.badge.xmark")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(.secondary)
+
+            Text("资料库暂时无法打开")
+                .font(.title3.weight(.semibold))
+
+            Text(appSession.libraryStartupFailureMessage ?? "重试，或打开一个已有资料库。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
+
+            if appSession.isRetryingLibraryStartup {
+                HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
                     Text("正在重试…")
                         .foregroundStyle(.secondary)
-                } else {
+                }
+                .padding(.top, 10)
+            } else {
+                HStack(spacing: 10) {
                     Button("重试") {
                         Task { await appSession.retryLibraryStartup() }
                     }
                     .buttonStyle(.borderedProminent)
+                    .buttonBorderShape(.capsule)
+
+                    Button("检查资料库") {
+                        appSession.presentLibraryRepair()
+                    }
+                    .audioDSPCapsuleButtonStyle()
 
                     Button("打开资料库…") { openLibraryPanel() }
-                        .buttonStyle(.bordered)
+                        .audioDSPCapsuleButtonStyle()
                 }
+                .padding(.top, 10)
             }
         }
+        .padding(32)
     }
 
     private func openLibraryPanel() {
@@ -126,8 +162,8 @@ private struct NoLibraryContentPane: View {
 }
 
 /// Compact companion for the sidebar when the exceptional startup recovery
-/// surface is active. The content pane owns the full open-library action; the
-/// sidebar only needs to make the state legible and offer the safe retry.
+/// surface is active. The content pane owns the recovery actions; the sidebar
+/// only states the condition and points at them.
 private struct LibraryStartupRecoverySidebarPane: View {
     @ObservedObject var appSession: AppSessionHost
 
@@ -140,17 +176,19 @@ private struct LibraryStartupRecoverySidebarPane: View {
                 .font(.callout.weight(.medium))
                 .multilineTextAlignment(.center)
             if appSession.isRetryingLibraryStartup {
-                ProgressView()
-                    .controlSize(.small)
+                Text("正在重试…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else {
-                Button("重试") {
-                    Task { await appSession.retryLibraryStartup() }
-                }
-                .buttonStyle(.bordered)
+                Text("在右侧重试，或检查资料库。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .preferredColorScheme(AppSettings.shared.colorScheme)
     }
 }
 
@@ -168,27 +206,32 @@ struct AppKitMainContentPaneRoot: View {
 
     var body: some View {
         let uiState = appSession.uiState
-        if let libraryVM = appSession.libraryVM,
-           let playerVM = appSession.playerVM,
-           let playbackCoordinator = appSession.playbackCoordinator,
-           let lyricsVM = appSession.lyricsVM,
-           let ledMeterProvider = appSession.ledMeterProvider,
-           let importEnrichmentService = appSession.importEnrichmentService,
-           let cacheServices = appSession.cacheServices,
-           let skinManager = appSession.skinManager {
-            contentView(
-                uiState: uiState,
-                libraryVM: libraryVM,
-                playerVM: playerVM,
-                playbackCoordinator: playbackCoordinator,
-                lyricsVM: lyricsVM,
-                ledMeterProvider: ledMeterProvider,
-                importEnrichmentService: importEnrichmentService,
-                cacheServices: cacheServices,
-                skinManager: skinManager
-            )
-        } else {
-            NoLibraryContentPane(appSession: appSession)
+        Group {
+            if let libraryVM = appSession.libraryVM,
+               let playerVM = appSession.playerVM,
+               let playbackCoordinator = appSession.playbackCoordinator,
+               let lyricsVM = appSession.lyricsVM,
+               let ledMeterProvider = appSession.ledMeterProvider,
+               let importEnrichmentService = appSession.importEnrichmentService,
+               let cacheServices = appSession.cacheServices,
+               let skinManager = appSession.skinManager {
+                contentView(
+                    uiState: uiState,
+                    libraryVM: libraryVM,
+                    playerVM: playerVM,
+                    playbackCoordinator: playbackCoordinator,
+                    lyricsVM: lyricsVM,
+                    ledMeterProvider: ledMeterProvider,
+                    importEnrichmentService: importEnrichmentService,
+                    cacheServices: cacheServices,
+                    skinManager: skinManager
+                )
+            } else {
+                NoLibraryContentPane(appSession: appSession)
+            }
+        }
+        .sheet(isPresented: $appSession.isLibraryRepairPresented) {
+            LibraryRepairSheet(appSession: appSession)
         }
     }
 

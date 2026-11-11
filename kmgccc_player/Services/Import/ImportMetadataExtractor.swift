@@ -298,6 +298,58 @@ nonisolated enum ImportMetadataExtractor {
         return year
     }
 
+    /// Song identity read from a file name, for files that carry no tags at
+    /// all. `福梦 - 背叛.mp3` names 福梦 as the artist and 背叛 as the title.
+    /// Callers apply these hints only when the embedded tags are empty: a file
+    /// name is weaker evidence than a tag and must never override one.
+    nonisolated struct FileNameMetadataHints: Equatable, Sendable {
+        let title: String?
+        let artist: String?
+
+        static let none = FileNameMetadataHints(title: nil, artist: nil)
+
+        /// Separators that read as "artist - title" rather than as part of a
+        /// title. En and em dashes are common in exported file names.
+        private static let separators = [" - ", " – ", " — "]
+
+        /// `fileName` is the extension-stripped name.
+        static func hints(from fileName: String) -> FileNameMetadataHints {
+            let name = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return .none }
+
+            for separator in separators {
+                let parts = name.components(separatedBy: separator)
+                guard parts.count >= 2 else { continue }
+                // The artist side stops at the first separator so a title that
+                // contains its own dash keeps the remainder intact.
+                let artist = parts[0].trimmingCharacters(in: .whitespaces)
+                let title = parts.dropFirst()
+                    .joined(separator: separator)
+                    .trimmingCharacters(in: .whitespaces)
+                guard readsAsArtist(artist), readsAsTitle(title) else { continue }
+                return FileNameMetadataHints(title: title, artist: artist)
+            }
+            return .none
+        }
+
+        /// Track numbers (`01`, `01.`, `1)`), bare years and empty strings
+        /// precede real names, so they are not artist names.
+        private static func readsAsArtist(_ value: String) -> Bool {
+            guard !value.isEmpty, value.count <= 80 else { return false }
+            let digitsAndPunctuation = value.unicodeScalars.allSatisfy {
+                CharacterSet.decimalDigits.contains($0)
+                    || CharacterSet.punctuationCharacters.contains($0)
+                    || CharacterSet.whitespaces.contains($0)
+            }
+            return !digitsAndPunctuation
+        }
+
+        private static func readsAsTitle(_ value: String) -> Bool {
+            guard !value.isEmpty, value.count <= 200 else { return false }
+            return value.unicodeScalars.contains { CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0) }
+        }
+    }
+
     nonisolated private static func normalizedArtworkData(in items: [AVMetadataItem]) async -> Data? {
         for item in items {
             guard let key = item.commonKey?.rawValue, key == "artwork" else { continue }

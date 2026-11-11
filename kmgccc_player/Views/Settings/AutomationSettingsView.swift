@@ -15,8 +15,7 @@ struct AutomationSettingsView: View {
     @State private var didCopyCLICommand = false
     @State private var didCopySkillPath = false
     @State private var didCopySkillPrompt = false
-    @State private var skillTargets: [AutomationSkillInstaller.Target] = []
-    @State private var skillStatuses: [String: AutomationSkillInstaller.Status] = [:]
+    @State private var isSkillAdvancedExpanded = false
 
     private struct MCPServerConfiguration: Encodable {
         let command: String
@@ -54,48 +53,22 @@ struct AutomationSettingsView: View {
 
                     Text("配置可直接粘贴到 agent 工具的配置文件。")
                         .settingsDescriptionStyle()
-
-                    Divider()
-
-                    commandBlock(
-                        title: "命令行",
-                        command: "player-automation cli --help",
-                        buttonTitle: didCopyCLICommand ? "已复制" : "复制命令",
-                        buttonSystemImage: didCopyCLICommand ? "checkmark" : "doc.on.doc",
-                        action: copyCLICommand
-                    )
                 }
             }
             .settingsSearchAnchor("automation.mcp")
 
             SettingsSection("Agent 技能") {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("安装到本机 Agent 的技能目录，按需加载。")
-                        .settingsDescriptionStyle()
-
-                    if skillTargets.isEmpty {
-                        Text("未检测到 Agent 技能目录。")
-                            .settingsDescriptionStyle()
-                    } else {
-                        ForEach(skillTargets) { target in
-                            skillRow(target)
-                        }
-                    }
-
-                    Divider()
-
-                    commandBlock(
-                        title: "技能目录",
-                        command: AutomationSkillInstaller.exportDirectory().path,
-                        buttonTitle: didCopySkillPath ? "已复制" : "复制路径",
-                        buttonSystemImage: didCopySkillPath ? "checkmark" : "doc.on.doc",
-                        action: copySkillPath
+                    Text(
+                        """
+                        复制下面的安装指令，粘贴给你常用的 Agent 工具，例如 Claude、Codex、WorkBuddy。它会读取技能目录并完成安装。
+                        命令走本机自动化接口，播放器没运行时第一条命令会自动启动它。
+                        """
                     )
+                    .settingsDescriptionStyle()
+                    .fixedSize(horizontal: false, vertical: true)
 
                     HStack(spacing: 10) {
-                        Text("其他 Agent 工具可读取该目录自行安装。")
-                            .settingsDescriptionStyle()
-
                         Spacer(minLength: 12)
 
                         Button {
@@ -108,10 +81,31 @@ struct AutomationSettingsView: View {
                         }
                         .buttonStyle(AppPanelButtonStyle())
                     }
+
+                    DisclosureGroup("高级", isExpanded: $isSkillAdvancedExpanded) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            commandBlock(
+                                title: "技能目录",
+                                command: AutomationSkillInstaller.exportDirectory().path,
+                                buttonTitle: didCopySkillPath ? "已复制" : "复制路径",
+                                buttonSystemImage: didCopySkillPath ? "checkmark" : "doc.on.doc",
+                                action: copySkillPath
+                            )
+
+                            commandBlock(
+                                title: "命令行",
+                                command: "player-automation cli --help",
+                                buttonTitle: didCopyCLICommand ? "已复制" : "复制命令",
+                                buttonSystemImage: didCopyCLICommand ? "checkmark" : "doc.on.doc",
+                                action: copyCLICommand
+                            )
+                        }
+                        .padding(.top, 8)
+                    }
                 }
             }
             .settingsSearchAnchor("automation.skill")
-            .task { refreshAgentSkills() }
+            .task { syncAgentSkillExport() }
 
             TrustedAudioRootSettingsSection()
                 .settingsSearchAnchor("automation.trusted")
@@ -259,55 +253,9 @@ struct AutomationSettingsView: View {
         NSPasteboard.general.setString(value, forType: .string)
     }
 
-    private func skillRow(_ target: AutomationSkillInstaller.Target) -> some View {
-        let status = skillStatuses[target.id] ?? .notInstalled
-        return HStack(spacing: 10) {
-            Text(target.displayName)
-                .settingsRowLabelStyle()
-            Spacer(minLength: 12)
-            Text(skillStatusTitle(status))
-                .settingsDescriptionStyle()
-            if status != .current {
-                Button(status == .notInstalled ? "安装" : "更新") {
-                    installSkill(target)
-                }
-                .buttonStyle(AppPanelButtonStyle())
-            }
-        }
-    }
-
-    private func skillStatusTitle(_ status: AutomationSkillInstaller.Status) -> String {
-        switch status {
-        case .notInstalled: return "未安装"
-        case .current: return "已安装"
-        case .updateAvailable: return "可更新"
-        case .modified: return "已修改"
-        }
-    }
-
-    private func refreshAgentSkills() {
-        if let executable = AutomationSkillInstaller.automationExecutableURL {
-            try? AutomationSkillInstaller.syncExport(executableURL: executable)
-        }
-        let targets = AutomationSkillInstaller.availableTargets()
-        skillTargets = targets
-        var statuses: [String: AutomationSkillInstaller.Status] = [:]
-        for target in targets {
-            statuses[target.id] = AutomationSkillInstaller.status(for: target)
-        }
-        skillStatuses = statuses
-    }
-
-    private func installSkill(_ target: AutomationSkillInstaller.Target) {
-        guard let executable = AutomationSkillInstaller.automationExecutableURL,
-              let status = try? AutomationSkillInstaller.install(
-                  target,
-                  executableURL: executable
-              ) else {
-            refreshAgentSkills()
-            return
-        }
-        skillStatuses[target.id] = status
+    private func syncAgentSkillExport() {
+        guard let executable = AutomationSkillInstaller.automationExecutableURL else { return }
+        try? AutomationSkillInstaller.syncExport(executableURL: executable)
     }
 
     private func copySkillPath() {

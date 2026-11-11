@@ -281,7 +281,9 @@ final class ImportCommitter {
         _ importedTracks: [Track],
         progressController: BatchImportProgressDialogController,
         session: ImportSession,
-        cancellationToken: ImportCancellationToken
+        cancellationToken: ImportCancellationToken,
+        didCommitAudio: @MainActor () async throws -> Void = {},
+        didCommitTracks: @MainActor ([UUID]) async -> Void = { _ in }
     ) async -> [Track]? {
         progressController.update(
             stage: .savingLibrary,
@@ -301,9 +303,12 @@ final class ImportCommitter {
                 session: session,
                 cancellationToken: cancellationToken
             )
+            try await didCommitAudio()
         } catch is CancellationError {
+            session.retainTrackFolders(trackIDs: importedTracks.map(\.id))
             return nil
         } catch {
+            session.retainTrackFolders(trackIDs: importedTracks.map(\.id))
             Log.error(
                 "[Import] failed to commit staged audio files: \(error.localizedDescription)",
                 category: .import
@@ -312,6 +317,7 @@ final class ImportCommitter {
         }
 
         guard !(await isImportCancellationRequested(progressController, cancellationToken)) else {
+            session.retainTrackFolders(trackIDs: importedTracks.map(\.id))
             return nil
         }
 
@@ -342,8 +348,11 @@ final class ImportCommitter {
         }
         let persistedIDs = Set(commitResult.persistedTrackIDs)
         let persistedTracks = importedTracks.filter { persistedIDs.contains($0.id) }
+        let unpersisted = importedTracks.filter { !persistedIDs.contains($0.id) }
+        session.retainTrackFolders(trackIDs: unpersisted.map(\.id))
         guard !persistedTracks.isEmpty else { return nil }
         session.markCommitted(trackIDs: persistedTracks.map(\.id))
+        await didCommitTracks(persistedTracks.map(\.id))
         progressController.update(
             stage: .savingLibrary,
             progress: FileImportService.progress(for: .savingLibrary, completed: 1, total: 2),
@@ -386,11 +395,32 @@ final class ImportCommitter {
         let files = stagedFiles.map {
             ImportStagedAssetFile(stagedURL: $0.stagedAudioURL, libraryRelativePath: $0.libraryRelativePath)
         } + session.stagedAssetFiles(for: trackIDs)
+        let sessionID = session.id
 
         let capturedPaths = paths
         try await Task.detached(priority: .userInitiated) { @Sendable in
             let fileManager = FileManager.default
             try capturedPaths.createRequiredDirectories(fileManager: fileManager)
+
+            // Claim only folders this session creates. A folder that already
+            // exists belongs to the user or another writer and must never be
+            // deleted later as import residue.
+            for staged in stagedFiles {
+                try await cancellationToken.checkCancellation()
+                let folder = capturedPaths.trackFolderURL(for: staged.trackID)
+                var isDirectory: ObjCBool = false
+                if fileManager.fileExists(atPath: folder.path, isDirectory: &isDirectory) {
+                    guard isDirectory.boolValue else {
+                        throw CocoaError(.fileWriteFileExists)
+                    }
+                    continue
+                }
+                try fileManager.createDirectory(at: folder, withIntermediateDirectories: false)
+                try ImportTrackFolderMarker(
+                    trackID: staged.trackID,
+                    sessionID: sessionID
+                ).write(to: folder, fileManager: fileManager)
+            }
 
             for file in files {
                 try await cancellationToken.checkCancellation()
@@ -399,22 +429,20 @@ final class ImportCommitter {
                 ) else {
                     throw CocoaError(.fileWriteInvalidFileName)
                 }
-                let destinationFolder = destinationURL.deletingLastPathComponent()
-                try fileManager.createDirectory(
-                    at: destinationFolder,
-                    withIntermediateDirectories: true
-                )
-                if fileManager.fileExists(atPath: destinationURL.path) {
-                    try fileManager.removeItem(at: destinationURL)
-                }
-                if fileManager.fileExists(atPath: destinationFolder.path),
-                   !fileManager.fileExists(atPath: file.stagedURL.path) {
+                guard fileManager.fileExists(atPath: file.stagedURL.path) else {
                     throw NSError(
                         domain: "FileImportService.ImportSession",
                         code: 2,
                         userInfo: [NSLocalizedDescriptionKey: "Staged audio file is missing"]
                     )
                 }
+                let destinationFolder = destinationURL.deletingLastPathComponent()
+                try fileManager.createDirectory(
+                    at: destinationFolder,
+                    withIntermediateDirectories: true
+                )
+                // moveItem refuses an existing destination. Never remove a
+                // file that may have appeared since staging began.
                 try fileManager.moveItem(at: file.stagedURL, to: destinationURL)
             }
         }.value
@@ -452,7 +480,10 @@ final class ImportCommitter {
             reason: "importCancelled"
         )
 
-        let cleanupReport = await cleanupFailedImportResidue(reason: "importCancelled")
+        let cleanupReport = await cleanupFailedImportResidue(
+            reason: "importCancelled",
+            protecting: session.retainedTrackFolderIDs
+        )
         let retainedCount = 0
         let cleanedCount = cleanupReport.deletedCount
         let incompleteCount = createdTrackIDs.count
@@ -474,7 +505,10 @@ final class ImportCommitter {
     }
 
     @discardableResult
-    func cleanupFailedImportResidue(reason: String) async -> TrackDirectoryCleanupReport {
+    func cleanupFailedImportResidue(
+        reason: String,
+        protecting retainedTrackIDs: Set<UUID> = []
+    ) async -> TrackDirectoryCleanupReport {
         let tracks = await repository.fetchTracks(in: nil)
         let referencedTrackIDs = Set(tracks.map(\.id))
         let capturedPaths = paths
@@ -486,6 +520,7 @@ final class ImportCommitter {
                     isImporting: false,
                     activeTrackIDs: []
                 ),
+                protectedTrackIDs: retainedTrackIDs,
                 reason: reason
             )
         }.value

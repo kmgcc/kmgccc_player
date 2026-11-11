@@ -166,7 +166,7 @@ enum TrackSortKey: String, CaseIterable, Identifiable {
     }
 }
 
-enum TrackSortOrder: String, CaseIterable, Identifiable {
+nonisolated enum TrackSortOrder: String, CaseIterable, Identifiable {
     case ascending
     case descending
 
@@ -716,6 +716,10 @@ final class LibraryViewModel {
     /// changed or closed can surface a sidebar notice like other library
     /// notices.
     var onImportRejectedNotice: ((String) -> Void)?
+    /// A durable library write failed. Unlike a cancelled import, this needs
+    /// the listener's attention, so the shell presents it as a persistent
+    /// notice with a repair entry.
+    var onLibraryWriteFailureNotice: ((String) -> Void)?
     var runOwnedLibraryMutation: ((
         @escaping @MainActor () async throws -> Void
     ) async throws -> Void)?
@@ -1090,7 +1094,7 @@ final class LibraryViewModel {
 
     private func reportLibraryMutationFailure(_ error: any Error) {
         Log.error("[LibraryVM] library mutation failed: \(error)", category: .library)
-        onImportRejectedNotice?("资料库写入失败：\(error.localizedDescription)")
+        onLibraryWriteFailureNotice?("资料库写入失败：\(error.localizedDescription)")
     }
 
     // MARK: - Computed Properties
@@ -4109,6 +4113,13 @@ final class LibraryViewModel {
         return formatter.string(from: Date())
     }
 
+    /// Settings surfaces read `diagnostics` directly, so they refresh it when
+    /// the overview appears instead of trusting a snapshot that may predate
+    /// the latest import.
+    func refreshDiagnostics() {
+        scheduleDiagnosticsRebuild()
+    }
+
     /// Build diagnostics from immutable value inputs off the main actor. The
     /// generation guard prevents a slow 100k-track calculation from publishing
     /// into a later library session.
@@ -5000,10 +5011,45 @@ final class LibraryViewModel {
         guard let displayedTrackIDs else { return uniquePersistedIDs }
 
         let available = Set(displayedTrackIDs)
-        var merged = uniquePersistedIDs.filter { available.contains($0) }
-        seen = Set(merged)
-        merged.append(contentsOf: displayedTrackIDs.filter { seen.insert($0).inserted })
-        return merged
+        let ranked = uniquePersistedIDs.filter { available.contains($0) }
+        seen = Set(ranked)
+        let addedTrackIDs = displayedTrackIDs.filter { seen.insert($0).inserted }
+        guard !addedTrackIDs.isEmpty else { return ranked }
+
+        // Tracks that arrived after the order was recorded join by their real
+        // add time, following the active ascending/descending choice.
+        return CustomTrackOrderMerge.merging(
+            customOrder: ranked,
+            availableIDs: displayedTrackIDs,
+            addedAt: addedAtForCustomOrder(addedTrackIDs, selection: selection),
+            placesNewTracksOnTop: trackSortOrder == .descending
+        )
+    }
+
+    private func addedAtForCustomOrder(
+        _ trackIDs: [UUID],
+        selection: LibrarySelection
+    ) -> [UUID: Date] {
+        guard trackIDs.count > 1 else { return [:] }
+
+        var dates: [UUID: Date] = [:]
+        var unresolved = Set(trackIDs)
+        if case .playlist(let playlistID) = selection {
+            let itemAddedAt = playlistItemAddedAtMap[playlistID] ?? [:]
+            for trackID in trackIDs {
+                guard let date = itemAddedAt[trackID] else { continue }
+                dates[trackID] = date
+                unresolved.remove(trackID)
+            }
+        }
+        if !unresolved.isEmpty {
+            for track in allTracks where unresolved.contains(track.id) {
+                dates[track.id] = track.importedAt ?? track.addedAt
+                unresolved.remove(track.id)
+                if unresolved.isEmpty { break }
+            }
+        }
+        return dates
     }
 
     private func persistedCustomTrackOrder(for selection: LibrarySelection) -> [UUID]? {

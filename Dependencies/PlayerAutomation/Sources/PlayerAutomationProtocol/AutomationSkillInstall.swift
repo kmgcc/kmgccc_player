@@ -1,51 +1,22 @@
-import CryptoKit
 import Foundation
 
-/// Installs the bundled Agent skill into local agent skill directories.
+/// Exports the Agent skill that ships inside the App bundle.
 ///
-/// The App and the CLI share one exported copy under Application Support.
-/// Install targets are copies of that directory, so the installed skill and
-/// the shipped one can be compared by content hash.
+/// Settings shows the exported directory so users copy it into their Agent's
+/// skill directory by hand, and `installPrompt` gives Agents a ready-made
+/// instruction for doing the same.
 public enum AutomationSkillInstaller {
     public static let skillName = "kmgccc-player-automation"
-    public static let recordName = ".kmgccc-install.json"
     public static let fallbackBundleIdentifier = "kmgccc.player"
-
-    public struct Target: Identifiable, Sendable, Hashable {
-        public let id: String
-        public let displayName: String
-        public let skillsDirectory: URL
-
-        public var skillDirectory: URL {
-            skillsDirectory.appendingPathComponent(
-                AutomationSkillInstaller.skillName,
-                isDirectory: true
-            )
-        }
-
-        public var isAvailable: Bool {
-            FileManager.default.fileExists(atPath: skillsDirectory.path)
-        }
-    }
-
-    public enum Status: String, Sendable {
-        case notInstalled
-        case current
-        case updateAvailable
-        case modified
-    }
 
     public enum InstallError: Error, LocalizedError {
         case bundledSkillMissing
-        case sourceMissing
         case copyFailed(String)
 
         public var errorDescription: String? {
             switch self {
             case .bundledSkillMissing:
                 return "The bundled agent skill is missing."
-            case .sourceMissing:
-                return "The exported agent skill is missing."
             case let .copyFailed(path):
                 return "Could not write \(path)."
             }
@@ -87,21 +58,20 @@ public enum AutomationSkillInstaller {
             .appendingPathComponent("Automation", isDirectory: true)
     }
 
-    /// Stable directory other agents can read from. It survives App moves and
+    /// Stable directory users and Agents copy from. It survives App moves and
     /// is refreshed from the bundle by `syncExport`.
     public static func exportDirectory() -> URL {
         supportDirectory().appendingPathComponent("skill", isDirectory: true)
     }
 
+    /// CLI entry point the skill refers to. It is a symlink so the App can
+    /// move without breaking the documented path.
     public static func exportExecutableURL() -> URL {
         supportDirectory()
             .appendingPathComponent("bin", isDirectory: true)
             .appendingPathComponent("player-automation", isDirectory: false)
     }
 
-    /// The bundled CLI. MCP configuration and the exported skill point at it
-    /// through `exportExecutableURL()` so the App can move without breaking
-    /// either entry point.
     public static var automationExecutableURL: URL? {
         if let bundleURL = appBundleURL {
             let candidate = bundleURL.appendingPathComponent(
@@ -135,43 +105,6 @@ public enum AutomationSkillInstaller {
         }
     }
 
-    // MARK: - Targets
-
-    public static func targetCandidates(
-        home: URL = FileManager.default.homeDirectoryForCurrentUser
-    ) -> [Target] {
-        [
-            Target(
-                id: "claude",
-                displayName: "Claude Code",
-                skillsDirectory: home.appendingPathComponent(".claude/skills", isDirectory: true)
-            ),
-            Target(
-                id: "codex",
-                displayName: "Codex",
-                skillsDirectory: home.appendingPathComponent(".codex/skills", isDirectory: true)
-            ),
-            Target(
-                id: "dsh",
-                displayName: "DeepSeek Harness",
-                skillsDirectory: home.appendingPathComponent(".dsh/skills", isDirectory: true)
-            )
-        ]
-    }
-
-    /// Targets whose skills directory already exists on this Mac.
-    public static func availableTargets(
-        home: URL = FileManager.default.homeDirectoryForCurrentUser
-    ) -> [Target] {
-        targetCandidates(home: home).filter {
-            FileManager.default.fileExists(atPath: $0.skillsDirectory.path)
-        }
-    }
-
-    public static func target(id: String) -> Target? {
-        targetCandidates().first { $0.id == id }
-    }
-
     // MARK: - Export
 
     /// Refresh the stable export directory from the App bundle.
@@ -200,93 +133,23 @@ public enum AutomationSkillInstaller {
         try manager.createSymbolicLink(at: link, withDestinationURL: executable)
     }
 
-    // MARK: - State
-
-    public static func status(for target: Target) -> Status {
-        let manager = FileManager.default
-        let directory = target.skillDirectory
-        guard manager.fileExists(atPath: directory.path),
-              let installedHash = contentHash(of: directory) else {
-            return .notInstalled
-        }
-        guard let exportHash = contentHash(of: exportDirectory()) else {
-            return .updateAvailable
-        }
-        if installedHash == exportHash {
-            return .current
-        }
-        if let record = readRecord(in: directory), record.contentHash == installedHash {
-            return .updateAvailable
-        }
-        return .modified
-    }
-
-    // MARK: - Mutations
-
-    @discardableResult
-    public static func install(_ target: Target, executableURL: URL) throws -> Status {
-        let export = try syncExport(executableURL: executableURL)
-        let manager = FileManager.default
-        try manager.createDirectory(
-            at: target.skillsDirectory,
-            withIntermediateDirectories: true
-        )
-        let destination = target.skillDirectory
-        if manager.fileExists(atPath: destination.path),
-           status(for: target) == .modified {
-            let backup = destination.deletingLastPathComponent()
-                .appendingPathComponent(
-                    "\(skillName).backup-\(timestamp())",
-                    isDirectory: true
-                )
-            try? manager.moveItem(at: destination, to: backup)
-        }
-        try replaceDirectory(at: destination, with: export)
-        if let hash = contentHash(of: destination) {
-            writeRecord(Record(contentHash: hash, installedAt: Date()), to: destination)
-        }
-        return status(for: target)
-    }
-
-    public static func uninstall(_ target: Target) throws {
-        let manager = FileManager.default
-        let directory = target.skillDirectory
-        guard manager.fileExists(atPath: directory.path) else { return }
-        try manager.removeItem(at: directory)
-    }
-
     // MARK: - Prompt
 
-    /// Instruction for agents that install skills themselves.
+    /// Instruction for Agents that install the skill themselves. It names the
+    /// source and the CLI, and leaves the install location to the Agent, whose
+    /// own tool decides where skills live.
     public static func installPrompt() -> String {
         """
-        读取 \(exportDirectory().path) 下的 SKILL.md，按其中的说明操作本机播放器。\
-        该目录可整体复制到你的 skills 目录；命令行入口是同目录的 bin/player-automation。
+        这是 kmgccc_player 的技能包，源目录保持原样，不要移动或改动：
+        \(exportDirectory().path)
+
+        装的时候按你所用工具的规则来：不同 Agent 的技能目录不一样，放到你的工具能加载的位置。优先建软链接而不是复制，播放器更新技能后会自动同步；一个工具只装一处，装完确认技能列表里出现 kmgccc-player-automation。
+
+        之后用 \(exportExecutableURL().path) 操作播放器。命令走本机自动化接口，播放器没在运行时会自动启动，超时重试一次即可；automation tools 不依赖播放器，可以先跑它确认通路。
         """
     }
 
     // MARK: - Files
-
-    private struct Record: Codable {
-        let contentHash: String
-        let installedAt: Date
-    }
-
-    private static func readRecord(in directory: URL) -> Record? {
-        let url = directory.appendingPathComponent(recordName)
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(Record.self, from: data)
-    }
-
-    private static func writeRecord(_ record: Record, to directory: URL) {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(record) else { return }
-        try? data.write(to: directory.appendingPathComponent(recordName))
-    }
 
     private static func replaceDirectory(at destination: URL, with source: URL) throws {
         let manager = FileManager.default
@@ -302,45 +165,5 @@ public enum AutomationSkillInstaller {
         } catch {
             throw InstallError.copyFailed(destination.path)
         }
-    }
-
-    /// Content hash over every regular file, keyed by relative path. The
-    /// install record is excluded so recording an install does not change it.
-    static func contentHash(of directory: URL) -> String? {
-        let manager = FileManager.default
-        guard let enumerator = manager.enumerator(
-            at: directory,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return nil
-        }
-        var entries: [(String, Data)] = []
-        for case let url as URL in enumerator {
-            guard url.lastPathComponent != recordName,
-                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
-                  let data = try? Data(contentsOf: url) else {
-                continue
-            }
-            let relative = url.path.replacingOccurrences(
-                of: directory.path.hasSuffix("/") ? directory.path : directory.path + "/",
-                with: ""
-            )
-            entries.append((relative, data))
-        }
-        guard !entries.isEmpty else { return nil }
-        var hasher = SHA256()
-        for (path, data) in entries.sorted(by: { $0.0 < $1.0 }) {
-            hasher.update(data: Data(path.utf8))
-            hasher.update(data: data)
-        }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-    }
-
-    private static func timestamp() -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        return formatter.string(from: Date())
     }
 }

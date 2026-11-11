@@ -5,6 +5,7 @@
 //  Conservative maintenance for library sidecars and failed import residue.
 //
 
+import Darwin
 import Foundation
 
 nonisolated enum TrackDirectoryMaintenanceClassification: String, Sendable {
@@ -15,11 +16,26 @@ nonisolated enum TrackDirectoryMaintenanceClassification: String, Sendable {
     case importingDoNotDelete
 }
 
+nonisolated struct LibraryMaintenanceFileIdentity: Sendable, Equatable {
+    let device: UInt64
+    let inode: UInt64
+    let size: Int64
+    let modifiedSeconds: Int64
+    let modifiedNanoseconds: Int64
+}
+
 nonisolated struct TrackDirectoryMaintenanceResult: Sendable {
     let trackID: UUID?
     let folderURL: URL
     let classification: TrackDirectoryMaintenanceClassification
     let reason: String
+    /// Identity of the sole audio file observed during classification. A
+    /// replacement between classification and cleanup changes the inode.
+    var audioIdentity: LibraryMaintenanceFileIdentity?
+    /// Identity of the directory itself. Renaming a directory keeps its
+    /// inode, so comparing it after the move proves which tree was moved even
+    /// when the parent path was replaced.
+    var folderIdentity: LibraryMaintenanceFileIdentity?
 }
 
 nonisolated struct TrackDirectoryCleanupReport: Sendable {
@@ -35,7 +51,10 @@ nonisolated struct MetadataOrphanCleanupReport: Sendable {
 }
 
 nonisolated struct LibraryMaintenanceService {
-    private static let ignoredFileNames: Set<String> = [".DS_Store"]
+    private static let ignoredFileNames: Set<String> = [
+        ".DS_Store",
+        ImportTrackFolderMarker.fileName,
+    ]
 
     private let fileManager: FileManager
 
@@ -47,7 +66,8 @@ nonisolated struct LibraryMaintenanceService {
         _ folderURL: URL,
         tracksRootURL: URL,
         referencedTrackIDs: Set<UUID>,
-        importActivity: LibraryImportActivitySnapshot
+        importActivity: LibraryImportActivitySnapshot,
+        protectedTrackIDs: Set<UUID> = []
     ) -> TrackDirectoryMaintenanceResult {
         guard isDirectChild(folderURL, of: tracksRootURL),
               let trackID = UUID(uuidString: folderURL.lastPathComponent)
@@ -75,6 +95,15 @@ nonisolated struct LibraryMaintenanceService {
                 folderURL: folderURL,
                 classification: .importingDoNotDelete,
                 reason: "an import batch is active"
+            )
+        }
+
+        if protectedTrackIDs.contains(trackID) {
+            return TrackDirectoryMaintenanceResult(
+                trackID: trackID,
+                folderURL: folderURL,
+                classification: .importingDoNotDelete,
+                reason: "retained by the import session that created it"
             )
         }
 
@@ -110,11 +139,55 @@ nonisolated struct LibraryMaintenanceService {
             )
         }
 
+        // A folder without this marker may have been prepared by the user or
+        // by another writer. Only a folder this import session created is
+        // residue that may be removed.
+        guard ImportTrackFolderMarker.marksOwnership(
+            of: folderURL,
+            trackID: trackID,
+            fileManager: fileManager
+        ) else {
+            return TrackDirectoryMaintenanceResult(
+                trackID: trackID,
+                folderURL: folderURL,
+                classification: .suspiciousDirectoryDoNotDelete,
+                reason: "folder has no import ownership marker"
+            )
+        }
+
         return TrackDirectoryMaintenanceResult(
             trackID: trackID,
             folderURL: folderURL,
             classification: .failedImportAudioOnlyDirectory,
-            reason: "unreferenced managed track folder contains only audio file and no meta.json"
+            reason: "unreferenced managed track folder contains only audio file and no meta.json",
+            audioIdentity: fileIdentity(of: onlyFile),
+            folderIdentity: directoryIdentity(of: folderURL)
+        )
+    }
+
+    private func directoryIdentity(of url: URL) -> LibraryMaintenanceFileIdentity? {
+        var info = stat()
+        guard lstat(url.path, &info) == 0,
+              info.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else { return nil }
+        return LibraryMaintenanceFileIdentity(
+            device: UInt64(info.st_dev),
+            inode: UInt64(info.st_ino),
+            size: Int64(info.st_size),
+            modifiedSeconds: Int64(info.st_mtimespec.tv_sec),
+            modifiedNanoseconds: Int64(info.st_mtimespec.tv_nsec)
+        )
+    }
+
+    private func fileIdentity(of url: URL) -> LibraryMaintenanceFileIdentity? {
+        var info = stat()
+        guard lstat(url.path, &info) == 0,
+              info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else { return nil }
+        return LibraryMaintenanceFileIdentity(
+            device: UInt64(info.st_dev),
+            inode: UInt64(info.st_ino),
+            size: Int64(info.st_size),
+            modifiedSeconds: Int64(info.st_mtimespec.tv_sec),
+            modifiedNanoseconds: Int64(info.st_mtimespec.tv_nsec)
         )
     }
 
@@ -122,6 +195,7 @@ nonisolated struct LibraryMaintenanceService {
         tracksRootURL: URL,
         referencedTrackIDs: Set<UUID>,
         importActivity: LibraryImportActivitySnapshot,
+        protectedTrackIDs: Set<UUID> = [],
         reason: String
     ) -> TrackDirectoryCleanupReport {
         let trackDirectories = directDirectories(at: tracksRootURL)
@@ -134,23 +208,36 @@ nonisolated struct LibraryMaintenanceService {
                 folderURL,
                 tracksRootURL: tracksRootURL,
                 referencedTrackIDs: referencedTrackIDs,
-                importActivity: importActivity
+                importActivity: importActivity,
+                protectedTrackIDs: protectedTrackIDs
             )
             results.append(result)
 
             switch result.classification {
             case .failedImportAudioOnlyDirectory:
-                Log.warning(
-                    "[LibraryMaintenance] deleting failed import residue reason=\(reason) trackID=\(result.trackID?.uuidString ?? "nil") path=\(result.folderURL.path) classification=\(result.classification.rawValue) detail=\(result.reason)",
-                    category: .library
-                )
-                do {
-                    try fileManager.removeItem(at: result.folderURL)
+                switch removeResidueDirectory(
+                    folderURL,
+                    tracksRootURL: tracksRootURL,
+                    expectedTrackID: result.trackID,
+                    expectedAudioIdentity: result.audioIdentity,
+                    expectedFolderIdentity: result.folderIdentity
+                ) {
+                case .deleted:
                     deletedCount += 1
-                } catch {
+                    Log.warning(
+                        "[LibraryMaintenance] removed verified failed import residue reason=\(reason) trackID=\(result.trackID?.uuidString ?? "nil") path=\(result.folderURL.path)",
+                        category: .library
+                    )
+                case .changed:
+                    failedDeleteCount += 1
+                    Log.warning(
+                        "[LibraryMaintenance] retained import residue because its contents changed reason=\(reason) path=\(result.folderURL.path)",
+                        category: .library
+                    )
+                case .failed(let detail):
                     failedDeleteCount += 1
                     Log.error(
-                        "[LibraryMaintenance] failed deleting track residue reason=\(reason) trackID=\(result.trackID?.uuidString ?? "nil") path=\(result.folderURL.path) error=\(error.localizedDescription)",
+                        "[LibraryMaintenance] failed removing import residue reason=\(reason) path=\(result.folderURL.path) error=\(detail)",
                         category: .library
                     )
                 }
@@ -180,6 +267,91 @@ nonisolated struct LibraryMaintenanceService {
             failedDeleteCount: failedDeleteCount,
             results: results
         )
+    }
+
+    private enum ResidueRemovalResult {
+        case deleted
+        case changed
+        case failed(String)
+    }
+
+    /// Renames the candidate inside the same volume before deleting it. The
+    /// rename is atomic, so content placed at the original path afterwards is
+    /// never part of the deleted tree; the renamed tree is re-checked and
+    /// restored when it no longer has exactly the shape that was classified.
+    private func removeResidueDirectory(
+        _ folderURL: URL,
+        tracksRootURL: URL,
+        expectedTrackID: UUID?,
+        expectedAudioIdentity: LibraryMaintenanceFileIdentity?,
+        expectedFolderIdentity: LibraryMaintenanceFileIdentity?
+    ) -> ResidueRemovalResult {
+        let quarantineName = ".kmgccc-import-residue-\(UUID().uuidString)"
+        let quarantineURL = tracksRootURL.appendingPathComponent(quarantineName, isDirectory: true)
+        do {
+            try fileManager.moveItem(at: folderURL, to: quarantineURL)
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+        guard let expectedTrackID,
+              let expectedFolderIdentity,
+              let movedFolderIdentity = directoryIdentity(of: quarantineURL),
+              sameObject(expectedFolderIdentity, movedFolderIdentity),
+              ImportTrackFolderMarker.marksOwnership(
+                  of: quarantineURL,
+                  trackID: expectedTrackID,
+                  fileManager: fileManager
+              ) else {
+            restoreQuarantinedDirectory(quarantineURL, to: folderURL)
+            return .changed
+        }
+        let entries = visibleEntries(in: quarantineURL)
+        guard entries.count == 1,
+              let onlyFile = entries.first,
+              isRegularFile(onlyFile),
+              onlyFile.lastPathComponent.lowercased().hasPrefix("audio."),
+              FileImportService.supportedExtensions.contains(onlyFile.pathExtension.lowercased()),
+              expectedAudioIdentity != nil,
+              fileIdentity(of: onlyFile) == expectedAudioIdentity else {
+            restoreQuarantinedDirectory(quarantineURL, to: folderURL)
+            return .changed
+        }
+        do {
+            try fileManager.removeItem(at: quarantineURL)
+            return .deleted
+        } catch {
+            let detail = error.localizedDescription
+            restoreQuarantinedDirectory(quarantineURL, to: folderURL)
+            return .failed(detail)
+        }
+    }
+
+    /// Renaming can change metadata even though the object stays the same.
+    /// Device and inode identify the directory across the move.
+    private func sameObject(
+        _ lhs: LibraryMaintenanceFileIdentity,
+        _ rhs: LibraryMaintenanceFileIdentity
+    ) -> Bool {
+        lhs.device == rhs.device && lhs.inode == rhs.inode
+    }
+
+    private func restoreQuarantinedDirectory(_ quarantineURL: URL, to originalURL: URL) {
+        guard !fileManager.fileExists(atPath: originalURL.path) else {
+            // Another process recreated the original path. Keep the renamed
+            // copy so nothing is lost, and leave it for manual review.
+            Log.warning(
+                "[LibraryMaintenance] import residue kept at \(quarantineURL.path); original path was recreated",
+                category: .library
+            )
+            return
+        }
+        do { try fileManager.moveItem(at: quarantineURL, to: originalURL) }
+        catch {
+            Log.warning(
+                "[LibraryMaintenance] import residue kept at \(quarantineURL.path) after restore failure: \(error.localizedDescription)",
+                category: .library
+            )
+        }
     }
 
     func cleanupOrphanMetadataEntries(

@@ -1627,7 +1627,7 @@ enum CoverGradientBlurRenderer {
         config: CoverGradientBlurConfig
     ) -> CGImage? {
 
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let colorSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
 
         guard let context = CGContext(

@@ -24,7 +24,7 @@ nonisolated enum LibraryRelocationResult: Sendable, Equatable {
 nonisolated enum LibraryRelocationError: Error, Equatable {
     case libraryNotRegistered, destinationExists, closeFailed, copyFailed, validationFailed
     case publicationFailed, newSessionFailed, registryCommitFailed, recoveryFailed, recoveryConflict
-    case transactionInProgress, securityScopeDenied, pendingRepair
+    case transactionInProgress, securityScopeDenied, pendingRepair, pendingMutations
 }
 
 nonisolated enum LibraryRelocationRepairPhase: String, Codable, Sendable {
@@ -90,6 +90,7 @@ nonisolated enum LibraryRelocationRepairIntentFile {
 
 @MainActor
 final class LibraryRelocationService {
+    private(set) var preservedRecoveryCopies: [URL] = []
     private let registryStore: MusicLibraryRegistryStore
     private let sessionController: LibrarySessionController
     private let sessionValidator: any LibrarySessionValidating
@@ -130,6 +131,7 @@ final class LibraryRelocationService {
         do { try gate.acquire() }
         catch { throw LibraryRelocationError.transactionInProgress }
         defer { gate.release() }
+        preservedRecoveryCopies = []
         guard let intent = try LibraryRelocationRepairIntentFile.load(from: intentURL) else { return false }
         try await replay(intent)
         return true
@@ -146,7 +148,7 @@ final class LibraryRelocationService {
         } catch let error as LibraryRelocationError { throw error }
         catch { throw LibraryRelocationError.pendingRepair }
 
-        let beforeRegistry = await registryStore.snapshot()
+        let beforeRegistry = try await registryStore.reload()
         guard let descriptor = beforeRegistry.library(id: libraryID) else {
             throw LibraryRelocationError.libraryNotRegistered
         }
@@ -165,6 +167,13 @@ final class LibraryRelocationService {
         guard manifest.libraryID == descriptor.id, manifest.mode == descriptor.modeProjection else {
             throw LibraryRelocationError.validationFailed
         }
+        // Moving the root while a durable commit record is unresolved would
+        // carry an unknown projection between volumes and make later
+        // verification depend on the new location. Refuse until the record is
+        // adjudicated.
+        guard !LibraryMutationJournal.hasPendingRecords(paths: LibraryPaths(rootURL: sourceURL)) else {
+            throw LibraryRelocationError.pendingMutations
+        }
 
         let destination = parentURL.appendingPathComponent(LibraryPaths.rootDirectoryName, isDirectory: true).standardizedFileURL
         if destination == sourceURL {
@@ -173,9 +182,43 @@ final class LibraryRelocationService {
         }
         guard !(await fileOperator.itemExists(at: destination)) else { throw LibraryRelocationError.destinationExists }
         let staging = parentURL.appendingPathComponent(".kmgccc-player-relocation-\(UUID().uuidString)", isDirectory: true)
+        let previousSession = sessionController.activeLibraryContext
+        let wasActive = previousSession?.id == libraryID
+        if wasActive {
+            do { try await sessionController.closeActiveSession() }
+            catch { throw LibraryRelocationError.closeFailed }
+        }
+        let writerLease: LibraryWriterLease
+        do { writerLease = try LibraryWriterLease.acquire(paths: LibraryPaths(rootURL: sourceURL)) }
+        catch {
+            if wasActive {
+                do { try await restoreLifecycleSession(previousSession, using: sessionController) }
+                catch { throw LibraryRelocationError.recoveryFailed }
+            }
+            throw error
+        }
+        defer { writerLease.release() }
         let authority: LibraryRelocationAuthoritySnapshot
-        do { authority = try await fileOperator.captureRelocationAuthority(at: sourceURL) }
-        catch { throw LibraryRelocationError.validationFailed }
+        do {
+            let lockedManifest = try MusicLibraryManifest.read(from: LibraryPaths(rootURL: sourceURL).manifestURL)
+            guard lockedManifest.libraryID == manifest.libraryID, lockedManifest.mode == manifest.mode else {
+                throw LibraryRelocationError.validationFailed
+            }
+            authority = try await fileOperator.captureRelocationAuthority(at: sourceURL)
+        }
+        catch {
+            writerLease.release()
+            do {
+                if wasActive {
+                    try await Task { @MainActor in
+                        try await restoreLifecycleSession(previousSession, using: sessionController)
+                    }.value
+                }
+            }
+            catch { throw LibraryRelocationError.recoveryFailed }
+            if error is CancellationError { throw CancellationError() }
+            throw LibraryRelocationError.validationFailed
+        }
         var intent = LibraryRelocationRepairIntent(
             libraryID: libraryID,
             mode: manifest.mode,
@@ -186,20 +229,16 @@ final class LibraryRelocationService {
             registryBefore: beforeRegistry
         )
         do { try LibraryRelocationRepairIntentFile.save(intent, to: intentURL) }
-        catch { throw LibraryRelocationError.recoveryFailed }
-
-        let previousSession = sessionController.activeLibraryContext
-        let wasActive = previousSession?.id == libraryID
-        if wasActive {
-            do { try await sessionController.closeActiveSession() }
-            catch {
-                try? LibraryRelocationRepairIntentFile.remove(at: intentURL)
-                throw LibraryRelocationError.closeFailed
-            }
+        catch {
+            writerLease.release()
+            do { if wasActive { try await restoreLifecycleSession(previousSession, using: sessionController) } }
+            catch { throw LibraryRelocationError.recoveryFailed }
+            throw LibraryRelocationError.recoveryFailed
         }
 
         var transferredURL: URL?
         var attemptedRegistryCommit = false
+        var committedDescriptor: MusicLibraryBookmark?
         do {
             let transfer = try await fileOperator.relocate(from: sourceURL, toStaging: staging)
             transferredURL = staging
@@ -222,6 +261,9 @@ final class LibraryRelocationService {
             try LibraryRelocationRepairIntentFile.save(intent, to: intentURL)
             generation &+= 1
             let newContext = makeContext(manifest, destination, bookmark)
+            // A same-volume move carries the lock file to the destination.
+            // Release it before the destination session acquires its lease.
+            if transfer == .sameVolume { writerLease.release() }
             if wasActive {
                 try await sessionController.switchToLibrary(newContext)
             } else {
@@ -229,29 +271,46 @@ final class LibraryRelocationService {
             }
 
             let committed = try committedRegistry(for: intent, bookmark: bookmark)
+            guard let destinationDescriptor = committed.library(id: libraryID) else {
+                throw LibraryRelocationError.recoveryConflict
+            }
             attemptedRegistryCommit = true
-            try await registryStore.replaceSnapshot(committed)
+            try await registryStore.replaceDescriptor(expected: descriptor, with: destinationDescriptor)
+            committedDescriptor = destinationDescriptor
             intent.phase = .registryCommitted
             try LibraryRelocationRepairIntentFile.save(intent, to: intentURL)
 
             if transfer == .copiedAcrossVolumes {
-                do {
-                    try await recycler.recycle(sourceURL)
-                    try LibraryRelocationRepairIntentFile.remove(at: intentURL)
-                    return .moved(newContext, transfer: transfer)
-                } catch {
-                    return .movedWithOldCopyRemaining(newContext, transfer: transfer)
-                }
+                // The source path can be replaced independently of the open
+                // lock file. Keep the old copy until the user can inspect it.
+                try LibraryRelocationRepairIntentFile.remove(at: intentURL)
+                return .movedWithOldCopyRemaining(newContext, transfer: transfer)
             }
             try LibraryRelocationRepairIntentFile.remove(at: intentURL)
             return .moved(newContext, transfer: transfer)
         } catch {
             do {
+                if wasActive, sessionController.activeLibraryContext?.rootURL == destination {
+                    try await sessionController.closeActiveSession()
+                }
+                if let committedDescriptor {
+                    // Claim the registry row before moving the directory. If
+                    // another writer changed it, leave the destination intact
+                    // and retain the intent for explicit recovery.
+                    try await registryStore.replaceDescriptor(expected: committedDescriptor, with: descriptor)
+                }
                 if let transferredURL, let transfer = intent.transfer {
+                    let rollbackLease: LibraryWriterLease?
+                    if writerLease.isReleased || transfer == .copiedAcrossVolumes {
+                        rollbackLease = try LibraryWriterLease.acquire(paths: LibraryPaths(rootURL: transferredURL))
+                    } else {
+                        rollbackLease = nil
+                    }
+                    defer { rollbackLease?.release() }
                     try await fileOperator.rollbackRelocation(from: transferredURL, to: sourceURL, transfer: transfer)
                 }
+                writerLease.release()
                 try await restoreLifecycleSession(previousSession, using: sessionController)
-                try await registryStore.replaceSnapshot(beforeRegistry)
                 try LibraryRelocationRepairIntentFile.remove(at: intentURL)
             } catch {
                 throw LibraryRelocationError.recoveryFailed
@@ -271,38 +330,51 @@ final class LibraryRelocationService {
         let source = URL(fileURLWithPath: intent.sourcePath, isDirectory: true)
         let staging = URL(fileURLWithPath: intent.stagingPath, isDirectory: true)
         let destination = URL(fileURLWithPath: intent.destinationPath, isDirectory: true)
-        let current = await registryStore.snapshot()
+        // A second App process can update the shared registry after this
+        // actor was initialized. Recovery must inspect the durable state.
+        let current = try await registryStore.reload()
         let committed = try intent.destinationBookmark.map { try committedRegistry(for: intent, bookmark: $0) }
-        let registryIsBefore = current == intent.registryBefore
-        let registryIsCommitted = committed == current
+        // Other libraries and the active selection can legitimately change
+        // while a relocation is awaiting replay. Only the moved row belongs
+        // to this transaction; retain all unrelated registry updates.
+        let currentDescriptor = current.library(id: intent.libraryID)
+        let registryIsBefore = currentDescriptor == beforeDescriptor
+        let registryIsCommitted = currentDescriptor != nil
+            && currentDescriptor == committed?.library(id: intent.libraryID)
         guard registryIsBefore || registryIsCommitted else { throw LibraryRelocationError.recoveryConflict }
 
         if registryIsCommitted {
             guard let descriptor = current.library(id: intent.libraryID),
                   descriptor.lastKnownPath == destination.standardizedFileURL.path,
-                  await matchesLibrary(destination, intent: intent) else {
+                  await hasLibraryIdentity(destination, intent: intent) else {
                 throw LibraryRelocationError.recoveryConflict
             }
-            if await fileOperator.itemExists(at: source), intent.transfer == .copiedAcrossVolumes {
-                do { try await recycler.recycle(source) }
-                catch { throw LibraryRelocationError.recoveryFailed }
-            }
+            // The original path may have been reused or edited since the
+            // interrupted move. Preserve it for the user to inspect.
             if await fileOperator.itemExists(at: staging) {
-                guard await matchesLibrary(staging, intent: intent) else { throw LibraryRelocationError.recoveryConflict }
-                await fileOperator.removeItemIfPresent(at: staging)
+                preservedRecoveryCopies.append(staging)
             }
+            if intent.transfer == .copiedAcrossVolumes,
+               await fileOperator.itemExists(at: source) { preservedRecoveryCopies.append(source) }
             try LibraryRelocationRepairIntentFile.remove(at: intentURL)
             return
         }
 
         if await fileOperator.itemExists(at: source) {
-            guard await matchesLibrary(source, intent: intent) else { throw LibraryRelocationError.recoveryConflict }
+            let replayLease = try LibraryWriterLease.acquire(paths: LibraryPaths(rootURL: source))
+            defer { replayLease.release() }
+            guard await hasLibraryIdentity(source, intent: intent) else { throw LibraryRelocationError.recoveryConflict }
             for orphan in [staging, destination] where await fileOperator.itemExists(at: orphan) {
-                guard await matchesLibrary(orphan, intent: intent) else { throw LibraryRelocationError.recoveryConflict }
-                await fileOperator.removeItemIfPresent(at: orphan)
+                preservedRecoveryCopies.append(orphan)
             }
         } else if await fileOperator.itemExists(at: staging) {
             guard intent.transfer != .copiedAcrossVolumes, await matchesLibrary(staging, intent: intent) else {
+                throw LibraryRelocationError.recoveryConflict
+            }
+            let replayLease = try LibraryWriterLease.acquire(paths: LibraryPaths(rootURL: staging))
+            defer { replayLease.release() }
+            guard await matchesLibrary(staging, intent: intent) else { throw LibraryRelocationError.recoveryConflict }
+            guard try await registryStore.reload().library(id: intent.libraryID) == beforeDescriptor else {
                 throw LibraryRelocationError.recoveryConflict
             }
             try await fileOperator.rollbackRelocation(from: staging, to: source, transfer: .sameVolume)
@@ -310,11 +382,16 @@ final class LibraryRelocationService {
             guard intent.transfer != .copiedAcrossVolumes, await matchesLibrary(destination, intent: intent) else {
                 throw LibraryRelocationError.recoveryConflict
             }
+            let replayLease = try LibraryWriterLease.acquire(paths: LibraryPaths(rootURL: destination))
+            defer { replayLease.release() }
+            guard await matchesLibrary(destination, intent: intent) else { throw LibraryRelocationError.recoveryConflict }
+            guard try await registryStore.reload().library(id: intent.libraryID) == beforeDescriptor else {
+                throw LibraryRelocationError.recoveryConflict
+            }
             try await fileOperator.rollbackRelocation(from: destination, to: source, transfer: .sameVolume)
         } else {
             throw LibraryRelocationError.recoveryConflict
         }
-        try await registryStore.replaceSnapshot(intent.registryBefore)
         try LibraryRelocationRepairIntentFile.remove(at: intentURL)
     }
 
@@ -326,6 +403,13 @@ final class LibraryRelocationService {
                 expectedID: intent.libraryID,
                 expectedMode: intent.mode
             )
+            return true
+        } catch { return false }
+    }
+
+    private func hasLibraryIdentity(_ url: URL, intent: LibraryRelocationRepairIntent) async -> Bool {
+        do {
+            try await fileOperator.validateLibrary(at: url, expectedID: intent.libraryID, expectedMode: intent.mode)
             return true
         } catch { return false }
     }

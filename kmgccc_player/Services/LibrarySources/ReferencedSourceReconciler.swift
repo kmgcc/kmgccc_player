@@ -43,6 +43,10 @@ nonisolated struct ReferencedSourceReconcileOutcome: Sendable, Equatable {
 nonisolated enum ReferencedSourceNotice: Sendable, Equatable {
     case filesImported(sourceID: UUID, count: Int)
     case unavailable(sourceID: UUID, status: ReferencedSourceStatus)
+    /// A later scan reached the folder again. Surfaces use it to retire the
+    /// "source folder is temporarily unavailable" warning instead of leaving
+    /// it up next to a healthy source.
+    case available(sourceID: UUID)
     case fileFailures(sourceID: UUID, failures: [ReferencedSourceScanFailure])
     case scanFailures(sourceID: UUID, failures: [ReferencedSourceScanFailure])
     case reconcileFailures(sourceID: UUID, failures: [ReferencedSourceScanFailure])
@@ -830,6 +834,7 @@ final class ReferencedSourceReconciler {
                 diff: intent.diff,
                 rootURL: rootURL,
                 importedTracks: imported,
+                scannedEntries: intent.proposedManifest?.entries ?? [],
                 firstScanPresentPaths: firstScanPresentPaths
             )
             intent = try await intentStore.updateMutations(intent, mutations: mutations)
@@ -931,6 +936,8 @@ final class ReferencedSourceReconciler {
         case .reconcile:
             if let manifest = intent.proposedManifest { try await manifestStore.save(manifest) }
             var descriptor = try await sourceStore.load(id: intent.sourceID)
+            let recoveredFromUnavailable = descriptor.status != .available
+                && intent.diff.sourceStatus == .available
             descriptor.status = intent.diff.sourceStatus
             if intent.diff.sourceStatus == .available { descriptor.lastScan = Date() }
             try await sourceStore.save(descriptor)
@@ -952,6 +959,8 @@ final class ReferencedSourceReconciler {
             }
             if intent.diff.sourceStatus != .available {
                 await noticePublisher.publish(.unavailable(sourceID: intent.sourceID, status: intent.diff.sourceStatus))
+            } else if recoveredFromUnavailable {
+                await noticePublisher.publish(.available(sourceID: intent.sourceID))
             }
             if !intent.diff.failures.isEmpty {
                 await noticePublisher.publish(.scanFailures(
@@ -1327,6 +1336,7 @@ final class ReferencedSourceReconciler {
         diff: ReferencedSourceDiff,
         rootURL: URL,
         importedTracks: [Track],
+        scannedEntries: [ReferencedSourceScanEntry] = [],
         firstScanPresentPaths: Set<String>? = nil
     ) async -> [ReferencedSourceLocatorMutation] {
         let allTracks = await repository.fetchTracks(in: nil)
@@ -1384,7 +1394,7 @@ final class ReferencedSourceReconciler {
             if let added = matchingAddedFile(
                 for: locator,
                 groupedByPhysicalIdentity: addedFilesByPhysicalIdentity
-            ) {
+            ), shouldFollowAddedFile(track: track, locator: locator) {
                 let resolvedURL = url(
                     forRelativePath: added.relativePath,
                     root: rootURL,
@@ -1448,11 +1458,61 @@ final class ReferencedSourceReconciler {
                   let track = tracksByID[missing.trackID], case var .referenced(locator) = track.mediaLocator else { continue }
             locator.removeSourcePreservingRecovery(diff.sourceID)
             locator.primarySourceID = primarySourceID(locator.sourceMemberships)
+            // The removed file can be the preferred copy while another copy of
+            // the same recording still plays. Prefer the readable one instead
+            // of leaving the Track pointing at a deleted path.
+            _ = locator.promoteFirstExistingLocation {
+                FileManager.default.fileExists(atPath: $0)
+            }
             changes[track.id] = .init(
                 trackID: track.id,
                 locator: locator,
                 availability: locator.allSourceMemberships.isEmpty ? .missing : track.availability
             )
+        }
+
+        // A referenced Track whose memberships were cleared by an earlier move
+        // or delete never leaves `missing`: the repair branch above only runs
+        // for Tracks that still carry a membership, and a file that is back
+        // under a path the scan manifest already binds to this Track produces
+        // no diff entry at all. Rebuild the membership from that binding, or
+        // from the Track's own recorded origin, whenever the file is on disk.
+        let scannedTrackPaths = Dictionary(
+            scannedEntries.compactMap { entry in entry.trackID.map { ($0, entry.relativePath) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for track in allTracks {
+            guard changes[track.id] == nil,
+                  track.availability != .available,
+                  case var .referenced(locator) = track.mediaLocator,
+                  !locator.containsSource(diff.sourceID),
+                  let relative = recoveredRelativePath(
+                      for: track,
+                      locator: locator,
+                      rootURL: rootURL,
+                      scannedTrackPaths: scannedTrackPaths
+                  ) else { continue }
+            setMembership(sourceID: diff.sourceID, relativePath: relative, locator: &locator)
+            // Restoring the membership is not enough when the recorded playback
+            // file itself is gone: a converted source can be found again while
+            // its product was renamed. Point the locator at the product the
+            // conversion committed, so an available Track is a playable one.
+            let recordedPath = locator.lastKnownPath
+            if !recordedPath.isEmpty,
+               !FileManager.default.fileExists(atPath: recordedPath),
+               let outputPath = track.ncmConversionAssociation?.outputPath,
+               FileManager.default.fileExists(atPath: outputPath) {
+                let outputURL = URL(fileURLWithPath: outputPath).standardizedFileURL
+                if let fingerprint = try? ReferencedFileIdentityProvider().fingerprint(for: outputURL) {
+                    refresh(
+                        locator: &locator,
+                        sourceID: diff.sourceID,
+                        url: outputURL,
+                        fingerprint: fingerprint
+                    )
+                }
+            }
+            changes[track.id] = .init(trackID: track.id, locator: locator, availability: .available)
         }
 
         // First successful scan is authoritative: with no previous manifest
@@ -1475,6 +1535,9 @@ final class ReferencedSourceReconciler {
                       }) else { continue }
                 locator.removeSourcePreservingRecovery(diff.sourceID)
                 locator.primarySourceID = primarySourceID(locator.sourceMemberships)
+                _ = locator.promoteFirstExistingLocation {
+                    FileManager.default.fileExists(atPath: $0)
+                }
                 changes[track.id] = .init(
                     trackID: track.id,
                     locator: locator,
@@ -1483,6 +1546,23 @@ final class ReferencedSourceReconciler {
             }
         }
         return changes.values.sorted { $0.trackID.uuidString < $1.trackID.uuidString }
+    }
+
+    /// A byte-identical copy dropped into a monitored folder is a duplicate,
+    /// not a move: the Track's own file is still where it was. Following the
+    /// copy would strand the Track the moment the copy is deleted, and would
+    /// make the Album point into an unrelated folder. Only follow the newly
+    /// observed file when the Track's recorded location is gone.
+    private func shouldFollowAddedFile(
+        track: Track,
+        locator: ReferencedFileLocator
+    ) -> Bool {
+        guard track.availability == .available else { return true }
+        let recordedPath = locator.locations.first {
+            $0.id == locator.primaryLocationID
+        }?.lastKnownPath ?? locator.lastKnownPath
+        guard !recordedPath.isEmpty else { return true }
+        return !FileManager.default.fileExists(atPath: recordedPath)
     }
 
     private func matchingAddedFile(
@@ -1540,6 +1620,39 @@ final class ReferencedSourceReconciler {
             return $0.sourceID.uuidString < $1.sourceID.uuidString
         }
         locator.primarySourceID = primarySourceID(locator.sourceMemberships)
+    }
+
+    /// Finds a source-relative path that proves this Track's file is present
+    /// again, in order of authority: the scan manifest's binding for this
+    /// Track, the Track's own NCM/video origin, then its last known location.
+    /// Generated products are skipped because the scanner hides them, so a
+    /// membership pointing at one would be removed by the next scan.
+    private func recoveredRelativePath(
+        for track: Track,
+        locator: ReferencedFileLocator,
+        rootURL: URL,
+        scannedTrackPaths: [UUID: String]
+    ) -> String? {
+        let isFileRoot = rootIsFile(rootURL)
+        func present(_ relative: String) -> String? {
+            let candidate = url(forRelativePath: relative, root: rootURL, rootIsFile: isFileRoot)
+            return FileManager.default.fileExists(atPath: candidate.path) ? relative : nil
+        }
+        if let scanned = scannedTrackPaths[track.id], let relative = present(scanned) {
+            return relative
+        }
+        let origin = track.ncmConversionAssociation?.sourcePath ?? locator.videoSource?.path
+        if let origin,
+           let relative = relativePath(URL(fileURLWithPath: origin), root: rootURL),
+           let found = present(relative) {
+            return found
+        }
+        guard generatedOutputRelativePath(for: track, locator: locator, rootURL: rootURL) == nil,
+              !locator.lastKnownPath.isEmpty,
+              let relative = relativePath(URL(fileURLWithPath: locator.lastKnownPath), root: rootURL) else {
+            return nil
+        }
+        return present(relative)
     }
 
     private func generatedOutputRelativePath(

@@ -1031,6 +1031,12 @@ private struct RotatingCoverArtwork: View {
                     .frame(width: layout.baseSize, height: layout.baseSize)
                 }
             }
+            .motionArtworkFullscreenSource(
+                context: context,
+                cornerRadius: layout.baseSize * 0.5,
+                insetScale: 0.90,
+                handoffStyle: .maskedCrossfade
+            )
 
             if visualizerMode == "led" {
                 let usesFullscreen = usesFullscreenLayout

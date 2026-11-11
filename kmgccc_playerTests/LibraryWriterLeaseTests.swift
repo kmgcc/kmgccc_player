@@ -84,8 +84,59 @@ final class LibraryWriterLeaseTests: XCTestCase {
         )
     }
 
+    func testMissingLibraryRootIsNotRecreatedForWriterLock() throws {
+        let root = temporaryRoot().appendingPathComponent("missing", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        XCTAssertThrowsError(try LibraryWriterLease.acquire(paths: LibraryPaths(rootURL: root)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+    }
+
+    func testWriterLockSymlinkDoesNotModifyItsTarget() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = LibraryPaths(rootURL: root)
+        try FileManager.default.createDirectory(at: paths.settingsRootURL, withIntermediateDirectories: true)
+        let target = root.appendingPathComponent("user-file")
+        let original = Data("preserve".utf8)
+        try original.write(to: target)
+        try FileManager.default.createSymbolicLink(at: paths.writerLockURL, withDestinationURL: target)
+        XCTAssertThrowsError(try LibraryWriterLease.acquire(paths: paths))
+        XCTAssertEqual(try Data(contentsOf: target), original)
+    }
+
+    func testSeparateOpenDescriptionHoldingTheKernelLockBlocksTheLease() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = LibraryPaths(rootURL: root)
+        try FileManager.default.createDirectory(at: paths.settingsRootURL, withIntermediateDirectories: true)
+
+        // BSD locks belong to the open file description, so this raw open
+        // models a second App process holding the writer lock. The lease must
+        // observe the kernel lock rather than only the in-process registry.
+        let descriptor = Darwin.open(
+            paths.writerLockURL.path,
+            O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+            mode_t(S_IRUSR | S_IWUSR)
+        )
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { _ = Darwin.close(descriptor) }
+        XCTAssertEqual(kmgccc_flock(descriptor, LOCK_EX | LOCK_NB), 0)
+
+        XCTAssertThrowsError(try LibraryWriterLease.acquire(paths: paths)) { error in
+            guard case LibraryWriterLeaseError.libraryInUse = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+
+        XCTAssertEqual(kmgccc_flock(descriptor, LOCK_UN), 0)
+        let lease = try LibraryWriterLease.acquire(paths: paths)
+        lease.release()
+    }
+
     private func temporaryRoot() -> URL {
-        FileManager.default.temporaryDirectory
+        let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("writer-lease-tests-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
     }
 }

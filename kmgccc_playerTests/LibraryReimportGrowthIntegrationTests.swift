@@ -280,6 +280,65 @@ final class LibraryReimportGrowthIntegrationTests: XCTestCase {
         await session.close()
     }
 
+    func testReferencedDuplicateCopyKeepsHealthyRecordingPrimary() async throws {
+        let fixture = try makeFixture(initialFileCount: 1)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let originalURL = fixture.sourceRoot.appendingPathComponent("1.wav")
+
+        let duplicateRoot = fixture.root.appendingPathComponent("Duplicate Source", isDirectory: true)
+        try FileManager.default.createDirectory(at: duplicateRoot, withIntermediateDirectories: true)
+        let duplicateURL = duplicateRoot.appendingPathComponent("1.wav")
+        try FileManager.default.copyItem(at: originalURL, to: duplicateURL)
+
+        let host = try makeHost(registryURL: fixture.registryURL)
+        let entries = LibraryImportSourceEntry.makeEntries(from: [fixture.sourceRoot])
+        _ = try await host.createMusicLibrary(
+            mode: .referenced,
+            parentURL: fixture.libraryParent,
+            displayName: "Duplicate Copy Referenced",
+            initialImportSelection: LibraryInitialImportSelection(
+                urls: [fixture.sourceRoot],
+                playlistSourceEntries: entries
+            )
+        )
+        let session = try XCTUnwrap(host.activeLibraryBinding.activeSession)
+        let initialTracks = await session.repository.fetchTracks(in: nil)
+        let existing = try XCTUnwrap(initialTracks.first)
+        XCTAssertEqual(existing.availability, .available)
+        let destination = try await session.repository.createPlaylist(name: "Duplicate Copy Target")
+        let previousDeferred = AppSettings.shared.deferImportEnrichment
+        AppSettings.shared.deferImportEnrichment = true
+        defer { AppSettings.shared.deferImportEnrichment = previousDeferred }
+
+        let result = await session.fileImportService.importSelectedURLs(
+            [duplicateURL],
+            context: LibraryImportContext(
+                libraryID: session.context.id,
+                sessionGeneration: session.context.generation,
+                destination: .playlist(destination.id),
+                origin: .windowDrop
+            )
+        )
+
+        XCTAssertEqual(result.importedTrackCount, 0)
+        XCTAssertEqual(result.reusedTrackCount, 1)
+        let allTracks = await session.repository.fetchTracks(in: nil)
+        XCTAssertEqual(allTracks.map(\.id), [existing.id], "the copy must not create a second Track")
+        let locator = try XCTUnwrap(existing.mediaLocator.referencedFile)
+        XCTAssertEqual(locator.locations.count, 2, "the copy should be retained as a second location")
+        XCTAssertTrue(locator.locations.contains { $0.lastKnownPath == duplicateURL.path })
+        XCTAssertEqual(
+            locator.lastKnownPath,
+            originalURL.path,
+            "a playable copy must not replace the recording the Track already plays"
+        )
+        XCTAssertEqual(existing.availability, .available)
+
+        await session.fileImportService.cancelEnrichment(for: Set(allTracks.map(\.id)))
+        await session.quiesce()
+        await session.close()
+    }
+
     func testManagedInteractiveMetadataDuplicateCopiesTrackIntoPlaylist() async throws {
         let fixture = try makeFixture(initialFileCount: 1)
         defer { try? FileManager.default.removeItem(at: fixture.root) }

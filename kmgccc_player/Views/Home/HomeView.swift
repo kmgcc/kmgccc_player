@@ -183,6 +183,14 @@ struct HomeView: View {
         }
 
         if libraryVM.state == .loaded || libraryVM.loadingPhase.isFailed {
+            // The All Artists / All Albums pages change the shared sort while
+            // Home is unmounted, so re-entering Home must reconcile the rails
+            // with the sort the user just picked. The call is signature-gated,
+            // so an unchanged sort costs only the hash.
+            if libraryVM.state == .loaded, homeVM.hasPreparedContent {
+                homeVM.refreshArtistAlbumSort(from: libraryVM)
+            }
+
             if !libraryVM.allTracks.isEmpty, !homeVM.hasPreparedContent {
                 // The first Home snapshot is required to render the page at
                 // startup. It is a one-time aggregation, so do not park it

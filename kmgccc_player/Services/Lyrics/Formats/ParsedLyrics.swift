@@ -107,6 +107,21 @@ nonisolated extension ParsedLyrics {
         }
         while line.words.first?.isSpacing == true { line.words.removeFirst() }
         while line.words.last?.isSpacing == true { line.words.removeLast() }
+        if let firstIndex = line.words.firstIndex(where: { !$0.isSpacing }) {
+            line.words[firstIndex].text = line.words[firstIndex].text.replacingOccurrences(of: "^\\s+", with: "", options: .regularExpression)
+        }
+        if let lastIndex = line.words.lastIndex(where: { !$0.isSpacing }) {
+            line.words[lastIndex].text = line.words[lastIndex].text.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+        }
+        for i in 1..<line.words.count {
+            if !line.words[i].isSpacing && line.words[i].text.hasPrefix(" ") {
+                let trimmed = line.words[i].text.replacingOccurrences(of: "^\\s+", with: "", options: .regularExpression)
+                line.words[i].text = trimmed
+                if !line.words[i - 1].isSpacing && !line.words[i - 1].text.hasSuffix(" ") {
+                    line.words[i - 1].text += " "
+                }
+            }
+        }
 
         let timedWords = line.words.filter { !$0.isSpacing }
         guard let firstStart = timedWords.map(\.startMs).min(),

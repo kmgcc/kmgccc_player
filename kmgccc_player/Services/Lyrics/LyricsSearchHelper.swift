@@ -544,6 +544,10 @@ struct LyricsSearchHelper {
         amllDBService: AMLLDBService
     ) async -> AutomaticFetchResult {
         Self.logger.info("[LyricsSearchHelper] searchAndFetchBestLyrics called for: '\(title)' by '\(artist ?? "unknown")'")
+        // 未知艺人 / 群星 / 未知专辑 name nothing; carrying them into the query
+        // only narrows the search.
+        let seedArtist = LibraryNormalization.searchSeedArtist(artist)
+        let seedAlbum = LibraryNormalization.searchSeedAlbum(album)
         guard !Task.isCancelled else {
             return AutomaticFetchResult(
                 status: .allCandidatesFailed,
@@ -556,8 +560,8 @@ struct LyricsSearchHelper {
 
         let searchResult = await performFullSearch(
             title: title,
-            artist: artist,
-            album: album,
+            artist: seedArtist.isEmpty ? nil : seedArtist,
+            album: seedAlbum.isEmpty ? nil : seedAlbum,
             duration: duration,
             mode: mode,
             searchCoordinator: searchCoordinator

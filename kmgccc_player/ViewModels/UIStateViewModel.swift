@@ -28,11 +28,29 @@ enum SidebarNoticeStyle: Sendable {
     case warning
 }
 
+/// Identifies a notice so the App can clear it later without disturbing a
+/// newer notice for something else.
+nonisolated enum SidebarNoticeTag: String, Sendable {
+    case libraryMutation
+}
+
+/// Where a sidebar notice's action should take the user. Kept independent of
+/// view types so notices stay `Sendable`.
+nonisolated enum SidebarNoticeDestination: Equatable, Sendable {
+    case libraryImportStatus
+    case librarySettings(anchor: String?)
+    case libraryRepair
+    case revealPath(String)
+}
+
 struct SidebarNotice: Equatable, Identifiable, Sendable {
     let id = UUID()
     let message: String
     let style: SidebarNoticeStyle
     let actionTitle: String?
+    let destination: SidebarNoticeDestination?
+    let isSticky: Bool
+    let tag: SidebarNoticeTag?
     let sourceID: UUID?
 }
 
@@ -169,14 +187,49 @@ final class UIStateViewModel {
         origin: LibraryImportOrigin
     ) {
         guard !failures.isEmpty else { return }
+        // One file can fail twice in one scan: the importer explains why it
+        // could not decode it, and the source scan separately reports that it
+        // stayed unimported. That is one problem, not two. Keep a single entry
+        // per file and prefer the longer, more concrete reason.
+        var unique: [ImportInputFailure] = []
+        for failure in failures {
+            let key = Self.importFailureKey(failure)
+            if let reportIndex = libraryImportFailureReports.firstIndex(where: { report in
+                report.failures.contains { Self.importFailureKey($0) == key }
+            }),
+               let failureIndex = libraryImportFailureReports[reportIndex].failures.firstIndex(where: {
+                   Self.importFailureKey($0) == key
+               }) {
+                let report = libraryImportFailureReports[reportIndex]
+                let stored = report.failures[failureIndex]
+                if failure.message.count > stored.message.count {
+                    var updated = report.failures
+                    updated[failureIndex] = failure
+                    libraryImportFailureReports[reportIndex] = LibraryImportFailureReport(
+                        id: report.id,
+                        origin: report.origin,
+                        failures: updated,
+                        createdAt: report.createdAt
+                    )
+                }
+                continue
+            }
+            guard !unique.contains(where: { Self.importFailureKey($0) == key }) else { continue }
+            unique.append(failure)
+        }
+        guard !unique.isEmpty else { return }
         libraryImportFailureReports.append(
-            LibraryImportFailureReport(origin: origin, failures: failures)
+            LibraryImportFailureReport(origin: origin, failures: unique)
         )
         // Keep the status surface bounded even when a disconnected source is
         // retried repeatedly over a long-running session.
         if libraryImportFailureReports.count > 12 {
             libraryImportFailureReports.removeFirst(libraryImportFailureReports.count - 12)
         }
+    }
+
+    private static func importFailureKey(_ failure: ImportInputFailure) -> String {
+        failure.url.standardizedFileURL.path
     }
 
     func clearLibraryImportFailureReports() {
@@ -216,17 +269,33 @@ final class UIStateViewModel {
         style: SidebarNoticeStyle = .success,
         duration: TimeInterval? = nil,
         actionTitle: String? = nil,
-        sourceID: UUID? = nil
+        sourceID: UUID? = nil,
+        destination: SidebarNoticeDestination? = nil,
+        isSticky: Bool = false,
+        tag: SidebarNoticeTag? = nil
     ) {
+        // A persistent warning describes a condition the user still has to
+        // resolve. Do not let a passing success toast erase it.
+        if let current = sidebarNotice, current.isSticky, !isSticky, style == .success {
+            return
+        }
         let notice = SidebarNotice(
             message: message,
             style: style,
             actionTitle: actionTitle,
+            destination: destination,
+            isSticky: isSticky,
+            tag: tag,
             sourceID: sourceID
         )
         sidebarNotice = notice
 
         sidebarNoticeDismissTask?.cancel()
+        sidebarNoticeDismissTask = nil
+        // Sticky notices describe a condition that still needs the user. They
+        // stay until the action succeeds, the App resolves the condition, or
+        // the user closes them explicitly.
+        guard !isSticky else { return }
         let visibleDuration = duration ?? (style == .warning ? 8 : 1.8)
         let delay = UInt64(max(0.1, visibleDuration) * 1_000_000_000)
         sidebarNoticeDismissTask = Task { @MainActor [weak self] in
@@ -236,6 +305,24 @@ final class UIStateViewModel {
                 self?.sidebarNotice = nil
             }
         }
+    }
+
+    func dismissSidebarNotice() {
+        sidebarNoticeDismissTask?.cancel()
+        sidebarNoticeDismissTask = nil
+        sidebarNotice = nil
+    }
+
+    /// Clears a notice only when it belongs to the given source, so a newer
+    /// notice for something else is never dismissed by a stale refresh.
+    func dismissSidebarNotice(sourceID: UUID) {
+        guard sidebarNotice?.sourceID == sourceID else { return }
+        dismissSidebarNotice()
+    }
+
+    func dismissSidebarNotice(tag: SidebarNoticeTag) {
+        guard sidebarNotice?.tag == tag else { return }
+        dismissSidebarNotice()
     }
 
     func showWindowPlaybackQueue() {

@@ -1429,10 +1429,18 @@ final class LocalLibraryService {
         let effectiveSortKey = trackSortKey ?? existingSidecar?.trackSortKey
         let effectiveSortOrder = trackSortOrder ?? existingSidecar?.trackSortOrder
         let requestedCustomOrder = customTrackOrder ?? existingSidecar?.customTrackOrder
-        let effectiveCustomOrder = normalizedOrder(
-            requestedCustomOrder,
-            availableIDs: normalizedTrackIDs
-        )
+        // A custom order keeps the manual arrangement, so tracks that arrive
+        // later join by their add time instead of always landing at the end:
+        // ascending appends them, descending puts the latest on top.
+        let itemDates = items.reduce(into: [UUID: Date]()) { $0[$1.trackID] = $1.addedAt }
+        let effectiveCustomOrder = requestedCustomOrder.map { order in
+            CustomTrackOrderMerge.merging(
+                customOrder: order,
+                availableIDs: normalizedTrackIDs,
+                addedAt: itemDates,
+                placesNewTracksOnTop: TrackSortOrder(rawValue: effectiveSortOrder ?? "") == .descending
+            )
+        }
         let sidecar = PlaylistSidecar(
             id: playlistID,
             name: name,

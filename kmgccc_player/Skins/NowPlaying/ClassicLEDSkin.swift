@@ -182,6 +182,11 @@ struct ClassicArtworkCoverContainer: View {
     var body: some View {
         classicCoverContent
             .frame(width: size, height: size)
+            .motionArtworkFullscreenSource(
+                context: context,
+                cornerRadius: cornerRadius,
+                handoffStyle: usesFrameMask ? .maskedCrossfade : .directLiftOff
+            )
             .contentShape(Rectangle())
             .onTapGesture {
                 advanceArtworkFrameMask()
@@ -422,6 +427,11 @@ private struct AppleStyleArtworkCoverContainer: View {
             }
         }
         .frame(width: size, height: size)
+        .motionArtworkFullscreenSource(
+            context: context,
+            cornerRadius: cornerRadius,
+            handoffStyle: .directLiftOff
+        )
     }
 }
 
@@ -902,7 +912,10 @@ enum ClassicArtworkFrameExtendedArtworkRenderer {
             blurFilter.setValue(fullCanvasMask, forKey: "inputMask")
 
             guard let output = blurFilter.outputImage?.cropped(to: canvasRect) else { return base }
-            return currentCIContext().createCGImage(output, from: canvasRect) ?? base
+            return currentCIContext().createCGImage(
+                output, from: canvasRect, format: .RGBA8,
+                colorSpace: base.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)
+            ) ?? base
         }
     }
 

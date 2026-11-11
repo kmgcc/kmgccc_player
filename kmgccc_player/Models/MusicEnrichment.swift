@@ -104,7 +104,7 @@ nonisolated struct StoredMotionArtwork: Codable, Equatable, Sendable {
     var height: Int?
 }
 
-nonisolated struct MotionArtworkResource: Equatable, Sendable {
+nonisolated struct MotionArtworkResource: Hashable, Sendable {
     var url: URL
     var startTime: Double
     var duration: Double

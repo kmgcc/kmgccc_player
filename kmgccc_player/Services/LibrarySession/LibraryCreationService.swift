@@ -1,4 +1,6 @@
 import Foundation
+import Darwin
+import CryptoKit
 
 nonisolated struct LibraryInitialImportPayload: Sendable, Equatable {
     let selectedURLs: [URL]
@@ -27,7 +29,7 @@ nonisolated enum LibraryCreationError: Error, Equatable {
 
 nonisolated protocol LibraryLifecycleFileOperating: Sendable {
     func itemExists(at url: URL) async -> Bool
-    func directoryIsEmpty(at url: URL) async throws -> Bool
+    func removeEmptyDirectory(at url: URL) async throws
     func createStagedLibrary(at url: URL, manifest: MusicLibraryManifest) async throws
     func validateLibrary(at url: URL, expectedID: UUID, expectedMode: MusicLibraryMode) async throws
     /// Recreates missing library scaffolding (required directories and the
@@ -35,7 +37,10 @@ nonisolated protocol LibraryLifecycleFileOperating: Sendable {
     /// libraries migrated from the pre-manifest layout openable again.
     func repairLibraryScaffolding(at url: URL) async throws
     func publishStaging(at stagingURL: URL, to destinationURL: URL) async throws
-    func removeItemIfPresent(at url: URL) async
+    /// Renames a staging directory created by this transaction and deletes it
+    /// only after re-reading the manifest from the renamed path. A directory
+    /// that no longer carries the expected identity is restored and retained.
+    func discardOwnedStaging(at url: URL, expectedLibraryID: UUID) async throws
     func relocate(from sourceURL: URL, toStaging stagingURL: URL) async throws -> LibraryRelocationTransfer
     func captureRelocationAuthority(at url: URL) async throws -> LibraryRelocationAuthoritySnapshot
     func validateRelocation(at url: URL, expectedAuthority: LibraryRelocationAuthoritySnapshot, expectedID: UUID, expectedMode: MusicLibraryMode) async throws
@@ -45,6 +50,8 @@ nonisolated protocol LibraryLifecycleFileOperating: Sendable {
 nonisolated struct LibraryRelocationAuthoritySnapshot: Codable, Sendable, Equatable {
     let relativeAuthorityFiles: Set<String>
     let fileCount: Int
+    /// Optional for repair intents created before content verification.
+    let fileDigests: [String: String]?
 }
 
 nonisolated enum LibraryRelocationTransfer: String, Codable, Sendable, Equatable {
@@ -52,15 +59,44 @@ nonisolated enum LibraryRelocationTransfer: String, Codable, Sendable, Equatable
     case copiedAcrossVolumes
 }
 
+private nonisolated final class LibraryEnumerationFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var detail: String?
+
+    func record(_ url: URL, _ error: Error) {
+        lock.lock()
+        defer { lock.unlock() }
+        if detail == nil { detail = "\(url.path): \(error.localizedDescription)" }
+    }
+
+    func result() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return detail
+    }
+}
+
 actor ProductionLibraryLifecycleFileOperator: LibraryLifecycleFileOperating {
     private let fileManager = FileManager.default
+    private let sqliteExecutableURL: URL
+    private let sqliteCheckTimeout: TimeInterval
+
+    init(
+        sqliteExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/sqlite3"),
+        sqliteCheckTimeout: TimeInterval = 60
+    ) {
+        self.sqliteExecutableURL = sqliteExecutableURL
+        self.sqliteCheckTimeout = max(0.1, sqliteCheckTimeout)
+    }
 
     func itemExists(at url: URL) -> Bool {
         fileManager.fileExists(atPath: url.path)
     }
 
-    func directoryIsEmpty(at url: URL) throws -> Bool {
-        try fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: nil).isEmpty
+    func removeEmptyDirectory(at url: URL) throws {
+        guard Darwin.rmdir(url.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     func createStagedLibrary(at url: URL, manifest: MusicLibraryManifest) throws {
@@ -103,9 +139,31 @@ actor ProductionLibraryLifecycleFileOperator: LibraryLifecycleFileOperating {
         try fileManager.moveItem(at: stagingURL, to: destinationURL)
     }
 
-    func removeItemIfPresent(at url: URL) {
+    func discardOwnedStaging(at url: URL, expectedLibraryID: UUID) async throws {
         guard fileManager.fileExists(atPath: url.path) else { return }
-        try? fileManager.removeItem(at: url)
+        let discardURL = url.deletingLastPathComponent()
+            .appendingPathComponent(".kmgccc-player-discard-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.moveItem(at: url, to: discardURL)
+        do {
+            let manifest = try MusicLibraryManifest.read(from: LibraryPaths(rootURL: discardURL).manifestURL)
+            guard manifest.libraryID == expectedLibraryID else {
+                throw LibraryCreationError.validationFailed
+            }
+            try fileManager.removeItem(at: discardURL)
+        } catch {
+            // The renamed directory no longer matches what this transaction
+            // created. Put it back at its original name when that path is
+            // still free; otherwise keep the renamed copy for inspection.
+            if !fileManager.fileExists(atPath: url.path) {
+                try? fileManager.moveItem(at: discardURL, to: url)
+            } else {
+                Log.warning(
+                    "[LibraryCreation] staging kept at \(discardURL.path); original path was recreated",
+                    category: .library
+                )
+            }
+            throw error
+        }
     }
 
     func relocate(from sourceURL: URL, toStaging stagingURL: URL) throws -> LibraryRelocationTransfer {
@@ -122,8 +180,8 @@ actor ProductionLibraryLifecycleFileOperator: LibraryLifecycleFileOperating {
     }
 
     func captureRelocationAuthority(at url: URL) throws -> LibraryRelocationAuthoritySnapshot {
-        let snapshot = try authoritySnapshot(at: url)
-        return .init(relativeAuthorityFiles: snapshot.relativeAuthorityFiles, fileCount: snapshot.fileCount)
+        let snapshot = try authoritySnapshot(at: url, includeHidden: true)
+        return .init(relativeAuthorityFiles: snapshot.relativeAuthorityFiles, fileCount: snapshot.fileCount, fileDigests: snapshot.fileDigests)
     }
 
     func validateRelocation(
@@ -131,15 +189,16 @@ actor ProductionLibraryLifecycleFileOperator: LibraryLifecycleFileOperating {
         expectedAuthority: LibraryRelocationAuthoritySnapshot,
         expectedID: UUID,
         expectedMode: MusicLibraryMode
-    ) throws {
+    ) async throws {
         try validateLibrary(at: url, expectedID: expectedID, expectedMode: expectedMode)
-        let destination = try authoritySnapshot(at: url)
+        let destination = try authoritySnapshot(at: url, includeHidden: expectedAuthority.fileDigests != nil)
         guard expectedAuthority.relativeAuthorityFiles == destination.relativeAuthorityFiles,
-              expectedAuthority.fileCount == destination.fileCount else {
+              expectedAuthority.fileCount == destination.fileCount,
+              expectedAuthority.fileDigests == nil || expectedAuthority.fileDigests == destination.fileDigests else {
             throw LibraryRelocationError.validationFailed
         }
         for database in destination.sqliteFiles {
-            guard try sqliteIntegrityCheck(database) else {
+            guard try await sqliteIntegrityCheck(database) else {
                 throw LibraryRelocationError.validationFailed
             }
         }
@@ -154,42 +213,153 @@ actor ProductionLibraryLifecycleFileOperator: LibraryLifecycleFileOperating {
             }
             try fileManager.moveItem(at: url, to: sourceURL)
         case .copiedAcrossVolumes:
-            try fileManager.removeItem(at: url)
+            // Published copies can have been modified independently after
+            // validation. Retain the copy and the repair intent for review.
+            throw LibraryRelocationError.recoveryFailed
         }
     }
 
-    private func authoritySnapshot(at root: URL) throws -> (relativeAuthorityFiles: Set<String>, fileCount: Int, sqliteFiles: [URL]) {
+    private func authoritySnapshot(at root: URL, includeHidden: Bool) throws -> (relativeAuthorityFiles: Set<String>, fileCount: Int, fileDigests: [String: String], sqliteFiles: [URL]) {
+        let enumerationFailure = LibraryEnumerationFailure()
         guard let enumerator = fileManager.enumerator(
             at: root,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
+            includingPropertiesForKeys: nil,
+            options: includeHidden ? [] : [.skipsHiddenFiles],
+            errorHandler: { url, error in
+                enumerationFailure.record(url, error)
+                return false
+            }
         ) else { throw LibraryRelocationError.validationFailed }
         var authority = Set<String>()
         var count = 0
+        var digests: [String: String] = [:]
         var databases: [URL] = []
-        for case let fileURL as URL in enumerator {
-            let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey])
-            guard values.isRegularFile == true else { continue }
+        // The enumerator's URLs can carry a different spelling of the root
+        // (`/var` versus `/private/var`). Derive the relative path from the
+        // enumerator depth instead of a character offset, so capture and
+        // validation produce the same keys for the same tree.
+        while let fileURL = enumerator.nextObject() as? URL {
+            let level = enumerator.level
+            var info = stat()
+            guard lstat(fileURL.path, &info) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            let fileType = info.st_mode & mode_t(S_IFMT)
+            if fileType == mode_t(S_IFDIR) { continue }
+            guard fileType == mode_t(S_IFREG) || fileType == mode_t(S_IFLNK),
+                  level > 0 else {
+                throw LibraryRelocationError.validationFailed
+            }
+            let components = fileURL.pathComponents
+            guard components.count >= level else {
+                throw LibraryRelocationError.validationFailed
+            }
+            let relative = components.suffix(level).joined(separator: "/")
+            // Exclude the session lock regardless of how the root is spelled.
+            if level == 2,
+               components.last == ".writer.lock",
+               components.dropLast().last == "Settings" {
+                continue
+            }
             count += 1
-            let relative = String(fileURL.path.dropFirst(root.path.count + 1))
+            if fileType == mode_t(S_IFLNK) {
+                let target = try fileManager.destinationOfSymbolicLink(atPath: fileURL.path)
+                digests[relative] = "symlink:" + target
+                continue
+            }
+            // Open without following a replacement symlink and without
+            // blocking if the path was replaced by a FIFO after lstat.
+            let fd = Darwin.open(fileURL.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+            guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            let input = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            var hash = SHA256()
+            do {
+                var opened = stat()
+                guard fstat(fd, &opened) == 0,
+                      opened.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+                      opened.st_dev == info.st_dev, opened.st_ino == info.st_ino else {
+                    throw LibraryRelocationError.validationFailed
+                }
+                while true {
+                    try Task.checkCancellation()
+                    let chunk = try input.read(upToCount: 1_048_576) ?? Data()
+                    if chunk.isEmpty { break }
+                    hash.update(data: chunk)
+                }
+                var finished = stat()
+                guard fstat(fd, &finished) == 0,
+                      finished.st_size == opened.st_size,
+                      finished.st_mtimespec.tv_sec == opened.st_mtimespec.tv_sec,
+                      finished.st_mtimespec.tv_nsec == opened.st_mtimespec.tv_nsec,
+                      finished.st_ctimespec.tv_sec == opened.st_ctimespec.tv_sec,
+                      finished.st_ctimespec.tv_nsec == opened.st_ctimespec.tv_nsec else {
+                    throw LibraryRelocationError.validationFailed
+                }
+                try input.close()
+            } catch {
+                try? input.close()
+                throw error
+            }
+            digests[relative] = hash.finalize().map { String(format: "%02x", $0) }.joined()
             if relative == MusicLibraryManifest.fileName || relative.hasSuffix("/meta.json") || relative.hasSuffix("/source.json") || relative.hasPrefix("Settings/") || relative.hasPrefix("Playlists/") {
                 authority.insert(relative)
             }
             if fileURL.pathExtension == "sqlite" { databases.append(fileURL) }
         }
-        return (authority, count, databases)
+        if let failure = enumerationFailure.result() {
+            Log.error("[LibraryRelocation] directory enumeration failed: \(failure)", category: .library)
+            throw LibraryRelocationError.validationFailed
+        }
+        return (authority, count, digests, databases)
     }
 
-    private func sqliteIntegrityCheck(_ url: URL) throws -> Bool {
+    private func sqliteIntegrityCheck(_ url: URL) async throws -> Bool {
+        // A damaged database can emit more than a pipe buffer. Redirect to a
+        // temporary file so neither output stream can block process exit.
+        let outputURL = fileManager.temporaryDirectory
+            .appendingPathComponent("library-integrity-\(UUID().uuidString)")
+        guard fileManager.createFile(atPath: outputURL.path, contents: nil) else {
+            throw LibraryRelocationError.validationFailed
+        }
+        defer { try? fileManager.removeItem(at: outputURL) }
+        let outputHandle = try FileHandle(forWritingTo: outputURL)
+        defer { try? outputHandle.close() }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = [url.path, "PRAGMA integrity_check;"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
+        process.executableURL = sqliteExecutableURL
+        // One integrity error is enough to reject the copy and bounds normal
+        // sqlite output even for a severely damaged database.
+        process.arguments = [url.path, "PRAGMA integrity_check(1);"]
+        process.standardOutput = outputHandle
+        process.standardError = FileHandle.nullDevice
         try process.run()
-        process.waitUntilExit()
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(sqliteCheckTimeout))
+        do {
+            while process.isRunning {
+                try Task.checkCancellation()
+                var outputInfo = stat()
+                guard fstat(outputHandle.fileDescriptor, &outputInfo) == 0 else {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                if outputInfo.st_size > 65_536 {
+                    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                    return false
+                }
+                guard clock.now < deadline else {
+                    kill(process.processIdentifier, SIGKILL)
+                    return false
+                }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        } catch {
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            throw error
+        }
+        let input = try FileHandle(forReadingFrom: outputURL)
+        defer { try? input.close() }
+        let outputData = try input.read(upToCount: 1024) ?? Data()
+        guard outputData.count < 1024 else { return false }
+        let output = String(data: outputData, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return process.terminationStatus == 0 && output == "ok"
     }
@@ -281,10 +451,10 @@ final class LibraryCreationService {
                     ? .existingLibrary(inspected.context)
                     : .existingLibraryModeMismatch(inspected.context, requestedMode: mode)
             } catch {
-                guard (try? await fileOperator.directoryIsEmpty(at: destination)) == true else {
+                do { try await fileOperator.removeEmptyDirectory(at: destination) }
+                catch {
                     throw LibraryCreationError.destinationContainsUnknownItems
                 }
-                await fileOperator.removeItemIfPresent(at: destination)
                 break
             }
         }
@@ -300,11 +470,11 @@ final class LibraryCreationService {
             didPublish = true
             try Task.checkCancellation()
         } catch is CancellationError {
-            await fileOperator.removeItemIfPresent(at: staging)
+            await discardStagingIfOwned(at: staging, manifest: manifest)
             if didPublish { await removeCreatedLibrary(at: destination, manifest: manifest) }
             throw CancellationError()
         } catch {
-            await fileOperator.removeItemIfPresent(at: staging)
+            await discardStagingIfOwned(at: staging, manifest: manifest)
             throw LibraryCreationError.stagingFailed
         }
 
@@ -333,13 +503,23 @@ final class LibraryCreationService {
     }
 
     private func removeCreatedLibrary(at root: URL, manifest: MusicLibraryManifest) async {
+        // Once published, another process can modify or replace this path.
+        // A prior manifest check cannot authorize a later recursive deletion.
+        Log.warning("[LibraryCreation] retaining published library after failed activation id=\(manifest.libraryID) root=\(root.path)", category: .library)
+    }
+
+    private func discardStagingIfOwned(at url: URL, manifest: MusicLibraryManifest) async {
+        guard await fileOperator.itemExists(at: url) else { return }
         do {
-            // Cleanup owns only the library published by this transaction.
-            // A replaced or changed destination must be retained for recovery.
-            try await fileOperator.validateLibrary(at: root, expectedID: manifest.libraryID, expectedMode: manifest.mode)
-            await fileOperator.removeItemIfPresent(at: root)
+            try await fileOperator.discardOwnedStaging(
+                at: url,
+                expectedLibraryID: manifest.libraryID
+            )
         } catch {
-            Log.warning("[LibraryCreation] retaining changed destination root=\(root.path): \(error)", category: .library)
+            Log.warning(
+                "[LibraryCreation] retaining staging directory after interrupted creation root=\(url.path) error=\(error.localizedDescription)",
+                category: .library
+            )
         }
     }
 }

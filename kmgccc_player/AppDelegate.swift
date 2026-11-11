@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     override init() {
         super.init()
         Self.shared = self
+        ProcessFileDescriptorBudget.raiseToHardLimit()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

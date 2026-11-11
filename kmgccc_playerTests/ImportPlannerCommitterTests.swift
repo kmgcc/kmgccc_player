@@ -85,8 +85,59 @@ final class ImportPlannerCommitterTests: XCTestCase {
             )
             XCTFail("A silent movie must not become an unplayable song")
         } catch VideoMusicImportError.noAudio {}
-        let staged = try FileManager.default.contentsOfDirectory(atPath: fixture.session.stagingDirectoryURL.path)
+        let staged = try FileManager.default.contentsOfDirectory(
+            at: fixture.session.stagingDirectoryURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
         XCTAssertTrue(staged.isEmpty)
+    }
+
+    func testImportDoesNotReplaceAnExistingDestination() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let source = try await writeVideo(in: fixture.root, withAudio: true)
+        let plan = await fixture.backend.prepareInputs([source])
+        let file = try XCTUnwrap(plan.files.first)
+        let token = ImportCancellationToken()
+        let controller = BatchImportProgressDialogController(presentsWindow: false)
+        let prepared = await fixture.planner.prepareCandidates(
+            resolvedFiles: [ResolvedImportFile(
+                progressID: source.path, displayName: source.lastPathComponent,
+                fileURL: source, ncmResult: nil, discoveredFile: file, referencedNCMOutput: nil
+            )],
+            libraryTracks: [], metadataOverride: nil,
+            cancellationToken: token, progressController: controller
+        )
+        let placements = await fixture.planner.resolvePlacements(
+            uniqueCandidates: prepared.unique, selectedDuplicates: [], session: fixture.session,
+            progressController: controller
+        )
+        let batch = await fixture.committer.executeBatch(
+            placements.placements, progressController: controller,
+            enrichmentMode: .skipped, session: fixture.session, cancellationToken: token
+        )
+        let track = try XCTUnwrap(batch.records.first?.track)
+        let path = try XCTUnwrap(track.mediaLocator.managedLibraryRelativePath)
+        let destination = fixture.paths.rootURL.appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let existing = Data("preserve existing content".utf8)
+        try existing.write(to: destination)
+
+        let saved = await fixture.committer.saveImportedTracks(
+            [track], progressController: controller, session: fixture.session, cancellationToken: token
+        )
+        XCTAssertNil(saved)
+        XCTAssertEqual(try Data(contentsOf: destination), existing)
+        _ = await fixture.committer.finishCancelledImport(
+            session: fixture.session,
+            importedRecords: batch.records,
+            createdTrackIDs: batch.createdTrackIDs,
+            to: nil,
+            progressController: controller,
+            totalCount: 1
+        )
+        XCTAssertEqual(try Data(contentsOf: destination), existing)
     }
 
     func testReferencedVideoCommitsMotionInLibraryAndLeavesAudioBesideSource() async throws {
@@ -122,14 +173,20 @@ final class ImportPlannerCommitterTests: XCTestCase {
         XCTAssertEqual(saved?.map(\.id), [track.id])
         let stored = try XCTUnwrap(track.mediaLocator.referencedFile)
         let audio = URL(fileURLWithPath: stored.lastKnownPath)
-        XCTAssertEqual(audio.deletingLastPathComponent(), source.deletingLastPathComponent())
+        XCTAssertEqual(
+            audio.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL.path,
+            source.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL.path
+        )
         XCTAssertEqual(audio.pathExtension, "m4a")
         XCTAssertEqual(stored.videoSource?.fingerprint, fingerprint)
         let resolved = try LocalAudioResourceResolver(
             paths: fixture.paths,
             authorizedSourceRoots: [sourceID: AuthorizedSourceRoot(url: source, scopeOwner: .none)]
         ).resolve(track.mediaLocator)
-        XCTAssertEqual(resolved.url, audio)
+        XCTAssertEqual(
+            resolved.url.resolvingSymlinksInPath().standardizedFileURL.path,
+            audio.resolvingSymlinksInPath().standardizedFileURL.path
+        )
         resolved.lease.release()
         XCTAssertGreaterThan(try AVAudioFile(forReading: audio).length, 0)
         XCTAssertNotNil(track.motionArtwork?.resource(kind: "square", libraryRootURL: fixture.paths.rootURL))
@@ -630,5 +687,87 @@ private struct PlannerFixture {
 
     func cleanup() {
         try? FileManager.default.removeItem(at: root)
+    }
+}
+
+@MainActor
+final class ImportStagingCleanupTests: XCTestCase {
+    func testCleanupRemovesOnlyItsOwnMarkedStagingDirectory() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let session = try ImportSession(paths: fixture.paths)
+        let staging = session.stagingDirectoryURL
+        try Data("staged".utf8).write(to: staging.appendingPathComponent("audio.mp3"))
+
+        session.cleanupStaging()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+    }
+
+    func testCleanupKeepsStagingDirectoryWhoseMarkerWasRemoved() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let session = try ImportSession(paths: fixture.paths)
+        let staging = session.stagingDirectoryURL
+        try FileManager.default.removeItem(
+            at: staging.appendingPathComponent(ImportStagingMarker.fileName)
+        )
+        try Data("foreign".utf8).write(to: staging.appendingPathComponent("keep.txt"))
+
+        session.cleanupStaging()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staging.appendingPathComponent("keep.txt").path))
+    }
+
+    private struct Fixture {
+        let root: URL
+        let paths: LibraryPaths
+        init() throws {
+            root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("import-staging-\(UUID().uuidString)", isDirectory: true)
+            paths = LibraryPaths(rootURL: root)
+            try paths.createRequiredDirectories()
+        }
+        func cleanup() { try? FileManager.default.removeItem(at: root) }
+    }
+}
+
+/// Files without tags name their song as `歌手 - 歌名`; only that shape is read
+/// as identity, and nothing else is invented from a file name.
+final class ImportFileNameHintsTests: XCTestCase {
+    private typealias Hints = ImportMetadataExtractor.FileNameMetadataHints
+
+    func testSplitsArtistAndTitle() {
+        let hints = Hints.hints(from: "福梦 - 背叛")
+        XCTAssertEqual(hints.artist, "福梦")
+        XCTAssertEqual(hints.title, "背叛")
+    }
+
+    func testKeepsEverythingAfterTheFirstSeparator() {
+        let hints = Hints.hints(from: "A - B - C")
+        XCTAssertEqual(hints.artist, "A")
+        XCTAssertEqual(hints.title, "B - C")
+    }
+
+    func testSplitsJoinedArtistCredits() {
+        let hints = Hints.hints(from: "福梦, CVLTE - 3MPTY")
+        XCTAssertEqual(hints.artist, "福梦, CVLTE")
+        XCTAssertEqual(hints.title, "3MPTY")
+    }
+
+    func testSplitsEnDash() {
+        let hints = Hints.hints(from: "司南 – 天空")
+        XCTAssertEqual(hints.artist, "司南")
+        XCTAssertEqual(hints.title, "天空")
+    }
+
+    func testDoesNotReadTrackNumbersAsArtists() {
+        XCTAssertEqual(Hints.hints(from: "01 - Intro"), .none)
+        XCTAssertEqual(Hints.hints(from: "2019 - Live"), .none)
+    }
+
+    func testDoesNotSplitNamesWithoutBothSides() {
+        XCTAssertEqual(Hints.hints(from: "背叛"), .none)
+        XCTAssertEqual(Hints.hints(from: " - orphan"), .none)
     }
 }

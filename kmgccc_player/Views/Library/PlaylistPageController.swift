@@ -437,6 +437,17 @@ final class PlaylistPageController {
         isCollectionListFiltering = false
     }
 
+    private var collectionScrollPositions: [LibrarySelection: UUID] = [:]
+
+    func updateCollectionScrollPosition(_ itemID: UUID?, for selection: LibrarySelection) {
+        guard let itemID else { return }
+        collectionScrollPositions[selection] = itemID
+    }
+
+    func collectionScrollPosition(for selection: LibrarySelection) -> UUID? {
+        collectionScrollPositions[selection]
+    }
+
     /// Clears page-local interaction state only.
     ///
     /// Safe to call during an in-place selection transition (e.g. switching

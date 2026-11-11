@@ -50,6 +50,22 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         // source repair, or any sidecar writer can touch this Library root.
         let writerLease = try LibraryWriterLease.acquire(paths: context.paths)
 
+        // The manifest was read before the lease existed. A cooperating
+        // process could have moved or replaced the root in between; the lease
+        // is only meaningful for the root that is still there now.
+        do {
+            let lockedManifest = try MusicLibraryManifest.read(from: context.paths.manifestURL)
+            guard lockedManifest.libraryID == context.id, lockedManifest.mode == context.mode else {
+                writerLease.release()
+                throw LibrarySessionFactoryError.manifestIdentityMismatch
+            }
+        } catch let error as LibrarySessionFactoryError {
+            throw error
+        } catch {
+            writerLease.release()
+            throw error
+        }
+
         try context.paths.createRequiredDirectories()
         let mutationJournal = LibraryMutationJournal(
             paths: context.paths,
@@ -58,7 +74,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         let recoveredMutations = try await mutationJournal.recoverInterruptedMutations()
         if !recoveredMutations.isEmpty {
             Log.warning(
-                "[LibrarySession] recovered \(recoveredMutations.count) interrupted mutation intent(s) before reload",
+                "[LibrarySession] found \(recoveredMutations.count) interrupted mutation intent(s); unresolved records remain in Pending",
                 category: .library
             )
         }
@@ -509,6 +525,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             fileImportService: fileImportService,
             operationCoordinator: operationCoordinator,
             mutationCoordinator: mutationCoordinator,
+            mutationJournal: mutationJournal,
             storageBackend: storageBackend,
             referencedSourceStore: sourceStore,
             referencedSourceScope: sourceScope,
@@ -521,6 +538,8 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             lyricsViewModel: lyricsViewModel,
             ledMeterProvider: ledMeterProvider
         )
+        session.unresolvedMutationCount = recoveredMutations.filter { $0.state != .recovered }.count
+        session.ncmRecoveryService = referencedNCMConversionService
         session.bindLibraryViewModelOperationOwnership()
         return session
     }
