@@ -59,6 +59,8 @@ struct SkinSceneFilters: ViewModifier {
                 let amplitude = filter[member: "amplitude"].number(4)
                 let shader = library.skinFxWave(.float(time), .float(amplitude), .float(filter[member: "wavelength"].number(180)), .float(filter[member: "speed"].number(1.5)))
                 view = padded(view, reach: abs(amplitude)) { $0.distortionEffect(shader, maxSampleOffset: CGSize(width: abs(amplitude), height: abs(amplitude)), isEnabled: enabled) }
+            case "fov":
+                view = SkinSceneFOV.apply(view, filter: filter, enabled: enabled)
             case "custom":
                 view = custom(view, filter: filter, time: moves ? time : 0, enabled: enabled, root: root)
             default: break
