@@ -41,9 +41,17 @@ struct SkinSceneFeeds: View {
             .onChange(of: audioKey, initial: true) { _, _ in updateAudio() }
             .onChange(of: NativeLyricsSurfaceManager.shared.documentPublication.revision, initial: true) { _, _ in updateLyrics() }
             .onDisappear { data.audio.stop() }
-            .overlay { SkinSceneClockFeed(data: data, role: viewport.surface == .window ? .main : .fullscreen) }
+            .overlay { SkinSceneClockFeed(data: data, role: viewport.surface == .window ? .main : .fullscreen, lead: lyricsLead) }
             .background { SkinSceneHostProbe(data: data) }
             .allowsHitTesting(false)
+    }
+
+    /// A skin may move its own lyric clock ahead of the audio. `lyricsLead` is seconds, so a
+    /// positive value shows a line before it is sung. The setting is scoped to this scene only;
+    /// the native lyrics surface and other skins keep the app-wide offset.
+    private var lyricsLead: Double {
+        guard case .number(let value)? = parameters["lyricsLead"] else { return 0 }
+        return min(2, max(-1, value))
     }
 
     private var audioKey: String { "\(active)|\(snapshot.playback.isPlaying)|\(playback.stablePresentation.source)|\(data.audioReaders.isEmpty)" }
@@ -59,7 +67,14 @@ struct SkinSceneFeeds: View {
         let manager = NativeLyricsSurfaceManager.shared
         let document = manager.documentForConsumers()
         let config = manager.configurationForConsumers(role: viewport.surface == .window ? .main : .fullscreen)
-        data.lyricsTimeline.load(document, timing: config.timing)
+        var timing = config.timing
+        if parameters["lyricsLead"] != nil {
+            // The scene owns line advance through `lyricsLead`; native near-switch lead-in would
+            // otherwise stack on top of it and make the first line arrive almost a second early.
+            timing.leadIn = 0
+            timing.nearSwitchGap = 0
+        }
+        data.lyricsTimeline.load(document, timing: timing)
         data.set(.lyrics, [
             "lyrics.available": .boolean(document != nil), "lyrics.availability": .text(document == nil ? "unavailable" : "available"),
             "lyrics.revision": .number(Double(manager.documentPublication.revision)),
@@ -251,19 +266,28 @@ struct SkinSceneFeeds: View {
 private struct SkinSceneClockFeed: View {
     let data: SkinSceneData
     let role: LyricsSurfaceRole
+    let lead: Double
     @Environment(PlaybackCoordinator.self) private var playback
     var body: some View {
         let p = playback.presentation
-        let key = [p.currentTime, p.lyricsCurrentTime, p.isPlaying ? 1 : 0, p.duration]
+        // `presentation` is rewritten only when content changes; elapsed time lives in the
+        // coordinator's progress channel. Reading the presentation's time here left the scene
+        // clock at its last content change after a seek or a skin switch.
+        let progress = playback.playbackProgress
+        let lyricsTime = playback.liveLyricsTime
+        let playing = p.isPlaying, lyricsPlaying = p.effectiveLyricsIsPlaying
+        let key = [progress.currentTime, lyricsTime, playing ? 1 : 0, lyricsPlaying ? 1 : 0, progress.duration, lead]
         Color.clear.onChange(of: key, initial: true) { _, _ in
             let manager = NativeLyricsSurfaceManager.shared
             let config = manager.configurationForConsumers(role: role)
-            if data.clock.duration > 0, abs(data.clock.position(at: Date.timeIntervalSinceReferenceDate) - p.currentTime) > 0.5 { data.seekRevision &+= 1 }
-            data.clock.lyricsOffset = p.currentTime - p.lyricsCurrentTime + config.timing.trackOffset
+            let now = Date.timeIntervalSinceReferenceDate
+            if data.clock.duration > 0, abs(data.clock.position(at: now) - progress.currentTime) > 0.5 { data.seekRevision &+= 1 }
+            let lyricPosition = lyricsTime - config.timing.trackOffset + lead
+            data.clock.lyricsOffset = progress.currentTime - lyricPosition
             data.clock.seekOffset = config.timing.seekOffset
-            data.clock.updateLyrics(position: p.lyricsCurrentTime - config.timing.trackOffset, isPlaying: p.lyricsIsPlaying ?? p.isPlaying, now: Date.timeIntervalSinceReferenceDate)
-            data.clock.update(position: p.currentTime, isPlaying: p.isPlaying, duration: p.duration, now: Date.timeIntervalSinceReferenceDate)
-            data.updateFlow(playing: p.isPlaying)
+            data.clock.updateLyrics(position: lyricPosition, isPlaying: lyricsPlaying, now: now)
+            data.clock.update(position: progress.currentTime, isPlaying: playing, duration: progress.duration, now: now)
+            data.updateFlow(playing: playing)
         }
     }
 }
