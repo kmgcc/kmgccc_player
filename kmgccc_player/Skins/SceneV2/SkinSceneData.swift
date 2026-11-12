@@ -278,7 +278,12 @@ final class SkinLyricsTimeline {
     /// `timing` moves each line switch earlier the way native lyrics do, so a scene's current
     /// line arrives with the native one; word and line progress keep the authored times.
     func load(_ document: LyricsDocument?, timing: LyricsTimingConfiguration? = nil) {
-        let groups = document?.groups ?? []
+        let groups = (document?.groups ?? []).map { group in
+            var group = group
+            group.main = Self.spreadingSingleSpan(group.main, mode: document?.timingMode ?? .word)
+            group.background = group.background.map { Self.spreadingSingleSpan($0, mode: document?.timingMode ?? .word) }
+            return group
+        }
         lines = groups.enumerated().map { Self.record(for: $0.element, index: $0.offset) }
         ranges = groups.map { ($0.main.range.start, max($0.main.range.end, $0.background?.range.end ?? 0)) }
         starts = ranges.enumerated().map { index, range in
@@ -293,6 +298,49 @@ final class SkinLyricsTimeline {
         songParts = groups.map { $0.main.songPart ?? "" }
         cacheTime = .nan
         cacheIndex = -1
+    }
+
+    /// Some exports declare word timing but wrap a whole line in one timed span. Native lyrics
+    /// spread that span over the visible tokens for presentation, so a scene does the same:
+    /// CJK splits per character, other text per word with its trailing space, and each token
+    /// takes a share of the span by its character count. Source ranges stay untouched.
+    static func spreadingSingleSpan(_ line: LyricLine, mode: TTMLTimingMode) -> LyricLine {
+        guard mode == .word, line.isWordTimed, line.words.count == 1, let word = line.words.first,
+              word.ruby.isEmpty, word.romanization.isEmpty, word.range.duration > 0 else { return line }
+        var tokens: [String] = [], current = "", inWord = false
+        for character in word.text {
+            if character.isWhitespace {
+                if !current.isEmpty { current.append(character) }
+                inWord = false
+            } else if character.isPunctuation, !current.isEmpty {
+                current.append(character)
+            } else if inWord, !isCJK(character) {
+                current.append(character)
+            } else {
+                if !current.isEmpty { tokens.append(current) }
+                current = String(character)
+                inWord = !isCJK(character)
+            }
+        }
+        if !current.isEmpty { tokens.append(current) }
+        guard tokens.count > 1 else { return line }
+        let weights = tokens.map { Double(max(1, $0.filter { !$0.isWhitespace }.utf16.count)) }
+        let total = weights.reduce(0, +)
+        var spread = line, offset = 0.0
+        spread.words = tokens.enumerated().map { index, text in
+            var token = word
+            token.id = "\(word.id)-\(index)"
+            token.text = text
+            token.range = LyricRange(word.range.start + word.range.duration * offset / total,
+                                     word.range.start + word.range.duration * (offset + weights[index]) / total)
+            offset += weights[index]
+            return token
+        }
+        return spread
+    }
+
+    private static func isCJK(_ character: Character) -> Bool {
+        character.unicodeScalars.contains { (0x2E80...0x9FFF).contains($0.value) || (0xAC00...0xD7AF).contains($0.value) || (0xF900...0xFAFF).contains($0.value) }
     }
 
     static func record(for group: LyricGroup, index: Int) -> SkinValue {

@@ -308,6 +308,10 @@ enum SkinFunctions {
                 return .number(SkinTextMeasure.width(text, size: arguments[1].number(), weight: weight, font: font))
             })
         }
+        // A lyric line composed as poster typography; see `SkinKineticLayout`.
+        table["kineticLayout"] = SkinFunction(arity: 1...9, argumentTypes: [.any], result: { _ in .record }, tier: .change) { arguments, _ in
+            SkinKineticLayout.layout(arguments[0].listValue, options: Array(arguments.dropFirst()))
+        }
 
         // Logic
         table["if"] = SkinFunction(arity: 3...3, argumentTypes: [.any], result: { types in types[1] == types[2] ? types[1] : .any }) { arguments, _ in
