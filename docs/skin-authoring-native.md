@@ -228,6 +228,9 @@ token 可以是名称，也可以是与 `animation` 相同的记录。`spring` �
 | `pluck(列表, 字段)` | 取出每条记录的一个字段 |
 | `argmax(列表)`、`argmin(列表)` | 最大、最小值的序号 |
 | `addEach(列表, 数或列表)`、`mulEach(列表, 数或列表)` | 逐项相加、相乘 |
+| `kineticLayout(词, 种子, 避开, 宽, 高, 竖排字距, 字体, 字重, 强度)` | 把一行歌词排成海报式构图，返回每个词的位置与大小 |
+
+`kineticLayout` 以 100 为普通字的 1em。它按字数与时长选出主词和次重点，再按段数、行宽、文字种类与节奏，从横幅、叠句、立柱、题头、阶梯、竖标、环绕、重击、文段、竖排、瀑布中挑一种构图；`避开` 是构图序号列表，常放前两行用过的。整幅构图超出宽高时等比缩小并居中。结果含 `family`、`hero`、`size`（[宽, 高]）、`ghost`（[x, y, 倍率]，倍率为 0 表示无）、`ghostText` 与 `items`；每项有 `x`、`y`（中心）、`s`（倍率）、`w`、`h`、`v`（竖排为 1）、`r`（角度）、`ex`/`ey`（入场来向）、`role`（0 衬字、1 次重点、2 主词）、`t`（显示文本）、`start`、`end`。只有一个词的整行会先按字或词拆开，因此 `items` 可能比输入的词多。函数在换行时求值一次，结果宜存入 state。
 
 例如每个词的起点：`"=offsets(measureEach(lyrics.current.words, 64, \"heavy\"), 12)[index]"`；唱得最久的词：`"=argmax(addEach(pluck(lyrics.current.words, \"end\"), mulEach(pluck(lyrics.current.words, \"start\"), -1)))"`。
 
@@ -251,6 +254,7 @@ token 可以是名称，也可以是与 `animation` 相同的记录。`spring` �
 | `scanlines` | spacing、intensity、speed | 扫描线 |
 | `wave` | amplitude、wavelength、speed | 缓慢的液态扭曲 |
 | `grain` | amount | 逐帧胶片颗粒 |
+| `fov` | distortion、chromatic、blur、start | 镜头边缘：广角畸变、边缘色散与半径渐增的边缘模糊；start 以内不受影响 |
 
 `custom` 调用包内预编译的着色器库，写法为 `{type: "custom", library: "fx.metallib", function, kind, args, reach, animated}`。`kind` 为 layer（可采样子树）、color 或 distortion；函数在 SwiftUI 规定的参数之后依次收到 `float2 size`（含外扩的画布尺寸）、`float time`，再按顺序收到 `args`：数为 float，2 至 4 个数的列表为 float2 至 float4，颜色为 half4。`reach` 为最大采样偏移，`animated` 为 true 时逐帧更新。用 `xcrun -sdk macosx metal -o fx.metallib fx.metal` 编译，源码以 `#include <SwiftUI/SwiftUI_Metal.h>` 开头，函数标注 `[[stitchable]]`。
 
@@ -260,7 +264,9 @@ token 可以是名称，也可以是与 `animation` 相同的记录。`spring` �
 
 `shape` 的 `stroke` 改为描线，写成宽度，或 `{width, color, cap, join, dash}`；同时写了 `color` 时才另行填充。`trimStart` 与 `trimEnd` 截取线段，让 `trimEnd` 随时间从 0 走到 1，就是逐笔画出的线圈。
 
-`spectrum`、`waveform`、`meter` 直接绘制共享音频。`particles` 提供确定性的粒子画布：默认是缓缓上浮的尘点；写上 `lifetime`（秒）后改为发射，每颗粒子在随机位置出现，沿 `angle` 度方向、在 `spread` 度内散开，以 `speed` 点每秒飞行，在一生中淡入淡出，`trail` 给出以秒计的拖尾，`colors` 为随机取用的颜色。配合 `blendMode: plusLighter` 与 `bloom`，就是带拖尾的彗星与火花。`shadow` 可以写成数组，按顺序叠加多层。`video.path` 加载静音循环视频，隐藏时停止；动态封面使用 `artwork`，沿用 App 的共享解码。
+`spectrum`、`waveform`、`meter` 直接绘制共享音频。`particles` 提供确定性的粒子画布：默认是缓缓上浮的尘点；写上 `lifetime`（秒）后改为发射，每颗粒子在随机位置出现，沿 `angle` 度方向、在 `spread` 度内散开，以 `speed` 点每秒飞行，在一生中淡入淡出，`trail` 给出以秒计的拖尾，`colors` 为随机取用的颜色。`turbulence`（点）与 `wander`（弧度每秒）让粒子沿前进方向两侧缓慢摆动，`curve` 让路线逐渐弯曲；粒子始终向前，拖尾是它刚走过的路径，画成一条由细到粗、由暗到亮的连续光带。配合 `blendMode: plusLighter`，就是带拖尾的彗星与火花。
+
+`comet` 是绕目标飞行的单颗彗星，以节点中心为目标：`orbit` 为 [rx, ry] 椭圆，`progress` 从 0 到 1 表示飞行进度，通常由时钟算出；它从 `angle` 所指的一侧远处飞来，绕目标转过 `sweep` 度后飞离。`trail` 为拖尾占整段飞行的比例，`size` 为实心彗头半径，`width` 为拖尾最宽处。节点框需要容纳整段轨迹，约为椭圆的 5.6 倍。`shadow` 可以写成数组，按顺序叠加多层。`video.path` 加载静音循环视频，隐藏时停止；动态封面使用 `artwork`，沿用 App 的共享解码。
 
 `fonts` 列出包内 ttf、otf 或 ttc 路径。字体按可见场景持有，退出后释放登记。
 
@@ -275,6 +281,8 @@ float4 skinFragment(float2 uv, constant SkinUniforms& u, texture2d<float> artwor
 ## 参数、安装和开发
 
 `parameters` 声明 id、title、defaultValue、control；control 支持 toggle、range、choice 和 color。`isUserVisible` 为 true 的参数出现在设置的皮肤选项与全屏快速面板中，只为少量重要选项开启。`visibleWhen` 可以引用其他 params，支持参数联动。相邻且 `section` 相同的参数归在同一小标题下。普通用户不编辑位置。场景用到 `control.miniPlayer` 时，快速面板同时列出播放条的可视化、自动隐藏与材质；用到 `background.host` 时，窗口设置列出艺术背景开关。
+
+`lyricsLead` 是宿主识别的保留参数，单位为秒。声明后，它只把该皮肤的歌词时钟提前对应秒数，不改变原生歌词与其他皮肤；`clock.lyrics`、`lyrics.current` 与逐词进度都会一起前移。正值提前，默认 0.4 表示提前 400 毫秒。
 
 内置原件保留，导出置灰。导入同 ID 用户包时可替换或另存副本；失败保留当前版本。删除使用中的皮肤会把相关模式切回默认皮肤，播放继续。
 

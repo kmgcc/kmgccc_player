@@ -293,19 +293,37 @@
           "description": "text, lyricLine: solid depth behind each glyph: a depth, or {depth, angle, color, endColor}"
         },
         "angle": {
-          "description": "particles with lifetime: direction of travel in degrees, -90 is up"
+          "description": "particles with lifetime: direction of travel in degrees, -90 is up; comet: the side it arrives from in degrees, 0 is right, 90 is below"
         },
         "spread": {
           "description": "particles with lifetime: random spread of the direction in degrees"
         },
         "trail": {
-          "description": "particles with lifetime: tail length in seconds of travel"
+          "description": "particles with lifetime: tail length in seconds of travel; comet: tail length as a share of the flight"
+        },
+        "orbit": {
+          "description": "comet: [rx, ry] in points, the ellipse it circles around the node's centre"
+        },
+        "sweep": {
+          "description": "comet: degrees it turns around the target; negative turns the other way"
+        },
+        "progress": {
+          "description": "comet: 0 to 1, how far along its flight it is; drive it from the clock"
+        },
+        "turbulence": {
+          "description": "particles with lifetime: width in points of the slow sideways wander along the path"
+        },
+        "wander": {
+          "description": "particles with lifetime: angular frequency of the sideways wander, in radians per second"
+        },
+        "curve": {
+          "description": "particles with lifetime: turn added to the travel direction over time, in radians per second squared"
         },
         "outline": {
           "description": "text, lyricLine: a width, or {width, color, hollow}; hollow keeps only the ring"
         },
         "filter": {
-          "description": "a preset {type, ...} or a list applied in order: chromatic {amount, angle}, glitch {amount, slice, rate, intensity}, motionBlur {x, y, samples}, scanlines {spacing, intensity, speed}, wave {amplitude, wavelength, speed}, grain {amount}, custom {library (.metallib), function, kind (layer, color, distortion), args, reach, animated}"
+          "description": "a preset {type, ...} or a list applied in order: chromatic {amount, angle}, glitch {amount, slice, rate, intensity}, motionBlur {x, y, samples}, scanlines {spacing, intensity, speed}, wave {amplitude, wavelength, speed}, grain {amount}, fov {distortion, chromatic, blur, start}, custom {library (.metallib), function, kind (layer, color, distortion), args, reach, animated}"
         },
         "bloom": {
           "description": "bright parts of the subtree glow: a radius, or {radius, intensity, threshold}"
@@ -356,7 +374,8 @@
             "meter",
             "shader",
             "particles",
-            "fog"
+            "fog",
+            "comet"
           ]
         },
         "id": {

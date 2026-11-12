@@ -244,6 +244,28 @@ final class SkinSystemTests: XCTestCase {
     }
 
     @MainActor
+    func testV2HiddenNodesAndUnsetStyleStayOffTheFrame() throws {
+        func node(_ root: String) throws -> SkinCompiledSceneNode {
+            try SkinSceneCompiler.compile(JSONDecoder().decode(SkinSceneV2Document.self, from: Data("{\"root\":\(root)}".utf8))).root
+        }
+        // `visible` alone decides the draw, so a hidden node evaluates nothing else.
+        XCTAssertTrue(try node(#"{"type":"shape","visible":"=clock.position > 1","opacity":"=clock.progress"}"#).hidesWithoutTransition)
+        // A transition keeps the node mounted, and a variant may show it again.
+        XCTAssertFalse(try node(#"{"type":"shape","visible":false,"transition":"fade"}"#).hidesWithoutTransition)
+        XCTAssertFalse(try node(#"{"type":"shape","visible":false,"variants":[{"when":"=self.hovered","visible":true}]}"#).hidesWithoutTransition)
+        XCTAssertFalse(try node(#"{"type":"shape"}"#).hidesWithoutTransition)
+        // Only the style a node can set is applied; effects and keyframes may set any of it.
+        let plain = try node(#"{"type":"shape","opacity":0.5,"variants":[{"when":"=self.hovered","scale":1.1}]}"#)
+        XCTAssertEqual(plain.styleKeys?.contains("opacity"), true)
+        XCTAssertEqual(plain.styleKeys?.contains("scale"), true)
+        XCTAssertEqual(plain.styleKeys?.contains("blur"), false)
+        XCTAssertNil(try node(#"{"type":"shape","effects":[{"type":"blur","value":4}]}"#).styleKeys)
+        // A white glyph tint multiplies to no change and is left off.
+        XCTAssertNil(SkinGlyphTransform(.record(["tint": .color(OKLCHColor(lightness: 1, chroma: 0, hue: nil))])).tint)
+        XCTAssertNotNil(SkinGlyphTransform(.record(["tint": .color(OKLCHColor(lightness: 0.6, chroma: 0.1, hue: 0.1))])).tint)
+    }
+
+    @MainActor
     func testV2GlyphMotionFiltersAndCamera() throws {
         func node(_ root: String) throws -> SkinCompiledSceneNode {
             try SkinSceneCompiler.compile(JSONDecoder().decode(SkinSceneV2Document.self, from: Data("{\"root\":\(root)}".utf8))).root
@@ -268,6 +290,7 @@ final class SkinSystemTests: XCTestCase {
         XCTAssertThrowsError(try node(#"{"type":"shape","glyphMotion":{"y":1}}"#))
 
         XCTAssertNoThrow(try node(#"{"type":"text","text":"a","filter":[{"type":"chromatic","amount":2},{"type":"glitch"}],"bloom":12,"outline":{"width":2,"hollow":true}}"#))
+        XCTAssertNoThrow(try node(#"{"type":"text","text":"a","filter":[{"type":"fov","distortion":0.25,"chromatic":1.5,"blur":4,"start":0.55}]}"#))
         XCTAssertThrowsError(try node(#"{"type":"text","text":"a","filter":{"type":"chromatc"}}"#)) { error in
             XCTAssertTrue(error.localizedDescription.contains("chromatic"))
         }
@@ -290,7 +313,31 @@ final class SkinSystemTests: XCTestCase {
         XCTAssertThrowsError(try node(#"{"type":"text","text":"a","filter":{"type":"custom","library":"fx.metal","function":"ripple"}}"#))
         XCTAssertTrue(try node(#"{"type":"text","text":"a","filter":{"type":"custom","library":"fx.metallib","function":"ripple"}}"#).referencedAssets.contains("fx.metallib"))
         XCTAssertNoThrow(try node(#"{"type":"text","text":"=str(offsets(measureEach(split(\"a b c\", \" \"), 20, \"heavy\"), 4)[1])","extrude":{"depth":6,"angle":30},"shadow":[{"radius":2},{"radius":8}]}"#))
-        XCTAssertNoThrow(try node(#"{"type":"particles","lifetime":2,"angle":-30,"spread":10,"trail":0.3,"count":6}"#))
+        XCTAssertNoThrow(try node(#"{"type":"particles","lifetime":2,"angle":-30,"spread":10,"trail":0.3,"count":6,"turbulence":40,"wander":0.6,"curve":0.1}"#))
+        let comet = try node(#"{"type":"comet","frame":{"x":120,"y":80,"width":600,"height":400},"orbit":[140,90],"progress":"=fract(time)","angle":90,"sweep":-240,"trail":0.16,"size":3,"width":3,"color":"#FFFFFF"}"#)
+        XCTAssertEqual(comet.type, "comet")
+
+        // Kinetic layout: every word gets a box, boxes never overlap, the block fits the safe area.
+        func words(_ texts: [String]) -> [SkinValue] {
+            texts.enumerated().map { .record(["text": .text($0.element), "start": .number(Double($0.offset) * 0.4), "end": .number(Double($0.offset) * 0.4 + 0.4)]) }
+        }
+        let lines = [words(["IT ", "WAS ", "LIKE"]), words(["we ", "were ", "never ", "meant ", "to ", "be ", "separated"]),
+                     words(["宝", "船", "载", "着", "星", "光"]), words(["你"]), [.record(["text": .text("一整行 只有行时间"), "start": .number(0), "end": .number(3)])]]
+        for (number, line) in lines.enumerated() {
+            for seed in 0..<24 {
+                let result = SkinKineticLayout.layout(line, options: [.number(Double(seed) * 1.618 + Double(number)), .list([]), .number(2000), .number(1000), .number(1.08), .text(""), .text("heavy"), .number(1)])
+                let items = result[member: "items"].listValue
+                XCTAssertGreaterThanOrEqual(items.count, line.count)
+                let size = result[member: "size"].listValue.map { $0.number() }
+                XCTAssertLessThanOrEqual(size[0], 2001); XCTAssertLessThanOrEqual(size[1], 1001)
+                for a in items.indices { for b in items.indices where b > a {
+                    let p = items[a], q = items[b]
+                    let apart = abs(p[member: "x"].number() - q[member: "x"].number()) >= (p[member: "w"].number() + q[member: "w"].number()) / 2 - 4
+                        || abs(p[member: "y"].number() - q[member: "y"].number()) >= (p[member: "h"].number() + q[member: "h"].number()) / 2 * 0.86 - 4
+                    XCTAssertTrue(apart, "family \(result[member: "family"].number()) overlaps \(p[member: "t"].textValue) / \(q[member: "t"].textValue)")
+                } }
+            }
+        }
     }
 
     @MainActor
