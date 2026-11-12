@@ -52,7 +52,7 @@ struct SkinSceneComet: View {
 
 /// Shared comet drawing for the `comet` node and particle comets.
 enum SkinCometPath {
-    static func smooth(_ x: Double) -> Double {
+    nonisolated static func smooth(_ x: Double) -> Double {
         let t = min(1, max(0, x))
         return t * t * (3 - 2 * t)
     }
@@ -60,7 +60,7 @@ enum SkinCometPath {
     /// `points` run from the tail to the head. The tail is one filled outline, so no seams or
     /// beads appear along it: it widens from nothing to `width` and fades in from transparent,
     /// and a solid disc of radius `head` sits on its front end.
-    static func draw(in context: inout GraphicsContext, points: [CGPoint], width: Double, head: Double, color: Color, alpha: Double) {
+    nonisolated static func draw(in context: inout GraphicsContext, points: [CGPoint], width: Double, head: Double, color: Color, alpha: Double) {
         guard let front = points.last else { return }
         var lengths = [0.0]
         for index in points.indices.dropFirst() {
