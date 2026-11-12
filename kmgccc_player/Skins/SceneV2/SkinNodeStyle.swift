@@ -83,7 +83,10 @@ struct SkinGlyphTransform: Equatable, Sendable {
         rotation = value[member: "rotation"].number(); scale = value[member: "scale"].number(1)
         opacity = value[member: "opacity"].number(1).clamped01; blur = max(0, value[member: "blur"].number())
         split = value[member: "split"].number(); smearX = value[member: "smearX"].number(); smearY = value[member: "smearY"].number()
-        tint = value[member: "tint"].colorValue?.swiftUIColor
+        // Multiplying by white changes nothing; leaving it out spares the glyph a filter pass.
+        if let color = value[member: "tint"].colorValue, color.lightness < 0.999 || color.chroma > 0.001 || color.alpha < 0.999 {
+            tint = color.swiftUIColor
+        }
     }
 }
 
@@ -213,23 +216,40 @@ struct SkinGlyphRenderer: TextRenderer {
         context.drawLayer { layer in
             if let extrude = style.extrude {
                 let steps = Int(min(32, ceil(extrude.depth)))
-                for step in stride(from: steps, through: 1, by: -1) {
-                    let fraction = Double(step) / Double(steps)
-                    var copy = layer
-                    copy.addFilter(.colorMatrix(mix(extrude.near, extrude.far, fraction).matrix))
-                    copy.translateBy(x: extrude.dx * extrude.depth * fraction, y: extrude.dy * extrude.depth * fraction)
-                    copy.draw(slice)
+                if extrude.near == extrude.far {
+                    // One colour: every step shares a single filtered layer.
+                    var solid = layer
+                    solid.addFilter(.colorMatrix(extrude.near.matrix))
+                    solid.drawLayer { copies in
+                        for step in stride(from: steps, through: 1, by: -1) {
+                            let fraction = Double(step) / Double(steps)
+                            var copy = copies
+                            copy.translateBy(x: extrude.dx * extrude.depth * fraction, y: extrude.dy * extrude.depth * fraction)
+                            copy.draw(slice)
+                        }
+                    }
+                } else {
+                    for step in stride(from: steps, through: 1, by: -1) {
+                        let fraction = Double(step) / Double(steps)
+                        var copy = layer
+                        copy.addFilter(.colorMatrix(mix(extrude.near, extrude.far, fraction).matrix))
+                        copy.translateBy(x: extrude.dx * extrude.depth * fraction, y: extrude.dy * extrude.depth * fraction)
+                        copy.draw(slice)
+                    }
                 }
             }
             if let outline = style.outline {
+                // The ring is one ink, so its copies are filtered once as a layer, not once each.
                 var ring = layer
                 ring.addFilter(.colorMatrix(outline.ink.matrix))
                 let steps = outline.width > 2 ? 16 : 8
-                for step in 0..<steps {
-                    let angle = Double(step) / Double(steps) * 2 * .pi
-                    var copy = ring
-                    copy.translateBy(x: cos(angle) * outline.width, y: sin(angle) * outline.width)
-                    copy.draw(slice)
+                ring.drawLayer { copies in
+                    for step in 0..<steps {
+                        let angle = Double(step) / Double(steps) * 2 * .pi
+                        var copy = copies
+                        copy.translateBy(x: cos(angle) * outline.width, y: sin(angle) * outline.width)
+                        copy.draw(slice)
+                    }
                 }
             }
             var face = layer
@@ -411,8 +431,11 @@ struct SkinKeyedSwap: View {
 }
 
 enum SkinNodeStyle {
-    static func apply(_ content: AnyView, values: [String: SkinValue], reduceTransparency: Bool) -> AnyView {
+    /// `keys` names the style properties the node can ever set. Effects outside it are left off the
+    /// view instead of being applied at their identity value on every frame.
+    static func apply(_ content: AnyView, values: [String: SkinValue], keys: Set<String>? = nil, reduceTransparency: Bool) -> AnyView {
         var result = content
+        func sets(_ names: String...) -> Bool { keys.map { set in names.contains { set.contains($0) } } ?? true }
         let shape = SkinSceneShape(kind: values["glass"]?[member: "shape"].textValue ?? values["shape"]?.textValue ?? "rectangle", cornerRadius: values["cornerRadius"]?.number() ?? values["glass"]?[member: "cornerRadius"].number() ?? 0)
         if let color = values["background"]?.colorValue { result = AnyView(result.background(color.swiftUIColor, in: shape)) }
         if let material = values["material"]?.textValue {
@@ -433,18 +456,20 @@ enum SkinNodeStyle {
         for shadow in values["shadow"].map({ $0.type == .list ? $0.listValue : [$0] }) ?? [] {
             result = AnyView(result.shadow(color: shadow[member: "color"].colorValue?.swiftUIColor ?? .clear, radius: shadow[member: "radius"].number(), x: shadow[member: "x"].number(), y: shadow[member: "y"].number()))
         }
-        result = AnyView(result
-            .opacity(values["opacity"]?.number(1) ?? 1)
-            .rotationEffect(.degrees(values["rotation"]?.number() ?? 0))
-            .scaleEffect(x: values["scaleX"]?.number() ?? values["scale"]?.number(1) ?? 1, y: values["scaleY"]?.number() ?? values["scale"]?.number(1) ?? 1)
-            .offset(x: values["offsetX"]?.number() ?? 0, y: values["offsetY"]?.number() ?? 0)
-            .blur(radius: max(0, values["blur"]?.number() ?? 0))
-            .brightness(values["brightness"]?.number() ?? 0)
-            .contrast(values["contrast"]?.number(1) ?? 1)
-            .saturation(values["saturation"]?.number(1) ?? 1)
-            .grayscale(values["grayscale"]?.number() ?? 0)
-            .hueRotation(.degrees(values["hueRotation"]?.number() ?? 0))
-            .blendMode(blendMode(values["blendMode"]?.textValue ?? "normal")))
+        // Applied in this order; each is present only when the node can set it.
+        if sets("opacity") { result = AnyView(result.opacity(values["opacity"]?.number(1) ?? 1)) }
+        if sets("rotation") { result = AnyView(result.rotationEffect(.degrees(values["rotation"]?.number() ?? 0))) }
+        if sets("scale", "scaleX", "scaleY") {
+            result = AnyView(result.scaleEffect(x: values["scaleX"]?.number() ?? values["scale"]?.number(1) ?? 1, y: values["scaleY"]?.number() ?? values["scale"]?.number(1) ?? 1))
+        }
+        if sets("offsetX", "offsetY") { result = AnyView(result.offset(x: values["offsetX"]?.number() ?? 0, y: values["offsetY"]?.number() ?? 0)) }
+        if sets("blur") { result = AnyView(result.blur(radius: max(0, values["blur"]?.number() ?? 0))) }
+        if sets("brightness") { result = AnyView(result.brightness(values["brightness"]?.number() ?? 0)) }
+        if sets("contrast") { result = AnyView(result.contrast(values["contrast"]?.number(1) ?? 1)) }
+        if sets("saturation") { result = AnyView(result.saturation(values["saturation"]?.number(1) ?? 1)) }
+        if sets("grayscale") { result = AnyView(result.grayscale(values["grayscale"]?.number() ?? 0)) }
+        if sets("hueRotation") { result = AnyView(result.hueRotation(.degrees(values["hueRotation"]?.number() ?? 0))) }
+        if sets("blendMode") { result = AnyView(result.blendMode(blendMode(values["blendMode"]?.textValue ?? "normal"))) }
         if values["invert"]?.isTruthy == true { result = AnyView(result.colorInvert()) }
         return result
     }

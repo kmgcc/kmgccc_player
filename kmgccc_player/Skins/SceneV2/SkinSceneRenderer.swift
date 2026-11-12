@@ -93,7 +93,7 @@ struct SkinSceneNodeV2View: View {
 
     private var needsFrames: Bool {
         node.tier == .frame || node.watches.contains(where: { $0.value.tier == .frame }) || node.properties["keyframes"] != nil || node.properties["glyphMotion"] != nil
-            || ["spectrum", "waveform", "meter", "particles", "shader", "fog", "lyricLine"].contains(node.type)
+            || ["spectrum", "waveform", "meter", "particles", "shader", "fog", "lyricLine", "comet"].contains(node.type)
     }
 
     /// Clock, lyric and audio inputs stand still while paused; scene time once the playback flow
@@ -136,6 +136,10 @@ struct SkinSceneNodeV2View: View {
 
     private func render(at now: Double) -> AnyView {
         let context = context(now: now)
+        // A hidden node with no transition draws nothing, so the rest of its values are not evaluated.
+        if node.hidesWithoutTransition, node.properties["visible"]?.evaluate(context).isTruthy == false {
+            return AnyView(EmptyView())
+        }
         var values = node.values(context, cache: valueCache)
         for effect in values["effects"]?.listValue ?? [] {
             let name = effect[member: "type"].textValue
@@ -166,7 +170,7 @@ struct SkinSceneNodeV2View: View {
             result = AnyView(result.modifier(SkinSceneFilters(filters: filter.type == .list ? filter.listValue : [filter], dormant: dormant)))
         }
         if let bloom = values["bloom"] { result = AnyView(result.modifier(SkinSceneBloom(value: bloom, dormant: dormant))) }
-        result = SkinNodeStyle.apply(result, values: values, reduceTransparency: reduceTransparency)
+        result = SkinNodeStyle.apply(result, values: values, keys: node.styleKeys, reduceTransparency: reduceTransparency)
         if let key = values["key"] {
             result = AnyView(SkinKeyedSwap(key: String(describing: key), transition: transition ?? .null, content: result))
         }
@@ -414,6 +418,7 @@ struct SkinSceneNodeV2View: View {
         case "spectrum", "waveform", "meter": return AnyView(SkinSceneAudioCanvas(kind: node.type, data: data, values: values, now: now, color: components.snapshot.theme.accentColor))
         case "particles": return AnyView(SkinSceneParticles(data: data, values: values, now: now, reduceMotion: reduceMotion))
         case "shader": return AnyView(SkinSceneShader(path: values["path"]?.textValue ?? "", function: values["function"]?.textValue ?? "skinFragment", data: data, snapshot: components.snapshot, now: now))
+        case "comet": return AnyView(SkinSceneComet(values: values).frame(width: size.width, height: size.height))
         default: return AnyView(EmptyView())
         }
     }

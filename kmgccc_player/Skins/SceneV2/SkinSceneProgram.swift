@@ -113,6 +113,12 @@ final class SkinCompiledSceneNode: Identifiable {
     let domains: Set<SkinDataDomain>
     /// Hover state is tracked only for nodes that read `self` or handle hover events.
     let tracksPointer: Bool
+    /// True when `visible` alone decides whether the node draws: no transition keeps it mounted and
+    /// nothing else can set either property, so a hidden node skips the rest of its values.
+    let hidesWithoutTransition: Bool
+    /// Style properties the node can ever set, fixed at compile time; nil when effects or keyframes
+    /// may set any of them. The renderer applies only these, so the view's structure never changes.
+    let styleKeys: Set<String>?
     /// What keeps the node's display timeline running, so it can rest once every input stands still.
     let frameInputs: SkinFrameInputs
     /// True when every per-frame input stands still the moment playback pauses.
@@ -162,6 +168,10 @@ final class SkinCompiledSceneNode: Identifiable {
         domains = all
         let sources = properties.values.flatMap(\.sources) + variants.flatMap { [$0.condition.source] + $0.properties.values.flatMap(\.sources) }
         tracksPointer = actions["hoverStart"] != nil || actions["hoverEnd"] != nil || sources.contains { $0.contains("self.") }
+        let setsAnyProperty = properties["effects"] != nil || properties["keyframes"] != nil
+        hidesWithoutTransition = properties["visible"] != nil && properties["transition"] == nil && !setsAnyProperty
+            && !variants.contains { $0.properties["visible"] != nil || $0.properties["transition"] != nil }
+        styleKeys = setsAnyProperty ? nil : variants.reduce(into: Set(properties.keys)) { $0.formUnion($1.properties.keys) }
         var frame = properties.filter { $0.key != "camera" }.values.reduce(into: Set<SkinDataDomain>()) { $0.formUnion($1.frameDomains) }
         for variant in variants {
             if variant.condition.tier == .frame { frame.formUnion(variant.condition.domains) }
