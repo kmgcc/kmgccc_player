@@ -168,6 +168,7 @@ nonisolated struct LibraryPathClassifier: Sendable {
         }
         // Managed audio is stored as `Tracks/<id>/audio.<ext>`; older
         // imports may keep the original file name.
+        if path.hasPrefix("MediaAssets/") { return .music }
         if path.hasPrefix(tracksPrefix), let name = path.split(separator: "/").last {
             let lowered = name.lowercased()
             let fileExtension = lowered.split(separator: ".").last.map(String.init) ?? ""
@@ -178,8 +179,5 @@ nonisolated struct LibraryPathClassifier: Sendable {
         return .libraryContent
     }
 
-    private static let audioExtensions: Set<String> = [
-        "mp3", "m4a", "aac", "flac", "alac", "wav", "aif", "aiff", "caf",
-        "ogg", "oga", "opus", "ape", "wv", "wma", "dsf", "dff",
-    ]
+    private static let audioExtensions = AudioFormatSupport.playableExtensions.union(["iso", "wvc"])
 }

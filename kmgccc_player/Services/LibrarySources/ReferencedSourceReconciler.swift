@@ -628,7 +628,10 @@ final class ReferencedSourceReconciler {
                 rootURL: root,
                 excludedRelativePaths: Set(descriptor.excludedRelativePaths)
             )
-            if result.diff.sourceStatus != .available {
+            if result.diff.sourceStatus != .available,
+               let resolved = try? bookmarkResolver.resolve(descriptor.rootBookmarkData),
+               resolved.url.standardizedFileURL != root.standardizedFileURL,
+               FileManager.default.isReadableFile(atPath: resolved.url.path) {
                 // The authorized URL is path-stale after a rename/move while
                 // the app was running; the bookmark still follows the inode.
                 // Re-resolve authorization for THIS source only (refresh,
@@ -813,7 +816,7 @@ final class ReferencedSourceReconciler {
         var intent = original
         if intent.operation == .reconcile,
            intent.diff.sourceStatus == .available,
-           intent.mutations.isEmpty || intent.proposedManifest?.entries.contains(where: { $0.trackID == nil }) == true {
+           intent.mutations.isEmpty || !intent.diff.added.isEmpty || intent.proposedManifest?.entries.contains(where: { $0.boundTrackIDs.isEmpty }) == true {
             guard let rootURL = explicitRootURL ?? sourceScope.authorizedRoots[intent.sourceID]?.url else { return changes }
             let isFileRoot = rootIsFile(rootURL)
             let imported = intent.diff.added.isEmpty
@@ -859,9 +862,20 @@ final class ReferencedSourceReconciler {
             if var manifest = intent.proposedManifest {
                 for index in manifest.entries.indices {
                     let entry = manifest.entries[index]
+                    let logicalIDs = tracks.filter { track in
+                        guard let locator = track.mediaLocator.referencedFile else { return false }
+                        return locator.allSourceMemberships.contains { $0.sourceID == intent.sourceID && $0.relativePath == entry.relativePath }
+                    }.sorted { ($0.mediaSelection?.trackNumber ?? 0) < ($1.mediaSelection?.trackNumber ?? 0) }.map(\.id)
+                    let logicalTracks = tracks.filter { logicalIDs.contains($0.id) }
+                    if let program = logicalTracks.compactMap(\.mediaSelection).first {
+                        manifest.entries[index].programFingerprint = program.descriptorFingerprint
+                    } else if !logicalIDs.isEmpty {
+                        manifest.entries[index].programFingerprint = nil
+                    }
+                    manifest.entries[index].trackIDs = logicalIDs.isEmpty ? nil : logicalIDs
                     manifest.entries[index].trackID = physicalTrackIDs[ReferencedPhysicalIdentityKey(entry.fingerprint)]
                         ?? entry.fingerprint.identity.flatMap { ncmSourceTrackIDs[$0] }
-                        ?? entry.trackID
+                        ?? logicalIDs.first ?? entry.trackID
                 }
                 intent = try await intentStore.updateManifest(intent, manifest: manifest)
             }
@@ -1296,9 +1310,11 @@ final class ReferencedSourceReconciler {
                 ? membership.relativePath
                 : nil
         }
-        return matchingPaths.min {
+        let path = matchingPaths.min {
             $0 != $1 && $0.localizedStandardCompare($1) == .orderedAscending
         } ?? ""
+        if let selection = track.mediaSelection { return path + String(format: "#%06d", selection.trackNumber) }
+        return path
     }
 
     private func physicalTrackIDMap(_ tracks: [Track]) -> [ReferencedPhysicalIdentityKey: UUID] {
@@ -1450,7 +1466,19 @@ final class ReferencedSourceReconciler {
                 fingerprint: replacement.newFingerprint
             )
             setMembership(sourceID: diff.sourceID, relativePath: replacement.relativePath, locator: &locator)
-            changes[track.id] = .init(trackID: track.id, locator: locator, availability: .available)
+            let selection = track.mediaSelection
+            let info = await Task.detached {
+                try? AudioDecoderFactory.probe(resolvedURL, selection: selection)
+            }.value
+            if var properties = info?.audioProperties {
+                properties.mediaSelection = selection
+                locator.setAudioProperties(properties, for: diff.sourceID)
+            }
+            changes[track.id] = .init(trackID: track.id, locator: locator, availability: info != nil ? .available : .missing)
+            if info == nil {
+                await noticePublisher.publish(.fileFailures(sourceID: diff.sourceID,
+                    failures: [.init(relativePath: replacement.relativePath, summary: "音频替换后分轨范围需要核验")]))
+            }
         }
         let presentTrackIDs = Set(importedTracks.map(\.id) + diff.moved.map(\.trackID) + diff.replacements.map(\.trackID))
         for missing in diff.missing {
@@ -1478,20 +1506,24 @@ final class ReferencedSourceReconciler {
         // no diff entry at all. Rebuild the membership from that binding, or
         // from the Track's own recorded origin, whenever the file is on disk.
         let scannedTrackPaths = Dictionary(
-            scannedEntries.compactMap { entry in entry.trackID.map { ($0, entry.relativePath) } },
+            scannedEntries.flatMap { entry in entry.boundTrackIDs.map { ($0, entry.relativePath) } },
             uniquingKeysWith: { first, _ in first }
         )
         for track in allTracks {
             guard changes[track.id] == nil,
                   track.availability != .available,
                   case var .referenced(locator) = track.mediaLocator,
-                  !locator.containsSource(diff.sourceID),
                   let relative = recoveredRelativePath(
                       for: track,
                       locator: locator,
                       rootURL: rootURL,
                       scannedTrackPaths: scannedTrackPaths
                   ) else { continue }
+            if let selection = track.mediaSelection {
+                let url = rootIsFile(rootURL) ? rootURL : rootURL.appendingPathComponent(relative)
+                let readable = await Task.detached { (try? AudioDecoderFactory.probe(url, selection: selection)) != nil }.value
+                guard readable else { continue }
+            }
             setMembership(sourceID: diff.sourceID, relativePath: relative, locator: &locator)
             // Restoring the membership is not enough when the recorded playback
             // file itself is gone: a converted source can be found again while

@@ -22,6 +22,19 @@ nonisolated enum ImportMetadataExtractor {
         title: String, artist: String, album: String, albumArtist: String?, duration: Double,
         lyrics: String?, tagFields: ExtractedMetadataFields
     ) {
+        if AudioDecoderFactory.extendedExtensions.contains(url.pathExtension.lowercased()) || url.pathExtension.lowercased() == "iso",
+           let info = try? AudioDecoderFactory.probe(url) {
+            var fields = ExtractedMetadataFields()
+            fields.title = info.title
+            fields.artist = info.artist
+            fields.album = info.album
+            fields.albumArtist = info.album_artist
+            fields.releaseYear = info.date.flatMap { Int($0.prefix(4)) }
+            fields.musicBrainzReleaseID = info.musicbrainz_albumid.flatMap(UUID.init(uuidString:))?.uuidString.lowercased()
+            fields.compilation = info.compilation.map { $0 == "1" || $0.lowercased() == "true" }
+            return (info.title?.isEmpty == false ? info.title! : url.deletingPathExtension().lastPathComponent,
+                info.artist ?? "", info.album ?? "", info.album_artist, info.duration, info.lyrics, fields)
+        }
         let asset = AVURLAsset(url: url)
 
         var fields = ExtractedMetadataFields()
@@ -90,6 +103,10 @@ nonisolated enum ImportMetadataExtractor {
         }
 
         // Apply defaults
+        fields.title = fields.title?.trimmingCharacters(in: .controlCharacters)
+        fields.artist = fields.artist?.trimmingCharacters(in: .controlCharacters)
+        fields.album = fields.album?.trimmingCharacters(in: .controlCharacters)
+        fields.albumArtist = fields.albumArtist?.trimmingCharacters(in: .controlCharacters)
         let finalTitle = fields.title ?? url.deletingPathExtension().lastPathComponent
         let finalArtist = fields.artist ?? NSLocalizedString("library.unknown_artist", comment: "")
         let finalAlbum = fields.album?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -106,8 +123,30 @@ nonisolated enum ImportMetadataExtractor {
         )
     }
 
+    nonisolated static func extractProgramFolderArtwork(beside url: URL) -> Data? {
+        let folder = url.deletingLastPathComponent()
+        guard let files = try? FileManager.default.contentsOfDirectory(at: folder,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]) else { return nil }
+        let byName = Dictionary(files.map { ($0.lastPathComponent.lowercased(), $0) },
+            uniquingKeysWith: { first, _ in first })
+        let names = ["cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.jpeg", "folder.png", "front.jpg", "front.jpeg", "front.png"]
+        for name in names {
+            guard let file = byName[name],
+                  let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true, let size = values.fileSize, size <= 16 * 1024 * 1024,
+                  let data = try? Data(contentsOf: file),
+                  let normalized = ArtworkDataNormalizer.normalizedJPEGData(from: data,
+                      maxPixelSize: ArtworkDataNormalizer.importMaxPixelSize) else { continue }
+            return normalized
+        }
+        return nil
+    }
+
     /// Extract artwork from audio file.
     nonisolated static func extractArtwork(from url: URL) async -> Data? {
+        if AudioDecoderFactory.extendedExtensions.contains(url.pathExtension.lowercased()),
+           let encoded = try? AudioDecoderFactory.probe(url).artwork,
+           let data = Data(base64Encoded: encoded) { return data }
         let asset = AVURLAsset(url: url)
 
         do {

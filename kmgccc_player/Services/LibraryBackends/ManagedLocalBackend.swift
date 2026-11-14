@@ -11,6 +11,8 @@ final class ManagedLocalBackend: LibraryStorageBackend {
     private(set) var lastPreparedInputPlan: ImportInputPlan?
     private let paths: LibraryPaths
     private var selectionLeases: [SecurityScopedResourceLease] = []
+    private var sharedPlacements: [String: ImportPlacement] = [:]
+    private var sharedMediaReleases: [@Sendable () -> Void] = []
 
     init(paths: LibraryPaths) { self.paths = paths }
 
@@ -23,7 +25,8 @@ final class ManagedLocalBackend: LibraryStorageBackend {
                 selectionLeases.append(SecurityScopedResourceLease { root.stopAccessingSecurityScopedResource() })
             }
         }
-        let plan = await ImportInputScanner.scan(selectedURLs: selectedURLs, directorySources: [:])
+        let plan = await ImportInputScanner.scan(selectedURLs: selectedURLs, directorySources: [:], sacdAreas: (try? AudioProgramSourcePreferences.areas(paths: paths)) ?? [:],
+            cueSelections: (try? AudioProgramSourcePreferences.cues(paths: paths)) ?? [:])
         lastPreparedInputPlan = plan
         return plan
     }
@@ -33,6 +36,44 @@ final class ManagedLocalBackend: LibraryStorageBackend {
         trackID: UUID,
         stagingDirectoryURL: URL
     ) async throws -> ImportPlacement {
+        try verifyUnchanged(file)
+        if let selection = file.mediaSelection {
+            let version = "\(file.fingerprint?.fileSize ?? 0)-\(file.fingerprint?.modifiedAt ?? 0)"
+            let physicalID = AudioMediaSelection.groupID(for: file.url)
+            let key = "\(selection.groupID.uuidString)/\(physicalID.uuidString)-\(version)"
+            if let existing = sharedPlacements[key] { return existing }
+            let relativePath = "MediaAssets/\(key)/\(file.url.lastPathComponent)"
+            guard let destination = paths.libraryURL(from: relativePath) else { throw CocoaError(.fileWriteInvalidFileName) }
+            sharedMediaReleases.append(SharedMediaAssetStore.retainMedia(relativePath, paths: paths))
+            let staged: URL
+            if FileManager.default.fileExists(atPath: destination.path) {
+                staged = destination
+            } else {
+                let folder = stagingDirectoryURL.appendingPathComponent("Shared/\(key)", isDirectory: true)
+                staged = folder.appendingPathComponent(file.url.lastPathComponent)
+                try await Task.detached(priority: .userInitiated) {
+                    try Task.checkCancellation()
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    try FileManager.default.copyItem(at: file.url, to: staged)
+                    try SharedMediaAssetStore.markOwnership(folder: folder, audioFileName: file.url.lastPathComponent)
+                    let correction = file.url.deletingPathExtension().appendingPathExtension("wvc")
+                    if file.url.pathExtension.lowercased() == "wv", FileManager.default.isReadableFile(atPath: correction.path) {
+                        try FileManager.default.copyItem(at: correction, to: folder.appendingPathComponent(correction.lastPathComponent))
+                    }
+                    if let descriptor = selection.descriptorPath, descriptor != file.url.path {
+                        let cue = URL(fileURLWithPath: descriptor)
+                        if FileManager.default.isReadableFile(atPath: descriptor) {
+                            try FileManager.default.copyItem(at: cue, to: folder.appendingPathComponent(cue.lastPathComponent))
+                        }
+                    }
+                    try Task.checkCancellation()
+                }.value
+            }
+            try verifyUnchanged(file)
+            let placement = ImportPlacement.managed(stagedAudioURL: staged, libraryRelativePath: relativePath)
+            sharedPlacements[key] = placement
+            return placement
+        }
         let ext = file.url.pathExtension.lowercased()
         let stagedURL = stagingDirectoryURL.appendingPathComponent("\(trackID.uuidString).\(ext)")
         if FileManager.default.fileExists(atPath: stagedURL.path) {
@@ -41,12 +82,30 @@ final class ManagedLocalBackend: LibraryStorageBackend {
         // Video containers are split by the worker directly into staging;
         // copying the complete movie here would double temporary disk use.
         if !AudioFormatSupport.isVideoContainer(file.url) {
-            try FileManager.default.copyItem(at: file.url, to: stagedURL)
+            try await Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+                try FileManager.default.copyItem(at: file.url, to: stagedURL)
+                if ext == "wv" {
+                    let correction = file.url.deletingPathExtension().appendingPathExtension("wvc")
+                    if FileManager.default.isReadableFile(atPath: correction.path) {
+                        try FileManager.default.copyItem(at: correction, to: stagedURL.deletingPathExtension().appendingPathExtension("wvc"))
+                    }
+                }
+                try Task.checkCancellation()
+            }.value
         }
+        try verifyUnchanged(file)
         return .managed(
             stagedAudioURL: stagedURL,
             libraryRelativePath: "Tracks/\(trackID.uuidString)/audio.\(ext)"
         )
+    }
+
+    private func verifyUnchanged(_ file: ImportDiscoveredFile) throws {
+        if let original = file.fingerprint,
+           try ReferencedFileIdentityProvider().fingerprint(for: file.url) != original {
+            throw AudioDecodingError.failed("文件在导入期间发生变化，请重试")
+        }
     }
 
     func validate(_ placement: ImportPlacement) throws {
@@ -56,6 +115,10 @@ final class ManagedLocalBackend: LibraryStorageBackend {
     }
 
     func finishImportBatch() {
+        sharedPlacements.removeAll()
+        let releases = sharedMediaReleases
+        sharedMediaReleases.removeAll()
+        releases.forEach { $0() }
         let leases = selectionLeases
         selectionLeases.removeAll()
         for lease in leases { lease.release() }
@@ -68,7 +131,9 @@ nonisolated enum ImportInputScanner {
     static func scan(
         selectedURLs: [URL],
         directorySources: [URL: UUID],
-        identityProvider: ReferencedFileIdentityProvider = .init()
+        identityProvider: ReferencedFileIdentityProvider = .init(),
+        sacdAreas: [UUID: Int] = [:],
+        cueSelections: [UUID: String] = [:]
     ) async -> ImportInputPlan {
         await Task.detached(priority: .userInitiated) {
             var failures: [ImportInputFailure] = []
@@ -133,7 +198,50 @@ nonisolated enum ImportInputScanner {
                     ))
                 }
             }
-            return ImportInputPlan(files: output, directorySources: [], failures: failures)
+            var logicalFiles: [ImportDiscoveredFile] = []
+            var logicalKeys = Set<String>()
+            var cueChoices: [AudioCueDescriptorChoice] = []
+            let explicitCuePaths = Set(selectedURLs.filter { $0.pathExtension.lowercased() == "cue" }.map { $0.standardizedFileURL.path })
+            for file in output.sorted(by: { $0.url.pathExtension.lowercased() == "cue" && $1.url.pathExtension.lowercased() != "cue" }) {
+                if Task.isCancelled { break }
+                do {
+                    let isCue = file.url.pathExtension.lowercased() == "cue"
+                    if isCue && !explicitCuePaths.contains(file.url.standardizedFileURL.path) { continue }
+                    var descriptor: URL?
+                    if !isCue && file.url.pathExtension.lowercased() != "iso" {
+                        let candidates = try AudioProgramResolver.externalCues(for: file.url)
+                        let explicit = candidates.filter { explicitCuePaths.contains($0.standardizedFileURL.path) }
+                        if explicit.count == 1 { descriptor = explicit[0] }
+                        else if let saved = cueSelections[AudioMediaSelection.groupID(for: file.url)],
+                                let chosen = candidates.first(where: { $0.lastPathComponent == saved }) { descriptor = chosen }
+                        else if candidates.count > 1 {
+                            cueChoices.append(.init(file: file, descriptors: candidates))
+                            continue
+                        }
+                    }
+                    if let tracks = try AudioProgramResolver.tracks(at: file.url,
+                        area: sacdAreas[AudioMediaSelection.groupID(for: file.url)] ?? -1,
+                        cueDescriptor: descriptor), !tracks.isEmpty {
+                        for track in tracks {
+                            guard logicalKeys.insert(track.selection.logicalKey).inserted else { continue }
+                            let fingerprint = try identityProvider.fingerprint(for: track.url)
+                            let derived = memberships(for: track.url, roots: roots, sourceIDs: directorySources)
+                            var logical = ImportDiscoveredFile(url: track.url,
+                                memberships: derived.values.isEmpty ? file.memberships : derived.values,
+                                primarySourceID: derived.primary ?? file.primarySourceID, fingerprint: fingerprint)
+                            logical.mediaSelection = track.selection
+                            logical.programMetadata = AudioProgramMetadata(title: track.title, artist: track.artist,
+                                album: track.album, albumArtist: track.albumArtist)
+                            logicalFiles.append(logical)
+                        }
+                    } else if !logicalFiles.contains(where: { $0.url.standardizedFileURL == file.url.standardizedFileURL && $0.mediaSelection != nil }) {
+                        logicalFiles.append(file)
+                    }
+                } catch {
+                    failures.append(.init(url: file.url, message: error.localizedDescription))
+                }
+            }
+            return ImportInputPlan(files: logicalFiles, directorySources: [], failures: failures, cueChoices: cueChoices)
         }.value
     }
 

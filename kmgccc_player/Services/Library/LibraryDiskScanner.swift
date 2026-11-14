@@ -126,8 +126,16 @@ nonisolated struct LibraryDiskScanner: Sendable {
         var rescanned = 0
         var missingMeta = 0
         var seen = Set<String>()
+        let pendingPrograms: Set<UUID>
+        do { pendingPrograms = try AudioProgramImportTransaction.pendingTrackIDs(paths: paths) }
+        catch {
+            Log.error("[LibraryScan] program recovery records unreadable: \(error.localizedDescription)", category: .library)
+            return ScanResult(values: [], manifestEntries: [:],
+                stats: ScanStats(total: 0, cached: 0, rescanned: 0, removed: 0, missingMeta: 0), enumerationFailed: true)
+        }
 
         for folderURL in folders.urls {
+            if let id = UUID(uuidString: folderURL.lastPathComponent), pendingPrograms.contains(id) { continue }
             let folderRelativePath = "Tracks/\(folderURL.lastPathComponent)"
             let metaRelativePath = "\(folderRelativePath)/meta.json"
             seen.insert(folderRelativePath)

@@ -1,0 +1,28 @@
+Bundled audio decoding components
+
+FFmpeg 8.1.3
+https://ffmpeg.org/releases/ffmpeg-8.1.3.tar.xz
+SHA256 7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
+Configured without GPL/nonfree options. LGPL-2.1-or-later.
+
+WavPack 5.8.1
+https://github.com/dbry/WavPack
+Commit 4827b9889665b937b6ed71b9c6c0123152cd7a02
+BSD-3-Clause.
+
+DSD Nexus libsacd_lite and libsautil
+https://github.com/wichers/dsd-nexus
+Commit b3f443d4c42ccf52806eb57def3b3a34805714bd
+LGPL-2.1-or-later. PS3 drive and network support disabled.
+
+FFmpeg includes the accompanying ffmpeg-dst-raw-frames.patch. It expands raw
+DST-frame DSD bytes into the decoder's four-byte sample stride and rejects
+truncated frames before DSD-to-PCM conversion. ffmpeg-dsf-duration.patch uses
+the DSF header sample count to retain the exact program duration. WavPack sources are built without source modifications.
+DSD Nexus includes dsd-nexus-dst-error-codes.patch to give each read failure
+a distinct negative status and preserve I/O errors. The accompanying
+AudioCodecs.cpp adapter is distributed with the application's source code.
+The reproducible build configuration is scripts/build-audio-codecs.sh and
+Dependencies/AudioCodecs/CMakeLists.txt in the application repository.
+The corresponding source archives and fixed commits are available at the
+upstream locations above. License texts accompany the bundled libraries.

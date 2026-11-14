@@ -27,6 +27,9 @@ internal struct ImportEnrichmentSnapshot: Sendable {
     let artistArtworkNames: [String]
     let needsAlbumArtwork: Bool
 
+    var albumScope: String? = nil
+    var albumArtist: String? = nil
+
     var needsArtistMetadata: Bool { !artistMetadataNames.isEmpty }
     var needsArtistArtwork: Bool { !artistArtworkNames.isEmpty }
 }
@@ -67,6 +70,7 @@ final class ImportImmediateEnrichmentEngine {
     private let artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
     private let lyricsSearchCoordinator: LyricsSearchCoordinator
     private let amllDBService: AMLLDBService
+    private let albumLookups: AlbumContentLookupPool
 
     init(
         repository: LibraryRepositoryProtocol,
@@ -74,7 +78,8 @@ final class ImportImmediateEnrichmentEngine {
         qqMusicCoverService: QQMusicCoverService,
         artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator,
         lyricsSearchCoordinator: LyricsSearchCoordinator,
-        amllDBService: AMLLDBService
+        amllDBService: AMLLDBService,
+        albumLookups: AlbumContentLookupPool
     ) {
         self.repository = repository
         self.mutationCoordinator = mutationCoordinator
@@ -82,6 +87,7 @@ final class ImportImmediateEnrichmentEngine {
         self.artistArtworkProviderCoordinator = artistArtworkProviderCoordinator
         self.lyricsSearchCoordinator = lyricsSearchCoordinator
         self.amllDBService = amllDBService
+        self.albumLookups = albumLookups
     }
 
     func enrichImportedRecords(
@@ -162,7 +168,9 @@ final class ImportImmediateEnrichmentEngine {
                 artistMetadataNames: artistMetadataNames,
                 needsAlbumMetadata: needsAlbumMetadata,
                 artistArtworkNames: artistArtworkNames,
-                needsAlbumArtwork: needsAlbumArtwork
+                needsAlbumArtwork: needsAlbumArtwork,
+                albumScope: record.track.audioProgramLookupScope,
+                albumArtist: record.track.mediaSelection?.albumArtist ?? record.track.albumArtist
             ))
         }
         let recordsByTrackID = Dictionary(
@@ -195,14 +203,15 @@ final class ImportImmediateEnrichmentEngine {
                     )
                 )
                 group.addTask {
-                    [qqMusicCoverService, artistArtworkProviderCoordinator, lyricsSearchCoordinator, amllDBService] in
+                    [qqMusicCoverService, artistArtworkProviderCoordinator, lyricsSearchCoordinator, amllDBService, albumLookups] in
                     await Self.performImmediateEnrichmentTask(
                         snapshot: snapshot,
                         cancellationToken: cancellationToken,
                         qqMusicCoverService: qqMusicCoverService,
                         artistArtworkProviderCoordinator: artistArtworkProviderCoordinator,
                         lyricsSearchCoordinator: lyricsSearchCoordinator,
-                        amllDBService: amllDBService
+                        amllDBService: amllDBService,
+                        albumLookups: albumLookups
                     )
                 }
             }
@@ -289,14 +298,15 @@ final class ImportImmediateEnrichmentEngine {
                         )
                     )
                     group.addTask {
-                        [qqMusicCoverService, artistArtworkProviderCoordinator, lyricsSearchCoordinator, amllDBService] in
+                        [qqMusicCoverService, artistArtworkProviderCoordinator, lyricsSearchCoordinator, amllDBService, albumLookups] in
                         await Self.performImmediateEnrichmentTask(
                             snapshot: snapshot,
                             cancellationToken: cancellationToken,
                             qqMusicCoverService: qqMusicCoverService,
                             artistArtworkProviderCoordinator: artistArtworkProviderCoordinator,
                             lyricsSearchCoordinator: lyricsSearchCoordinator,
-                            amllDBService: amllDBService
+                            amllDBService: amllDBService,
+                            albumLookups: albumLookups
                         )
                     }
                 }
@@ -350,14 +360,15 @@ final class ImportImmediateEnrichmentEngine {
     private func applyAlbumMetadataDetail(
         _ detail: AlbumMetadataDetail,
         album: String,
-        artist: String
+        artist: String,
+        program: AudioProgramAlbumContext? = nil
     ) async -> Bool {
         guard !LibraryNormalization.isUnknownAlbum(album) else { return false }
-        let entry = await latestAlbumEntry(album: album, artist: artist)
+        let entry = await latestAlbumEntry(album: album, artist: artist, program: program)
         let result = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: entry)
         guard result.changed else { return false }
         return await commitMetadataEntry(id: result.value.id) {
-            let latest = await self.latestAlbumEntry(album: album, artist: artist)
+            let latest = await self.latestAlbumEntry(album: album, artist: artist, program: program)
             let fresh = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: latest)
             if fresh.changed {
                 try await self.repository.updateAlbumEntry(fresh.value)
@@ -365,15 +376,16 @@ final class ImportImmediateEnrichmentEngine {
         }
     }
 
-    private func applyAlbumArtworkData(_ data: Data, album: String, artist: String) async -> Bool {
+    private func applyAlbumArtworkData(_ data: Data, album: String, artist: String, program: AudioProgramAlbumContext? = nil) async -> Bool {
         guard !LibraryNormalization.isUnknownAlbum(album) else { return false }
-        var entry = await latestAlbumEntry(album: album, artist: artist)
-        guard !entry.hasArtwork else { return false }
-        entry.artworkData = data
-        entry.artworkFileName = "artwork.png"
-        entry.updatedAt = Date()
+        let entry = await latestAlbumEntry(album: album, artist: artist, program: program)
         return await commitMetadataEntry(id: entry.id) {
-            try await self.repository.updateAlbumEntry(entry)
+            var latest = await self.latestAlbumEntry(album: album, artist: artist, program: program)
+            guard !latest.hasArtwork else { return }
+            latest.artworkData = data
+            latest.artworkFileName = "artwork.png"
+            latest.updatedAt = Date()
+            try await self.repository.updateAlbumEntry(latest)
         }
     }
 
@@ -422,8 +434,8 @@ final class ImportImmediateEnrichmentEngine {
         )
     }
 
-    private func latestAlbumEntry(album: String, artist: String) async -> AlbumEntry {
-        let albumKey = LibraryNormalization.normalizedAlbumKey(album: album)
+    private func latestAlbumEntry(album: String, artist: String, program: AudioProgramAlbumContext? = nil) async -> AlbumEntry {
+        let albumKey = program?.key ?? LibraryNormalization.normalizedAlbumKey(album: album)
         let entries = await repository.fetchAlbumEntries()
         if let entry = entries.first(where: { $0.canonicalKey == albumKey }) {
             return entry
@@ -431,7 +443,7 @@ final class ImportImmediateEnrichmentEngine {
 
         let now = Date()
         return AlbumEntry(
-            id: UUID(),
+            id: program?.id ?? UUID(),
             canonicalKey: albumKey,
             displayTitle: LibraryNormalization.displayAlbum(album),
             primaryArtistCanonicalName: LibraryNormalization.normalizeArtist(artist),
@@ -453,6 +465,7 @@ final class ImportImmediateEnrichmentEngine {
         for output in outputs {
             if (try? await cancellationToken.checkCancellation()) == nil { return }
             let effectiveAlbum = recordsByTrackID[output.trackID]?.track.album ?? output.album
+            let program = recordsByTrackID[output.trackID]?.track.audioProgramAlbum
 
             for result in output.artistMetadataResults {
                 guard case .completed(let detail) = result.outcome else { continue }
@@ -474,8 +487,14 @@ final class ImportImmediateEnrichmentEngine {
                 }
             }
 
+            if let program, case .completed(let data) = output.coverOutcome,
+               recordsByTrackID[output.trackID]?.track.artworkIsUserSelected != true {
+                _ = await applyAlbumArtworkData(data, album: effectiveAlbum, artist: program.artist, program: program)
+                recordsByTrackID[output.trackID]?.track.artworkData = nil
+            }
+
             if case .completed(let detail) = output.albumMetadataOutcome {
-                if await applyAlbumMetadataDetail(detail, album: effectiveAlbum, artist: output.artist) {
+                if await applyAlbumMetadataDetail(detail, album: effectiveAlbum, artist: program?.artist ?? output.artist, program: program) {
                     Log.info(
                         "[ImportEnrichment] immediate albumMetadata persisted \(effectiveAlbum)",
                         category: .import
@@ -484,7 +503,7 @@ final class ImportImmediateEnrichmentEngine {
             }
 
             if case .completed(let data) = output.albumArtworkOutcome {
-                if await applyAlbumArtworkData(data, album: effectiveAlbum, artist: output.artist) {
+                if await applyAlbumArtworkData(data, album: effectiveAlbum, artist: program?.artist ?? output.artist, program: program) {
                     Log.info(
                         "[ImportEnrichment] immediate albumArtwork persisted \(effectiveAlbum)",
                         category: .import
@@ -503,7 +522,7 @@ final class ImportImmediateEnrichmentEngine {
                     artist: output.artist
                 )
                 if case .completed(let detail) = metadataOutcome {
-                    _ = await applyAlbumMetadataDetail(detail, album: effectiveAlbum, artist: output.artist)
+                    _ = await applyAlbumMetadataDetail(detail, album: effectiveAlbum, artist: program?.artist ?? output.artist, program: program)
                 }
 
                 let artworkOutcome = await MetadataEnrichmentWorker.fetchAlbumArtwork(
@@ -512,7 +531,7 @@ final class ImportImmediateEnrichmentEngine {
                     qqMusicCoverService: qqMusicCoverService
                 )
                 if case .completed(let data) = artworkOutcome {
-                    _ = await applyAlbumArtworkData(data, album: effectiveAlbum, artist: output.artist)
+                    _ = await applyAlbumArtworkData(data, album: effectiveAlbum, artist: program?.artist ?? output.artist, program: program)
                 }
             }
         }
@@ -524,7 +543,8 @@ final class ImportImmediateEnrichmentEngine {
         qqMusicCoverService: QQMusicCoverService,
         artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator,
         lyricsSearchCoordinator: LyricsSearchCoordinator,
-        amllDBService: AMLLDBService
+        amllDBService: AMLLDBService,
+        albumLookups: AlbumContentLookupPool
     ) async -> ImportEnrichmentTaskOutput {
         if (try? await cancellationToken.checkCancellation()) == nil {
             return ImportEnrichmentTaskOutput(
@@ -555,10 +575,11 @@ final class ImportImmediateEnrichmentEngine {
         async let coverOutcome: ImportCoverLookupOutcome? = snapshot.needsCover
             ? ImportEnrichmentWorker.fetchCover(
                 title: snapshot.title,
-                artist: snapshot.artist,
+                artist: snapshot.albumScope == nil ? snapshot.artist : (snapshot.albumArtist ?? snapshot.artist),
                 album: snapshot.album,
                 duration: snapshot.duration,
-                qqMusicCoverService: qqMusicCoverService
+                qqMusicCoverService: qqMusicCoverService,
+                albumPool: albumLookups, albumScope: snapshot.albumScope
             )
             : nil
 
@@ -581,7 +602,8 @@ final class ImportImmediateEnrichmentEngine {
         async let albumMetadataOutcome: ImportAlbumMetadataOutcome? = snapshot.needsAlbumMetadata
             ? MetadataEnrichmentWorker.fetchAlbumMetadata(
                 album: snapshot.album,
-                artist: snapshot.artist
+                artist: snapshot.albumScope == nil ? snapshot.artist : (snapshot.albumArtist ?? snapshot.artist),
+                albumPool: albumLookups, albumScope: snapshot.albumScope
             )
             : nil
         async let artistArtworkResults: [ImportArtistArtworkResult] = {
@@ -598,8 +620,9 @@ final class ImportImmediateEnrichmentEngine {
         async let albumArtworkOutcome: ImportAlbumArtworkOutcome? = snapshot.needsAlbumArtwork
             ? MetadataEnrichmentWorker.fetchAlbumArtwork(
                 album: snapshot.album,
-                artist: snapshot.artist,
-                qqMusicCoverService: qqMusicCoverService
+                artist: snapshot.albumScope == nil ? snapshot.artist : (snapshot.albumArtist ?? snapshot.artist),
+                qqMusicCoverService: qqMusicCoverService,
+                albumPool: albumLookups, albumScope: snapshot.albumScope
             )
             : nil
 
@@ -710,8 +733,9 @@ final class ImportImmediateEnrichmentEngine {
             // severity is determined by the essential lyrics and track cover.
             switch trackMetadataOutcome {
             case .completed(let detail):
+                let newSourceMatch = record.track.recordProgramMetadataMatch(detail)
                 let changed = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: record.track)
-                if changed {
+                if changed || newSourceMatch {
                     stats.trackMetadataSuccess += 1
                     detailParts.append("歌曲信息已补全")
                 }

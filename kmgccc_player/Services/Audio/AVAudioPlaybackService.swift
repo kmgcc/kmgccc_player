@@ -88,7 +88,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     // MARK: - Renderer Components
 
-    private var audioFile: AVAudioFile?
+    private var audioFile: AudioDecoderResource?
     private let rendererPipeline = RendererPlaybackPipeline()
     private var spatialCurrentSegmentID: UUID?
     private var pendingRendererStartSegmentID: UUID?
@@ -639,7 +639,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         activeLookaheadEnabled = desired
         currentTime = max(0, min(resumeTime, duration))
-        let provider = AVFilePCMProvider(file: file, startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
+        let provider = file.makeProvider(startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
         let segmentID = UUID()
         spatialCurrentSegmentID = segmentID
         rendererLoadSegmentID = segmentID
@@ -820,7 +820,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             locator: track.mediaLocator,
             libraryPaths: LibraryPaths(rootURL: root),
             authorizedSourceRoots: authorizedSourceRootsProvider.snapshot(),
-            titleForLog: track.title
+            titleForLog: track.title,
+            mediaSelection: track.mediaSelection
         )
     }
 
@@ -972,7 +973,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let upperBound = duration > 0.5 ? duration - 0.5 : 0
         let position = max(0, min(requestedPosition, upperBound))
         let frame = AVAudioFramePosition(position * sampleRate)
-        let provider = AVFilePCMProvider(file: resource.file, startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
+        let provider = resource.file.makeProvider(startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
         adoptCurrentLoudnessPlan(makeLoudnessPlan(track: track, url: resource.resolvedURL),
                                  track: track, url: resource.resolvedURL)
         pauseTransitionPending = false
@@ -1338,7 +1339,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private func seekSpatialRenderer(
         to seconds: Double,
-        file: AVAudioFile,
+        file: AudioDecoderResource,
         wasPlaying: Bool
     ) {
         cancelPendingCompletion()
@@ -1351,7 +1352,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
 
         let position = max(0, min(seconds, duration))
-        let provider = AVFilePCMProvider(file: file, startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
+        let provider = file.makeProvider(startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
         let segmentID = UUID()
         spatialCurrentSegmentID = segmentID
         rendererLoadSegmentID = segmentID
@@ -1622,8 +1623,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let frameCount = trim?.scheduledFrameCount
         let itemDuration = trim?.scheduledDuration
             ?? (resource.sampleRate > 0 ? Double(resource.file.length) / resource.sampleRate : resource.duration)
-        let provider = AVFilePCMProvider(
-            file: resource.file,
+        let provider = resource.file.makeProvider(
             startingFrame: startFrame,
             frameCount: frameCount
         )

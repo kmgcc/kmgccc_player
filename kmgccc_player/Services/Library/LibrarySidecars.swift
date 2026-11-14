@@ -29,6 +29,9 @@ nonisolated struct TrackAudioProperties: Codable, Equatable, Hashable, Sendable 
     var sampleRateHz: Int?
     var bitDepth: Int?
     var channelCount: Int?
+    var mediaSelection: AudioMediaSelection? = nil
+    var decodedSampleRateHz: Int? = nil
+    var isLossless: Bool? = nil
 
     init(
         format: String? = nil,
@@ -312,7 +315,7 @@ nonisolated struct ImportProvenance: Codable, Equatable, Sendable {
 }
 
 nonisolated struct TrackSidecar: Codable, Sendable {
-    static let currentSchemaVersion = 9
+    static let currentSchemaVersion = 10
 
     let schemaVersion: Int
     let id: UUID

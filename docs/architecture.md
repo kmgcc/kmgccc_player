@@ -47,6 +47,10 @@ flowchart TD
 
 本地播放的命令入口是 `PlaybackCoordinator`。界面调用它的 play、pause、seek、next、previous 等方法，当来源不是本地时，播放某个曲目会先切回 `.local`。协调器把具体操作交给 `PlayerViewModel`，后者持有当前曲目、队列、播放顺序、进度、音量和播放态，并调用 `AVAudioPlaybackService`。服务通过唯一的 `RendererPlaybackPipeline` 驱动 `AVSampleBufferAudioRenderer` 和 `AVSampleBufferRenderSynchronizer`；解码、segment、PTS、输出设备切换与恢复在管线串行队列执行。managed locator 由 captured `LibraryPaths` 解析；referenced locator 通过 source/file bookmark 和成对的 scope lease 解析。
 
+`AudioDecoderFactory` 统一播放、导入探测、波形和响度读取。系统音频经 Core Audio，新编码经随 App 打包的 FFmpeg、WavPack 和 SACD 薄接口，输出统一 `RendererPCMProvider`。DSD 使用 176.4 kHz Float32 PCM，技术属性分别保存源采样率与解码采样率。
+
+`AudioMediaSelection` 以整数时间基保存 CUE 范围或 SACD 区域内曲目。逻辑曲目的 provider 从零计时，连续分轨复用物理 decoder 的游标和滤波状态。seek 重建 DSD 转换状态并预解码到目标位置。每轨的元数据与歌词查询使用该轨标题、署名和时长，来源专辑通过现有 AlbumEntry 共享资料与封面。
+
 Renderer 保持源采样率与声道数，并向系统声明可用的空间化格式。输出设备 UID 绑定设备时钟；HAL 延迟只用于诊断。可视化延迟开关通过时间线保留零或固定 180 ms lead。无缝播放追加下一 segment，正常边界不重建输出对象。Renderer 连续故障只尝试一次重建；无法恢复或源读取失败时停止该请求，保留曲目与位置供用户重试。DSP 效果链由可编程节点接入渲染管线，脚本语言见 [DSP 脚本语言](audio-dsp-script-language.md)，当前输出统一阶段不包含效果处理。
 
 未来远程 catalog 不复用本地 bookmark/locator 伪装网络流。它应使用独立媒体表示、backend 与 playback adapter；当前 session/backend factory 和统一展示模型是预留边界，不包含未实现的远程 API 或行为承诺。

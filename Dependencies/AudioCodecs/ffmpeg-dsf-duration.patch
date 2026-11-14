@@ -1,0 +1,10 @@
+--- a/libavformat/dsfdec.c
++++ b/libavformat/dsfdec.c
+@@ -132,6 +132,7 @@
+     }
+ 
+     dsf->audio_size = avio_rl64(pb) / 8 * st->codecpar->ch_layout.nb_channels;
++    st->duration = dsf->audio_size / st->codecpar->ch_layout.nb_channels;
+     st->codecpar->block_align = avio_rl32(pb);
+     if (st->codecpar->block_align > INT_MAX / st->codecpar->ch_layout.nb_channels ||
+         st->codecpar->block_align <= 0) {

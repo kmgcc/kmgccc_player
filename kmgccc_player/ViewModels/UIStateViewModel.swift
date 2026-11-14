@@ -32,12 +32,17 @@ enum SidebarNoticeStyle: Sendable {
 /// newer notice for something else.
 nonisolated enum SidebarNoticeTag: String, Sendable {
     case libraryMutation
+    case audioPrograms
+    case audioProgramRecovery
+    case albumOrdering
 }
 
 /// Where a sidebar notice's action should take the user. Kept independent of
 /// view types so notices stay `Sendable`.
 nonisolated enum SidebarNoticeDestination: Equatable, Sendable {
     case libraryImportStatus
+    case audioProgramExpansion
+    case albumOrderingFailures
     case librarySettings(anchor: String?)
     case libraryRepair
     case revealPath(String)
@@ -52,6 +57,7 @@ struct SidebarNotice: Equatable, Identifiable, Sendable {
     let isSticky: Bool
     let tag: SidebarNoticeTag?
     let sourceID: UUID?
+    var visibleDuration: TimeInterval? = nil
 }
 
 /// Observable ViewModel for UI layout state.
@@ -171,6 +177,23 @@ final class UIStateViewModel {
 
     /// Compact, transient notice shown in the sidebar bottom status area.
     var sidebarNotice: SidebarNotice?
+    private var queuedSidebarNotices: [SidebarNotice] = []
+    var pendingAudioAreaChoice: AudioProgramAreaChoice?
+    private var queuedAudioChoices: [AudioProgramAreaChoice] = []
+    var pendingAudioExpansions: [AudioProgramExpansionProposal] = []
+
+    func recordAudioProgramProposals(_ proposals: [AudioProgramExpansionProposal]) {
+        guard !proposals.isEmpty else { return }
+        for proposal in proposals {
+            if let index = pendingAudioExpansions.firstIndex(where: { $0.id == proposal.id }) {
+                pendingAudioExpansions[index] = proposal
+            } else {
+                pendingAudioExpansions.append(proposal)
+            }
+        }
+        showSidebarNotice("有分轨待处理", style: .warning, actionTitle: "查看分轨",
+            destination: .audioProgramExpansion, isSticky: true, tag: .audioPrograms)
+    }
 
     /// Import failures outlive the progress window so a background source
     /// scan can be reviewed from the sidebar instead of sending the user to a
@@ -254,14 +277,23 @@ final class UIStateViewModel {
         if albumOrderingFailures.count > 20 {
             albumOrderingFailures.removeFirst(albumOrderingFailures.count - 20)
         }
+        updateAlbumOrderingNotice()
     }
 
     func removeAlbumOrderingFailure(albumKey: String) {
         albumOrderingFailures.removeAll { $0.albumKey == albumKey }
+        updateAlbumOrderingNotice()
     }
 
     func clearAlbumOrderingFailures() {
         albumOrderingFailures.removeAll()
+        updateAlbumOrderingNotice()
+    }
+
+    private func updateAlbumOrderingNotice() {
+        guard !albumOrderingFailures.isEmpty else { dismissSidebarNotice(tag: .albumOrdering); return }
+        showSidebarNotice("\(albumOrderingFailures.count) 张专辑的曲序待整理", style: .warning,
+            actionTitle: "查看详情", destination: .albumOrderingFailures, isSticky: true, tag: .albumOrdering)
     }
 
     func showSidebarNotice(
@@ -274,36 +306,31 @@ final class UIStateViewModel {
         isSticky: Bool = false,
         tag: SidebarNoticeTag? = nil
     ) {
-        // A persistent warning describes a condition the user still has to
-        // resolve. Do not let a passing success toast erase it.
-        if let current = sidebarNotice, current.isSticky, !isSticky, style == .success {
+        let notice = SidebarNotice(message: message, style: style, actionTitle: actionTitle,
+            destination: destination, isSticky: isSticky, tag: tag, sourceID: sourceID,
+            visibleDuration: duration)
+        let sameTask: (SidebarNotice) -> Bool = {
+            $0.sourceID == sourceID && $0.tag == tag && $0.destination == destination
+        }
+        if let current = sidebarNotice, current.isSticky, !sameTask(current) {
+            if let index = queuedSidebarNotices.firstIndex(where: sameTask) { queuedSidebarNotices[index] = notice }
+            else { queuedSidebarNotices.append(notice) }
             return
         }
-        let notice = SidebarNotice(
-            message: message,
-            style: style,
-            actionTitle: actionTitle,
-            destination: destination,
-            isSticky: isSticky,
-            tag: tag,
-            sourceID: sourceID
-        )
-        sidebarNotice = notice
+        queuedSidebarNotices.removeAll(where: sameTask)
+        presentSidebarNotice(notice)
+    }
 
+    private func presentSidebarNotice(_ notice: SidebarNotice) {
         sidebarNoticeDismissTask?.cancel()
         sidebarNoticeDismissTask = nil
-        // Sticky notices describe a condition that still needs the user. They
-        // stay until the action succeeds, the App resolves the condition, or
-        // the user closes them explicitly.
-        guard !isSticky else { return }
-        let visibleDuration = duration ?? (style == .warning ? 8 : 1.8)
-        let delay = UInt64(max(0.1, visibleDuration) * 1_000_000_000)
+        sidebarNotice = notice
+        guard !notice.isSticky else { return }
+        let duration = notice.visibleDuration ?? (notice.style == .warning ? 8 : 1.8)
         sidebarNoticeDismissTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: delay)
-            guard !Task.isCancelled else { return }
-            if self?.sidebarNotice?.id == notice.id {
-                self?.sidebarNotice = nil
-            }
+            try? await Task.sleep(for: .seconds(max(0.1, duration)))
+            guard !Task.isCancelled, self?.sidebarNotice?.id == notice.id else { return }
+            self?.dismissSidebarNotice()
         }
     }
 
@@ -311,18 +338,56 @@ final class UIStateViewModel {
         sidebarNoticeDismissTask?.cancel()
         sidebarNoticeDismissTask = nil
         sidebarNotice = nil
+        if !queuedSidebarNotices.isEmpty { presentSidebarNotice(queuedSidebarNotices.removeFirst()) }
     }
 
-    /// Clears a notice only when it belongs to the given source, so a newer
-    /// notice for something else is never dismissed by a stale refresh.
     func dismissSidebarNotice(sourceID: UUID) {
-        guard sidebarNotice?.sourceID == sourceID else { return }
-        dismissSidebarNotice()
+        queuedSidebarNotices.removeAll { $0.sourceID == sourceID }
+        if sidebarNotice?.sourceID == sourceID { dismissSidebarNotice() }
     }
 
     func dismissSidebarNotice(tag: SidebarNoticeTag) {
-        guard sidebarNotice?.tag == tag else { return }
+        queuedSidebarNotices.removeAll { $0.tag == tag }
+        if sidebarNotice?.tag == tag { dismissSidebarNotice() }
+    }
+
+    func resetLibraryNotices() {
+        pendingAudioExpansions.removeAll()
+        queuedSidebarNotices.removeAll()
         dismissSidebarNotice()
+        let choices = queuedAudioChoices + (pendingAudioAreaChoice.map { [$0] } ?? [])
+        queuedAudioChoices.removeAll()
+        pendingAudioAreaChoice = nil
+        choices.forEach { $0.finish(nil) }
+    }
+
+    func chooseAudioProgram(title: String, fileName: String, labels: [String], selected: Int,
+        trackTitles: [String] = [], actionTitle: String = "导入") async -> Int? {
+        let requestID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(returning: nil); return }
+                let request = AudioProgramAreaChoice(id: requestID, title: title, labels: labels,
+                    trackTitles: trackTitles, actionTitle: actionTitle,
+                    fileName: fileName, areas: Array(labels.indices), selectedArea: selected) { [weak self] index in
+                        self?.queuedAudioChoices.removeAll { $0.id == requestID }
+                        if self?.pendingAudioAreaChoice?.id == requestID {
+                            self?.pendingAudioAreaChoice = nil
+                            if self?.queuedAudioChoices.isEmpty == false {
+                                self?.pendingAudioAreaChoice = self?.queuedAudioChoices.removeFirst()
+                            }
+                        }
+                        continuation.resume(returning: index)
+                    }
+                if pendingAudioAreaChoice == nil { pendingAudioAreaChoice = request }
+                else { queuedAudioChoices.append(request) }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                if self?.pendingAudioAreaChoice?.id == requestID { self?.pendingAudioAreaChoice?.finish(nil) }
+                else { self?.queuedAudioChoices.first { $0.id == requestID }?.finish(nil) }
+            }
+        }
     }
 
     func showWindowPlaybackQueue() {

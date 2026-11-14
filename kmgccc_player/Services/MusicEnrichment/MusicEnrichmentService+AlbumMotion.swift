@@ -31,7 +31,7 @@ extension MusicEnrichmentService {
         a.title == b.title && a.artist == b.artist && a.album == b.album
             && a.albumArtist == b.albumArtist && abs(a.duration - b.duration) < 0.01
             && a.appleSongID == b.appleSongID && a.appleAlbumID == b.appleAlbumID
-            && a.isrc == b.isrc && a.storefront == b.storefront
+            && a.isrc == b.isrc && a.storefront == b.storefront && a.sourceAlbumIdentity == b.sourceAlbumIdentity
     }
 
     /// One automatic download per album and shape, shared by playback and the

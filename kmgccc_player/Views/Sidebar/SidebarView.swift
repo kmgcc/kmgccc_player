@@ -85,6 +85,7 @@ struct SidebarView: View {
     }
 
     var body: some View {
+        @Bindable var uiState = uiState
         VStack(spacing: 0) {
             if settings.showPlaybackSourceSwitcher {
                 playbackSourceSwitcher
@@ -582,6 +583,9 @@ struct SidebarView: View {
                 .environment(cacheServices)
                 .environmentObject(appSession)
                 .environmentObject(themeStore)
+        }
+        .sheet(item: $uiState.pendingAudioAreaChoice) { request in
+            AudioProgramAreaChoiceView(request: request)
         }
         .sheet(isPresented: $showingLibraryImportStatus) {
             LibraryImportStatusDialogView(
@@ -1135,8 +1139,14 @@ struct SidebarView: View {
     /// without an explicit destination keep the historical fallback.
     private func handleSidebarNoticeAction(_ notice: SidebarNotice) {
         switch notice.destination {
+        case .audioProgramExpansion:
+            guard !uiState.pendingAudioExpansions.isEmpty else { return }
+            let proposals = uiState.pendingAudioExpansions
+            Task { await appSession.previewAudioPrograms(proposals) }
         case .libraryImportStatus:
             showingLibraryImportStatus = true
+        case .albumOrderingFailures:
+            AlbumOrderingFailureDialogPresenter.present(uiState: uiState, appSession: appSession)
         case .librarySettings(let anchor):
             openSettings(category: .library, anchor: anchor)
         case .libraryRepair:
@@ -1661,6 +1671,7 @@ struct SidebarView: View {
         deletionRequest = nil
         Task {
             switch request {
+
             case .playlist(let playlist):
                 await libraryVM.deletePlaylist(playlist)
             case .artist(let entry, _):
@@ -1694,11 +1705,11 @@ private struct SidebarEnrichmentCompletionNotice: View {
         // narrow to fit icon + title + action + close on one line.
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Image(systemName: "checkmark.circle.fill")
+                Image(systemName: summary.failedCount > 0 ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.green)
+                    .foregroundStyle(summary.failedCount > 0 ? Color.orange : Color.green)
 
-                Text("歌曲信息补全完毕")
+                Text(summary.failedCount > 0 ? "部分内容待补全" : "歌曲信息补全完毕")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1720,7 +1731,7 @@ private struct SidebarEnrichmentCompletionNotice: View {
                 HStack {
                     Spacer(minLength: 0)
 
-                    Button("查看 \(summary.failedCount) 首失败") {
+                    Button("查看 \(summary.failedCount) 首") {
                         onShowFailures()
                     }
                     .buttonStyle(
@@ -1736,7 +1747,7 @@ private struct SidebarEnrichmentCompletionNotice: View {
         .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.green.opacity(0.08))
+                .fill((summary.failedCount > 0 ? Color.orange : Color.green).opacity(0.08))
         )
         .contentShape(Rectangle())
         .onTapGesture {

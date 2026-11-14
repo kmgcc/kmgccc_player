@@ -514,6 +514,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         for location in existing.locations {
             merged.mergeLocation(location)
         }
+        if incoming.primaryAudioProperties?.mediaSelection != nil {
+            merged.primaryAudioProperties = incoming.primaryAudioProperties
+            merged.fingerprint = incoming.fingerprint
+        }
         merged.primarySourceID = merged.sourceMemberships.min {
             if $0.relativePath.count != $1.relativePath.count {
                 return $0.relativePath.count < $1.relativePath.count

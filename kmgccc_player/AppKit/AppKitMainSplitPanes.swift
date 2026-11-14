@@ -232,6 +232,7 @@ struct AppKitMainContentPaneRoot: View {
         }
         .sheet(isPresented: $appSession.isLibraryRepairPresented) {
             LibraryRepairSheet(appSession: appSession)
+                .environmentObject(themeStore)
         }
     }
 

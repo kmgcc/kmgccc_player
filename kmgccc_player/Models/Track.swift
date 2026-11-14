@@ -319,6 +319,13 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
         }
     }
 
+    var mediaSelection: AudioMediaSelection? {
+        if case .referenced(let locator) = mediaLocator {
+            return locator.primaryAudioProperties?.mediaSelection ?? audioProperties?.mediaSelection
+        }
+        return audioProperties?.mediaSelection
+    }
+
     var audioPropertiesData: Data? {
         get {
             guard let properties = audioProperties else { return nil }
@@ -682,6 +689,7 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
             }
         }
 
+        if let shared = sharedProgramArtworkURLs.first(where: { fileManager.fileExists(atPath: $0.path) }) { return shared }
         guard let artworkFileName, !artworkFileName.isEmpty else { return nil }
         return paths.trackArtworkURL(for: id, fileName: artworkFileName)
     }
@@ -694,6 +702,13 @@ nonisolated final class Track: Identifiable, Hashable, Equatable, @unchecked Sen
         guard let paths = capturedLibraryPaths else { return [] }
         return paths.trackArtworkCandidateFileNames(preferredFileName: artworkFileName).compactMap {
             paths.trackArtworkURL(for: id, fileName: $0)
+        } + sharedProgramArtworkURLs
+    }
+
+    private var sharedProgramArtworkURLs: [URL] {
+        guard let paths = capturedLibraryPaths, let program = audioProgramAlbum else { return [] }
+        return ["artwork.png", "artwork.jpg", "artwork.jpeg"].map {
+            paths.albumFolderURL(for: program.id).appendingPathComponent($0)
         }
     }
 

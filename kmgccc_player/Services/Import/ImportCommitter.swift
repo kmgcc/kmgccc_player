@@ -96,6 +96,14 @@ final class ImportCommitter {
             return ImportBatchResult(records: [], createdTrackIDs: [], failures: [], cancelled: false)
         }
 
+        if candidates.contains(where: { $0.discoveredFile.mediaSelection != nil }) {
+            do { try SharedMediaAssetStore.enableFormat(at: paths) }
+            catch {
+                return ImportBatchResult(records: [], createdTrackIDs: [], failures: candidates.map {
+                    ImportInputFailure(url: $0.fileURL, message: error.localizedDescription)
+                }, cancelled: false)
+            }
+        }
         var orderedRecords = Array<ImportedTrackRecord?>(repeating: nil, count: candidates.count)
         var iterator = Array(candidates.enumerated()).makeIterator()
         let maxConcurrent = PerAudioFileImportTask.importConcurrency(for: candidates.count)
@@ -267,6 +275,18 @@ final class ImportCommitter {
             }
         }
 
+        let groupedIndices = Dictionary(grouping: candidates.indices.filter {
+            candidates[$0].discoveredFile.mediaSelection != nil
+        }, by: { candidates[$0].discoveredFile.mediaSelection!.groupID })
+        for indices in groupedIndices.values where indices.contains(where: { orderedRecords[$0] == nil }) {
+            for index in indices where orderedRecords[index] != nil {
+                orderedRecords[index] = nil
+                failures.append(.init(url: candidates[index].fileURL, message: "专辑分轨准备失败，请重试此专辑"))
+                progressController.updateItem(id: candidates[index].progressID, title: candidates[index].metadata.title,
+                    artist: candidates[index].metadata.artist, stage: .importing, status: .failed,
+                    detail: "专辑分轨准备失败")
+            }
+        }
         return ImportBatchResult(
             records: orderedRecords.compactMap { $0 },
             createdTrackIDs: createdTrackIDs,
@@ -321,12 +341,43 @@ final class ImportCommitter {
             return nil
         }
 
+        let programGroups = Dictionary(grouping: importedTracks.filter { $0.mediaSelection != nil },
+            by: { $0.mediaSelection!.groupID })
+        var programTransactions: [AudioProgramImportTransaction] = []
+        do {
+            for (groupID, tracks) in programGroups {
+                programTransactions.append(try AudioProgramImportTransaction.begin(groupID: groupID,
+                    trackIDs: Set(tracks.map(\.id)), paths: paths))
+            }
+        } catch {
+            Log.error("[Import] cannot prepare program commit: \(error.localizedDescription)", category: .import)
+            return nil
+        }
+        do { try await prepareProgramAlbums(importedTracks) }
+        catch {
+            Log.error("[Import] cannot prepare shared album artwork: \(error.localizedDescription)", category: .import)
+            return nil
+        }
+        let capturedTransactions = programTransactions
+        let capturedPaths = paths
         let referencedNCMConversionService = self.referencedNCMConversionService
         let tracksByID = Dictionary(uniqueKeysWithValues: importedTracks.map { ($0.id, $0) })
         let commitResult = await repository.commitImportedTracks(importedTracks) { persistedIDs in
-            guard let referencedNCMConversionService else { return Set(persistedIDs) }
+            var permitted = Set(persistedIDs)
+            for transaction in capturedTransactions {
+                guard transaction.trackIDs.isSubset(of: permitted) else {
+                    permitted.subtract(transaction.trackIDs)
+                    continue
+                }
+                do { try transaction.complete(paths: capturedPaths) }
+                catch {
+                    permitted.subtract(transaction.trackIDs)
+                    Log.error("[Import] program commit incomplete: \(error.localizedDescription)", category: .import)
+                }
+            }
+            guard let referencedNCMConversionService else { return permitted }
             var visible = Set<UUID>()
-            for trackID in persistedIDs {
+            for trackID in persistedIDs where permitted.contains(trackID) {
                 guard let operationID = tracksByID[trackID]?.ncmConversionAssociation?.operationID else {
                     visible.insert(trackID)
                     continue
@@ -371,6 +422,39 @@ final class ImportCommitter {
         return persistedTracks
     }
 
+    private func prepareProgramAlbums(_ tracks: [Track]) async throws {
+        let groups = Dictionary(grouping: tracks.filter { $0.audioProgramAlbum != nil }, by: { $0.audioProgramAlbum!.id })
+        let entries = await repository.fetchAlbumEntries()
+        for (_, members) in groups {
+            guard let first = members.first, let program = first.audioProgramAlbum else { continue }
+            var entry = entries.first { $0.canonicalKey == program.key }
+                ?? entries.first { $0.id == program.id } ?? AlbumEntry(
+                id: program.id, canonicalKey: program.key, displayTitle: first.album,
+                primaryArtistCanonicalName: LibraryNormalization.normalizeArtist(program.artist),
+                primaryArtistDisplayName: program.artist, createdAt: Date(), updatedAt: Date(),
+                trackCount: members.count, totalDuration: members.reduce(0) { $0 + $1.duration }, isOrphaned: false)
+            entry.canonicalKey = program.key
+            if !entry.manuallyEditedFields.contains("title") && !entry.manuallyEditedFields.contains("displayTitle") { entry.displayTitle = first.album }
+            var numbers = entry.catalogTrackNumbers ?? [:]
+            for track in members { numbers[track.id] = track.mediaSelection?.trackNumber }
+            entry.catalogTrackNumbers = numbers
+            if !entry.hasArtwork, let data = members.compactMap(\.artworkData).first {
+                entry.artworkData = data
+                entry.artworkFileName = "artwork.png"
+            }
+            try await repository.updateAlbumEntry(entry)
+            for track in members {
+                var properties = track.mediaLocator.referencedFile?.primaryAudioProperties ?? track.audioProperties ?? TrackAudioProperties()
+                properties.mediaSelection?.albumResourceID = entry.id
+                if case .referenced(var locator) = track.mediaLocator {
+                    locator.primaryAudioProperties = properties
+                    track.mediaLocator = .referenced(locator)
+                } else { track.audioProperties = properties }
+                if entry.hasArtwork && track.artworkIsUserSelected != true { track.artworkData = nil }
+            }
+        }
+    }
+
     private func commitStagedAudioFiles(
         for trackIDs: Set<UUID>,
         session: ImportSession,
@@ -378,6 +462,9 @@ final class ImportCommitter {
     ) async throws {
         guard !trackIDs.isEmpty else { return }
         let stagedFiles = session.stagedFiles(for: trackIDs)
+        if stagedFiles.contains(where: { $0.libraryRelativePath.hasPrefix("MediaAssets/") }) {
+            try SharedMediaAssetStore.enableFormat(at: paths)
+        }
         if storageBackend.mode == .referenced {
             guard stagedFiles.isEmpty else {
                 throw LibraryBackendError.modeMismatch(expected: .referenced, actual: .managed)
@@ -422,7 +509,9 @@ final class ImportCommitter {
                 ).write(to: folder, fileManager: fileManager)
             }
 
+            var movedPaths = Set<String>()
             for file in files {
+                guard movedPaths.insert(file.libraryRelativePath).inserted else { continue }
                 try await cancellationToken.checkCancellation()
                 guard let destinationURL = capturedPaths.libraryURL(
                     from: file.libraryRelativePath
@@ -441,6 +530,7 @@ final class ImportCommitter {
                     at: destinationFolder,
                     withIntermediateDirectories: true
                 )
+                if file.stagedURL.standardizedFileURL == destinationURL.standardizedFileURL { continue }
                 // moveItem refuses an existing destination. Never remove a
                 // file that may have appeared since staging began.
                 try fileManager.moveItem(at: file.stagedURL, to: destinationURL)
@@ -539,6 +629,7 @@ final class ImportCommitter {
             albumArtist: payload.albumArtist,
             motionArtwork: payload.motionArtwork,
             artworkIsUserSelected: payload.artworkIsUserSelected ? true : nil,
+            embeddedMetadataSnapshot: payload.embeddedSnapshot,
             duration: payload.duration,
             importedAt: payload.importedAt,
             fileBookmarkData: Data(),

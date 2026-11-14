@@ -293,6 +293,7 @@ struct AutomationFilesHandler {
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 let confirm = try parameters.boolean("confirm", default: false)
                 let plans = try makeFileDeletePlans(trackIDs: trackIDs, session: session)
+                let affectedTracks = fileDeletionAffectedTracks(plans: plans, session: session)
                 let files = plans.map { AutomationFileAccess.makeFileSummary($0.track) }
                 if dryRun {
                     return AutomationResponseSupport.encodeResult(
@@ -300,7 +301,7 @@ struct AutomationFilesHandler {
                             operation: AutomationMethod.filesDelete,
                             applied: false,
                             dryRun: true,
-                            affectedTrackIDs: plans.map(\.trackID),
+                            affectedTrackIDs: affectedTracks.map(\.id),
                             files: files,
                             message: "Preview only. Files will be moved to the macOS Trash after confirm=true and foreground confirmation. Tracks and Playlist membership will be preserved."
                         ),
@@ -310,7 +311,7 @@ struct AutomationFilesHandler {
                 let isTrusted = plans.allSatisfy { plan in
                     session.referencedSourceScope?.isTrustedAutomationPath(plan.from) == true
                 }
-                if !isTrusted {
+                if !isTrusted || affectedTracks.contains(where: { $0.mediaSelection != nil }) {
                     guard confirm else {
                         return AutomationResponseSupport.confirmationRequired(
                             for: request,
@@ -323,7 +324,8 @@ struct AutomationFilesHandler {
                     }
                     guard await AutomationInteraction.confirmDestructiveOperation(
                         title: "将音乐文件移到废纸篓？",
-                        message: "要将 \(plans.count) 个音乐文件移到 macOS 废纸篓吗？歌曲、元数据、播放记录和播放列表关系会保留。"
+                        message: "要将 \(plans.count) 个音乐文件移到 macOS 废纸篓吗？歌曲、元数据、播放记录和播放列表关系会保留。\n\n受影响的 \(affectedTracks.count) 首歌曲\n"
+                            + affectedTracks.map { "\($0.title)（\($0.artist)）" }.joined(separator: "\n")
                     ) else {
                         return AutomationResponseSupport.interactionCancelled(for: request)
                     }
@@ -343,8 +345,13 @@ struct AutomationFilesHandler {
                     return (succeeded, failures)
                 }
                 let successfulPlans = plans.filter { outcome.0.contains($0.trackID) }
+                let successfulAffectedTracks = fileDeletionAffectedTracks(plans: successfulPlans, session: session)
+                let sourceIDs = Set(successfulPlans.flatMap(\.sourceIDs))
+                    .union(successfulAffectedTracks.flatMap {
+                        ($0.mediaLocator.referencedFile?.allSourceMemberships ?? []).map(\.sourceID)
+                    })
                 let jobs = sourceRefreshJobs(
-                    sourceIDs: Set(successfulPlans.flatMap(\.sourceIDs)),
+                    sourceIDs: sourceIDs,
                     appSession: appSession,
                     libraryID: session.context.id
                 )
@@ -360,7 +367,7 @@ struct AutomationFilesHandler {
                         applied: !outcome.0.isEmpty,
                         dryRun: false,
                         confirmed: confirm || isTrusted,
-                        affectedTrackIDs: outcome.0,
+                        affectedTrackIDs: successfulAffectedTracks.map(\.id),
                         files: appliedFiles,
                         jobs: jobs,
                         failures: outcome.1,
@@ -490,15 +497,32 @@ struct AutomationFilesHandler {
             throw AutomationFileOperationError.referencedLibraryRequired
         }
         let tracks = try AutomationFileAccess.automationTracks(ids: trackIDs, in: session.libraryViewModel.allTracks)
-        return try tracks.map { track in
+        var plannedPaths = Set<String>()
+        var plans: [AutomationFilePlan] = []
+        for track in tracks {
             let current = try AutomationFileAccess.currentAuthorizedFile(for: track, session: session)
-            return AutomationFilePlan(
+            guard plannedPaths.insert(current.url.path).inserted else { continue }
+            plans.append(AutomationFilePlan(
                 track: track,
                 trackID: track.id,
                 from: current.url,
                 destination: nil,
                 sourceIDs: current.sourceIDs
-            )
+            ))
+        }
+        return plans
+    }
+
+    private func fileDeletionAffectedTracks(
+        plans: [AutomationFilePlan],
+        session: LibrarySession
+    ) -> [Track] {
+        let paths = Set(plans.map { $0.from.standardizedFileURL.path })
+        let selectedIDs = Set(plans.map(\.trackID))
+        return session.libraryViewModel.allTracks.filter { track in
+            selectedIDs.contains(track.id) || AutomationFileAccess.automationTrackFileURLs(track, in: session).contains {
+                paths.contains($0.standardizedFileURL.path)
+            }
         }
     }
 

@@ -347,14 +347,19 @@ struct MusicSettingsView: View {
                     }
                     .audioDSPCapsuleButtonStyle()
 
-                    Button("检查资料库") {
-                        appSession.presentLibraryRepair()
-                    }
-                    .audioDSPCapsuleButtonStyle()
                 }
                 .padding(.horizontal, 14)
                 .padding(.bottom, 14)
             }
+            HStack {
+                Spacer()
+                Button("检查资料库") {
+                    appSession.presentLibraryRepair()
+                }
+                .audioDSPCapsuleButtonStyle()
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 14)
         }
         .onAppear {
             libraryVM.refreshDiagnostics()

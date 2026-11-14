@@ -173,6 +173,7 @@ private final class BatchImportProgressViewModel {
     var detail: String = ""
     var completedCount: Int = 0
     var totalCount: Int = 0
+    var mediaSummary = ""
     var items: [BatchImportProgressItemModel] = []
     var isCancellationRequested = false
 
@@ -190,10 +191,12 @@ final class BatchImportProgressDialogController: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
     private let viewModel = BatchImportProgressViewModel()
     private let onCancelRequested: () -> Void
+    private let onProgress: (String) -> Void
     private var isClosed = false
     private var allowsClose = false
 
-    init(presentsWindow: Bool = true, onCancelRequested: @escaping () -> Void = {}) {
+    init(presentsWindow: Bool = true, onProgress: @escaping (String) -> Void = { _ in }, onCancelRequested: @escaping () -> Void = {}) {
+        self.onProgress = onProgress
         self.onCancelRequested = onCancelRequested
         super.init()
         guard presentsWindow else { return }
@@ -246,6 +249,12 @@ final class BatchImportProgressDialogController: NSObject, NSWindowDelegate {
         viewModel.items = items.map { BatchImportProgressItemModel(id: $0.id, fileName: $0.fileName) }
     }
 
+    func setMediaCounts(physicalFiles: Int, logicalTracks: Int) {
+        guard !isClosed else { return }
+        viewModel.mediaSummary = logicalTracks > physicalFiles
+            ? "\(physicalFiles) 个音频文件，\(logicalTracks) 首歌曲" : ""
+    }
+
     func update(
         stage: BatchImportStage,
         progress: Double,
@@ -257,6 +266,7 @@ final class BatchImportProgressDialogController: NSObject, NSWindowDelegate {
         viewModel.stage = stage
         viewModel.progress = min(max(progress, 0), 1)
         viewModel.detail = detail
+        onProgress(viewModel.mediaSummary.isEmpty ? detail : "\(viewModel.mediaSummary)\n\(detail)")
         viewModel.completedCount = completedCount
         viewModel.totalCount = totalCount
     }
@@ -365,6 +375,9 @@ private struct BatchImportProgressDialogView: View {
                     if viewModel.totalCount > 0 {
                         Text("\(viewModel.completedCount)/\(viewModel.totalCount)").monospacedDigit()
                     }
+                }
+                if !viewModel.mediaSummary.isEmpty {
+                    Text(viewModel.mediaSummary).font(.callout).foregroundStyle(.secondary)
                 }
                 if !viewModel.detail.isEmpty {
                     Text(viewModel.detail).foregroundStyle(.secondary).lineLimit(2)

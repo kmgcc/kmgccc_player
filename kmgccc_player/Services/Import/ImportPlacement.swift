@@ -111,6 +111,9 @@ nonisolated struct ImportDiscoveredFile: Sendable, Equatable {
     let memberships: [ReferencedSourceMembership]
     let primarySourceID: UUID?
     let fingerprint: ReferencedFileFingerprint?
+    var mediaSelection: AudioMediaSelection? = nil
+    var programMetadata: AudioProgramMetadata? = nil
+    var progressID: String { mediaSelection.map { "\(url.path)#\($0.logicalKey)" } ?? url.path }
 }
 
 nonisolated struct ImportSourceSelection: Sendable, Equatable {
@@ -122,6 +125,7 @@ nonisolated struct ImportInputPlan: Sendable {
     let files: [ImportDiscoveredFile]
     let directorySources: [ImportSourceSelection]
     let failures: [ImportInputFailure]
+    var cueChoices: [AudioCueDescriptorChoice] = []
 }
 
 nonisolated struct ImportInputFailure: Sendable, Equatable {

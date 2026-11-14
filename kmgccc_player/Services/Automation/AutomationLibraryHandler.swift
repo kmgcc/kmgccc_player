@@ -1008,7 +1008,8 @@ struct AutomationLibraryHandler {
                         ttmlURL: existingAsset(track.resolvedTTMLURL()),
                         failures: trackFailures,
                         motionArtwork: track.motionArtwork,
-                        libraryRootURL: session.context.paths.rootURL
+                        libraryRootURL: session.context.paths.rootURL,
+                        mediaSelection: track.mediaSelection
                     )
                 }
                 let playlists = libraryPlaylists.map {

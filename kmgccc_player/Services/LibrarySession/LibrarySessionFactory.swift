@@ -67,6 +67,10 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         }
 
         try context.paths.createRequiredDirectories()
+        // Replay interrupted range updates under the library's writer lease,
+        // before any repository or derived index reads their projections.
+        try AudioProgramImportTransaction.recoverInterruptedUpdates(paths: context.paths)
+
         let mutationJournal = LibraryMutationJournal(
             paths: context.paths,
             libraryID: context.id
@@ -211,7 +215,8 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             qqMusicCoverService: cacheServices.qqMusicCoverService,
             artistArtworkProviderCoordinator: cacheServices.artistArtworkProviderCoordinator,
             lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
-            amllDBService: cacheServices.amllDBService
+            amllDBService: cacheServices.amllDBService,
+            paths: context.paths
         )
         let ignoredItemsStore = sourceScope.map { _ in
             IgnoredReferencedItemsStore(paths: context.paths)
@@ -339,7 +344,11 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
                 ignoredItemsStore: ignoredItemsStore,
                 ncmRegistry: ncmRegistry,
                 bookmarkResolver: sourceBookmarkResolver,
-                requiresSecurityScope: requiresSecurityScope
+                requiresSecurityScope: requiresSecurityScope,
+                repository: repository,
+                confirmSharedOriginalDeletion: { [weak libraryViewModel] tracks in
+                    await libraryViewModel?.confirmSharedOriginalDeletion?(tracks)
+                }
             )
             libraryViewModel.prepareTracksForDeletion = { tracks in
                 await deletionService.prepareForAuthorityDeletion(tracks)

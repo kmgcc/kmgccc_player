@@ -25,6 +25,19 @@
 - **动态色彩系统**：从专辑封面中提炼具有视觉张力的 OKLCH 语义色，自适应生成舒适通透的视窗质感与高可读性歌词配色。
 - **纯粹本地优先**：全部元数据解析、全文搜索索引与偏好统计皆在 Mac 本地无声运行，无需注册账号，零网络依赖，尊重听者的隐私与数据掌控。
 
+## 音频格式
+
+| 类型 | 格式 |
+| --- | --- |
+| 无损与 PCM | FLAC、ALAC、WAV、AIFF、CAF、APE、WavPack、TTA、RF64、Wave64、WMA Lossless |
+| 有损 | MP3、AAC、Ogg Vorbis、Opus、无 DRM 的 WMA |
+| DSD | DSF、DFF，支持 DSD64/128/256 和 DFF 的 DST 压缩 |
+| 整轨与镜像 | 外置 CUE、FLAC 内嵌 CUE、SACD ISO |
+
+CUE 和 SACD 按曲目入库，每首独立匹配歌曲资料与歌词，同一专辑共享封面。托管模式保留一份整轨音频或 ISO。DSD 转为 176.4 kHz Float32 PCM，接入现有音量、音效与频谱链路，技术信息保留源采样率。
+
+WavPack 混合模式的 `.wvc` 校正文件应与 `.wv` 放在同一目录并保持同名。导入、拖放和原位扫描使用统一的格式列表，入库前由对应解码器读取 PCM 验证。
+
 ## 系统要求
 
 - macOS 26.0 或更新版本
@@ -109,6 +122,9 @@ git submodule update --init --recursive
 - **[MelismaKit](https://github.com/kmgcc/melismakit)** — 原生 Swift 歌词排版与动效渲染引擎
 - **[LDDC](https://github.com/chenmozhijin/LDDC)** — 歌词获取与匹配
 - **[apple-audio-visualization](https://github.com/taterboom/apple-audio-visualization)** — 音频频谱分析与可视化算法
+- **[FFmpeg](https://ffmpeg.org)** — 通用音频解封装、解码与 DSD/DST 转 PCM
+- **[WavPack](https://www.wavpack.com)** — WavPack 无损、混合模式与校正文件读取
+- **[DSD Nexus](https://github.com/wichers/dsd-nexus)** — SACD ISO 目录与音频帧读取
 - **[ncmdump](https://github.com/taurusxin/ncmdump)** — NCM 格式解密
 - **[sacad](https://github.com/desbma/sacad)** — 专辑封面搜索与下载
 - **[QQMusicApi](https://github.com/L-1124/QQMusicApi)** — QQ 音乐元数据与封面查询

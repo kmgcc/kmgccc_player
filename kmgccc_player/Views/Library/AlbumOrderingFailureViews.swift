@@ -10,52 +10,6 @@ import AppKit
 import PopupKit
 import SwiftUI
 
-/// Small always-on-top-of-content card anchored to the window's bottom-right.
-/// It appears only when an ordering pass left at least one unresolved album.
-struct AlbumOrderingFailureToast: View {
-    @Bindable var uiState: UIStateViewModel
-    let onOpen: () -> Void
-
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    var body: some View {
-        if !uiState.albumOrderingFailures.isEmpty {
-            HStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.orange)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("\(uiState.albumOrderingFailures.count) 张专辑的曲序未整理")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                        .lineLimit(1)
-                    Text("查看失败列表")
-                        .font(.system(size: 11))
-                        .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 0)
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(width: 300, alignment: .leading)
-            .background(
-                .regularMaterial,
-                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .onTapGesture(perform: onOpen)
-            .padding(8)
-        }
-    }
-}
-
 @MainActor
 final class AlbumOrderingFailureDialogPresenter: NSObject, NSWindowDelegate {
     private static var activePresenter: AlbumOrderingFailureDialogPresenter?
@@ -111,7 +65,7 @@ private struct AlbumOrderingFailureDialogView: View {
 
     var body: some View {
         SettingsTaskDialog(
-            title: "专辑曲序未整理",
+            title: "专辑曲序",
             subtitle: subtitle,
             systemImage: "exclamationmark.triangle",
             iconColor: .orange,
@@ -119,9 +73,8 @@ private struct AlbumOrderingFailureDialogView: View {
         ) {
             if uiState.albumOrderingFailures.isEmpty {
                 ContentUnavailableView(
-                    "曲序已整理",
-                    systemImage: "checkmark.circle",
-                    description: Text("没有待处理的专辑")
+                    "暂无待处理记录",
+                    systemImage: "checkmark.circle"
                 )
             } else {
                 AppPopupScrollRegion {

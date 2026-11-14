@@ -1357,6 +1357,8 @@ final class LocalLibraryService {
         let folder = paths.trackFolderURL(for: trackID)
         guard fileManager.fileExists(atPath: folder.path) else { return }
 
+        let sharedPath = (try? Data(contentsOf: folder.appendingPathComponent("meta.json")))
+            .flatMap { try? JSONDecoder().decode(SharedMediaReference.self, from: $0) }?.mediaLocator?.managedLibraryRelativePath
         do {
             try fileManager.removeItem(at: folder)
         } catch {
@@ -1379,6 +1381,14 @@ final class LocalLibraryService {
                 albumEntryIDs: []
             )
         }
+        if let sharedPath {
+            do { try SharedMediaAssetStore.releaseIfUnreferenced(sharedPath, paths: paths) }
+            catch { Log.warning("Shared audio retained for recovery: \(error.localizedDescription)", category: .library) }
+        }
+    }
+
+    private nonisolated struct SharedMediaReference: Decodable {
+        let mediaLocator: TrackMediaLocator?
     }
 
     // MARK: - Playlist Sidecars

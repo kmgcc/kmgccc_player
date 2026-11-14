@@ -396,18 +396,18 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
     func testProductionReconcileNewRenameReplacementOfflineRestartAndSourceRemoval() async throws {
         let fixture = try await ReconcileFixture()
         defer { fixture.cleanup() }
-        let song = fixture.sourceRoot.appendingPathComponent("song.mp3")
-        try Data("first".utf8).write(to: song)
+        let song = fixture.sourceRoot.appendingPathComponent("song.wav")
+        try writeReconnectAudio(to: song)
 
         try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
         var tracks = await fixture.repository.fetchTracks(in: nil)
         let track = try XCTUnwrap(tracks.first)
         XCTAssertEqual(track.userDescription, "application metadata")
         XCTAssertEqual(track.availability, .available)
-        XCTAssertEqual(track.mediaLocator.referencedFile?.sourceMemberships.first?.relativePath, "song.mp3")
+        XCTAssertEqual(track.mediaLocator.referencedFile?.sourceMemberships.first?.relativePath, "song.wav")
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.paths.sourceScanManifestURL(for: fixture.sourceID).path))
 
-        let renamed = fixture.sourceRoot.appendingPathComponent("renamed.mp3")
+        let renamed = fixture.sourceRoot.appendingPathComponent("renamed.wav")
         try FileManager.default.moveItem(at: song, to: renamed)
         try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
         tracks = await fixture.repository.fetchTracks(in: nil)
@@ -415,7 +415,7 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         XCTAssertEqual(tracks[0].mediaLocator.referencedFile?.lastKnownPath, renamed.path)
 
         try FileManager.default.removeItem(at: renamed)
-        try Data("replacement-has-a-different-identity".utf8).write(to: renamed)
+        try writeReconnectAudio(to: renamed)
         try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
         tracks = await fixture.repository.fetchTracks(in: nil)
         XCTAssertEqual(tracks.map(\.id), [track.id])
@@ -861,7 +861,7 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         let imported = await fixture.repository.commitImportedTracks([track])
         XCTAssertEqual(imported.persistedTrackIDs, [track.id])
         let selectedURL = fixture.root.appendingPathComponent("replacement.wav")
-        try Data("replacement-audio".utf8).write(to: selectedURL)
+        try writeReconnectAudio(to: selectedURL)
         let service = SourceReconnectService(
             context: fixture.context,
             repository: fixture.repository,
@@ -919,17 +919,17 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         let candidateRoot = fixture.root.appendingPathComponent("Reconnected", isDirectory: true)
         let albumRoot = candidateRoot.appendingPathComponent("Album", isDirectory: true)
         try FileManager.default.createDirectory(at: albumRoot, withIntermediateDirectories: true)
-        let matchedURL = albumRoot.appendingPathComponent("existing.mp3")
-        let newURL = candidateRoot.appendingPathComponent("fresh.mp3")
-        try Data("existing-audio".utf8).write(to: matchedURL)
-        try Data("fresh-audio".utf8).write(to: newURL)
+        let matchedURL = albumRoot.appendingPathComponent("existing.wav")
+        let newURL = candidateRoot.appendingPathComponent("fresh.wav")
+        try writeReconnectAudio(to: matchedURL)
+        try writeReconnectAudio(to: newURL)
         let fingerprint = try ReferencedFileIdentityProvider().fingerprint(for: matchedURL)
-        let oldURL = fixture.sourceRoot.appendingPathComponent("Album/existing.mp3")
+        let oldURL = fixture.sourceRoot.appendingPathComponent("Album/existing.wav")
         let locator = kmgccc_player.ReferencedFileLocator(
             fileBookmarkData: Data(oldURL.path.utf8),
             sourceMemberships: [.init(
                 sourceID: fixture.sourceID,
-                relativePath: "Album/existing.mp3"
+                relativePath: "Album/existing.wav"
             )],
             primarySourceID: fixture.sourceID,
             lastKnownPath: oldURL.path,
@@ -1072,7 +1072,7 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
     func testScannerUsesImportableAudioExtensions() async throws {
         let fixture = try await ReconcileFixture()
         defer { fixture.cleanup() }
-        let expected = AudioFormatSupport.importableExtensions
+        let expected = AudioFormatSupport.importableExtensions.subtracting(["cue"])
         for ext in expected.union(["ogg", "opus", "cue", "dsf"]) {
             try Data("candidate".utf8).write(to: fixture.sourceRoot.appendingPathComponent("sample.\(ext)"))
         }
@@ -1215,8 +1215,10 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         let eventSource = TestFileEventSource()
         let monitor = LibraryChangeMonitor(eventSource: eventSource, debounceNanoseconds: 20_000_000)
         let sourceID = UUID()
-        let sourceURL = URL(fileURLWithPath: "/tmp/library", isDirectory: true)
+        let sourceURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
         let watchURL = sourceURL.appendingPathComponent("Tracks", isDirectory: true)
+        try FileManager.default.createDirectory(at: watchURL, withIntermediateDirectories: true)
         let scanned = expectation(description: "watched path scanned")
         let recorder = MonitorRecorder { _ in scanned.fulfill() }
 
@@ -1983,4 +1985,19 @@ private func makeLibraryContext(root: URL, mode: kmgccc_player.MusicLibraryMode)
         rootBookmarkData: Data(root.path.utf8),
         generation: 1
     )
+}
+
+private func writeReconnectAudio(to url: URL) throws {
+    let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44_100)!
+    buffer.frameLength = 44_100
+    for channel in 0..<2 {
+        buffer.floatChannelData![channel].initialize(repeating: 0, count: 44_100)
+    }
+    let waveURL = url.deletingPathExtension().appendingPathExtension("wav")
+    do {
+        let writer = try AVAudioFile(forWriting: waveURL, settings: format.settings)
+        try writer.write(from: buffer)
+    }
+    if waveURL != url { try FileManager.default.moveItem(at: waveURL, to: url) }
 }

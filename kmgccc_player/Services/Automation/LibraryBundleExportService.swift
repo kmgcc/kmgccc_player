@@ -11,6 +11,7 @@ nonisolated struct LibraryBundleExportTrackInput: Sendable {
     let failures: [String]
     var motionArtwork: TrackMotionArtwork? = nil
     var libraryRootURL: URL? = nil
+    var mediaSelection: AudioMediaSelection? = nil
 }
 
 nonisolated struct LibraryBundleExportPlaylistInput: Codable, Equatable, Sendable {
@@ -44,6 +45,7 @@ private nonisolated struct LibraryBundleExportTrack: Codable, Sendable {
     let lyricsPath: String?
     let ttmlPath: String?
     var motionArtwork: TrackMotionArtwork? = nil
+    var mediaSelection: AudioMediaSelection? = nil
 }
 
 private nonisolated struct LibraryBundleExportManifest: Codable, Sendable {
@@ -65,7 +67,7 @@ nonisolated enum LibraryBundleExportService {
         let trackID: UUID
         let kind: String
         let sourceURL: URL
-        let relativePath: String
+        var relativePath: String
         var motionDescriptor: StoredMotionArtwork? = nil
     }
 
@@ -114,7 +116,8 @@ nonisolated enum LibraryBundleExportService {
 
             var failures = tracks.flatMap(\.failures)
             var trackRecords = tracks.map {
-                LibraryBundleExportTrack(id: $0.metadata.id, audioPath: nil, artworkPath: nil, lyricsPath: nil, ttmlPath: nil)
+                LibraryBundleExportTrack(id: $0.metadata.id, audioPath: nil, artworkPath: nil, lyricsPath: nil, ttmlPath: nil,
+                    mediaSelection: exportSelection($0.mediaSelection))
             }
             var files: [LibraryBundleExportFile] = []
             var copiedAssets: [String: CopyResult] = [:]
@@ -150,7 +153,8 @@ nonisolated enum LibraryBundleExportService {
                             artworkPath: asset.kind == "artwork" ? asset.relativePath : current.artworkPath,
                             lyricsPath: asset.kind == "lyrics" ? asset.relativePath : current.lyricsPath,
                             ttmlPath: asset.kind == "ttml" ? asset.relativePath : current.ttmlPath,
-                            motionArtwork: motion
+                            motionArtwork: motion,
+                            mediaSelection: current.mediaSelection
                         )
                     }
                 } catch is CancellationError {
@@ -163,6 +167,7 @@ nonisolated enum LibraryBundleExportService {
                 await progress(completedSteps, totalSteps, "copying \(asset.kind)")
             }
 
+            files.append(contentsOf: try writeCueDescriptors(tracks: tracks, records: trackRecords, to: stagingURL))
             let exportedAt = date
             for pageIndex in 0..<metadataPages {
                 try Task.checkCancellation()
@@ -196,7 +201,7 @@ nonisolated enum LibraryBundleExportService {
             await progress(completedSteps, totalSteps, "writing playlists")
 
             let manifest = LibraryBundleExportManifest(
-                schemaVersion: 1,
+                schemaVersion: tracks.contains(where: { $0.mediaSelection != nil }) ? 2 : 1,
                 libraryID: libraryID,
                 mode: mode,
                 exportedAt: exportedAt,
@@ -234,14 +239,100 @@ nonisolated enum LibraryBundleExportService {
         }
     }
 
+    private static func exportSelection(_ source: AudioMediaSelection?) -> AudioMediaSelection? {
+        guard var selection = source else { return nil }
+        selection.descriptorPath = nil
+        selection.descriptorFingerprint = nil
+        return selection
+    }
+
+    private static func audioExportPath(track: LibraryBundleExportTrackInput, url: URL) -> String {
+        if track.mediaSelection != nil {
+            return "Media/Shared/\(AudioMediaSelection.groupID(for: url).uuidString)/audio.\(safeExtension(url))"
+        }
+        return "Media/\(track.metadata.id.uuidString)/audio.\(safeExtension(url))"
+    }
+
+    private static func artworkExportPath(track: LibraryBundleExportTrackInput, url: URL) -> String {
+        if track.mediaSelection != nil {
+            let identity = SHA256.hash(data: Data(url.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
+            return "Artwork/Shared/\(identity).\(safeExtension(url))"
+        }
+        return "Artwork/\(track.metadata.id.uuidString).\(safeExtension(url))"
+    }
+
+    private static func writeCueDescriptors(tracks: [LibraryBundleExportTrackInput],
+        records: [LibraryBundleExportTrack], to root: URL) throws -> [LibraryBundleExportFile] {
+        let groups = Dictionary(grouping: tracks.filter { $0.mediaSelection?.kind == .cue },
+            by: { $0.mediaSelection!.groupID })
+        let byID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
+        var files: [LibraryBundleExportFile] = []
+        func quoted(_ value: String) -> String {
+            "\"" + value.replacingOccurrences(of: "\"", with: "\\\"")
+                .replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ") + "\""
+        }
+        for (groupID, members) in groups {
+            let sorted = members.sorted { $0.mediaSelection!.trackNumber < $1.mediaSelection!.trackNumber }
+            guard let first = sorted.first, sorted.allSatisfy({ track in
+                guard let selection = track.mediaSelection, selection.timeScale > 0,
+                      selection.trackNumber <= 99, byID[track.metadata.id]?.audioPath != nil else { return false }
+                let cueFrame = selection.startSeconds * 75
+                return cueFrame.isFinite && abs(cueFrame - cueFrame.rounded()) < 0.000_001 && cueFrame < Double(Int64.max)
+            }) else { continue }
+            let physicalFiles = Dictionary(grouping: sorted, by: { byID[$0.metadata.id]?.audioPath ?? "" })
+            let completeRanges = physicalFiles.values.allSatisfy { members in
+                let ranges = members.sorted { $0.mediaSelection!.start < $1.mediaSelection!.start }
+                guard let last = ranges.last, let url = last.audioURL,
+                      let resource = try? AudioDecoderFactory.open(url),
+                      let selection = last.mediaSelection else { return false }
+                let end = ((selection.startSeconds + selection.duration) * resource.sampleRate).rounded(.down)
+                guard abs(end - Double(resource.length)) <= 1 else { return false }
+                return zip(ranges, ranges.dropFirst()).allSatisfy { previous, next in
+                    let prior = previous.mediaSelection!
+                    return abs(prior.startSeconds + prior.duration - next.mediaSelection!.startSeconds) < 0.000_001
+                }
+            }
+            guard completeRanges else { continue }
+            var text = "TITLE \(quoted(first.metadata.album))\nPERFORMER \(quoted(first.mediaSelection?.albumArtist ?? first.metadata.artist))\n"
+            var previousFile: String?
+            for track in sorted {
+                guard let selection = track.mediaSelection, let audioPath = byID[track.metadata.id]?.audioPath else { continue }
+                if audioPath != previousFile {
+                    let type = URL(fileURLWithPath: audioPath).pathExtension.lowercased() == "mp3" ? "MP3" : "WAVE"
+                    text += "FILE \(quoted("../" + String(audioPath.dropFirst("Media/".count)))) \(type)\n"
+                    previousFile = audioPath
+                }
+                let frame = Int64((selection.startSeconds * 75).rounded())
+                text += String(format: "  TRACK %02d AUDIO\n", selection.trackNumber)
+                text += "    TITLE \(quoted(track.metadata.title))\n    PERFORMER \(quoted(track.metadata.artist))\n"
+                text += String(format: "    INDEX 01 %02lld:%02lld:%02lld\n", frame / 4500, frame / 75 % 60, frame % 75)
+            }
+            let relativePath = "Media/Programs/\(groupID.uuidString).cue"
+            let destination = root.appendingPathComponent(relativePath)
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = Data(text.utf8)
+            try data.write(to: destination, options: .atomic)
+            files.append(LibraryBundleExportFile(trackID: nil, kind: "cue", relativePath: relativePath,
+                byteCount: Int64(data.count), sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()))
+        }
+        return files
+    }
+
     private static func makeAssets(from tracks: [LibraryBundleExportTrackInput]) -> [Asset] {
-        tracks.flatMap { track -> [Asset] in
+        let assets = tracks.flatMap { track -> [Asset] in
             var assets = [
-                track.audioURL.map { Asset(trackID: track.metadata.id, kind: "audio", sourceURL: $0, relativePath: "Media/\(track.metadata.id.uuidString)/audio.\(safeExtension($0))") },
-                track.artworkURL.map { Asset(trackID: track.metadata.id, kind: "artwork", sourceURL: $0, relativePath: "Artwork/\(track.metadata.id.uuidString).\(safeExtension($0))") },
+                track.audioURL.map { Asset(trackID: track.metadata.id, kind: "audio", sourceURL: $0, relativePath: audioExportPath(track: track, url: $0)) },
+                track.artworkURL.map { Asset(trackID: track.metadata.id, kind: "artwork", sourceURL: $0, relativePath: artworkExportPath(track: track, url: $0)) },
                 track.lyricsURL.map { Asset(trackID: track.metadata.id, kind: "lyrics", sourceURL: $0, relativePath: "Lyrics/\(track.metadata.id.uuidString).\(safeExtension($0))") },
                 track.ttmlURL.map { Asset(trackID: track.metadata.id, kind: "ttml", sourceURL: $0, relativePath: "Lyrics/\(track.metadata.id.uuidString).ttml") }
             ].compactMap { $0 }
+            if let audio = track.audioURL, audio.pathExtension.lowercased() == "wv" {
+                let correction = audio.deletingPathExtension().appendingPathExtension("wvc")
+                if FileManager.default.isReadableFile(atPath: correction.path) {
+                    let relative = (audioExportPath(track: track, url: audio) as NSString).deletingPathExtension + ".wvc"
+                    assets.append(Asset(trackID: track.metadata.id, kind: "correction", sourceURL: correction, relativePath: relative))
+                }
+            }
             if let motion = track.motionArtwork, let root = track.libraryRootURL {
                 let folder = root.appendingPathComponent("Tracks/\(track.metadata.id.uuidString)", isDirectory: true).standardizedFileURL
                 for descriptor in motion.assets {
@@ -267,6 +358,15 @@ nonisolated enum LibraryBundleExportService {
         }.sorted {
             if $0.trackID != $1.trackID { return $0.trackID.uuidString < $1.trackID.uuidString }
             return $0.kind < $1.kind
+        }
+        var pathsBySource: [String: String] = [:]
+        return assets.map { asset in
+            guard ["audio", "artwork", "correction"].contains(asset.kind) else { return asset }
+            let key = "\(asset.kind)|\(asset.sourceURL.resolvingSymlinksInPath().standardizedFileURL.path)"
+            var shared = asset
+            shared.relativePath = pathsBySource[key] ?? asset.relativePath
+            pathsBySource[key] = shared.relativePath
+            return shared
         }
     }
 

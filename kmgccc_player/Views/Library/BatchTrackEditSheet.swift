@@ -630,7 +630,7 @@ struct BatchTrackEditSheet: View {
         guard let track = currentTrack else { return nil }
         return MusicEnrichmentQuery(
             key: "track:" + track.id.uuidString, title: title, artist: artist, album: album,
-            duration: track.duration, albumArtist: track.albumArtist
+            duration: track.duration, albumArtist: track.albumArtist, sourceAlbumIdentity: track.audioProgramLookupScope
         )
     }
 

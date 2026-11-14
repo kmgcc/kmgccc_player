@@ -16,15 +16,28 @@ nonisolated struct SourceReconnectMatcher: Sendable {
         var matches: [SourceReconnectMatch] = []
         var conflicts: [SourceReconnectConflict] = []
         var unmatched: [UUID] = []
+        let expectedByID = Dictionary(uniqueKeysWithValues: expected.map { ($0.trackID, $0) })
+        var matchedByPath: [String: SourceReconnectMatch] = [:]
+
+        func accept(_ item: SourceReconnectExpectedFile, index: Int, basis: SourceReconnectMatchBasis) {
+            let result = match(item, candidates[index], basis: basis)
+            matches.append(result)
+            matchedByPath[item.relativePath] = result
+            available.remove(index)
+        }
 
         for item in expected.sorted(by: expectedOrder) {
+            if let shared = matchedByPath[item.relativePath], expectedByID[shared.trackID]?.fingerprint == item.fingerprint {
+                matches.append(match(item, shared.candidate, basis: shared.basis))
+                continue
+            }
+            if conflicts.contains(where: { $0.expected.relativePath == item.relativePath && $0.expected.fingerprint == item.fingerprint }) { continue }
             if let index = uniqueCandidateIndex(
                 in: available,
                 candidates: candidates,
                 where: { $0.relativePath == item.relativePath }
             ) {
-                matches.append(match(item, candidates[index], basis: .relativePath))
-                available.remove(index)
+                accept(item, index: index, basis: .relativePath)
                 continue
             }
 
@@ -33,8 +46,7 @@ nonisolated struct SourceReconnectMatcher: Sendable {
                     candidates[index].fingerprint.identity == identity
                 }
                 if identityMatches.count == 1, let index = identityMatches.first {
-                    matches.append(match(item, candidates[index], basis: .physicalIdentity))
-                    available.remove(index)
+                    accept(item, index: index, basis: .physicalIdentity)
                     continue
                 }
                 if identityMatches.count > 1 {
@@ -47,8 +59,7 @@ nonisolated struct SourceReconnectMatcher: Sendable {
                 fallbackMatches(item, candidates[index])
             }
             if fallbackIndices.count == 1, let index = fallbackIndices.first {
-                matches.append(match(item, candidates[index], basis: .fingerprint))
-                available.remove(index)
+                accept(item, index: index, basis: .fingerprint)
             } else if fallbackIndices.count > 1 {
                 conflicts.append(conflict(item, indices: fallbackIndices, candidates: candidates))
             } else {

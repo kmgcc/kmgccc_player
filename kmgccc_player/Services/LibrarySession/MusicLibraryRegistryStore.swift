@@ -125,6 +125,9 @@ nonisolated enum MusicLibraryRegistryFile {
         fileManager: FileManager = .default,
         bundleIdentifier: String = Bundle.main.bundleIdentifier ?? "kmgccc.player"
     ) -> URL {
+        #if DEBUG
+        if let root = DebugLibraryIsolation.rootURL { return root.appendingPathComponent("LibraryRegistry.json") }
+        #endif
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         return appSupport
