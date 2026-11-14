@@ -92,6 +92,7 @@ enum SkinDataSchema {
             ("lyrics.prefs.showRuby", .boolean), ("lyrics.prefs.translationLanguage", .text),
             ("lyrics.prefs.romanizationLanguage", .text), ("lyrics.prefs.fontSize", .number),
             ("lyrics.prefs.fontFamily", .text), ("lyrics.prefs.translationFontSize", .number),
+            ("lyrics.prefs.fontFamilyCJK", .text), ("lyrics.prefs.fontWeight", .text),
             ("lyrics.prefs.obscenity", .text),
         ])
         add("lyrics.derived@1", .lyricsTimeline, .frame, [

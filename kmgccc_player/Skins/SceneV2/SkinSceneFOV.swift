@@ -19,9 +19,13 @@ enum SkinSceneFOV {
         if abs(distortion) > 0.001 || chromatic > 0.05 {
             view = SkinSceneFilters.padded(view, reach: reach) { padded in
                 padded.visualEffect { effect, proxy in
-                    effect.layerEffect(
+                    // The stretch samples up to `0.35 * |distortion|` of the half size away from
+                    // the pixel (at the corners). The offset must cover it, or a partial redraw
+                    // reads nothing there and text near the left and right edges is cut off.
+                    let stretch = 0.35 * abs(distortion) * 1.05
+                    return effect.layerEffect(
                         library.skinFxLens(.float2(proxy.size), .float(reach), .float(distortion), .float(chromatic), .float(start)),
-                        maxSampleOffset: CGSize(width: reach, height: reach))
+                        maxSampleOffset: CGSize(width: ceil(proxy.size.width / 2 * stretch) + reach, height: ceil(proxy.size.height / 2 * stretch) + reach))
                 }
             }
         }

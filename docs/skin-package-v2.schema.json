@@ -258,6 +258,9 @@
           "description": "gradient: radial radius relative to the node's longer side; elliptical radius as a fraction of the frame, so the glow ends inside it"
         },
         "tracking": {},
+        "subpixel": {
+          "description": "text: fill each glyph from its outline so position and size change continuously instead of snapping to the pixel grid"
+        },
         "lineSpacing": {},
         "design": {
           "enum": ["default", "rounded", "serif", "monospaced"]

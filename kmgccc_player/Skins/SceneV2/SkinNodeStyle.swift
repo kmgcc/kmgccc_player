@@ -147,8 +147,25 @@ struct SkinGlyphStyle: Equatable, Sendable {
     var transforms: [SkinGlyphTransform] = []
     var outline: SkinGlyphOutline?
     var extrude: SkinGlyphExtrude?
+    /// Glyphs filled as outlines (`subpixel` text).
+    var vector: SkinGlyphVector?
     /// How far glyphs may draw outside the text's frame.
     var padding = 0.0
+}
+
+/// One glyph slice, drawn as its outline when the text is `subpixel` and the outline is known.
+private struct SkinGlyphShape {
+    let slice: Text.Layout.RunSlice
+    let outline: Path?
+    let color: Color?
+
+    func draw(in context: GraphicsContext) {
+        guard let outline, let color else { context.draw(slice); return }
+        var context = context
+        let origin = slice.typographicBounds.origin
+        context.translateBy(x: origin.x, y: origin.y)
+        context.fill(outline, with: .color(color))
+    }
 }
 
 /// Draws scene text glyph by glyph: the `glyphs` reveal, `glyphMotion` and `outline` in one pass.
@@ -176,6 +193,13 @@ struct SkinGlyphRenderer: TextRenderer {
 
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
         var index = 0
+        // Outlines only when every slice is one character, so slice and character stay paired.
+        var vector = style.vector
+        if let current = vector {
+            var slices = 0
+            for line in layout { for run in line { slices += run.count } }
+            if slices != current.characters.count { vector = nil }
+        }
         for line in layout {
             for run in line {
                 for slice in run {
@@ -201,18 +225,19 @@ struct SkinGlyphRenderer: TextRenderer {
                     guard opacity > 0.001 else { continue }
                     glyph.opacity *= opacity
                     if radius > 0.05 { glyph.addFilter(.blur(radius: radius)) }
-                    Self.draw(slice, motion: motion, style: style, in: glyph)
+                    let outline = vector.flatMap { SkinGlyphOutlines.path($0.characters[index], font: $0.font, weight: $0.weight, size: $0.size) }
+                    Self.draw(SkinGlyphShape(slice: slice, outline: outline, color: vector?.color), motion: motion, style: style, in: glyph)
                 }
             }
         }
     }
 
     /// Extrusion behind, outline ring, then the face. Plain glyphs skip the offscreen layer.
-    private static func draw(_ slice: Text.Layout.RunSlice, motion: SkinGlyphTransform?, style: SkinGlyphStyle, in context: GraphicsContext) {
+    private static func draw(_ slice: SkinGlyphShape, motion: SkinGlyphTransform?, style: SkinGlyphStyle, in context: GraphicsContext) {
         let split = motion?.split ?? 0
         let smear = CGSize(width: motion?.smearX ?? 0, height: motion?.smearY ?? 0)
         let smears = abs(smear.width) + abs(smear.height) > 0.25
-        guard style.outline != nil || style.extrude != nil || abs(split) > 0.05 || smears else { context.draw(slice); return }
+        guard style.outline != nil || style.extrude != nil || abs(split) > 0.05 || smears else { slice.draw(in: context); return }
         context.drawLayer { layer in
             if let extrude = style.extrude {
                 let steps = Int(min(32, ceil(extrude.depth)))
@@ -225,7 +250,7 @@ struct SkinGlyphRenderer: TextRenderer {
                             let fraction = Double(step) / Double(steps)
                             var copy = copies
                             copy.translateBy(x: extrude.dx * extrude.depth * fraction, y: extrude.dy * extrude.depth * fraction)
-                            copy.draw(slice)
+                            slice.draw(in: copy)
                         }
                     }
                 } else {
@@ -234,7 +259,7 @@ struct SkinGlyphRenderer: TextRenderer {
                         var copy = layer
                         copy.addFilter(.colorMatrix(mix(extrude.near, extrude.far, fraction).matrix))
                         copy.translateBy(x: extrude.dx * extrude.depth * fraction, y: extrude.dy * extrude.depth * fraction)
-                        copy.draw(slice)
+                        slice.draw(in: copy)
                     }
                 }
             }
@@ -248,7 +273,7 @@ struct SkinGlyphRenderer: TextRenderer {
                         let angle = Double(step) / Double(steps) * 2 * .pi
                         var copy = copies
                         copy.translateBy(x: cos(angle) * outline.width, y: sin(angle) * outline.width)
-                        copy.draw(slice)
+                        slice.draw(in: copy)
                     }
                 }
             }
@@ -271,8 +296,8 @@ struct SkinGlyphRenderer: TextRenderer {
     }
 
     /// Red and blue drawn `split` points apart, green in place, summed back to the original colour.
-    private static func drawFace(_ slice: Text.Layout.RunSlice, split: Double, in context: GraphicsContext) {
-        guard abs(split) > 0.05 else { context.draw(slice); return }
+    private static func drawFace(_ slice: SkinGlyphShape, split: Double, in context: GraphicsContext) {
+        guard abs(split) > 0.05 else { slice.draw(in: context); return }
         context.drawLayer { layer in
             for (channel, offset) in [(0, split), (1, 0.0), (2, -split)] {
                 var copy = layer
@@ -281,7 +306,7 @@ struct SkinGlyphRenderer: TextRenderer {
                 copy.addFilter(.colorMatrix(matrix))
                 copy.blendMode = .plusLighter
                 copy.translateBy(x: offset, y: 0)
-                copy.draw(slice)
+                slice.draw(in: copy)
             }
         }
     }

@@ -87,10 +87,28 @@ struct SkinSceneFeeds: View {
             "lyrics.prefs.showTranslation": .boolean(config.showTranslation), "lyrics.prefs.showRomanization": .boolean(config.showRomanization),
             "lyrics.prefs.showRuby": .boolean(config.showRuby), "lyrics.prefs.fontSize": .number(config.fontSize),
             "lyrics.prefs.fontFamily": .text(config.fontName), "lyrics.prefs.translationFontSize": .number(config.translationFontSize ?? config.fontSize * 0.5),
+            "lyrics.prefs.fontFamilyCJK": .text(config.fontNameCJK ?? config.fontName),
+            "lyrics.prefs.fontWeight": .text(Self.weightName(config.fontWeight)),
             "lyrics.prefs.translationLanguage": .text(config.translationLanguage), "lyrics.prefs.romanizationLanguage": .text(config.romanizationLanguage),
             "lyrics.prefs.obscenity": .text(config.obscenity.rawValue),
             "lyrics.metadata": .record(document?.metadata.mapValues { .list($0.map(SkinValue.text)) } ?? [:]),
         ])
+    }
+
+    /// The lyric weight (−1…1, CSS 400 at 0 and 900 at 1) as a scene `weight` name.
+    private static func weightName(_ value: Double) -> String {
+        let css = Int(((400 + value * 500) / 100).rounded()) * 100
+        switch css {
+        case ...100: return "thin"
+        case 200: return "ultralight"
+        case 300: return "light"
+        case 400: return "regular"
+        case 500: return "medium"
+        case 600: return "semibold"
+        case 700: return "bold"
+        case 800: return "heavy"
+        default: return "black"
+        }
     }
 
     private var values: [SkinDataDomain: [String: SkinValue]] {
@@ -276,18 +294,32 @@ private struct SkinSceneClockFeed: View {
         let progress = playback.playbackProgress
         let lyricsTime = playback.liveLyricsTime
         let playing = p.isPlaying, lyricsPlaying = p.effectiveLyricsIsPlaying
-        let key = [progress.currentTime, lyricsTime, playing ? 1 : 0, lyricsPlaying ? 1 : 0, progress.duration, lead]
+        let seek = playback.lyricsSeekRevision
+        let key = [progress.currentTime, lyricsTime, playing ? 1 : 0, lyricsPlaying ? 1 : 0, progress.duration, lead, Double(seek)]
         Color.clear.onChange(of: key, initial: true) { _, _ in
             let manager = NativeLyricsSurfaceManager.shared
             let config = manager.configurationForConsumers(role: role)
             let now = Date.timeIntervalSinceReferenceDate
             if data.clock.duration > 0, abs(data.clock.position(at: now) - progress.currentTime) > 0.5 { data.seekRevision &+= 1 }
-            let lyricPosition = lyricsTime - config.timing.trackOffset + lead
+            // An explicit seek, or a new lead or track offset, lands at once; ordinary samples
+            // are eased in so the scene never steps back.
+            let lyricOffset = lead - config.timing.trackOffset
+            let jump = seek != state.seek || lyricOffset != state.offset
+            state.seek = seek; state.offset = lyricOffset
+            let lyricPosition = lyricsTime + lyricOffset
             data.clock.lyricsOffset = progress.currentTime - lyricPosition
             data.clock.seekOffset = config.timing.seekOffset
-            data.clock.updateLyrics(position: lyricPosition, isPlaying: lyricsPlaying, now: now)
-            data.clock.update(position: progress.currentTime, isPlaying: playing, duration: progress.duration, now: now)
+            data.clock.updateLyrics(position: lyricPosition, isPlaying: lyricsPlaying, now: now, jump: jump)
+            data.clock.update(position: progress.currentTime, isPlaying: playing, duration: progress.duration, now: now, jump: jump)
             data.updateFlow(playing: playing)
         }
+    }
+
+    /// The last seek revision and lyric offset the clock saw; a reference, so writing it
+    /// from the change handler does not invalidate the view.
+    @State private var state = Remembered()
+    private final class Remembered {
+        var seek = -1
+        var offset = 0.0
     }
 }

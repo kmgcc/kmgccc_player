@@ -340,9 +340,11 @@ struct SkinSceneNodeV2View: View {
             let value = node.type == "lyricLine" ? data.lyricsTimeline.line(relative: offset, time: lyricTime)[member: field].textValue : values["text"]?.textValue ?? ""
             let fontSize = values["fontSize"]?.number(24) ?? 24
             let font = values["font"]?.textValue ?? ""
-            var typeface = font.isEmpty
-                ? Font.system(size: fontSize, weight: skinFontWeight(values["weight"]?.textValue ?? "regular"), design: skinFontDesign(values["design"]?.textValue ?? ""))
-                : Font.custom(font, size: fontSize)
+            let weight = values["weight"]?.textValue ?? "regular"
+            // A family name takes the face nearest `weight`; a PostScript name is used as named.
+            let resolved = font.isEmpty ? nil : SkinFontResolver.font(font, size: fontSize, weight: weight)
+            var typeface = resolved.map { Font($0 as CTFont) }
+                ?? Font.system(size: fontSize, weight: skinFontWeight(weight), design: skinFontDesign(values["design"]?.textValue ?? ""))
             if values["italic"]?.isTruthy == true { typeface = typeface.italic() }
             let tracking = values["tracking"]?.number() ?? 0
             func layout(_ text: Text) -> some View {
@@ -353,7 +355,14 @@ struct SkinSceneNodeV2View: View {
                     .minimumScaleFactor((values["minScale"]?.number(1) ?? 1).clamped01)
             }
             let lineIndex = data.lyricsTimeline.currentIndex(at: lyricTime) + offset
-            let glyphs = glyphStyle(values, text: value, lineIndex: node.type == "lyricLine" ? lineIndex : nil, lyricTime: lyricTime, now: now, fontSize: fontSize)
+            var glyphs = glyphStyle(values, text: value, lineIndex: node.type == "lyricLine" ? lineIndex : nil, lyricTime: lyricTime, now: now, fontSize: fontSize)
+            // `subpixel`: plain text fills its glyph outlines, so it moves and zooms smoothly.
+            if node.type == "text", values["subpixel"]?.isTruthy == true {
+                var style = glyphs ?? SkinGlyphStyle(padding: 1)
+                style.vector = SkinGlyphVector(font: font, weight: weight, size: fontSize, color: foreground,
+                                               characters: value.filter { !$0.isNewline }.map(String.init))
+                glyphs = style
+            }
             if node.type == "lyricLine", let highlight = values["highlightColor"]?.colorValue {
                 // Word by word: each word moves toward `highlightColor` as it is sung, so wrapped lines stay right.
                 if values["highlightStyle"]?.textValue == "word", field == "text",
@@ -465,7 +474,8 @@ struct SkinSceneNodeV2View: View {
             growth = max(growth, transform.scale - 1, abs(transform.rotation) > 0.5 ? 0.5 : 0)
             style.transforms.append(transform)
         }
-        style.padding += reach + growth * fontSize
+        // Heavy and italic faces ink past their advance; leave room so they are not cut.
+        style.padding += reach + growth * fontSize + fontSize * 0.12
         return style
     }
 
@@ -626,6 +636,7 @@ private func skinFontDesign(_ name: String) -> Font.Design {
 private func skinFontWeight(_ name: String) -> Font.Weight {
     switch name {
     case "ultralight": .ultraLight
+    case "thin": .thin
     case "light": .light
     case "medium": .medium
     case "semibold": .semibold

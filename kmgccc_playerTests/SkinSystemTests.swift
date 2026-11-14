@@ -323,21 +323,74 @@ final class SkinSystemTests: XCTestCase {
         }
         let lines = [words(["IT ", "WAS ", "LIKE"]), words(["we ", "were ", "never ", "meant ", "to ", "be ", "separated"]),
                      words(["宝", "船", "载", "着", "星", "光"]), words(["你"]), [.record(["text": .text("一整行 只有行时间"), "start": .number(0), "end": .number(3)])]]
-        for (number, line) in lines.enumerated() {
-            for seed in 0..<24 {
-                let result = SkinKineticLayout.layout(line, options: [.number(Double(seed) * 1.618 + Double(number)), .list([]), .number(2000), .number(1000), .number(1.08), .text(""), .text("heavy"), .number(1)])
-                let items = result[member: "items"].listValue
-                XCTAssertGreaterThanOrEqual(items.count, line.count)
-                let size = result[member: "size"].listValue.map { $0.number() }
-                XCTAssertLessThanOrEqual(size[0], 2001); XCTAssertLessThanOrEqual(size[1], 1001)
-                for a in items.indices { for b in items.indices where b > a {
-                    let p = items[a], q = items[b]
-                    let apart = abs(p[member: "x"].number() - q[member: "x"].number()) >= (p[member: "w"].number() + q[member: "w"].number()) / 2 - 4
-                        || abs(p[member: "y"].number() - q[member: "y"].number()) >= (p[member: "h"].number() + q[member: "h"].number()) / 2 * 0.86 - 4
-                    XCTAssertTrue(apart, "family \(result[member: "family"].number()) overlaps \(p[member: "t"].textValue) / \(q[member: "t"].textValue)")
-                } }
+        // A word's drawn box, turned by its tilt (a rotated word's box is already upright), a
+        // little inside its em box so touching neighbours do not count.
+        func corners(_ item: SkinValue) -> [CGPoint] {
+            let r = item[member: "r"].number(), tilt = (r >= 45 ? r - 90 : r) * .pi / 180
+            let hw = item[member: "w"].number() / 2 - 2, hh = item[member: "h"].number() / 2 * 0.86 - 2
+            let x = item[member: "x"].number(), y = item[member: "y"].number()
+            return [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)].map { dx, dy in
+                CGPoint(x: x + dx * cos(tilt) - dy * sin(tilt), y: y + dx * sin(tilt) + dy * cos(tilt))
             }
         }
+        func separated(_ p: [CGPoint], _ q: [CGPoint]) -> Bool {
+            for shape in [p, q] {
+                for i in 0..<4 {
+                    let edge = CGPoint(x: shape[(i + 1) % 4].x - shape[i].x, y: shape[(i + 1) % 4].y - shape[i].y)
+                    let axis = CGPoint(x: -edge.y, y: edge.x)
+                    let a = p.map { $0.x * axis.x + $0.y * axis.y }, b = q.map { $0.x * axis.x + $0.y * axis.y }
+                    if a.max()! <= b.min()! || b.max()! <= a.min()! { return true }
+                }
+            }
+            return false
+        }
+        var archetypes: [Double: Set<Int>] = [0: [], 1: []]
+        for (number, line) in lines.enumerated() {
+            for complexity in [0.0, 1.0] {
+                for seed in 0..<40 {
+                    let result = SkinKineticLayout.layout(line, options: [.number(Double(seed) * 1.618 + Double(number)), .list([]), .number(2000), .number(1000), .number(1.08), .list([.text(""), .text("")]), .text("heavy"), .number(1), .number(complexity)])
+                    archetypes[complexity]?.insert(Int(result[member: "archetype"].number()))
+                    let items = result[member: "items"].listValue
+                    XCTAssertGreaterThanOrEqual(items.count, line.count)
+                    let size = result[member: "size"].listValue.map { $0.number() }
+                    XCTAssertLessThanOrEqual(size[0], 2001); XCTAssertLessThanOrEqual(size[1], 1001)
+                    for item in items {
+                        XCTAssertTrue(item[member: "x"].number().isFinite && item[member: "y"].number().isFinite)
+                        XCTAssertEqual(hypot(item[member: "ex"].number(), item[member: "ey"].number()), 1, accuracy: 0.01)
+                    }
+                    for a in items.indices { for b in items.indices where b > a {
+                        XCTAssertTrue(separated(corners(items[a]), corners(items[b])),
+                                      "family \(result[member: "family"].number()) overlaps \(items[a][member: "t"].textValue) / \(items[b][member: "t"].textValue)")
+                    } }
+                }
+            }
+        }
+        // Simple lines stay with rows (and the rare vertical hero or cascade); rich lines use every archetype.
+        XCTAssertTrue(archetypes[0]!.isSubset(of: [0, 1, 2, 6, 8]), "\(archetypes[0]!)")
+        XCTAssertGreaterThanOrEqual(archetypes[1]!.count, 7, "\(archetypes[1]!)")
+    }
+
+    @MainActor
+    func testV2SceneClockNeverStepsBackWhilePlaying() {
+        var clock = SkinPlaybackClock()
+        clock.update(position: 10, isPlaying: true, duration: 100, now: 0)
+        var last = clock.position(at: 0)
+        // Samples arrive late and uneven, as from a 10 Hz timer behind a busy main thread.
+        var now = 0.0
+        for step in 1...60 {
+            now += step % 7 == 0 ? 0.35 : 0.1
+            let stale = step % 5 == 0 ? 0.18 : 0.02
+            clock.update(position: 10 + now - stale, isPlaying: true, duration: 100, now: now)
+            for frame in 0..<12 {
+                let value = clock.position(at: now + Double(frame) / 120)
+                XCTAssertGreaterThanOrEqual(value, last - 0.0001)
+                last = value
+            }
+        }
+        XCTAssertEqual(clock.position(at: now), 10 + now, accuracy: 0.2)
+        // A seek lands at once, backwards included.
+        clock.update(position: 3, isPlaying: true, duration: 100, now: now, jump: true)
+        XCTAssertEqual(clock.position(at: now), 3, accuracy: 0.0001)
     }
 
     @MainActor
@@ -360,6 +413,12 @@ final class SkinSystemTests: XCTestCase {
         var still = SkinEvaluationContext(data: data)
         still.moves = false
         XCTAssertEqual(try evaluate(#"spring("emphasis", 0.1)"#, still), 1)
+        // springTo: a spring of a given length and bounce; no bounce never overshoots.
+        XCTAssertEqual(try evaluate("springTo(-0.2, 0.8, 0.3)"), 0)
+        XCTAssertEqual(try evaluate("springTo(3, 0.8, 0.3)"), 1, accuracy: 0.001)
+        XCTAssertGreaterThan(try evaluate("springTo(0.45, 0.8, 0.5)"), 1)
+        XCTAssertLessThanOrEqual(try evaluate("springTo(0.45, 0.8, 0)"), 1.0001)
+        XCTAssertEqual(try evaluate("springTo(0.05, 0.8, 0.3)", still), 1)
 
         // A follow spring starts on its target, chases a new one and lands.
         let followers = SkinFollowers()

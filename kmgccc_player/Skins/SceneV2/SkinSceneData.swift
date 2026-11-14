@@ -221,44 +221,67 @@ final class SkinSceneData {
 
 /// Playback position extrapolated from the coordinator's presentation updates.
 struct SkinPlaybackClock {
-    var position: Double = 0
-    var anchor: Double = Date.timeIntervalSinceReferenceDate
     var isPlaying = false
     var duration: Double = 0
     var rate: Double = 1
     /// Seconds to subtract from the playback position to reach lyric document time.
     var lyricsOffset: Double = 0
     var seekOffset: Double = 0
-    private var lyricsPosition: Double?
-    private var lyricsAnchor: Double = 0
-    private var lyricsPlaying = false
+    private var playback = SkinSmoothedTime()
+    private var lyrics: SkinSmoothedTime?
 
     func position(at now: Double) -> Double {
-        let raw = isPlaying ? position + max(0, now - anchor) * rate : position
+        let raw = playback.value(at: now, rate: rate)
         return duration > 0 ? min(duration, max(0, raw)) : max(0, raw)
     }
 
     func lyricsTime(at now: Double) -> Double {
-        guard let lyricsPosition else { return position(at: now) - lyricsOffset }
-        return lyricsPosition + (lyricsPlaying ? max(0, now - lyricsAnchor) * rate : 0)
+        guard let lyrics else { return position(at: now) - lyricsOffset }
+        return lyrics.value(at: now, rate: rate)
     }
 
-    mutating func updateLyrics(position: Double, isPlaying: Bool, now: Double) {
-        if lyricsPosition == nil || isPlaying != lyricsPlaying || abs(lyricsTime(at: now) - position) > 0.2 {
-            lyricsPosition = position; lyricsAnchor = now
-        }
-        lyricsPlaying = isPlaying
+    /// `jump` lands on `position` at once: a seek, or a change of the skin's lyric lead.
+    mutating func updateLyrics(position: Double, isPlaying: Bool, now: Double, jump: Bool = false) {
+        var lyrics = self.lyrics ?? SkinSmoothedTime()
+        lyrics.sample(position, playing: isPlaying, rate: rate, now: now, jump: jump)
+        self.lyrics = lyrics
     }
 
-    /// Re-anchor only on a real discontinuity, so 4 Hz presentation ticks never jitter frames.
-    mutating func update(position newPosition: Double, isPlaying playing: Bool, duration newDuration: Double, now: Double) {
-        let predicted = position(at: now)
-        if playing != isPlaying || abs(predicted - newPosition) > 0.2 || newDuration != duration {
-            position = newPosition
-            anchor = now
-        }
+    mutating func update(position newPosition: Double, isPlaying playing: Bool, duration newDuration: Double, now: Double, jump: Bool = false) {
+        playback.sample(newPosition, playing: playing, rate: rate, now: now, jump: jump || newDuration != duration)
         isPlaying = playing
         duration = newDuration
+    }
+}
+
+/// A media position that follows sparse samples without stepping. Samples come from a 10 Hz
+/// timer and reach the scene a little late, so each one is a slightly stale reading. Between
+/// samples the time runs at the playback rate; a sample that disagrees is caught up by running
+/// up to a quarter faster or slower until the next one, so the time never jumps or runs backwards
+/// while playing. A seek, a change of play state or a gap over a second lands at once.
+struct SkinSmoothedTime {
+    private var base = 0.0
+    private var anchor = 0.0
+    private var speed = 1.0
+    private var playing = false
+    private var started = false
+
+    func value(at now: Double, rate: Double) -> Double {
+        playing ? base + max(0, now - anchor) * rate * speed : base
+    }
+
+    mutating func sample(_ position: Double, playing isPlaying: Bool, rate: Double, now: Double, jump: Bool = false) {
+        let current = value(at: now, rate: rate)
+        let error = position - current
+        if !started || jump || isPlaying != playing || abs(error) > 1 || (!isPlaying && abs(error) > 0.0005) {
+            base = position; anchor = now; speed = 1; playing = isPlaying; started = true
+            return
+        }
+        guard isPlaying else { return }
+        base = current; anchor = now
+        // A sample is never newer than now, so a small lag is expected and left alone.
+        let drift = error < 0 ? min(0, error + 0.05) : max(0, error - 0.01)
+        speed = 1 + min(0.25, max(-0.25, drift / 0.6))
     }
 }
 

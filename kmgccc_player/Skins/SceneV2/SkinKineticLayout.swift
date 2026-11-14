@@ -1,27 +1,34 @@
 import Foundation
 import NaturalLanguage
 
-/// `kineticLayout(words, seed, avoid, width, height, advance, font, weight, energy)` composes one
-/// lyric line as poster typography and returns where every word goes. Units: 100 is one em of ordinary text; the skin multiplies by its own scale.
+/// `kineticLayout(words, seed, avoid, width, height, advance, font, weight, energy, complexity)`
+/// composes one lyric line as poster typography and returns where every word goes. Units: 100 is
+/// one em of ordinary text; the skin multiplies by its own scale.
 ///
 /// The line is cut into segments (a word, or a CJK token found by the system tokenizer). The
 /// segment with the most text and time is the hero; segments held longer than the line's pace,
-/// or picked at random on longer lines, become semi-heroes. A composition is then chosen from the
-/// line's shape (segment count, width, script, pace) with seeded weights, never one listed in
-/// `avoid`, laid out on measured boxes and scaled as a whole to the safe area.
+/// or picked at random on longer lines, become semi-heroes. A composition is then generated from
+/// seeded choices: an archetype (rows, a hero on its own row, a vertical hero beside or between
+/// the rows, an orbit, vertical columns, a cascade, an arc), then its row breaks, alignment,
+/// stairs, vertical alignment, spacing, size contrast, tilt and the direction each word enters
+/// from. Rows read top to bottom and left to right, so the line keeps its reading order; boxes
+/// are pushed apart until none overlap and the whole is scaled to the safe area.
 ///
-/// Arguments after `words`: `seed`, `avoid` (families to skip), `width` / `height` (safe area),
-/// `advance` (vertical glyph pitch in em), `font`, `weight`, `energy` (hero size, 1 is designed).
-/// Result: `family`, `hero` (item index), `size` `[w, h]`, `ghost` `[x, y, scale]` (scale 0 for
-/// none), `ghostText`, and `items`, one per word: `x`, `y` (centre), `s` (scale), `w`, `h`,
-/// `v` (1 for a stacked vertical word), `r` (degrees), `ex`, `ey` (unit direction it comes from),
-/// `role` (0 support, 1 semi-hero, 2 hero), `seg`, `t` (text to draw), `start`, `end`.
-/// A single word holding a whole line (a line without word timing) is first spread over its
-/// tokens, so `items` may outnumber `words`.
+/// Arguments after `words`: `seed`, `avoid` (`family` values of recent lines, so a composition is
+/// not repeated), `width` / `height` (safe area), `advance` (vertical glyph pitch in em), `font`
+/// (one name, or `[latin, cjk]`), `weight`, `energy` (hero size, 1 is designed) and `complexity`
+/// (0 simple: rows read left to right with an occasional vertical word; 1 rich: every archetype;
+/// values between mix them, so a line or a song can be given its own).
+/// Result: `family` (archetype × 1000 + variant), `archetype`, `hero` (item index), `size`
+/// `[w, h]`, `ghost` `[x, y, scale]` (scale 0 for none), `ghostText`, and `items`, one per word:
+/// `x`, `y` (centre), `s` (scale), `w`, `h`, `v` (1 for a stacked vertical word), `r` (degrees),
+/// `ex`, `ey` (unit direction it comes from), `role` (0 support, 1 semi-hero, 2 hero), `k`
+/// (1 for CJK), `seg`, `t` (text to draw), `start`, `end`. A single word holding a whole line (a
+/// line without word timing) is first spread over its tokens, so `items` may outnumber `words`.
 @MainActor
 enum SkinKineticLayout {
-    enum Family: Int, CaseIterable {
-        case ribbon, tableau, pillar, header, stairs, badge, orbit, impact, flow, columns, cascade
+    enum Archetype: Int, CaseIterable {
+        case rows, heroRow, side, pillar, orbit, columns, cascade, arc, single
     }
 
     private struct Segment {
@@ -41,23 +48,47 @@ enum SkinKineticLayout {
         var duration: Double { max(0, end - start) }
     }
 
+    /// Seeded draws: each call returns the next value in 0..<1.
+    private final class Draws {
+        let seed: Double
+        var count = 0.0
+        init(_ seed: Double) { self.seed = seed }
+        func next() -> Double {
+            count += 1
+            let value = sin(seed * 91.3458 + count * 47.123 + 0.5) * 43758.5453
+            return value - floor(value)
+        }
+        func chance(_ p: Double) -> Bool { next() < p }
+        func range(_ low: Double, _ high: Double) -> Double { low + (high - low) * next() }
+        func int(_ low: Int, _ high: Int) -> Int { high <= low ? low : low + min(high - low, Int(next() * Double(high - low + 1))) }
+        func pick(_ weights: [Double]) -> Int {
+            let total = weights.reduce(0, +)
+            guard total > 0 else { return 0 }
+            var value = next() * total
+            for (index, weight) in weights.enumerated() {
+                value -= weight
+                if value <= 0, weight > 0 { return index }
+            }
+            return weights.lastIndex { $0 > 0 } ?? 0
+        }
+    }
+
     /// `options` are the function's arguments after `words`, in order.
     static func layout(_ words: [SkinValue], options: [SkinValue]) -> SkinValue {
         let words = Array(words.prefix(64))
-        guard !words.isEmpty else { return .record(["items": .list([]), "family": .number(-1), "hero": .number(-1), "size": .list([.number(0), .number(0)])]) }
+        guard !words.isEmpty else { return .record(["items": .list([]), "family": .number(-1), "archetype": .number(-1), "hero": .number(-1), "size": .list([.number(0), .number(0)])]) }
         func option(_ index: Int) -> SkinValue { options.indices.contains(index) ? options[index] : .null }
         let seed = option(0).number()
         let avoid = Set(option(1).listValue.map { Int($0.number(-1)) })
         let safeW = max(200, option(2).number(1400))
         let safeH = max(150, option(3).number(800))
         let advance = max(0.8, option(4).number(1.08))
-        let font = option(5).textValue
+        let fonts = option(5).type == .list ? option(5).listValue.map(\.textValue) : [option(5).textValue]
+        let latinFont = fonts.first ?? "", cjkFont = fonts.count > 1 ? fonts[1] : latinFont
         let weight = option(6).textValue.isEmpty ? "heavy" : option(6).textValue
         let energy = max(0, min(2, option(7).number(1)))
-        func random(_ salt: Double) -> Double {
-            let value = sin(seed * 91.3458 + salt * 47.123 + 0.5) * 43758.5453
-            return value - floor(value)
-        }
+        let complexity = option(8).type == .null ? 1 : max(0, min(1, option(8).number(1)))
+        let draws = Draws(seed)
 
         // Words and their inked widths at size 100, trailing spaces excluded.
         var texts = words.map { $0.type == .record ? $0[member: "text"].textValue : $0.textValue }
@@ -79,15 +110,13 @@ enum SkinKineticLayout {
             }
         }
         let inked = texts.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        let widths = inked.map { SkinTextMeasure.width($0, size: 100, weight: weight, font: font) }
+        let widths = inked.map { SkinTextMeasure.width($0, size: 100, weight: weight, font: $0.contains(where: isCJK) ? cjkFont : latinFont) }
 
-        let segments = segment(texts: texts, inked: inked, widths: widths, starts: starts, ends: ends)
-        var parts = segments
+        var parts = segment(texts: texts, inked: inked, widths: widths, starts: starts, ends: ends)
         let n = parts.count
         let totalChars = max(1, parts.reduce(0) { $0 + $1.chars })
         let cjkChars = parts.reduce(0) { $0 + ($1.cjk ? $1.chars : 0) }
         let cjkLine = cjkChars * 2 >= totalChars
-        let gap = cjkLine ? 16.0 : 32.0, stack = 36.0
         let lineSpan = max(0.1, (ends.max() ?? 0) - (starts.min() ?? 0))
         let pace = lineSpan / Double(n)
 
@@ -102,70 +131,86 @@ enum SkinKineticLayout {
             index != hero && parts[index].wordLike && abs(index - hero) >= (n <= 4 ? 1 : 2)
                 && (score(parts[index]) >= score(parts[hero]) * 0.35 || held(parts[index]))
         }
-        candidates.sort { score(parts[$0]) + (held(parts[$0]) ? 40 : 0) + random(Double($0) * 3.1) * 24
-            > score(parts[$1]) + (held(parts[$1]) ? 40 : 0) + random(Double($1) * 3.1) * 24 }
+        let jitter = parts.indices.map { _ in draws.next() * 24 }
+        candidates.sort { score(parts[$0]) + (held(parts[$0]) ? 40 : 0) + jitter[$0] > score(parts[$1]) + (held(parts[$1]) ? 40 : 0) + jitter[$1] }
         var semis: [Int] = []
         for index in candidates where semis.count < semiLimit && semis.allSatisfy({ abs($0 - index) >= 2 }) { semis.append(index) }
         let spare = parts.indices.filter { $0 != hero && parts[$0].wordLike && abs($0 - hero) >= 2 }
-        if semis.isEmpty, n >= 3, random(7.7) < 0.4, !spare.isEmpty {
-            semis.append(spare[min(spare.count - 1, Int(random(8.8) * Double(spare.count)))])
+        if semis.isEmpty, n >= 3, draws.chance(0.4), !spare.isEmpty {
+            semis.append(spare[min(spare.count - 1, Int(draws.next() * Double(spare.count)))])
         }
         semis.forEach { parts[$0].role = 1 }
 
-        // Composition by the line's shape.
+        // Archetype. Specials are never repeated within two lines; rows only grow less likely.
+        let gap = cjkLine ? 16.0 : 32.0
         let plainWidth = parts.reduce(0) { $0 + $1.width } + gap * Double(max(0, n - 1))
         let wide = plainWidth / safeW
-        var weights: [Family: Double] = [:]
-        switch n {
-        case 1:
-            weights = [.impact: 3, .columns: cjkLine && totalChars >= 2 ? 2 : 0, .ribbon: 1]
-        case 2...3:
-            weights = [.impact: 2.5, .tableau: 2, .ribbon: wide < 1.3 ? 2 : 0.5, .cascade: n == 3 ? 1.5 : 0.5,
-                       .pillar: cjkLine ? 2 : 1, .columns: cjkLine ? 1.6 : 0, .orbit: n == 3 ? 1 : 0]
-        case 4...6:
-            weights = [.ribbon: wide < 1.2 ? 1.5 : 0.3, .tableau: 2, .pillar: cjkLine ? 2 : 0.8, .header: 2, .stairs: 2,
-                       .orbit: 2, .cascade: 1.5, .badge: n >= 5 ? 1.2 : 0.4, .columns: cjkLine && totalChars <= 18 ? 1.6 : 0, .impact: 0.8]
-        case 7...10:
-            weights = [.header: 1.5, .stairs: 2, .badge: 2, .flow: 2.5, .orbit: n <= 8 ? 1.2 : 0,
-                       .columns: cjkLine && totalChars <= 22 ? 1.2 : 0, .tableau: n <= 8 ? 1 : 0, .pillar: cjkLine ? 1 : 0]
-        default:
-            weights = [.flow: 3, .badge: 2, .stairs: 1.5, .header: 1]
-        }
-        if pace < 0.28 {
-            weights[.orbit] = (weights[.orbit] ?? 0) * 0.5
-            weights[.columns] = (weights[.columns] ?? 0) * 0.6
-            weights[.flow] = (weights[.flow] ?? 0) + 0.8
-        }
-        let pool = Family.allCases.filter { (weights[$0] ?? 0) > 0 && !avoid.contains($0.rawValue) }
-        let usable = pool.isEmpty ? Family.allCases.filter { (weights[$0] ?? 0) > 0 } : pool
-        let total = usable.reduce(0) { $0 + (weights[$1] ?? 0) }
-        var pick = random(1.3) * total
-        var family = usable.first ?? .impact
-        for candidate in usable {
-            pick -= weights[candidate] ?? 0
-            if pick <= 0 { family = candidate; break }
-        }
-
-        // Scales.
-        let designed: [Family: Double] = [.ribbon: 2.7, .tableau: 2.5, .pillar: 3.0, .header: 2.7, .stairs: 2.2, .badge: 3.1,
-                                          .orbit: 2.6, .impact: 3.6, .flow: 1.8, .columns: 2.2, .cascade: 2.1]
-        let heroScale = 1 + ((designed[family] ?? 2.4) - 1) * energy * (0.9 + 0.2 * random(2.9)) * (n == 1 ? 0.75 : 1)
-        let semiScale = 1 + (heroScale - 1) * 0.42
-        let jitters = family == .orbit || family == .cascade || family == .flow
-        for index in parts.indices {
-            parts[index].scale = parts[index].role == 2 ? heroScale : (parts[index].role == 1 ? semiScale : (jitters ? 0.88 + 0.24 * random(Double(index) * 1.7) : 1))
-        }
-
-        // Orientation, then box sizes.
-        for index in parts.indices {
-            let stacked: Bool
-            switch family {
-            case .columns: stacked = true
-            case .pillar, .badge: stacked = index == hero
-            default: stacked = false
+        let c = complexity
+        let heroCJK = parts[hero].cjk && parts[hero].chars >= 2 && parts[hero].chars <= 8
+        let avoided = Set(avoid.map { $0 >= 0 ? $0 / 1000 : -1 })
+        var weights = [Double](repeating: 0, count: Archetype.allCases.count)
+        if n == 1 {
+            weights[Archetype.single.rawValue] = 1
+        } else {
+            weights[Archetype.rows.rawValue] = 3
+            weights[Archetype.heroRow.rawValue] = 2.4
+            weights[Archetype.side.rawValue] = heroCJK ? 0.35 + 1.2 * c : (parts[hero].chars >= 3 && !parts[hero].cjk ? 0.6 * c : 0)
+            weights[Archetype.pillar.rawValue] = heroCJK && hero > 0 && hero < n - 1 ? 1.3 * c : 0
+            weights[Archetype.orbit.rawValue] = (3...8).contains(n) && pace >= 0.22 ? 1.4 * c : 0
+            weights[Archetype.columns.rawValue] = cjkLine && totalChars <= 22 ? 1.2 * c : 0
+            weights[Archetype.cascade.rawValue] = (2...6).contains(n) ? 0.15 + 1.0 * c : 0
+            weights[Archetype.arc.rawValue] = (3...9).contains(n) && wide < 2.4 ? 1.1 * c : 0
+            for archetype in Archetype.allCases where avoided.contains(archetype.rawValue) {
+                weights[archetype.rawValue] *= [.rows, .heroRow].contains(archetype) ? 0.45 : 0
             }
+            if weights.allSatisfy({ $0 <= 0 }) { weights[Archetype.rows.rawValue] = 1 }
+        }
+        let archetype = Archetype(rawValue: draws.pick(weights)) ?? .rows
+
+        // Size contrast. Rich lines reach further in both directions.
+        let growthRange: (Double, Double)
+        switch archetype {
+        case .rows: growthRange = (1.0 + 0.3 * c, 1.7 + 0.6 * c)
+        case .heroRow: growthRange = (1.5, 2.3 + 0.5 * c)
+        case .side, .pillar: growthRange = (1.6, 2.2)
+        case .orbit: growthRange = (1.4, 1.8)
+        case .columns: growthRange = (0.9, 1.4)
+        case .cascade, .arc: growthRange = (0.9, 1.4)
+        case .single: growthRange = (1.6, 2.1)
+        }
+        let heroScale = 1 + draws.range(growthRange.0, growthRange.1) * energy
+        let semiScale = 1 + (heroScale - 1) * draws.range(0.3, 0.5)
+        // Supports: flat, a little uneven, swelling toward the hero, alternating, or tapering.
+        let scheme = draws.pick([1, 1 + c, 0.8 * c, 0.6 * c, 0.6 * c])
+        let kicker = archetype == .heroRow && hero > 0 && draws.chance(0.5)
+        for index in parts.indices {
+            switch parts[index].role {
+            case 2: parts[index].scale = heroScale
+            case 1: parts[index].scale = semiScale
+            default:
+                var s = 1.0
+                switch scheme {
+                case 1: s = 1 + (draws.next() - 0.5) * (0.1 + 0.16 * c)
+                case 2: s = 0.86 + 0.28 * (1 - min(1, Double(abs(index - hero)) / 4))
+                case 3: s = index % 2 == 0 ? 1 : 0.82
+                case 4: s = 1.1 - 0.25 * Double(index) / Double(max(1, n - 1))
+                default: break
+                }
+                if kicker && index < hero { s *= 0.78 }
+                parts[index].scale = s
+            }
+        }
+
+        // Orientation, then box sizes. Simple lines keep words upright except a rare vertical hero.
+        let verticalHero = (archetype == .side || archetype == .pillar) || (archetype == .single && heroCJK && draws.chance(0.12 + 0.25 * c))
+        let verticalSemi = [.rows, .heroRow].contains(archetype) && draws.chance(0.06 + 0.2 * c)
+        for index in parts.indices {
+            var stacked = archetype == .columns
+            if index == hero && verticalHero { stacked = true }
+            if parts[index].role == 1 && verticalSemi && parts[index].cjk && (2...5).contains(parts[index].chars) { stacked = true }
             if stacked {
-                if parts[index].cjk { parts[index].vertical = true } else if parts[index].chars > 1 { parts[index].rotated = true }
+                if parts[index].cjk { parts[index].vertical = true }
+                else if parts[index].chars > 1, archetype != .columns { parts[index].rotated = true }
             }
             let s = parts[index].scale
             if parts[index].vertical {
@@ -180,14 +225,17 @@ enum SkinKineticLayout {
             }
         }
 
-        let variant = Int(random(4.1) * 4)
-        let mirror = random(5.3) < 0.5
-        place(&parts, family: family, hero: hero, variant: variant, mirror: mirror, gap: gap, stack: stack, safeW: safeW, safeH: safeH, random: random)
+        let variant = compose(&parts, archetype: archetype, hero: hero, gap: gap, safeW: safeW, safeH: safeH,
+                              complexity: c, avoid: avoid, draws: draws)
 
-        // Fit the whole composition and centre it.
-        let minX = parts.map { $0.x - $0.w / 2 }.min() ?? 0, maxX = parts.map { $0.x + $0.w / 2 }.max() ?? 0
-        let minY = parts.map { $0.y - $0.h / 2 }.min() ?? 0, maxY = parts.map { $0.y + $0.h / 2 }.max() ?? 0
-        let fit = max(0.5, min(1, safeW / max(1, maxX - minX), safeH / max(1, maxY - minY)))
+        // Fit the whole composition (tilted boxes counted by their rotated extent) and centre it.
+        func extent(_ part: Segment) -> (Double, Double) {
+            let angle = abs(part.tilt) * .pi / 180
+            return (part.w * cos(angle) + part.h * sin(angle), part.h * cos(angle) + part.w * sin(angle))
+        }
+        let minX = parts.map { $0.x - extent($0).0 / 2 }.min() ?? 0, maxX = parts.map { $0.x + extent($0).0 / 2 }.max() ?? 0
+        let minY = parts.map { $0.y - extent($0).1 / 2 }.min() ?? 0, maxY = parts.map { $0.y + extent($0).1 / 2 }.max() ?? 0
+        let fit = max(0.45, min(1, safeW / max(1, maxX - minX), safeH / max(1, maxY - minY)))
         let cx = (minX + maxX) / 2, cy = (minY + maxY) / 2
         for index in parts.indices {
             parts[index].x = (parts[index].x - cx) * fit
@@ -197,45 +245,50 @@ enum SkinKineticLayout {
             parts[index].h *= fit
         }
 
-        // Words inside their segments.
+        // Words inside their segments, laid along the segment's own axis and tilt.
         var items: [SkinValue] = []
         for (number, part) in parts.enumerated() {
-            var cursor = part.vertical || part.rotated ? part.y - part.h / 2 : part.x - part.w / 2
+            let along = part.vertical || part.rotated
+            var cursor = along ? -part.h / 2 : -part.w / 2
+            let angle = part.tilt * .pi / 180
             for index in part.first...part.last {
                 let s = part.scale
                 let text = inked[index]
-                var x = part.x, y = part.y, w = widths[index] * s, h = 102 * s, shown = text
+                var dx = 0.0, dy = 0.0, w = widths[index] * s, h = 102 * s, shown = text
                 if part.vertical {
                     let glyphs = text.filter { !$0.isWhitespace }
                     h = Double(max(1, glyphs.count)) * advance * 100 * s
                     w = 100 * s
-                    y = cursor + h / 2
+                    dy = cursor + h / 2
                     cursor += h
                     shown = glyphs.map(String.init).joined(separator: "\n")
                 } else if part.rotated {
-                    y = cursor + w / 2
+                    dy = cursor + w / 2
                     cursor += w
                     swap(&w, &h)
                 } else {
-                    x = cursor + w / 2
+                    dx = cursor + w / 2
                     cursor += w
                 }
+                let x = part.x + dx * cos(angle) - dy * sin(angle), y = part.y + dx * sin(angle) + dy * cos(angle)
                 items.append(.record([
                     "x": .number(x), "y": .number(y), "s": .number(s), "w": .number(w), "h": .number(h),
                     "v": .number(part.vertical ? 1 : 0), "r": .number((part.rotated ? 90 : 0) + part.tilt),
                     "ex": .number(part.ex), "ey": .number(part.ey), "role": .number(Double(part.role)),
-                    "seg": .number(Double(number)), "t": .text(shown),
+                    "k": .number(part.cjk ? 1 : 0), "seg": .number(Double(number)), "t": .text(shown),
                     "start": .number(starts[index]), "end": .number(ends[index]),
                 ]))
             }
         }
 
-        let ghostFamilies: Set<Family> = [.ribbon, .tableau, .pillar, .header, .orbit, .stairs, .cascade]
-        let hasGhost = ghostFamilies.contains(family) && parts[hero].chars <= 6 && random(6.1) < 0.7
+        let ghostArchetypes: Set<Archetype> = [.rows, .heroRow, .side, .pillar, .orbit, .cascade]
+        let hasGhost = ghostArchetypes.contains(archetype) && parts[hero].chars <= 6 && draws.chance(0.6)
         let ghostScale = hasGhost ? min(5, max(2.6, parts[hero].scale * 1.7)) : 0
-        let ghost: [SkinValue] = [.number(parts[hero].x - safeW * 0.1 * (mirror ? -1 : 1)), .number(parts[hero].y - safeH * 0.06), .number(ghostScale)]
+        let ghostSide = draws.chance(0.5) ? -1.0 : 1.0
+        let ghost: [SkinValue] = [.number(parts[hero].x - safeW * 0.1 * ghostSide), .number(parts[hero].y - safeH * 0.06), .number(ghostScale)]
         return .record([
-            "family": .number(Double(family.rawValue)), "hero": .number(Double(parts[hero].first)),
+            "family": .number(Double(archetype.rawValue * 1000 + variant)), "archetype": .number(Double(archetype.rawValue)),
+            "hero": .number(Double(parts[hero].first)),
             "size": .list([.number((maxX - minX) * fit), .number((maxY - minY) * fit)]),
             "ghost": .list(ghost), "ghostText": .text(parts[hero].text),
             "items": .list(items),
@@ -309,162 +362,179 @@ enum SkinKineticLayout {
         return result
     }
 
-    // MARK: Compositions
+    // MARK: Composition
 
-    private static func place(_ parts: inout [Segment], family: Family, hero: Int, variant: Int, mirror: Bool,
-                              gap: Double, stack: Double, safeW: Double, safeH: Double, random: (Double) -> Double) {
+    /// Places every segment for `archetype` and sets where each enters from. Returns the variant
+    /// number (0…999) that, with the archetype, names the composition for `avoid`.
+    private static func compose(_ parts: inout [Segment], archetype: Archetype, hero: Int, gap baseGap: Double,
+                                safeW: Double, safeH: Double, complexity c: Double, avoid: Set<Int>, draws: Draws) -> Int {
         let n = parts.count
-        let side = mirror ? -1.0 : 1.0
-        parts[hero].x = 0; parts[hero].y = 0; parts[hero].ex = 0; parts[hero].ey = 1
+        let all = Array(0..<n)
+        let before = Array(0..<hero), after = Array((hero + 1)..<n)
+        let gap = baseGap * draws.range(0.75, 1.1 + 0.5 * c)
+        let leading = 36 * draws.range(0.3, 0.6 + 0.5 * c)
 
-        /// Lays `indices` left to right in rows no wider than `limit`, from (`left`, `top`).
-        /// `align` 0 left, 1 centre, 2 right. Returns the bottom edge.
-        func rows(_ indices: [Int], left: Double, top: Double, limit: Double, align: Int, enter: (Double, Double)) -> Double {
-            var lines: [[Int]] = [[]], widths: [Double] = [0]
-            for index in indices {
-                let extra = (lines[lines.count - 1].isEmpty ? 0 : gap) + parts[index].w
-                if !lines[lines.count - 1].isEmpty && widths[widths.count - 1] + extra > limit {
-                    lines.append([]); widths.append(0)
-                }
-                widths[widths.count - 1] += (lines[lines.count - 1].isEmpty ? 0 : gap) + parts[index].w
-                lines[lines.count - 1].append(index)
-            }
-            var y = top
-            for (line, width) in zip(lines, widths) where !line.isEmpty {
-                let height = line.map { parts[$0].h }.max() ?? 0
-                var x = left + (align == 1 ? (limit - width) / 2 : (align == 2 ? limit - width : 0))
-                for index in line {
-                    parts[index].x = x + parts[index].w / 2
-                    parts[index].y = y + height - parts[index].h / 2
-                    parts[index].ex = enter.0; parts[index].ey = enter.1
-                    x += parts[index].w + gap
-                }
-                y += height + stack * 0.55
-            }
-            return y - stack * 0.55
+        // Row style: alignment 0 left, 1 centre, 2 right, 3 justified; vertical alignment 0
+        // bottom, 1 centre, 2 top, 3 staggered; stairs and zigzag offsets per row.
+        var align = 0, valign = 0, stairs = 0.0, zig = 0.0, pattern = 0, extraRows = 0
+        var signature = 0
+        for _ in 0..<4 {
+            align = draws.pick([1.2, 1.4, 0.4 + 0.6 * c, 0.5 + 0.5 * c])
+            valign = draws.pick([1.6, 0.8, 0.3 + 0.5 * c, 0.6 * c])
+            stairs = draws.chance(0.12 + 0.35 * c) ? (draws.chance(0.7 - 0.3 * c) ? 1 : -1) * safeW * draws.range(0.04, 0.06 + 0.1 * c) : 0
+            zig = stairs == 0 && draws.chance(0.25 * c) ? safeW * draws.range(0.04, 0.12) : 0
+            pattern = draws.pick([1.5, 0.8 + 0.4 * c, 0.6 + 0.4 * c, 0.6 * c])
+            extraRows = draws.pick([1.4, 1, 0.8 * c])
+            signature = align + 4 * valign + 16 * (stairs > 0 ? 1 : (stairs < 0 ? 2 : 0)) + 48 * (zig > 0 ? 1 : 0) + 96 * pattern + 384 * extraRows
+            if !avoid.contains(archetype.rawValue * 1000 + signature) { break }
         }
 
-        let before = Array(0..<hero), after = Array((hero + 1)..<n)
-        let others = before + after
-        let heroBox = parts[hero]
-        switch family {
-        case .ribbon:
-            var x = -heroBox.w / 2 - gap
-            for index in before.reversed() {
-                parts[index].x = x - parts[index].w / 2; x -= parts[index].w + gap
-                parts[index].ex = 1; parts[index].ey = 0
-            }
-            x = heroBox.w / 2 + gap
-            for index in after {
-                parts[index].x = x + parts[index].w / 2; x += parts[index].w + gap
-                parts[index].ex = -1; parts[index].ey = 0
-            }
-            for (order, index) in others.enumerated() {
-                switch variant % 3 {
-                case 0: parts[index].y = heroBox.h / 2 - parts[index].h / 2 - heroBox.h * 0.08
-                case 1: parts[index].y = -heroBox.h / 2 + parts[index].h / 2 + heroBox.h * 0.06
-                default: parts[index].y = (order % 2 == 0 ? -1 : 1) * heroBox.h * 0.26
+        /// Splits `indices` into `count` rows by width, the rows' shares following `pattern`
+        /// (even, growing, shrinking, uneven). Every row keeps at least one segment.
+        func breakRows(_ indices: [Int], count: Int) -> [[Int]] {
+            let count = max(1, min(indices.count, count))
+            guard count > 1 else { return [indices] }
+            var shares = (0..<count).map { row -> Double in
+                switch pattern {
+                case 1: 1 + Double(row) * 0.6
+                case 2: 1 + Double(count - 1 - row) * 0.6
+                case 3: 0.6 + draws.next()
+                default: 1
                 }
             }
-        case .tableau:
-            var y = -heroBox.h / 2 - stack * 0.5
-            for index in before.reversed() {
-                parts[index].y = y - parts[index].h / 2; y -= parts[index].h + stack * 0.5
-                parts[index].ex = 0; parts[index].ey = -1
-            }
-            y = heroBox.h / 2 + stack * 0.5
-            for index in after {
-                parts[index].y = y + parts[index].h / 2; y += parts[index].h + stack * 0.5
-                parts[index].ex = 0; parts[index].ey = 1
-            }
-            for (order, index) in others.enumerated() {
-                switch variant {
-                case 0: parts[index].x = 0
-                case 1: parts[index].x = -heroBox.w / 2 + parts[index].w / 2
-                case 2: parts[index].x = heroBox.w / 2 - parts[index].w / 2
-                default: parts[index].x = (order % 2 == 0 ? -1 : 1) * min(heroBox.w * 0.3, 120)
+            let total = shares.reduce(0, +)
+            shares = shares.map { $0 / total }
+            let widths = indices.map { parts[$0].w }
+            let sum = widths.reduce(0, +) + gap * Double(indices.count - 1)
+            var rows: [[Int]] = [[]], used = 0.0, boundary = shares[0] * sum
+            for (position, index) in indices.enumerated() {
+                let remainingItems = indices.count - position
+                let remainingRows = count - rows.count
+                let middle = used + widths[position] / 2
+                if !rows[rows.count - 1].isEmpty, remainingRows > 0, (middle > boundary || remainingItems <= remainingRows) {
+                    rows.append([])
+                    boundary += shares[rows.count - 1] * sum
                 }
+                rows[rows.count - 1].append(index)
+                used += widths[position] + gap
             }
-        case .pillar:
-            let top = -heroBox.h / 2
+            return rows
+        }
+
+        func rowCount(_ indices: [Int], measure: Double) -> Int {
+            guard !indices.isEmpty else { return 0 }
+            let width = indices.reduce(0) { $0 + parts[$1].w } + gap * Double(indices.count - 1)
+            let least = max(1, Int(ceil(width / measure)))
+            return min(indices.count, least + extraRows)
+        }
+
+        /// Lays `rows` top to bottom from `top`, each row left to right. Returns the block's bottom.
+        @discardableResult
+        func layRows(_ rows: [[Int]], left: Double, top: Double, align: Int) -> Double {
+            let rowWidths = rows.map { row in row.reduce(0) { $0 + parts[$1].w } + gap * Double(max(0, row.count - 1)) }
+            let block = rowWidths.max() ?? 0
             var y = top
-            for index in before {
-                parts[index].x = side * (heroBox.w / 2 + gap * 1.5 + parts[index].w / 2)
-                parts[index].y = y + parts[index].h / 2; y += parts[index].h + stack * 0.4
-                parts[index].ex = -side; parts[index].ey = 0
+            for (number, row) in rows.enumerated() where !row.isEmpty {
+                let height = row.map { parts[$0].h }.max() ?? 0
+                var spacing = gap
+                var x = left
+                switch align {
+                case 1: x += (block - rowWidths[number]) / 2
+                case 2: x += block - rowWidths[number]
+                case 3:
+                    if row.count > 1 { spacing = gap + (block - rowWidths[number]) / Double(row.count - 1) }
+                    else { x += (block - rowWidths[number]) / 2 }
+                default: break
+                }
+                x += Double(number) * stairs + (number % 2 == 0 ? 0 : zig)
+                for (order, index) in row.enumerated() {
+                    parts[index].x = x + parts[index].w / 2
+                    switch valign {
+                    case 1: parts[index].y = y + height / 2
+                    case 2: parts[index].y = y + parts[index].h / 2
+                    case 3: parts[index].y = y + height - parts[index].h / 2 - (order % 2 == 0 ? 0 : min(height - parts[index].h, parts[index].h * 0.22))
+                    default: parts[index].y = y + height - parts[index].h / 2
+                    }
+                    x += parts[index].w + spacing
+                }
+                y += height + leading
             }
-            y = top + (variant % 2 == 0 ? 0 : heroBox.h * 0.3)
-            for index in after {
-                parts[index].x = -side * (heroBox.w / 2 + gap * 1.5 + parts[index].w / 2)
-                parts[index].y = y + parts[index].h / 2; y += parts[index].h + stack * 0.4
-                parts[index].ex = side; parts[index].ey = 0
-            }
-        case .header:
-            let kickerWidth = max(heroBox.w * 1.3, safeW * 0.4)
+            return y - leading
+        }
+
+        let measure = safeW * draws.range(0.55, 0.95)
+        var resolves = true
+        switch archetype {
+        case .rows:
+            layRows(breakRows(all, count: rowCount(all, measure: measure)), left: 0, top: 0, align: align)
+        case .heroRow:
+            var y = 0.0
             if !before.isEmpty {
-                let bottom = rows(before, left: -kickerWidth / 2, top: 0, limit: kickerWidth, align: 1, enter: (0, -1))
-                let lift = bottom + stack * 0.6 + heroBox.h / 2
-                before.forEach { parts[$0].y -= lift }
+                y = layRows(breakRows(before, count: rowCount(before, measure: measure)), left: 0, top: 0, align: align) + leading * 1.3
             }
-            let leftAnchor = -heroBox.w * 0.25 - gap / 2, rightAnchor = heroBox.w * 0.25 + gap / 2
-            var y = heroBox.h / 2 + stack * 0.6
-            var pair = 0
-            while pair < after.count {
-                let left = after[pair], right = pair + 1 < after.count ? after[pair + 1] : nil
-                let height = max(parts[left].h, right.map { parts[$0].h } ?? 0)
-                parts[left].x = leftAnchor - parts[left].w / 2; parts[left].y = y + height - parts[left].h / 2
-                parts[left].ex = -1; parts[left].ey = 0
-                if let right {
-                    parts[right].x = rightAnchor + parts[right].w / 2; parts[right].y = y + height - parts[right].h / 2
-                    parts[right].ex = 1; parts[right].ey = 0
+            layRows([[hero]], left: 0, top: y, align: align)
+            y = parts[hero].y + parts[hero].h / 2 + leading * 1.3
+            if !after.isEmpty { layRows(breakRows(after, count: rowCount(after, measure: measure)), left: 0, top: y, align: align) }
+            // Rows share one left edge or centre line with the hero row.
+            let anchor = align == 2 ? parts[hero].x + parts[hero].w / 2 : (align == 0 ? parts[hero].x - parts[hero].w / 2 : parts[hero].x)
+            for group in [before, after] where !group.isEmpty {
+                let lo = group.map { parts[$0].x - parts[$0].w / 2 }.min() ?? 0, hi = group.map { parts[$0].x + parts[$0].w / 2 }.max() ?? 0
+                let edge = align == 2 ? hi : (align == 0 ? lo : (lo + hi) / 2)
+                for index in group { parts[index].x += anchor - edge }
+            }
+        case .side, .pillar:
+            let heroBox = parts[hero]
+            let rowHeight = (parts.filter { $0.role != 2 }.map(\.h).max() ?? 102) + leading
+            let others = before + after
+            let lines = max(1, min(others.count, Int((heroBox.h / rowHeight).rounded())))
+            if archetype == .side {
+                // The vertical hero stands on the side its place in the line suggests.
+                let heroLeft = hero <= (n - 1) / 2
+                let rows = breakRows(others, count: lines)
+                let bottom = layRows(rows, left: 0, top: 0, align: heroLeft ? 0 : 2)
+                let blockW = others.map { parts[$0].x + parts[$0].w / 2 }.max() ?? 0
+                let place = draws.pick([1, 1, 0.8])
+                let dy = place == 0 ? -heroBox.h / 2 : (place == 1 ? -bottom / 2 : heroBox.h / 2 - bottom)
+                for index in others {
+                    parts[index].x += heroLeft ? heroBox.w / 2 + gap * 1.5 : -(blockW + heroBox.w / 2 + gap * 1.5)
+                    parts[index].y += dy
                 }
-                y += height + stack * 0.5
-                pair += 2
-            }
-        case .stairs, .flow:
-            let limit = family == .flow ? safeW * (0.62 + 0.2 * random(8.2)) : max(heroBox.w * 1.2, safeW * 0.5)
-            let align = family == .flow ? variant % 3 : 0
-            _ = rows(Array(0..<n), left: -limit / 2, top: 0, limit: limit, align: align, enter: (0, 1))
-            if family == .stairs {
-                // Each row steps further in, like a staircase.
-                let rowsY = Array(Set(parts.map { ($0.y + $0.h / 2).rounded() })).sorted()
-                for index in parts.indices {
-                    let row = rowsY.firstIndex(of: (parts[index].y + parts[index].h / 2).rounded()) ?? 0
-                    parts[index].x += side * Double(row) * safeW * (0.07 + 0.04 * random(9.4))
-                    parts[index].ex = -side; parts[index].ey = 0
+            } else {
+                let leftRows = breakRows(before, count: max(1, lines / 2))
+                let rightRows = breakRows(after, count: max(1, lines / 2))
+                let leftBottom = layRows(leftRows, left: 0, top: 0, align: 2)
+                let leftW = before.map { parts[$0].x + parts[$0].w / 2 }.max() ?? 0
+                for index in before { parts[index].x += -leftW - heroBox.w / 2 - gap * 1.5; parts[index].y += -heroBox.h / 2 }
+                let rightBottom = layRows(rightRows, left: 0, top: 0, align: 0)
+                let diagonal = draws.chance(0.6)
+                for index in after {
+                    parts[index].x += heroBox.w / 2 + gap * 1.5
+                    parts[index].y += diagonal ? heroBox.h / 2 - rightBottom : -heroBox.h / 2 + max(0, leftBottom - rightBottom) / 2
                 }
             }
-        case .badge:
-            let pillarRight = heroBox.w / 2
-            let rowHeight = 102.0 + stack * 0.55
-            let lines = max(1, (heroBox.h / rowHeight).rounded())
-            let othersWidth = others.reduce(0) { $0 + parts[$1].w + gap }
-            let widest = others.map { parts[$0].w }.max() ?? 0
-            let limit = max(widest, min(safeW * 0.55, othersWidth / lines * 1.1))
-            _ = rows(others, left: pillarRight + gap * 1.5, top: -heroBox.h / 2, limit: limit, align: 0, enter: (-1, 0))
-            if mirror {
-                for index in others { parts[index].x = -parts[index].x; parts[index].ex = 1 }
-            }
+            parts[hero].x = 0; parts[hero].y = 0
         case .orbit:
+            resolves = false
+            let heroBox = parts[hero]
+            let others = before + after
             let widest = others.map { parts[$0].w }.max() ?? 0, tallest = others.map { parts[$0].h }.max() ?? 0
-            var rx = heroBox.w / 2 + widest / 2 + gap * 1.5, ry = heroBox.h / 2 + tallest / 2 + stack * 0.6
+            var rx = heroBox.w / 2 + widest / 2 + gap * 1.5, ry = heroBox.h / 2 + tallest / 2 + 22
             let span = min(5.4, 1.15 * Double(others.count))
-            let begin = -2.6 + (random(3.7) - 0.5) * 0.6
-            for _ in 0..<5 {
+            let begin = -2.6 + (draws.next() - 0.5) * 0.6
+            let tilts = others.map { _ in (draws.next() - 0.5) * 8 }
+            parts[hero].x = 0; parts[hero].y = 0
+            for _ in 0..<6 {
                 for (order, index) in others.enumerated() {
                     let angle = begin + span * (others.count > 1 ? Double(order) / Double(others.count - 1) : 0.5)
                     var x = cos(angle) * rx, y = sin(angle) * ry
-                    // Off the axes an ellipse cuts into the hero's box; push out along the ray
-                    // until the word clears it on one axis.
-                    let clearX = (heroBox.w + parts[index].w) / 2 + gap, clearY = (heroBox.h + parts[index].h) / 2 + stack * 0.3
+                    // Off the axes an ellipse cuts into the hero's box; push out along the ray.
+                    let clearX = (heroBox.w + parts[index].w) / 2 + gap, clearY = (heroBox.h + parts[index].h) / 2 + 11
                     if abs(x) < clearX, abs(y) < clearY {
                         let push = min(abs(x) > 0.001 ? clearX / abs(x) : .infinity, abs(y) > 0.001 ? clearY / abs(y) : .infinity)
                         if push.isFinite { x *= push; y *= push }
                     }
-                    parts[index].x = x
-                    parts[index].y = y
-                    parts[index].ex = cos(angle); parts[index].ey = sin(angle)
-                    parts[index].tilt = (random(Double(index) * 2.3) - 0.5) * 8
+                    parts[index].x = x; parts[index].y = y
+                    parts[index].tilt = tilts[order]
                 }
                 let crowded = zip(others, others.dropFirst()).contains { a, b in
                     abs(parts[a].x - parts[b].x) < (parts[a].w + parts[b].w) / 2 && abs(parts[a].y - parts[b].y) < (parts[a].h + parts[b].h) / 2
@@ -472,42 +542,134 @@ enum SkinKineticLayout {
                 if !crowded { break }
                 rx *= 1.18; ry *= 1.12
             }
-        case .impact:
-            let limit = max(heroBox.w, safeW * 0.6)
-            if !before.isEmpty {
-                let bottom = rows(before, left: -limit / 2, top: 0, limit: limit, align: 1, enter: (0, -1))
-                before.forEach { parts[$0].y -= bottom + stack * 0.5 + heroBox.h / 2 }
-            }
-            if !after.isEmpty {
-                _ = rows(after, left: -limit / 2, top: heroBox.h / 2 + stack * 0.5, limit: limit, align: 1, enter: (0, 1))
-            }
         case .columns:
             // Top to bottom, columns from right to left.
-            let cap = max(heroBox.h, safeH * 0.85)
+            let cap = max(parts[hero].h, safeH * draws.range(0.6, 0.9))
+            let drop = draws.chance(0.5) ? draws.range(20, 60) : 0
             var x = 0.0, y = 0.0, columnWidth = 0.0, column = 0
-            for index in 0..<n {
+            for index in all {
                 if y > 0, y + parts[index].h > cap {
                     x -= columnWidth + gap * 1.6; y = 0; columnWidth = 0; column += 1
                 }
-                let drop = variant % 2 == 1 ? Double(column) * 40 : 0
                 parts[index].x = x - parts[index].w / 2
-                parts[index].y = drop + y + parts[index].h / 2
-                parts[index].ex = 0; parts[index].ey = -1
-                y += parts[index].h + stack * 0.3
+                parts[index].y = Double(column) * drop + y + parts[index].h / 2
+                y += parts[index].h + 11
                 columnWidth = max(columnWidth, parts[index].w)
-            }
-            if variant >= 2 {
-                for index in 0..<n { parts[index].tilt = (random(Double(index) * 1.9) - 0.5) * 4 }
             }
         case .cascade:
             var y = 0.0
-            let step = (0.35 + 0.3 * random(4.9)) * (parts.map(\.w).reduce(0, +) / Double(n))
-            for index in 0..<n {
-                parts[index].x = side * Double(index) * step + parts[index].w / 2 * side
+            let step = draws.range(0.35, 0.65) * (parts.map(\.w).reduce(0, +) / Double(n))
+            for index in all {
+                parts[index].x = Double(index) * step + parts[index].w / 2
                 parts[index].y = y + parts[index].h / 2
-                parts[index].ex = -side * 0.8; parts[index].ey = -0.6
-                y += parts[index].h + stack * 0.35
+                y += parts[index].h + leading * 0.4
+            }
+        case .arc:
+            resolves = false
+            let spacing = gap * 1.3
+            let length = all.reduce(0) { $0 + parts[$1].w } + spacing * Double(n - 1)
+            let sweep = draws.range(0.55, 0.9 + 0.3 * c)
+            let radius = length / sweep
+            let arch = draws.chance(0.55)
+            var cursor = -length / 2
+            for index in all {
+                let phi = (cursor + parts[index].w / 2) / radius
+                parts[index].x = radius * sin(phi)
+                parts[index].y = (arch ? 1 : -1) * radius * (1 - cos(phi))
+                parts[index].tilt = (arch ? 1 : -1) * phi * 180 / .pi
+                cursor += parts[index].w + spacing
+            }
+        case .single:
+            parts[hero].x = 0; parts[hero].y = 0
+            if !parts[hero].vertical, draws.chance(0.35 * c) { parts[hero].tilt = (draws.next() - 0.5) * 10 }
+        }
+
+        // Rows-like compositions: push later boxes away from earlier ones until none overlap.
+        if resolves {
+            for _ in 0..<60 {
+                var moved = false
+                for i in parts.indices {
+                    for j in parts.indices where j > i {
+                        let dx = parts[j].x - parts[i].x, dy = parts[j].y - parts[i].y
+                        let overlapX = (parts[i].w + parts[j].w) / 2 + gap * 0.5 - abs(dx)
+                        let overlapY = (parts[i].h + parts[j].h) / 2 + 8 - abs(dy)
+                        guard overlapX > 0, overlapY > 0 else { continue }
+                        if overlapX < overlapY { parts[j].x += (dx >= 0 ? 1 : -1) * overlapX }
+                        else { parts[j].y += (dy >= 0 ? 1 : -1) * overlapY }
+                        moved = true
+                    }
+                }
+                if !moved { break }
             }
         }
+
+        // A slight tilt of the whole composition, on rich lines only.
+        if [.rows, .heroRow, .cascade].contains(archetype), draws.chance(0.3 * c) {
+            let angle = (draws.next() - 0.5) * 8 * .pi / 180
+            for index in parts.indices {
+                let x = parts[index].x, y = parts[index].y
+                parts[index].x = x * cos(angle) - y * sin(angle)
+                parts[index].y = x * sin(angle) + y * cos(angle)
+                parts[index].tilt += angle * 180 / .pi
+            }
+        }
+
+        enter(&parts, archetype: archetype, hero: hero, align: align, complexity: c, draws: draws)
+        return signature
+    }
+
+    /// Where each word comes from. A line picks one way in, so its words move together: along the
+    /// reading direction, rising, dropping, from the side its row is aligned to, alternating by
+    /// row, or out of the centre. Specials enter along their own shape.
+    private static func enter(_ parts: inout [Segment], archetype: Archetype, hero: Int, align: Int, complexity c: Double, draws: Draws) {
+        func set(_ index: Int, _ x: Double, _ y: Double) {
+            let length = max(0.001, hypot(x, y))
+            parts[index].ex = x / length; parts[index].ey = y / length
+        }
+        let cx = parts.map(\.x).reduce(0, +) / Double(parts.count), cy = parts.map(\.y).reduce(0, +) / Double(parts.count)
+        switch archetype {
+        case .orbit:
+            let inward = draws.chance(0.5)
+            for index in parts.indices where index != hero {
+                set(index, (parts[index].x - cx) * (inward ? 1 : -1), (parts[index].y - cy) * (inward ? 1 : -1))
+            }
+            set(hero, 0, 1)
+            return
+        case .columns:
+            for index in parts.indices { set(index, 0, -1) }
+            return
+        case .cascade:
+            for index in parts.indices { set(index, -0.8, -0.6) }
+            return
+        case .arc:
+            // Along the arc, as if the line were drawn from its start.
+            for index in parts.indices {
+                let angle = parts[index].tilt * .pi / 180
+                set(index, -cos(angle), -sin(angle))
+            }
+            return
+        default: break
+        }
+        let mode = draws.pick([1.4, 1.2, 0.4 + 0.5 * c, 0.8, 0.6 * c, 0.6 * c])
+        // Rows, by their vertical position, for the alternating mode.
+        let rowKeys = Array(Set(parts.map { ($0.y / 40).rounded() })).sorted()
+        for index in parts.indices {
+            let part = parts[index]
+            switch mode {
+            case 0: set(index, -1, 0.15)
+            case 1: set(index, 0, 1)
+            case 2: set(index, 0, -1)
+            case 3:
+                if part.vertical { set(index, 0, -1) }
+                else { set(index, align == 0 ? -1 : (align == 2 ? 1 : 0), align == 1 || align == 3 ? 1 : 0.1) }
+            case 4:
+                let row = rowKeys.firstIndex(of: (part.y / 40).rounded()) ?? 0
+                set(index, row % 2 == 0 ? -1 : 1, 0.1)
+            default:
+                set(index, part.x - cx + 0.001, part.y - cy)
+            }
+            if part.vertical && mode != 5 { set(index, 0, -1) }
+        }
+        if mode != 5 { set(hero, parts[hero].ex * 0.5, parts[hero].ey * 0.5 + 0.5) }
     }
 }

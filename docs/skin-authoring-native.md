@@ -170,6 +170,7 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 | --- | --- |
 | `spring(token, 秒)` | 该 token 的弹簧在给定秒数时的进度，自 0 起、到 1 落定，带回弹的 token 会略过 1 |
 | `springVelocity(token, 秒)` | 同一弹簧每秒的进度变化 |
+| `springTo(秒, 时长, 弹性)` | 一段给定时长与弹性（0 到 1）的 MotionKit 弹簧在该时刻的进度；弹性为 0 时平滑落定、不越过 1。时长与弹性可以来自参数，让用户调整入场的长短与回弹 |
 | `follow(目标, token)` | 一个追随目标的弹簧；目标改变时从当前位置与速度接着追，不会跳变。token 省略时为 control |
 | `followVelocity(目标, token)` | 同一追随弹簧的速度，单位为目标单位每秒，适合做拉伸与倾斜 |
 
@@ -218,6 +219,10 @@ token 可以是名称，也可以是与 `animation` 相同的记录。`spring` �
 
 `easeIn`、`easeOut`、`easeInOut` 与 `backOut` 把 0 到 1 的进度映射为缓动曲线，`backOut` 带回弹。表达式里的时长宜写成 MotionKit token 的倍数：声明 `motion@1` 后，`motion.emphasis`、`motion.contentReplacement` 等给出各 token 按用户动画速度换算后的秒数，`motion.speed` 为相对标准速度的倍率；上例的 0.5 可写作 `motion.emphasis`。颜色同理取自 `theme.*`，皮肤便随歌曲换色。逐字运动与 `glyphs` 过渡可以叠加；`outline` 为每个字描边，写成宽度，或 `{width, color, hollow}`，`hollow` 只留外圈，适合做空心衬底大字；宽度为 0 时不描边。`extrude` 为每个字加上实心的厚度，写成深度，或 `{depth, angle, color, endColor}`，颜色由近及远渐变。glyphMotion 另有 `split`（红蓝错开的点数，逐字色散）与 `smearX`/`smearY`（沿位移方向的拖影）。减弱动态效果时逐字运动停止，描边与厚度保留。
 
+文字默认按像素栅格绘制，缓慢缩放或平移时会一格一格地跳。`text` 写上 `"subpixel": true` 后，每个字按字形轮廓填充，位置与字号连续变化，适合镜头缓推和逐字慢移的大字；表情符号等没有轮廓的字仍按原方式绘制。
+
+歌词字体可以跟随 App：声明 `lyrics.prefs@1` 后，`lyrics.prefs.fontFamily`、`lyrics.prefs.fontFamilyCJK` 与 `lyrics.prefs.fontWeight`（thin 到 black）给出用户为当前皮肤选定的歌词字体与字重，这款皮肤没有单独设置时为全局歌词设置。皮肤可以把它作为一个字体选项，与自带的字体并列，例如 `"font": "=params.font == 'app' ? lyrics.prefs.fontFamilyCJK : 'youyou-yisong'"`。
+
 逐词排版用文字测量与列表函数完成，不必手算：
 
 | 函数 | 结果 |
@@ -228,9 +233,9 @@ token 可以是名称，也可以是与 `animation` 相同的记录。`spring` �
 | `pluck(列表, 字段)` | 取出每条记录的一个字段 |
 | `argmax(列表)`、`argmin(列表)` | 最大、最小值的序号 |
 | `addEach(列表, 数或列表)`、`mulEach(列表, 数或列表)` | 逐项相加、相乘 |
-| `kineticLayout(词, 种子, 避开, 宽, 高, 竖排字距, 字体, 字重, 强度)` | 把一行歌词排成海报式构图，返回每个词的位置与大小 |
+| `kineticLayout(词, 种子, 避开, 宽, 高, 竖排字距, 字体, 字重, 强度, 丰富度)` | 把一行歌词排成海报式构图，返回每个词的位置与大小 |
 
-`kineticLayout` 以 100 为普通字的 1em。它按字数与时长选出主词和次重点，再按段数、行宽、文字种类与节奏，从横幅、叠句、立柱、题头、阶梯、竖标、环绕、重击、文段、竖排、瀑布中挑一种构图；`避开` 是构图序号列表，常放前两行用过的。整幅构图超出宽高时等比缩小并居中。结果含 `family`、`hero`、`size`（[宽, 高]）、`ghost`（[x, y, 倍率]，倍率为 0 表示无）、`ghostText` 与 `items`；每项有 `x`、`y`（中心）、`s`（倍率）、`w`、`h`、`v`（竖排为 1）、`r`（角度）、`ex`/`ey`（入场来向）、`role`（0 衬字、1 次重点、2 主词）、`t`（显示文本）、`start`、`end`。只有一个词的整行会先按字或词拆开，因此 `items` 可能比输入的词多。函数在换行时求值一次，结果宜存入 state。
+`kineticLayout` 以 100 为普通字的 1em。它按字数与时长选出主词和次重点，再由种子生成构图：先按段数、行宽、文字种类与节奏挑一种骨架（成行、主词独占一行、竖排主词靠边、竖排主词居中、环绕、竖列、阶梯、弧线、单词拆字），再随机组合对齐、纵向错落、阶梯与折线、断行位置、大小搭配与整体倾斜，同一种骨架也很少重复。大小搭配与大致从左到右的阅读顺序始终保留，词与词互不重叠。`字体` 可以是一个名称，也可以是 [西文字体, 中文字体]。`丰富度` 从 0 到 1，省略时为 1：0 时大致从左到右成行，偶尔出现竖排；1 时所有骨架都可能出现。它可以写成参数，也可以按每首歌或每行歌词改变。`避开` 是构图序号列表，常放前两行用过的；同一骨架两行内不再出现。整幅构图超出宽高时等比缩小并居中。结果含 `family`（骨架 × 1000 + 变体）、`archetype`（骨架序号）、`hero`、`size`（[宽, 高]）、`ghost`（[x, y, 倍率]，倍率为 0 表示无）、`ghostText` 与 `items`；每项有 `x`、`y`（中心）、`s`（倍率）、`w`、`h`、`v`（竖排为 1）、`r`（角度）、`ex`/`ey`（入场来向的单位向量，按构图选择：顺读向、上升、下落、随对齐方向、按行交替、自中心放射，环绕与弧线沿自身形状）、`role`（0 衬字、1 次重点、2 主词）、`k`（中日韩文字为 1）、`t`（显示文本）、`start`、`end`。只有一个词的整行会先按字或词拆开，因此 `items` 可能比输入的词多。函数在换行时求值一次，结果宜存入 state。
 
 例如每个词的起点：`"=offsets(measureEach(lyrics.current.words, 64, \"heavy\"), 12)[index]"`；唱得最久的词：`"=argmax(addEach(pluck(lyrics.current.words, \"end\"), mulEach(pluck(lyrics.current.words, \"start\"), -1)))"`。
 

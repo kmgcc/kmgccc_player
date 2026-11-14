@@ -107,6 +107,18 @@ enum SkinFunctions {
                 return .number(SkinFunctions.sanitized(name == "spring" ? evaluator.normalizedValue(at: t) : evaluator.normalizedVelocity(at: t)))
             }
         }
+        // `springTo(t, duration, bounce)`: a MotionKit spring of that perceptual duration and
+        // bounce from 0 to 1 over `t` seconds, at the user's motion speed, overshoot included. 0
+        // before `t` reaches 0. Lets a value computed per frame (a glyph's entrance) ride the
+        // same springs as the app, with the duration and bounce chosen by the skin at run time.
+        table["springTo"] = SkinFunction(arity: 3...3, argumentTypes: [.number], result: { _ in .number }, tier: .change, domains: [.viewport]) { arguments, context in
+            let t = arguments[0].number()
+            guard t > 0 else { return .number(0) }
+            guard context.moves else { return .number(1) }
+            let duration = min(10, max(0.05, arguments[1].number())), bounce = min(0.9, max(-0.9, arguments[2].number()))
+            let spec = context.motionTokens.phaseSpec(for: .emphasis, duration: duration, bounce: bounce, blendDuration: 0)
+            return .number(SkinFunctions.sanitized(MotionSpringEvaluator(spec: spec).normalizedValue(at: t)))
+        }
 
         table["mix"] = SkinFunction(arity: 3...3, argumentTypes: [.any, .any, .number], result: { types in
             types.first == .color || (types.count > 1 && types[1] == .color) ? .color : .number
@@ -309,7 +321,7 @@ enum SkinFunctions {
             })
         }
         // A lyric line composed as poster typography; see `SkinKineticLayout`.
-        table["kineticLayout"] = SkinFunction(arity: 1...9, argumentTypes: [.any], result: { _ in .record }, tier: .change) { arguments, _ in
+        table["kineticLayout"] = SkinFunction(arity: 1...10, argumentTypes: [.any], result: { _ in .record }, tier: .change) { arguments, _ in
             SkinKineticLayout.layout(arguments[0].listValue, options: Array(arguments.dropFirst()))
         }
 
@@ -404,27 +416,13 @@ enum SkinTextMeasure {
         guard !text.isEmpty, size > 0 else { return 0 }
         let key = "\(name)|\(weight)|\(size)|\(text)"
         if let width = cache[key] { return width }
-        let named = name.isEmpty ? nil : NSFont(name: name, size: size)
-        let font = named ?? NSFont.systemFont(ofSize: size, weight: Self.weight(weight))
+        let (font, found) = SkinFontResolver.lookup(name, size: size, weight: weight)
         let width = Double((text as NSString).size(withAttributes: [.font: font]).width)
         // A package font may not be registered yet; measure it again once it is.
-        guard name.isEmpty || named != nil else { return width }
+        guard found else { return width }
         if cache.count > 4096 { cache.removeAll(keepingCapacity: true) }
         cache[key] = width
         return width
-    }
-
-    private static func weight(_ name: String) -> NSFont.Weight {
-        switch name {
-        case "ultralight": .ultraLight
-        case "light": .light
-        case "medium": .medium
-        case "semibold": .semibold
-        case "bold": .bold
-        case "heavy": .heavy
-        case "black": .black
-        default: .regular
-        }
     }
 }
 
