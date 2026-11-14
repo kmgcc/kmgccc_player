@@ -334,7 +334,7 @@ final class TelemetryService: NSObject {
     }
 
     private func recoverPreviousSessionIfNeeded() {
-        guard Self.isReportingAllowed else { return }
+        guard Self.isReportingAllowed, accumulator == nil else { return }
         guard consentStore.isEnabled, let checkpoint = recoveryStore.load() else { return }
         let summary = checkpoint.recoveredSummary()
         queue.enqueue(summaryEvent(from: summary))
