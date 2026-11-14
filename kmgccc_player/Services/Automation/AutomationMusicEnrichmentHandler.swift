@@ -284,7 +284,7 @@ final class AutomationMusicEnrichmentHandler {
         return Target(query: MusicEnrichmentQuery(
             key: "track:\(id.uuidString)", title: track.title, artist: track.artist,
             album: track.album, duration: track.duration, storedMotionArtwork: track.motionArtwork,
-            albumArtist: track.albumArtist
+            albumArtist: track.albumArtist, sourceAlbumIdentity: track.audioProgramLookupScope
         ), trackID: id)
     }
 

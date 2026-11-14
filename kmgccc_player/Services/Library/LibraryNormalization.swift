@@ -534,11 +534,11 @@ nonisolated enum LibraryNormalization {
         preferredArtistCanonicalName: String?,
         memberArtistCanonicalNames: [String]
     )] {
-        guard tracks.contains(where: { $0.userMetadataOverride?.albumGroupKey != nil }) else {
+        guard tracks.contains(where: { $0.userMetadataOverride?.albumGroupKey != nil || $0.audioProgramAlbum != nil }) else {
             return splitAutomaticAlbumBucket(tracks)
         }
         func assignedKey(_ track: Track) -> String? {
-            track.userMetadataOverride?.albumGroupKey.flatMap {
+            (track.userMetadataOverride?.albumGroupKey ?? track.audioProgramAlbum?.key).flatMap {
                 parseAlbumKey($0).normalizedAlbumTitle == normalizedAlbumKey(album: track.album) ? $0 : nil
             }
         }
@@ -749,6 +749,12 @@ nonisolated enum LibraryNormalization {
                 }
                 return (preferredKey, displayArtist(preferredTrack.artist))
             }
+        }
+
+        let sourceArtists = tracks.compactMap { $0.audioProgramAlbum?.artist }
+        if let artist = sourceArtists.first, sourceArtists.count == tracks.count,
+           Set(sourceArtists.map(normalizeArtist)).count == 1 {
+            return (normalizeArtist(artist), displayArtist(artist))
         }
 
         let groupedByArtist = Dictionary(grouping: tracks) {

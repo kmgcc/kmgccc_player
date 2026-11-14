@@ -1582,6 +1582,81 @@ final class AppSessionHost: ObservableObject {
     /// Opens the read-only repair surface for the library the app is trying
     /// to use. Inspection writes nothing; only an explicit quarantine action
     /// moves a broken record into the library's Recovery folder.
+    func restoreAudioProgram(_ snapshotID: UUID) async {
+        guard let session = activeLibraryBinding.activeSession else { return }
+        do {
+            try await session.runLibraryOperation { try await session.restoreAudioProgram(snapshotID) }
+            guard activeLibraryBinding.activeSession === session else { return }
+            await session.libraryViewModel.reloadLibrary()
+            uiState.dismissSidebarNotice(sourceID: snapshotID)
+            uiState.showSidebarNotice("整轨资料已恢复")
+            await refreshLibraryRepairReport()
+        } catch {
+            guard activeLibraryBinding.activeSession === session else { return }
+            uiState.showSidebarNotice(error.localizedDescription, style: .warning,
+                actionTitle: "查看详情", sourceID: snapshotID, destination: .libraryRepair,
+                isSticky: true, tag: .audioProgramRecovery)
+        }
+    }
+
+    private var isPreviewingAudioPrograms = false
+
+    func previewAudioPrograms(_ proposals: [AudioProgramExpansionProposal]) async {
+        guard !isPreviewingAudioPrograms, let session = activeLibraryBinding.activeSession else { return }
+        isPreviewingAudioPrograms = true
+        defer { isPreviewingAudioPrograms = false }
+        do {
+            var titles: [String] = []
+            for proposal in proposals {
+                let files = try await session.fileImportService.audioProgramsForUpdate(proposal)
+                titles.append(proposal.sourceURL.lastPathComponent)
+                for file in files {
+                    guard let metadata = file.programMetadata, let selection = file.mediaSelection else { continue }
+                    let seconds = Int(selection.duration)
+                    let duration = String(format: "%d:%02d", seconds / 60, seconds % 60)
+                    titles.append("\(selection.trackNumber). \(metadata.title) — \(metadata.artist)（\(duration)）")
+                }
+            }
+            guard activeLibraryBinding.activeSession === session else { return }
+            let choice = await uiState.chooseAudioProgram(title: "分轨预览",
+                fileName: "变更前的资料可在资料库修复中恢复", labels: [], selected: 0,
+                trackTitles: titles, actionTitle: "应用分轨")
+            guard choice != nil, activeLibraryBinding.activeSession === session else { return }
+            guard proposals.allSatisfy({ proposal in
+                uiState.pendingAudioExpansions.contains(proposal)
+            }) else {
+                uiState.showSidebarNotice("分轨描述已更新，请重新预览", style: .warning,
+                    actionTitle: "查看分轨", destination: .audioProgramExpansion, isSticky: true, tag: .audioPrograms)
+                return
+            }
+            await expandAudioPrograms(proposals)
+        } catch {
+            guard activeLibraryBinding.activeSession === session else { return }
+            uiState.showSidebarNotice(error.localizedDescription, style: .warning,
+                actionTitle: "资料库修复", destination: .libraryRepair, isSticky: true, tag: .audioProgramRecovery)
+        }
+    }
+
+    func expandAudioPrograms(_ proposals: [AudioProgramExpansionProposal]) async {
+        guard let session = activeLibraryBinding.activeSession else { return }
+        do {
+            let count = try await session.runLibraryOperation {
+                try await session.expandAudioPrograms(proposals)
+            }
+            guard activeLibraryBinding.activeSession === session else { return }
+            let completed = Set(proposals.map(\.id))
+            uiState.pendingAudioExpansions.removeAll { completed.contains($0.id) }
+            if uiState.pendingAudioExpansions.isEmpty { uiState.dismissSidebarNotice(tag: .audioPrograms) }
+            uiState.showSidebarNotice("已整理 \(count) 首歌曲")
+            await session.libraryViewModel.reloadLibrary()
+        } catch {
+            guard activeLibraryBinding.activeSession === session else { return }
+            uiState.showSidebarNotice(error.localizedDescription, style: .warning,
+                actionTitle: "资料库修复", sourceID: proposals.first?.id, destination: .libraryRepair,
+                isSticky: true, tag: .audioProgramRecovery)
+        }
+    }
+
     func presentLibraryRepair() {
         libraryRepairReport = nil
         isLibraryRepairPresented = true
@@ -1623,19 +1698,38 @@ final class AppSessionHost: ObservableObject {
         guard !quarantinable.isEmpty else { return }
         isRepairingLibrary = true
         defer { isRepairingLibrary = false }
-        let result = LibraryRepairQuarantineService(rootURL: rootURL).quarantine(
-            quarantinable,
-            libraryID: report.libraryID
-        )
+        let result: LibraryRepairQuarantineResult
+        let containsAudioProgram = quarantinable.contains { issue in
+            if case .some(.audioProgramImport(_)) = issue.quarantineTarget { return true }
+            return false
+        }
+        if containsAudioProgram {
+            do {
+                if let session = activeLibraryBinding.activeSession, session.context.id == report.libraryID {
+                    result = try await session.quarantineAudioProgramIssues(quarantinable)
+                } else {
+                    let lease = try LibraryWriterLease.acquire(paths: LibraryPaths(rootURL: rootURL))
+                    defer { lease.release() }
+                    result = LibraryRepairQuarantineService(rootURL: rootURL).quarantine(quarantinable, libraryID: report.libraryID)
+                }
+            } catch is CancellationError { return }
+            catch {
+                uiState.showSidebarNotice(error.localizedDescription, style: .warning,
+                    actionTitle: "资料库修复", destination: .libraryRepair, isSticky: true, tag: .audioProgramRecovery)
+                return
+            }
+        } else {
+            result = LibraryRepairQuarantineService(rootURL: rootURL).quarantine(quarantinable, libraryID: report.libraryID)
+        }
         if result.moved.isEmpty {
             if let failure = result.failed.first {
-                uiState.showSidebarNotice("无法隔离记录：\(failure)", style: .warning)
+                uiState.showSidebarNotice("记录恢复失败：\(failure)", style: .warning)
             } else {
-                uiState.showSidebarNotice("没有需要隔离的记录", style: .warning)
+                uiState.showSidebarNotice("没有需要处理的记录", style: .warning)
             }
         } else {
             uiState.showSidebarNotice(
-                "已隔离 \(result.moved.count) 个记录，可在恢复文件夹找回。",
+                "已处理 \(result.moved.count) 个记录",
                 style: .warning
             )
         }
@@ -1645,6 +1739,8 @@ final class AppSessionHost: ObservableObject {
             // instead of creating an empty replacement.
             await retryLibraryStartup()
         } else if let session = activeLibraryBinding.activeSession {
+            await session.libraryViewModel.reloadLibrary()
+            session.importEnrichmentService.resumeSavedWork(force: true)
             let remaining = await session.recoverPendingMutations()
             unresolvedLibraryMutationCount = remaining
             if remaining == 0 { clearLibraryMutationNoticeIfNeeded() }
@@ -2061,6 +2157,27 @@ final class AppSessionHost: ObservableObject {
         let lyricsVM = session.lyricsViewModel
         let ledMeterProvider = session.ledMeterProvider
         let importEnrichmentService = session.importEnrichmentService
+        uiState.pendingAudioExpansions = []
+        uiState.resetLibraryNotices()
+        session.fileImportService.onCueDescriptorChoice = { [weak uiState] url, descriptors in
+            guard let uiState else { return nil }
+            let selected = await uiState.chooseAudioProgram(title: "选择 CUE 分轨描述",
+                fileName: url.lastPathComponent, labels: descriptors.map(\.lastPathComponent), selected: 0)
+            return selected.map { descriptors[$0] }
+        }
+        session.fileImportService.onSACDAreaChoice = { [weak uiState] url, areas, selected in
+            guard let uiState else { return nil }
+            let index = await uiState.chooseAudioProgram(title: "选择 SACD 音频区域", fileName: url.lastPathComponent,
+                labels: areas.map { $0 == 0 ? "立体声" : "多声道" }, selected: areas.firstIndex(of: selected) ?? 0)
+            return index.map { areas[$0] }
+        }
+        session.fileImportService.onAudioProgramExpansionNeeded = { [weak uiState] proposals in
+            uiState?.recordAudioProgramProposals(proposals)
+        }
+        session.importEnrichmentService.onPersistenceFailure = { [weak uiState] message in
+            uiState?.showSidebarNotice(message, style: .warning, actionTitle: "查看详情",
+                destination: .libraryRepair, isSticky: true, tag: .audioProgramRecovery)
+        }
         session.fileImportService.onImportFailures = { [weak uiState] failures, origin in
             uiState?.recordLibraryImportFailures(failures, origin: origin)
         }
@@ -2069,6 +2186,15 @@ final class AppSessionHost: ObservableObject {
             for albumKey in outcome.updatedAlbumKeys {
                 libraryVM?.refreshAlbumOrderingMetadata(albumKey: albumKey)
             }
+        }
+        libraryVM.confirmSharedOriginalDeletion = { [weak uiState] tracks in
+            guard let uiState else { return nil }
+            let names = Set(tracks.compactMap { $0.mediaLocator.referencedFile?.lastKnownPath }.map { URL(fileURLWithPath: $0).lastPathComponent }).sorted()
+            let choice = await uiState.chooseAudioProgram(title: "共享原文件", fileName: names.joined(separator: "、"),
+                labels: ["仅移除所选分轨", "删除原文件及全部相关曲目"], selected: 0,
+                trackTitles: tracks.sorted { ($0.mediaSelection?.trackNumber ?? 0) < ($1.mediaSelection?.trackNumber ?? 0) }
+                    .map { "\($0.title) — \($0.artist)" }, actionTitle: "继续")
+            return choice.map { $0 == 1 }
         }
         libraryVM.onTrackDeletionPreparationFailures = { [weak self] failures in
             guard let self, !failures.isEmpty else { return }

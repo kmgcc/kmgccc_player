@@ -14,6 +14,9 @@ nonisolated enum LibraryLocationStore {
 
     /// The legacy factory default root URL (`~/Music/kmgccc_player Library`).
     static var defaultLibraryRootURL: URL {
+        #if DEBUG
+        if let root = DebugLibraryIsolation.rootURL { return root.appendingPathComponent("Library", isDirectory: true) }
+        #endif
         let base = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first
         return (base ?? URL(fileURLWithPath: NSHomeDirectory()))
             .appendingPathComponent(defaultLibraryRootName, isDirectory: true)

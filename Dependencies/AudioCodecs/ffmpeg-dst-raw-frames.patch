@@ -1,0 +1,13 @@
+--- a/libavcodec/dstdec.c
++++ b/libavcodec/dstdec.c
+@@ -271,7 +271,10 @@ static int decode_frame(AVCodecContext *avctx, AVFrame *frame,
+         skip_bits1(gb);
+         if (get_bits(gb, 6))
+             return AVERROR_INVALIDDATA;
+-        memcpy(frame->data[0], avpkt->data + 1, FFMIN(avpkt->size - 1, frame->nb_samples * channels));
++        if (avpkt->size - 1 < frame->nb_samples * channels)
++            return AVERROR_INVALIDDATA;
++        for (i = 0; i < frame->nb_samples * channels; i++)
++            frame->data[0][i * 4] = avpkt->data[i + 1];
+         goto dsd;
+     }

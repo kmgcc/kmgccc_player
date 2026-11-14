@@ -76,8 +76,16 @@ nonisolated enum ImportEnrichmentWorker {
         artist: String,
         album: String,
         duration: Double? = nil,
-        qqMusicCoverService: QQMusicCoverService
+        qqMusicCoverService: QQMusicCoverService,
+        albumPool: AlbumContentLookupPool? = nil,
+        albumScope: String? = nil
     ) async -> ImportCoverLookupOutcome {
+        if let albumPool, let albumScope {
+            return await albumPool.covers.value(for: albumScope) {
+                await Self.fetchCover(title: nil, artist: artist, album: album, duration: nil, qqMusicCoverService: qqMusicCoverService)
+            }
+        }
+
         guard !Task.isCancelled else { return .failed("已取消") }
         let normalizedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -258,8 +266,16 @@ nonisolated enum MetadataEnrichmentWorker {
 
     static func fetchAlbumMetadata(
         album: String,
-        artist: String
+        artist: String,
+        albumPool: AlbumContentLookupPool? = nil,
+        albumScope: String? = nil
     ) async -> ImportAlbumMetadataOutcome {
+        if let albumPool, let albumScope {
+            return await albumPool.metadata.value(for: albumScope) {
+                await Self.fetchAlbumMetadata(album: album, artist: artist)
+            }
+        }
+
         guard !Task.isCancelled else { return .failed("已取消") }
         guard !album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .noResults
@@ -336,8 +352,16 @@ nonisolated enum MetadataEnrichmentWorker {
     static func fetchAlbumArtwork(
         album: String,
         artist: String,
-        qqMusicCoverService: QQMusicCoverService
+        qqMusicCoverService: QQMusicCoverService,
+        albumPool: AlbumContentLookupPool? = nil,
+        albumScope: String? = nil
     ) async -> ImportAlbumArtworkOutcome {
+        if let albumPool, let albumScope {
+            return await albumPool.artwork.value(for: albumScope) {
+                await Self.fetchAlbumArtwork(album: album, artist: artist, qqMusicCoverService: qqMusicCoverService)
+            }
+        }
+
         guard !Task.isCancelled else { return .failed("已取消") }
         let cleanAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanAlbum.isEmpty, !LibraryNormalization.isUnknownAlbum(cleanAlbum) else {

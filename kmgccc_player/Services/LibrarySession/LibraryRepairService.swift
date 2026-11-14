@@ -14,6 +14,7 @@ nonisolated enum LibraryRepairQuarantineTarget: Sendable, Equatable {
     case sourceDirectory(id: UUID)
     case transactionRecord
     case playlistRecord
+    case audioProgramImport(UUID)
 }
 
 nonisolated struct LibraryRepairIssue: Sendable, Equatable, Identifiable {
@@ -53,11 +54,15 @@ nonisolated struct LibraryRepairReport: Sendable, Equatable {
     let trackCount: Int
     let trackFolderCount: Int
     let checkedAt: Date
+    var audioProgramSnapshots: [AudioProgramRecoverySnapshot] = []
 
     var blockingIssues: [LibraryRepairIssue] { issues.filter(\.blocksOpen) }
-    var quarantinableIssues: [LibraryRepairIssue] { blockingIssues.filter { $0.quarantineTarget != nil } }
+    var quarantinableIssues: [LibraryRepairIssue] { issues.filter { issue in
+        if case .some(.audioProgramImport(_)) = issue.quarantineTarget { return true }
+        return issue.blocksOpen && issue.quarantineTarget != nil
+    } }
     var canQuarantineAndRetry: Bool {
-        !quarantinableIssues.isEmpty && quarantinableIssues.count == blockingIssues.count
+        !quarantinableIssues.isEmpty && blockingIssues.allSatisfy { $0.quarantineTarget != nil }
     }
 }
 
@@ -93,6 +98,16 @@ nonisolated enum LibraryRepairInspector {
             ))
         }
 
+        do {
+            for record in try AudioProgramImportTransaction.load(paths: paths) where !record.committed {
+                issues.append(.init(kind: .transaction,
+                    path: AudioProgramImportTransaction.root(paths).appendingPathComponent("\(record.id.uuidString).json"),
+                    detail: "分轨导入尚待恢复", quarantineTarget: .audioProgramImport(record.id), blocksOpen: false))
+            }
+        } catch {
+            issues.append(.init(kind: .transaction, path: AudioProgramImportTransaction.root(paths),
+                detail: error.localizedDescription, quarantineTarget: nil, blocksOpen: false))
+        }
         let projection = LibraryMutationProjectionReader.read(paths: paths, fileManager: fileManager)
         for issue in projection.issues {
             let isPlaylist = issue.path.deletingLastPathComponent().path == paths.playlistsRootURL.path
@@ -194,7 +209,8 @@ nonisolated enum LibraryRepairInspector {
             sampleTracks: projection.sampleTrackTitles,
             trackCount: projection.trackCount,
             trackFolderCount: projection.trackFolderCount,
-            checkedAt: now
+            checkedAt: now,
+            audioProgramSnapshots: (try? AudioProgramRecoverySnapshot.loadAll(paths: paths)) ?? []
         )
     }
 }
@@ -305,6 +321,16 @@ nonisolated struct LibraryRepairQuarantineService {
                     now: now
                 )
                 move(issue.path, to: destination, result: &result)
+
+            case .audioProgramImport(let id):
+                do {
+                    guard let record = try AudioProgramImportTransaction.load(paths: paths).first(where: { $0.id == id }) else {
+                        result.skipped.append(issue.path)
+                        continue
+                    }
+                    try record.recover(paths: paths)
+                    result.moved.append(issue.path)
+                } catch { result.failed.append(error.localizedDescription) }
 
             case .playlistRecord:
                 guard fileManager.fileExists(atPath: issue.path.path) else {

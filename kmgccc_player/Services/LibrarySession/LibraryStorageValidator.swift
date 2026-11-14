@@ -96,10 +96,12 @@ enum LibraryStorageValidator {
         var trackIDs = Set<UUID>()
         var locatorKinds: [LocalTrackStorageKind] = []
 
+        let pendingPrograms = try AudioProgramImportTransaction.pendingTrackIDs(paths: context.paths)
         for directory in try directDirectories(at: context.paths.tracksRootURL) {
             guard let folderID = UUID(uuidString: directory.lastPathComponent) else {
                 throw LibraryStorageValidationError.damagedTrackSidecar
             }
+            if pendingPrograms.contains(folderID) { continue }
             let metaURL = directory.appendingPathComponent("meta.json")
             guard let sidecar = try? decoder.decode(
                 TrackSidecar.self,

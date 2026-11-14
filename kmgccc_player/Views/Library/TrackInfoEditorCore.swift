@@ -443,7 +443,8 @@ struct TrackInfoEditorCore: View {
         guard let key = enrichmentKey ?? lyricsSearchTrack.map({ "track:" + $0.id.uuidString }) else { return nil }
         return MusicEnrichmentQuery(
             key: key, title: title, artist: artist, album: album, duration: duration,
-            albumArtist: lyricsSearchTrack?.albumArtist ?? enrichmentAlbumArtist
+            albumArtist: lyricsSearchTrack?.albumArtist ?? enrichmentAlbumArtist,
+            sourceAlbumIdentity: lyricsSearchTrack?.audioProgramLookupScope
         )
     }
 

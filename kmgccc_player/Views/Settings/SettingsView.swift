@@ -156,6 +156,11 @@ struct SettingsView: View {
                 subpagePath = []
             }
         }
+        .onChange(of: appSession.isLibraryRepairPresented) { _, isPresented in
+            if isPresented {
+                dismiss()
+            }
+        }
         .onChange(of: searchText) { _, value in
             selectedSearchResultID = nil
             if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

@@ -17,18 +17,18 @@ import UniformTypeIdentifiers
 
 /// Canonical definition of the audio formats the app supports.
 ///
-/// `playableExtensions` lists container/codec extensions that Core Audio
-/// (`AVAudioFile` / `AVURLAsset`) can decode on the app's deployment target.
-/// `importableExtensions` adds formats that are decrypted/transcoded during
-/// import (NCM and video containers) before they become playable audio files.
-///
-/// Formats deliberately excluded: `ogg` / `opus`. Core Audio cannot decode
-/// Vorbis or Ogg-Opus, so whitelisting them would create a "selectable but the
-/// import/playback fails" trap. They stay out until a real decoder exists.
+/// Shared candidates for import, file selection, scanning and playback.
+/// Import verifies the routed decoder with a PCM read before committing media.
 nonisolated enum AudioFormatSupport {
 
-    /// Extensions Core Audio can decode directly (lowercased, no dot).
+    static let codecLibraryExtensions: Set<String> = [
+        "ape", "wv", "tta", "ogg", "oga", "opus", "wma", "asf", "dsf", "dff", "w64", "rf64"
+    ]
+
+    /// Audio candidates decoded by Core Audio or the bundled codec libraries.
     static let playableExtensions: Set<String> = [
+        "ape", "wv", "tta", "ogg", "oga", "opus", "wma", "asf",
+        "dsf", "dff", "w64", "rf64", "wave", "aifc",
         "mp3",
         "m4a",
         "aac",   // bare ADTS stream and AAC-in-MP4
@@ -42,9 +42,12 @@ nonisolated enum AudioFormatSupport {
         "mp4",   // MPEG-4 container (audio track)
     ]
 
+    static let physicalMediaExtensions = playableExtensions.union(["iso"])
+
     /// Extensions accepted by the importer. Superset of `playableExtensions`
     /// plus formats converted to a playable file during import.
     static let importableExtensions: Set<String> = playableExtensions.union([
+        "cue", "iso",
         "ncm",   // NetEase encrypted; decrypted during import
     ]).union(videoContainerExtensions)
 
@@ -80,6 +83,7 @@ nonisolated enum AudioFormatSupport {
         // extension is what makes it selectable in the panel.
         let extensionFallbacks = [
             "aac", "flac", "m4a", "alac", "caf", "m4b", "mp4", "aif",
+            "ape", "wv", "tta", "ogg", "oga", "opus", "wma", "asf", "dsf", "dff", "w64", "rf64", "wave", "aifc", "cue", "iso",
         ]
         for ext in extensionFallbacks {
             if let type = UTType(filenameExtension: ext) { types.append(type) }

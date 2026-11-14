@@ -84,7 +84,7 @@ nonisolated struct MusicLibraryManifest: Codable, Sendable, Equatable {
     }
 
     func validated() throws -> MusicLibraryManifest {
-        guard schemaVersion == Self.currentSchemaVersion else {
+        guard (1...2).contains(schemaVersion) else {
             throw MusicLibraryManifestError.unsupportedSchema(schemaVersion)
         }
         guard libraryID != UUID.zero else {
@@ -121,7 +121,15 @@ nonisolated struct MusicLibraryManifest: Codable, Sendable, Equatable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(self).write(to: url, options: .atomic)
+        // Renaming a library from a context opened before its first split import
+        // must retain the newer on-disk format version.
+        var manifest = self
+        if let existing = try? Self.read(from: url), existing.libraryID == libraryID,
+           existing.schemaVersion > schemaVersion {
+            manifest = Self(schemaVersion: existing.schemaVersion, libraryID: libraryID,
+                displayName: displayName, mode: mode, createdAt: createdAt, updatedAt: updatedAt)
+        }
+        try encoder.encode(manifest).write(to: url, options: .atomic)
     }
 }
 

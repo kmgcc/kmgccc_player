@@ -71,6 +71,21 @@ struct LibraryRepairSheet: View {
                         }
                     }
                 }
+                if !report.audioProgramSnapshots.isEmpty {
+                    sectionTitle("整轨恢复记录")
+                    ForEach(report.audioProgramSnapshots, id: \.id) { snapshot in
+                        HStack {
+                            Text(snapshot.createdAt.formatted(date: .abbreviated, time: .shortened))
+                                .font(.callout)
+                            Spacer()
+                            Button("恢复整轨资料") {
+                                Task { await appSession.restoreAudioProgram(snapshot.id) }
+                            }
+                            .buttonStyle(AppDialogGlassButtonStyle())
+                            .disabled(appSession.activeLibraryBinding.activeSession?.context.id != report.libraryID)
+                        }
+                    }
+                }
                 Text("检查只读取文件。隔离会把记录移到资料库内的恢复文件夹，可随时取回。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -182,7 +197,7 @@ struct LibraryRepairSheet: View {
             .disabled(appSession.isInspectingLibraryRepair || appSession.isRepairingLibrary)
 
             if appSession.canQuarantineLibraryRepairIssues {
-                Button(appSession.isRepairingLibrary ? "正在隔离" : "隔离损坏记录") {
+                Button(appSession.isRepairingLibrary ? "正在处理" : "处理待恢复记录") {
                     Task { await appSession.quarantineLibraryRepairIssues() }
                 }
                 .buttonStyle(AppDialogGlassButtonStyle(kind: .primary))

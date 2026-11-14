@@ -172,6 +172,10 @@ final class FileImportService: FileImportServiceProtocol {
     /// Main-actor UI hook.  The service remains independent of presentation;
     /// AppSessionHost stores the failures in UI state for the sidebar report.
     var onImportFailures: (@MainActor ([ImportInputFailure], LibraryImportOrigin) -> Void)?
+    var onCueDescriptorChoice: (@MainActor (URL, [URL]) async -> URL?)?
+    var onSACDAreaChoice: (@MainActor (URL, [Int], Int) async -> Int?)?
+    var onAudioProgramExpansionNeeded: (@MainActor ([AudioProgramExpansionProposal]) -> Void)?
+    private var approvedAudioProgramGroups = Set<UUID>()
     /// Album-order outcomes are reported after the import task finishes so the
     /// UI can collect every failure in one place.
     var onAlbumOrderingResult: (@MainActor (AlbumOrderingOutcome) -> Void)?
@@ -215,7 +219,8 @@ final class FileImportService: FileImportServiceProtocol {
             qqMusicCoverService: qqMusicCoverService,
             artistArtworkProviderCoordinator: artistArtworkProviderCoordinator,
             lyricsSearchCoordinator: lyricsSearchCoordinator,
-            amllDBService: amllDBService
+            amllDBService: amllDBService,
+            albumLookups: importEnrichmentService.albumLookups
         )
         self.ncmConversionPipeline = ManagedNCMConversionPipeline(
             operationCoordinator: operationCoordinator
@@ -486,6 +491,27 @@ final class FileImportService: FileImportServiceProtocol {
         )
     }
 
+    func audioProgramsForUpdate(_ proposal: AudioProgramExpansionProposal) async throws -> [ImportDiscoveredFile] {
+        guard await acquireImportSlot() else { throw CancellationError() }
+        defer { releaseImportSlot() }
+        let input = await storageBackend.prepareInputs([proposal.sourceURL])
+        defer { storageBackend.finishImportBatch() }
+        if let failure = input.failures.first { throw AudioDecodingError.failed(failure.message) }
+        return input.files.filter { $0.mediaSelection?.groupID == proposal.id }
+    }
+
+    func expandAudioPrograms(_ proposals: [AudioProgramExpansionProposal]) async -> [Track] {
+        guard !proposals.isEmpty else { return [] }
+        let outcome = await enqueueImport { [weak self] in
+            guard let self else { return .empty }
+            self.approvedAudioProgramGroups = Set(proposals.map(\.id))
+            defer { self.approvedAudioProgramGroups.removeAll() }
+            return await self.performImport(proposals.map(\.sourceURL), to: nil, metadataOverride: nil,
+                presentation: .interactive, isManualSelection: true, origin: .menu, enrichmentPolicy: .standard)
+        }
+        return outcome.tracks
+    }
+
     private enum ImportPresentation {
         case interactive
         case automatic
@@ -675,7 +701,8 @@ final class FileImportService: FileImportServiceProtocol {
 
         if presentation == .interactive, origin != .automation { uiPresentationObserver?() }
         let progressController = BatchImportProgressDialogController(
-            presentsWindow: presentation == .interactive && origin != .automation,
+            presentsWindow: false,
+            onProgress: { [weak self] detail in self?.operationCoordinator.recordCheckpoint(detail) },
             onCancelRequested: {
                 Task {
                     await cancellationToken.requestCancel()
@@ -692,9 +719,80 @@ final class FileImportService: FileImportServiceProtocol {
         )
 
         // The backend captures panel/drag scopes before this suspension returns.
-        let inputPlan = await storageBackend.prepareInputs(selectedURLs)
+        var inputPlan = await storageBackend.prepareInputs(selectedURLs)
         lastImportFailures.append(contentsOf: inputPlan.failures)
         defer { storageBackend.finishImportBatch() }
+        for choice in inputPlan.cueChoices {
+            guard presentation == .interactive, origin != .automation, let choose = onCueDescriptorChoice else {
+                lastImportFailures.append(.init(url: choice.file.url, message: "发现多份 CUE，请手动选择分轨描述"))
+                continue
+            }
+            guard let descriptor = await choose(choice.file.url, choice.descriptors) else {
+                importSession.cleanupStaging()
+                return .empty
+            }
+            do {
+                let url = choice.file.url
+                let programs = try await Task.detached {
+                    try AudioProgramResolver.tracks(at: url, cueDescriptor: descriptor) ?? []
+                }.value
+                let replacements = programs.map { program in
+                    var file = choice.file
+                    file.mediaSelection = program.selection
+                    file.programMetadata = AudioProgramMetadata(title: program.title, artist: program.artist,
+                        album: program.album, albumArtist: program.albumArtist)
+                    return file
+                }
+                inputPlan = ImportInputPlan(files: inputPlan.files + replacements,
+                    directorySources: inputPlan.directorySources, failures: inputPlan.failures)
+                try AudioProgramSourcePreferences.save(cue: descriptor,
+                    groupID: AudioMediaSelection.groupID(for: url), paths: paths)
+            } catch { lastImportFailures.append(.init(url: choice.file.url, message: error.localizedDescription)) }
+        }
+        if presentation == .interactive, origin != .automation, let chooseArea = onSACDAreaChoice {
+            let images = Dictionary(grouping: inputPlan.files.filter { $0.mediaSelection?.kind == .sacd },
+                by: { $0.mediaSelection!.groupID })
+            for (groupID, files) in images {
+                guard let first = files.first else { continue }
+                do {
+                    let url = first.url
+                    let info = try await Task.detached { try AudioDecoderFactory.open(url).info }.value
+                    guard let areas = info.availableAreas, areas.count > 1 else { continue }
+                    guard let area = await chooseArea(url, areas, first.mediaSelection?.area ?? 0) else {
+                        importSession.cleanupStaging()
+                        return .empty
+                    }
+                    let programs = try await Task.detached { try AudioProgramResolver.tracks(at: url, area: area) ?? [] }.value
+                    let replacements = programs.map { program in
+                        var file = ImportDiscoveredFile(url: program.url, memberships: first.memberships,
+                            primarySourceID: first.primarySourceID, fingerprint: first.fingerprint)
+                        file.mediaSelection = program.selection
+                        file.programMetadata = AudioProgramMetadata(title: program.title, artist: program.artist,
+                            album: program.album, albumArtist: program.albumArtist)
+                        return file
+                    }
+                    inputPlan = ImportInputPlan(files: inputPlan.files.filter { $0.mediaSelection?.groupID != groupID } + replacements,
+                        directorySources: inputPlan.directorySources, failures: inputPlan.failures)
+                    try AudioProgramSourcePreferences.save(area: area, groupID: groupID, paths: paths)
+                } catch {
+                    lastImportFailures.append(.init(url: first.url, message: error.localizedDescription))
+                    importSession.cleanupStaging()
+                    return .empty
+                }
+            }
+        }
+        if storageBackend.mode == .referenced, !isManualSelection {
+            do {
+                let suppressed = try LogicalAudioTrackTombstones.load(paths: paths)
+                inputPlan = ImportInputPlan(files: inputPlan.files.filter { file in
+                    file.mediaSelection.map { !suppressed.contains($0.logicalKey) } ?? true
+                }, directorySources: inputPlan.directorySources, failures: inputPlan.failures)
+            } catch {
+                lastImportFailures.append(.init(url: paths.sourcesRootURL, message: "无法读取已移除的分轨记录"))
+                importSession.cleanupStaging()
+                return .empty
+            }
+        }
         // NCM conversion may need write access to the folder containing each
         // source. Keep one parent authorization per directory for this whole
         // import, including cancellation and partial-failure paths, instead
@@ -715,8 +813,10 @@ final class FileImportService: FileImportServiceProtocol {
             inputPlan: inputPlan,
             libraryTracks: libraryTracks,
             isManualSelection: isManualSelection,
-            session: importSession
+            session: importSession,
+            approvedProgramGroups: approvedAudioProgramGroups
         )
+        if !interpretation.pendingAudioExpansions.isEmpty { onAudioProgramExpansionNeeded?(interpretation.pendingAudioExpansions) }
         var fileTrackMappings = interpretation.fileTrackMappings
         var reusedTracks = interpretation.reusedTracks
         var reusedTrackIDs = interpretation.reusedTrackIDs
@@ -727,7 +827,9 @@ final class FileImportService: FileImportServiceProtocol {
         progressController.update(
             stage: .scanning,
             progress: Self.progress(for: .scanning, completed: discoveredFileCount, total: max(discoveredFileCount, 1)),
-            detail: discoveredFileCount > 0 ? "已找到 \(discoveredFileCount) 个可导入文件" : "未找到支持的音频文件",
+            detail: discoveredFileCount > 0
+                ? "已找到 \(Set(interpretation.filesToImport.map { $0.url.path }).count + interpretation.eligibleNCMFiles.count) 个音频文件，共 \(discoveredFileCount) 首歌曲"
+                : "扫描完成",
             completedCount: discoveredFileCount,
             totalCount: discoveredFileCount
         )
@@ -778,13 +880,16 @@ final class FileImportService: FileImportServiceProtocol {
             )
         }
 
-        let discoveredItems = (interpretation.filesToImport + interpretation.eligibleNCMFiles).map {
-            BatchImportProgressItemSeed(id: $0.url.path, fileName: $0.url.lastPathComponent)
+        let pendingFiles = interpretation.filesToImport + interpretation.eligibleNCMFiles
+        progressController.setMediaCounts(physicalFiles: Set(pendingFiles.map { $0.url.standardizedFileURL.path }).count,
+            logicalTracks: pendingFiles.count)
+        let discoveredItems = pendingFiles.map {
+            BatchImportProgressItemSeed(id: $0.progressID, fileName: $0.url.lastPathComponent)
         }
         progressController.setItems(discoveredItems)
         for file in interpretation.filesToImport {
             progressController.updateItem(
-                id: file.url.path,
+                id: file.progressID,
                 stage: .metadata,
                 status: .waiting,
                 detail: "等待解析歌曲信息"
@@ -970,7 +1075,10 @@ final class FileImportService: FileImportServiceProtocol {
         let enrichmentMode: ImportEnrichmentMode
         switch enrichmentPolicy {
         case .standard:
-            enrichmentMode = AppSettings.shared.deferImportEnrichment ? .deferred : .immediate
+            let mediaFirst = finalCandidates.contains {
+                $0.discoveredFile.mediaSelection != nil || AudioDecoderFactory.extendedExtensions.contains($0.fileURL.pathExtension.lowercased())
+            }
+            enrichmentMode = mediaFirst || AppSettings.shared.deferImportEnrichment ? .deferred : .immediate
         case .migration:
             enrichmentMode = .skipped
         }
@@ -1229,7 +1337,7 @@ final class FileImportService: FileImportServiceProtocol {
                 totalCount: 0
             )
             let orderingOutcome = await albumTrackOrderingService.applyCatalogOrder(
-                toImportedTracks: persistedTracks,
+                toImportedTracks: persistedTracks.filter { $0.mediaSelection == nil },
                 isCancelled: { progressController.isCancellationRequested }
             ) { completed, total, albumTitle in
                 progressController.update(
@@ -1448,6 +1556,9 @@ final class FileImportService: FileImportServiceProtocol {
                         }
                     }
                 }
+            }
+            if storageBackend.mode == .referenced {
+                try LogicalAudioTrackTombstones.remove(Set(tracks.compactMap { $0.mediaSelection?.logicalKey }), paths: paths)
             }
         } catch {
             await storageBackend.rollbackPreparedSources()

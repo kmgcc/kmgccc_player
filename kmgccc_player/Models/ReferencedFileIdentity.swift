@@ -430,6 +430,13 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
         }
     }
 
+    mutating func setAudioProperties(_ properties: TrackAudioProperties, for sourceID: UUID) {
+        if sourceMemberships.contains(where: { $0.sourceID == sourceID }) { primaryAudioProperties = properties }
+        for index in alternateLocations.indices where alternateLocations[index].sourceMemberships.contains(where: { $0.sourceID == sourceID }) {
+            alternateLocations[index].audioProperties = properties
+        }
+    }
+
     mutating func mergeLocation(_ incoming: ReferencedTrackLocation) {
         let incomingKey = Self.locationKey(incoming)
         if incomingKey == Self.locationKey(locations[0]) {
@@ -453,6 +460,7 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
             existing.fingerprint = incoming.fingerprint ?? existing.fingerprint
             existing.ncmSourceIdentity = incoming.ncmSourceIdentity ?? existing.ncmSourceIdentity
             existing.videoSource = incoming.videoSource ?? existing.videoSource
+            existing.audioProperties = incoming.audioProperties ?? existing.audioProperties
             alternateLocations[index] = existing
         } else {
             alternateLocations.append(incoming)

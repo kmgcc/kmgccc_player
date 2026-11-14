@@ -316,7 +316,8 @@ final class MusicEnrichmentWorkSource: BackgroundWorkSource {
     static func query(_ track: Track) -> MusicEnrichmentQuery {
         MusicEnrichmentQuery(key: "track:\(track.id.uuidString)", title: track.title,
             artist: track.artist, album: track.album, duration: track.duration,
-            storedMotionArtwork: track.motionArtwork, albumArtist: track.albumArtist)
+            storedMotionArtwork: track.motionArtwork, albumArtist: track.albumArtist,
+            sourceAlbumIdentity: track.audioProgramLookupScope)
     }
     /// Bounds a unit so pausing and progress stay responsive on huge albums.
     private static let maxAlbumUnitSize = 40
@@ -327,6 +328,6 @@ final class MusicEnrichmentWorkSource: BackgroundWorkSource {
         return identity?.fallbackKey ?? identity?.key
     }
     private static func fingerprint(_ track: Track) -> String {
-        MusicEnrichmentStore.digest("\(track.title)\u{0}\(track.artist)\u{0}\(track.album)\u{0}\(track.albumArtist ?? "")\u{0}\(track.duration)")
+        MusicEnrichmentStore.digest("\(track.title)\u{0}\(track.artist)\u{0}\(track.album)\u{0}\(track.albumArtist ?? "")\u{0}\(track.duration)\u{0}\(track.audioProgramLookupScope ?? "")")
     }
 }

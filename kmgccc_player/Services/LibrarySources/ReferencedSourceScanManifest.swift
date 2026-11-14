@@ -7,6 +7,10 @@ nonisolated struct ReferencedSourceScanEntry: Codable, Sendable, Equatable {
     var trackID: UUID?
     var availability: TrackAvailability
     var lastSeenGeneration: UInt64
+    var trackIDs: [UUID]? = nil
+    var programFingerprint: ReferencedFileFingerprint? = nil
+    var correctionFingerprint: ReferencedFileFingerprint? = nil
+    var boundTrackIDs: [UUID] { trackIDs?.isEmpty == false ? trackIDs! : trackID.map { [$0] } ?? [] }
 }
 
 nonisolated struct ReferencedSourceScanResult: Sendable, Equatable {
@@ -15,7 +19,7 @@ nonisolated struct ReferencedSourceScanResult: Sendable, Equatable {
 }
 
 nonisolated struct ReferencedSourceScanManifest: Codable, Sendable, Equatable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     var schemaVersion = Self.currentSchemaVersion
     var libraryID: UUID
@@ -53,7 +57,7 @@ actor ReferencedSourceScanManifestStore {
             try quarantine(url, sourceID: sourceID, reason: "corrupt")
             return nil
         }
-        guard value.schemaVersion == ReferencedSourceScanManifest.currentSchemaVersion else {
+        guard (1...ReferencedSourceScanManifest.currentSchemaVersion).contains(value.schemaVersion) else {
             try quarantine(url, sourceID: sourceID, reason: "schema")
             return nil
         }
@@ -73,7 +77,9 @@ actor ReferencedSourceScanManifestStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(manifest).write(
+        var upgraded = manifest
+        upgraded.schemaVersion = ReferencedSourceScanManifest.currentSchemaVersion
+        try encoder.encode(upgraded).write(
             to: paths.sourceScanManifestURL(for: manifest.sourceID),
             options: .atomic
         )

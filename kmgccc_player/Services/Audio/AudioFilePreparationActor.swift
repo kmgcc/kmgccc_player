@@ -24,28 +24,20 @@ struct AudioPrepRequest: Sendable {
     let libraryPaths: LibraryPaths
     let authorizedSourceRoots: [UUID: AuthorizedSourceRoot]
     let titleForLog: String
+    var mediaSelection: AudioMediaSelection? = nil
 }
 
 /// Result of off-main audio file preparation.
 ///
-/// INVARIANT (single-owner handoff): `file` (AVAudioFile) is created ONLY
-/// inside `AudioFilePreparationActor`. After creation the actor never touches
-/// it again. It is handed through `AVAudioPlaybackService` to the renderer for
-/// single-point scheduling — there is NO concurrent multi-thread access.
-/// AVAudioFile is not Sendable; this type is `@unchecked Sendable` solely
-/// because that single-owner handoff is upheld by construction.
+/// Decoder resources are prepared here and consumed on the renderer's serial
+/// queue. Adjacent program ranges may retain the same physical decoder. The
+/// preparation actor inspects immutable descriptors and creates range wrappers.
 ///
-/// INVARIANT (security scope): when `didStartSecurityScopedAccess` is true,
-/// `resolvedURL` holds an active security-scoped access that was started during
-/// resolution. Any path that drops this resource WITHOUT keeping it as the
-/// current file (generation discard, prepare-after-the-fact failure, stop, or
-/// replacement) MUST call `resolvedURL.stopAccessingSecurityScopedResource()`
-/// — and ONLY when `didStartSecurityScopedAccess` is true. Library-relative
-/// paths never start a security scope, so the flag is false and no release is
-/// performed for them.
+/// The resource's lease retains file access through prefetch and playback.
+/// Discard, cancellation, replacement and stop release that lease explicitly.
 struct PreparedAudioResource: @unchecked Sendable {
     let trackID: UUID
-    let file: AVAudioFile
+    let file: AudioDecoderResource
     let resolvedURL: URL
     let lease: SecurityScopedResourceLease
     let refreshedLocator: TrackMediaLocator?
@@ -63,6 +55,26 @@ struct PreparedAudioResource: @unchecked Sendable {
 /// Prepares audio files off the MainActor. Each `prepare(_:)` call is an
 /// independent unit of work; a failure throws and never blocks other prepares.
 actor AudioFilePreparationActor {
+    private final class CachedDecoder {
+        weak var resource: AudioDecoderResource?
+        init(_ resource: AudioDecoderResource) { self.resource = resource }
+    }
+    private var programDecoders: [String: CachedDecoder] = [:]
+
+    private func openDecoder(_ url: URL, selection: AudioMediaSelection?) throws -> AudioDecoderResource {
+        guard let selection else { return try AudioDecoderFactory.open(url) }
+        let fingerprint = try ReferencedFileIdentityProvider().fingerprint(for: url)
+        let key = "\(url.standardizedFileURL.path)|\(fingerprint.fileSize)|\(fingerprint.modifiedAt)|\(selection.area ?? -1)"
+        programDecoders = programDecoders.filter { $0.value.resource != nil }
+        if let resource = programDecoders[key]?.resource { return try resource.selecting(selection) }
+        // Selection is applied after opening the physical program so adjacent
+        // tracks can retain its conversion history.
+        let physicalSelection = selection.kind == .sacd ? selection : nil
+        let resource = try AudioDecoderFactory.openPhysical(url, selection: physicalSelection)
+        programDecoders[key] = CachedDecoder(resource)
+        return try resource.selecting(selection)
+    }
+
     private let bookmarkResolver: any BookmarkResolving
     private let requiresSecurityScope: Bool
 
@@ -97,13 +109,7 @@ actor AudioFilePreparationActor {
     nonisolated static func canOpenForPlayback(_ url: URL) async -> Bool {
         await Task.detached(priority: .utility) {
             guard !Task.isCancelled else { return false }
-            guard let file = try? AVAudioFile(forReading: url),
-                  file.length > 0,
-                  file.processingFormat.sampleRate.isFinite,
-                  file.processingFormat.sampleRate > 0,
-                  file.processingFormat.channelCount > 0 else {
-                return false
-            }
+            guard (try? AudioDecoderFactory.probe(url)) != nil else { return false }
             return true
         }.value
     }
@@ -139,7 +145,7 @@ actor AudioFilePreparationActor {
         // failures (missing/permission) are handled before this loop; an
         // AVAudioFile failure is local to one physical location and should not
         // discard the remaining fallbacks.
-        var file: AVAudioFile?
+        var file: AudioDecoderResource?
         var selectedResolution: Resolution?
         var lastOpenError: Error?
         while !resolutions.isEmpty {
@@ -155,7 +161,7 @@ actor AudioFilePreparationActor {
                 detail: "track=\(request.trackID.uuidString.prefix(8))"
             )
             do {
-                file = try openPlayableFile(at: resolution.url)
+                file = try openDecoder(resolution.url, selection: resolution.refreshedLocator?.referencedFile?.primaryAudioProperties?.mediaSelection ?? request.mediaSelection)
                 FirstUseHitchDiagnostics.end(openToken)
                 selectedResolution = resolution
                 break
@@ -181,14 +187,14 @@ actor AudioFilePreparationActor {
         // later fallback candidates are released now that opening succeeded.
         resolutions.forEach { $0.lease.release() }
 
-        let sampleRate = file.processingFormat.sampleRate
+        let sampleRate = file.sampleRate
         let frameLength = file.length
         let duration = sampleRate > 0 ? Double(frameLength) / sampleRate : 0
 
         // Read AAC gapless metadata off-main here (cheap property reads on a
         // separate AudioToolbox handle). Carried on the resource and used only by
         // the gapless-append path; resilient (nil on any failure).
-        let aacGaplessInfo = AACGaplessMetadata.read(url: resolution.url)
+        let aacGaplessInfo = request.mediaSelection == nil ? AACGaplessMetadata.read(url: resolution.url) : nil
 
         return PreparedAudioResource(
             trackID: request.trackID,
@@ -208,21 +214,6 @@ actor AudioFilePreparationActor {
     /// playback graph. AVAudioFile can construct a zero-frame resource for a
     /// damaged container; treating that as a failed candidate lets the caller
     /// try the next physical copy without retaining an unusable file.
-    private func openPlayableFile(at url: URL) throws -> AVAudioFile {
-        let file = try AVAudioFile(forReading: url)
-        guard file.length > 0,
-              file.processingFormat.sampleRate.isFinite,
-              file.processingFormat.sampleRate > 0,
-              file.processingFormat.channelCount > 0 else {
-            throw NSError(
-                domain: "AudioFilePreparation",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Audio file has no decodable frames"]
-            )
-        }
-        return file
-    }
-
     // MARK: - Resolution (mirrors Track.resolveFileURL semantics, off-main)
 
     private struct Resolution {

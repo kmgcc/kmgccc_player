@@ -99,6 +99,7 @@ nonisolated private struct ImportEnrichmentItemState: Sendable {
     var title: String
     var artist: String
     var album: String
+    var includesMetadataFailures = false
     private var partStates: [ImportEnrichmentPart: ImportEnrichmentPartState] = [:]
     private var partAttempts: [ImportEnrichmentPart: Int] = [:]
 
@@ -146,7 +147,8 @@ nonisolated private struct ImportEnrichmentItemState: Sendable {
     /// track counts as failed. Metadata/artist/album lookups are
     /// best-effort bonuses and never flip the row to failed.
     var hasTerminalFailure: Bool {
-        [.lyrics, .cover].contains { partStates[$0]?.countsAsFailure ?? false }
+        let parts: [ImportEnrichmentPart] = includesMetadataFailures ? ImportEnrichmentPart.allCases : [.lyrics, .cover]
+        return parts.contains { partStates[$0]?.countsAsFailure ?? false }
     }
 
     var flushPendingPartCount: Int {
@@ -249,6 +251,7 @@ nonisolated private struct PendingTrackEnrichmentPatch: Sendable {
     var lyricShouldFlush: Bool
     var coverShouldFlush: Bool
     var trackMetadataShouldFlush: Bool
+    var hasNewSourceMatch = false
 
     // Track metadata fields (filled by metadata enrichment)
     var album: String?
@@ -276,9 +279,26 @@ nonisolated private struct PendingTrackEnrichmentPatch: Sendable {
     }
 }
 
+nonisolated private struct SavedImportEnrichmentItem: Codable, Sendable {
+    let query: String
+    let parts: [String: String]
+}
+
 @MainActor
 @Observable
 final class ImportEnrichmentService {
+    let albumLookups = AlbumContentLookupPool()
+    private var queryTokens: [ImportEnrichmentPartRequest: String] = [:]
+
+    private let paths: LibraryPaths?
+    private var savedItems: [UUID: SavedImportEnrichmentItem] = [:]
+    private var ledgerDebounceTask: Task<Void, Never>?
+    private var ledgerWriteTask: Task<Void, Never>?
+    private var resumeTask: Task<Void, Never>?
+    private var didResumeSavedWork = false
+    private var ledgerIsWritable = true
+    var onPersistenceFailure: (@MainActor (String) -> Void)?
+
     private let repository: LibraryRepositoryProtocol
     private let mutationCoordinator: LibraryMutationCoordinator?
     private let qqMusicCoverService: QQMusicCoverService
@@ -345,8 +365,10 @@ final class ImportEnrichmentService {
         qqMusicCoverService: QQMusicCoverService,
         artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator,
         lyricsSearchCoordinator: LyricsSearchCoordinator,
-        amllDBService: AMLLDBService
+        amllDBService: AMLLDBService,
+        paths: LibraryPaths? = nil
     ) {
+        self.paths = paths
         self.repository = repository
         self.mutationCoordinator = mutationCoordinator
         self.qqMusicCoverService = qqMusicCoverService
@@ -354,12 +376,99 @@ final class ImportEnrichmentService {
         self.lyricsSearchCoordinator = lyricsSearchCoordinator
         self.amllDBService = amllDBService
         self.maxConcurrent = max(1, maxConcurrent)
+        if let paths {
+            let file = Self.ledgerURL(paths)
+            if FileManager.default.fileExists(atPath: file.path) {
+                do { savedItems = try JSONDecoder().decode([UUID: SavedImportEnrichmentItem].self, from: Data(contentsOf: file)) }
+                catch {
+                    let recovery = paths.recoveryRootURL.appendingPathComponent("ImportEnrichment", isDirectory: true)
+                    do {
+                        try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+                        try FileManager.default.moveItem(at: file, to: recovery.appendingPathComponent("\(UUID().uuidString).json"))
+                    } catch {
+                        ledgerIsWritable = false
+                        Log.error("[ImportEnrichment] cannot preserve task ledger: \(error.localizedDescription)", category: .library)
+                    }
+                    Log.warning("[ImportEnrichment] task ledger requires reconstruction", category: .library)
+                }
+            }
+        }
         Log.info("[ImportEnrichment] service init", category: .import)
     }
 
     deinit {
         completionSummaryDismissTask?.cancel()
         Log.info("[ImportEnrichment] service deinit", category: .import)
+    }
+
+    private nonisolated static func ledgerURL(_ paths: LibraryPaths) -> URL {
+        paths.rootURL.appendingPathComponent("Enrichment/ImportTasks.json")
+    }
+
+    private static func retainsImportTaskState(_ track: Track) -> Bool {
+        let path = track.mediaLocator.managedLibraryRelativePath ?? track.mediaLocator.referencedFile?.lastKnownPath ?? track.originalFilePath
+        return track.mediaSelection != nil || AudioFormatSupport.codecLibraryExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+    }
+
+    func resumeSavedWork(force: Bool = false) {
+        guard paths != nil, (!didResumeSavedWork || force), resumeTask == nil, !isClosed else { return }
+        didResumeSavedWork = true
+        resumeTask = Task { [weak self] in
+            guard let self else { return }
+            let tracks = await repository.fetchTracks(in: nil)
+            guard !isClosed, !Task.isCancelled else { return }
+            let ids = Set(tracks.map(\.id))
+            savedItems = savedItems.filter { ids.contains($0.key) }
+            let pending = tracks.filter { track in
+                guard Self.retainsImportTaskState(track) else { return false }
+                guard let saved = savedItems[track.id], saved.query == queryToken(for: track) else { return true }
+                return saved.parts.values.contains { $0 != ImportEnrichmentPartState.completed.rawValue && $0 != ImportEnrichmentPartState.skipped.rawValue }
+            }
+            await enqueueTracks(pending, resumeOnly: true)
+            captureSavedStates()
+            releaseCompletedSessionIfIdle()
+            resumeTask = nil
+        }
+    }
+
+    private func captureSavedStates() {
+        guard paths != nil, !isClosed else { return }
+        for (id, state) in itemStates {
+            let query: String
+            if let track = trackByID[id], Self.retainsImportTaskState(track) { query = queryToken(for: track) }
+            else if let existing = savedItems[id] { query = existing.query }
+            else { continue }
+            savedItems[id] = SavedImportEnrichmentItem(query: query,
+                parts: Dictionary(uniqueKeysWithValues: ImportEnrichmentPart.allCases.map { ($0.rawValue, state.state(for: $0).rawValue) }))
+        }
+        ledgerDebounceTask?.cancel()
+        ledgerDebounceTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled, let self, !isClosed else { return }
+            persistSavedStates()
+        }
+    }
+
+    private func persistSavedStates() {
+        guard let paths else { return }
+        guard ledgerIsWritable else { onPersistenceFailure?("补全进度暂时无法保存"); return }
+        let data: Data
+        do { data = try JSONEncoder().encode(savedItems) }
+        catch { onPersistenceFailure?(error.localizedDescription); return }
+        let file = Self.ledgerURL(paths)
+        let previous = ledgerWriteTask
+        ledgerWriteTask = Task { [weak self] in
+            await previous?.value
+            do {
+                try await Task.detached(priority: .utility) {
+                    try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try data.write(to: file, options: .atomic)
+                }.value
+            } catch {
+                Log.error("[ImportEnrichment] task ledger write failed: \(error.localizedDescription)", category: .library)
+                self?.onPersistenceFailure?("补全进度保存失败，可重试未完成的项目")
+            }
+        }
     }
 
     func bindBackgroundWork(lender: BackgroundWorkLender) {
@@ -380,6 +489,7 @@ final class ImportEnrichmentService {
         }
 
         for trackID in trackIDs {
+            savedItems[trackID] = nil
             trackByID[trackID] = nil
             itemStates[trackID] = nil
             pendingFlushPatches[trackID] = nil
@@ -426,7 +536,8 @@ final class ImportEnrichmentService {
         }
     }
 
-    func enqueueTracks(_ tracks: [Track]) async {
+    func enqueueTracks(_ tracks: [Track], resumeOnly: Bool = false) async {
+        guard !isClosed else { return }
         dismissCompletionSummary()
         if hasOutstandingWork == false {
             resetProgressIfIdle()
@@ -443,11 +554,25 @@ final class ImportEnrichmentService {
 
         for track in tracks {
             completedPartWarnings[track.id] = nil
-            guard let itemState = makeInitialItemState(
+            guard var itemState = makeInitialItemState(
                 for: track,
                 artistEntriesByCanonical: artistEntriesByCanonical,
                 albumEntriesByCanonical: albumEntriesByCanonical
-            ) else { continue }
+            ) else {
+                if Self.retainsImportTaskState(track) {
+                    savedItems[track.id] = SavedImportEnrichmentItem(query: queryToken(for: track),
+                        parts: Dictionary(uniqueKeysWithValues: ImportEnrichmentPart.allCases.map { ($0.rawValue, ImportEnrichmentPartState.skipped.rawValue) }))
+                }
+                continue
+            }
+            if let saved = savedItems[track.id], saved.query == queryToken(for: track) {
+                for part in ImportEnrichmentPart.allCases {
+                    guard let raw = saved.parts[part.rawValue], let previous = ImportEnrichmentPartState(rawValue: raw) else { continue }
+                    if previous == .completed || previous == .skipped || (resumeOnly && previous.countsAsFailure) {
+                        itemState.setState(previous, for: part)
+                    }
+                }
+            }
             if itemStates[track.id] == nil {
                 itemStates[track.id] = itemState
             } else {
@@ -501,7 +626,7 @@ final class ImportEnrichmentService {
                metadataTargetKeys.contains(where: { !enqueuedArtistMetadata.contains($0) }) {
                 enqueuedArtistMetadata.formUnion(metadataTargetKeys)
                 enqueuePart(.artistMetadata, for: track.id)
-            } else if var state = itemStates[track.id] {
+            } else if var state = itemStates[track.id], state.state(for: .artistMetadata) == .pending {
                 state.setState(.skipped, for: .artistMetadata)
                 itemStates[track.id] = state
             }
@@ -511,10 +636,10 @@ final class ImportEnrichmentService {
             let albumCanonical = LibraryNormalization.normalizedAlbumKey(album: track.album)
             let albumDedupKey = "\(artistCanonical)•\(albumCanonical)"
             if itemState.state(for: .albumMetadata) == .pending,
-               !enqueuedAlbumMetadata.contains(albumDedupKey) {
+               (track.audioProgramAlbum != nil || !enqueuedAlbumMetadata.contains(albumDedupKey)) {
                 enqueuedAlbumMetadata.insert(albumDedupKey)
                 enqueuePart(.albumMetadata, for: track.id)
-            } else if var state = itemStates[track.id] {
+            } else if var state = itemStates[track.id], state.state(for: .albumMetadata) == .pending {
                 state.setState(.skipped, for: .albumMetadata)
                 itemStates[track.id] = state
             }
@@ -528,17 +653,17 @@ final class ImportEnrichmentService {
                artworkTargetKeys.contains(where: { !enqueuedArtistArtwork.contains($0) }) {
                 enqueuedArtistArtwork.formUnion(artworkTargetKeys)
                 enqueuePart(.artistArtwork, for: track.id)
-            } else if var state = itemStates[track.id] {
+            } else if var state = itemStates[track.id], state.state(for: .artistArtwork) == .pending {
                 state.setState(.skipped, for: .artistArtwork)
                 itemStates[track.id] = state
             }
 
             // Album artwork (dedup across batch)
             if itemState.state(for: .albumArtwork) == .pending,
-               !enqueuedAlbumArtwork.contains(albumDedupKey) {
+               (track.audioProgramAlbum != nil || !enqueuedAlbumArtwork.contains(albumDedupKey)) {
                 enqueuedAlbumArtwork.insert(albumDedupKey)
                 enqueuePart(.albumArtwork, for: track.id)
-            } else if var state = itemStates[track.id] {
+            } else if var state = itemStates[track.id], state.state(for: .albumArtwork) == .pending {
                 state.setState(.skipped, for: .albumArtwork)
                 itemStates[track.id] = state
             }
@@ -572,7 +697,7 @@ final class ImportEnrichmentService {
         ).isEmpty
         let needsAlbumMetadata = Self.albumMetadataNeedsEnrichment(
             album: track.album,
-            entriesByCanonical: albumEntriesByCanonical
+            entriesByCanonical: albumEntriesByCanonical, canonicalKey: track.audioProgramAlbum?.key
         )
         let needsArtistArtwork = !Self.artistArtworkTargets(
             for: track,
@@ -580,7 +705,7 @@ final class ImportEnrichmentService {
         ).isEmpty
         let needsAlbumArtwork = Self.albumArtworkNeedsEnrichment(
             album: track.album,
-            entriesByCanonical: albumEntriesByCanonical
+            entriesByCanonical: albumEntriesByCanonical, canonicalKey: track.audioProgramAlbum?.key
         )
         let needsAny = needsLyrics || needsCover || needsTrackMetadata
             || needsArtistMetadata || needsAlbumMetadata || needsArtistArtwork || needsAlbumArtwork
@@ -595,7 +720,7 @@ final class ImportEnrichmentService {
         partStates[.artistArtwork] = needsArtistArtwork ? .pending : .skipped
         partStates[.albumArtwork] = needsAlbumArtwork ? .pending : .skipped
 
-        return ImportEnrichmentItemState(
+        var initial = ImportEnrichmentItemState(
             trackID: track.id,
             title: track.title,
             artist: track.artist,
@@ -603,6 +728,8 @@ final class ImportEnrichmentService {
             partStates: partStates,
             partAttempts: [:]
         )
+        initial.includesMetadataFailures = Self.retainsImportTaskState(track)
+        return initial
     }
 
     private func trackMetadataIsMissing(_ track: Track) -> Bool {
@@ -686,10 +813,11 @@ final class ImportEnrichmentService {
 
     static func albumMetadataNeedsEnrichment(
         album: String,
-        entriesByCanonical: [String: AlbumEntry]
+        entriesByCanonical: [String: AlbumEntry],
+        canonicalKey: String? = nil
     ) -> Bool {
         guard !LibraryNormalization.isUnknownAlbum(album) else { return false }
-        let canonical = LibraryNormalization.normalizedAlbumKey(album: album)
+        let canonical = canonicalKey ?? LibraryNormalization.normalizedAlbumKey(album: album)
         guard let entry = entriesByCanonical[canonical] else { return true }
         return (!entry.manuallyEditedFields.contains("description") && entry.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             || (entry.year == nil && entry.releaseYear == nil && entry.releaseDate == nil
@@ -704,10 +832,11 @@ final class ImportEnrichmentService {
 
     static func albumArtworkNeedsEnrichment(
         album: String,
-        entriesByCanonical: [String: AlbumEntry]
+        entriesByCanonical: [String: AlbumEntry],
+        canonicalKey: String? = nil
     ) -> Bool {
         guard !LibraryNormalization.isUnknownAlbum(album) else { return false }
-        let canonical = LibraryNormalization.normalizedAlbumKey(album: album)
+        let canonical = canonicalKey ?? LibraryNormalization.normalizedAlbumKey(album: album)
         guard let entry = entriesByCanonical[canonical] else { return true }
         return !entry.hasArtwork
     }
@@ -718,7 +847,7 @@ final class ImportEnrichmentService {
         else { return }
         guard var state = itemStates[trackID] else { return }
         let currentState = state.state(for: part)
-        guard currentState == .pending || currentState == .failed else { return }
+        guard currentState == .pending else { return }
 
         state.setState(.pending, for: part)
         itemStates[trackID] = state
@@ -788,18 +917,19 @@ final class ImportEnrichmentService {
     private func applyAlbumMetadataDetail(
         _ detail: AlbumMetadataDetail,
         album: String,
-        artist: String
+        artist: String,
+        program: AudioProgramAlbumContext? = nil
     ) async -> Bool {
         guard let lockKey = Self.albumUpdateLockKey(album) else { return false }
         return await withEntryUpdateLock(lockKey) {
-            await self.applyAlbumMetadataDetailUnlocked(detail, album: album, artist: artist)
+            await self.applyAlbumMetadataDetailUnlocked(detail, album: album, artist: artist, program: program)
         }
     }
 
-    private func applyAlbumArtworkData(_ data: Data, album: String, artist: String) async -> Bool {
+    private func applyAlbumArtworkData(_ data: Data, album: String, artist: String, program: AudioProgramAlbumContext? = nil) async -> Bool {
         guard let lockKey = Self.albumUpdateLockKey(album) else { return false }
         return await withEntryUpdateLock(lockKey) {
-            await self.applyAlbumArtworkDataUnlocked(data, album: album, artist: artist)
+            await self.applyAlbumArtworkDataUnlocked(data, album: album, artist: artist, program: program)
         }
     }
 
@@ -833,26 +963,34 @@ final class ImportEnrichmentService {
     private func applyAlbumMetadataDetailUnlocked(
         _ detail: AlbumMetadataDetail,
         album: String,
-        artist: String
+        artist: String,
+        program: AudioProgramAlbumContext? = nil
     ) async -> Bool {
         guard !LibraryNormalization.isUnknownAlbum(album) else { return false }
-        let entry = await latestAlbumEntry(album: album, artist: artist)
+        let entry = await latestAlbumEntry(album: album, artist: artist, program: program)
         let result = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: entry)
         guard result.changed else { return false }
         return await commitMetadataEntry(id: result.value.id) {
-            try await self.repository.updateAlbumEntry(result.value)
+            let latest = await self.latestAlbumEntry(album: album, artist: artist, program: program)
+            let fresh = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: latest)
+            if fresh.changed { try await self.repository.updateAlbumEntry(fresh.value) }
         }
     }
 
-    private func applyAlbumArtworkDataUnlocked(_ data: Data, album: String, artist: String) async -> Bool {
+    private func applyAlbumArtworkDataUnlocked(_ data: Data, album: String, artist: String, program: AudioProgramAlbumContext? = nil) async -> Bool {
         guard !LibraryNormalization.isUnknownAlbum(album) else { return false }
-        var entry = await latestAlbumEntry(album: album, artist: artist)
-        guard !entry.hasArtwork else { return false }
-        entry.artworkData = data
-        entry.artworkFileName = "artwork.png"
-        entry.updatedAt = Date()
+        let entry = await latestAlbumEntry(album: album, artist: artist, program: program)
         return await commitMetadataEntry(id: entry.id) {
-            try await self.repository.updateAlbumEntry(entry)
+            var latest = await self.latestAlbumEntry(album: album, artist: artist, program: program)
+            if latest.hasArtwork {
+                guard program != nil, !latest.hasUserEditedContent else { return }
+                let existing = latest.artworkData ?? latest.existingArtworkURL.flatMap { try? Data(contentsOf: $0) }
+                guard ArtworkDataNormalizer.isHigherResolution(data, than: existing) else { return }
+            }
+            latest.artworkData = data
+            latest.artworkFileName = "artwork.png"
+            latest.updatedAt = Date()
+            try await self.repository.updateAlbumEntry(latest)
         }
     }
 
@@ -901,8 +1039,8 @@ final class ImportEnrichmentService {
         )
     }
 
-    private func latestAlbumEntry(album: String, artist: String) async -> AlbumEntry {
-        let albumKey = LibraryNormalization.normalizedAlbumKey(album: album)
+    private func latestAlbumEntry(album: String, artist: String, program: AudioProgramAlbumContext? = nil) async -> AlbumEntry {
+        let albumKey = program?.key ?? LibraryNormalization.normalizedAlbumKey(album: album)
         let entries = await repository.fetchAlbumEntries()
         if let entry = entries.first(where: { $0.canonicalKey == albumKey }) {
             return entry
@@ -910,7 +1048,7 @@ final class ImportEnrichmentService {
 
         let now = Date()
         return AlbumEntry(
-            id: UUID(),
+            id: program?.id ?? UUID(),
             canonicalKey: albumKey,
             displayTitle: LibraryNormalization.displayAlbum(album),
             primaryArtistCanonicalName: LibraryNormalization.normalizeArtist(artist),
@@ -924,6 +1062,7 @@ final class ImportEnrichmentService {
     }
 
     private func refreshProgress() {
+        captureSavedStates()
         let values = Array(itemStates.values)
         let completedCount = values.filter(\.isTerminal).count
         let failedCount = values.filter(\.hasTerminalFailure).count
@@ -1100,6 +1239,9 @@ final class ImportEnrichmentService {
         let album = state.album
         let duration = track.duration > 0 ? track.duration : nil
         let attempt = state.attempts(for: request.part)
+        let albumArtist = track.audioProgramAlbum?.artist ?? track.albumArtist ?? artist
+        let albumScope = track.audioProgramLookupScope.map { "\($0)|\(attempt)" }
+        queryTokens[request] = queryToken(for: track)
         Log.info(
             "[ImportEnrichment] \(request.part.rawValue) started \(title) - \(artist) | attempt \(attempt)/\(maxAttemptsPerPart)",
             category: request.part == .lyrics ? .lyrics : .import
@@ -1136,10 +1278,11 @@ final class ImportEnrichmentService {
             case .cover:
                 let outcome = await ImportEnrichmentWorker.fetchCover(
                     title: title,
-                    artist: artist,
+                    artist: albumScope == nil ? artist : albumArtist,
                     album: album,
                     duration: duration,
-                    qqMusicCoverService: self.qqMusicCoverService
+                    qqMusicCoverService: self.qqMusicCoverService,
+                    albumPool: self.albumLookups, albumScope: albumScope
                 )
                 await self.completeCover(request: request, outcome: outcome)
             case .trackMetadata:
@@ -1160,7 +1303,7 @@ final class ImportEnrichmentService {
                 }
                 await self.completeArtistMetadata(request: request, results: results)
             case .albumMetadata:
-                let outcome = await MetadataEnrichmentWorker.fetchAlbumMetadata(album: album, artist: artist)
+                let outcome = await MetadataEnrichmentWorker.fetchAlbumMetadata(album: album, artist: albumArtist, albumPool: self.albumLookups, albumScope: albumScope)
                 await self.completeAlbumMetadata(request: request, outcome: outcome)
             case .artistArtwork:
                 let entries = Self.artistEntriesByCanonical(await self.repository.fetchArtistEntries())
@@ -1177,8 +1320,9 @@ final class ImportEnrichmentService {
             case .albumArtwork:
                 let outcome = await MetadataEnrichmentWorker.fetchAlbumArtwork(
                     album: album,
-                    artist: artist,
-                    qqMusicCoverService: self.qqMusicCoverService
+                    artist: albumArtist,
+                    qqMusicCoverService: self.qqMusicCoverService,
+                    albumPool: self.albumLookups, albumScope: albumScope
                 )
                 await self.completeAlbumArtwork(request: request, outcome: outcome)
             }
@@ -1198,6 +1342,7 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportLyricsLookupOutcome
     ) async {
+        guard acceptsResult(for: request) else { return }
         guard !isClosed, !Task.isCancelled else {
             finish(request)
             return
@@ -1263,6 +1408,7 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportCoverLookupOutcome
     ) async {
+        guard acceptsResult(for: request) else { return }
         guard !isClosed, !Task.isCancelled else {
             finish(request)
             return
@@ -1275,7 +1421,11 @@ final class ImportEnrichmentService {
         var shouldRequeue = false
         switch outcome {
         case .completed(let data):
-            if !track.hasArtwork || track.artworkNeedsUpgrade {
+            if let program = track.audioProgramAlbum, track.artworkIsUserSelected != true {
+                let applied = await applyAlbumArtworkData(data, album: track.album, artist: program.artist, program: program)
+                state.setState(applied || track.hasArtwork ? .completed : .failed, for: .cover)
+                track.artworkNeedsUpgrade = false
+            } else if !track.hasArtwork || track.artworkNeedsUpgrade {
                 bufferFlushPatch(
                     trackID: request.trackID,
                     title: state.title,
@@ -1346,6 +1496,7 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportTrackMetadataOutcome
     ) async {
+        guard acceptsResult(for: request) else { return }
         guard !isClosed, !Task.isCancelled else {
             finish(request)
             return
@@ -1362,13 +1513,15 @@ final class ImportEnrichmentService {
         case .completed(let detail):
             if let freshTrack = trackByID[request.trackID] {
                 let previousAlbum = state.album
+                let newSourceMatch = freshTrack.recordProgramMetadataMatch(detail)
                 let changed = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: freshTrack)
-                if changed {
+                if changed || newSourceMatch {
                     bufferFlushPatch(
                         trackID: request.trackID,
                         title: state.title,
                         artist: state.artist
                     ) { patch in
+                        patch.hasNewSourceMatch = newSourceMatch
                         patch.album = freshTrack.album
                         patch.userDescription = freshTrack.userDescription
                         patch.genreTags = freshTrack.genreTags
@@ -1459,6 +1612,7 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         results: [ImportArtistMetadataResult]
     ) async {
+        guard acceptsResult(for: request) else { return }
         guard !isClosed, !Task.isCancelled else {
             finish(request)
             return
@@ -1525,6 +1679,7 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportAlbumMetadataOutcome
     ) async {
+        guard acceptsResult(for: request) else { return }
         guard !isClosed, !Task.isCancelled else {
             finish(request)
             return
@@ -1537,7 +1692,9 @@ final class ImportEnrichmentService {
         var shouldRequeue = false
         switch outcome {
         case .completed(let detail):
-            if await applyAlbumMetadataDetail(detail, album: state.album, artist: state.artist) {
+            if await applyAlbumMetadataDetail(detail, album: state.album,
+                artist: trackByID[request.trackID]?.audioProgramAlbum?.artist ?? state.artist,
+                program: trackByID[request.trackID]?.audioProgramAlbum) {
                 Log.info(
                     "[ImportEnrichment] albumMetadata applied \(state.album)",
                     category: .import
@@ -1580,6 +1737,7 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         results: [ImportArtistArtworkResult]
     ) async {
+        guard acceptsResult(for: request) else { return }
         guard !isClosed, !Task.isCancelled else {
             finish(request)
             return
@@ -1647,6 +1805,7 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportAlbumArtworkOutcome
     ) async {
+        guard acceptsResult(for: request) else { return }
         guard !isClosed, !Task.isCancelled else {
             finish(request)
             return
@@ -1659,7 +1818,9 @@ final class ImportEnrichmentService {
         var shouldRequeue = false
         switch outcome {
         case .completed(let data):
-            if await applyAlbumArtworkData(data, album: state.album, artist: state.artist) {
+            if await applyAlbumArtworkData(data, album: state.album,
+                artist: trackByID[request.trackID]?.audioProgramAlbum?.artist ?? state.artist,
+                program: trackByID[request.trackID]?.audioProgramAlbum) {
                 Log.info(
                     "[ImportEnrichment] albumArtwork applied \(state.album)",
                     category: .import
@@ -1742,7 +1903,16 @@ final class ImportEnrichmentService {
     /// persistence task before the ModelContainer is released. SwiftData
     /// traps — not throws — when a dangling ModelContext is touched.
     func quiesce() async {
+        captureSavedStates()
         isClosed = true
+        resumeTask?.cancel()
+        let pendingResumeTask = resumeTask
+        resumeTask = nil
+        ledgerDebounceTask?.cancel()
+        ledgerDebounceTask = nil
+        persistSavedStates()
+        albumLookups.close()
+        queryTokens.removeAll()
         flushTask?.cancel()
         let pendingFlushTask = flushTask
         flushTask = nil
@@ -1764,6 +1934,8 @@ final class ImportEnrichmentService {
         }
         await pendingFlushTask?.value
         await pendingWatchdogTask?.value
+        await pendingResumeTask?.value
+        await ledgerWriteTask?.value
     }
 
     /// Idempotent compatibility entry point for session teardown callers.
@@ -1961,8 +2133,8 @@ final class ImportEnrichmentService {
                 track.artworkNeedsUpgrade = false
             }
             if patch.trackMetadataShouldFlush {
-                var hasMetadataFieldToFlush = false
-                if let album = patch.album {
+                var hasMetadataFieldToFlush = patch.hasNewSourceMatch
+                if let album = patch.album, track.mediaSelection?.albumTitle?.isEmpty != false {
                     if !track.isMetadataFieldManual("album") && (track.album == album || MetadataDetailApplicator.shouldFillMissingAlbum(track.album)) {
                         track.album = album
                         hasMetadataFieldToFlush = true
@@ -2378,7 +2550,31 @@ final class ImportEnrichmentService {
         }
     }
 
+    private func queryToken(for track: Track) -> String {
+        let selection = track.mediaSelection.map { "\($0.logicalKey)|\($0.start)|\($0.length)|\($0.timeScale)" } ?? ""
+        return "\(track.title)|\(track.artist)|\(track.album)|\(track.albumArtist ?? "")|\(track.duration)|\(selection)"
+    }
+
+    private func acceptsResult(for request: ImportEnrichmentPartRequest) -> Bool {
+        guard !isClosed, let track = trackByID[request.trackID] else { finish(request); return false }
+        guard queryTokens[request] == queryToken(for: track) else {
+            finish(request)
+            if var state = itemStates[request.trackID] {
+                state.title = track.title
+                state.artist = track.artist
+                state.album = track.album
+                state.setState(.pending, for: request.part)
+                itemStates[request.trackID] = state
+                enqueuePart(request.part, for: request.trackID)
+            }
+            return false
+        }
+        return true
+    }
+
     private func finish(_ request: ImportEnrichmentPartRequest, requeue: Bool = false) {
+        queryTokens[request] = nil
+
         runningRequests.remove(request)
         activeTasks[request] = nil
 

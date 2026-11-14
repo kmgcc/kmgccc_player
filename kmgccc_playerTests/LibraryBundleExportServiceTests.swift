@@ -6,6 +6,35 @@ import XCTest
 
 @MainActor
 final class LibraryBundleExportServiceTests: XCTestCase {
+    func testWholeTrackAndSegmentsExportOneSharedPhysicalFile() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("export", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let source = root.appendingPathComponent("album.mp3")
+        let audio = Data("one physical audio fixture".utf8)
+        try audio.write(to: source)
+        let groupID = UUID()
+        let inputs = (0..<3).map { index in
+            LibraryBundleExportTrackInput(metadata: AutomationMetadataDocumentTrack(id: UUID(), revision: "v1",
+                title: "Track \(index)", artist: "Artist", album: "Album", duration: 2, fields: [:]),
+                audioURL: source, artworkURL: nil, lyricsURL: nil, ttmlURL: nil, failures: [],
+                mediaSelection: index == 0 ? nil : AudioMediaSelection(kind: .cue, groupID: groupID,
+                    trackNumber: index, start: Int64(index - 1) * 75, length: 75, timeScale: 75))
+        }
+        XCTAssertEqual(LibraryBundleExportService.estimatedBytes(for: inputs), Int64(audio.count))
+        let outcome = try await LibraryBundleExportService.export(libraryID: UUID(), mode: "managed",
+            revision: "v1", destinationDirectory: destination, tracks: inputs, playlists: [], progress: { _, _, _ in })
+        let data = try Data(contentsOf: outcome.outputDirectory.appendingPathComponent("manifest.json"))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let tracks = try XCTUnwrap(manifest["tracks"] as? [[String: Any]])
+        let files = try XCTUnwrap(manifest["files"] as? [[String: Any]])
+        XCTAssertEqual(tracks.count, 3)
+        XCTAssertEqual(Set(tracks.compactMap { $0["audioPath"] as? String }).count, 1)
+        XCTAssertEqual(files.filter { $0["kind"] as? String == "audio" }.count, 1)
+        XCTAssertTrue(outcome.failures.isEmpty)
+    }
+
     func testExportsPathFreeMetadataPlaylistAndMediaWithChecksums() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LibraryBundleExport-\(UUID().uuidString)", isDirectory: true)

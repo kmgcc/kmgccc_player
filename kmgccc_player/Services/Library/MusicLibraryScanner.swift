@@ -55,9 +55,11 @@ nonisolated struct ScannedTrackMeta: Sendable {
 
 nonisolated struct MusicLibraryScanner: Sendable {
     private let paths: LibraryPaths
+    private let pendingProgramTrackIDs: Set<UUID>?
 
     init(paths: LibraryPaths) {
         self.paths = paths
+        pendingProgramTrackIDs = try? AudioProgramImportTransaction.pendingTrackIDs(paths: paths)
     }
 
     func scanTracks() -> [ScannedTrackMeta] {
@@ -82,6 +84,8 @@ nonisolated struct MusicLibraryScanner: Sendable {
     }
 
     private func parseTrackMeta(in folderURL: URL) -> ScannedTrackMeta? {
+        guard let pendingProgramTrackIDs, let id = UUID(uuidString: folderURL.lastPathComponent),
+              !pendingProgramTrackIDs.contains(id) else { return nil }
         let metaURL = folderURL.appendingPathComponent("meta.json")
         guard let data = try? Data(contentsOf: metaURL) else { return nil }
         let decoder = JSONDecoder()

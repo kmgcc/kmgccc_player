@@ -1152,7 +1152,7 @@ struct EqualLoudnessCalibrationDialog: View {
         let resolution = track.resolveFileURL()
         defer { resolution.lease.release() }
         guard let url = resolution.url else { return }
-        let levels = await TrackWaveformSampler.levels(url: url, binCount: 120)
+        let levels = await TrackWaveformSampler.levels(url: url, binCount: 120, selection: track.mediaSelection)
         guard !Task.isCancelled, segmentTrackID == id else { return }
         waveform = levels
     }

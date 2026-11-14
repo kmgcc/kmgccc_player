@@ -690,10 +690,11 @@ final class LibraryLoudnessService: BackgroundWorkSource {
             return .failed(message)
         }
         states[trackID] = .measuring(phase: .readingTags, fraction: nil)
+        let mediaSelection = track.mediaSelection
         let resolution = track.resolveFileURL()
         defer { resolution.lease.release() }
         guard let fileURL = resolution.url,
-              let identity = try? Self.fileIdentity(for: fileURL) else {
+              let identity = try? Self.fileIdentity(for: fileURL, selection: track.mediaSelection) else {
             let message = "无法打开这首歌曲的音频文件。"
             finishFailure(trackID, message: message)
             return .failed(message)
@@ -720,12 +721,12 @@ final class LibraryLoudnessService: BackgroundWorkSource {
         do {
             let outcome = try await Task.detached(priority: context.taskPriority) {
                 try await Self.analyze(
-                    trackID: trackID, url: fileURL, identity: identity,
+                    trackID: trackID, url: fileURL, identity: identity, selection: mediaSelection,
                     playbackAACGaplessTrimEnabled: trim, context: context, progress: progress
                 )
             }.value
             guard !isClosed else { return .cancelled }
-            guard (try? Self.fileIdentity(for: fileURL)) == identity, trim == playbackAACGaplessTrimEnabled else {
+            guard (try? Self.fileIdentity(for: fileURL, selection: track.mediaSelection)) == identity, trim == playbackAACGaplessTrimEnabled else {
                 let message = "音频文件正在变化，请稍后重试。"
                 finishFailure(trackID, message: message)
                 return .failed(message)
@@ -856,7 +857,7 @@ final class LibraryLoudnessService: BackgroundWorkSource {
             return nil
         }
         if let fileURL {
-            guard let identity = try? Self.fileIdentity(for: fileURL),
+            guard let identity = try? Self.fileIdentity(for: fileURL, selection: track.mediaSelection),
                   Self.isCurrent(record, for: identity, playbackAACGaplessTrimEnabled: playbackAACGaplessTrimEnabled)
             else { return nil }
         } else if !isCurrentVersion(record) {
@@ -924,7 +925,7 @@ final class LibraryLoudnessService: BackgroundWorkSource {
             && measurement.playbackAACGaplessTrimEnabled == playbackAACGaplessTrimEnabled
     }
 
-    private nonisolated static func fileIdentity(for url: URL) throws -> LoudnessFileIdentity {
+    private nonisolated static func fileIdentity(for url: URL, selection: AudioMediaSelection? = nil) throws -> LoudnessFileIdentity {
         let standardizedURL = url.standardizedFileURL
         let values = try standardizedURL.resourceValues(forKeys: [
             .fileSizeKey,
@@ -939,7 +940,8 @@ final class LibraryLoudnessService: BackgroundWorkSource {
         guard time.isFinite, time >= Double(Int64.min), time <= Double(Int64.max) else {
             throw CocoaError(.fileReadUnknown)
         }
-        let digest = SHA256.hash(data: Data(standardizedURL.path.utf8))
+        let selectionKey = selection.map { "|\($0.logicalKey)|\($0.start)|\($0.length)|\($0.timeScale)" } ?? ""
+        let digest = SHA256.hash(data: Data((standardizedURL.path + selectionKey).utf8))
             .map { String(format: "%02x", $0) }
             .joined()
         return LoudnessFileIdentity(
@@ -957,6 +959,7 @@ final class LibraryLoudnessService: BackgroundWorkSource {
         trackID: UUID,
         url: URL,
         identity: LoudnessFileIdentity,
+        selection: AudioMediaSelection?,
         playbackAACGaplessTrimEnabled: Bool,
         context: BackgroundWorkContext,
         progress: @escaping @Sendable (LoudnessAnalysisPhase, Double?) -> Void
@@ -969,12 +972,12 @@ final class LibraryLoudnessService: BackgroundWorkSource {
         var measurement: LoudnessMeasurement?
         var failure: String?
         do {
-            let audioFile = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+            let audioFile = try AudioDecoderFactory.open(url, selection: selection)
             let dspFormat = Self.dspFormat(for: audioFile)
             guard dspFormat.channelCount > 0, dspFormat.channelCount <= 64 else {
                 throw LoudnessScanError.unsupportedChannelCount
             }
-            let range = AACDecodedFrameRange.resolve(metadata: AACGaplessMetadata.read(url: url),
+            let range = AACDecodedFrameRange.resolve(metadata: selection == nil ? AACGaplessMetadata.read(url: url) : nil,
                 decodedFrames: audioFile.length, enabled: playbackAACGaplessTrimEnabled)
             audioFile.framePosition = range.startingFrame
             let endFrame = range.startingFrame + range.frameCount
@@ -1124,21 +1127,8 @@ final class LibraryLoudnessService: BackgroundWorkSource {
         }
     }
 
-    private nonisolated static func dspFormat(for audioFile: AVAudioFile) -> DSPAudioFormat {
-        let processingFormat = audioFile.processingFormat
-        let processingDSPFormat = CMSampleBufferFactory.dspAudioFormat(from: processingFormat)
-        guard processingFormat.channelLayout == nil,
-              audioFile.fileFormat.channelLayout != nil else { return processingDSPFormat }
-        let fileDSPFormat = CMSampleBufferFactory.dspAudioFormat(from: audioFile.fileFormat)
-        guard fileDSPFormat.channelCount == Int(processingFormat.channelCount),
-              let sourceLayout = fileDSPFormat.rawLayoutData else { return processingDSPFormat }
-        return DSPAudioFormat(
-            sampleRate: processingFormat.sampleRate,
-            channelCount: Int(processingFormat.channelCount),
-            rawLayoutData: sourceLayout,
-            channelLabels: fileDSPFormat.channelLabels,
-            layoutIsKnown: fileDSPFormat.layoutIsKnown
-        )
+    private nonisolated static func dspFormat(for audioFile: AudioDecoderResource) -> DSPAudioFormat {
+        audioFile.provider.sourceDSPFormat
     }
 }
 

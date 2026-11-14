@@ -724,6 +724,7 @@ final class LibraryViewModel {
         @escaping @MainActor () async throws -> Void
     ) async throws -> Void)?
     private var rejectsUnownedMutations = false
+    var confirmSharedOriginalDeletion: (@MainActor ([Track]) async -> Bool?)?
     var prepareTracksForDeletion: (([Track]) async -> TrackAuthorityDeletionPreparationResult)?
     var onTrackDeletionPreparationFailures: (([TrackAuthorityDeletionFailure]) -> Void)?
     var prepareTrackRelocationAction: ((UUID, URL) async throws -> TrackRelocationProposal)?
@@ -3134,6 +3135,11 @@ final class LibraryViewModel {
                 onTrackDeletionPreparationFailures?(preparation.failures)
             }
             uniqueTracks.removeAll { !preparation.approvedTrackIDs.contains($0.id) }
+            if !preparation.additionalTrackIDs.isEmpty {
+                let additional = await repository.fetchTracks(ids: Array(preparation.additionalTrackIDs))
+                uniqueTracks.append(contentsOf: additional)
+                await importService?.cancelEnrichment(for: preparation.additionalTrackIDs)
+            }
         }
         let deletedTrackIDs = Set(uniqueTracks.map(\.id))
         guard !deletedTrackIDs.isEmpty else { return }

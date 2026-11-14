@@ -16,6 +16,97 @@ import XCTest
 
 @MainActor
 final class ImportPlannerCommitterTests: XCTestCase {
+    func testAIFFTagPaddingIsRemovedBeforeMatchingAndSnapshots() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let url = fixture.root.appendingPathComponent("tags.aiff")
+        try autoreleasepool {
+            let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1))
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 441))
+            buffer.frameLength = 441
+            buffer.floatChannelData?[0].initialize(repeating: 0, count: 441)
+            try file.write(from: buffer)
+        }
+        var data = try Data(contentsOf: url)
+        for (chunk, value) in [("NAME", "Padded title\0"), ("AUTH", "Padded artist\0")] {
+            let text = Data(value.utf8)
+            data.append(Data(chunk.utf8))
+            var length = UInt32(text.count).bigEndian
+            withUnsafeBytes(of: &length) { data.append(contentsOf: $0) }
+            data.append(text)
+            if text.count % 2 != 0 { data.append(0) }
+        }
+        var formLength = UInt32(data.count - 8).bigEndian
+        withUnsafeBytes(of: &formLength) { data.replaceSubrange(4..<8, with: $0) }
+        try data.write(to: url)
+        let metadata = await ImportMetadataExtractor.extractMetadata(from: url)
+        XCTAssertEqual(metadata.tagFields.title, "Padded title")
+        XCTAssertEqual(metadata.tagFields.artist, "Padded artist")
+    }
+
+    func testProgramRescanPreservesSourceSnapshotAndUserEdits() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        try MusicLibraryManifest(displayName: "Test", mode: .managed).write(to: fixture.paths.manifestURL)
+        let audio = try writeWAV(named: "album.wav", in: fixture.root)
+        let cue = fixture.root.appendingPathComponent("album.cue")
+        let text = "TITLE \"合辑\"\nPERFORMER \"群星\"\nFILE \"album.wav\" WAVE\nTRACK 01 AUDIO\nTITLE \"来源曲名\"\nPERFORMER \"演唱者\"\nINDEX 01 00:00:00\n"
+        try Data(text.utf8).write(to: cue)
+        let plan = await fixture.backend.prepareInputs([cue])
+        let file = try XCTUnwrap(plan.files.first)
+        let token = ImportCancellationToken()
+        let controller = BatchImportProgressDialogController(presentsWindow: false)
+        let prepared = await fixture.planner.prepareCandidates(
+            resolvedFiles: [ResolvedImportFile(progressID: file.progressID, displayName: audio.lastPathComponent,
+                fileURL: audio, ncmResult: nil, discoveredFile: file, referencedNCMOutput: nil)],
+            libraryTracks: [], metadataOverride: nil, cancellationToken: token, progressController: controller
+        )
+        let placements = await fixture.planner.resolvePlacements(
+            uniqueCandidates: prepared.unique, selectedDuplicates: [], session: fixture.session,
+            progressController: controller
+        )
+        let batch = await fixture.committer.executeBatch(
+            placements.placements, progressController: controller, enrichmentMode: .skipped,
+            session: fixture.session, cancellationToken: token
+        )
+        XCTAssertTrue(batch.failures.isEmpty, String(describing: batch.failures))
+        let track = try XCTUnwrap(batch.records.first?.track)
+        XCTAssertEqual(track.embeddedMetadataSnapshot?.title, "来源曲名")
+        XCTAssertEqual(track.embeddedMetadataSnapshot?.albumArtist, "群星")
+        let saved = await fixture.committer.saveImportedTracks([track], progressController: controller,
+            session: fixture.session, cancellationToken: token)
+        XCTAssertEqual(saved?.map(\.id), [track.id])
+        let copy = fixture.root.appendingPathComponent("whole-copy.wav")
+        try FileManager.default.copyItem(at: audio, to: copy)
+        let copyPlan = await fixture.backend.prepareInputs([copy])
+        let whole = await fixture.planner.interpretInputs(inputPlan: copyPlan, libraryTracks: [track],
+            isManualSelection: true, session: fixture.session)
+        XCTAssertTrue(whole.reusedTracks.isEmpty)
+        XCTAssertEqual(whole.filesToImport.map(\.url), [copy])
+        track.title = "用户曲名"
+        let repeated = await fixture.planner.interpretInputs(inputPlan: plan, libraryTracks: [track],
+            isManualSelection: false, session: fixture.session)
+        XCTAssertTrue(repeated.pendingAudioExpansions.isEmpty)
+        XCTAssertEqual(repeated.reusedTrackIDs, [track.id])
+
+        // Older imports omitted the snapshot. An unchanged descriptor keeps
+        // the saved range authoritative even when the user edited the title.
+        track.embeddedMetadataSnapshot = nil
+        let legacy = await fixture.planner.interpretInputs(inputPlan: plan, libraryTracks: [track],
+            isManualSelection: false, session: fixture.session)
+        XCTAssertTrue(legacy.pendingAudioExpansions.isEmpty)
+        XCTAssertEqual(legacy.reusedTrackIDs, [track.id])
+
+        try Data(text.replacingOccurrences(of: "来源曲名", with: "更新曲名").utf8).write(to: cue, options: .atomic)
+        let updated = await fixture.backend.prepareInputs([cue])
+        let changed = await fixture.planner.interpretInputs(inputPlan: updated, libraryTracks: [track],
+            isManualSelection: false, session: fixture.session)
+        XCTAssertEqual(changed.pendingAudioExpansions.count, 1)
+        XCTAssertEqual(changed.pendingAudioExpansions.first?.oldTrackIDs, [track.id])
+        XCTAssertTrue(changed.filesToImport.isEmpty)
+    }
+
     func testVideoImportCommitsAudioPosterAndSilentMotionTogether() async throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }

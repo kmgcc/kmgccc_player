@@ -177,6 +177,9 @@ struct AboutSettingsView: View {
                     url: "https://github.com/desbma/sacad",
                     license: "MPL-2.0"
                 )
+                complianceItem(name: "FFmpeg 8.1.3", url: "https://ffmpeg.org", license: "LGPL-2.1-or-later")
+                complianceItem(name: "WavPack 5.8.1", url: "https://www.wavpack.com", license: "BSD-3-Clause")
+                complianceItem(name: "DSD Nexus", url: "https://github.com/wichers/dsd-nexus", license: "LGPL-2.1-or-later")
                 complianceItem(
                     name: "ncmdump",
                     url: "https://github.com/taurusxin/ncmdump",
@@ -197,6 +200,11 @@ struct AboutSettingsView: View {
                     url: "https://github.com/sparkle-project/Sparkle",
                     license: "MIT"
                 )
+            }
+
+            if let licenses = Bundle.main.resourceURL?.appendingPathComponent("AudioCodecs/Licenses") {
+                Link("音频组件许可证", destination: licenses)
+                    .settingsRowLabelStyle()
             }
 
             VStack(alignment: .leading, spacing: 6) {

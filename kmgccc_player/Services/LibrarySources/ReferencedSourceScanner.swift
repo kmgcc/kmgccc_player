@@ -29,6 +29,7 @@ actor ReferencedSourceScanner {
     typealias IgnoreCheck = @Sendable (ReferencedFileFingerprint) async -> Bool
     typealias FingerprintProvider = @Sendable (URL) throws -> ReferencedFileFingerprint
 
+    private let paths: LibraryPaths
     private let fingerprintProvider: FingerprintProvider
     private let fileManager: FileManager
     private let manifestStore: ReferencedSourceScanManifestStore
@@ -46,6 +47,7 @@ actor ReferencedSourceScanner {
         isReserved: @escaping ReservationCheck = { _, _ in false },
         isIgnored: @escaping IgnoreCheck = { _ in false }
     ) {
+        self.paths = paths
         self.fingerprintProvider = fingerprintProvider
         self.fileManager = fileManager
         manifestStore = ReferencedSourceScanManifestStore(paths: paths)
@@ -125,7 +127,7 @@ actor ReferencedSourceScanner {
                 return ([], [.init(relativePath: root.lastPathComponent, fingerprint: fingerprint)], [])
             }
             return (
-                [.init(relativePath: root.lastPathComponent, identity: fingerprint.identity, fingerprint: fingerprint, trackID: nil, availability: .available, lastSeenGeneration: generation)],
+                [try makeEntry(url: root, relativePath: root.lastPathComponent, fingerprint: fingerprint, generation: generation)],
                 [],
                 []
             )
@@ -191,6 +193,7 @@ actor ReferencedSourceScanner {
                         continue
                     }
                     guard values.isRegularFile == true,
+                          resolved.pathExtension.lowercased() != "cue",
                           supportedExtensions.contains(resolved.pathExtension.lowercased()) else { continue }
                     let fingerprint = try fingerprintProvider(resolved)
                     if VideoMusicImporter.isGeneratedAudio(resolved) { continue }
@@ -208,7 +211,7 @@ actor ReferencedSourceScanner {
                         ignored.append(.init(relativePath: relative, fingerprint: fingerprint))
                         continue
                     }
-                    entries.append(.init(relativePath: relative, identity: fingerprint.identity, fingerprint: fingerprint, trackID: nil, availability: .available, lastSeenGeneration: generation))
+                    entries.append(try makeEntry(url: resolved, relativePath: relative, fingerprint: fingerprint, generation: generation))
                 } catch {
                     failures.append(.init(relativePath: relativePath(child, root: root), summary: String(describing: error).prefixString(256)))
                 }
@@ -217,6 +220,24 @@ actor ReferencedSourceScanner {
         entries.sort { $0.relativePath < $1.relativePath }
         ignored.sort { $0.relativePath < $1.relativePath }
         return (entries, ignored, failures)
+    }
+
+    private func makeEntry(url: URL, relativePath: String, fingerprint: ReferencedFileFingerprint,
+        generation: UInt64) throws -> ReferencedSourceScanEntry {
+        var entry = ReferencedSourceScanEntry(relativePath: relativePath, identity: fingerprint.identity,
+            fingerprint: fingerprint, trackID: nil, availability: .available, lastSeenGeneration: generation)
+        if url.pathExtension.lowercased() != "cue" && url.pathExtension.lowercased() != "iso" {
+            let descriptors = try AudioProgramResolver.externalCues(for: url)
+            let saved = try AudioProgramSourcePreferences.cues(paths: paths)[AudioMediaSelection.groupID(for: url)]
+            if let selected = descriptors.first(where: { $0.lastPathComponent == saved }) ?? (descriptors.count == 1 ? descriptors.first : nil) {
+                entry.programFingerprint = try fingerprintProvider(selected)
+            }
+        }
+        if url.pathExtension.lowercased() == "wv" {
+            let correction = url.deletingPathExtension().appendingPathExtension("wvc")
+            if fileManager.fileExists(atPath: correction.path) { entry.correctionFingerprint = try fingerprintProvider(correction) }
+        }
+        return entry
     }
 
     private func buildDiff(
@@ -248,19 +269,28 @@ actor ReferencedSourceScanner {
             if let old = oldByPath[entry.relativePath] {
                 consumedOldPaths.insert(old.relativePath)
                 entry.trackID = old.trackID
-                if old.trackID == nil {
+                entry.trackIDs = old.trackIDs
+                if old.boundTrackIDs.isEmpty {
                     // A prior scan saw the file but its import failed. Keep
                     // the manifest entry for auditability, while presenting
                     // it as an addition again so the next scan retries it.
                     diff.added.append(.init(relativePath: entry.relativePath, fingerprint: entry.fingerprint))
-                } else if old.fingerprint != entry.fingerprint, let trackID = old.trackID {
-                    diff.replacements.append(.init(trackID: trackID, relativePath: entry.relativePath, oldFingerprint: old.fingerprint, newFingerprint: entry.fingerprint))
+                } else if (entry.programFingerprint != nil && old.programFingerprint != entry.programFingerprint)
+                    || old.correctionFingerprint != entry.correctionFingerprint {
+                    diff.added.append(.init(relativePath: entry.relativePath, fingerprint: entry.fingerprint))
+                } else if old.fingerprint != entry.fingerprint {
+                    for trackID in old.boundTrackIDs {
+                        diff.replacements.append(.init(trackID: trackID, relativePath: entry.relativePath, oldFingerprint: old.fingerprint, newFingerprint: entry.fingerprint))
+                    }
                 }
             } else if let identity = entry.identity, identity.isStable, let old = oldByIdentity[identity] {
                 consumedOldPaths.insert(old.relativePath)
                 entry.trackID = old.trackID
-                if let trackID = old.trackID {
-                    diff.moved.append(.init(trackID: trackID, oldRelativePath: old.relativePath, newRelativePath: entry.relativePath, fingerprint: entry.fingerprint))
+                entry.trackIDs = old.trackIDs
+                if !old.boundTrackIDs.isEmpty {
+                    for trackID in old.boundTrackIDs {
+                        diff.moved.append(.init(trackID: trackID, oldRelativePath: old.relativePath, newRelativePath: entry.relativePath, fingerprint: entry.fingerprint))
+                    }
                 } else {
                     diff.added.append(.init(relativePath: entry.relativePath, fingerprint: entry.fingerprint))
                 }
@@ -272,8 +302,11 @@ actor ReferencedSourceScanner {
                    let old = oldMatches.first, !consumedOldPaths.contains(old.relativePath) {
                     consumedOldPaths.insert(old.relativePath)
                     entry.trackID = old.trackID
-                    if let trackID = old.trackID {
-                        diff.moved.append(.init(trackID: trackID, oldRelativePath: old.relativePath, newRelativePath: entry.relativePath, fingerprint: entry.fingerprint))
+                    entry.trackIDs = old.trackIDs
+                    if !old.boundTrackIDs.isEmpty {
+                        for trackID in old.boundTrackIDs {
+                            diff.moved.append(.init(trackID: trackID, oldRelativePath: old.relativePath, newRelativePath: entry.relativePath, fingerprint: entry.fingerprint))
+                        }
                     } else {
                         diff.added.append(.init(relativePath: entry.relativePath, fingerprint: entry.fingerprint))
                     }
@@ -295,7 +328,7 @@ actor ReferencedSourceScanner {
                 if let preserved = oldByPath[old.relativePath] { next.append(preserved) }
                 continue
             }
-            if let trackID = old.trackID { diff.missing.append(.init(trackID: trackID, relativePath: old.relativePath)) }
+            for trackID in old.boundTrackIDs { diff.missing.append(.init(trackID: trackID, relativePath: old.relativePath)) }
         }
         next.sort { $0.relativePath < $1.relativePath }
         return (diff, next)

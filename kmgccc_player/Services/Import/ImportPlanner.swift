@@ -203,19 +203,22 @@ final class ImportPlanner {
         let filesToImport: [ImportDiscoveredFile]
         let eligibleNCMFiles: [ImportDiscoveredFile]
         let fileTrackMappings: [LibraryImportFileTrackMapping]
+        var pendingAudioExpansions: [AudioProgramExpansionProposal] = []
     }
 
     func interpretInputs(
         inputPlan: ImportInputPlan,
         libraryTracks: [Track],
         isManualSelection: Bool,
-        session: ImportSession
+        session: ImportSession,
+        approvedProgramGroups: Set<UUID> = []
     ) async -> InputInterpretation {
         let playlistSourceIDs = Set(
             inputPlan.directorySources.map(\.source.id)
                 + inputPlan.files.flatMap { $0.memberships.map(\.sourceID) }
         )
         var newFiles: [ImportDiscoveredFile] = []
+        var pendingPrograms: [UUID: AudioProgramExpansionProposal] = [:]
         var reusedTracks: [Track] = []
         var reusedTrackIDs = Set<UUID>()
         var referencedReuseLocators: [UUID: ReferencedFileLocator] = [:]
@@ -234,14 +237,119 @@ final class ImportPlanner {
                 }
             }
         }
+        var wholeMatchByPath: [String: Track] = [:]
+        var checkedWholePaths = Set<String>()
         for file in inputPlan.files {
+            if let selection = file.mediaSelection {
+                let priorPrograms = libraryTracks.filter { track in
+                    guard track.mediaSelection != nil else { return false }
+                    if TrackIdentityResolver.canonicalPath(track.originalFilePath) == TrackIdentityResolver.canonicalPath(file.url.path) { return true }
+                    if let path = track.mediaLocator.managedLibraryRelativePath, let owned = paths.libraryURL(from: path),
+                       TrackIdentityResolver.canonicalPath(owned.path) == TrackIdentityResolver.canonicalPath(file.url.path) { return true }
+                    guard let incoming = file.fingerprint else { return false }
+                    return track.mediaLocator.referencedFile?.locations.contains {
+                        $0.fingerprint.map { TrackIdentityResolver.samePhysicalIdentity($0, incoming) } ?? false
+                    } ?? false
+                }
+                let priorGroups = Set(priorPrograms.compactMap { $0.mediaSelection?.groupID })
+                if priorGroups.count == 1, let priorGroup = priorGroups.first, priorGroup != selection.groupID,
+                   !approvedProgramGroups.contains(selection.groupID) {
+                    let members = inputPlan.files.filter { $0.mediaSelection?.groupID == selection.groupID }
+                    pendingPrograms[selection.groupID] = AudioProgramExpansionProposal(id: selection.groupID,
+                        sourceURL: selection.descriptorPath.map { URL(fileURLWithPath: $0) } ?? file.url,
+                        oldTrackIDs: libraryTracks.filter { $0.mediaSelection?.groupID == priorGroup }.map(\.id),
+                        trackCount: members.count)
+                    continue
+                }
+                var existingWhole = libraryTracks.filter { track in
+                    guard track.mediaSelection == nil else { return false }
+                    if TrackIdentityResolver.canonicalPath(track.originalFilePath) == TrackIdentityResolver.canonicalPath(file.url.path) { return true }
+                    if let path = track.mediaLocator.managedLibraryRelativePath, let owned = paths.libraryURL(from: path),
+                       TrackIdentityResolver.canonicalPath(owned.path) == TrackIdentityResolver.canonicalPath(file.url.path) { return true }
+                    guard let incoming = file.fingerprint else { return false }
+                    return track.mediaLocator.referencedFile?.locations.contains {
+                        $0.fingerprint.map { TrackIdentityResolver.samePhysicalIdentity($0, incoming) } ?? false
+                    } ?? false
+                }
+                if existingWhole.isEmpty, storageBackend.mode == .managed {
+                    let key = file.url.standardizedFileURL.path
+                    if checkedWholePaths.insert(key).inserted,
+                       let matched = await provenanceTierReuse(for: file,
+                           libraryTracks: libraryTracks.filter { $0.mediaSelection == nil }, identityResolver: identityResolver) {
+                        wholeMatchByPath[key] = matched
+                    }
+                    if let matched = wholeMatchByPath[key] { existingWhole = [matched] }
+                }
+                if !existingWhole.isEmpty, !approvedProgramGroups.contains(selection.groupID) {
+                    let members = inputPlan.files.filter { $0.mediaSelection?.groupID == selection.groupID }
+                    let oldIDs = Set((pendingPrograms[selection.groupID]?.oldTrackIDs ?? [])
+                        + existingWhole.map(\.id) + libraryTracks.filter { $0.mediaSelection?.groupID == selection.groupID }.map(\.id))
+                    pendingPrograms[selection.groupID] = AudioProgramExpansionProposal(id: selection.groupID,
+                        sourceURL: selection.descriptorPath.map { URL(fileURLWithPath: $0) } ?? file.url,
+                        oldTrackIDs: oldIDs.sorted { $0.uuidString < $1.uuidString }, trackCount: members.count)
+                    continue
+                }
+                let matches = libraryTracks.filter { $0.mediaSelection?.logicalKey == selection.logicalKey }
+                let changedProgram = libraryTracks.filter { $0.mediaSelection?.groupID == selection.groupID }.contains { old in
+                    guard let prior = old.mediaSelection,
+                          let incoming = inputPlan.files.first(where: { $0.mediaSelection?.logicalKey == prior.logicalKey })?.mediaSelection else { return true }
+                    let metadata = inputPlan.files.first { $0.mediaSelection?.logicalKey == prior.logicalKey }?.programMetadata
+                    let source = old.embeddedMetadataSnapshot
+                    return prior.start != incoming.start || prior.length != incoming.length || prior.timeScale != incoming.timeScale
+                        || ((source != nil || prior.descriptorFingerprint != incoming.descriptorFingerprint) && metadata.map {
+                            $0.title != (source?.title ?? old.title) || $0.artist != (source?.artistDisplay ?? old.artist)
+                                || $0.album != (source?.album ?? old.album)
+                                || $0.albumArtist != (source?.albumArtist ?? prior.albumArtist ?? old.albumArtist)
+                        } == true)
+                }
+                if changedProgram && !approvedProgramGroups.contains(selection.groupID) {
+                    let oldTracks = libraryTracks.filter { $0.mediaSelection?.groupID == selection.groupID }
+                    pendingPrograms[selection.groupID] = AudioProgramExpansionProposal(id: selection.groupID,
+                        sourceURL: selection.descriptorPath.map { URL(fileURLWithPath: $0) } ?? file.url,
+                        oldTrackIDs: oldTracks.map(\.id),
+                        trackCount: inputPlan.files.filter { $0.mediaSelection?.groupID == selection.groupID }.count)
+                    continue
+                }
+                if matches.count == 1, let track = matches.first, !approvedProgramGroups.contains(selection.groupID) {
+                    if storageBackend.mode == .referenced,
+                       let incoming = try? await referencedReuseLocator(file, track: track, session: session) {
+                        referencedReuseLocators[track.id] = incoming
+                    }
+                    if reusedTrackIDs.insert(track.id).inserted { reusedTracks.append(track) }
+                    fileTrackMappings.append(.init(filePath: file.url.standardizedFileURL.path, trackID: track.id))
+                } else {
+                    newFiles.append(file)
+                }
+                continue
+            }
+            // Saved selections remain authoritative when their descriptor is
+            // offline or removed. A physical match can represent several songs.
+            let savedPrograms = libraryTracks.filter { track in
+                guard track.mediaSelection != nil else { return false }
+                if TrackIdentityResolver.canonicalPath(track.originalFilePath) == TrackIdentityResolver.canonicalPath(file.url.path) { return true }
+                guard let incoming = file.fingerprint else { return false }
+                return track.mediaLocator.referencedFile?.locations.contains {
+                    $0.fingerprint.map { TrackIdentityResolver.samePhysicalIdentity($0, incoming) } ?? false
+                } ?? false
+            }
+            if !savedPrograms.isEmpty {
+                for track in savedPrograms {
+                    if storageBackend.mode == .referenced,
+                       let incoming = try? await referencedReuseLocator(file, track: track, session: session) {
+                        referencedReuseLocators[track.id] = incoming
+                    }
+                    if reusedTrackIDs.insert(track.id).inserted { reusedTracks.append(track) }
+                    fileTrackMappings.append(.init(filePath: file.url.standardizedFileURL.path, trackID: track.id))
+                }
+                continue
+            }
             if storageBackend.mode == .referenced {
                 guard let fingerprint = file.fingerprint else {
                     newFiles.append(file)
                     continue
                 }
                 var reuse: DigestTierReuseMatch?
-                if let fingerprintMatch = await repository.track(matching: fingerprint) {
+                if let fingerprintMatch = await repository.track(matching: fingerprint), fingerprintMatch.mediaSelection == nil {
                     reuse = DigestTierReuseMatch(
                         track: fingerprintMatch,
                         incomingDigest: nil,
@@ -364,7 +472,10 @@ final class ImportPlanner {
             }
         }
         operationCoordinator.recordCheckpoint("身份复用完成")
-        let filesToImport = newFiles.filter { $0.url.pathExtension.lowercased() != "ncm" }
+        let filesToImport = newFiles.filter {
+            $0.url.pathExtension.lowercased() != "ncm"
+                && ($0.mediaSelection.map { pendingPrograms[$0.groupID] == nil } ?? true)
+        }
         let ncmFiles = newFiles.filter { $0.url.pathExtension.lowercased() == "ncm" }
         for failure in inputPlan.failures {
             Log.warning(
@@ -382,7 +493,8 @@ final class ImportPlanner {
             referencedReuseLocators: referencedReuseLocators,
             filesToImport: filesToImport,
             eligibleNCMFiles: eligibleNCMFiles,
-            fileTrackMappings: fileTrackMappings
+            fileTrackMappings: fileTrackMappings,
+            pendingAudioExpansions: pendingPrograms.values.sorted { $0.id.uuidString < $1.id.uuidString }
         )
     }
 
@@ -424,7 +536,7 @@ final class ImportPlanner {
 
         var resolvedFiles: [ResolvedImportFile] = filesToImport.map {
             ResolvedImportFile(
-                progressID: $0.url.path,
+                progressID: $0.progressID,
                 displayName: $0.url.lastPathComponent,
                 fileURL: $0.url,
                 ncmResult: nil,
@@ -483,7 +595,7 @@ final class ImportPlanner {
                     operationCoordinator.recordCheckpoint("NCM 转换 \(file.url.lastPathComponent)")
                     let output = try await referencedNCMConversionService.convert(file)
                     resolvedFiles.append(ResolvedImportFile(
-                        progressID: file.url.path,
+                        progressID: file.progressID,
                         displayName: file.url.lastPathComponent,
                         fileURL: output.result.audioFileURL,
                         ncmResult: output.result,
@@ -570,6 +682,23 @@ final class ImportPlanner {
             fileTrackMappings: fileTrackMappings,
             cancelledAfterManagedConversion: false
         )
+    }
+
+    private func referencedReuseLocator(_ file: ImportDiscoveredFile, track: Track,
+        session: ImportSession) async throws -> ReferencedFileLocator? {
+        let placement = try await storageBackend.makePlacement(for: file, trackID: track.id,
+            stagingDirectoryURL: session.stagingDirectoryURL)
+        guard case .referenced(var locator) = placement else { return nil }
+        var properties = track.mediaLocator.referencedFile?.primaryAudioProperties ?? track.audioProperties ?? TrackAudioProperties()
+        properties.mediaSelection = file.mediaSelection ?? track.mediaSelection
+        properties.mediaSelection?.albumResourceID = track.mediaSelection?.albumResourceID
+        locator.primaryAudioProperties = properties
+        if let existing = track.mediaLocator.referencedFile {
+            for location in existing.locations { locator.mergeLocation(location) }
+        }
+        locator.primaryAudioProperties = properties
+        locator.fingerprint = file.fingerprint
+        return locator
     }
 
     // MARK: - Candidate preparation
@@ -690,6 +819,17 @@ final class ImportPlanner {
                 )
             }
         }
+        let expected = Dictionary(grouping: selectedCandidates.filter { $0.discoveredFile.mediaSelection != nil },
+            by: { $0.discoveredFile.mediaSelection!.groupID })
+        let prepared = Dictionary(grouping: finalCandidates.filter { $0.discoveredFile.mediaSelection != nil },
+            by: { $0.discoveredFile.mediaSelection!.groupID })
+        let incomplete = Set(expected.keys.filter { expected[$0]?.count != prepared[$0]?.count })
+        for candidate in finalCandidates where candidate.discoveredFile.mediaSelection.map({ incomplete.contains($0.groupID) }) == true {
+            failures.append(.init(url: candidate.fileURL, message: "专辑文件准备失败，请重试此专辑"))
+            progressController.updateItem(id: candidate.progressID, title: candidate.metadata.title,
+                artist: candidate.metadata.artist, stage: .importing, status: .failed, detail: "专辑文件准备失败")
+        }
+        finalCandidates.removeAll { $0.discoveredFile.mediaSelection.map { incomplete.contains($0.groupID) } == true }
         return PlacementResolution(placements: finalCandidates, failures: failures)
     }
 
@@ -714,6 +854,7 @@ final class ImportPlanner {
         identityResolver: TrackIdentityResolver
     ) async -> DigestTierReuseMatch? {
         let candidates = libraryTracks.compactMap { track -> ReferencedTrackCandidate? in
+            guard track.mediaSelection == nil else { return nil }
             guard case let .referenced(locator) = track.mediaLocator else { return nil }
             return ReferencedTrackCandidate(
                 trackID: track.id,
@@ -758,6 +899,7 @@ final class ImportPlanner {
         identityResolver: TrackIdentityResolver
     ) async -> Track? {
         let candidates = libraryTracks.compactMap { track -> ManagedTrackCandidate? in
+            guard track.mediaSelection == nil else { return nil }
             if AudioFormatSupport.isVideoContainer(file.url), Self.isUnconvertedVideoTrack(track) { return nil }
             let managedAudioURL: URL?
             if case let .managed(libraryRelativePath) = track.mediaLocator {
@@ -794,6 +936,8 @@ final class ImportPlanner {
     // MARK: - Coalescing
 
     private func coalescedResolvedFiles(_ files: [ResolvedImportFile]) -> [ResolvedImportFile] {
+        if files.contains(where: { $0.discoveredFile.mediaSelection != nil }) { return files }
+
         guard storageBackend.mode == .referenced else { return files }
 
         var result: [ResolvedImportFile] = []
@@ -1171,7 +1315,13 @@ final class ImportPlanner {
         let preview: ImportPreview
         var embeddedSnapshot: EmbeddedMetadataSnapshot?
         var audioPropertiesOverride: TrackAudioProperties?
-        if let ncmResult = file.ncmResult {
+        if let metadata = file.discoveredFile.programMetadata,
+           let selection = file.discoveredFile.mediaSelection {
+            preview = ImportPreview(title: metadata.title, artist: metadata.artist, album: metadata.album,
+                albumArtist: metadata.albumArtist, duration: selection.duration, lyrics: nil, artworkData: nil)
+            embeddedSnapshot = Self.embeddedSnapshot(title: metadata.title, artist: metadata.artist,
+                album: metadata.album, albumArtist: metadata.albumArtist, durationSeconds: selection.duration)
+        } else if let ncmResult = file.ncmResult {
             let normalizedCoverData = ncmResult.coverData.flatMap {
                 ArtworkDataNormalizer.normalizedJPEGData(
                     from: $0,
@@ -1290,7 +1440,9 @@ final class ImportPlanner {
             artist: effectivePreview.artist
         )
 
-        let groupMatches = existingMatches[dedupKey]?.matches ?? []
+        // A source program defines a complete ordered set. Similarity to a
+        // recording elsewhere in the library cannot remove a member of it.
+        let groupMatches = file.discoveredFile.mediaSelection == nil ? existingMatches[dedupKey]?.matches ?? [] : []
         let classification = TrackIdentityResolver.classifyMetadataSimilarity(
             dedupKey: dedupKey,
             incomingDuration: effectivePreview.duration,

@@ -52,17 +52,26 @@ nonisolated enum PerAudioFileImportTask {
                     maxPixelSize: ArtworkDataNormalizer.importMaxPixelSize
                 )
             }
-            return await ImportMetadataExtractor.extractArtwork(from: candidate.fileURL)
+            if let embedded = await ImportMetadataExtractor.extractArtwork(from: candidate.fileURL) { return embedded }
+            guard candidate.discoveredFile.mediaSelection != nil else { return nil }
+            return ImportMetadataExtractor.extractProgramFolderArtwork(beside: candidate.fileURL)
         }()
         // Managed NCM progress IDs retain the encrypted source path;
         // fileURL points to a temporary decrypted audio product.
         let originalSourceURL = placement.storageKind == .managed
             && URL(fileURLWithPath: candidate.progressID).pathExtension.lowercased() == "ncm"
             ? URL(fileURLWithPath: candidate.progressID) : candidate.fileURL
-        async let localLyricsTask = LocalLyricsImporter.ttmlForImportedAudio(
-            at: originalSourceURL,
-            embeddedLyrics: candidate.metadata.lyrics
-        )
+        async let localLyricsTask: String? = {
+            if candidate.discoveredFile.mediaSelection != nil {
+                let title = candidate.metadata.title.replacingOccurrences(of: "/", with: "_")
+                let perTrackURL = originalSourceURL.deletingLastPathComponent()
+                    .appendingPathComponent(title).appendingPathExtension(originalSourceURL.pathExtension)
+                guard perTrackURL != originalSourceURL else { return nil }
+                return await LocalLyricsImporter.sidecarTTML(forAudioAt: perTrackURL)
+            }
+            return await LocalLyricsImporter.ttmlForImportedAudio(at: originalSourceURL,
+                embeddedLyrics: candidate.metadata.lyrics)
+        }()
 
         var videoMusic: ImportedVideoMusic?
         var generatedReferencedAudioURL: URL?
@@ -86,12 +95,16 @@ nonisolated enum PerAudioFileImportTask {
                     cancellationToken: cancellationToken
                 )
             }
-            let audioURL = videoMusic?.audioURL ?? candidate.fileURL
+            let preparedURL: URL
+            if case .managed(let stagedURL, _) = placement { preparedURL = stagedURL }
+            else { preparedURL = candidate.fileURL }
+            let audioURL = videoMusic?.audioURL ?? preparedURL
             let duration = videoMusic?.duration ?? candidate.metadata.duration
             do {
                 try Self.ensureAudioIsDecodable(
                     audioURL,
-                    knownDuration: duration
+                    knownDuration: duration,
+                    selection: candidate.discoveredFile.mediaSelection
                 )
             } catch {
                 // A file that is still being copied into a monitored folder can
@@ -105,7 +118,8 @@ nonisolated enum PerAudioFileImportTask {
                 }
                 try Self.ensureAudioIsDecodable(
                     audioURL,
-                    knownDuration: duration
+                    knownDuration: duration,
+                    selection: candidate.discoveredFile.mediaSelection
                 )
             }
             try await cancellationToken.checkCancellation()
@@ -125,11 +139,16 @@ nonisolated enum PerAudioFileImportTask {
             // §9.2: technical properties of the physical file. NCM outputs
             // already carry bitrate/format from the decrypted header; plain
             // files are probed here while they are open for decode checks.
-            let audioProperties = candidate.audioPropertiesOverride
+            var audioProperties = candidate.audioPropertiesOverride
                 ?? Self.readAudioProperties(
                     for: audioURL,
                     durationSeconds: duration
                 )
+            if let selection = candidate.discoveredFile.mediaSelection {
+                var properties = audioProperties ?? TrackAudioProperties()
+                properties.mediaSelection = selection
+                audioProperties = properties
+            }
             let mediaLocator: TrackMediaLocator
             var stagedAudioURL: URL?
             switch placement {
@@ -163,11 +182,29 @@ nonisolated enum PerAudioFileImportTask {
             }
             try await cancellationToken.checkCancellation()
             let motionArtwork = videoMusic?.motionArtwork(trackID: trackId)
-            let stagedAssets: [ImportStagedAssetFile]
+            var stagedAssets: [ImportStagedAssetFile]
             if let motionURL = videoMusic?.motionURL, let asset = motionArtwork?.assets.first {
                 stagedAssets = [.init(stagedURL: motionURL, libraryRelativePath: asset.relativePath)]
             } else {
                 stagedAssets = []
+            }
+            if candidate.discoveredFile.mediaSelection != nil || candidate.fileURL.pathExtension.lowercased() == "wv",
+               case .managed(let stagedURL, let relativePath) = placement {
+                let folder = stagedURL.deletingLastPathComponent()
+                let companions: [URL]
+                if candidate.discoveredFile.mediaSelection != nil {
+                    companions = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+                } else {
+                    let correction = stagedURL.deletingPathExtension().appendingPathExtension("wvc")
+                    companions = FileManager.default.fileExists(atPath: correction.path) ? [correction] : []
+                }
+                let parent = (relativePath as NSString).deletingLastPathComponent
+                for companion in companions where companion != stagedURL {
+                    let destination = candidate.discoveredFile.mediaSelection == nil
+                        ? (relativePath as NSString).deletingPathExtension + ".wvc"
+                        : "\(parent)/\(companion.lastPathComponent)"
+                    stagedAssets.append(.init(stagedURL: companion, libraryRelativePath: destination))
+                }
             }
             preparedSuccessfully = true
 
@@ -304,34 +341,12 @@ nonisolated enum PerAudioFileImportTask {
     /// the media; video containers previously slipped through that shortcut.
     nonisolated static func ensureAudioIsDecodable(
         _ url: URL,
-        knownDuration: Double
+        knownDuration: Double,
+        selection: AudioMediaSelection? = nil
     ) throws {
         do {
-            let file = try AVAudioFile(forReading: url)
-            guard file.length > 0,
-                  file.processingFormat.sampleRate.isFinite,
-                  file.processingFormat.sampleRate > 0,
-                  file.processingFormat.channelCount > 0 else {
-                throw AudioImportError.undecodable(fileName: url.lastPathComponent)
-            }
-            guard let buffer = AVAudioPCMBuffer(
-                pcmFormat: file.processingFormat,
-                frameCapacity: AVAudioFrameCount(min(file.length, 1_024))
-            ) else {
-                throw AudioImportError.undecodable(fileName: url.lastPathComponent)
-            }
-            try file.read(into: buffer)
-            guard buffer.frameLength > 0 else {
-                throw AudioImportError.undecodable(fileName: url.lastPathComponent)
-            }
+            _ = try AudioDecoderFactory.probe(url, selection: selection)
         } catch {
-            Log.warning(
-                "[Import] rejected undecodable file '\(url.lastPathComponent)': \(error.localizedDescription)",
-                category: .import
-            )
-            if error is AudioImportError {
-                throw error
-            }
             throw AudioImportError.undecodable(fileName: url.lastPathComponent)
         }
     }
@@ -343,86 +358,15 @@ nonisolated enum PerAudioFileImportTask {
         for url: URL,
         durationSeconds: Double
     ) -> TrackAudioProperties? {
-        let format = url.pathExtension.uppercased()
-        var codec = Self.inferredCodec(forPathExtension: url.pathExtension)
-        var sampleRateHz: Int?
-        var channelCount: Int?
-        var bitDepth: Int?
-
-        if let audioFile = try? AVAudioFile(forReading: url) {
-            codec = Self.codecName(
-                for: audioFile.fileFormat.streamDescription.pointee.mFormatID
-            ) ?? codec
-            let processingFormat = audioFile.processingFormat
-            if processingFormat.sampleRate > 0 {
-                sampleRateHz = Int(processingFormat.sampleRate)
-            }
-            if processingFormat.channelCount > 0 {
-                channelCount = Int(processingFormat.channelCount)
-            }
-            let bitsPerChannel = processingFormat.streamDescription.pointee.mBitsPerChannel
-            if bitsPerChannel > 0 {
-                bitDepth = Int(bitsPerChannel)
-            }
+        guard let resource = try? AudioDecoderFactory.open(url),
+              (try? resource.provider.nextChunk(maxFrames: 256)) != nil else { return nil }
+        var properties = resource.info.audioProperties
+        properties.format = url.pathExtension.uppercased()
+        let duration = Double(resource.length) / resource.sampleRate
+        if duration > 0, let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+            properties.bitrateKbps = Int((Double(size) * 8 / duration / 1000).rounded())
         }
-
-        let bitrateKbps: Int?
-        if durationSeconds > 0, durationSeconds.isFinite,
-           let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-           let fileSize = attributes[.size] as? Int64,
-           fileSize > 0 {
-            bitrateKbps = Int((Double(fileSize) * 8 / durationSeconds / 1000).rounded())
-        } else {
-            bitrateKbps = nil
-        }
-
-        guard format.isEmpty == false || sampleRateHz != nil || bitrateKbps != nil else {
-            return nil
-        }
-        return TrackAudioProperties(
-            format: format.isEmpty ? nil : format,
-            codec: codec,
-            bitrateKbps: bitrateKbps,
-            sampleRateHz: sampleRateHz,
-            bitDepth: bitDepth,
-            channelCount: channelCount
-        )
-    }
-
-    /// AVAudioFile exposes the source stream's format id separately from the
-    /// decoded processing format. Keep the user-facing names short and stable
-    /// so diagnostics can distinguish, for example, M4A/AAC from M4A/ALAC.
-    private nonisolated static func codecName(for formatID: AudioFormatID) -> String? {
-        let bytes = [
-            UInt8((formatID >> 24) & 0xff),
-            UInt8((formatID >> 16) & 0xff),
-            UInt8((formatID >> 8) & 0xff),
-            UInt8(formatID & 0xff)
-        ]
-        guard let rawTag = String(bytes: bytes, encoding: .ascii) else { return nil }
-        switch rawTag.trimmingCharacters(in: .whitespacesAndNewlines) {
-        case "aac": return "AAC"
-        case ".mp3": return "MP3"
-        case "alac": return "ALAC"
-        case "lpcm": return "PCM"
-        case "flac": return "FLAC"
-        case "opus": return "Opus"
-        case "vorb": return "Vorbis"
-        case "ima4": return "IMA4"
-        case "ulaw": return "μ-law"
-        case "alaw": return "A-law"
-        default: return nil
-        }
-    }
-
-    private nonisolated static func inferredCodec(forPathExtension pathExtension: String) -> String? {
-        switch pathExtension.lowercased() {
-        case "mp3": return "MP3"
-        case "flac": return "FLAC"
-        case "alac": return "ALAC"
-        case "wav", "wave", "aif", "aiff": return "PCM"
-        default: return nil
-        }
+        return properties
     }
 
     // MARK: - Concurrency calculators

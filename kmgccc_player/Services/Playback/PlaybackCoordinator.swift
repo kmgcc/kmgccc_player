@@ -1244,7 +1244,8 @@ final class PlaybackCoordinator {
             isrc: seed["isrc"]?.text,
             seedAttributes: seed.isEmpty ? nil : seed,
             storedMotionArtwork: value.source == .local ? value.localTrack?.motionArtwork : nil,
-            albumArtist: value.localTrack?.albumArtist
+            albumArtist: value.localTrack?.albumArtist,
+            sourceAlbumIdentity: value.source == .local ? value.localTrack?.audioProgramLookupScope : nil
         )
         musicEnrichmentService.update(query: query)
         guard let snapshot = musicEnrichmentService.snapshot(for: key) else { return }

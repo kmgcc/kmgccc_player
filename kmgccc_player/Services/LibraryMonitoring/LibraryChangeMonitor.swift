@@ -14,7 +14,7 @@ nonisolated struct LibraryFileEvent: Sendable, Equatable {
 
 nonisolated struct ManagedLibraryFileEventFilter: Sendable {
     private let rootPath: String
-    private let authoritativeDirectoryNames = Set(["Tracks", "Playlists", "Artists", "Albums"])
+    private let authoritativeDirectoryNames = Set(["Tracks", "Playlists", "Artists", "Albums", "MediaAssets"])
 
     init(paths: LibraryPaths) {
         rootPath = paths.rootURL.standardizedFileURL.path
