@@ -22,7 +22,9 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     typealias AdaptiveConsumer = @MainActor (SpectrumWaveFrame) -> Void
 
     private enum Constants {
-        static let bandCount = 9
+        // Apple's own six bands. Surfaces expand this by resampling (or by
+        // pulling the engine's wider chains) when they have room for more.
+        static let bandCount = TunedSpectrumEngine.baselineBandCount
         static let uiUpdateHz: Double = 30
         static let staleDataThreshold: TimeInterval = 0.12
         static let staleRestartThreshold: TimeInterval = 0.80
@@ -37,12 +39,7 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         static let defaultSampleRate: Float = 44_100
     }
 
-    private let processor = SpectrumProcessor()
-    private let detailedProcessor = DetailedSpectrumProcessor()
-    #if DEBUG
-    private let legacyProcessor = LegacySpectrumProcessor()
-    private let useLegacySpectrum = ProcessInfo.processInfo.environment["KMGCCC_LEGACY_SPECTRUM"] == "1"
-    #endif
+    private let tunedEngine = TunedSpectrumEngine.shared
     private let hub = AudioAnalysisHub.shared
     private let processingQueue = DispatchQueue(
         label: "AudioVisualizationService.processing",
@@ -78,11 +75,8 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     private var outputDetailedWave: [Float] = DetailedSpectrumProcessor.zeroWave
     private var lastPublishedDetailedWave: [Float] = DetailedSpectrumProcessor.zeroWave
 
-    private var pendingMagnitudes: [Float] = []
-    private var pendingFFTSize: Int = Constants.defaultFFTSize
+    private var pendingPCM: [Float] = []
     private var pendingSampleRate: Float = Constants.defaultSampleRate
-    private var pendingRms: Float = 0
-    private var pendingPeak: Float = 0
     private var hasPendingFFT = false
 
     /// Player volume (0...1) retained for diagnostics. Renderer PCM is supplied
@@ -108,13 +102,21 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     private var coalescedFrameCount: UInt64 = 0
 
     private var poseBlend: Float = 0.0
-    private let idlePattern: [Float] = [0.37, 0.20, 0.40, 0.20, 0.65, 0.20, 0.40, 0.20, 0.37]
-    private let detailedIdlePattern = DetailedSpectrumProcessor.resampledLegacyWave(
-        [0.37, 0.20, 0.40, 0.20, 0.65, 0.20, 0.40, 0.20, 0.37]
+    /// Calm rest pose in the tuned contour's shape (the six reference medians
+    /// scaled down), so a paused player still reads as the same instrument.
+    private static let restPose: [Float] = [0.29, 0.13, 0.45, 0.31, 0.24, 0.19]
+    private let idlePattern: [Float] = AudioVisualizationService.restPose
+    private let detailedIdlePattern: [Float] = TunedSpectrumEngine.resample(
+        AudioVisualizationService.restPose,
+        to: TunedSpectrumEngine.detailedBandCount
     )
 
     private var lastDataTime: TimeInterval = 0
     private var lastTickTime: TimeInterval = 0
+    /// Timestamp of the last chain step. The chain's gate envelope and dy
+    /// constants are time-based, so dt must be measured step-to-step; the idle
+    /// timer ticks between data frames and would otherwise shrink it.
+    private var lastSpectrumStepTime: TimeInterval = 0
     private var lastPublishTime: TimeInterval = 0
     private var lastRestartAttemptTime: TimeInterval = 0
 
@@ -262,22 +264,14 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
                 category: .audio
             )
         }
-        processor.reset()
-        detailedProcessor.reset()
-        #if DEBUG
-        legacyProcessor.reset()
-        #endif
+        tunedEngine.reset()
         liveWave = Array(repeating: 0, count: Constants.bandCount)
         outputWave = Array(repeating: 0, count: Constants.bandCount)
         lastPublishedWave = Array(repeating: 0, count: Constants.bandCount)
         liveDetailedWave = DetailedSpectrumProcessor.zeroWave
         outputDetailedWave = DetailedSpectrumProcessor.zeroWave
         lastPublishedDetailedWave = DetailedSpectrumProcessor.zeroWave
-        pendingMagnitudes = []
-        pendingFFTSize = Constants.defaultFFTSize
         pendingSampleRate = Constants.defaultSampleRate
-        pendingRms = 0
-        pendingPeak = 0
         hasPendingFFT = false
         poseBlend = 0
         lastDataTime = now
@@ -311,20 +305,13 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         let shouldPublishZero = lastPublishedWave.contains(where: { $0 > 0.001 })
 
         isRunning = false
-        processor.reset()
-        detailedProcessor.reset()
-        #if DEBUG
-        legacyProcessor.reset()
-        #endif
+        tunedEngine.reset()
         liveWave = zeroWave
         outputWave = zeroWave
         lastPublishedWave = zeroWave
         liveDetailedWave = DetailedSpectrumProcessor.zeroWave
         outputDetailedWave = DetailedSpectrumProcessor.zeroWave
         lastPublishedDetailedWave = DetailedSpectrumProcessor.zeroWave
-        pendingMagnitudes = []
-        pendingRms = 0
-        pendingPeak = 0
         hasPendingFFT = false
         poseBlend = 0
         pauseStartTime = nil
@@ -356,12 +343,21 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         guard !hasHubLease else { return }
         hub.start()
         hasHubLease = true
-        hubConsumerId = hub.addConsumer { [weak self] data in
-            self?.enqueue(data)
+        // The hub's 30Hz publish is the LED meter's display cadence. A spectrum
+        // that follows the music has to see the renderer's own buffers, which
+        // arrive at 60Hz -- half the cadence means every attack is quantized to
+        // 33ms and the tuned chain's three-tick reference stretches to 100ms.
+        // The tap carries the same newest-2048-samples window, unthrottled.
+        hub.setSampleTap { [weak self] samples, rate in
+            self?.enqueueSamples(samples, sampleRate: rate)
         }
+        // Keep a consumer registration purely as the hub lease: it is what makes
+        // the hub keep the renderer feed enabled for us.
+        hubConsumerId = hub.addConsumer { _ in }
     }
 
     private func detachHubLocked() {
+        hub.setSampleTap(nil)
         if let id = hubConsumerId {
             hub.removeConsumer(id)
             hubConsumerId = nil
@@ -372,22 +368,26 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     }
 
     private func resetDetailedSpectrumLocked() {
-        detailedProcessor.reset()
+        tunedEngine.reset()
+        lastSpectrumStepTime = Date().timeIntervalSinceReferenceDate
         liveDetailedWave = DetailedSpectrumProcessor.zeroWave
         outputDetailedWave = DetailedSpectrumProcessor.zeroWave
         lastPublishedDetailedWave = DetailedSpectrumProcessor.zeroWave
     }
 
-    private func enqueue(_ data: AudioAnalysisData) {
+    /// Renderer-clock PCM tap. Runs on the renderer's analysis queue, so the
+    /// actual work is handed to `processingQueue` (which also runs the idle /
+    /// decay timer, so chain steps stay serialized).
+    private func enqueueSamples(_ samples: [Float], sampleRate: Float) {
         processingQueue.async { [weak self] in
             guard let self, self.isRunning else { return }
-            self.pendingMagnitudes = data.magnitudes
-            self.pendingFFTSize = data.fftSize
-            self.pendingSampleRate = data.sampleRate
-            self.pendingRms = data.rms
-            self.pendingPeak = data.peak
+            self.pendingPCM = samples
+            self.pendingSampleRate = sampleRate
             self.hasPendingFFT = true
             self.lastDataTime = Date().timeIntervalSinceReferenceDate
+            // Step the chain on the frame, not on the UI timer: the tuned
+            // constants are tick-based, so the tick has to be the renderer's.
+            self.tick()
         }
     }
 
@@ -434,57 +434,39 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         }
 
         if isExternalMode {
+            // External sources have no PCM tap, so the simulator drives the
+            // baseline wave and the detailed view is its interpolation — the
+            // same shape the old detail processor produced with no FFT input.
             liveWave = ExternalPlaybackSpectrumSimulator.shared.lastWave
             if hasDetailedConsumers {
-                liveDetailedWave = detailedProcessor.process(
-                    magnitudes: [],
-                    fftSize: pendingFFTSize,
-                    sampleRate: pendingSampleRate,
-                    legacyWave: liveWave,
-                    dt: dt
+                liveDetailedWave = TunedSpectrumEngine.resample(
+                    liveWave,
+                    to: TunedSpectrumEngine.detailedBandCount
                 )
             }
             lastDataTime = now
         } else if hasPendingFFT {
-            liveWave = processWave(
-                magnitudes: pendingMagnitudes,
-                fftSize: pendingFFTSize,
-                sampleRate: pendingSampleRate,
-                rms: pendingRms,
-                peak: pendingPeak,
-                playerVolume: playerVolume,
-                dt: dt
-            )
+            let stepDt = Float(max(0.001, min(0.1, now - lastSpectrumStepTime)))
+            lastSpectrumStepTime = now
+            tunedEngine.ingest(pcm: pendingPCM, sampleRate: Double(pendingSampleRate))
+            tunedEngine.advance(dt: Double(stepDt))
+            liveWave = tunedEngine.wave(bandCount: Constants.bandCount)
             if hasDetailedConsumers {
-                liveDetailedWave = detailedProcessor.process(
-                    magnitudes: pendingMagnitudes,
-                    fftSize: pendingFFTSize,
-                    sampleRate: pendingSampleRate,
-                    legacyWave: liveWave,
-                    dt: dt
+                liveDetailedWave = tunedEngine.wave(
+                    bandCount: TunedSpectrumEngine.detailedBandCount
                 )
             }
             hasPendingFFT = false
         } else if isPlaying, now - lastDataTime > Constants.staleDataThreshold {
             // Only force a decay tick while playing; while paused we keep the
-            // last processor output and let the idle-pose blend handle the slow
-            // settle-down.
-            liveWave = processWave(
-                magnitudes: [],
-                fftSize: pendingFFTSize,
-                sampleRate: pendingSampleRate,
-                rms: 0,
-                peak: 0,
-                playerVolume: playerVolume,
-                dt: dt
-            )
+            // last output and let the idle-pose blend handle the settle-down.
+            let stepDt = Float(max(0.001, min(0.1, now - lastSpectrumStepTime)))
+            lastSpectrumStepTime = now
+            tunedEngine.advanceSilence(dt: Double(stepDt))
+            liveWave = tunedEngine.wave(bandCount: Constants.bandCount)
             if hasDetailedConsumers {
-                liveDetailedWave = detailedProcessor.process(
-                    magnitudes: [],
-                    fftSize: pendingFFTSize,
-                    sampleRate: pendingSampleRate,
-                    legacyWave: liveWave,
-                    dt: dt
+                liveDetailedWave = tunedEngine.wave(
+                    bandCount: TunedSpectrumEngine.detailedBandCount
                 )
             }
         }
@@ -521,6 +503,19 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
             }
         }
 
+        #if DEBUG
+        // Runtime acceptance probe: KMGCCC_SPECTRUM_DEBUG=1 prints the published
+        // wave once a second so the tuned chain can be checked against a playing
+        // track without Instruments.
+        if ProcessInfo.processInfo.environment["KMGCCC_SPECTRUM_DEBUG"] == "1",
+           producedFrameCount % 30 == 0 {
+            let levels = outputWave.map { String(format: "%.2f", $0) }.joined(separator: " ")
+            var sumSquares: Float = 0
+            for sample in pendingPCM { sumSquares += sample * sample }
+            let rmsDb = 10 * log10f(max(1e-9, sumSquares / Float(max(1, pendingPCM.count))))
+            NSLog("[TunedSpectrum] n=%d blend=%.2f rms=%.1fdBfs %@", outputWave.count, poseBlend, rmsDb, levels)
+        }
+        #endif
         var maxDelta = zip(outputWave, lastPublishedWave).reduce(Float.zero) { partial, pair in
             max(partial, abs(pair.0 - pair.1))
         }
@@ -620,43 +615,15 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
             hubConsumerId = nil
         }
 
-        hubConsumerId = hub.addConsumer { [weak self] data in
-            self?.enqueue(data)
+        hub.setSampleTap { [weak self] samples, rate in
+            self?.enqueueSamples(samples, sampleRate: rate)
         }
+        hubConsumerId = hub.addConsumer { _ in }
         lastDataTime = now
+        lastSpectrumStepTime = now
         startTimerLocked()
     }
 
-    private func processWave(
-        magnitudes: [Float],
-        fftSize: Int,
-        sampleRate: Float,
-        rms: Float,
-        peak: Float,
-        playerVolume: Float,
-        dt: Float
-    ) -> [Float] {
-        let scheduling = schedulingStats()
-        #if DEBUG
-        if useLegacySpectrum {
-            return legacyProcessor.process(
-                magnitudes: magnitudes,
-                fftSize: fftSize,
-                sampleRate: sampleRate
-            )
-        }
-        #endif
-        return processor.process(
-            magnitudes: magnitudes,
-            fftSize: fftSize,
-            sampleRate: sampleRate,
-            rms: rms,
-            peak: peak,
-            playerVolume: playerVolume,
-            scheduling: scheduling,
-            dt: dt
-        )
-    }
 }
 
 // MARK: - Detailed Spectrum Processor

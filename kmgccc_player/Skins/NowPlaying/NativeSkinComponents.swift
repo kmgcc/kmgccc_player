@@ -159,7 +159,7 @@ private struct SkinSpectrumComponent: View {
                 usesDarkForeground: configuration.boolean("darkForeground", fallback: snapshot.theme.spectrumUsesDarkForeground),
                 scale: configuration.number("scale", fallback: 1), isHovered: false,
                 pausedBehavior: configuration.text("paused") == "dots" ? .minimalDots : .default,
-                capsuleCount: max(1, min(64, Int(configuration.number("count", fallback: 9)))),
+                capsuleCount: max(1, min(64, Int(configuration.number("count", fallback: Double(TunedSpectrumEngine.baselineBandCount))))),
                 preferredWidth: proxy.size.width, preferredHeight: proxy.size.height
             )
         }

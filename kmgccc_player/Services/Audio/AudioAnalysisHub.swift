@@ -77,6 +77,15 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     private nonisolated(unsafe) var timer: DispatchSourceTimer?
     private nonisolated(unsafe) var activeClients: Int = 0
     private nonisolated(unsafe) var droppedRendererBuffers: UInt64 = 0
+
+    /// Renderer-clock sample tap. The 30Hz `process()` publish is a *display*
+    /// cadence inherited from the LED meter; a spectrum that wants to follow the
+    /// music at the renderer's own 60Hz rate should not be throttled to half of
+    /// it. This delivers the newest `fftSize` samples on every renderer buffer,
+    /// straight from the ring buffer, without touching the FFT cadence above.
+    private nonisolated(unsafe) var sampleTap: (@Sendable ([Float], Float) -> Void)?
+    private let sampleTapLock = NSLock()
+    private nonisolated(unsafe) var sampleTapBuffer: [Float] = []
     private nonisolated(unsafe) var skippedProcessReads: UInt64 = 0
     private nonisolated(unsafe) var processedFrames: UInt64 = 0
     private nonisolated(unsafe) var lastDiagnosticsDumpUptime: TimeInterval = 0
@@ -120,6 +129,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         self.fftReal = [Float](repeating: 0, count: fftSize / 2)
         self.fftImag = [Float](repeating: 0, count: fftSize / 2)
         self.fftMagnitudes = [Float](repeating: 0, count: fftSize / 2)
+        self.sampleTapBuffer = [Float](repeating: 0, count: fftSize)
 
         processingQueue.setSpecific(key: processingQueueKey, value: ())
         rebuildFFT()
@@ -151,6 +161,15 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     }
 
     // MARK: - Consumer API
+
+    /// Registers the renderer-clock sample tap (one at a time). Called on the
+    /// renderer's analysis queue with the newest `fftSize` mono samples, oldest
+    /// first, and the current sample rate.
+    nonisolated func setSampleTap(_ tap: (@Sendable ([Float], Float) -> Void)?) {
+        sampleTapLock.lock()
+        sampleTap = tap
+        sampleTapLock.unlock()
+    }
 
     func addConsumer(_ callback: @escaping @Sendable (AudioAnalysisData) -> Void) -> UUID {
         let id = UUID()
@@ -281,6 +300,36 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         }
         ringLock.unlock()
         stateLock.unlock()
+
+        deliverSampleTap()
+    }
+
+    /// Hands the newest `fftSize` samples to the renderer-clock tap. Cheap and
+    /// non-blocking: a contended lock just drops this buffer (the tap runs at
+    /// 60Hz, so the next one is 16ms away and the window overlaps anyway).
+    private func deliverSampleTap() {
+        sampleTapLock.lock()
+        let tap = sampleTap
+        sampleTapLock.unlock()
+        guard let tap else { return }
+        guard ringLock.try() else { return }
+
+        let capacity = ringBuffer.count
+        sampleTapBuffer.withUnsafeMutableBufferPointer { out in
+            guard let base = out.baseAddress else { return }
+            var readIndex = writeIndex - fftSize
+            if readIndex < 0 { readIndex += capacity }
+            for i in 0..<fftSize {
+                base[i] = ringBuffer[readIndex]
+                readIndex += 1
+                if readIndex >= capacity { readIndex = 0 }
+            }
+        }
+        let rate = sampleRate
+        ringLock.unlock()
+
+        let samples = sampleTapBuffer
+        tap(samples, rate)
     }
 
     private func resetBuffer() {

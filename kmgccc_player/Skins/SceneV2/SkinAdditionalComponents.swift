@@ -58,6 +58,10 @@ struct SkinProgressSpectrumPart: View {
             foregroundColor: configuration.color(fallback: snapshot.theme.accentColor),
             spectrumArtworkColors: snapshot.theme.spectrumArtworkColors,
             spectrumUsesDarkForeground: snapshot.theme.spectrumUsesDarkForeground,
+            // A skin's progress row is usually the widest spectrum surface there
+            // is; without this it stayed at the six-bar baseline no matter how
+            // wide the scene got.
+            adaptsWideVisualizationSegments: true,
             progress: dragging ? position : p.currentTime, duration: p.duration, isSeekEnabled: p.isSeekEnabled,
             onSeek: { position = $0 }, onDragStart: { position = p.currentTime; dragging = true },
             onDragEnd: { actions.seek(position); dragging = false }, onInteraction: {}, onDragStateChanged: { _ in })
