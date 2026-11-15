@@ -357,6 +357,7 @@ final class SkinSystemTests: XCTestCase {
                     for item in items {
                         XCTAssertTrue(item[member: "x"].number().isFinite && item[member: "y"].number().isFinite)
                         XCTAssertEqual(hypot(item[member: "ex"].number(), item[member: "ey"].number()), 1, accuracy: 0.01)
+                        XCTAssertTrue((0...4).contains(Int(item[member: "m"].number(-1))))
                     }
                     for a in items.indices { for b in items.indices where b > a {
                         XCTAssertTrue(separated(corners(items[a]), corners(items[b])),
@@ -365,9 +366,9 @@ final class SkinSystemTests: XCTestCase {
                 }
             }
         }
-        // Simple lines stay with rows (and the rare vertical hero or cascade); rich lines use every archetype.
-        XCTAssertTrue(archetypes[0]!.isSubset(of: [0, 1, 2, 6, 8]), "\(archetypes[0]!)")
-        XCTAssertGreaterThanOrEqual(archetypes[1]!.count, 7, "\(archetypes[1]!)")
+        // Simple lines stay with rows, blocks and calm rows (and the rare vertical hero or cascade); rich lines use every archetype.
+        XCTAssertTrue(archetypes[0]!.isSubset(of: [0, 1, 2, 6, 8, 10, 15]), "\(archetypes[0]!)")
+        XCTAssertGreaterThanOrEqual(archetypes[1]!.count, 12, "\(archetypes[1]!)")
     }
 
     @MainActor
