@@ -85,6 +85,7 @@ struct SkinSceneNodeV2View: View {
     @State private var backdropReading: SkinBackdropReading?
     @State private var measuredFrame: CGRect?
     @State private var glyphClock = SkinGlyphClock()
+    @State private var glyphPadding = SkinGlyphPadding()
     @State private var valueCache = SkinNodeValueCache()
     @State private var cameraSource = SkinCameraSource()
     @State private var followers = SkinFollowers()
@@ -475,7 +476,11 @@ struct SkinSceneNodeV2View: View {
             style.transforms.append(transform)
         }
         // Heavy and italic faces ink past their advance; leave room so they are not cut.
-        style.padding += reach + growth * fontSize + fontSize * 0.12
+        let wanted = style.padding + reach + growth * fontSize + fontSize * 0.12
+        // A renderer's display padding that changes under a text moves its glyphs sideways, so a
+        // padding that shrank as an entrance settled made the glyph jump half an em. It is kept per
+        // text and only grows; the first frame of an entrance usually reaches the most it needs.
+        style.padding = glyphPadding.stable(for: text + "\u{1F}" + String(fontSize), wanted: max(wanted, style.padding + fontSize * 0.6))
         return style
     }
 

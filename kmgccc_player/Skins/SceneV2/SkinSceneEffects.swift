@@ -283,3 +283,15 @@ final class SkinGlyphClock {
         return start
     }
 }
+
+/// The display padding of a text with `glyphMotion`, kept while the text stays the same and
+/// only ever grown. A reference type, so the renderer can update it while drawing a frame.
+final class SkinGlyphPadding {
+    private var key: String?
+    private var value = 0.0
+
+    func stable(for key: String, wanted: Double) -> Double {
+        if key != self.key { self.key = key; value = wanted } else { value = max(value, wanted) }
+        return value
+    }
+}
