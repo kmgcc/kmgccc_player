@@ -69,8 +69,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private let mutationCoordinator: LibraryMutationCoordinator?
     private var changeHandler: LibraryRepositoryChangeHandler?
 
-    private var allTracks: [Track] = []
-    private var playlists: [Playlist] = []
+    private var membershipRevision: UInt64 = 0
+    private var allTracks: [Track] = [] {
+        didSet { membershipRevision &+= 1 }
+    }
+    private var playlists: [Playlist] = [] {
+        didSet { membershipRevision &+= 1 }
+    }
     private var runtimeArtists: [ArtistSection] = []
     private var runtimeAlbums: [AlbumSection] = []
     private var dedupCountByKey: [String: Int] = [:]
@@ -86,6 +91,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     /// call-through semantics; production runs the batched detached path.
     private let usesInjectedImportSidecarWriter: Bool
     private let usesInjectedLocatorSidecarWriter: Bool
+    private let scanLibrary: @Sendable (LibraryPaths) async -> LibraryDiskSnapshot
     private weak var backgroundScheduler: BackgroundWorkScheduler?
     private var backgroundOwner: BackgroundWorkOwner = .app
     /// Why a leftover-folder scan is wanted but has not run yet. A reload
@@ -101,7 +107,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         playlistArtworkPipeline: PlaylistArtworkPipeline? = nil,
         mutationCoordinator: LibraryMutationCoordinator? = nil,
         importSidecarWriter: ((Track, String) -> Bool)? = nil,
-        locatorSidecarWriter: ((Track, TrackMediaLocator, TrackAvailability, String) -> Bool)? = nil
+        locatorSidecarWriter: ((Track, TrackMediaLocator, TrackAvailability, String) -> Bool)? = nil,
+        scanLibrary: @escaping @Sendable (LibraryPaths) async -> LibraryDiskSnapshot = { paths in
+            await Task.detached { LibraryDiskScanner(paths: paths).scanAll() }.value
+        }
     ) {
         let resolvedDerivativeStore = artworkDerivativeStore ?? ArtworkDerivativeCacheStore(
             diskRootURL: StorageLocations.scoped(
@@ -117,6 +126,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             derivativeStore: resolvedDerivativeStore
         )
         self.mutationCoordinator = mutationCoordinator
+        self.scanLibrary = scanLibrary
         self.importSidecarWriter = importSidecarWriter ?? { track, reason in
             libraryService.writeImportedTrackSidecar(for: track, reason: reason)
         }
@@ -150,20 +160,20 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     func reloadFromLibrary() async {
         let previousTrackCount = allTracks.count
         libraryService.ensureLibraryFolders()
+        var snapshot: LibraryDiskSnapshot
+        var trackMetas: [ScannedTrackMeta]
+        var existingManagedAudioPaths: Set<String>
+        repeat {
+            let revision = membershipRevision
+            snapshot = await scanLibrary(paths)
+            trackMetas = uniqueTrackMetas(snapshot.trackMetas)
+            existingManagedAudioPaths = await Self.existingManagedAudioPaths(metas: trackMetas, paths: paths)
+            // Imports, deletions and playlist edits can finish while the disk
+            // scan is suspended. Rescan before publishing so an older snapshot
+            // cannot drop a committed song or resurrect a removed membership.
+            if membershipRevision == revision { break }
+        } while true
         playlistItemAddedAtMap.removeAll()
-
-        let capturedPaths = paths
-        let snapshot = await Task.detached { @Sendable in
-            LibraryDiskScanner(paths: capturedPaths).scanAll()
-        }.value
-
-        let trackMetas = uniqueTrackMetas(snapshot.trackMetas)
-        // Resolve managed audio existence off the main actor: large managed
-        // libraries otherwise pay one stat call per track during the map below.
-        let existingManagedAudioPaths = await Self.existingManagedAudioPaths(
-            metas: trackMetas,
-            paths: paths
-        )
         let stringPool = StringInternPool()
         let tracks = trackMetas.map { buildTrack(from: $0, existingManagedAudioPaths: existingManagedAudioPaths, stringPool: stringPool) }
         let tracksById = trackDictionaryByID(tracks)
