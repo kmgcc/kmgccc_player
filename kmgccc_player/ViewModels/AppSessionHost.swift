@@ -297,11 +297,13 @@ final class AppSessionHost: ObservableObject {
             )
         case .available(let sourceID):
             uiState.dismissSidebarNotice(sourceID: sourceID)
-        case .fileFailures(_, let failures):
+        case .fileFailures(_, let rootURL, let rootIsFile, let failures):
             uiState.recordLibraryImportFailures(
                 failures.map { failure in
                     ImportInputFailure(
-                        url: URL(fileURLWithPath: failure.relativePath ?? "来源文件"),
+                        url: rootIsFile
+                            ? rootURL
+                            : rootURL.appendingPathComponent(failure.relativePath ?? ""),
                         message: failure.summary
                     )
                 },

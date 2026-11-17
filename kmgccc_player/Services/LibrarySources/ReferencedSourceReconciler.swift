@@ -47,7 +47,12 @@ nonisolated enum ReferencedSourceNotice: Sendable, Equatable {
     /// "source folder is temporarily unavailable" warning instead of leaving
     /// it up next to a healthy source.
     case available(sourceID: UUID)
-    case fileFailures(sourceID: UUID, failures: [ReferencedSourceScanFailure])
+    case fileFailures(
+        sourceID: UUID,
+        rootURL: URL,
+        rootIsFile: Bool,
+        failures: [ReferencedSourceScanFailure]
+    )
     case scanFailures(sourceID: UUID, failures: [ReferencedSourceScanFailure])
     case reconcileFailures(sourceID: UUID, failures: [ReferencedSourceScanFailure])
     case monitorFailure(sourceIDs: [UUID], summary: String)
@@ -608,6 +613,7 @@ final class ReferencedSourceReconciler {
         var changes = ReferencedReconcileChanges()
         guard !isClosed else { return changes }
         for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+            try Task.checkCancellation()
             guard !isClosed else { return changes }
             changes += try await replayPending(sourceID: sourceID)
             guard try await intentStore.pending(libraryID: context.id, sourceID: sourceID).isEmpty else {
@@ -824,6 +830,10 @@ final class ReferencedSourceReconciler {
                 : await importer.importAutomatically(intent.diff.added.map {
                     url(forRelativePath: $0.relativePath, root: rootURL, rootIsFile: isFileRoot)
                 })
+            // A monitor restart cancels its import. Keep the prepared intent
+            // for the next scan instead of publishing failures or an empty
+            // binding snapshot for files that were never processed.
+            try Task.checkCancellation()
             changes.importedFiles += imported.count
             guard !isClosed else { return changes }
             let firstScanPresentPaths: Set<String>? = (
@@ -851,6 +861,8 @@ final class ReferencedSourceReconciler {
             if !unresolvedAdded.isEmpty {
                 await noticePublisher.publish(.fileFailures(
                     sourceID: intent.sourceID,
+                    rootURL: rootURL,
+                    rootIsFile: isFileRoot,
                     failures: unresolvedAdded.map {
                         ReferencedSourceScanFailure(
                             relativePath: $0.relativePath,
@@ -1477,6 +1489,7 @@ final class ReferencedSourceReconciler {
             changes[track.id] = .init(trackID: track.id, locator: locator, availability: info != nil ? .available : .missing)
             if info == nil {
                 await noticePublisher.publish(.fileFailures(sourceID: diff.sourceID,
+                    rootURL: rootURL, rootIsFile: isFileRoot,
                     failures: [.init(relativePath: replacement.relativePath, summary: "音频替换后分轨范围需要核验")]))
             }
         }
@@ -1692,6 +1705,9 @@ final class ReferencedSourceReconciler {
         locator: ReferencedFileLocator,
         rootURL: URL
     ) -> String? {
+        // An explicitly selected file is itself the source. Directory scans
+        // hide generated products, but single-file scans include that file.
+        guard !rootIsFile(rootURL) else { return nil }
         let outputURL = URL(fileURLWithPath: locator.lastKnownPath).standardizedFileURL
         guard !locator.lastKnownPath.isEmpty else { return nil }
         let associationMatches = track.ncmConversionAssociation.map {

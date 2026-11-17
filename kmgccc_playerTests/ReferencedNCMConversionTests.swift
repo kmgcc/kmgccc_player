@@ -48,6 +48,37 @@ private actor ConversionCounter {
 
 @MainActor
 final class ReferencedNCMConversionTests: XCTestCase {
+    func testCancelledReferencedConversionEndsPlanningWithoutFileFailure() async throws {
+        let fixture = try Fixture(convert: { _, _ in throw CancellationError() })
+        defer { fixture.cleanup() }
+        let coordinator = LibraryOperationCoordinator()
+        let backend = ReferencedLocalBackend(
+            paths: fixture.paths,
+            sourceStore: ReferencedSourceStore(paths: fixture.paths),
+            sourceScope: fixture.scope,
+            bookmarkResolver: fixture.resolver
+        )
+        let planner = ImportPlanner(
+            repository: StubLibraryRepository(), storageBackend: backend, paths: fixture.paths,
+            referencedNCMConversionService: fixture.service, operationCoordinator: coordinator,
+            ncmConversionPipeline: ManagedNCMConversionPipeline(operationCoordinator: coordinator)
+        )
+        let session = try ImportSession(paths: fixture.paths)
+        defer { session.cleanupStaging() }
+        let token = ImportCancellationToken()
+        let result = await planner.resolveConversions(
+            filesToImport: [], eligibleNCMFiles: [try fixture.input()],
+            reusedTracks: [], reusedTrackIDs: [], session: session, cancellationToken: token,
+            progressController: BatchImportProgressDialogController(presentsWindow: false)
+        )
+
+        XCTAssertTrue(result.wasCancelled)
+        XCTAssertTrue(result.failures.isEmpty)
+        XCTAssertTrue(result.resolvedFiles.isEmpty)
+        let cancelled = await token.isCancelled
+        XCTAssertTrue(cancelled)
+    }
+
     func testFolderSourceWritesIntoOutputSubfolderAndPersistsReservationAssociation() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }

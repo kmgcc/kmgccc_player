@@ -112,7 +112,7 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
         XCTAssertNil(fixture.track.storedMotionArtworkResource)
     }
 
-    func testSchemaNineWithoutMotionArtworkRemainsReadable() throws {
+    func testSidecarWithoutMotionArtworkRemainsReadable() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         XCTAssertTrue(fixture.service.writeMetaOnly(for: fixture.track, reason: "legacyNoMotion"))
@@ -120,7 +120,7 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertNil(json["motionArtwork"])
         let decoded = try fixture.decoder.decode(kmgccc_player.TrackSidecar.self, from: data)
-        XCTAssertEqual(decoded.schemaVersion, 9)
+        XCTAssertEqual(decoded.schemaVersion, kmgccc_player.TrackSidecar.currentSchemaVersion)
         XCTAssertNil(decoded.motionArtwork)
         XCTAssertNil(decoded.artworkIsUserSelected)
     }

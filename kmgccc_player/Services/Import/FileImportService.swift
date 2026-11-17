@@ -920,7 +920,7 @@ final class FileImportService: FileImportServiceProtocol {
         reusedTrackIDs = conversion.reusedTrackIDs
         fileTrackMappings.append(contentsOf: conversion.fileTrackMappings)
         lastImportFailures.append(contentsOf: conversion.failures)
-        if conversion.cancelledAfterManagedConversion {
+        if conversion.wasCancelled {
             return await finishCancelledImportOutcome(
                 session: importSession,
                 importedRecords: [],

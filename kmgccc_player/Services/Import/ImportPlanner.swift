@@ -515,9 +515,8 @@ final class ImportPlanner {
         let reusedTrackIDs: Set<UUID>
         let failures: [ImportInputFailure]
         var fileTrackMappings: [LibraryImportFileTrackMapping] = []
-        /// Managed pipeline finished but cancellation was requested right
-        /// after; the caller owns rollback.
-        let cancelledAfterManagedConversion: Bool
+        /// The caller owns rollback for either conversion pipeline.
+        let wasCancelled: Bool
     }
 
     func resolveConversions(
@@ -560,7 +559,7 @@ final class ImportPlanner {
                     reusedTracks: reusedTracks,
                     reusedTrackIDs: reusedTrackIDs,
                     failures: failures,
-                    cancelledAfterManagedConversion: true
+                    wasCancelled: true
                 )
             }
             for output in results {
@@ -644,6 +643,16 @@ final class ImportPlanner {
                             detail: "已复用此前转换的歌曲"
                         )
                     }
+                } catch is CancellationError {
+                    await cancellationToken.requestCancel()
+                    return ConversionOutcome(
+                        resolvedFiles: resolvedFiles,
+                        reusedTracks: reusedTracks,
+                        reusedTrackIDs: reusedTrackIDs,
+                        failures: failures,
+                        fileTrackMappings: fileTrackMappings,
+                        wasCancelled: true
+                    )
                 } catch {
                     failures.append(.init(
                         url: file.url,
@@ -680,7 +689,7 @@ final class ImportPlanner {
             reusedTrackIDs: reusedTrackIDs,
             failures: failures,
             fileTrackMappings: fileTrackMappings,
-            cancelledAfterManagedConversion: false
+            wasCancelled: false
         )
     }
 

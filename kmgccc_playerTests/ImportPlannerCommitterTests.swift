@@ -364,7 +364,7 @@ final class ImportPlannerCommitterTests: XCTestCase {
         XCTAssertEqual(outcome.failures.count, 1)
         XCTAssertEqual(outcome.failures.first?.url, source)
         XCTAssertFalse(outcome.failures.first?.message.isEmpty ?? true)
-        XCTAssertFalse(outcome.cancelledAfterManagedConversion)
+        XCTAssertFalse(outcome.wasCancelled)
     }
 
     // MARK: - Planner golden plan
