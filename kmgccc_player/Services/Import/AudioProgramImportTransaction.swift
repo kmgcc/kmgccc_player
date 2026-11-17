@@ -33,15 +33,85 @@ nonisolated struct AudioProgramImportTransaction: Codable, Sendable {
     private func write(paths: LibraryPaths) throws {
         let root = Self.root(paths)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try JSONEncoder().encode(self).write(to: root.appendingPathComponent("\(id.uuidString).json"), options: .atomic)
+        try JSONEncoder().encode(self).write(to: recordURL(paths), options: .atomic)
     }
 
+    private func recordURL(_ paths: LibraryPaths) -> URL {
+        Self.root(paths).appendingPathComponent("\(id.uuidString).json")
+    }
+
+    /// Loads uncommitted records. A single unreadable record is moved to the
+    /// quarantine directory and skipped; only a systemic directory failure
+    /// throws. Committed records are terminal and removed here so every scan
+    /// does not decode them again.
     static func load(paths: LibraryPaths) throws -> [Self] {
-        let root = root(paths)
-        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "json" }
-            .map { try JSONDecoder().decode(Self.self, from: Data(contentsOf: $0)) }
+        let directory = root(paths)
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        let files: [URL]
+        do {
+            files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        } catch {
+            Log.error("[AudioProgramImport] cannot list import records: \(error.localizedDescription)", category: .library)
+            throw error
+        }
+        let decoder = JSONDecoder()
+        var records: [Self] = []
+        for file in files where file.pathExtension == "json" {
+            let record: Self
+            do {
+                record = try decoder.decode(Self.self, from: Data(contentsOf: file))
+            } catch {
+                Self.quarantine(file, paths: paths, reason: "record is unreadable: \(error.localizedDescription)")
+                continue
+            }
+            if record.committed {
+                record.removeRecordFile(paths: paths)
+                continue
+            }
+            records.append(record)
+        }
+        return records
+    }
+
+    /// Moves a record file into the quarantine directory, where later loads do
+    /// not read it. A missing or unreadable file is only logged; scanning a
+    /// library must not fail because of it.
+    private static func quarantine(_ file: URL, paths: LibraryPaths, reason: String) {
+        let invalidRoot = root(paths).appendingPathComponent("Invalid", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: invalidRoot, withIntermediateDirectories: true)
+            var target = invalidRoot.appendingPathComponent(file.lastPathComponent)
+            if FileManager.default.fileExists(atPath: target.path) {
+                target = invalidRoot.appendingPathComponent("\(UUID().uuidString)-\(file.lastPathComponent)")
+            }
+            try FileManager.default.moveItem(at: file, to: target)
+            Log.warning(
+                "[AudioProgramImport] quarantined \(file.lastPathComponent) | \(reason)",
+                category: .library
+            )
+        } catch {
+            Log.warning(
+                "[AudioProgramImport] cannot quarantine \(file.lastPathComponent) | \(reason); \(error.localizedDescription)",
+                category: .library
+            )
+        }
+    }
+
+    private func quarantineRecordFile(paths: LibraryPaths, reason: String) {
+        Self.quarantine(recordURL(paths), paths: paths, reason: reason)
+    }
+
+    private func removeRecordFile(paths: LibraryPaths) {
+        let file = recordURL(paths)
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: file)
+        } catch {
+            Log.debug(
+                "[AudioProgramImport] cannot remove completed record \(file.lastPathComponent): \(error.localizedDescription)",
+                category: .library
+            )
+        }
     }
 
     func recover(paths: LibraryPaths) throws {
@@ -81,9 +151,27 @@ nonisolated struct AudioProgramImportTransaction: Codable, Sendable {
         try FileManager.default.moveItem(at: record, to: target.appendingPathComponent("transaction.json"))
     }
 
-    static func recoverInterruptedUpdates(paths: LibraryPaths) throws {
-        for record in try load(paths: paths) where !record.committed && record.recoverySnapshotID != nil {
-            try record.recover(paths: paths)
+    /// Replays interrupted range updates under the library's writer lease. A
+    /// record whose recovery fails is quarantined and the remaining records
+    /// continue, so a damaged record cannot keep the library from opening.
+    static func recoverInterruptedUpdates(paths: LibraryPaths) {
+        let records: [Self]
+        do {
+            records = try load(paths: paths)
+        } catch {
+            Log.warning(
+                "[AudioProgramImport] cannot read import records: \(error.localizedDescription); skipping recovery",
+                category: .library
+            )
+            return
+        }
+        for record in records where record.recoverySnapshotID != nil {
+            do {
+                try record.recover(paths: paths)
+                record.removeRecordFile(paths: paths)
+            } catch {
+                record.quarantineRecordFile(paths: paths, reason: error.localizedDescription)
+            }
         }
     }
 

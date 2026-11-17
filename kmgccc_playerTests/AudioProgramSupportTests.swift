@@ -161,6 +161,82 @@ final class AudioProgramSupportTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: saved), Data("partial".utf8))
     }
 
+    func testInvalidTransactionRecordIsQuarantinedAndSkipped() throws {
+        let fixture = try Fixture(seconds: 1)
+        defer { fixture.remove() }
+        let paths = LibraryPaths(rootURL: fixture.folder.appendingPathComponent("Library"))
+        try paths.createRequiredDirectories()
+        let good = try AudioProgramImportTransaction.begin(groupID: UUID(), trackIDs: [UUID()], paths: paths)
+        let root = AudioProgramImportTransaction.root(paths)
+        let invalidURL = root.appendingPathComponent("\(UUID().uuidString).json")
+        try Data("not a transaction".utf8).write(to: invalidURL)
+
+        let loaded = try AudioProgramImportTransaction.load(paths: paths)
+
+        XCTAssertEqual(loaded.map(\.id), [good.id])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: invalidURL.path))
+        let invalidRoot = root.appendingPathComponent("Invalid", isDirectory: true)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: invalidRoot.appendingPathComponent(invalidURL.lastPathComponent).path
+        ))
+        // A later load neither reads nor re-quarantines the isolated record.
+        XCTAssertEqual(try AudioProgramImportTransaction.load(paths: paths).map(\.id), [good.id])
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: invalidRoot.appendingPathComponent(invalidURL.lastPathComponent).path
+        ))
+    }
+
+    func testMissingRecoverySnapshotIsQuarantinedAndOtherRecordsStillRecover() throws {
+        let fixture = try Fixture(seconds: 1)
+        defer { fixture.remove() }
+        let paths = LibraryPaths(rootURL: fixture.folder.appendingPathComponent("Library"))
+        try paths.createRequiredDirectories()
+
+        let snapshot = AudioProgramRecoverySnapshot(
+            id: UUID(), createdAt: Date(), oldTracks: [], newTrackIDs: [], playlists: []
+        )
+        try snapshot.write(to: paths)
+        let recoverable = try AudioProgramImportTransaction.begin(
+            groupID: UUID(), trackIDs: [], paths: paths, recoverySnapshotID: snapshot.id
+        )
+        let missingSnapshot = try AudioProgramImportTransaction.begin(
+            groupID: UUID(), trackIDs: [], paths: paths, recoverySnapshotID: UUID()
+        )
+
+        AudioProgramImportTransaction.recoverInterruptedUpdates(paths: paths)
+
+        let root = AudioProgramImportTransaction.root(paths)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("\(recoverable.id.uuidString).json").path
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("\(missingSnapshot.id.uuidString).json").path
+        ))
+        let invalidRoot = root.appendingPathComponent("Invalid", isDirectory: true)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: invalidRoot.appendingPathComponent("\(missingSnapshot.id.uuidString).json").path
+        ))
+        XCTAssertTrue(try AudioProgramImportTransaction.load(paths: paths).isEmpty)
+        XCTAssertTrue(try AudioProgramImportTransaction.pendingTrackIDs(paths: paths).isEmpty)
+    }
+
+    func testCommittedTransactionRecordsAreRemovedOnLoad() throws {
+        let fixture = try Fixture(seconds: 1)
+        defer { fixture.remove() }
+        let paths = LibraryPaths(rootURL: fixture.folder.appendingPathComponent("Library"))
+        try paths.createRequiredDirectories()
+        let transaction = try AudioProgramImportTransaction.begin(groupID: UUID(), trackIDs: [UUID()], paths: paths)
+        try transaction.complete(paths: paths)
+        let recordURL = AudioProgramImportTransaction.root(paths)
+            .appendingPathComponent("\(transaction.id.uuidString).json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recordURL.path))
+
+        XCTAssertTrue(try AudioProgramImportTransaction.load(paths: paths).isEmpty)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recordURL.path))
+        XCTAssertTrue(try AudioProgramImportTransaction.pendingTrackIDs(paths: paths).isEmpty)
+    }
+
     func testRegistryIncludesNativeFormatsAndDescriptors() {
         XCTAssertTrue(AudioFormatSupport.codecLibraryExtensions.isSubset(of: AudioFormatSupport.playableExtensions))
         XCTAssertTrue(AudioFormatSupport.importableExtensions.isSuperset(of: ["cue", "iso", "w64", "wave", "aifc", "rf64"]))
