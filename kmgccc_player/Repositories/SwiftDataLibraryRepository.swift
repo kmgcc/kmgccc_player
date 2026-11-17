@@ -1207,8 +1207,26 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             )
             return
         }
-        let apply = { @MainActor [self] in
-            let (artists, albums) = try metadataSync.sync(
+        do {
+            guard let mutationCoordinator else {
+                let (artists, albums) = try metadataSync.sync(
+                    derivedArtists: runtimeArtists,
+                    derivedAlbums: runtimeAlbums,
+                    allTracks: allTracks,
+                    artistSidecars: artistSidecars,
+                    albumSidecars: albumSidecars,
+                    libraryService: libraryService
+                )
+                artistEntries = artists
+                albumEntries = albums
+                return
+            }
+            // Plan first: an unchanged projection must not open a maintenance
+            // transaction, and the transaction must only isolate the sidecars
+            // that actually change. Isolating every artist and album id on
+            // every reload froze the whole library whenever one such
+            // transaction failed.
+            let plan = try metadataSync.plan(
                 derivedArtists: runtimeArtists,
                 derivedAlbums: runtimeAlbums,
                 allTracks: allTracks,
@@ -1216,21 +1234,26 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 albumSidecars: albumSidecars,
                 libraryService: libraryService
             )
-            artistEntries = artists
-            albumEntries = albums
-        }
-        do {
-            if let mutationCoordinator {
-                let targetIDs = artistSidecars.map { $0.sidecar.id.uuidString }
-                    + albumSidecars.map { $0.sidecar.id.uuidString }
-                try await mutationCoordinator.run(
-                    kind: .maintenance,
-                    targetIDs: targetIDs
-                ) {
-                    try apply()
-                }
-            } else {
-                try apply()
+            if plan.writeTargets.isEmpty {
+                artistEntries = plan.artists
+                albumEntries = plan.albums
+                return
+            }
+            let targetIDs = plan.writeTargets.map(\.uuidString).sorted()
+            try await mutationCoordinator.run(
+                kind: .maintenance,
+                targetIDs: targetIDs
+            ) { [self] in
+                let (artists, albums) = try metadataSync.sync(
+                    derivedArtists: runtimeArtists,
+                    derivedAlbums: runtimeAlbums,
+                    allTracks: allTracks,
+                    artistSidecars: artistSidecars,
+                    albumSidecars: albumSidecars,
+                    libraryService: libraryService
+                )
+                artistEntries = artists
+                albumEntries = albums
             }
         } catch {
             // Keep the last coherent in-memory metadata projection. A failed
