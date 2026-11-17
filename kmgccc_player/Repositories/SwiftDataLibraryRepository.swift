@@ -70,6 +70,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private var changeHandler: LibraryRepositoryChangeHandler?
 
     private var membershipRevision: UInt64 = 0
+    /// Track records on disk that were written by a build with a newer sidecar
+    /// schema. They are intact but invisible here; source reconciliation must
+    /// stop instead of re-importing their files as new tracks.
+    private(set) var newerSchemaTrackCount = 0
     private var allTracks: [Track] = [] {
         didSet { membershipRevision &+= 1 }
     }
@@ -174,6 +178,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             if membershipRevision == revision { break }
         } while true
         playlistItemAddedAtMap.removeAll()
+        newerSchemaTrackCount = snapshot.newerSchemaTrackCount
+        if newerSchemaTrackCount > 0 {
+            Log.warning(
+                "[LibraryReload] \(newerSchemaTrackCount) track sidecars were written by a newer build; they stay hidden and source reconciliation will not import their files",
+                category: .library
+            )
+        }
         let stringPool = StringInternPool()
         let tracks = trackMetas.map { buildTrack(from: $0, existingManagedAudioPaths: existingManagedAudioPaths, stringPool: stringPool) }
         let tracksById = trackDictionaryByID(tracks)
@@ -449,9 +460,17 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         )
 
         let capturedPaths = paths
-        let metas = await Task.detached { @Sendable in
-            MusicLibraryScanner(paths: capturedPaths).scanTracks(ids: uniqueIDs)
+        let scan = await Task.detached { @Sendable in
+            MusicLibraryScanner(paths: capturedPaths).scanTracksReporting(ids: uniqueIDs)
         }.value
+        let metas = scan.metas
+        if scan.newerSchemaCount > 0 {
+            newerSchemaTrackCount = max(newerSchemaTrackCount, scan.newerSchemaCount)
+            Log.warning(
+                "[ImportEnrichmentReload] \(scan.newerSchemaCount) refreshed track sidecars were written by a newer build; source reconciliation will not import their files",
+                category: .library
+            )
+        }
         let existingManagedAudioPaths = await Self.existingManagedAudioPaths(
             metas: metas,
             paths: paths

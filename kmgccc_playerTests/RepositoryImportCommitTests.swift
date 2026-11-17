@@ -385,6 +385,116 @@ final class RepositoryImportCommitTests: XCTestCase {
         XCTAssertEqual(inMemoryTrackIDs, [existingTrackID])
     }
 
+    func testNewerSchemaTrackIsReportedAsNewerAndNeverTreatedAsDamaged() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.cleanup() }
+
+        let trackID = UUID()
+        try FileManager.default.createDirectory(
+            at: fixture.paths.trackFolderURL(for: trackID),
+            withIntermediateDirectories: true
+        )
+        let sidecar = kmgccc_player.TrackSidecar(
+            id: trackID,
+            title: "Future",
+            artist: "Artist",
+            album: "Album",
+            duration: 1,
+            addedAt: Date(timeIntervalSince1970: 1_760_000_000),
+            importedAt: nil,
+            lyricsTimeOffsetMs: nil,
+            originalFilePath: nil,
+            audioFileName: "audio.flac",
+            artworkFileName: nil,
+            lyricsFileName: nil,
+            lyricsType: nil,
+            ttmlLyricsFileName: nil,
+            ncmSourcePath: nil,
+            mediaLocator: .managed(libraryRelativePath: "Tracks/\(trackID.uuidString)/audio.flac")
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try encoder.encode(sidecar)) as? [String: Any]
+        )
+        object["schemaVersion"] = kmgccc_player.TrackSidecar.currentSchemaVersion + 1
+        try JSONSerialization.data(withJSONObject: object).write(
+            to: fixture.paths.trackMetaURL(for: trackID)
+        )
+
+        let snapshot = await Task.detached {
+            LibraryDiskScanner(paths: fixture.paths).scanAll()
+        }.value
+        XCTAssertEqual(snapshot.newerSchemaTrackCount, 1)
+        XCTAssertTrue(snapshot.trackMetas.isEmpty)
+
+        let repository = SwiftDataLibraryRepository(libraryService: fixture.libraryService)
+        await repository.reloadFromLibrary()
+        XCTAssertEqual(repository.newerSchemaTrackCount, 1)
+        let tracks = await repository.fetchTracks(in: nil)
+        XCTAssertTrue(tracks.isEmpty)
+    }
+
+    func testUnchangedMetadataSyncDoesNotOpenMaintenanceTransaction() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.cleanup() }
+
+        let trackID = UUID()
+        let folder = fixture.paths.trackFolderURL(for: trackID)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data().write(to: folder.appendingPathComponent("audio.flac"))
+        let sidecar = kmgccc_player.TrackSidecar(
+            id: trackID,
+            title: "Song",
+            artist: "Artist",
+            album: "Album",
+            duration: 1,
+            addedAt: Date(timeIntervalSince1970: 1_760_000_000),
+            importedAt: nil,
+            lyricsTimeOffsetMs: nil,
+            originalFilePath: nil,
+            audioFileName: "audio.flac",
+            artworkFileName: nil,
+            lyricsFileName: nil,
+            lyricsType: nil,
+            ttmlLyricsFileName: nil,
+            ncmSourcePath: nil,
+            mediaLocator: .managed(libraryRelativePath: "Tracks/\(trackID.uuidString)/audio.flac")
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(sidecar).write(to: fixture.paths.trackMetaURL(for: trackID))
+
+        let libraryID = UUID()
+        let journal = LibraryMutationJournal(paths: fixture.paths, libraryID: libraryID)
+        let coordinator = LibraryMutationCoordinator(
+            libraryID: libraryID,
+            sessionGeneration: 1,
+            journal: journal
+        )
+        let repository = SwiftDataLibraryRepository(
+            libraryService: fixture.libraryService,
+            mutationCoordinator: coordinator
+        )
+
+        await repository.reloadFromLibrary()
+        let tracks = await repository.fetchTracks(in: nil)
+        XCTAssertEqual(tracks.map(\.id), [trackID])
+        let completedAfterFirstReload = try await journal.completedIntents()
+        XCTAssertFalse(
+            completedAfterFirstReload.isEmpty,
+            "the first reload writes the artist and album sidecars"
+        )
+
+        await repository.reloadFromLibrary()
+        let completedAfterSecondReload = try await journal.completedIntents()
+        XCTAssertEqual(
+            completedAfterSecondReload.count,
+            completedAfterFirstReload.count,
+            "an unchanged metadata projection must not open a maintenance transaction"
+        )
+    }
+
     private func makeTrack(
         title: String,
         root: URL,

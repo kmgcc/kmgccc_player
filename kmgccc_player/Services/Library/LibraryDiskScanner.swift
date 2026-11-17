@@ -24,6 +24,10 @@ nonisolated struct LibraryDiskSnapshot: Sendable {
     /// scan. A scan that returns no tracks while it saw such folders is a
     /// failed scan, not an empty library.
     let unreadableTrackFolderCount: Int
+    /// Track records written by a build that uses a newer sidecar schema.
+    /// They are not damaged: this build must leave them alone and stop source
+    /// reconciliation instead of re-importing their files as new tracks.
+    let newerSchemaTrackCount: Int
 }
 
 nonisolated struct LibraryDiskScanner: Sendable {
@@ -62,7 +66,8 @@ nonisolated struct LibraryDiskScanner: Sendable {
             albumSidecars: albums.values,
             hasEnumerationFailure: enumerationFailure,
             previousTrackCount: previousManifest?.tracks.count ?? 0,
-            unreadableTrackFolderCount: tracks.stats.missingMeta
+            unreadableTrackFolderCount: tracks.stats.missingMeta,
+            newerSchemaTrackCount: tracks.stats.newerSchema
         )
 
         let newManifest = LibraryManifest(
@@ -125,6 +130,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
         var cached = 0
         var rescanned = 0
         var missingMeta = 0
+        var newerSchema = 0
         var seen = Set<String>()
         let pendingPrograms: Set<UUID>
         do { pendingPrograms = try AudioProgramImportTransaction.pendingTrackIDs(paths: paths) }
@@ -163,6 +169,19 @@ nonisolated struct LibraryDiskScanner: Sendable {
             }
 
             guard let meta = scanner.scanTrackFolder(folderURL) else {
+                // A record written by a newer build decodes as nil here, but it
+                // is intact. Counting it as damaged would let the reconciler
+                // re-import its file and duplicate the track.
+                if let version = MusicLibraryScanner.declaredSchemaVersion(
+                    inMetaURL: rootURL.appendingPathComponent(metaRelativePath)
+                ), version > TrackSidecar.currentSchemaVersion {
+                    newerSchema += 1
+                    Log.warning(
+                        "[LibraryIncrementalScan] skipped track meta from a newer schema v\(version): \(metaRelativePath)",
+                        category: .library
+                    )
+                    continue
+                }
                 Log.warning(
                     "[LibraryIncrementalScan] skipped damaged track meta: \(metaRelativePath)",
                     category: .library
@@ -185,7 +204,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
         return ScanResult(
             values: values,
             manifestEntries: manifestEntries,
-            stats: ScanStats(total: values.count, cached: cached, rescanned: rescanned, removed: removed, missingMeta: missingMeta),
+            stats: ScanStats(total: values.count, cached: cached, rescanned: rescanned, removed: removed, missingMeta: missingMeta, newerSchema: newerSchema),
             enumerationFailed: folders.failed
         )
     }
@@ -505,6 +524,7 @@ nonisolated private struct ScanStats {
     let rescanned: Int
     let removed: Int
     let missingMeta: Int
+    var newerSchema: Int = 0
 }
 
 nonisolated private struct DirectoryListing {

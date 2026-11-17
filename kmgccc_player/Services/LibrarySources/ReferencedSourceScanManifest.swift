@@ -20,6 +20,11 @@ nonisolated struct ReferencedSourceScanResult: Sendable, Equatable {
 
 nonisolated struct ReferencedSourceScanManifest: Codable, Sendable, Equatable {
     static let currentSchemaVersion = 2
+    /// Schema 2 only adds the multi-track bindings and program fingerprints.
+    /// A manifest without them is written as schema 1 so an older build keeps
+    /// its file bindings instead of quarantining the manifest and re-importing
+    /// the whole source.
+    static let previousSchemaVersion = 1
 
     var schemaVersion = Self.currentSchemaVersion
     var libraryID: UUID
@@ -31,6 +36,23 @@ nonisolated struct ReferencedSourceScanManifest: Codable, Sendable, Equatable {
     func entryByPath() -> [String: ReferencedSourceScanEntry] {
         Dictionary(uniqueKeysWithValues: entries.map { ($0.relativePath, $0) })
     }
+
+    /// Lowest schema that can represent this manifest.
+    var encodedSchemaVersion: Int {
+        let usesMultiTrackBindings = entries.contains { entry in
+            entry.trackIDs?.isEmpty == false
+                || entry.programFingerprint != nil
+                || entry.correctionFingerprint != nil
+        }
+        return usesMultiTrackBindings ? Self.currentSchemaVersion : Self.previousSchemaVersion
+    }
+}
+
+nonisolated enum ReferencedSourceScanManifestStoreError: Error, Equatable {
+    /// The manifest was written by a build whose schema is newer than this one.
+    /// It is intact, so it must not be quarantined: dropping it makes the
+    /// reconciler treat every file as new and re-import the source.
+    case newerSchema(Int)
 }
 
 actor ReferencedSourceScanManifestStore {
@@ -58,6 +80,9 @@ actor ReferencedSourceScanManifestStore {
             return nil
         }
         guard (1...ReferencedSourceScanManifest.currentSchemaVersion).contains(value.schemaVersion) else {
+            if value.schemaVersion > ReferencedSourceScanManifest.currentSchemaVersion {
+                throw ReferencedSourceScanManifestStoreError.newerSchema(value.schemaVersion)
+            }
             try quarantine(url, sourceID: sourceID, reason: "schema")
             return nil
         }
@@ -78,7 +103,7 @@ actor ReferencedSourceScanManifestStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         var upgraded = manifest
-        upgraded.schemaVersion = ReferencedSourceScanManifest.currentSchemaVersion
+        upgraded.schemaVersion = upgraded.encodedSchemaVersion
         try encoder.encode(upgraded).write(
             to: paths.sourceScanManifestURL(for: manifest.sourceID),
             options: .atomic

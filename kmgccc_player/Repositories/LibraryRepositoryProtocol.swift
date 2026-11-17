@@ -30,6 +30,11 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Reload repository state from authoritative Music Library on disk.
     func reloadFromLibrary() async
 
+    /// Track records present on disk but written by a build that uses a newer
+    /// sidecar schema. While this is non-zero, source reconciliation must not
+    /// run: it cannot see those tracks and would re-import their files.
+    var newerSchemaTrackCount: Int { get }
+
     // MARK: - Track Operations
 
     /// Fetch all tracks, optionally filtered by playlist.

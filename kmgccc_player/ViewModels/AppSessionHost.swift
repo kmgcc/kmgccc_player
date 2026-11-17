@@ -250,6 +250,7 @@ final class AppSessionHost: ObservableObject {
             if self.uiState.sidebarNotice?.sourceID != nil {
                 self.uiState.dismissSidebarNotice()
             }
+            self.uiState.dismissSidebarNotice(tag: .librarySchemaMismatch)
             if session.unresolvedMutationCount > 0 {
                 self.uiState.showSidebarNotice(
                     "上次资料库操作未完成，请检查资料库内容。",
@@ -357,6 +358,13 @@ final class AppSessionHost: ObservableObject {
                 style: .warning,
                 actionTitle: "来源设置",
                 destination: .librarySettings(anchor: "library.sources")
+            )
+        case .newerLibraryRecords:
+            uiState.showSidebarNotice(
+                "资料库中有更新版本写入的歌曲，来源导入已暂停。请用较新版本打开资料库。",
+                style: .warning,
+                isSticky: true,
+                tag: .librarySchemaMismatch
             )
         }
     }
