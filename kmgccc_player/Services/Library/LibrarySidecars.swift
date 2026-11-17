@@ -316,6 +316,10 @@ nonisolated struct ImportProvenance: Codable, Equatable, Sendable {
 
 nonisolated struct TrackSidecar: Codable, Sendable {
     static let currentSchemaVersion = 10
+    /// Schema 10 only adds the shared-media fields on `audioProperties`.
+    /// Records without them are written as schema 9 so a build that predates
+    /// shared media can still read the library instead of dropping every track.
+    static let previousSchemaVersion = 9
 
     let schemaVersion: Int
     let id: UUID
@@ -554,9 +558,20 @@ nonisolated struct TrackSidecar: Codable, Sendable {
         audioProperties = try c.decodeIfPresent(TrackAudioProperties.self, forKey: .audioProperties)
     }
 
+    /// Lowest schema that can represent this record. Writing the current
+    /// version unconditionally turns every play-count update into a record an
+    /// older build treats as damaged, which is how duplicates were produced.
+    var encodedSchemaVersion: Int {
+        guard let audioProperties else { return Self.previousSchemaVersion }
+        let usesSharedMedia = audioProperties.mediaSelection != nil
+            || audioProperties.decodedSampleRateHz != nil
+            || audioProperties.isLossless != nil
+        return usesSharedMedia ? Self.currentSchemaVersion : Self.previousSchemaVersion
+    }
+
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
+        try c.encode(encodedSchemaVersion, forKey: .schemaVersion)
         try c.encode(id, forKey: .id)
         try c.encode(title, forKey: .title)
         try c.encode(artist, forKey: .artist)

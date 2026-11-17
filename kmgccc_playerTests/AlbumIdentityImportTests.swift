@@ -347,7 +347,7 @@ final class AlbumIdentityImportTests: XCTestCase {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let decoded = try decoder.decode(kmgccc_player.TrackSidecar.self, from: try encoder.encode(sidecar))
-        XCTAssertEqual(decoded.schemaVersion, kmgccc_player.TrackSidecar.currentSchemaVersion, "No schema bump for the additive field")
+        XCTAssertEqual(decoded.schemaVersion, kmgccc_player.TrackSidecar.previousSchemaVersion, "Schema 10 is only written when shared-media fields are present")
         XCTAssertEqual(decoded.audioProperties, properties)
     }
 
