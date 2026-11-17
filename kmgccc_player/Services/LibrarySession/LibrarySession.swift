@@ -225,6 +225,9 @@ final class LibrarySession: LibrarySessionLifecycle {
     private let mutationCoordinator: LibraryMutationCoordinator
     private let mutationJournal: LibraryMutationJournal
     private var isLoaded = false
+    /// First source reconcile and source monitor start, running after
+    /// activation. `load()` waits for it; the session controller does not.
+    private var initialReconcileTask: Task<Void, Never>?
     private var isClosed = false
     private var onSlowQuiescenceStage: (@MainActor (String) -> Void)?
     private(set) var initialReconcileOutcome: InitialReconcileOutcome?
@@ -302,6 +305,14 @@ final class LibrarySession: LibrarySessionLifecycle {
     }
 
     func load() async throws {
+        try await activate()
+        await waitForInitialReconcile()
+    }
+
+    /// Establishes the session and publishes it before the first source
+    /// reconcile. Activation used to wait for every source scan, so a library
+    /// on a slow external drive kept the switch blocked for over a minute.
+    func activate() async throws {
         precondition(!isClosed)
         guard !isLoaded else { return }
         try context.paths.createRequiredDirectories()
@@ -325,28 +336,62 @@ final class LibrarySession: LibrarySessionLifecycle {
         // writer is allowed to touch the same targets. NCM recovery runs
         // first so an association it can finish is visible to the verifier.
         await recoverPendingMutations()
-        if let referencedSourceReconciler {
-            initialReconcileOutcome = try await Self.runInitialReconcile(
-                reconciler: referencedSourceReconciler,
-                operationCoordinator: operationCoordinator
-            )
-        }
-        if let referencedSourceReconciler, let libraryChangeMonitor {
-            try await startReferencedSourceMonitor(
-                libraryChangeMonitor,
-                reconciler: referencedSourceReconciler,
-                roots: try await referencedSourceReconciler.monitoredSourceRoots()
-            )
+        isLoaded = true
+        if referencedSourceReconciler != nil {
+            initialReconcileTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.runPostActivationWork()
+            }
         } else if context.mode == .managed, let libraryChangeMonitor {
             try await startManagedLibraryMonitor(libraryChangeMonitor)
         }
-        isLoaded = true
+    }
+
+    func waitForInitialReconcile() async {
+        _ = await initialReconcileTask?.value
+    }
+
+    /// First source reconcile and source monitor start. Both run after
+    /// activation: the reconcile because it can be slow, the monitor because it
+    /// must replay prepared intents before it starts watching for new events.
+    private func runPostActivationWork() async {
+        guard let reconciler = referencedSourceReconciler else { return }
+        do {
+            initialReconcileOutcome = try await Self.runInitialReconcile(
+                reconciler: reconciler,
+                operationCoordinator: operationCoordinator
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            Log.error(
+                "[LibrarySession] initial source reconcile failed: \(error.localizedDescription)",
+                category: .library
+            )
+        }
+        guard !Task.isCancelled else { return }
+        do {
+            if let libraryChangeMonitor {
+                try await startReferencedSourceMonitor(
+                    libraryChangeMonitor,
+                    reconciler: reconciler,
+                    roots: try await reconciler.monitoredSourceRoots()
+                )
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            Log.error(
+                "[LibrarySession] source monitor failed to start after activation: \(error.localizedDescription)",
+                category: .library
+            )
+        }
     }
 
     /// Switch-time first reconcile contract: every known source is attempted
-    /// exactly once before activation completes; one failing source never
-    /// skips the rest and never blocks activation. A genuinely cancelled
-    /// switch aborts without reporting source failures.
+    /// exactly once; one failing source never skips the rest. It runs after the
+    /// session is published so a slow drive cannot block activation, and a
+    /// cancelled switch aborts without reporting source failures.
     static func runInitialReconcile(
         reconciler: ReferencedSourceReconciler,
         operationCoordinator: LibraryOperationCoordinator
@@ -2221,6 +2266,7 @@ final class LibrarySession: LibrarySessionLifecycle {
     func quiesce() async {
         guard !isClosed else { return }
         operationCoordinator.stopAcceptingNewOperations()
+        initialReconcileTask?.cancel()
         loudnessService.cancel()
         stopStorageMaintenance()
         revokeBackgroundWork()
@@ -2228,6 +2274,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         playbackService.unbindAudioDSPDevices()
         await waitForQuiescenceStage("文件监控") { _ = await libraryChangeMonitor?.stopAndWait() }
         await operationCoordinator.cancelAndWait()
+        await waitForQuiescenceStage("首轮来源对账") { _ = await initialReconcileTask?.value }
         await waitForQuiescenceStage("文件导入") { await fileImportService.quiesce() }
         playerViewModel.stop()
         playerViewModel.stopLevelMeter()
@@ -2241,11 +2288,13 @@ final class LibrarySession: LibrarySessionLifecycle {
     func close() async {
         guard !isClosed else { return }
         operationCoordinator.stopAcceptingNewOperations()
+        initialReconcileTask?.cancel()
         loudnessService.cancel()
         stopStorageMaintenance()
         revokeBackgroundWork()
         await libraryChangeMonitor?.stopAndWait()
         await operationCoordinator.cancelAndWait()
+        _ = await initialReconcileTask?.value
         await fileImportService.quiesce()
         playerViewModel.stop()
         playerViewModel.stopLevelMeter()

@@ -5,9 +5,22 @@ protocol LibrarySessionLifecycle: AnyObject {
     var context: LibraryContext { get }
 
     func load() async throws
+    /// Publishes the session without waiting for its post-activation source
+    /// reconcile. The controller uses this so a slow external drive cannot hold
+    /// the library switch. Sessions with nothing to finish after activation
+    /// inherit the blocking `load()` default.
+    func activate() async throws
+    /// Resolves once post-activation work (first source reconcile and monitor
+    /// start) finished. Callers that assert reconciled state await this.
+    func waitForInitialReconcile() async
     func flush() async throws
     func quiesce() async
     func close() async
+}
+
+extension LibrarySessionLifecycle {
+    func activate() async throws { try await load() }
+    func waitForInitialReconcile() async {}
 }
 
 @MainActor
@@ -173,7 +186,7 @@ final class LibrarySessionController {
 
         state = .loading(context.id)
         do {
-            try await candidate.load()
+            try await candidate.activate()
         } catch {
             Log.error("[LibrarySession] target load failed library=\(context.id): \(error)", category: .library)
             await candidate.close()
