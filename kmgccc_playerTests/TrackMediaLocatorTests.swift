@@ -669,7 +669,7 @@ final class TrackMediaLocatorTests: XCTestCase {
         decoder.dateDecodingStrategy = .iso8601
         let decoded = try decoder.decode(TrackSidecar.self, from: data)
 
-        XCTAssertEqual(decoded.schemaVersion, TrackSidecar.currentSchemaVersion)
+        XCTAssertEqual(decoded.schemaVersion, TrackSidecar.previousSchemaVersion)
         XCTAssertEqual(decoded.musicBrainzReleaseID, sidecar.musicBrainzReleaseID)
         XCTAssertEqual(decoded.embeddedMetadataSnapshot, sidecar.embeddedMetadataSnapshot)
         XCTAssertEqual(decoded.userMetadataOverride, sidecar.userMetadataOverride)

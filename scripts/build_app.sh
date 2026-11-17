@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIGURATION="${CONFIGURATION:-Release}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
-MELISMAKIT_EXPECTED_SOURCE="${MELISMAKIT_EXPECTED_SOURCE:-local}"
+MELISMAKIT_EXPECTED_SOURCE="${MELISMAKIT_EXPECTED_SOURCE:-auto}"
 CLEAN_BUILD="${CLEAN_BUILD:-0}"
 
 if (($# > 0)); then
@@ -24,9 +24,10 @@ case "$CONFIGURATION" in
   *) echo "error: configuration must be Debug or Release" >&2; exit 2 ;;
 esac
 case "$MELISMAKIT_EXPECTED_SOURCE" in
+  auto) MELISMAKIT_DEPENDENCY_FLAG="--auto" ;;
   local) MELISMAKIT_DEPENDENCY_FLAG="--require-local" ;;
   remote) MELISMAKIT_DEPENDENCY_FLAG="--require-remote" ;;
-  *) echo "error: MELISMAKIT_EXPECTED_SOURCE must be local or remote" >&2; exit 2 ;;
+  *) echo "error: MELISMAKIT_EXPECTED_SOURCE must be auto, local or remote" >&2; exit 2 ;;
 esac
 case "$CLEAN_BUILD" in
   0|1) ;;

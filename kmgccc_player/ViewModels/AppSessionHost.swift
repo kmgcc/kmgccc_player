@@ -250,6 +250,7 @@ final class AppSessionHost: ObservableObject {
             if self.uiState.sidebarNotice?.sourceID != nil {
                 self.uiState.dismissSidebarNotice()
             }
+            self.uiState.dismissSidebarNotice(tag: .librarySchemaMismatch)
             if session.unresolvedMutationCount > 0 {
                 self.uiState.showSidebarNotice(
                     "上次资料库操作未完成，请检查资料库内容。",
@@ -357,6 +358,13 @@ final class AppSessionHost: ObservableObject {
                 style: .warning,
                 actionTitle: "来源设置",
                 destination: .librarySettings(anchor: "library.sources")
+            )
+        case .newerLibraryRecords:
+            uiState.showSidebarNotice(
+                "资料库中有更新版本写入的歌曲，来源导入已暂停。请用较新版本打开资料库。",
+                style: .warning,
+                isSticky: true,
+                tag: .librarySchemaMismatch
             )
         }
     }
@@ -2539,6 +2547,14 @@ final class AppSessionHost: ObservableObject {
                 lastForegroundLibraryRescan = (libraryID, ProcessInfo.processInfo.systemUptime)
             }
             if session.context.mode == .referenced {
+                // A healthy file monitor already reconciles every change
+                // through FSEvents, so a foreground rescan would repeat the
+                // same work. Keep it only as the fallback for a stopped
+                // listener or a failed automatic scan; mount and unmount
+                // notifications never take this path.
+                if fromForeground, await referencedMonitorIsHealthy(session) {
+                    return
+                }
                 do {
                     try await refreshAllReferencedSources(automatic: true)
                 } catch {
@@ -2551,6 +2567,17 @@ final class AppSessionHost: ObservableObject {
                 await monitor.markDirty(sourceIDs: [libraryID], fullScan: true)
             }
         }
+    }
+
+    /// The change monitor publishes one scan state per watched root, including
+    /// the library root, and clears the snapshot when its event stream stops.
+    /// An empty snapshot therefore means no listener is running; a failed
+    /// state means the last automatic reconcile failed, so activating the App
+    /// remains the fallback retry.
+    private func referencedMonitorIsHealthy(_ session: LibrarySession) async -> Bool {
+        guard let monitor = session.libraryChangeMonitor else { return false }
+        let states = await monitor.sourceStateSnapshot()
+        return !states.isEmpty && !states.values.contains(.failed)
     }
 
 

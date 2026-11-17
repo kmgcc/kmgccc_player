@@ -30,15 +30,15 @@ KMGCCC_DEBUG_PERF="${KMGCCC_DEBUG_PERF:-0}"
 MALLOC_STACK_LOGGING="${KMGCCC_MALLOC_STACK_LOGGING:-}"
 PROCESS_PREFLIGHT="$SCRIPT_DIR/check-app-process-state.sh"
 DEPENDENCY_PREFLIGHT="$SCRIPT_DIR/check-melismakit-dependency.sh"
-MELISMAKIT_EXPECTED_SOURCE="${MELISMAKIT_EXPECTED_SOURCE:-local}"
+MELISMAKIT_EXPECTED_SOURCE="${MELISMAKIT_EXPECTED_SOURCE:-auto}"
 BUILD_LOG="${KMGCCC_BUILD_LOG:-$REPO_ROOT/build/logs/build_and_run-$(date +%Y%m%d-%H%M%S)-$$.log}"
 RUN_LOCK_DIR="${KMGCCC_RUN_LOCK_DIR:-${TMPDIR:-/tmp}/kmgccc-player-build-and-run.lock}"
 RUN_LOCK_HELD=0
 
 case "$MELISMAKIT_EXPECTED_SOURCE" in
-    local|remote) ;;
+    auto|local|remote) ;;
     *)
-        echo "error: MELISMAKIT_EXPECTED_SOURCE must be local or remote" >&2
+        echo "error: MELISMAKIT_EXPECTED_SOURCE must be auto, local or remote" >&2
         exit 2
         ;;
 esac
@@ -52,11 +52,11 @@ case "$MODE" in
 esac
 
 dependency_preflight_args() {
-    if [[ "$MELISMAKIT_EXPECTED_SOURCE" == "remote" ]]; then
-        printf '%s\n' --require-remote
-    else
-        printf '%s\n' --require-local
-    fi
+    case "$MELISMAKIT_EXPECTED_SOURCE" in
+        auto) printf '%s\n' --auto ;;
+        local) printf '%s\n' --require-local ;;
+        remote) printf '%s\n' --require-remote ;;
+    esac
 }
 
 release_run_lock() {

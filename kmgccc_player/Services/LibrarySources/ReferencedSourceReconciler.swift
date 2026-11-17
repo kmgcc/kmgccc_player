@@ -56,6 +56,9 @@ nonisolated enum ReferencedSourceNotice: Sendable, Equatable {
     case scanFailures(sourceID: UUID, failures: [ReferencedSourceScanFailure])
     case reconcileFailures(sourceID: UUID, failures: [ReferencedSourceScanFailure])
     case monitorFailure(sourceIDs: [UUID], summary: String)
+    /// The library holds records written by a build with a newer schema, so
+    /// automatic source work is paused for this session.
+    case newerLibraryRecords
 }
 
 nonisolated protocol ReferencedSourceNoticePublishing: Sendable {
@@ -108,6 +111,7 @@ final class ReferencedSourceReconciler {
     private let noticePublisher: any ReferencedSourceNoticePublishing
     private let requiresSecurityScope: Bool
     private var isClosed = false
+    private var newerLibraryRecordsNoticePublished = false
     private var backgroundLender: BackgroundWorkLender = .none
 
     func bindBackgroundWork(lender: BackgroundWorkLender) {
@@ -403,7 +407,8 @@ final class ReferencedSourceReconciler {
         // The identity scan and bookmark resolution can touch every track.
         // Keep that long read outside the mutation queue; only each durable
         // descriptor/authority commit below enters the short owner.
-        try await repairOrphanedFileSourcesUncoordinated()
+        guard await shouldSkipForNewerLibraryRecords() == false else { return 0 }
+        return try await repairOrphanedFileSourcesUncoordinated()
     }
 
     private func repairOrphanedFileSourcesUncoordinated() async throws -> Int {
@@ -612,6 +617,7 @@ final class ReferencedSourceReconciler {
     func reconcile(sourceIDs: Set<UUID>) async throws -> ReferencedReconcileChanges {
         var changes = ReferencedReconcileChanges()
         guard !isClosed else { return changes }
+        guard await shouldSkipForNewerLibraryRecords() == false else { return changes }
         for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
             try Task.checkCancellation()
             guard !isClosed else { return changes }
@@ -629,11 +635,11 @@ final class ReferencedSourceReconciler {
                 continue
             }
             var effectiveRoot = root
-            var result = try await scanSource(
+            guard var result = try await scanSource(
                 sourceID: sourceID,
                 rootURL: root,
                 excludedRelativePaths: Set(descriptor.excludedRelativePaths)
-            )
+            ) else { continue }
             if result.diff.sourceStatus != .available,
                let resolved = try? bookmarkResolver.resolve(descriptor.rootBookmarkData),
                resolved.url.standardizedFileURL != root.standardizedFileURL,
@@ -653,14 +659,18 @@ final class ReferencedSourceReconciler {
                    let refreshedRoot = sourceScope.authorizedRoots[sourceID]?.url,
                    refreshedRoot != root {
                     effectiveRoot = refreshedRoot
-                    result = try await scanSource(
+                    if let refreshed = try await scanSource(
                         sourceID: sourceID,
                         rootURL: refreshedRoot,
                         excludedRelativePaths: Set(descriptor.excludedRelativePaths)
-                    )
+                    ) {
+                        result = refreshed
+                    } else {
+                        continue
+                    }
                 }
             }
-            changes += try await apply(result, rootURL: effectiveRoot)
+            changes += try await apply(result, rootURL: effectiveRoot, descriptor: descriptor)
         }
         return changes
     }
@@ -770,19 +780,49 @@ final class ReferencedSourceReconciler {
         sourceID: UUID,
         rootURL: URL,
         excludedRelativePaths: Set<String>
-    ) async throws -> ReferencedSourceScanResult {
-        try await backgroundLender.withLease(
-            domain: .sourceSync,
-            priority: .upcoming,
-            resources: [.disk]
-        ) {
-            try await scanner.scan(
-                context: context,
-                sourceID: sourceID,
-                rootURL: rootURL,
-                excludedRelativePaths: excludedRelativePaths
+    ) async throws -> ReferencedSourceScanResult? {
+        do {
+            return try await backgroundLender.withLease(
+                domain: .sourceSync,
+                priority: .upcoming,
+                resources: [.disk]
+            ) {
+                try await scanner.scan(
+                    context: context,
+                    sourceID: sourceID,
+                    rootURL: rootURL,
+                    excludedRelativePaths: excludedRelativePaths
+                )
+            }
+        } catch ReferencedSourceScanError.manifestFromNewerBuild(let version) {
+            // The manifest is intact but its bindings cannot be read here.
+            // Rescanning from scratch would re-import every file in the source.
+            Log.warning(
+                "[ReferencedSource] source \(sourceID.uuidString) has a scan manifest from a newer build (schema v\(version)); skipping it",
+                category: .library
             )
+            await publishNewerLibraryRecordsNotice()
+            return nil
         }
+    }
+
+    /// A library that contains records from a newer build cannot be reconciled:
+    /// this build cannot see those tracks, so a source rescan would claim their
+    /// files as new songs and duplicate them.
+    private func shouldSkipForNewerLibraryRecords() async -> Bool {
+        guard repository.newerSchemaTrackCount > 0 else { return false }
+        await publishNewerLibraryRecordsNotice()
+        return true
+    }
+
+    private func publishNewerLibraryRecordsNotice() async {
+        guard !newerLibraryRecordsNoticePublished else { return }
+        newerLibraryRecordsNoticePublished = true
+        Log.warning(
+            "[ReferencedSource] automatic source work paused: the library contains records from a newer build",
+            category: .library
+        )
+        await noticePublisher.publish(.newerLibraryRecords)
     }
 
     private func runShortMutation<Value: Sendable>(
@@ -801,16 +841,151 @@ final class ReferencedSourceReconciler {
     }
 
     @discardableResult
-    private func apply(_ result: ReferencedSourceScanResult, rootURL: URL) async throws -> ReferencedReconcileChanges {
+    private func apply(
+        _ result: ReferencedSourceScanResult,
+        rootURL: URL,
+        descriptor: ReferencedSourceDescriptor
+    ) async throws -> ReferencedReconcileChanges {
         let diff = result.diff
         guard diff.sourceStatus == .available else {
             return try await applyUnavailable(sourceID: diff.sourceID, status: diff.sourceStatus)
+        }
+        if try await isNoOpScan(result, rootURL: rootURL, descriptor: descriptor) {
+            return ReferencedReconcileChanges()
         }
         let intent = try await intentStore.prepare(
             diff,
             proposedManifest: result.proposedManifest
         )
         return try await drivePrepared(intent, rootURL: rootURL)
+    }
+
+    /// A rescan that observed neither a file change nor pending Track repair
+    /// must not prepare an intent or run an empty mutation transaction.
+    /// `drivePrepared` also rewrote the scan manifest and stamped
+    /// `source.json` on such scans, so periodic and FS-event refreshes
+    /// accumulated empty `sourceReconcileCommit` records without changing
+    /// anything.
+    private func isNoOpScan(
+        _ result: ReferencedSourceScanResult,
+        rootURL: URL,
+        descriptor: ReferencedSourceDescriptor
+    ) async throws -> Bool {
+        let diff = result.diff
+        // The first scan establishes the baseline manifest and settles the
+        // memberships that predate it, so it always runs.
+        guard diff.scanGeneration > 1 else { return false }
+        // An added, removed or replaced file needs import, locator or
+        // availability work inside the transaction; a failed entry must
+        // surface the scan-failure notice.
+        guard diff.added.isEmpty,
+              diff.moved.isEmpty,
+              diff.replacements.isEmpty,
+              diff.missing.isEmpty,
+              diff.failures.isEmpty,
+              let proposedManifest = result.proposedManifest else {
+            return false
+        }
+        // An entry without bound Tracks marks an import that did not finish;
+        // the retry path re-imports it on the next pass.
+        guard !proposedManifest.entries.contains(where: { $0.boundTrackIDs.isEmpty }) else {
+            return false
+        }
+        // A source that came back online needs its descriptor and sidebar
+        // state updated even when the files themselves did not change.
+        guard descriptor.status == .available else { return false }
+        // Finalize repairs bindings whose playlist disappeared outside the
+        // App; an unchanged scan is the only pass that can still do that, so
+        // keep it while a binding is dangling.
+        if descriptor.mode == .directory || descriptor.mode == .file,
+           !descriptor.playlistBindings.isEmpty {
+            let playlistIDs = Set(await repository.fetchPlaylists().map(\.id))
+            guard descriptor.playlistBindings.allSatisfy({
+                playlistIDs.contains($0.playlistID)
+            }) else {
+                return false
+            }
+        }
+        // Manifest-only changes (an entry that became ignored, a refreshed
+        // identity) do not produce a diff entry but still have to reach disk
+        // once, so compare the proposed manifest with the persisted one.
+        let previousManifest = try await manifestStore.load(
+            sourceID: diff.sourceID,
+            libraryID: context.id
+        )
+        guard let previousManifest,
+              previousManifest.entries.count == proposedManifest.entries.count,
+              zip(previousManifest.entries, proposedManifest.entries).allSatisfy({ pair in
+                  isSameScanEntry(pair.0, pair.1)
+              }) else {
+            return false
+        }
+        // Track-side repairs bypass the diff; keep the pass while a Track can
+        // still be rebuilt from its manifest binding.
+        let pendingTrackRepairs = await hasPendingTrackRepairs(
+            sourceID: diff.sourceID,
+            rootURL: rootURL,
+            scannedEntries: proposedManifest.entries
+        )
+        return !pendingTrackRepairs
+    }
+
+    /// Compares the file state of two manifest entries. `lastSeenGeneration`
+    /// records scan history rather than file state and advances on every
+    /// scan, so it is excluded.
+    private func isSameScanEntry(
+        _ lhs: ReferencedSourceScanEntry,
+        _ rhs: ReferencedSourceScanEntry
+    ) -> Bool {
+        lhs.relativePath == rhs.relativePath
+            && lhs.identity == rhs.identity
+            && lhs.fingerprint == rhs.fingerprint
+            && lhs.trackID == rhs.trackID
+            && lhs.trackIDs == rhs.trackIDs
+            && lhs.availability == rhs.availability
+            && lhs.programFingerprint == rhs.programFingerprint
+            && lhs.correctionFingerprint == rhs.correctionFingerprint
+    }
+
+    /// Mirrors the Track repair branches in `makeMutations` that an unchanged
+    /// scan still has to run: memberships that point at a generated output,
+    /// Tracks marked unavailable while their membership is intact, and Tracks
+    /// whose cleared membership can be rebuilt from the manifest binding or
+    /// the Track's own recorded origin.
+    private func hasPendingTrackRepairs(
+        sourceID: UUID,
+        rootURL: URL,
+        scannedEntries: [ReferencedSourceScanEntry]
+    ) async -> Bool {
+        let scannedTrackPaths = Dictionary(
+            scannedEntries.flatMap { entry in
+                entry.boundTrackIDs.map { ($0, entry.relativePath) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for track in await repository.fetchTracks(in: nil) {
+            guard case let .referenced(locator) = track.mediaLocator else { continue }
+            if let generatedRelativePath = generatedOutputRelativePath(
+                for: track,
+                locator: locator,
+                rootURL: rootURL
+            ), locator.allSourceMemberships.contains(where: {
+                $0.sourceID == sourceID && $0.relativePath == generatedRelativePath
+            }) {
+                return true
+            }
+            guard track.availability != .available else { continue }
+            if locator.containsSource(sourceID) { return true }
+            if recoveredRelativePath(
+                for: track,
+                locator: locator,
+                rootURL: rootURL,
+                scannedTrackPaths: scannedTrackPaths
+            ) != nil {
+                return true
+            }
+        }
+        return false
     }
 
     @discardableResult

@@ -31,6 +31,8 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         // No-op for stub
     }
 
+    var newerSchemaTrackCount: Int { 0 }
+
     // MARK: - Track Operations
 
     func fetchTracks(in playlist: Playlist?) async -> [Track] {

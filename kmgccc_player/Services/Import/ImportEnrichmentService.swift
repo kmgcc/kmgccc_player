@@ -307,6 +307,9 @@ final class ImportEnrichmentService {
     private let amllDBService: AMLLDBService
     private let maxConcurrent: Int
     private let maxAttemptsPerPart = 2
+    /// A lookup that cannot get a background network slot within this window
+    /// proceeds without one instead of leaving the item queued as "waiting".
+    private static let leaseWaitTimeout: Duration = .seconds(30)
     private let flushBatchSize = 4
     private let flushDebounceNanoseconds: UInt64 = 900_000_000
     /// Borrows network slots from the App scheduler for each lookup, so idle
@@ -1219,7 +1222,6 @@ final class ImportEnrichmentService {
                 continue
             }
 
-            state.setState(.running, for: request.part)
             state.incrementAttempts(for: request.part)
             itemStates[request.trackID] = state
             runningRequests.insert(request)
@@ -1227,6 +1229,17 @@ final class ImportEnrichmentService {
             start(request: request, track: track, state: state)
         }
         diagnoseStalledQueue(context: "drain")
+    }
+
+    /// Marks a part as running only once its task reached the point of doing
+    /// the lookup. While the task waits for background slots the part keeps
+    /// its queued `.pending` state.
+    private func markRunning(_ request: ImportEnrichmentPartRequest) {
+        guard var state = itemStates[request.trackID] else { return }
+        guard state.state(for: request.part) == .pending else { return }
+        state.setState(.running, for: request.part)
+        itemStates[request.trackID] = state
+        refreshProgress()
     }
 
     private func start(
@@ -1242,10 +1255,6 @@ final class ImportEnrichmentService {
         let albumArtist = track.audioProgramAlbum?.artist ?? track.albumArtist ?? artist
         let albumScope = track.audioProgramLookupScope.map { "\($0)|\(attempt)" }
         queryTokens[request] = queryToken(for: track)
-        Log.info(
-            "[ImportEnrichment] \(request.part.rawValue) started \(title) - \(artist) | attempt \(attempt)/\(maxAttemptsPerPart)",
-            category: request.part == .lyrics ? .lyrics : .import
-        )
 
         let task = Task(priority: .utility) {
             let taskStart = ContinuousClock.now
@@ -1253,16 +1262,41 @@ final class ImportEnrichmentService {
                 self.finish(request)
                 return
             }
-            let lease = await self.backgroundLender.lease(
+            let acquisition = await self.backgroundLender.acquireLease(
                 domain: .importEnrichment,
                 priority: .userRequested,
-                resources: [.network]
+                resources: [.network],
+                waitTimeout: Self.leaseWaitTimeout
             )
+            let lease = acquisition.lease
             defer { lease?.release() }
             guard !Task.isCancelled else {
                 self.finish(request)
                 return
             }
+
+            switch acquisition {
+            case .granted:
+                Log.info(
+                    "[ImportEnrichment] background lease granted | \(request.part.rawValue) \(title) - \(artist)",
+                    category: .import
+                )
+            case .timedOut:
+                Log.warning(
+                    "[ImportEnrichment] background lease wait timed out | continuing \(request.part.rawValue) \(title) - \(artist) without a counted claim",
+                    category: .import
+                )
+            case .unavailable:
+                Log.debug(
+                    "[ImportEnrichment] background lease unavailable | \(request.part.rawValue) \(title) - \(artist)",
+                    category: .import
+                )
+            }
+            self.markRunning(request)
+            Log.info(
+                "[ImportEnrichment] \(request.part.rawValue) started \(title) - \(artist) | attempt \(attempt)/\(maxAttemptsPerPart)",
+                category: request.part == .lyrics ? .lyrics : .import
+            )
 
             switch request.part {
             case .lyrics:

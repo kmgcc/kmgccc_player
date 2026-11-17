@@ -7,7 +7,7 @@ import XCTest
 
 @MainActor
 final class LocatorPersistenceIntegrationTests: XCTestCase {
-    func testReferencedMetaOnlyWritesCurrentSchemaAndPreservesLocator() throws {
+    func testReferencedMetaOnlyWritesPreviousSchemaWithoutSharedMedia() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
 
@@ -17,7 +17,7 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
         XCTAssertEqual(metaURL.deletingLastPathComponent().lastPathComponent, fixture.track.id.uuidString)
         let data = try Data(contentsOf: metaURL)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(json["schemaVersion"] as? Int, kmgccc_player.TrackSidecar.currentSchemaVersion)
+        XCTAssertEqual(json["schemaVersion"] as? Int, kmgccc_player.TrackSidecar.previousSchemaVersion)
         let decoded = try fixture.decoder.decode(kmgccc_player.TrackSidecar.self, from: data)
         XCTAssertEqual(decoded.mediaLocator, fixture.locator)
         XCTAssertEqual(decoded.mediaLocator.referencedFile?.fileBookmarkData, Data([1, 2, 3]))
@@ -50,7 +50,7 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
             kmgccc_player.TrackSidecar.self,
             from: Data(contentsOf: fixture.paths.trackMetaURL(for: fixture.track.id))
         )
-        XCTAssertEqual(decoded.schemaVersion, kmgccc_player.TrackSidecar.currentSchemaVersion)
+        XCTAssertEqual(decoded.schemaVersion, kmgccc_player.TrackSidecar.previousSchemaVersion)
         XCTAssertEqual(decoded.musicBrainzReleaseID, "mbid-9f2")
         XCTAssertEqual(decoded.embeddedMetadataSnapshot?.releaseYear, 2026)
         let persistedLocator = try XCTUnwrap(decoded.mediaLocator.referencedFile)
@@ -120,9 +120,49 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertNil(json["motionArtwork"])
         let decoded = try fixture.decoder.decode(kmgccc_player.TrackSidecar.self, from: data)
-        XCTAssertEqual(decoded.schemaVersion, kmgccc_player.TrackSidecar.currentSchemaVersion)
+        XCTAssertEqual(decoded.schemaVersion, kmgccc_player.TrackSidecar.previousSchemaVersion)
         XCTAssertNil(decoded.motionArtwork)
         XCTAssertNil(decoded.artworkIsUserSelected)
+    }
+
+    func testSharedMediaSelectionWritesCurrentSchema() throws {
+        var properties = kmgccc_player.TrackAudioProperties(format: "FLAC")
+        properties.mediaSelection = kmgccc_player.AudioMediaSelection(
+            kind: .cue,
+            groupID: UUID(),
+            trackNumber: 2,
+            start: 0,
+            length: 44_100,
+            timeScale: 44_100
+        )
+        let sidecar = kmgccc_player.TrackSidecar(
+            id: UUID(),
+            title: "Shared",
+            artist: "Artist",
+            album: "Album",
+            duration: 1,
+            addedAt: Date(timeIntervalSince1970: 1_760_000_000),
+            importedAt: nil,
+            lyricsTimeOffsetMs: nil,
+            originalFilePath: nil,
+            audioFileName: "audio.flac",
+            artworkFileName: nil,
+            lyricsFileName: nil,
+            lyricsType: nil,
+            ttmlLyricsFileName: nil,
+            ncmSourcePath: nil,
+            audioProperties: properties
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(
+            kmgccc_player.TrackSidecar.self,
+            from: try encoder.encode(sidecar)
+        )
+        XCTAssertEqual(decoded.schemaVersion, kmgccc_player.TrackSidecar.currentSchemaVersion)
+        XCTAssertEqual(decoded.audioProperties?.mediaSelection?.trackNumber, 2)
     }
 
     func testArtworkChoiceSurvivesWritersManifestAndRepositoryReload() async throws {

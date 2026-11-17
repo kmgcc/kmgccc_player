@@ -372,6 +372,181 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         XCTAssertTrue(descriptor.playlistBindings.isEmpty)
     }
 
+    func testSecondUnchangedScanSkipsManifestWriteAndMutationTransaction() async throws {
+        let fixture = try await ReconcileFixture(recordsMutations: true)
+        defer { fixture.cleanup() }
+        try Data("source-audio".utf8).write(
+            to: fixture.sourceRoot.appendingPathComponent("song.mp3")
+        )
+
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        let manifestURL = fixture.paths.sourceScanManifestURL(for: fixture.sourceID)
+        let manifestAfterFirstScan = try Data(contentsOf: manifestURL)
+        let descriptorAfterFirstScan = try await fixture.store.load(id: fixture.sourceID)
+        let completedAfterFirstScan = try await fixture.mutationJournal.completedIntents()
+        XCTAssertEqual(completedAfterFirstScan.count, 1)
+        XCTAssertFalse(completedAfterFirstScan[0].targetIDs.isEmpty)
+
+        // The second scan sees the same file with the same bindings. It must
+        // return without preparing an intent, running a mutation transaction,
+        // or rewriting the manifest and descriptor timestamps.
+        let changes = try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+
+        XCTAssertTrue(changes.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: manifestURL), manifestAfterFirstScan)
+        let descriptorAfterSecondScan = try await fixture.store.load(id: fixture.sourceID)
+        XCTAssertEqual(descriptorAfterSecondScan.lastScan, descriptorAfterFirstScan.lastScan)
+        let completedAfterSecondScan = try await fixture.mutationJournal.completedIntents()
+        XCTAssertEqual(completedAfterSecondScan.count, 1)
+        let pendingIntents = try await LibraryReconcileIntentStore(paths: fixture.paths)
+            .pending(libraryID: fixture.context.id, sourceID: fixture.sourceID)
+        XCTAssertTrue(pendingIntents.isEmpty)
+    }
+
+    func testNewerLibraryTrackRecordPausesSourceReconciliation() async throws {
+        let recorder = NoticeRecorder()
+        let fixture = try await ReconcileFixture(noticePublisher: recorder)
+        defer { fixture.cleanup() }
+
+        // A track record written by a newer build: readable JSON, schema this
+        // build does not understand. It decodes as neither damaged nor usable.
+        let futureTrackID = UUID()
+        try FileManager.default.createDirectory(
+            at: fixture.paths.trackFolderURL(for: futureTrackID),
+            withIntermediateDirectories: true
+        )
+        let sidecar = kmgccc_player.TrackSidecar(
+            id: futureTrackID,
+            title: "Future",
+            artist: "Artist",
+            album: "Album",
+            duration: 1,
+            addedAt: Date(timeIntervalSince1970: 1_760_000_000),
+            importedAt: nil,
+            lyricsTimeOffsetMs: nil,
+            originalFilePath: nil,
+            audioFileName: "audio.flac",
+            artworkFileName: nil,
+            lyricsFileName: nil,
+            lyricsType: nil,
+            ttmlLyricsFileName: nil,
+            ncmSourcePath: nil,
+            mediaLocator: .managed(
+                libraryRelativePath: "Tracks/\(futureTrackID.uuidString)/audio.flac"
+            )
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try encoder.encode(sidecar)) as? [String: Any]
+        )
+        object["schemaVersion"] = kmgccc_player.TrackSidecar.currentSchemaVersion + 1
+        try JSONSerialization.data(withJSONObject: object).write(
+            to: fixture.paths.trackMetaURL(for: futureTrackID)
+        )
+        await fixture.repository.reloadFromLibrary()
+        XCTAssertEqual(fixture.repository.newerSchemaTrackCount, 1)
+
+        // A new file appears in the source. Reconciliation must not claim it:
+        // this build cannot see the newer track, so the file would become a
+        // duplicate of a song that already exists on disk.
+        try Data("source-audio".utf8).write(
+            to: fixture.sourceRoot.appendingPathComponent("song.mp3")
+        )
+        let changes = try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+
+        XCTAssertTrue(changes.isEmpty)
+        let tracks = await fixture.repository.fetchTracks(in: nil)
+        XCTAssertTrue(tracks.isEmpty)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.paths.sourceScanManifestURL(for: fixture.sourceID).path
+            )
+        )
+        let notices = await recorder.snapshot()
+        XCTAssertTrue(notices.contains(.newerLibraryRecords))
+    }
+
+    func testScanManifestFromNewerBuildIsSkippedWithoutReimport() async throws {
+        let recorder = NoticeRecorder()
+        let fixture = try await ReconcileFixture(noticePublisher: recorder)
+        defer { fixture.cleanup() }
+        let manifestURL = fixture.paths.sourceScanManifestURL(for: fixture.sourceID)
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+
+        // Pretend a newer build wrote this source's manifest. Its file bindings
+        // cannot be read here, and dropping it would re-import every file.
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try Data(contentsOf: manifestURL)) as? [String: Any]
+        )
+        object["schemaVersion"] = kmgccc_player.ReferencedSourceScanManifest.currentSchemaVersion + 1
+        let newerManifest = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        try newerManifest.write(to: manifestURL)
+
+        try Data("source-audio".utf8).write(
+            to: fixture.sourceRoot.appendingPathComponent("song.mp3")
+        )
+        let changes = try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+
+        XCTAssertTrue(changes.isEmpty)
+        let tracks = await fixture.repository.fetchTracks(in: nil)
+        XCTAssertTrue(tracks.isEmpty, "the source must not be re-imported from scratch")
+        XCTAssertEqual(
+            try Data(contentsOf: manifestURL),
+            newerManifest,
+            "the newer manifest must be kept instead of quarantined"
+        )
+        let quarantined = try await kmgccc_player.ReferencedSourceScanManifestStore(
+            paths: fixture.paths
+        ).quarantinedURLs()
+        XCTAssertTrue(quarantined.isEmpty)
+        let notices = await recorder.snapshot()
+        XCTAssertTrue(notices.contains(.newerLibraryRecords))
+    }
+
+    func testScanManifestSchemaFollowsItsContent() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = kmgccc_player.LibraryPaths(rootURL: root)
+        let store = kmgccc_player.ReferencedSourceScanManifestStore(paths: paths)
+        let sourceID = UUID()
+        var manifest = kmgccc_player.ReferencedSourceScanManifest(
+            libraryID: UUID(),
+            sourceID: sourceID,
+            generation: 1,
+            lastSuccessfulScan: Date(),
+            entries: [
+                kmgccc_player.ReferencedSourceScanEntry(
+                    relativePath: "song.mp3",
+                    identity: nil,
+                    fingerprint: .init(fileSize: 1, modifiedAt: 1),
+                    trackID: UUID(),
+                    availability: .available,
+                    lastSeenGeneration: 1
+                )
+            ]
+        )
+        try await store.save(manifest)
+
+        func schemaVersionOnDisk() throws -> Int? {
+            let url = paths.sourceScanManifestURL(for: sourceID)
+            let object = try JSONSerialization.jsonObject(with: try Data(contentsOf: url)) as? [String: Any]
+            return object?["schemaVersion"] as? Int
+        }
+
+        // A manifest without multi-track bindings stays readable by an older
+        // build, so it is written as schema 1.
+        XCTAssertEqual(try schemaVersionOnDisk(), 1)
+
+        manifest.entries[0].trackIDs = [UUID(), UUID()]
+        try await store.save(manifest)
+        XCTAssertEqual(try schemaVersionOnDisk(), 2)
+    }
+
     func testUniqueFallbackIdentityRenamePreservesUUIDMembershipAndAvailability() async throws {
         let fallbackFingerprint: @Sendable (URL) throws -> kmgccc_player.ReferencedFileFingerprint = { url in
             let actual = try ReferencedFileIdentityProvider().fingerprint(for: url)
@@ -1673,7 +1848,6 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
             entries: []
         )
         let cases: [(String, (inout [String: Any]) -> Void)] = [
-            ("schema", { $0["schemaVersion"] = 99 }),
             ("library", { $0["libraryID"] = UUID().uuidString }),
             ("source", { $0["sourceID"] = UUID().uuidString }),
         ]
@@ -1688,6 +1862,25 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
             XCTAssertNil(loaded, "reason=\(reason)")
             XCTAssertFalse(FileManager.default.fileExists(atPath: manifestURL.path))
         }
+        // A manifest from a newer build is intact, not corrupt. Keeping its
+        // bindings is what stops the reconciler from re-importing the source.
+        try await store.save(valid)
+        var newerObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any]
+        )
+        newerObject["schemaVersion"] = kmgccc_player.ReferencedSourceScanManifest.currentSchemaVersion + 1
+        try JSONSerialization.data(withJSONObject: newerObject).write(to: manifestURL, options: .atomic)
+        do {
+            _ = try await store.load(sourceID: fixture.sourceID, libraryID: fixture.context.id)
+            XCTFail("expected a newer-schema manifest to be reported")
+        } catch let error as kmgccc_player.ReferencedSourceScanManifestStoreError {
+            XCTAssertEqual(
+                error,
+                .newerSchema(kmgccc_player.ReferencedSourceScanManifest.currentSchemaVersion + 1)
+            )
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifestURL.path))
+
         try Data("{".utf8).write(to: manifestURL, options: .atomic)
         let corruptLoad = try await store.load(
             sourceID: fixture.sourceID,
@@ -1695,7 +1888,7 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         )
         let quarantined = try await store.quarantinedURLs()
         XCTAssertNil(corruptLoad)
-        XCTAssertEqual(quarantined.count, 4)
+        XCTAssertEqual(quarantined.count, 3)
 
         try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
         let rebuilt = try await store.load(
@@ -1931,6 +2124,7 @@ private final class ReconcileFixture {
     let ncmRegistry: NCMConversionRegistry
     let repository: SwiftDataLibraryRepository
     let importer: ReconcileImporter
+    let mutationJournal: LibraryMutationJournal
     let reconciler: ReferencedSourceReconciler
 
     init(
@@ -1939,7 +2133,8 @@ private final class ReconcileFixture {
             try ReferencedFileIdentityProvider().fingerprint(for: $0)
         },
         locatorWriter: ((Track, kmgccc_player.TrackMediaLocator, kmgccc_player.TrackAvailability, String) -> Bool)? = nil,
-        noticePublisher: (any kmgccc_player.ReferencedSourceNoticePublishing)? = nil
+        noticePublisher: (any kmgccc_player.ReferencedSourceNoticePublishing)? = nil,
+        recordsMutations: Bool = false
     ) async throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         sourceRoot = root.appendingPathComponent("External", isDirectory: true)
@@ -1969,6 +2164,14 @@ private final class ReconcileFixture {
             repository: repository,
             fingerprintProvider: fingerprintProvider
         )
+        mutationJournal = LibraryMutationJournal(paths: paths, libraryID: context.id)
+        let mutationCoordinator = recordsMutations
+            ? LibraryMutationCoordinator(
+                libraryID: context.id,
+                sessionGeneration: context.generation,
+                journal: mutationJournal
+            )
+            : nil
         let scanner = scannerFactory?(paths) ?? ReferencedSourceScanner(
             paths: paths,
             fingerprintProvider: fingerprintProvider,
@@ -1980,6 +2183,7 @@ private final class ReconcileFixture {
             context: context,
             repository: repository,
             importer: importer,
+            mutationCoordinator: mutationCoordinator,
             sourceStore: store,
             sourceScope: scope,
             scanner: scanner,

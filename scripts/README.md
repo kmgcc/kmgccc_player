@@ -31,8 +31,7 @@ CONFIGURATION=Release ./scripts/build_and_run.sh
 ### `build_app.sh`
 
 构建 App 并执行 bundle 完整性检查，默认保留 DerivedData 缓存。该入口显式禁用本机构建扩展；需要全新构建时使用 `CLEAN_BUILD=1`，也可通过 `DERIVED_DATA_PATH` 指定独立目录。
-构建前后都会检查 MelismaKit 的依赖来源；本机默认要求本地 MelismaKit，干净 checkout 的远程构建需显式设置
-`MELISMAKIT_EXPECTED_SOURCE=remote`。
+构建前后都会检查 MelismaKit 的依赖来源，默认 `MELISMAKIT_EXPECTED_SOURCE=auto`，按 Xcode 工程配置接受本地或远程依赖。
 
 用户协议和隐私政策位于受版本控制的 `kmgccc_player/LegalDocuments/`，属于公开且必需的运行资源；不要用本机忽略目录替代它们。
 
@@ -61,9 +60,8 @@ OUTPUT_DIR=/tmp/kmgccc-player-release \
 
 ### `verify.sh`
 
-手动运行的完整门禁：bootstrap、ARM64 无签名 Debug 构建、LRC 回归、XCTest 和 App bundle 检查。构建与测试阶段显式禁用本机构建扩展。仓库不设 GitHub macOS CI，push 与 PR 不触发远端编译；该门禁由维护者在本机运行。
-它会检查每次 App/XCTest 构建的 MelismaKit 来源；远程依赖门禁需显式设置
-`MELISMAKIT_EXPECTED_SOURCE=remote`。
+手动运行的完整门禁包括 bootstrap、动效与 UI 静态检查、ARM64 无签名 Debug 构建、独立回归、串行 XCTest 和 App bundle 检查。独立回归覆盖 LRC、CostBoundedCache、封面缓存 generation、设备遥测和资料库规范化。构建与测试阶段显式禁用本机构建扩展。仓库不设 GitHub macOS CI，push 与 PR 不触发远端编译；该门禁由维护者在本机运行。
+它按 Xcode 工程配置检查 MelismaKit 来源，默认接受本地和远程依赖。
 
 ```sh
 ./scripts/verify.sh
@@ -90,18 +88,18 @@ OUTPUT_DIR=/tmp/kmgccc-player-release \
 
 ### check-melismakit-dependency.sh
 
-检查 App 的 Swift Package 依赖图和实际编译日志。默认的本机测试要求工程指向相邻的
-`MelismaKit` 本地 checkout；远程 `Package.resolved` 中的旧 pin 不会因为修改组件源码而自动更新。
+检查 App 的 Swift Package 依赖来源和构建日志。默认跟随 Xcode 工程配置，接受本地或远程 MelismaKit。远程版本由工程的版本约束和 `Package.resolved` 管理，缺少 pin 时交由 Xcode 在构建期间解析。
 
 ```sh
+./scripts/check-melismakit-dependency.sh
+./scripts/check-melismakit-dependency.sh --build-log /path/to/xcodebuild.log
 ./scripts/check-melismakit-dependency.sh --require-local
-./scripts/check-melismakit-dependency.sh --require-local --build-log /path/to/xcodebuild.log
 ./scripts/check-melismakit-dependency.sh --require-remote
 ```
 
-`build_and_run.sh` 默认执行本地检查并保存 verbose build log；只有明确进行远程依赖构建时才设置
-`MELISMAKIT_EXPECTED_SOURCE=remote`。构建日志必须显示 `MelismaKit/Sources/MelismaKit`，不能只显示
-`SourcePackages/checkouts/melismakit`。
+`build_and_run.sh`、`build_app.sh` 和 `verify.sh` 默认使用 `MELISMAKIT_EXPECTED_SOURCE=auto`。日志缺少组件源码路径时仅提示，适用于复用组件缓存的增量构建。发现来源冲突时阻塞。
+
+当前任务直接修改本地组件时，使用 `MELISMAKIT_EXPECTED_SOURCE=local` 并确认实际编译输入采用这次组件修改。需要限定远程来源时可设置 `MELISMAKIT_EXPECTED_SOURCE=remote`。
 
 ### check-ui-consistency.sh
 

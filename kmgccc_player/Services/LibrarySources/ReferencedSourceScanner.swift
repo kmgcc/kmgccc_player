@@ -4,6 +4,10 @@ nonisolated enum ReferencedSourceScanError: Error, Equatable {
     case sourceOffline
     case permissionDenied
     case cancelled
+    /// The source's scan manifest comes from a newer build. The bindings it
+    /// carries cannot be read here, so the source must be skipped rather than
+    /// rescanned from scratch.
+    case manifestFromNewerBuild(Int)
 }
 
 actor NCMScanReservationFilter {
@@ -71,7 +75,12 @@ actor ReferencedSourceScanner {
             return unavailableDiff(context: context, sourceID: sourceID, status: .permissionDenied)
         }
 
-        let previous = try await manifestStore.load(sourceID: sourceID, libraryID: context.id)
+        let previous: ReferencedSourceScanManifest?
+        do {
+            previous = try await manifestStore.load(sourceID: sourceID, libraryID: context.id)
+        } catch ReferencedSourceScanManifestStoreError.newerSchema(let version) {
+            throw ReferencedSourceScanError.manifestFromNewerBuild(version)
+        }
         let generation = (previous?.generation ?? 0) &+ 1
         let snapshot: (entries: [ReferencedSourceScanEntry], ignored: [ReferencedSourceIgnoredFile], failures: [ReferencedSourceScanFailure])
         if isDirectory.boolValue {

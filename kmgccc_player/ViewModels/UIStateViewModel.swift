@@ -32,6 +32,7 @@ enum SidebarNoticeStyle: Sendable {
 /// newer notice for something else.
 nonisolated enum SidebarNoticeTag: String, Sendable {
     case libraryMutation
+    case librarySchemaMismatch
     case audioPrograms
     case audioProgramRecovery
     case albumOrdering

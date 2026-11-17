@@ -68,8 +68,10 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
 
         try context.paths.createRequiredDirectories()
         // Replay interrupted range updates under the library's writer lease,
-        // before any repository or derived index reads their projections.
-        try AudioProgramImportTransaction.recoverInterruptedUpdates(paths: context.paths)
+        // before any repository or derived index reads their projections. A
+        // record that cannot be recovered is quarantined inside the recovery
+        // flow so a damaged record never blocks opening the library.
+        AudioProgramImportTransaction.recoverInterruptedUpdates(paths: context.paths)
 
         let mutationJournal = LibraryMutationJournal(
             paths: context.paths,

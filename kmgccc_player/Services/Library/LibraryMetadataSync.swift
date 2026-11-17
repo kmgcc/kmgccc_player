@@ -10,6 +10,8 @@ import Foundation
 
 @MainActor
 final class LibraryMetadataSync {
+    private var isPlanningWrites = false
+    private var plannedWriteTargets: Set<UUID> = []
 
     func sync(
         derivedArtists: [ArtistSection],
@@ -32,6 +34,43 @@ final class LibraryMetadataSync {
             libraryService: libraryService
         )
         return (artists, albums)
+    }
+
+    /// Runs `sync` without touching disk and reports the sidecar targets it
+    /// would write or delete. Callers use this to skip the maintenance
+    /// transaction when the metadata projection is already consistent, and to
+    /// scope the transaction to the entries that actually change instead of
+    /// every artist and album in the library.
+    func plan(
+        derivedArtists: [ArtistSection],
+        derivedAlbums: [AlbumSection],
+        allTracks: [Track],
+        artistSidecars: [(sidecar: ArtistSidecar, folderURL: URL)],
+        albumSidecars: [(sidecar: AlbumSidecar, folderURL: URL)],
+        libraryService: LocalLibraryService
+    ) throws -> (artists: [ArtistEntry], albums: [AlbumEntry], writeTargets: Set<UUID>) {
+        isPlanningWrites = true
+        plannedWriteTargets.removeAll()
+        defer { isPlanningWrites = false }
+        let result = try sync(
+            derivedArtists: derivedArtists,
+            derivedAlbums: derivedAlbums,
+            allTracks: allTracks,
+            artistSidecars: artistSidecars,
+            albumSidecars: albumSidecars,
+            libraryService: libraryService
+        )
+        return (result.artists, result.albums, plannedWriteTargets)
+    }
+
+    /// Dry-run gate for sidecar writes. Recording mode collects the sidecar IDs
+    /// that would be written or deleted so `plan` can return them.
+    private func recordOrPerform(_ targets: [UUID], _ body: () throws -> Void) rethrows {
+        if isPlanningWrites {
+            plannedWriteTargets.formUnion(targets)
+            return
+        }
+        try body()
     }
 
     // MARK: - Artist Sync
@@ -107,7 +146,9 @@ final class LibraryMetadataSync {
                     createdAt: now,
                     updatedAt: now
                 )
-                try libraryService.writeArtistSidecar(newSidecar, artworkData: nil)
+                try recordOrPerform([newID]) {
+                    try libraryService.writeArtistSidecar(newSidecar, artworkData: nil)
+                }
                 result.append(ArtistEntry(
                     id: newID,
                     canonicalName: section.key,
@@ -167,8 +208,10 @@ final class LibraryMetadataSync {
                     hasUserEditedContent: true
                 ))
             } else {
-                if FileManager.default.fileExists(atPath: folderURL.path) {
-                    try FileManager.default.removeItem(at: folderURL)
+                try recordOrPerform([sidecar.id]) {
+                    if FileManager.default.fileExists(atPath: folderURL.path) {
+                        try FileManager.default.removeItem(at: folderURL)
+                    }
                 }
             }
         }
@@ -238,7 +281,9 @@ final class LibraryMetadataSync {
                     createdAt: now,
                     updatedAt: now
                 )
-                try libraryService.writeAlbumSidecar(newSidecar, artworkData: nil)
+                try recordOrPerform([newID]) {
+                    try libraryService.writeAlbumSidecar(newSidecar, artworkData: nil)
+                }
                 result.append(AlbumEntry(
                     id: newID,
                     canonicalKey: section.key,
@@ -311,8 +356,10 @@ final class LibraryMetadataSync {
                     hasUserEditedContent: true
                 ))
             } else {
-                if FileManager.default.fileExists(atPath: folderURL.path) {
-                    try FileManager.default.removeItem(at: folderURL)
+                try recordOrPerform([sidecar.id]) {
+                    if FileManager.default.fileExists(atPath: folderURL.path) {
+                        try FileManager.default.removeItem(at: folderURL)
+                    }
                 }
             }
         }
@@ -411,12 +458,14 @@ final class LibraryMetadataSync {
             category: .library
         )
 
-        try libraryService.writeArtistSidecar(
-            mergedSidecar,
-            artworkData: mergedSidecar.artworkFileName != nil ? artworkData : nil
-        )
-        for duplicate in sorted.dropFirst() {
-            try libraryService.deleteArtistEntry(id: duplicate.sidecar.id)
+        try recordOrPerform([mergedSidecar.id] + sorted.dropFirst().map { $0.sidecar.id }) {
+            try libraryService.writeArtistSidecar(
+                mergedSidecar,
+                artworkData: mergedSidecar.artworkFileName != nil ? artworkData : nil
+            )
+            for duplicate in sorted.dropFirst() {
+                try libraryService.deleteArtistEntry(id: duplicate.sidecar.id)
+            }
         }
         return (mergedSidecar, keeper.folderURL)
     }
@@ -442,12 +491,14 @@ final class LibraryMetadataSync {
             category: .library
         )
 
-        try libraryService.writeAlbumSidecar(
-            mergedSidecar,
-            artworkData: mergedSidecar.artworkFileName != nil ? artworkData : nil
-        )
-        for duplicate in sorted.dropFirst() {
-            try libraryService.deleteAlbumEntry(id: duplicate.sidecar.id)
+        try recordOrPerform([mergedSidecar.id] + sorted.dropFirst().map { $0.sidecar.id }) {
+            try libraryService.writeAlbumSidecar(
+                mergedSidecar,
+                artworkData: mergedSidecar.artworkFileName != nil ? artworkData : nil
+            )
+            for duplicate in sorted.dropFirst() {
+                try libraryService.deleteAlbumEntry(id: duplicate.sidecar.id)
+            }
         }
         return (mergedSidecar, keeper.folderURL)
     }
@@ -836,16 +887,20 @@ final class LibraryMetadataSync {
             let artworkDataToPersist = needsArtworkCopy
                 ? artworkSourceURL.flatMap { try? Data(contentsOf: $0) }
                 : nil
-            try libraryService.writeAlbumSidecar(
-                mergedSidecar,
-                artworkData: mergedSidecar.artworkFileName != nil ? artworkDataToPersist : nil
-            )
+            try recordOrPerform([mergedSidecar.id]) {
+                try libraryService.writeAlbumSidecar(
+                    mergedSidecar,
+                    artworkData: mergedSidecar.artworkFileName != nil ? artworkDataToPersist : nil
+                )
+            }
         } else {
             mergedSidecar = keeper.sidecar
         }
 
-        for candidate in sortedCandidates.dropFirst() {
-            try libraryService.deleteAlbumEntry(id: candidate.sidecar.id)
+        try recordOrPerform(sortedCandidates.dropFirst().map { $0.sidecar.id }) {
+            for candidate in sortedCandidates.dropFirst() {
+                try libraryService.deleteAlbumEntry(id: candidate.sidecar.id)
+            }
         }
 
         var entry = AlbumEntry(

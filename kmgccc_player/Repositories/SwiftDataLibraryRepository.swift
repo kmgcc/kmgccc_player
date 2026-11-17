@@ -70,6 +70,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private var changeHandler: LibraryRepositoryChangeHandler?
 
     private var membershipRevision: UInt64 = 0
+    /// Track records on disk that were written by a build with a newer sidecar
+    /// schema. They are intact but invisible here; source reconciliation must
+    /// stop instead of re-importing their files as new tracks.
+    private(set) var newerSchemaTrackCount = 0
     private var allTracks: [Track] = [] {
         didSet { membershipRevision &+= 1 }
     }
@@ -174,6 +178,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             if membershipRevision == revision { break }
         } while true
         playlistItemAddedAtMap.removeAll()
+        newerSchemaTrackCount = snapshot.newerSchemaTrackCount
+        if newerSchemaTrackCount > 0 {
+            Log.warning(
+                "[LibraryReload] \(newerSchemaTrackCount) track sidecars were written by a newer build; they stay hidden and source reconciliation will not import their files",
+                category: .library
+            )
+        }
         let stringPool = StringInternPool()
         let tracks = trackMetas.map { buildTrack(from: $0, existingManagedAudioPaths: existingManagedAudioPaths, stringPool: stringPool) }
         let tracksById = trackDictionaryByID(tracks)
@@ -449,9 +460,17 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         )
 
         let capturedPaths = paths
-        let metas = await Task.detached { @Sendable in
-            MusicLibraryScanner(paths: capturedPaths).scanTracks(ids: uniqueIDs)
+        let scan = await Task.detached { @Sendable in
+            MusicLibraryScanner(paths: capturedPaths).scanTracksReporting(ids: uniqueIDs)
         }.value
+        let metas = scan.metas
+        if scan.newerSchemaCount > 0 {
+            newerSchemaTrackCount = max(newerSchemaTrackCount, scan.newerSchemaCount)
+            Log.warning(
+                "[ImportEnrichmentReload] \(scan.newerSchemaCount) refreshed track sidecars were written by a newer build; source reconciliation will not import their files",
+                category: .library
+            )
+        }
         let existingManagedAudioPaths = await Self.existingManagedAudioPaths(
             metas: metas,
             paths: paths
@@ -1188,8 +1207,26 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             )
             return
         }
-        let apply = { @MainActor [self] in
-            let (artists, albums) = try metadataSync.sync(
+        do {
+            guard let mutationCoordinator else {
+                let (artists, albums) = try metadataSync.sync(
+                    derivedArtists: runtimeArtists,
+                    derivedAlbums: runtimeAlbums,
+                    allTracks: allTracks,
+                    artistSidecars: artistSidecars,
+                    albumSidecars: albumSidecars,
+                    libraryService: libraryService
+                )
+                artistEntries = artists
+                albumEntries = albums
+                return
+            }
+            // Plan first: an unchanged projection must not open a maintenance
+            // transaction, and the transaction must only isolate the sidecars
+            // that actually change. Isolating every artist and album id on
+            // every reload froze the whole library whenever one such
+            // transaction failed.
+            let plan = try metadataSync.plan(
                 derivedArtists: runtimeArtists,
                 derivedAlbums: runtimeAlbums,
                 allTracks: allTracks,
@@ -1197,21 +1234,26 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 albumSidecars: albumSidecars,
                 libraryService: libraryService
             )
-            artistEntries = artists
-            albumEntries = albums
-        }
-        do {
-            if let mutationCoordinator {
-                let targetIDs = artistSidecars.map { $0.sidecar.id.uuidString }
-                    + albumSidecars.map { $0.sidecar.id.uuidString }
-                try await mutationCoordinator.run(
-                    kind: .maintenance,
-                    targetIDs: targetIDs
-                ) {
-                    try apply()
-                }
-            } else {
-                try apply()
+            if plan.writeTargets.isEmpty {
+                artistEntries = plan.artists
+                albumEntries = plan.albums
+                return
+            }
+            let targetIDs = plan.writeTargets.map(\.uuidString).sorted()
+            try await mutationCoordinator.run(
+                kind: .maintenance,
+                targetIDs: targetIDs
+            ) { [self] in
+                let (artists, albums) = try metadataSync.sync(
+                    derivedArtists: runtimeArtists,
+                    derivedAlbums: runtimeAlbums,
+                    allTracks: allTracks,
+                    artistSidecars: artistSidecars,
+                    albumSidecars: albumSidecars,
+                    libraryService: libraryService
+                )
+                artistEntries = artists
+                albumEntries = albums
             }
         } catch {
             // Keep the last coherent in-memory metadata projection. A failed

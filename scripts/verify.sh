@@ -10,7 +10,7 @@ PACKAGE_CACHE="$WORK_DIR/SourcePackages"
 LOG_DIR="$WORK_DIR/logs"
 CURRENT_PID=""
 KEEP_OUTPUT="${KMGCCC_KEEP_VERIFY_OUTPUT:-0}"
-MELISMAKIT_EXPECTED_SOURCE="${MELISMAKIT_EXPECTED_SOURCE:-local}"
+MELISMAKIT_EXPECTED_SOURCE="${MELISMAKIT_EXPECTED_SOURCE:-auto}"
 
 mkdir -p "$LOG_DIR"
 
@@ -92,9 +92,10 @@ if [[ $# -ne 0 ]]; then
 fi
 
 case "$MELISMAKIT_EXPECTED_SOURCE" in
+  auto) MELISMAKIT_DEPENDENCY_FLAG="--auto" ;;
   local) MELISMAKIT_DEPENDENCY_FLAG="--require-local" ;;
   remote) MELISMAKIT_DEPENDENCY_FLAG="--require-remote" ;;
-  *) echo "error: MELISMAKIT_EXPECTED_SOURCE must be local or remote" >&2; exit 2 ;;
+  *) echo "error: MELISMAKIT_EXPECTED_SOURCE must be auto, local or remote" >&2; exit 2 ;;
 esac
 
 require_command xcodebuild
@@ -211,8 +212,8 @@ run_step "XCTest" 1800 \
     BUILD_EXTENSION_MODE=disabled \
     CODE_SIGNING_ALLOWED=NO \
     test
-# The Debug build above proves the package compiler input; XCTest may reuse that
-# package build and emit no new MelismaKit source command in its own log.
+# XCTest may reuse the package outputs from the Debug build and emit no new
+# MelismaKit source command in its own log.
 "$ROOT/scripts/check-melismakit-dependency.sh" "$MELISMAKIT_DEPENDENCY_FLAG"
 
 APP="$DERIVED_DATA/Build/Products/Debug/kmgccc_player.app"

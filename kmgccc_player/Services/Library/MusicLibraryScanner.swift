@@ -74,9 +74,36 @@ nonisolated struct MusicLibraryScanner: Sendable {
     }
 
     func scanTracks(ids: [UUID]) -> [ScannedTrackMeta] {
-        ids.compactMap { id in
-            autoreleasepool { parseTrackMeta(in: paths.trackFolderURL(for: id)) }
+        scanTracksReporting(ids: ids).metas
+    }
+
+    /// Scans the given track folders and reports how many were skipped because
+    /// a newer build wrote them. A skipped newer record is intact; the caller
+    /// must not let source reconciliation re-import its file.
+    func scanTracksReporting(ids: [UUID]) -> (metas: [ScannedTrackMeta], newerSchemaCount: Int) {
+        var newerSchemaCount = 0
+        let metas = ids.compactMap { id -> ScannedTrackMeta? in
+            autoreleasepool {
+                let folderURL = paths.trackFolderURL(for: id)
+                if let meta = parseTrackMeta(in: folderURL) { return meta }
+                if let version = Self.declaredSchemaVersion(
+                    inMetaURL: folderURL.appendingPathComponent("meta.json")
+                ), version > TrackSidecar.currentSchemaVersion {
+                    newerSchemaCount += 1
+                }
+                return nil
+            }
         }
+        return (metas, newerSchemaCount)
+    }
+
+    /// Reads only the declared schema version so a record written by a newer
+    /// build can be told apart from a damaged one without a full decode.
+    static func declaredSchemaVersion(inMetaURL url: URL) -> Int? {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let number = object["schemaVersion"] as? NSNumber else { return nil }
+        return number.intValue
     }
 
     func scanTrackFolder(_ folderURL: URL) -> ScannedTrackMeta? {
