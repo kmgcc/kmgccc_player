@@ -493,6 +493,54 @@ final class BackgroundWorkSchedulerTests: XCTestCase {
         XCTAssertEqual(value, 42)
     }
 
+    func testLeaseWaitReturnsFalseWhenTheTimeoutElapses() async {
+        let lease = BackgroundLease()
+        let granted = await lease.waitForGrant(timeout: .milliseconds(20))
+        XCTAssertFalse(granted)
+        XCTAssertTrue(lease.waitTimedOut)
+        // A grant that arrives after the wait gave up must not resume it again.
+        lease.markGranted()
+        lease.markEnded()
+    }
+
+    func testLeaseWaitReturnsImmediatelyWhenTheTaskIsCancelled() async {
+        let lease = BackgroundLease()
+        let waiting = Task { await lease.waitForGrant(timeout: .seconds(10)) }
+        try? await Task.sleep(for: .milliseconds(50))
+        let start = ContinuousClock.now
+        waiting.cancel()
+        let granted = await waiting.value
+        XCTAssertFalse(granted)
+        XCTAssertLessThan(start.duration(to: ContinuousClock.now), .seconds(1))
+        lease.markEnded()
+    }
+
+    func testATimedOutLeaseWaitDoesNotHoldTheSlotItQueuedFor() async {
+        let scheduler = makeScheduler()
+        let first = await scheduler.acquireLease(domain: .fileWork, priority: .userRequested, resources: [.compute])
+        let second = await scheduler.acquireLease(domain: .fileWork, priority: .userRequested, resources: [.compute])
+        XCTAssertNotNil(first)
+        XCTAssertNotNil(second)
+
+        let acquisition = await scheduler.acquireLeaseOutcome(
+            domain: .fileWork, priority: .userRequested, resources: [.compute],
+            waitTimeout: .milliseconds(50)
+        )
+        guard case .timedOut = acquisition else {
+            XCTFail("expected the lease wait to time out")
+            return
+        }
+        first?.release()
+        second?.release()
+
+        let replacement = await scheduler.acquireLease(
+            domain: .fileWork, priority: .userRequested, resources: [.compute],
+            waitTimeout: .seconds(2)
+        )
+        XCTAssertNotNil(replacement, "a timed-out claim must not take the freed slot")
+        replacement?.release()
+    }
+
     // MARK: Domains
 
     func testUpdateDownloadAndSourceSyncSurviveThePreparationSwitch() {

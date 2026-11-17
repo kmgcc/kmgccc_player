@@ -346,15 +346,33 @@ final class BackgroundWorkScheduler {
 
     /// Claims channel slots for work that runs in its own pipeline. The claim
     /// waits like a submitted task and is counted while held, so idle work
-    /// steps aside. Returns nil when the claim was cancelled or its owner was
-    /// revoked before it was granted; the caller then carries on without it.
+    /// steps aside. Returns nil when the claim was cancelled, its owner was
+    /// revoked, or the wait timed out before it was granted; the caller then
+    /// carries on without it.
     func acquireLease(
         owner: BackgroundWorkOwner = .app,
         domain: BackgroundWorkDomain,
         priority: BackgroundWorkPriority,
         resources: BackgroundWorkResources,
-        networkHost: String? = nil
+        networkHost: String? = nil,
+        waitTimeout: Duration? = nil
     ) async -> BackgroundLease? {
+        await acquireLeaseOutcome(
+            owner: owner, domain: domain, priority: priority, resources: resources,
+            networkHost: networkHost, waitTimeout: waitTimeout
+        ).lease
+    }
+
+    /// Like `acquireLease`, but reports why no claim was held. A timed-out
+    /// claim is dropped from the queue so it cannot hold a slot later.
+    func acquireLeaseOutcome(
+        owner: BackgroundWorkOwner = .app,
+        domain: BackgroundWorkDomain,
+        priority: BackgroundWorkPriority,
+        resources: BackgroundWorkResources,
+        networkHost: String? = nil,
+        waitTimeout: Duration? = nil
+    ) async -> BackgroundWorkLeaseAcquisition {
         let lease = BackgroundLease()
         nextOrder += 1
         let handle = submit(
@@ -376,20 +394,33 @@ final class BackgroundWorkScheduler {
             _ = await handle.value()
             lease.markEnded()
         }
-        return await withTaskCancellationHandler {
-            await lease.waitForGrant() ? lease : nil
+        let granted = await withTaskCancellationHandler {
+            await lease.waitForGrant(timeout: waitTimeout)
         } onCancel: {
             Task { @MainActor in handle.cancel() }
         }
+        guard granted else {
+            let timedOut = lease.waitTimedOut
+            if timedOut {
+                Log.warning(
+                    "[Background] lease wait timed out | domain=\(domain.rawValue) priority=\(priority.rawValue) waited=\(waitTimeout.map(String.init(describing:)) ?? "unbounded")",
+                    category: .background
+                )
+            }
+            handle.cancel()
+            return timedOut ? .timedOut : .unavailable
+        }
+        return .granted(lease)
     }
 
     /// A lender bound to this scheduler and owner, for services that are not
     /// on the main actor.
     func lender(owner: BackgroundWorkOwner = .app) -> BackgroundWorkLender {
-        BackgroundWorkLender { [weak self] domain, priority, resources, host in
-            await self?.acquireLease(
+        BackgroundWorkLender { [weak self] domain, priority, resources, host, waitTimeout in
+            guard let self else { return .unavailable }
+            return await self.acquireLeaseOutcome(
                 owner: owner, domain: domain, priority: priority,
-                resources: resources, networkHost: host
+                resources: resources, networkHost: host, waitTimeout: waitTimeout
             )
         }
     }
