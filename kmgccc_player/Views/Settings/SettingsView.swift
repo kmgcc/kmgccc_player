@@ -15,10 +15,13 @@ import SwiftUI
 @MainActor
 struct SettingsView: View {
     var hasActiveLibrarySession = false
+    var initialCategory: SettingsCategory?
+    var initialAnchor: String?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @Environment(AppSettings.self) private var settings
+    @EnvironmentObject private var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
@@ -26,12 +29,26 @@ struct SettingsView: View {
 
     // MARK: - Navigation State
 
-    @State private var selection: SettingsCategory = .general
+    @State private var selection: SettingsCategory
     @State private var columnVisibility = NavigationSplitViewVisibility.all
     @State private var subpagePath: [SettingsSubpage] = []
+    @State private var searchText = ""
+    @State private var selectedSearchResultID: String?
+    @State private var searchRequest: SettingsSearchRequest?
     /// Applied only after the sheet closes: switching the app appearance while
     /// SwiftUI is still drawing this sheet leaves it in a mixed state.
     @State private var pendingAppearanceMode: AppSettings.AppearanceMode?
+
+    init(
+        hasActiveLibrarySession: Bool = false,
+        initialCategory: SettingsCategory? = nil,
+        initialAnchor: String? = nil
+    ) {
+        self.hasActiveLibrarySession = hasActiveLibrarySession
+        self.initialCategory = initialCategory
+        self.initialAnchor = initialAnchor
+        _selection = State(initialValue: initialCategory ?? .general)
+    }
 
     private var currentSubpage: SettingsSubpage? { subpagePath.last }
 
@@ -54,7 +71,13 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            SettingsSidebarView(selection: $selection)
+            SettingsSidebarView(
+                selection: $selection,
+                searchText: $searchText,
+                results: searchResults,
+                selectedResultID: selectedSearchResultID,
+                selectResult: selectSearchResult
+            )
                 .navigationSplitViewColumnWidth(
                     min: GlassStyleTokens.sidebarMinWidth,
                     ideal: GlassStyleTokens.sidebarWidth,
@@ -106,6 +129,7 @@ struct SettingsView: View {
                 .environment(\.navigateSettingsSubpage) { page in
                     navigateToSubpage(page)
                 }
+                .environment(\.settingsSearchRequest, searchRequest)
             }
         }
         .navigationSplitViewStyle(.prominentDetail)
@@ -119,7 +143,9 @@ struct SettingsView: View {
                 .padding(.trailing, AppPopupStyle().closeMarginTrailing)
         }
         .onExitCommand {
-            if currentSubpage != nil {
+            if !searchText.isEmpty {
+                searchText = ""
+            } else if currentSubpage != nil {
                 navigateToSubpage(nil)
             } else {
                 dismiss()
@@ -130,14 +156,37 @@ struct SettingsView: View {
                 subpagePath = []
             }
         }
+        .onChange(of: appSession.isLibraryRepairPresented) { _, isPresented in
+            if isPresented {
+                dismiss()
+            }
+        }
+        .onChange(of: searchText) { _, value in
+            selectedSearchResultID = nil
+            if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                searchRequest = nil
+            }
+        }
         .frame(minWidth: 760, minHeight: 680)
         .scrollContentBackground(.hidden)
         .background(ThemedBaseBackgroundColorView())
+        .background(SettingsWindowMarkerView())
+        .dismissTextEditingOnOutsideClick()
         .environment(\.fullscreenSettingsPresentationStyle, .settingsWindow)
         .environment(\.settingsAppForegroundColors, appForegroundColors)
         .foregroundStyle(appForegroundColors.primary)
         .onAppear {
             settings.fullscreen.normalizeConfiguration()
+            if let initialAnchor {
+                // Deep link from a sidebar notice: select the requested tab
+                // and reuse the search-anchor scroll path.
+                subpagePath = []
+                searchRequest = SettingsSearchRequest(
+                    category: selection,
+                    tab: nil,
+                    anchor: initialAnchor
+                )
+            }
         }
         .onDisappear {
             guard let mode = pendingAppearanceMode else { return }
@@ -161,52 +210,66 @@ struct SettingsView: View {
         // surfaces whose presentation style supplies its own unified foreground (fullscreen
         // overlay panel), which keep the high-contrast white hierarchy.
         let appColors = appForegroundColors
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                switch selection {
-                case .general:
-                    GeneralSettingsView()
-                case .appearance:
-                    AppearanceSettingsView(pendingAppearanceMode: $pendingAppearanceMode)
-                case .nowPlaying:
-                    NowPlayingSettingsContainerView()
-                case .fullscreen:
-                    FullscreenSettingsContainerView()
-                case .audio:
-                    AudioSettingsView()
-                case .externalPlayback:
-                    if hasActiveLibrarySession {
-                        ExternalPlaybackSettingsView()
-                    } else {
-                        unavailableLibrarySettings
+        let detailCategory = selection
+        return ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    switch selection {
+                    case .general:
+                        GeneralSettingsView()
+                    case .appearance:
+                        AppearanceSettingsView(pendingAppearanceMode: $pendingAppearanceMode)
+                    case .nowPlaying:
+                        NowPlayingSettingsContainerView()
+                    case .fullscreen:
+                        FullscreenSettingsContainerView()
+                    case .audio:
+                        AudioSettingsView()
+                    case .externalPlayback:
+                        if hasActiveLibrarySession {
+                            ExternalPlaybackSettingsView()
+                        } else {
+                            unavailableLibrarySettings
+                        }
+                    case .library:
+                        if hasActiveLibrarySession {
+                            LibrarySettingsView()
+                        } else {
+                            unavailableLibrarySettings
+                        }
+                    case .data:
+                        if hasActiveLibrarySession {
+                            DataManagementSettingsView()
+                        } else {
+                            unavailableLibrarySettings
+                        }
+                    case .automation:
+                        AutomationSettingsView()
+                    case .about:
+                        AboutSettingsView()
                     }
-                case .library:
-                    if hasActiveLibrarySession {
-                        LibrarySettingsView()
-                    } else {
-                        unavailableLibrarySettings
-                    }
-                case .data:
-                    if hasActiveLibrarySession {
-                        DataManagementSettingsView()
-                    } else {
-                        unavailableLibrarySettings
-                    }
-                case .automation:
-                    AutomationSettingsView()
-                case .about:
-                    AboutSettingsView()
+                }
+                .padding(.horizontal, 32)
+                .padding(.vertical, 40)
+                .frame(maxWidth: 800, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .settingsSearchAnchor("settings.top")
+            }
+            .onPreferenceChange(SettingsSearchAnchorPreferenceKey.self) { request in
+                guard let request, request.category == detailCategory else { return }
+                // The target reports itself after its tab enters the hierarchy.
+                DispatchQueue.main.async {
+                    guard searchRequest?.id == request.id, selection == request.category else { return }
+                    proxy.scrollTo(request.anchor ?? "settings.top", anchor: .top)
+                    searchRequest = nil
                 }
             }
-            .padding(.horizontal, 32)
-            .padding(.vertical, 40)
-            .frame(maxWidth: 800, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .groupBoxStyle(SettingsWindowGroupBoxStyle())
         .environment(\.settingsAppForegroundColors, appColors)
         .foregroundStyle(appColors.primary)
         .scrollContentBackground(.hidden)
+        .dismissTextEditingOnOutsideClick()
     }
 
     private var unavailableLibrarySettings: some View {
@@ -216,6 +279,107 @@ struct SettingsView: View {
             description: Text("请先打开资料库。")
         )
         .frame(maxWidth: .infinity, minHeight: 360)
+    }
+
+    private var searchResults: [SettingsSearchEntry] {
+        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+        let windowSkin = SkinRegistry.skin(for: settings.selectedNowPlayingSkinID)
+        let fullscreenSkin = SkinRegistry.fullscreenSkin(for: settings.fullscreen.skinID)
+        let hasFullscreenMiniPlayer = fullscreenSkin.scene == nil
+            || fullscreenSkin.sceneComponents.contains("control.miniPlayer")
+        let usesReferencedLibrary = hasActiveLibrarySession
+            && appSession.activeLibraryBinding.context?.mode == .referenced
+        let hasDuplicates = hasActiveLibrarySession
+            && !(appSession.libraryVM?.diagnostics.duplicateGroups.isEmpty ?? true)
+
+        let availableEntries = SettingsSearchIndex.entries.filter { entry in
+            switch entry.anchor {
+            case "skin.miniplayer" where entry.category == .fullscreen:
+                return hasFullscreenMiniPlayer
+            case "skin.visual":
+                return FullscreenSkinTabView.supportsArtworkScaleControl(for: settings.fullscreen.skinID)
+            case "library.sources", "library.deletion", "library.missing":
+                return usesReferencedLibrary
+            case "library.duplicates":
+                return hasDuplicates
+            default:
+                return true
+            }
+        }
+        var liveEntries = skinSearchEntries(for: windowSkin, surface: .window, category: .nowPlaying)
+            + skinSearchEntries(for: fullscreenSkin, surface: .fullscreen, category: .fullscreen)
+        if usesReferencedLibrary {
+            liveEntries.append(SettingsSearchEntry(
+                "来源同步", category: .data, tab: 0, tabTitle: "后台任务",
+                anchor: "background.task.source-sync", keywords: "文件夹 扫描 来源"
+            ))
+        }
+        return SettingsSearchIndex.results(for: searchText, entries: availableEntries + liveEntries)
+    }
+
+    private func skinSearchEntries(
+        for skin: any NowPlayingSkin,
+        surface: SkinSurface,
+        category: SettingsCategory
+    ) -> [SettingsSearchEntry] {
+        func entry(_ title: String, anchor: String = "skin.options", keywords: String = "", identity: String? = nil) -> SettingsSearchEntry {
+            SettingsSearchEntry(title, category: category, tab: 0, tabTitle: "皮肤",
+                                anchor: anchor, keywords: "\(skin.name) \(keywords)", identity: identity)
+        }
+
+        var result: [SettingsSearchEntry] = []
+        let hasHostBackground = surface == .window
+            ? skin.scene == nil || skin.sceneComponents.contains("background.host")
+            : skin.fullscreenSettingsView == nil && skin.sceneComponents.contains("background.host")
+        if hasHostBackground || (surface == .fullscreen && [ClassicLEDSkin.id, RotatingCoverSkin.id, "kmgccc.cassette"].contains(skin.id)) {
+            result.append(entry("启用艺术背景", keywords: "封面 背景"))
+        }
+
+        switch skin.id {
+        case ClassicLEDSkin.id:
+            result += [entry("风格化封面边缘"), entry("边缘模糊"), entry("皮肤音频可视化", keywords: "频谱 LED 电平")]
+        case RotatingCoverSkin.id:
+            result += [entry("CD 模式", keywords: "唱片"), entry("皮肤音频可视化", keywords: "频谱 LED 电平")]
+        case AppleStyleSkin.skinID:
+            result += [entry("动态背景"), entry("流体速度", keywords: "背景 动画"), entry("皮肤音频可视化", keywords: "频谱 LED 电平")]
+        case "kmgccc.cassette":
+            result += [entry("LED 电平表", keywords: "频谱"), entry(NSLocalizedString("skin.kmgccc_cassette.show_kmg", comment: ""))]
+        case "fullscreen.coverGradientBlur" where surface == .fullscreen:
+            result += [entry("右侧填充"), entry("背景压暗强度", keywords: "亮度")]
+        default:
+            break
+        }
+
+        let hasMiniPlayer = surface == .window
+            ? skin.scene == nil
+            : skin.scene == nil || skin.sceneComponents.contains("control.miniPlayer")
+        if hasMiniPlayer {
+            result.append(entry("Mini Player 音频可视化", anchor: "skin.miniplayer", keywords: "频谱 LED 电平"))
+        }
+
+        if SkinRegistry.customizationEnabled {
+            let definitions = SkinParameterSettingsView.visibleDefinitions(
+                skinID: skin.id, surface: surface, definitions: skin.parameterDefinitions,
+                store: SkinRegistry.catalog.parameters
+            )
+            result += definitions.map {
+                entry($0.title, anchor: "skin.parameter.\($0.id)",
+                      keywords: $0.section ?? "", identity: "parameter:\($0.id)")
+            }
+        }
+        return result
+    }
+
+    private func selectSearchResult(_ result: SettingsSearchEntry) {
+        subpagePath = []
+        selection = result.category
+        selectedSearchResultID = result.id
+        let needsLibrary = [.externalPlayback, .library, .data].contains(result.category)
+        searchRequest = SettingsSearchRequest(
+            category: result.category,
+            tab: result.tab,
+            anchor: needsLibrary && !hasActiveLibrarySession ? nil : result.anchor
+        )
     }
 
     private var appForegroundColors: SettingsAppForegroundColors {

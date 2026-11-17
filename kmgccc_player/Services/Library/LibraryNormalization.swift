@@ -215,24 +215,63 @@ nonisolated enum LibraryNormalization {
 
     static func isUnknownArtist(_ value: String?) -> Bool {
         guard let value else { return true }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return true }
-        let unknownNames: Set<String> = [
-            "未知歌手", "未知艺人", "未知艺术家", "未知", "unknown", "unknown artist", "<unknown>", "none", "n/a", "null"
-        ]
-        if unknownNames.contains(trimmed) { return true }
+        if unknownArtistNames.contains(trimmed.lowercased())
+            || unknownArtistNames.contains(placeholderKey(trimmed))
+        { return true }
         return normalizeArtist(value) == normalizeArtist(nil)
     }
 
     static func isUnknownAlbum(_ value: String?) -> Bool {
         guard let value else { return true }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return true }
-        let unknownNames: Set<String> = [
-            "未知专辑", "未知唱片集", "未标注专辑", "无专辑", "unknown album", "untitled album", "unknown", "<unknown>", "untitled", "none", "n/a", "null"
-        ]
-        if unknownNames.contains(trimmed) { return true }
+        if unknownAlbumNames.contains(trimmed.lowercased())
+            || unknownAlbumNames.contains(placeholderKey(trimmed))
+        { return true }
         return comparisonKey(canonicalAlbumTitle(value)) == comparisonKey(unknownAlbum)
+    }
+
+    /// A provider query built from a placeholder identity is worse than no
+    /// query at all: it narrows the search to nothing and lets a bogus artist
+    /// veto every candidate. These return "" instead, so callers search by
+    /// the fields that do carry information.
+    static func searchSeedArtist(_ value: String?) -> String {
+        guard !isUnknownArtist(value) else { return "" }
+        return value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    static func searchSeedAlbum(_ value: String?) -> String {
+        guard !isUnknownAlbum(value) else { return "" }
+        return value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private static let unknownArtistNames: Set<String> = [
+        "未知歌手", "未知艺人", "未知艺术家", "未知", "群星", "合辑",
+        "unknown", "unknown artist", "unkown", "unkown artist", "<unknown>",
+        "various artists", "various", "v.a.", "va", "none", "n/a", "null",
+    ]
+
+    private static let unknownAlbumNames: Set<String> = [
+        "未知专辑", "未知唱片", "未知唱片集", "未标注专辑", "未命名专辑", "无专辑",
+        "unknown", "unknown album", "untitled", "untitled album", "<unknown>",
+        "none", "n/a", "null",
+    ]
+
+    /// Comparison key for placeholder names: `未知艺人 (Unknown)` and
+    /// `未知专辑、` name the same placeholder as their bare forms.
+    private static func placeholderKey(_ value: String) -> String {
+        var key = value.lowercased()
+        key = key.replacingOccurrences(
+            of: #"[\(（\[【<][^\)）\]】>]*[\)）\]】>]"#,
+            with: "",
+            options: .regularExpression
+        )
+        key = key.trimmingCharacters(
+            in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
+        )
+        return key.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
     }
 
     /// §10.3 evidence-aware album key. Priority: MusicBrainz Release ID wins
@@ -495,11 +534,11 @@ nonisolated enum LibraryNormalization {
         preferredArtistCanonicalName: String?,
         memberArtistCanonicalNames: [String]
     )] {
-        guard tracks.contains(where: { $0.userMetadataOverride?.albumGroupKey != nil }) else {
+        guard tracks.contains(where: { $0.userMetadataOverride?.albumGroupKey != nil || $0.audioProgramAlbum != nil }) else {
             return splitAutomaticAlbumBucket(tracks)
         }
         func assignedKey(_ track: Track) -> String? {
-            track.userMetadataOverride?.albumGroupKey.flatMap {
+            (track.userMetadataOverride?.albumGroupKey ?? track.audioProgramAlbum?.key).flatMap {
                 parseAlbumKey($0).normalizedAlbumTitle == normalizedAlbumKey(album: track.album) ? $0 : nil
             }
         }
@@ -585,22 +624,37 @@ nonisolated enum LibraryNormalization {
             trustedAlbumArtistGroups[artistKey, default: []].append(track)
         }
 
-        if trustedAlbumArtistGroups.count > 1
-            && trustedAlbumArtistGroups.values.flatMap({ $0 }).count == tracks.count
-        {
-            return trustedAlbumArtistGroups
-                .sorted { $0.key < $1.key }
-                .map { artistKey, groupedTracks in
-                    (
-                        key: composeAlbumKey(
-                            album: groupedTracks.first?.album,
-                            disambiguation: .albumArtist(artistKey)
-                        ),
-                        tracks: groupedTracks,
-                        preferredArtistCanonicalName: artistKey,
-                        memberArtistCanonicalNames: memberArtistCanonicalNames(for: groupedTracks)
-                    )
-                }
+        if trustedAlbumArtistGroups.count > 1 {
+            var groups = trustedAlbumArtistGroups
+            var assignedIDs = Set(groups.values.flatMap { $0.map(\.id) })
+            for track in tracks where !assignedIDs.contains(track.id) {
+                let targetKey = primaryArtistClusterKey(for: track)
+                    .flatMap { groups[$0] != nil ? $0 : nil }
+                    ?? groups.max { lhs, rhs in
+                        if lhs.value.count == rhs.value.count {
+                            return lhs.key > rhs.key
+                        }
+                        return lhs.value.count < rhs.value.count
+                    }?.key
+                guard let targetKey else { continue }
+                groups[targetKey, default: []].append(track)
+                assignedIDs.insert(track.id)
+            }
+            if groups.values.flatMap({ $0 }).count == tracks.count {
+                return groups
+                    .sorted { $0.key < $1.key }
+                    .map { artistKey, groupedTracks in
+                        (
+                            key: composeAlbumKey(
+                                album: groupedTracks.first?.album,
+                                disambiguation: .albumArtist(artistKey)
+                            ),
+                            tracks: groupedTracks,
+                            preferredArtistCanonicalName: artistKey,
+                            memberArtistCanonicalNames: memberArtistCanonicalNames(for: groupedTracks)
+                        )
+                    }
+            }
         }
 
         var trustedTrackArtistGroups: [String: [Track]] = [:]
@@ -695,6 +749,12 @@ nonisolated enum LibraryNormalization {
                 }
                 return (preferredKey, displayArtist(preferredTrack.artist))
             }
+        }
+
+        let sourceArtists = tracks.compactMap { $0.audioProgramAlbum?.artist }
+        if let artist = sourceArtists.first, sourceArtists.count == tracks.count,
+           Set(sourceArtists.map(normalizeArtist)).count == 1 {
+            return (normalizeArtist(artist), displayArtist(artist))
         }
 
         let groupedByArtist = Dictionary(grouping: tracks) {

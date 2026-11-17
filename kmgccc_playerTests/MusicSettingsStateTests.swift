@@ -103,6 +103,32 @@ final class MusicSettingsStateTests: XCTestCase {
         await fulfillment(of: [cancelled], timeout: 1)
     }
 
+    func testSlowQuiescenceReportsPendingTaskWithoutReleasingIt() async {
+        let coordinator = LibraryOperationCoordinator(slowQuiescenceDelay: .milliseconds(20))
+        let started = expectation(description: "operation started")
+        let warned = expectation(description: "slow operation reported")
+        warned.assertForOverFulfill = false
+        var continuation: CheckedContinuation<Void, Never>?
+        coordinator.onSlowQuiescence = { kinds in
+            XCTAssertTrue(kinds.contains(.sourceScan))
+            warned.fulfill()
+        }
+        coordinator.start({
+            await withCheckedContinuation { value in
+                continuation = value
+                started.fulfill()
+            }
+        }, kind: .sourceScan)
+        await fulfillment(of: [started], timeout: 1)
+        let drain = Task { await coordinator.quiesceAndWait() }
+        await fulfillment(of: [warned], timeout: 1)
+        XCTAssertFalse(coordinator.taskDescriptors.isEmpty)
+        coordinator.onSlowQuiescence = nil
+        continuation?.resume()
+        await drain.value
+        XCTAssertTrue(coordinator.taskDescriptors.isEmpty)
+    }
+
     func testLocalLibraryBackgroundWritesQuiesceBeforeRootDeletionAndCannotRestart() async throws {
         let root = temporaryLibraryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1043,6 +1069,59 @@ final class MusicSettingsStateTests: XCTestCase {
         )
         XCTAssertEqual(legacyRetrySpec.kind, .sourceRefresh)
         XCTAssertNil(legacyRetrySpec.targetPlaylistID)
+    }
+
+    func testRestartRetainsAllInterruptedJobsBeyondHistoryLimit() async throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = kmgccc_player.LibraryPaths(rootURL: root)
+        try FileManager.default.createDirectory(at: paths.settingsRootURL, withIntermediateDirectories: true)
+        struct Fixture: Codable {
+            let schemaVersion: Int
+            let jobs: [LibraryOperationTaskDescriptor]
+        }
+        let jobs = (0..<125).map { index in
+            LibraryOperationTaskDescriptor(
+                id: UUID(), kind: .sourceScan, libraryID: UUID(), sessionGeneration: 1,
+                state: .running, createdAt: Date(timeIntervalSince1970: TimeInterval(index))
+            )
+        }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(Fixture(schemaVersion: 1, jobs: jobs)).write(to: paths.automationJobsURL)
+        let coordinator = LibraryOperationCoordinator(persistenceURL: paths.automationJobsURL)
+        XCTAssertEqual(coordinator.recentTaskDescriptors.count, jobs.count)
+        XCTAssertTrue(coordinator.recentTaskDescriptors.allSatisfy { $0.state == .failed })
+        let reopened = LibraryOperationCoordinator(persistenceURL: paths.automationJobsURL)
+        XCTAssertEqual(reopened.recentTaskDescriptors.count, jobs.count)
+    }
+
+    func testFlushingCoalescedLiveProgressPersistsLatestCheckpointAndFailures() async throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = kmgccc_player.LibraryPaths(rootURL: root)
+        let coordinator = LibraryOperationCoordinator(persistenceURL: paths.automationJobsURL)
+        let updated = expectation(description: "live task updated")
+        coordinator.start({
+            for index in 0..<50 {
+                coordinator.recordProgress(completedCount: index, totalCount: 50)
+                coordinator.recordCheckpoint("step \(index)")
+            }
+            coordinator.recordPartialFailure("one item failed")
+            updated.fulfill()
+            while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(10)) }
+        }, kind: .enrichment)
+        await fulfillment(of: [updated], timeout: 2)
+        await coordinator.flushPersistence()
+        struct Payload: Decodable { let jobs: [LibraryOperationTaskDescriptor] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let payload = try decoder.decode(Payload.self, from: Data(contentsOf: paths.automationJobsURL))
+        let job = try XCTUnwrap(payload.jobs.first)
+        XCTAssertEqual(job.completedCount, 49)
+        XCTAssertEqual(job.lastCheckpointLabel, "step 49")
+        XCTAssertTrue(job.partialFailureSummaries.contains("one item failed"))
+        await coordinator.cancelAndWait()
     }
 
     func testAutomationStorageBackupRetentionKeepsOnlyTheNewestSnapshot() throws {

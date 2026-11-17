@@ -160,5 +160,6 @@ extension MusicEnrichmentService {
     }
     nonisolated private static func completionMatches(_ a: MusicEnrichmentQuery, _ b: MusicEnrichmentQuery) -> Bool {
         a.title == b.title && a.artist == b.artist && a.album == b.album && abs(a.duration - b.duration) < 0.01
+            && a.sourceAlbumIdentity == b.sourceAlbumIdentity
     }
 }

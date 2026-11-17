@@ -98,13 +98,18 @@ struct FullscreenLeadingControlsPill: View {
     }
 
     private func lyricsVisibilityButton(size: CGFloat) -> some View {
-        let icon = presentation.isShowingLyrics ? "quote.bubble.fill" : "quote.bubble"
-        let helpText: LocalizedStringKey = presentation.isShowingLyrics ? "Hide Lyrics" : "Show Lyrics"
+        let isVideoFullscreen = presentation.isMotionArtworkFullscreenActive
+        let icon = isVideoFullscreen
+            ? "rectangle.compress.vertical"
+            : (presentation.isShowingLyrics ? "quote.bubble.fill" : "quote.bubble")
+        let helpText: LocalizedStringKey = isVideoFullscreen
+            ? "退出视频全屏"
+            : (presentation.isShowingLyrics ? "Hide Lyrics" : "Show Lyrics")
         return leadingControlButton(size: size, help: helpText) {
             Image(systemName: icon)
                 .id(icon)
                 .font(.system(size: size * 0.32, weight: .semibold))
-                .foregroundStyle(presentation.primaryColor.opacity(presentation.hasTrack ? 1 : 0.45))
+                .foregroundStyle(presentation.primaryColor.opacity((presentation.hasTrack || isVideoFullscreen) ? 1 : 0.45))
                 .compositingGroup()
                 .blendMode(presentation.iconBlendMode)
                 .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
@@ -113,8 +118,12 @@ struct FullscreenLeadingControlsPill: View {
                 )
                 .motionAnimation(.microInteraction, value: icon)
         } action: {
-            actions.toggleLyrics()
+            if isVideoFullscreen {
+                actions.exitMotionArtworkFullscreen()
+            } else {
+                actions.toggleLyrics()
+            }
         }
-        .disabled(!presentation.hasTrack)
+        .disabled(!presentation.hasTrack && !isVideoFullscreen)
     }
 }

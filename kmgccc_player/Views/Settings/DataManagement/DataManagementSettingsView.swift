@@ -10,6 +10,7 @@ import SwiftUI
 
 /// Storage and maintenance settings: background work, disk usage and resets.
 struct DataManagementSettingsView: View {
+    @Environment(\.settingsSearchRequest) private var searchRequest
     @State private var selectedTab = 0
 
     var body: some View {
@@ -29,6 +30,9 @@ struct DataManagementSettingsView: View {
             default:
                 ResetSettingsView()
             }
+        }
+        .onChange(of: searchRequest, initial: true) { _, request in
+            if request?.category == .data, let tab = request?.tab { selectedTab = tab }
         }
     }
 }
@@ -58,7 +62,7 @@ struct LibraryEnrichmentSettingsSection: View {
                         get: { settings.deferImportEnrichment },
                         set: { settings.deferImportEnrichment = $0 }
                     ),
-                    info: "导入时先完成文件复制，在后台补全歌词和封面。"
+                    info: "导入时先完成音乐入库，在后台补全歌词和封面。"
                 )
 
                 SettingsSwitchRow(
@@ -97,6 +101,7 @@ private struct ResetSettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var configuredMotionPolicy
+    @Environment(\.settingsSearchRequest) private var searchRequest
 
     @State private var showResetDataAlert: Bool = false
     @State private var isMoreSettingsExpanded: Bool = false
@@ -116,6 +121,7 @@ private struct ResetSettingsView: View {
                         .settingsDescriptionStyle()
                 }
             }
+            .settingsSearchAnchor("reset.main")
 
             // More settings
             SettingsSection("更多设置", headerTrailing: {
@@ -144,6 +150,12 @@ private struct ResetSettingsView: View {
                     Text("包含播放统计数据重置")
                         .settingsDescriptionStyle()
                 }
+            }
+            .settingsSearchAnchor("reset.more")
+        }
+        .onChange(of: searchRequest, initial: true) { _, request in
+            if request?.category == .data, request?.anchor == "reset.more" {
+                isMoreSettingsExpanded = true
             }
         }
         .alert("重置应用设置与状态？", isPresented: $showResetDataAlert) {

@@ -1,4 +1,5 @@
 import Foundation
+import MotionKit
 
 /// Per-evaluation inputs. `locals` holds node-scoped names: `item`, `index`, `count`,
 /// `self`, `parent`, `gesture` and the props of an author template.
@@ -10,8 +11,22 @@ struct SkinEvaluationContext {
     var now: Double = Date.timeIntervalSinceReferenceDate
     /// Size-derived facts of the frame being drawn; the feeds only catch up after the update.
     var live: SkinLiveViewport?
+    /// MotionKit tokens in effect at the node, after any `motion` retuning above it, and
+    /// whether motion is allowed at all.
+    var motionTokens = MotionTokens.standard
+    var moves = true
+    /// The node instance's `follow()` springs; without them `follow()` returns its target.
+    var followers: SkinFollowers?
+    /// Separates the springs of one call site per glyph.
+    var followSlot = 0
 
     func local(_ name: String) -> SkinValue { locals[name] ?? .null }
+
+    /// A token name or a retuning record, resolved against the scene's own tokens too;
+    /// nil when motion is reduced, so motion functions land on their end state.
+    func motionSpec(_ value: SkinValue) -> MotionSpec? {
+        moves ? SkinMotion.spec(value, tokens: motionTokens, custom: data.motion.tokens) : nil
+    }
     var time: Double { data.time(at: now) }
 }
 
@@ -300,6 +315,7 @@ private struct Compiler {
     }
 
     private func call(_ name: String, _ arguments: [CompiledNode]) throws -> CompiledNode {
+        if name == "follow" || name == "followVelocity" { return try follow(name, arguments) }
         guard let function = SkinFunctions.table[name] else {
             let hint = SkinFunctions.table.keys.min { levenshtein($0, name) < levenshtein($1, name) }.map { "，是否指 \($0)()？" } ?? ""
             throw typeError("未知函数“\(name)”\(hint)")
@@ -325,6 +341,26 @@ private struct Compiler {
             capabilities: base.capabilities.union(function.capabilities),
             evaluate: base.evaluate
         )
+    }
+
+    /// `follow(target, token)`: a MotionKit spring for this call site in each node instance (and
+    /// each glyph) that chases `target`, keeping its velocity when the target moves again.
+    /// `followVelocity` reads the same spring's speed, in target units per second.
+    private func follow(_ name: String, _ arguments: [CompiledNode]) throws -> CompiledNode {
+        guard (1...2).contains(arguments.count) else { throw typeError("\(name)() 需要 1 到 2 个参数，这里有 \(arguments.count) 个") }
+        guard arguments[0].type.conforms(to: .number) else { throw typeError("\(name)() 的第 1 个参数需要数字") }
+        let site = SkinFollowSites.next()
+        let target = arguments[0].evaluate
+        let token = arguments.count == 2 ? arguments[1].evaluate : nil
+        let readsVelocity = name == "followVelocity"
+        let base = merge(arguments, type: .number) { context in
+            let goal = target(context).number()
+            guard let followers = context.followers else { return .number(readsVelocity ? 0 : goal) }
+            let spec = context.motionSpec(token?(context) ?? .text(MotionToken.control.rawValue))
+            let state = followers.state(site: site &* 65_536 &+ context.followSlot, target: goal, spec: spec, now: context.now)
+            return .number(SkinFunctions.sanitized(readsVelocity ? state.velocity : state.value))
+        }
+        return CompiledNode(type: .number, tier: .frame, domains: base.domains.union([.follow]), capabilities: base.capabilities, evaluate: base.evaluate)
     }
 }
 

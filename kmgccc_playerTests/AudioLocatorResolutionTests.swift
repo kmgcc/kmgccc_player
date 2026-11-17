@@ -25,6 +25,38 @@ private final class BookmarkResolverSpy: BookmarkResolving, @unchecked Sendable 
 }
 
 final class AudioLocatorResolutionTests: XCTestCase {
+    func testImportedVideoResolvesOnlyItsExtractedAudioAndRoundTripsSourceLineage() throws {
+        let root = try temporaryDirectory()
+        let video = root.appendingPathComponent("movie.mp4")
+        let audio = root.appendingPathComponent("movie.m4a")
+        try Data("movie".utf8).write(to: video)
+        try Data("audio".utf8).write(to: audio)
+        let sourceID = UUID()
+        let fingerprint = try ReferencedFileIdentityProvider().fingerprint(for: video)
+        let locator = ReferencedFileLocator(
+            fileBookmarkData: Data([1]),
+            sourceMemberships: [.init(sourceID: sourceID, relativePath: video.lastPathComponent)],
+            primarySourceID: sourceID, lastKnownPath: audio.path,
+            videoSource: ReferencedVideoSource(path: video.path, fingerprint: fingerprint)
+        )
+        let decoded = try JSONDecoder().decode(ReferencedFileLocator.self, from: JSONEncoder().encode(locator))
+        XCTAssertEqual(decoded, locator)
+        XCTAssertEqual(decoded.locations[0].videoSource, locator.videoSource)
+        let bookmarkResolver = BookmarkResolverSpy(url: audio)
+        let resolver = LocalAudioResourceResolver(
+            paths: LibraryPaths(rootURL: root),
+            authorizedSourceRoots: [sourceID: AuthorizedSourceRoot(url: video, scopeOwner: .none)],
+            bookmarkResolver: bookmarkResolver
+        )
+        let resource = try resolver.resolve(.referenced(decoded))
+        XCTAssertEqual(resource.url, audio)
+        resource.lease.release()
+        XCTAssertEqual(bookmarkResolver.starts, bookmarkResolver.stops)
+        var withoutAudioBookmark = decoded
+        withoutAudioBookmark.fileBookmarkData = Data()
+        XCTAssertThrowsError(try resolver.resolve(.referenced(withoutAudioBookmark)), "A source movie is never an audio fallback")
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

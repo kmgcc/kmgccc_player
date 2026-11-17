@@ -53,7 +53,7 @@ struct SkinPackageSettingsActions: View {
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
-            do { try manager.catalog.developmentDirectories.attach(url) }
+            do { try manager.catalog.developmentDirectories.attachChosen(url) }
             catch { errorMessage = error.localizedDescription }
         }
     }

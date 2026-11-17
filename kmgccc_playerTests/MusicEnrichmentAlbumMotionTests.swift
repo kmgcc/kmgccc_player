@@ -79,4 +79,63 @@ final class MusicEnrichmentAlbumMotionTests: XCTestCase {
         b.query.albumArtist = "Second artist"
         XCTAssertNotEqual(a.motionAlbumIdentity?.key, b.motionAlbumIdentity?.key)
     }
+
+    func testSongLevelMusicVideoDoesNotMigrateToAlbum() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MusicEnrichmentStore(rootURL: root.appendingPathComponent("Enrichment"))
+        let temporary = root.appendingPathComponent("mv.mov")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("mv-content".utf8).write(to: temporary)
+
+        var songRecord = MusicEnrichmentRecord(query: query("SongWithMV", catalog: "album-1"))
+        // song duration is 100s, video duration is 105s -> qualifies as MV
+        let descriptor = MotionArtworkDescriptor(kind: "square", url: "song-mv")
+        let mvAsset = try await store.importMotion(from: temporary, descriptor: descriptor,
+            startTime: 0, duration: 105, queryKey: songRecord.query.key, fileExtension: "mov")
+        songRecord.assets = [try XCTUnwrap(mvAsset)]
+
+        let resolved = try await store.resolveMotion(in: songRecord)
+        // Song keeps its own MV
+        XCTAssertEqual(resolved.assets.count, 1)
+        XCTAssertTrue(resolved.assets[0].relativePath.hasPrefix("Tracks/"))
+        XCTAssertNil(resolved.albumMotionIdentity)
+
+        // Album does NOT adopt the MV
+        let albumState = try await store.albumMotionState(for: songRecord)
+        XCTAssertEqual(albumState?.assets.isEmpty, true)
+
+        // Sibling song in the same album does not receive the MV
+        let sibling = MusicEnrichmentRecord(query: query("SiblingTrack", catalog: "album-1"))
+        let resolvedSibling = try await store.resolveMotion(in: sibling)
+        XCTAssertTrue(resolvedSibling.assets.isEmpty)
+        XCTAssertNil(resolvedSibling.albumMotionIdentity)
+
+        let client = AlbumMotionClient()
+        let service = MusicEnrichmentService(store: store, client: client)
+        let albumResource = try await service.albumMotionResource(for: songRecord.query)
+        XCTAssertNil(albumResource)
+
+        await service.close()
+    }
+
+    func testImportAlbumMotionRejectsMusicVideo() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MusicEnrichmentStore(rootURL: root.appendingPathComponent("Enrichment"))
+        let client = AlbumMotionClient()
+        let service = MusicEnrichmentService(store: store, client: client)
+        let songQuery = query("SongWithMV", catalog: "album-2")
+
+        let candidate = MusicEnrichmentResult(source: "appleWeb", albumID: "album-2", motion: [
+            MotionArtworkDescriptor(kind: "square", url: "https://example.com/square.m3u8")
+        ])
+
+        // AlbumMotionClient returns video with duration: 8. For song duration: 100, 8s is not an MV.
+        // It succeeds.
+        let success = try await service.setAlbumMotion(candidate, for: songQuery)
+        XCTAssertTrue(success)
+
+        await service.close()
+    }
 }

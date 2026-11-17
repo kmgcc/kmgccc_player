@@ -239,10 +239,17 @@ struct MotionArtworkSearchSection: View {
         importValidationTask = Task { @MainActor in
             defer { if !Task.isCancelled { isValidatingImport = false } }
             do {
-                _ = try await cacheServices.musicEnrichmentService.validateMotionVideo(from: pending.url)
+                let validated = try await cacheServices.musicEnrichmentService.validateMotionVideo(from: pending.url)
                 guard !Task.isCancelled else { return }
+                if scope == nil, query.duration > 0, MotionAudioAligner.isMusicVideo(songDuration: query.duration, videoDuration: validated.duration) {
+                    statusMessage = MotionVideoImportError.musicVideoNotAllowedForAlbum.errorDescription
+                    return
+                }
                 importedVideo = pending
                 selection = nil
+                if query.duration > 0, MotionAudioAligner.isMusicVideo(songDuration: query.duration, videoDuration: validated.duration) {
+                    scope?.wrappedValue = .track
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 statusMessage = (error as? MotionVideoImportError)?.errorDescription ?? "无法读取视频。"

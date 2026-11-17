@@ -33,7 +33,7 @@ player-automation history list --track-id 00000000-0000-0000-0000-000000000001 \
 
 ```text
 system ping|info
-automation capabilities|scopes|call <method>
+automation tools|describe <method>|capabilities|scopes|call <method>
 library list|get|tracks|stats|report|bundle-export|selection-list|selection-create|selection-get|selection-delete|import|create|open|switch|rename|relocate|remove
 playlist list|get|create|rename|delete|add|add-selection|remove|replace|reorder|diff|import|export
 source list|get|config-export|config-import|rename|create|bind|exclude|include|watch|unwatch|remove|refresh
@@ -51,6 +51,14 @@ audio get|patch
 audio loudness get|analyze --params-json <object>
 storage inspect|validate|orphans|backup|diff|reload|repair
 ```
+
+方法超过 150 个，按需取用：`automation tools` 每行输出 `method<TAB>标题`（约 5 KB），
+`automation describe <method>` 给出这一个方法的说明、风险等级、所需 scope 与 input schema。
+两者都由 CLI 内置目录生成，不连接 App。
+
+`automation capabilities` 的人类可读输出只列出 scope、说明和方法名清单（约 7 KB）；需要完整
+descriptor 时加 `--json`。方法名写错时错误信息会给出最接近的几个名字，参数名写错时会列出该
+方法接受的参数。
 
 文件操作与 Playlist 分开。`files reveal` 只定位活动 Library 中已授权的音频；
 `files export` 通过 App 文件夹选择器复制音频，保留资料库原件，并避免覆盖同名文件：
@@ -306,9 +314,27 @@ player-automation metadata import --params-file import-request.json --confirm --
 - `--expected-revision` 防止 Library query 跨页漂移或 Playlist/Queue stale write；
   `--idempotency-key` 用于安全重试。
 - `--no-launch` 禁止 LaunchServices 启动 App；`--socket` 可指定测试 socket。
+- 连接超时默认 10 秒；非 read-only 方法放宽到 30 秒，避免 App 忙于资料库工作时把已经生效的
+  写入报成超时。`--timeout` 可覆盖，上限 120 秒。
 
 稳定 exit code：`0` 成功，`2` usage/contract，`3` endpoint/App 不可用，`4` 内部错误，
 `5` authorization，`6` revision conflict，`7` App interaction cancelled/required。
+
+## Agent 技能
+
+App 打开设置页时会把随包技能同步到
+`~/Library/Application Support/<bundle-id>/Automation/skill`。这个目录是一份完整技能包，
+整体复制到 Agent 的技能目录即可使用：
+
+- Codex：`~/.codex/skills`
+- DeepSeek Harness：`~/.dsh/skills`
+- opencode：`~/.config/opencode/skills`
+- Kimi Code：`~/.kimi-code/skills`
+- Qoder：`~/.agents/skills`（opencode 与 Kimi Code 也会读这个通用目录）
+
+设置页的「复制安装指令」给出一段可直接交给 Agent 的说明，由它自己完成复制。技能里记录的
+命令行入口是 `~/Library/Application Support/<bundle-id>/Automation/bin/player-automation`，
+指向 App 包内的 CLI，App 移动位置后由下一次同步更新。
 
 ## Source creation
 

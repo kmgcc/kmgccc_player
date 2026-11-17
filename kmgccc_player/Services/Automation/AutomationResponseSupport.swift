@@ -220,11 +220,18 @@ enum AutomationResponseSupport {
                 )
             )
         }
+        var message = error?.localizedDescription ?? "The request parameters are invalid."
+        if case .unknown? = error as? AutomationParameterError {
+            let accepted = AutomationToolCatalog.acceptedParameters(for: request.method)
+            if !accepted.isEmpty {
+                message += " Accepted: " + accepted.joined(separator: ", ") + "."
+            }
+        }
         return .failure(
             for: request,
             error: AutomationError(
                 code: .invalidRequest,
-                message: error?.localizedDescription ?? "The request parameters are invalid.",
+                message: message,
                 details: error.flatMap { error in
                     guard case let AutomationParameterError.unknown(keys) = error else {
                         return nil
@@ -286,11 +293,15 @@ enum AutomationResponseSupport {
     }
 
     static func unsupportedMethod(for request: AutomationRequest) -> AutomationResponse {
-        .failure(
+        let suggestions = AutomationToolCatalog.suggestions(for: request.method)
+        let hint = suggestions.isEmpty
+            ? ""
+            : " Did you mean " + suggestions.joined(separator: ", ") + "?"
+        return .failure(
             for: request,
             error: AutomationError(
                 code: .methodNotFound,
-                message: "Unsupported automation method: \(request.method)."
+                message: "Unsupported automation method: \(request.method)." + hint
             )
         )
     }

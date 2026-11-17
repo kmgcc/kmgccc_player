@@ -6,10 +6,12 @@ import Foundation
 /// visible surface, so prefetch never creates players or renders hidden skins.
 nonisolated struct MotionArtworkFirstFrame: @unchecked Sendable {
     let image: CGImage
+    let uncroppedImage: CGImage
     let byteCost: Int
 
-    init(image: CGImage, byteCost: Int? = nil) {
+    init(image: CGImage, uncroppedImage: CGImage? = nil, byteCost: Int? = nil) {
         self.image = image
+        self.uncroppedImage = uncroppedImage ?? image
         self.byteCost = byteCost ?? image.bytesPerRow * image.height
     }
 }
@@ -76,6 +78,17 @@ nonisolated final class MotionArtworkFirstFrameCache: @unchecked Sendable {
             entry.access = access
             entries[key] = entry
             return entry.frame.image
+        }
+    }
+
+    func cachedUncroppedFrame(for resource: MotionArtworkResource) -> CGImage? {
+        lock.withLock {
+            let key = Key(resource)
+            guard var entry = entries[key] else { return nil }
+            access &+= 1
+            entry.access = access
+            entries[key] = entry
+            return entry.frame.uncroppedImage
         }
     }
 
@@ -165,6 +178,7 @@ nonisolated final class MotionArtworkFirstFrameCache: @unchecked Sendable {
                     }
                     continuation.resume(returning: MotionArtworkFirstFrame(
                         image: MotionArtworkFrameGeometry.centerSquareCrop(image),
+                        uncroppedImage: image,
                         byteCost: image.bytesPerRow * image.height
                     ))
                 }

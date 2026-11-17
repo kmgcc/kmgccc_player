@@ -104,6 +104,12 @@ struct TrackRowView<MenuContent: View>: View {
     let enableArtworkLoading: Bool
     let allowsMissingRowTap: Bool
     let revealHighlight: Bool
+    /// Album pages show the row's catalog position before the artwork. Other
+    /// lists leave it nil so their layout is unchanged.
+    let leadingIndexText: String?
+    /// Album rows identify a track by its catalog position rather than its
+    /// cover. Lists that show covers keep the default.
+    let showsArtwork: Bool
     let onTap: (_ isShiftPressed: Bool) -> Void
     let onLyricSnippetTap: (() -> Void)?
     let onRowAppear: (() -> Void)?
@@ -159,6 +165,8 @@ struct TrackRowView<MenuContent: View>: View {
         enableArtworkLoading: Bool = true,
         allowsMissingRowTap: Bool = false,
         revealHighlight: Bool = false,
+        leadingIndexText: String? = nil,
+        showsArtwork: Bool = true,
         onTap: @escaping (_ isShiftPressed: Bool) -> Void,
         onLyricSnippetTap: (() -> Void)? = nil,
         onRowAppear: (() -> Void)? = nil,
@@ -179,6 +187,8 @@ struct TrackRowView<MenuContent: View>: View {
         self.enableArtworkLoading = enableArtworkLoading
         self.allowsMissingRowTap = allowsMissingRowTap
         self.revealHighlight = revealHighlight
+        self.leadingIndexText = leadingIndexText
+        self.showsArtwork = showsArtwork
         self.onTap = onTap
         self.onLyricSnippetTap = onLyricSnippetTap
         self.onRowAppear = onRowAppear
@@ -217,7 +227,31 @@ struct TrackRowView<MenuContent: View>: View {
         }
 
         HStack(spacing: Constants.Layout.TrackRow.horizontalSpacing) {
-            artworkView
+            if leadingIndexText != nil || showsArtwork {
+                HStack(spacing: 0) {
+                    if let leadingIndexText {
+                        Text(leadingIndexText)
+                            .font(.system(size: Constants.Layout.TrackRow.lyricSnippetFontSize, weight: .regular))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .foregroundStyle(effectiveRowTertiaryColor)
+                            .frame(
+                                width: Constants.Layout.TrackRow.indexColumnWidth,
+                                alignment: .center
+                            )
+                            // Without a cover the index column opens directly
+                            // onto the text column, which sits one row-spacing
+                            // away. With a cover the reserved gap keeps the
+                            // number centered between the row edge and cover.
+                            .padding(.trailing, showsArtwork ? Constants.Layout.TrackRow.indexColumnSpacing : 0)
+                    }
+
+                    if showsArtwork {
+                        artworkView
+                    }
+                }
+            }
 
             HStack(alignment: .center, spacing: Constants.Layout.TrackRow.textColumnSpacing) {
                 VStack(alignment: .leading, spacing: Constants.Layout.TrackRow.textVerticalSpacing) {
@@ -294,6 +328,11 @@ struct TrackRowView<MenuContent: View>: View {
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
+                // Name the control explicitly. Left to the system, the menu
+                // button and its indicator both surface as "更多", which doubles
+                // the row's accessibility tree and makes VoiceOver announce the
+                // same action twice.
+                .accessibilityLabel(Text("更多操作"))
                 .frame(
                     width: Constants.Layout.TrackRow.trailingMenuHitSize,
                     height: Constants.Layout.TrackRow.trailingMenuHitSize
@@ -302,6 +341,7 @@ struct TrackRowView<MenuContent: View>: View {
                 trailingMenuGlyph
                     .opacity(0.72)
                     .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
         }
         .padding(.vertical, Constants.Layout.TrackRow.verticalPadding)
@@ -406,9 +446,12 @@ struct TrackRowView<MenuContent: View>: View {
     }
 
     private var artworkTintColor: Color? {
-        guard artworkTintMode == .rich, let rowArtworkAccentColor else { return nil }
+        guard artworkTintMode == .rich,
+              let accentColor = rowArtworkAccentColor
+                ?? FastArtworkMemoryCache.shared.accent(forKey: model.highArtworkCacheKey)?.color
+        else { return nil }
         let adjusted = ArtworkColorExtractor.adjustedAccent(
-            from: rowArtworkAccentColor,
+            from: accentColor,
             isDarkMode: colorScheme == .dark
         )
         return ColorRenderingAdapter.makeSwiftUIColor(adjusted)
@@ -428,13 +471,13 @@ struct TrackRowView<MenuContent: View>: View {
     /// launch.
     @MainActor
     private func loadArtworkTint() async {
-        guard enableArtworkLoading,
-              artworkTintMode == .rich,
-              !model.isMissing
-        else {
+        guard artworkTintMode == .rich, !model.isMissing else {
             rowArtworkAccentColor = nil
             return
         }
+
+        // Pausing artwork work must not remove a color already on screen.
+        guard enableArtworkLoading else { return }
 
         let cacheKey = model.highArtworkCacheKey
         if let cached = FastArtworkMemoryCache.shared.accent(forKey: cacheKey) {
@@ -802,6 +845,8 @@ extension TrackRowView: Equatable where MenuContent: View {
             && lhs.enableArtworkLoading == rhs.enableArtworkLoading
             && lhs.allowsMissingRowTap == rhs.allowsMissingRowTap
             && lhs.revealHighlight == rhs.revealHighlight
+            && lhs.leadingIndexText == rhs.leadingIndexText
+            && lhs.showsArtwork == rhs.showsArtwork
             && (lhs.onLyricSnippetTap == nil) == (rhs.onLyricSnippetTap == nil)
             && lhs.rowPrimaryColor == rhs.rowPrimaryColor
             && lhs.rowSecondaryColor == rhs.rowSecondaryColor

@@ -5,6 +5,42 @@
 
 import Foundation
 
+nonisolated struct LibraryMetadataReadError: Error, LocalizedError, Sendable {
+    let fileURL: URL
+    let reason: String
+    let additionalFiles: [URL]
+
+    init(fileURL: URL, reason: String, additionalFiles: [URL] = []) {
+        self.fileURL = fileURL
+        self.reason = reason
+        self.additionalFiles = additionalFiles
+    }
+
+    var errorDescription: String? {
+        let allFiles = [fileURL] + additionalFiles
+        let files = allFiles.prefix(5).map(\.path).joined(separator: "\n")
+        let remainder = allFiles.count > 5 ? "\n另有 \(allFiles.count - 5) 个文件" : ""
+        return "资料库文件无法读取或格式不兼容：\n\(files)\(remainder)\n请检查访问权限或从备份恢复。"
+    }
+}
+
+nonisolated struct ReferencedSourceIssue: Sendable, Equatable, Identifiable {
+    let sourceID: UUID?
+    let directoryURL: URL
+    let descriptorURL: URL
+    let reason: String
+
+    var id: String { directoryURL.path }
+}
+
+nonisolated struct ReferencedSourceInventory: Sendable, Equatable {
+    let descriptors: [ReferencedSourceDescriptor]
+    let issues: [ReferencedSourceIssue]
+    /// Visible entries under Sources that are not UUID source directories.
+    /// They are never loaded; diagnostics may still point at them.
+    let unexpectedEntries: [URL]
+}
+
 actor ReferencedSourceStore {
     nonisolated let paths: LibraryPaths
     private let fileManager: FileManager
@@ -21,22 +57,90 @@ actor ReferencedSourceStore {
         decoder.dateDecodingStrategy = .iso8601
     }
 
+    /// Read-only inventory. Never upgrades, rewrites, or moves a descriptor,
+    /// so a caller can report every broken source before any repair.
+    func inspectAll() throws -> ReferencedSourceInventory {
+        let inventory = try loadInventory()
+        return ReferencedSourceInventory(
+            descriptors: inventory.loaded.map(\.descriptor).sorted { $0.createdAt < $1.createdAt },
+            issues: inventory.failures.map(\.issue),
+            unexpectedEntries: inventory.unexpectedEntries
+        )
+    }
+
     func loadAll() throws -> [ReferencedSourceDescriptor] {
-        guard fileManager.fileExists(atPath: paths.sourcesRootURL.path) else { return [] }
+        let inventory = try loadInventory()
+        if let first = inventory.failures.first {
+            throw LibraryMetadataReadError(
+                fileURL: first.issue.descriptorURL,
+                reason: first.issue.reason,
+                additionalFiles: inventory.failures.dropFirst().map(\.issue.descriptorURL)
+            )
+        }
+        // Validate every descriptor before starting any schema upgrade. A
+        // broken source must not cause earlier sources to be rewritten during
+        // an otherwise unsuccessful library open.
+        for item in inventory.loaded where item.needsUpgrade {
+            do { try upgrade(item) }
+            catch {
+                throw LibraryMetadataReadError(
+                    fileURL: paths.sourceDescriptorURL(for: item.descriptor.id),
+                    reason: error.localizedDescription
+                )
+            }
+        }
+        return inventory.loaded.map(\.descriptor).sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private typealias LoadedSource = (
+        descriptor: ReferencedSourceDescriptor,
+        needsUpgrade: Bool,
+        originalData: Data
+    )
+
+    private func loadInventory() throws -> (
+        loaded: [LoadedSource],
+        failures: [(issue: ReferencedSourceIssue, error: String)],
+        unexpectedEntries: [URL]
+    ) {
+        guard fileManager.fileExists(atPath: paths.sourcesRootURL.path) else {
+            return ([], [], [])
+        }
         let children = try fileManager.contentsOfDirectory(
             at: paths.sourcesRootURL,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         )
-        return try children.compactMap { child in
-            guard (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
-                  let id = UUID(uuidString: child.lastPathComponent) else { return nil }
-            let descriptorURL = paths.sourceDescriptorURL(for: id)
-            guard fileManager.fileExists(atPath: descriptorURL.path) else {
-                throw ReferencedSourceStoreError.incompleteSource(id)
+        var loaded: [LoadedSource] = []
+        var failures: [(issue: ReferencedSourceIssue, error: String)] = []
+        var unexpected: [URL] = []
+        for child in children.sorted(by: { $0.path < $1.path }) {
+            guard let id = UUID(uuidString: child.lastPathComponent) else {
+                unexpected.append(child)
+                continue
             }
-            return try load(id: id)
-        }.sorted { $0.createdAt < $1.createdAt }
+            let descriptorURL = paths.sourceDescriptorURL(for: id)
+            do {
+                guard try child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
+                    throw ReferencedSourceStoreError.incompleteSource(id)
+                }
+                guard fileManager.fileExists(atPath: descriptorURL.path) else {
+                    throw ReferencedSourceStoreError.incompleteSource(id)
+                }
+                loaded.append(try decode(id: id))
+            } catch {
+                failures.append((
+                    ReferencedSourceIssue(
+                        sourceID: id,
+                        directoryURL: child,
+                        descriptorURL: descriptorURL,
+                        reason: error.localizedDescription
+                    ),
+                    error.localizedDescription
+                ))
+            }
+        }
+        return (loaded, failures, unexpected)
     }
 
     func contains(id: UUID) -> Bool {
@@ -44,6 +148,12 @@ actor ReferencedSourceStore {
     }
 
     func load(id: UUID) throws -> ReferencedSourceDescriptor {
+        let decoded = try decode(id: id)
+        if decoded.needsUpgrade { try upgrade(decoded) }
+        return decoded.descriptor
+    }
+
+    private func decode(id: UUID) throws -> (descriptor: ReferencedSourceDescriptor, needsUpgrade: Bool, originalData: Data) {
         let data = try Data(contentsOf: paths.sourceDescriptorURL(for: id))
         if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             guard let schema = object["schemaVersion"] as? Int else {
@@ -61,12 +171,15 @@ actor ReferencedSourceStore {
         }
         let descriptor = try decoder.decode(ReferencedSourceDescriptor.self, from: data)
         let validated = try validate(descriptor, expectedID: id)
-        if schemaVersion(in: data) < ReferencedSourceDescriptor.currentSchemaVersion {
-            // Upgrade one descriptor at a time. The caller can continue even
-            // if another source is unavailable; each write is atomic.
-            try save(validated)
+        return (validated, schemaVersion(in: data) < ReferencedSourceDescriptor.currentSchemaVersion, data)
+    }
+
+    private func upgrade(_ item: (descriptor: ReferencedSourceDescriptor, needsUpgrade: Bool, originalData: Data)) throws {
+        let url = paths.sourceDescriptorURL(for: item.descriptor.id)
+        guard try Data(contentsOf: url) == item.originalData else {
+            throw ReferencedSourceStoreError.sourceChanged(item.descriptor.id)
         }
-        return validated
+        try save(item.descriptor)
     }
 
     func save(_ descriptor: ReferencedSourceDescriptor) throws {

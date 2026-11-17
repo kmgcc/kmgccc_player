@@ -46,7 +46,16 @@ final class SmartPlaybackController {
     private(set) var isShuffleEnabled: Bool = false
 
     /// The current source pool of tracks.
-    private var sourceTracks: [Track] = []
+    private var sourceTracks: [Track] = [] {
+        didSet {
+            sourceTracksByID.removeAll(keepingCapacity: true)
+            sourceTracksByID.reserveCapacity(sourceTracks.count)
+            for track in sourceTracks where sourceTracksByID[track.id] == nil {
+                sourceTracksByID[track.id] = track
+            }
+        }
+    }
+    private var sourceTracksByID: [UUID: Track] = [:]
 
     /// Current track index in source array (for non-shuffle mode).
     private var currentSourceIndex: Int = -1
@@ -115,7 +124,7 @@ final class SmartPlaybackController {
             )
             session.start(from: tracks[index].id, tracks: tracks)
             session.trackLoader = { [weak self] trackID in
-                self?.sourceTracks.first { $0.id == trackID }
+                self?.sourceTracksByID[trackID]
             }
             shuffleSession = session
         } else {
@@ -167,11 +176,14 @@ final class SmartPlaybackController {
 
         if enabled {
             // Enable shuffle: create session from current position.
-            let session = ShuffleSession(sourceTrackIDs: sourceTracks.map { $0.id })
-            let currentID = currentSourceIndex >= 0 ? sourceTracks[currentSourceIndex].id : nil
+            let session = ShuffleSession(
+                sourceTrackIDs: sourceTracks.map { $0.id },
+                preferenceStatsService: preferenceStatsService
+            )
+            let currentID = sourceTracks.indices.contains(currentSourceIndex) ? sourceTracks[currentSourceIndex].id : nil
             session.start(from: currentID, tracks: sourceTracks)
             session.trackLoader = { [weak self] trackID in
-                self?.sourceTracks.first { $0.id == trackID }
+                self?.sourceTracksByID[trackID]
             }
             shuffleSession = session
         } else {
@@ -229,7 +241,7 @@ final class SmartPlaybackController {
     var currentTrack: Track? {
         if isShuffleEnabled, let session = shuffleSession,
            let trackID = session.currentTrackID {
-            return sourceTracks.first { $0.id == trackID }
+            return sourceTracksByID[trackID]
         }
         guard currentSourceIndex >= 0, currentSourceIndex < sourceTracks.count else { return nil }
         return sourceTracks[currentSourceIndex]
@@ -243,7 +255,7 @@ final class SmartPlaybackController {
 
         if isShuffleEnabled, let session = shuffleSession {
             guard let nextID = session.next() else { return }
-            nextTrack = sourceTracks.first { $0.id == nextID }
+            nextTrack = sourceTracksByID[nextID]
         } else {
             let nextIndex = currentSourceIndex + 1
             if nextIndex < sourceTracks.count {
@@ -277,7 +289,7 @@ final class SmartPlaybackController {
 
         if isShuffleEnabled, let session = shuffleSession {
             guard let prevID = session.previous() else { return }
-            prevTrack = sourceTracks.first { $0.id == prevID }
+            prevTrack = sourceTracksByID[prevID]
         } else {
             let prevIndex = currentSourceIndex - 1
             if prevIndex >= 0 {
@@ -307,7 +319,7 @@ final class SmartPlaybackController {
 
         if isShuffleEnabled, let session = shuffleSession {
             guard let nextID = session.next() else { return nil }
-            nextTrack = sourceTracks.first { $0.id == nextID }
+            nextTrack = sourceTracksByID[nextID]
         } else {
             let nextIndex = currentSourceIndex + 1
             if nextIndex < sourceTracks.count {
@@ -334,7 +346,7 @@ final class SmartPlaybackController {
     func peekNextForGapless() -> Track? {
         if isShuffleEnabled, let session = shuffleSession {
             guard let nextID = session.peekNext(count: 1).first else { return nil }
-            return sourceTracks.first { $0.id == nextID }
+            return sourceTracksByID[nextID]
         }
         let nextIndex = currentSourceIndex + 1
         guard nextIndex >= 0, nextIndex < sourceTracks.count else { return nil }
@@ -354,7 +366,7 @@ final class SmartPlaybackController {
         let nextTrack: Track?
         if isShuffleEnabled, let session = shuffleSession {
             nextTrack = session.peekNext(count: 1).first.flatMap { id in
-                sourceTracks.first { $0.id == id }
+                sourceTracksByID[id]
             }
         } else {
             let nextIndex = currentSourceIndex + 1
@@ -683,7 +695,7 @@ final class SmartPlaybackController {
         // Handle save request from stats service.
         if let trackIDs = notification.userInfo?["trackIDs"] as? [UUID] {
             for trackID in trackIDs {
-                if let track = sourceTracks.first(where: { $0.id == trackID }) {
+                if let track = sourceTracksByID[trackID] {
                     libraryService.writeMetaOnlyInBackground(for: track, reason: "playbackStats")
                 }
             }
@@ -700,9 +712,10 @@ final class SmartPlaybackController {
             return sourceTracks
         }
         
-        // Shuffle mode: get the full generated sequence
+        // The source index changes with the queue, rather than being rebuilt
+        // by every presentation, prefetch and queue-display query.
         let sequenceIDs = session.getFullSequence()
-        return sequenceIDs.compactMap { id in sourceTracks.first { $0.id == id } }
+        return sequenceIDs.compactMap { sourceTracksByID[$0] }
     }
     
     /// Get the current track's index in the queue display order.
@@ -719,7 +732,7 @@ final class SmartPlaybackController {
     /// Jump to a specific track in the queue without reshuffling.
     /// For shuffle mode, maintains the session stability.
     func jumpToTrackInQueue(_ track: Track) {
-        guard sourceTracks.contains(where: { $0.id == track.id }) else { return }
+        guard sourceTracksByID[track.id] != nil else { return }
         
         finalizeCurrentPlaybackSession(reason: .userJumpWithinQueue)
         
@@ -750,7 +763,7 @@ final class SmartPlaybackController {
 
         // Shuffle mode: use session's peek.
         let upcomingIDs = session.peekNext(count: count)
-        return upcomingIDs.compactMap { id in sourceTracks.first { $0.id == id } }
+        return upcomingIDs.compactMap { sourceTracksByID[$0] }
     }
 
     /// Get previous tracks (for UI history).
@@ -765,7 +778,7 @@ final class SmartPlaybackController {
 
         // Shuffle mode: use session's peek.
         let previousIDs = session.peekPrevious(count: count)
-        return previousIDs.compactMap { id in sourceTracks.first { $0.id == id } }
+        return previousIDs.compactMap { sourceTracksByID[$0] }
     }
 
     private func playNextInsertionIndex(in queue: [Track], currentIndex: Int) -> Int {

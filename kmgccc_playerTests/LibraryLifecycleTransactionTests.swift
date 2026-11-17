@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import kmgccc_player
 
 @MainActor
@@ -400,6 +401,57 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         )
     }
 
+    func testActiveRelocationRegistryFailureClosesDestinationBeforeRollback() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let source = fixture.root.appendingPathComponent("source")
+        let manifest = try fixture.makeLibrary(at: source, mode: .managed)
+        _ = try await fixture.openService.open(selectedURL: source)
+        let parent = fixture.root.appendingPathComponent("destination")
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        fixture.registryFailure.arm()
+
+        await XCTAssertThrowsErrorAsync(
+            try await fixture.relocationService().relocate(libraryID: manifest.libraryID, toParent: parent)
+        ) { error in
+            XCTAssertEqual(error as? LibraryRelocationError, .registryCommitFailed)
+        }
+
+        XCTAssertEqual(fixture.controller.activeLibraryContext?.id, manifest.libraryID)
+        XCTAssertEqual(fixture.controller.activeLibraryContext?.rootURL, source.standardizedFileURL)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: parent.appendingPathComponent(LibraryPaths.rootDirectoryName).path
+        ))
+        let stored = await fixture.registry.snapshot()
+        XCTAssertEqual(
+            stored.library(id: manifest.libraryID)?.lastKnownPath,
+            source.standardizedFileURL.path
+        )
+    }
+
+    func testInactiveLibraryWithWriterLeaseCannotBeMovedOrRecycled() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let source = fixture.root.appendingPathComponent("busy")
+        let manifest = try fixture.makeLibrary(at: source, mode: .managed)
+        try await fixture.registerWithoutActivation(root: source, manifest: manifest)
+        let lease = try LibraryWriterLease.acquire(paths: LibraryPaths(rootURL: source))
+        defer { lease.release() }
+        let parent = fixture.root.appendingPathComponent("destination")
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+
+        await XCTAssertThrowsErrorAsync(
+            try await fixture.relocationService().relocate(libraryID: manifest.libraryID, toParent: parent)
+        ) { XCTAssertTrue($0 is LibraryWriterLeaseError) }
+        await XCTAssertThrowsErrorAsync(
+            try await fixture.removalService().moveToTrash(libraryID: manifest.libraryID)
+        ) { XCTAssertTrue($0 is LibraryWriterLeaseError) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parent.appendingPathComponent(LibraryPaths.rootDirectoryName).path))
+        let registry = await fixture.registry.snapshot()
+        XCTAssertNotNil(registry.library(id: manifest.libraryID))
+    }
+
     func testRelocationLoadFailureRemovesDestinationAndRestoresOldSessionRegistry() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -550,14 +602,287 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         fixture.factory.sabotageRegistryOnNextLoad = await fixture.registry.fileURL
 
         await XCTAssertThrowsErrorAsync(try await fixture.openService.open(selectedURL: root)) {
-            XCTAssertEqual($0 as? LibraryOpenError, .activationFailed)
+            XCTAssertEqual($0 as? LibraryOpenError, .registryCommitFailed)
         }
         XCTAssertNil(fixture.controller.activeLibraryContext)
         let registry = await fixture.registry.snapshot()
         XCTAssertTrue(registry.libraries.isEmpty)
     }
 
-    func testCreationActivationFailureDeletesDestinationAndRestoresRegistry() async throws {
+    func testFailedSourceCheckAfterActivationKeepsLibraryOpen() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("referenced")
+        _ = try fixture.makeLibrary(at: root, mode: .referenced)
+        let opened = try await fixture.openService.open(selectedURL: root)
+        let registryBefore = await fixture.registry.snapshot()
+        let paths = opened.context.paths
+        // A disconnected or changed source index after activation is an
+        // ancillary failure, not a failed library opening.
+        try FileManager.default.removeItem(at: paths.sourcesRootURL)
+        try Data("unreadable source directory".utf8).write(to: paths.sourcesRootURL)
+
+        let sourceIDs = await LibraryOpenService.unavailableReferencedSourceIDs(in: ReferencedSourceStore(paths: paths))
+
+        XCTAssertNil(sourceIDs)
+        XCTAssertEqual(fixture.controller.activeLibraryContext, opened.context)
+        let registryAfter = await fixture.registry.snapshot()
+        XCTAssertEqual(registryAfter, registryBefore)
+    }
+
+    func testSuccessfulEmptySourceCheckIsDistinctFromFailure() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("referenced")
+        _ = try fixture.makeLibrary(at: root, mode: .referenced)
+        let sourceIDs = await LibraryOpenService.unavailableReferencedSourceIDs(in: ReferencedSourceStore(paths: LibraryPaths(rootURL: root)))
+        XCTAssertEqual(sourceIDs, [])
+    }
+
+    func testOpenCurrentLibraryThroughSymlinkKeepsExistingSession() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("library")
+        _ = try fixture.makeLibrary(at: root, mode: .managed)
+        let opened = try await fixture.openService.open(selectedURL: root)
+        let sessionBefore = fixture.controller.activeSession
+        let alias = fixture.root.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: root)
+
+        let reopened = try await fixture.openService.open(selectedURL: alias)
+
+        XCTAssertTrue(fixture.controller.activeSession === sessionBefore)
+        XCTAssertEqual(reopened.context, opened.context)
+        XCTAssertFalse(reopened.didRegister)
+        let registry = await fixture.registry.snapshot()
+        XCTAssertEqual(registry.libraries.count, 1)
+    }
+
+    func testRootLeaseAcceptsBookmarkResolvingSymlinkToSameDirectory() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("library")
+        let manifest = try fixture.makeLibrary(at: root, mode: .managed)
+        let alias = fixture.root.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: root)
+        let context = LibraryContext(
+            manifest: manifest, rootURL: alias,
+            rootBookmarkData: try fixture.bookmarks.refreshBookmark(for: root), generation: 1
+        )
+        let lease = try LibraryRootAccessLease(context: context, resolver: fixture.bookmarks, requiresSecurityScope: true)
+        lease.release()
+        XCTAssertEqual(
+            lease.rootURL.resolvingSymlinksInPath().standardizedFileURL.path,
+            root.resolvingSymlinksInPath().standardizedFileURL.path
+        )
+        XCTAssertEqual(fixture.bookmarks.startCount, fixture.bookmarks.stopCount)
+    }
+
+    func testExplicitOpenRejectsStorageModeChangeForRegisteredIdentity() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("library")
+        let manifest = try fixture.makeLibrary(at: root, mode: .managed)
+        let opened = try await fixture.openService.open(selectedURL: root)
+        let registryBefore = await fixture.registry.snapshot()
+        let changed = kmgccc_player.MusicLibraryManifest(libraryID: manifest.libraryID, displayName: "Changed", mode: .referenced)
+        try changed.write(to: opened.context.paths.manifestURL)
+
+        await XCTAssertThrowsErrorAsync(try await fixture.openService.open(selectedURL: root)) {
+            XCTAssertEqual($0 as? LibraryOpenError, .reconnectModeMismatch(expected: .managed, actual: .referenced))
+        }
+        XCTAssertEqual(fixture.controller.activeLibraryContext, opened.context)
+        let registryAfter = await fixture.registry.snapshot()
+        XCTAssertEqual(registryAfter, registryBefore)
+    }
+
+    func testBusyOpenPathsDoNotInspectOrRepairLibrary() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("library")
+        let manifest = try fixture.makeLibrary(at: root, mode: .managed)
+        _ = try await fixture.openService.open(selectedURL: root)
+        let registryBefore = await fixture.registry.snapshot()
+        let settings = LibraryPaths(rootURL: root).librarySettingsURL
+        try FileManager.default.removeItem(at: settings)
+        try fixture.gate.acquire()
+        defer { fixture.gate.release() }
+
+        await XCTAssertThrowsErrorAsync(try await fixture.openService.open(selectedURL: root)) {
+            XCTAssertEqual($0 as? LibraryOpenError, .transactionInProgress)
+        }
+        await XCTAssertThrowsErrorAsync(try await fixture.openService.activateRegisteredLibrary(id: manifest.libraryID)) {
+            XCTAssertEqual($0 as? LibraryOpenError, .transactionInProgress)
+        }
+        await XCTAssertThrowsErrorAsync(try await fixture.openService.reconnectRegisteredLibrary(id: manifest.libraryID, selectedURL: root)) {
+            XCTAssertEqual($0 as? LibraryOpenError, .transactionInProgress)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: settings.path))
+        let registryAfter = await fixture.registry.snapshot()
+        XCTAssertEqual(registryAfter, registryBefore)
+    }
+
+    func testActivationRejectsRootReplacedAfterInspection() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let currentRoot = fixture.root.appendingPathComponent("current")
+        _ = try fixture.makeLibrary(at: currentRoot, mode: .managed)
+        let current = try await fixture.openService.open(selectedURL: currentRoot)
+        let targetRoot = fixture.root.appendingPathComponent("target")
+        _ = try fixture.makeLibrary(at: targetRoot, mode: .managed)
+        let inspection = try await fixture.openService.inspect(selectedURL: targetRoot)
+        let registryBefore = await fixture.registry.snapshot()
+        let replacement = kmgccc_player.MusicLibraryManifest(displayName: "Replacement", mode: .managed)
+        try replacement.write(to: inspection.context.paths.manifestURL)
+
+        await XCTAssertThrowsErrorAsync(try await fixture.openService.commitActivation(inspection)) {
+            XCTAssertEqual($0 as? LibraryOpenError, .libraryChanged)
+        }
+        XCTAssertEqual(fixture.controller.activeLibraryContext, current.context)
+        let registryAfter = await fixture.registry.snapshot()
+        XCTAssertEqual(registryAfter, registryBefore)
+        XCTAssertEqual(try kmgccc_player.MusicLibraryManifest.read(from: inspection.context.paths.manifestURL).libraryID, replacement.libraryID)
+    }
+
+    func testActivationRejectsBookmarkRedirectedAfterInspection() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let targetRoot = fixture.root.appendingPathComponent("target")
+        _ = try fixture.makeLibrary(at: targetRoot, mode: .managed)
+        let inspection = try await fixture.openService.inspect(selectedURL: targetRoot)
+        let otherRoot = fixture.root.appendingPathComponent("other")
+        _ = try fixture.makeLibrary(at: otherRoot, mode: .managed)
+        fixture.bookmarks.redirect(inspection.context.rootBookmarkData, to: otherRoot)
+
+        await XCTAssertThrowsErrorAsync(try await fixture.openService.commitActivation(inspection)) {
+            XCTAssertEqual($0 as? LibraryOpenError, .libraryChanged)
+        }
+        XCTAssertNil(fixture.controller.activeLibraryContext)
+        let registry = await fixture.registry.snapshot()
+        XCTAssertTrue(registry.libraries.isEmpty)
+    }
+
+    func testReopeningInspectedContextRejectsDifferentLibraryAtSamePath() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("library")
+        _ = try fixture.makeLibrary(at: root, mode: .managed)
+        let inspected = try await fixture.openService.inspect(selectedURL: root)
+        let replacement = kmgccc_player.MusicLibraryManifest(displayName: "Replacement", mode: .managed)
+        try replacement.write(to: inspected.context.paths.manifestURL)
+        // Identity must survive the UI handoff, which performs a fresh open.
+        await XCTAssertThrowsErrorAsync(try await fixture.openService.open(selectedURL: root, expectedContext: inspected.context)) {
+            XCTAssertEqual($0 as? LibraryOpenError, .libraryChanged)
+        }
+        XCTAssertNil(fixture.controller.activeSession)
+        let registry = await fixture.registry.snapshot()
+        XCTAssertTrue(registry.libraries.isEmpty)
+    }
+
+    func testRegistryFailureBeforeSwitchKeepsExistingSession() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let oldRoot = fixture.root.appendingPathComponent("old")
+        _ = try fixture.makeLibrary(at: oldRoot, mode: .managed)
+        _ = try await fixture.openService.open(selectedURL: oldRoot)
+        let sessionBefore = fixture.controller.activeSession
+        let registryBefore = await fixture.registry.snapshot()
+        let targetRoot = fixture.root.appendingPathComponent("target")
+        _ = try fixture.makeLibrary(at: targetRoot, mode: .managed)
+        fixture.registryFailure.arm()
+
+        await XCTAssertThrowsErrorAsync(try await fixture.openService.open(selectedURL: targetRoot)) {
+            XCTAssertEqual($0 as? LibraryOpenError, .registryCommitFailed)
+        }
+        XCTAssertTrue(fixture.controller.activeSession === sessionBefore)
+        let registryAfter = await fixture.registry.snapshot()
+        XCTAssertEqual(registryAfter, registryBefore)
+    }
+
+    func testRegisteredActivationFailureRestoresSessionAndRegistry() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let oldRoot = fixture.root.appendingPathComponent("old")
+        _ = try fixture.makeLibrary(at: oldRoot, mode: .managed)
+        let old = try await fixture.openService.open(selectedURL: oldRoot)
+        let targetRoot = fixture.root.appendingPathComponent("target")
+        let target = try fixture.makeLibrary(at: targetRoot, mode: .managed)
+        try await fixture.registerWithoutActivation(root: targetRoot, manifest: target)
+        let registryBefore = await fixture.registry.snapshot()
+        fixture.factory.failNextLoadForNewRoot = true
+
+        await XCTAssertThrowsErrorAsync(try await fixture.openService.activateRegisteredLibrary(id: target.libraryID)) {
+            XCTAssertEqual($0 as? LibraryOpenError, .activationFailed)
+        }
+        XCTAssertEqual(fixture.controller.activeLibraryContext, old.context)
+        let registryAfter = await fixture.registry.snapshot()
+        XCTAssertEqual(registryAfter, registryBefore)
+    }
+
+    func testFailedSessionRecoveryStillRollsBackRegistry() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let oldRoot = fixture.root.appendingPathComponent("old")
+        _ = try fixture.makeLibrary(at: oldRoot, mode: .managed)
+        _ = try await fixture.openService.open(selectedURL: oldRoot)
+        let registryBefore = await fixture.registry.snapshot()
+        let targetRoot = fixture.root.appendingPathComponent("target")
+        _ = try fixture.makeLibrary(at: targetRoot, mode: .managed)
+        fixture.factory.failingLoadRoots = [oldRoot, targetRoot]
+
+        await XCTAssertThrowsErrorAsync(try await fixture.openService.open(selectedURL: targetRoot)) {
+            XCTAssertEqual($0 as? LibraryOpenError, .recoveryFailed)
+        }
+        XCTAssertNil(fixture.controller.activeSession)
+        let registryAfter = await fixture.registry.snapshot()
+        XCTAssertEqual(registryAfter, registryBefore)
+    }
+
+    func testActivePointerAlreadyCommittedDoesNotWriteAgain() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("library")
+        let manifest = try fixture.makeLibrary(at: root, mode: .managed)
+        _ = try await fixture.openService.open(selectedURL: root)
+        fixture.registryFailure.arm()
+
+        try await fixture.registry.setActiveLibrary(id: manifest.libraryID, manifestMode: .managed)
+        // The injected failure remains for the next real write.
+        await XCTAssertThrowsErrorAsync(try await fixture.registry.updateDisplayName(libraryID: manifest.libraryID, displayName: "Changed")) {
+            XCTAssertTrue($0 is TestError)
+        }
+    }
+
+    func testLibraryOpenMessagesDistinguishValidationActivationAndRecovery() {
+        let invalid = LibraryOpenFailure.message(for: LibraryOpenError.invalidManifest)
+        let activation = LibraryOpenFailure.message(for: LibraryOpenError.activationFailed)
+        let recovery = LibraryOpenFailure.message(for: LibraryOpenError.recoveryFailed)
+        let registry = LibraryOpenFailure.message(for: LibraryOpenError.registryCommitFailed)
+        XCTAssertTrue(invalid.contains("格式"))
+        XCTAssertTrue(activation.contains("加载失败"))
+        XCTAssertTrue(recovery.contains("恢复失败"))
+        XCTAssertTrue(registry.contains("保存"))
+        XCTAssertEqual(Set([invalid, activation, recovery, registry]).count, 4)
+        let writerError = LibraryWriterLeaseError.libraryInUse(URL(fileURLWithPath: "/library"))
+        XCTAssertEqual(LibraryOpenFailure.message(for: writerError), writerError.localizedDescription)
+    }
+
+    func testStartupDoesNotReplaceLibraryForBusyCancelledOrRegistryFailure() {
+        let errors: [any Error] = [
+            LibraryOpenError.transactionInProgress,
+            LibraryLifecycleTransactionGateError.transactionInProgress,
+            LibraryOpenError.registryCommitFailed,
+            LibraryOpenError.recoveryFailed,
+            CancellationError(),
+            LibraryWriterLeaseError.libraryInUse(URL(fileURLWithPath: "/library"))
+        ]
+        for error in errors {
+            XCTAssertFalse(LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error), "\(error)")
+        }
+        XCTAssertTrue(LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: LibraryOpenError.invalidManifest))
+    }
+
+    func testCreationActivationFailureRetainsPublishedDestinationAndRestoresRegistry() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         let parent = fixture.root.appendingPathComponent("parent")
@@ -566,10 +891,30 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(
             try await fixture.creationService().create(mode: .managed, parentURL: parent, displayName: "New")
         ) { XCTAssertEqual($0 as? LibraryCreationError, .sessionActivationFailed) }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: parent.appendingPathComponent("kmgccc_player Library - New").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: parent.appendingPathComponent("kmgccc_player Library - New").path))
         let registry = await fixture.registry.snapshot()
         XCTAssertTrue(registry.libraries.isEmpty)
         XCTAssertNil(fixture.controller.activeLibraryContext)
+    }
+
+    func testCreationFailurePreservesDestinationReplacedByAnotherLibrary() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let parent = fixture.root.appendingPathComponent("parent")
+        let destination = parent.appendingPathComponent("kmgccc_player Library - New")
+        let replacement = kmgccc_player.MusicLibraryManifest(displayName: "Replacement", mode: .managed)
+        fixture.factory.beforeNextMake = { context in
+            try replacement.write(to: context.paths.manifestURL)
+            try Data("keep".utf8).write(to: context.rootURL.appendingPathComponent("keep.txt"))
+        }
+        fixture.factory.failNextLoadForNewRoot = true
+
+        await XCTAssertThrowsErrorAsync(try await fixture.creationService().create(mode: .managed, parentURL: parent, displayName: "New")) {
+            XCTAssertEqual($0 as? LibraryCreationError, .sessionActivationFailed)
+        }
+        XCTAssertEqual(try kmgccc_player.MusicLibraryManifest.read(from: LibraryPaths(rootURL: destination).manifestURL).libraryID, replacement.libraryID)
+        XCTAssertEqual(try String(contentsOf: destination.appendingPathComponent("keep.txt"), encoding: .utf8), "keep")
+        XCTAssertNil(fixture.controller.activeSession)
     }
 
     func testNonactiveRelocationRegistryFailureRestoresSourceRegistryAndNilSession() async throws {
@@ -655,6 +1000,94 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         try await fileOperator.rollbackRelocation(from: staging, to: source, transfer: transfer)
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+    }
+
+    func testRelocationValidationDetectsSameSizeChangedContent() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("library")
+        let manifest = try fixture.makeLibrary(at: root, mode: .managed)
+        let audio = root.appendingPathComponent("audio.bin")
+        try Data("first".utf8).write(to: audio)
+        let fileOperator = ProductionLibraryLifecycleFileOperator()
+        let authority = try await fileOperator.captureRelocationAuthority(at: root)
+        try Data("other".utf8).write(to: audio)
+        await XCTAssertThrowsErrorAsync(
+            try await fileOperator.validateRelocation(at: root, expectedAuthority: authority, expectedID: manifest.libraryID, expectedMode: manifest.mode)
+        ) { XCTAssertEqual($0 as? LibraryRelocationError, .validationFailed) }
+    }
+
+    func testRelocationValidationDetectsChangedHiddenFilesAndSymlinks() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("library")
+        let manifest = try fixture.makeLibrary(at: root, mode: .managed)
+        let hidden = root.appendingPathComponent(".user-data")
+        try Data("first".utf8).write(to: hidden)
+        let link = root.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "first-target")
+        let fileOperator = ProductionLibraryLifecycleFileOperator()
+        let authority = try await fileOperator.captureRelocationAuthority(at: root)
+        try Data("other".utf8).write(to: hidden)
+        await XCTAssertThrowsErrorAsync(
+            try await fileOperator.validateRelocation(at: root, expectedAuthority: authority, expectedID: manifest.libraryID, expectedMode: manifest.mode)
+        ) { XCTAssertEqual($0 as? LibraryRelocationError, .validationFailed) }
+        try Data("first".utf8).write(to: hidden)
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "other-target")
+        await XCTAssertThrowsErrorAsync(
+            try await fileOperator.validateRelocation(at: root, expectedAuthority: authority, expectedID: manifest.libraryID, expectedMode: manifest.mode)
+        ) { XCTAssertEqual($0 as? LibraryRelocationError, .validationFailed) }
+    }
+
+    func testLegacyRelocationSnapshotWithoutDigestsDecodes() throws {
+        let data = Data(#"{"relativeAuthorityFiles":[],"fileCount":0}"#.utf8)
+        let snapshot = try JSONDecoder().decode(LibraryRelocationAuthoritySnapshot.self, from: data)
+        XCTAssertNil(snapshot.fileDigests)
+        XCTAssertEqual(snapshot.fileCount, 0)
+    }
+
+    func testRelocationSnapshotRejectsSpecialFilesWithoutReadingThem() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("library")
+        _ = try fixture.makeLibrary(at: root, mode: .managed)
+        let fifo = root.appendingPathComponent("pipe")
+        XCTAssertEqual(Darwin.mkfifo(fifo.path, 0o600), 0)
+        let fileOperator = ProductionLibraryLifecycleFileOperator()
+        await XCTAssertThrowsErrorAsync(try await fileOperator.captureRelocationAuthority(at: root)) {
+            XCTAssertEqual($0 as? LibraryRelocationError, .validationFailed)
+        }
+    }
+
+    func testSQLiteValidationRejectsLargeOutputAndTimesOut() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("library")
+        let manifest = try fixture.makeLibrary(at: root, mode: .managed)
+        try Data().write(to: root.appendingPathComponent("test.sqlite"))
+        let executable = fixture.root.appendingPathComponent("sqlite-check")
+        func install(_ body: String) throws {
+            try Data(("#!/bin/sh\n" + body + "\n").utf8).write(to: executable)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        }
+        try install("while :; do printf 'integrity error\\n'; done")
+        let noisy = ProductionLibraryLifecycleFileOperator(sqliteExecutableURL: executable, sqliteCheckTimeout: 5)
+        let authority = try await noisy.captureRelocationAuthority(at: root)
+        let clock = ContinuousClock()
+        let noisyStart = clock.now
+        await XCTAssertThrowsErrorAsync(
+            try await noisy.validateRelocation(at: root, expectedAuthority: authority, expectedID: manifest.libraryID, expectedMode: manifest.mode)
+        ) { XCTAssertEqual($0 as? LibraryRelocationError, .validationFailed) }
+        XCTAssertLessThan(noisyStart.duration(to: clock.now), .seconds(3))
+
+        try install("while :; do :; done")
+        let hung = ProductionLibraryLifecycleFileOperator(sqliteExecutableURL: executable, sqliteCheckTimeout: 0.2)
+        let start = clock.now
+        await XCTAssertThrowsErrorAsync(
+            try await hung.validateRelocation(at: root, expectedAuthority: authority, expectedID: manifest.libraryID, expectedMode: manifest.mode)
+        ) { XCTAssertEqual($0 as? LibraryRelocationError, .validationFailed) }
+        XCTAssertLessThan(start.duration(to: clock.now), .seconds(3))
     }
 
     func testOpenRepairsMissingScaffoldingFromInPlaceMigration() async throws {
@@ -796,9 +1229,7 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         let root = fixture.root.appendingPathComponent("library")
         let manifest = try fixture.makeLibrary(at: root, mode: .managed, displayName: "Before")
         try await fixture.registerWithoutActivation(root: root, manifest: manifest)
-        let registryURL = await fixture.registry.fileURL
-        try FileManager.default.removeItem(at: registryURL)
-        try FileManager.default.createDirectory(at: registryURL, withIntermediateDirectories: false)
+        fixture.registryFailure.arm()
 
         await XCTAssertThrowsErrorAsync(
             try await fixture.removalService().updateDisplayName(libraryID: manifest.libraryID, displayName: "After")
@@ -889,7 +1320,7 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
     }
 
-    func testCrossVolumePreparedReplayRemovesOnlyMatchingOrphan() async throws {
+    func testCrossVolumePreparedReplayPreservesOrphanForRecovery() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         let source = fixture.root.appendingPathComponent("source")
@@ -925,7 +1356,12 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         let didReplay = try await service.replayPendingRepair()
         XCTAssertTrue(didReplay)
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staging.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: journal.path))
+        XCTAssertEqual(
+            service.preservedRecoveryCopies.map { $0.resolvingSymlinksInPath().standardizedFileURL.path },
+            [staging.resolvingSymlinksInPath().standardizedFileURL.path]
+        )
     }
 
     func testRelocationReplayFinishesRegistryCommittedPhaseAfterRelaunch() async throws {
@@ -935,6 +1371,7 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         let manifest = try fixture.makeLibrary(at: source, mode: .managed)
         try await fixture.registerWithoutActivation(root: source, manifest: manifest)
         let before = await fixture.registry.snapshot()
+        let staleRegistry = try MusicLibraryRegistryStore(fileURL: fixture.registry.fileURL)
         let parent = fixture.root.appendingPathComponent("destination")
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         let staging = parent.appendingPathComponent(".relocation-staging")
@@ -951,7 +1388,12 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
             authority: authority,
             registryBefore: before
         )
-        intent.transfer = try await fileOperator.relocate(from: source, toStaging: staging)
+        _ = try await fileOperator.relocate(from: source, toStaging: staging)
+        // Simulate a cross-volume move whose original path was reused.
+        intent.transfer = .copiedAcrossVolumes
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        let replacement = source.appendingPathComponent("new-user-file")
+        try Data("keep".utf8).write(to: replacement)
         try await fileOperator.publishStaging(at: staging, to: destination)
         let bookmark = try fixture.bookmarks.refreshBookmark(for: destination)
         intent.destinationBookmark = bookmark
@@ -962,9 +1404,12 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         committed.libraries[index].rootBookmarkData = bookmark
         committed.libraries[index].lastKnownPath = destination.path
         try await fixture.registry.replaceSnapshot(committed)
+        let unrelated = fixture.root.appendingPathComponent("unrelated")
+        let unrelatedManifest = try fixture.makeLibrary(at: unrelated, mode: .referenced)
+        try await fixture.registerWithoutActivation(root: unrelated, manifest: unrelatedManifest)
 
         let service = LibraryRelocationService(
-            registryStore: fixture.registry,
+            registryStore: staleRegistry,
             sessionController: fixture.controller,
             sessionValidator: LibrarySessionFactoryValidator(factory: fixture.factory),
             bookmarkResolver: fixture.bookmarks,
@@ -974,10 +1419,13 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         let didReplay = try await service.replayPendingRepair()
         XCTAssertTrue(didReplay)
         XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertEqual(try Data(contentsOf: replacement), Data("keep".utf8))
         XCTAssertFalse(FileManager.default.fileExists(atPath: journal.path))
         let registryAfter = await fixture.registry.snapshot()
         XCTAssertEqual(registryAfter.library(id: manifest.libraryID)?.lastKnownPath, destination.path)
+        XCTAssertNotNil(registryAfter.library(id: unrelatedManifest.libraryID))
+        let replayRegistry = await staleRegistry.snapshot()
+        XCTAssertEqual(replayRegistry.library(id: manifest.libraryID)?.lastKnownPath, destination.path)
     }
 
     func testRelocationReplayStopsOnForeignStagingIdentity() async throws {
@@ -1207,13 +1655,71 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
             bookmarkResolver: fixture.bookmarks
         ).resolve()
 
-        XCTAssertEqual(resolution, .noActive)
+        guard case .context(let selected) = resolution else {
+            return XCTFail("Expected the selected custom library to remain active")
+        }
+        XCTAssertEqual(selected.id, custom.libraryID)
         let registry = await fixture.registry.snapshot()
         XCTAssertNil(registry.library(id: old.libraryID))
         XCTAssertEqual(registry.activeLibraryID, custom.libraryID)
         XCTAssertEqual(registry.pendingFactoryDefaultReplacement, true)
         XCTAssertEqual(try Data(contentsOf: LibraryPaths(rootURL: customRoot).manifestURL), customManifestBefore)
         XCTAssertTrue(FileManager.default.fileExists(atPath: trashRoot.path))
+    }
+
+    func testRelaunchPrefersSelectedLegacyLibraryWithPendingDefaultReplacement() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let customRoot = fixture.root.appendingPathComponent("custom")
+        let custom = try fixture.makeLibrary(at: customRoot, mode: .referenced)
+        let manifestURL = LibraryPaths(rootURL: customRoot).manifestURL
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+        object["createdAt"] = "2026-01-02T03:04:05.123456Z"
+        object["updatedAt"] = "2026-01-02T03:04:05.123456Z"
+        let legacyManifestData = try JSONSerialization.data(withJSONObject: object)
+        try legacyManifestData.write(to: manifestURL)
+        try await fixture.registerWithoutActivation(root: customRoot, manifest: custom)
+        let defaultRoot = fixture.root.appendingPathComponent(LibraryPaths.rootDirectoryName)
+        let fallback = try fixture.makeLibrary(at: defaultRoot, mode: .referenced)
+        try await fixture.registerWithoutActivation(root: defaultRoot, manifest: fallback)
+        try await fixture.registry.setActiveLibrary(id: custom.libraryID, manifestMode: custom.mode)
+        var saved = await fixture.registry.snapshot()
+        saved.pendingFactoryDefaultReplacement = true
+        try await fixture.registry.replaceSnapshot(saved)
+
+        let registryURL = await fixture.registry.fileURL
+        let relaunchedRegistry = try MusicLibraryRegistryStore(fileURL: registryURL)
+        let resolution = await LibraryStartupContextResolver(
+            registryStore: relaunchedRegistry, bookmarkResolver: fixture.bookmarks
+        ).resolve()
+
+        guard case .context(let selected) = resolution else {
+            return XCTFail("Expected the persisted selected library to open despite deferred default maintenance")
+        }
+        XCTAssertEqual(selected.id, custom.libraryID)
+        XCTAssertEqual(
+            selected.rootURL.resolvingSymlinksInPath().standardizedFileURL.path,
+            customRoot.resolvingSymlinksInPath().standardizedFileURL.path
+        )
+        let after = await relaunchedRegistry.snapshot()
+        XCTAssertEqual(after.activeLibraryID, custom.libraryID)
+        XCTAssertEqual(after.libraries.count, 2)
+        XCTAssertEqual(try Data(contentsOf: manifestURL), legacyManifestData)
+        try await relaunchedRegistry.setActiveLibrary(id: selected.id, manifestMode: selected.mode)
+        let activated = await relaunchedRegistry.snapshot()
+        XCTAssertNil(activated.pendingFactoryDefaultReplacement)
+    }
+
+    func testManifestDateCompatibilityStillRejectsMalformedDates() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("library")
+        _ = try fixture.makeLibrary(at: root, mode: .managed)
+        let url = LibraryPaths(rootURL: root).manifestURL
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        object["createdAt"] = "invalid-date"
+        try JSONSerialization.data(withJSONObject: object).write(to: url)
+        XCTAssertThrowsError(try MusicLibraryManifest.read(from: url))
     }
 
     func testDeletingInactiveDefaultRequestsReplacementAndPreservesActiveCustomLibrary() async throws {
@@ -1547,11 +2053,22 @@ private final class LifecycleTestBookmarkResolver: kmgccc_player.BookmarkResolvi
 @MainActor
 private final class LifecycleTestSessionFactory: kmgccc_player.LibrarySessionBuilding {
     var failNextLoadForNewRoot = false
+    var failingLoadRoots: Set<URL> = []
     var sabotageRegistryOnNextLoad: URL?
+    var beforeNextMake: ((kmgccc_player.LibraryContext) throws -> Void)?
     private var lastLoadedRoot: URL?
 
     func makeSession(for context: kmgccc_player.LibraryContext) async throws -> any kmgccc_player.LibrarySessionLifecycle {
-        let shouldFail = failNextLoadForNewRoot && context.rootURL != lastLoadedRoot
+        let beforeMake = beforeNextMake
+        beforeNextMake = nil
+        try beforeMake?(context)
+        let canonicalRoot = context.rootURL.resolvingSymlinksInPath().standardizedFileURL
+        let canonicalFailureRoots = Set(failingLoadRoots.map {
+            $0.resolvingSymlinksInPath().standardizedFileURL
+        })
+        let shouldFail = canonicalFailureRoots.contains(canonicalRoot)
+            || (failNextLoadForNewRoot && canonicalRoot != lastLoadedRoot?
+                .resolvingSymlinksInPath().standardizedFileURL)
         if shouldFail { failNextLoadForNewRoot = false }
         let sabotageURL = sabotageRegistryOnNextLoad
         sabotageRegistryOnNextLoad = nil
@@ -1803,5 +2320,255 @@ final class LibraryMetadataOrphanCleanupTests: XCTestCase {
             isOrphaned: isOrphaned,
             hasUserEditedContent: hasUserEditedContent
         )
+    }
+}
+
+/// Read-only repair inspection and the explicit quarantine action that moves
+/// provably broken records into the library's Recovery folder.
+@MainActor
+final class LibraryRepairQuarantineTests: XCTestCase {
+    func testInspectionAggregatesSourceAndJournalFailures() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        try makeValidSource(in: fixture.paths)
+        let brokenSourceID = UUID()
+        try FileManager.default.createDirectory(
+            at: fixture.paths.sourceRootURL(for: brokenSourceID),
+            withIntermediateDirectories: true
+        )
+        let pendingURL = fixture.paths.pendingTransactionsRootURL.appendingPathComponent("broken.json")
+        try Data("not json".utf8).write(to: pendingURL)
+
+        let report = await LibraryRepairInspector.inspect(rootURL: fixture.paths.rootURL)
+
+        XCTAssertEqual(report.libraryID, fixture.manifest.libraryID)
+        XCTAssertTrue(report.issues.contains {
+            $0.kind == .source
+                && $0.path.resolvingSymlinksInPath().standardizedFileURL.path
+                    == fixture.paths.sourceDescriptorURL(for: brokenSourceID)
+                        .resolvingSymlinksInPath().standardizedFileURL.path
+        }, "source issue missing: \(report.issues)")
+        XCTAssertTrue(report.issues.contains {
+            $0.kind == .transaction
+                && $0.path.resolvingSymlinksInPath().standardizedFileURL.path
+                    == pendingURL.resolvingSymlinksInPath().standardizedFileURL.path
+        }, "transaction issue missing: \(report.issues)")
+        XCTAssertEqual(report.blockingIssues.count, 2, "blocking: \(report.blockingIssues)")
+        XCTAssertTrue(report.canQuarantineAndRetry, "quarantinable: \(report.quarantinableIssues)")
+        XCTAssertEqual(report.trackCount, 0)
+    }
+
+    func testQuarantinePreservesBrokenRecordsUnderRecovery() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let validSource = try makeValidSource(in: fixture.paths)
+        let brokenSourceID = UUID()
+        let brokenSourceURL = fixture.paths.sourceRootURL(for: brokenSourceID)
+        try FileManager.default.createDirectory(at: brokenSourceURL, withIntermediateDirectories: true)
+        try Data("keep me".utf8).write(to: brokenSourceURL.appendingPathComponent("note.txt"))
+        let pendingURL = fixture.paths.pendingTransactionsRootURL.appendingPathComponent("broken.json")
+        try Data("broken record".utf8).write(to: pendingURL)
+
+        let report = await LibraryRepairInspector.inspect(rootURL: fixture.paths.rootURL)
+        let result = LibraryRepairQuarantineService(rootURL: fixture.paths.rootURL).quarantine(
+            report.issues.filter { $0.quarantineTarget != nil },
+            libraryID: report.libraryID
+        )
+
+        XCTAssertEqual(result.moved.count, 2)
+        XCTAssertTrue(result.failed.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: brokenSourceURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pendingURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: fixture.paths.sourceDescriptorURL(for: validSource.id).path
+        ))
+        let recoveredSources = try FileManager.default.contentsOfDirectory(
+            at: fixture.paths.recoverySourcesRootURL,
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(recoveredSources.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: recoveredSources[0].appendingPathComponent("note.txt").path
+        ))
+        let recoveredTransactions = try FileManager.default.contentsOfDirectory(
+            at: fixture.paths.recoveryTransactionsRootURL,
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(recoveredTransactions.count, 1)
+        XCTAssertEqual(
+            try Data(contentsOf: recoveredTransactions[0]),
+            Data("broken record".utf8)
+        )
+
+        let after = await LibraryRepairInspector.inspect(rootURL: fixture.paths.rootURL)
+        XCTAssertTrue(after.issues.isEmpty)
+    }
+
+    func testQuarantineSkipsRecordThatNowLoads() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let sourceID = UUID()
+        let directory = fixture.paths.sourceRootURL(for: sourceID)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let descriptorURL = fixture.paths.sourceDescriptorURL(for: sourceID)
+        try Data("not json".utf8).write(to: descriptorURL)
+        let report = await LibraryRepairInspector.inspect(rootURL: fixture.paths.rootURL)
+        let issue = try XCTUnwrap(report.issues.first { $0.kind == .source })
+
+        // The source became readable after inspection. Quarantine must not
+        // treat the stale report as proof that it is still broken.
+        let descriptor = ReferencedSourceDescriptor(
+            id: sourceID,
+            rootBookmarkData: Data("bookmark".utf8),
+            lastKnownPath: "/Music",
+            displayName: "Music"
+        )
+        try await ReferencedSourceStore(paths: fixture.paths).save(descriptor)
+
+        let result = LibraryRepairQuarantineService(rootURL: fixture.paths.rootURL).quarantine(
+            [issue],
+            libraryID: report.libraryID
+        )
+        XCTAssertTrue(result.moved.isEmpty)
+        XCTAssertEqual(result.skipped, [directory])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: descriptorURL.path))
+    }
+
+    func testResidueCleanupDeletesOnlyVerifiedAudioOnlyFolder() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("residue-cleanup-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = LibraryPaths(rootURL: root)
+        try paths.createRequiredDirectories()
+        let trackID = UUID()
+        let folder = paths.trackFolderURL(for: trackID)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("audio".utf8).write(to: folder.appendingPathComponent("audio.mp3"))
+        try ImportTrackFolderMarker(trackID: trackID, sessionID: UUID()).write(to: folder)
+
+        let report = LibraryMaintenanceService().cleanupFailedImportTrackDirectories(
+            tracksRootURL: paths.tracksRootURL,
+            referencedTrackIDs: [],
+            importActivity: LibraryImportActivitySnapshot(isImporting: false, activeTrackIDs: []),
+            reason: "test"
+        )
+
+        XCTAssertEqual(report.deletedCount, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: paths.tracksRootURL.path)
+        XCTAssertTrue(siblings.isEmpty)
+    }
+
+    func testResidueCleanupKeepsUnmarkedAudioFolder() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("residue-cleanup-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = LibraryPaths(rootURL: root)
+        try paths.createRequiredDirectories()
+        let trackID = UUID()
+        let folder = paths.trackFolderURL(for: trackID)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("user content".utf8).write(to: folder.appendingPathComponent("audio.mp3"))
+
+        let report = LibraryMaintenanceService().cleanupFailedImportTrackDirectories(
+            tracksRootURL: paths.tracksRootURL,
+            referencedTrackIDs: [],
+            importActivity: LibraryImportActivitySnapshot(isImporting: false, activeTrackIDs: []),
+            reason: "test"
+        )
+
+        XCTAssertEqual(report.deletedCount, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path))
+    }
+
+    func testResidueCleanupKeepsFolderWhoseAudioIsNotARegularFile() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("residue-cleanup-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = LibraryPaths(rootURL: root)
+        try paths.createRequiredDirectories()
+        let trackID = UUID()
+        let folder = paths.trackFolderURL(for: trackID)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let target = root.appendingPathComponent("elsewhere.mp3")
+        try Data("audio".utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(
+            at: folder.appendingPathComponent("audio.mp3"),
+            withDestinationURL: target
+        )
+        try ImportTrackFolderMarker(trackID: trackID, sessionID: UUID()).write(to: folder)
+
+        let report = LibraryMaintenanceService().cleanupFailedImportTrackDirectories(
+            tracksRootURL: paths.tracksRootURL,
+            referencedTrackIDs: [],
+            importActivity: LibraryImportActivitySnapshot(isImporting: false, activeTrackIDs: []),
+            reason: "test"
+        )
+
+        XCTAssertEqual(report.deletedCount, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.path))
+    }
+
+    func testStagingDiscardRequiresTheManifestCreatedByThisTransaction() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("staging-discard-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let operatorUnderTest = ProductionLibraryLifecycleFileOperator(
+            sqliteExecutableURL: URL(fileURLWithPath: "/usr/bin/sqlite3"),
+            sqliteCheckTimeout: 1
+        )
+        let manifest = MusicLibraryManifest(displayName: "New", mode: .managed)
+        let staging = root.appendingPathComponent(".kmgccc-player-library-\(UUID().uuidString)")
+        try await operatorUnderTest.createStagedLibrary(at: staging, manifest: manifest)
+
+        await XCTAssertThrowsErrorAsync(
+            try await operatorUnderTest.discardOwnedStaging(
+                at: staging,
+                expectedLibraryID: UUID()
+            )
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staging.path))
+
+        try await operatorUnderTest.discardOwnedStaging(
+            at: staging,
+            expectedLibraryID: manifest.libraryID
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+    }
+
+    private struct RepairFixture {
+        let root: URL
+        let paths: LibraryPaths
+        let manifest: MusicLibraryManifest
+        func cleanup() { try? FileManager.default.removeItem(at: root) }
+    }
+
+    private func makeFixture() throws -> RepairFixture {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("library-repair-\(UUID().uuidString)", isDirectory: true)
+        let paths = LibraryPaths(rootURL: root)
+        try paths.createRequiredDirectories()
+        let manifest = MusicLibraryManifest(displayName: "Repair", mode: .referenced)
+        try manifest.write(to: paths.manifestURL)
+        try LibraryScopedSettingsFile.save(LibraryScopedSettings(), to: paths.librarySettingsURL)
+        return RepairFixture(root: root, paths: paths, manifest: manifest)
+    }
+
+    @discardableResult
+    private func makeValidSource(in paths: LibraryPaths) throws -> ReferencedSourceDescriptor {
+        let source = ReferencedSourceDescriptor(
+            rootBookmarkData: Data("bookmark".utf8),
+            lastKnownPath: "/Music",
+            displayName: "Music"
+        )
+        try FileManager.default.createDirectory(
+            at: paths.sourceRootURL(for: source.id),
+            withIntermediateDirectories: true
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(source).write(to: paths.sourceDescriptorURL(for: source.id))
+        return source
     }
 }

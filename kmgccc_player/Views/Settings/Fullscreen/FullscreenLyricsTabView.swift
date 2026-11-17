@@ -42,16 +42,21 @@ struct FullscreenLyricsTabView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
             appearanceSection
+                .settingsSearchAnchor("lyrics.appearance")
             springSection
+                .settingsSearchAnchor("lyrics.spring")
             fontsSection
+                .settingsSearchAnchor("lyrics.fonts")
 
             if !presentationStyle.usesMaterialSectionCards {
                 previewSection
+                    .settingsSearchAnchor("lyrics.preview")
             }
 
             LyricsTimingConfigSection()
                 .environment(settings)
                 .environment(lyricsVM)
+                .settingsSearchAnchor("lyrics.timing")
         }
         .onAppear {
             syncStateFromSettings()
@@ -85,7 +90,7 @@ struct FullscreenLyricsTabView: View {
                     isOn: $amllDiscreteWordHighlightEnabled,
                     titleFont: presentationStyle.rowLabelFont,
                     titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors),
-                    info: "开启后歌词逐字亮起而不是扫光。"
+                    info: "开启后歌词逐字亮起。"
                 )
             }
         }

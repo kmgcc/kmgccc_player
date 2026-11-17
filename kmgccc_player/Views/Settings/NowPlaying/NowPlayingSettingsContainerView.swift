@@ -13,6 +13,7 @@ struct NowPlayingSettingsContainerView: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsSearchRequest) private var searchRequest
 
     @State private var selectedTab = 0
     private let tabs = ["皮肤", "歌词"]
@@ -30,6 +31,9 @@ struct NowPlayingSettingsContainerView: View {
             default:
                 NowPlayingGeneralTabView()
             }
+        }
+        .onChange(of: searchRequest, initial: true) { _, request in
+            if request?.category == .nowPlaying, let tab = request?.tab { selectedTab = tab }
         }
     }
 }

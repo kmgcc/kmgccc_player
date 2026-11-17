@@ -263,7 +263,7 @@ private struct MusicPreferenceResetDialogView: View {
         case .finalConfirmation:
             return "最后确认：全库所选播放统计数据将被清空或重置，此操作不可撤销。"
         case .running:
-            return "后台处理中，设置页不会触发额外整库重复扫描。"
+            return "正在处理所选项目。"
         case .result:
             return "已完成全库处理，可在结果摘要中查看成功与失败数量。"
         }
@@ -322,7 +322,7 @@ private struct MusicPreferenceResetDialogView: View {
 
                 SettingsTaskOptionToggle(
                     title: "清理旧版残留与废弃缓存",
-                    detail: "仅清理统计相关的旧顶层残留与废弃缓存，不影响歌曲正常统计数据。",
+                    detail: "清理统计相关的旧顶层残留与废弃缓存。",
                     isOn: $viewModel.options.cleanupLegacyResiduals
                 )
             }

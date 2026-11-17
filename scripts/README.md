@@ -31,7 +31,7 @@ CONFIGURATION=Release ./scripts/build_and_run.sh
 ### `build_app.sh`
 
 构建 App 并执行 bundle 完整性检查，默认保留 DerivedData 缓存。该入口显式禁用本机构建扩展；需要全新构建时使用 `CLEAN_BUILD=1`，也可通过 `DERIVED_DATA_PATH` 指定独立目录。
-构建前后都会检查 MelismaKit 的依赖来源；本机默认要求本地 NativeLyrics，干净 checkout 的远程构建需显式设置
+构建前后都会检查 MelismaKit 的依赖来源；本机默认要求本地 MelismaKit，干净 checkout 的远程构建需显式设置
 `MELISMAKIT_EXPECTED_SOURCE=remote`。
 
 用户协议和隐私政策位于受版本控制的 `kmgccc_player/LegalDocuments/`，属于公开且必需的运行资源；不要用本机忽略目录替代它们。
@@ -91,7 +91,7 @@ OUTPUT_DIR=/tmp/kmgccc-player-release \
 ### check-melismakit-dependency.sh
 
 检查 App 的 Swift Package 依赖图和实际编译日志。默认的本机测试要求工程指向相邻的
-`NativeLyrics` 本地 checkout；远程 `Package.resolved` 中的旧 pin 不会因为修改组件源码而自动更新。
+`MelismaKit` 本地 checkout；远程 `Package.resolved` 中的旧 pin 不会因为修改组件源码而自动更新。
 
 ```sh
 ./scripts/check-melismakit-dependency.sh --require-local
@@ -100,7 +100,7 @@ OUTPUT_DIR=/tmp/kmgccc-player-release \
 ```
 
 `build_and_run.sh` 默认执行本地检查并保存 verbose build log；只有明确进行远程依赖构建时才设置
-`MELISMAKIT_EXPECTED_SOURCE=remote`。构建日志必须显示 `NativeLyrics/Sources/MelismaKit`，不能只显示
+`MELISMAKIT_EXPECTED_SOURCE=remote`。构建日志必须显示 `MelismaKit/Sources/MelismaKit`，不能只显示
 `SourcePackages/checkouts/melismakit`。
 
 ### check-ui-consistency.sh

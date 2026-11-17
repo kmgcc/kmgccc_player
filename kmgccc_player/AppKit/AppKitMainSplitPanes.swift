@@ -45,6 +45,8 @@ struct AppKitMainSidebarPaneRoot: View {
                 .tint(ThemeStore.shared.accentColor)
                 .accentColor(ThemeStore.shared.accentColor)
                 .preferredColorScheme(AppSettings.shared.colorScheme)
+        } else if appSession.isLibraryTransitioning {
+            LibraryLoadingIndicator()
         } else if appSession.hasCompletedInitialSetup {
             // Setup finished without an active library: keep the sidebar and
             // content pane in the same explicit recovery state instead of
@@ -57,6 +59,13 @@ struct AppKitMainSidebarPaneRoot: View {
     }
 }
 
+private struct LibraryLoadingIndicator: View {
+    var body: some View {
+        ProgressView("正在加载音乐资料库")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 /// Recovery state shown only while the lifecycle owner is repairing the active
 /// library. A normal empty library is rendered by HomeView and is never
 /// represented as "没有音乐资料库".
@@ -66,39 +75,66 @@ private struct NoLibraryContentPane: View {
     var body: some View {
         ZStack {
             ThemedBaseBackgroundColorView()
-            if appSession.hasCompletedInitialSetup {
-                emptyState
+            if appSession.isLibraryTransitioning {
+                LibraryLoadingIndicator()
+            } else if appSession.hasCompletedInitialSetup {
+                recoveryState
             } else {
                 ProgressView("正在打开资料库…")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .preferredColorScheme(AppSettings.shared.colorScheme)
         .task { appSession.autoPresentLibrarySetupIfNeeded() }
     }
 
-    private var emptyState: some View {
-        ContentUnavailableView {
-            Label("资料库暂时无法打开", systemImage: "externaldrive.badge.xmark")
-        } description: {
-            Text("重试，或打开一个已有资料库。")
-        } actions: {
-            HStack(spacing: 12) {
-                if appSession.isRetryingLibraryStartup {
+    /// Laid out explicitly rather than with `ContentUnavailableView`: the
+    /// failure reason is the only explanation the user gets for a library that
+    /// could not open, so it has to render in every appearance and system
+    /// version.
+    private var recoveryState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "externaldrive.badge.xmark")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(.secondary)
+
+            Text("资料库暂时无法打开")
+                .font(.title3.weight(.semibold))
+
+            Text(appSession.libraryStartupFailureMessage ?? "重试，或打开一个已有资料库。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
+
+            if appSession.isRetryingLibraryStartup {
+                HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
                     Text("正在重试…")
                         .foregroundStyle(.secondary)
-                } else {
+                }
+                .padding(.top, 10)
+            } else {
+                HStack(spacing: 10) {
                     Button("重试") {
                         Task { await appSession.retryLibraryStartup() }
                     }
                     .buttonStyle(.borderedProminent)
+                    .buttonBorderShape(.capsule)
+
+                    Button("检查资料库") {
+                        appSession.presentLibraryRepair()
+                    }
+                    .audioDSPCapsuleButtonStyle()
 
                     Button("打开资料库…") { openLibraryPanel() }
-                        .buttonStyle(.bordered)
+                        .audioDSPCapsuleButtonStyle()
                 }
+                .padding(.top, 10)
             }
         }
+        .padding(32)
     }
 
     private func openLibraryPanel() {
@@ -115,8 +151,10 @@ private struct NoLibraryContentPane: View {
                 defer { access.release() }
                 do {
                     _ = try await appSession.openMusicLibrary(at: url)
+                } catch is CancellationError {
+                    return
                 } catch {
-                    appSession.uiState.showSidebarNotice("所选位置不是可用资料库", style: .warning)
+                    appSession.uiState.showSidebarNotice(LibraryOpenFailure.message(for: error), style: .warning)
                 }
             }
         }
@@ -124,8 +162,8 @@ private struct NoLibraryContentPane: View {
 }
 
 /// Compact companion for the sidebar when the exceptional startup recovery
-/// surface is active. The content pane owns the full open-library action; the
-/// sidebar only needs to make the state legible and offer the safe retry.
+/// surface is active. The content pane owns the recovery actions; the sidebar
+/// only states the condition and points at them.
 private struct LibraryStartupRecoverySidebarPane: View {
     @ObservedObject var appSession: AppSessionHost
 
@@ -138,17 +176,19 @@ private struct LibraryStartupRecoverySidebarPane: View {
                 .font(.callout.weight(.medium))
                 .multilineTextAlignment(.center)
             if appSession.isRetryingLibraryStartup {
-                ProgressView()
-                    .controlSize(.small)
+                Text("正在重试…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else {
-                Button("重试") {
-                    Task { await appSession.retryLibraryStartup() }
-                }
-                .buttonStyle(.bordered)
+                Text("在右侧重试，或检查资料库。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .preferredColorScheme(AppSettings.shared.colorScheme)
     }
 }
 
@@ -166,27 +206,33 @@ struct AppKitMainContentPaneRoot: View {
 
     var body: some View {
         let uiState = appSession.uiState
-        if let libraryVM = appSession.libraryVM,
-           let playerVM = appSession.playerVM,
-           let playbackCoordinator = appSession.playbackCoordinator,
-           let lyricsVM = appSession.lyricsVM,
-           let ledMeterProvider = appSession.ledMeterProvider,
-           let importEnrichmentService = appSession.importEnrichmentService,
-           let cacheServices = appSession.cacheServices,
-           let skinManager = appSession.skinManager {
-            contentView(
-                uiState: uiState,
-                libraryVM: libraryVM,
-                playerVM: playerVM,
-                playbackCoordinator: playbackCoordinator,
-                lyricsVM: lyricsVM,
-                ledMeterProvider: ledMeterProvider,
-                importEnrichmentService: importEnrichmentService,
-                cacheServices: cacheServices,
-                skinManager: skinManager
-            )
-        } else {
-            NoLibraryContentPane(appSession: appSession)
+        Group {
+            if let libraryVM = appSession.libraryVM,
+               let playerVM = appSession.playerVM,
+               let playbackCoordinator = appSession.playbackCoordinator,
+               let lyricsVM = appSession.lyricsVM,
+               let ledMeterProvider = appSession.ledMeterProvider,
+               let importEnrichmentService = appSession.importEnrichmentService,
+               let cacheServices = appSession.cacheServices,
+               let skinManager = appSession.skinManager {
+                contentView(
+                    uiState: uiState,
+                    libraryVM: libraryVM,
+                    playerVM: playerVM,
+                    playbackCoordinator: playbackCoordinator,
+                    lyricsVM: lyricsVM,
+                    ledMeterProvider: ledMeterProvider,
+                    importEnrichmentService: importEnrichmentService,
+                    cacheServices: cacheServices,
+                    skinManager: skinManager
+                )
+            } else {
+                NoLibraryContentPane(appSession: appSession)
+            }
+        }
+        .sheet(isPresented: $appSession.isLibraryRepairPresented) {
+            LibraryRepairSheet(appSession: appSession)
+                .environmentObject(themeStore)
         }
     }
 
@@ -333,7 +379,13 @@ struct AppKitMainContentPaneRoot: View {
                 }
             }
 
-            if !uiState.usesSkinScene {
+            // The window mini player is fixed: author scenes lay out above it and never replace it.
+            //
+            // While the embedded fullscreen surface covers it, the mini player is
+            // invisible, so it must leave the view tree: it observes the
+            // now-playing presentation, progress and artwork, and staying
+            // mounted made every track switch rebuild a subtree nobody sees.
+            if !fullscreenWindowManager.isWindowedFullscreenActive {
                 GeometryReader { proxy in
                     MiniPlayerView()
                         .onGeometryChange(for: CGRect.self) { geometry in
@@ -347,9 +399,6 @@ struct AppKitMainContentPaneRoot: View {
                         .padding(.bottom, 12)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 }
-                .opacity(fullscreenWindowManager.isWindowedFullscreenActive ? 0 : 1)
-                .allowsHitTesting(!fullscreenWindowManager.isWindowedFullscreenActive)
-                .accessibilityHidden(fullscreenWindowManager.isWindowedFullscreenActive)
             }
 
             if fullscreenWindowManager.isEmbeddedFullscreenSurfaceMounted {
@@ -445,7 +494,10 @@ struct AppKitMainContentPaneRoot: View {
             .onChange(of: uiState.contentMode) { (_: ContentMode, newValue: ContentMode) in
                 handleContentModeChange(newValue, playbackCoordinator: playbackCoordinator, uiState: uiState)
             }
-            .onChange(of: playerVM.currentTrack?.id) { (_: UUID?, newTrackID: UUID?) in
+            // Follow the committed presentation so the background crossfade
+            // starts in the same frame as the cover, palette and lyric
+            // document instead of ahead of them on the raw audio track change.
+            .onChange(of: playbackCoordinator.stablePresentation.localTrack?.id) { (_: UUID?, newTrackID: UUID?) in
                 if shouldTriggerArtBackgroundTransition(playbackCoordinator: playbackCoordinator, uiState: uiState) {
                     artBackgroundController.triggerTransition(
                         for: playbackCoordinator.stablePresentation.source == .local ? newTrackID : nil
@@ -591,7 +643,6 @@ struct AppKitMainContentPaneRoot: View {
 /// timer reassigns the value. Renders an invisible zero-size layer.
 private struct PlaybackThemeArtworkWatcher: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
-    @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
         Color.clear
@@ -599,16 +650,19 @@ private struct PlaybackThemeArtworkWatcher: View {
             .allowsHitTesting(false)
             .task(id: artworkIdentity) {
                 // Artwork extraction and the resulting ThemeStore publication
-                // are visual follow-up work. Let the transport and lyric
-                // surface commit first, and coalesce intermediate artwork
+                // are visual follow-up work. Let the track switch prepare and
+                // commit the palette first, and coalesce intermediate artwork
                 // identities during a rapid track switch.
+                let switchGeneration = playbackCoordinator.switchGeneration
                 do {
                     try await Task.sleep(for: .milliseconds(400))
                 } catch {
                     return
                 }
-                guard !Task.isCancelled else { return }
-                await themeStore.updateTheme(for: playbackCoordinator.stablePresentation)
+                guard !Task.isCancelled,
+                      switchGeneration == playbackCoordinator.switchGeneration
+                else { return }
+                playbackCoordinator.requestAppearanceRefresh()
             }
     }
 
@@ -620,7 +674,7 @@ private struct PlaybackThemeArtworkWatcher: View {
             ?? presentation.lyricsIdentity
             ?? presentation.localTrack?.id.uuidString
             ?? "none"
-        return "\(presentation.source.rawValue)|track:\(presentation.hasTrack)|art:\(identity)|loading:\(presentation.isArtworkLoading)|sig:\(ArtworkDataFingerprint.sampledString(for: presentation.artworkData))"
+        return "\(presentation.source.rawValue)|track:\(presentation.hasTrack)|art:\(identity)|loading:\(presentation.isArtworkLoading)|sig:\(ArtworkDataFingerprint.sampledString(for: presentation.artworkData))|switch:\(playbackCoordinator.switchGeneration)"
     }
 }
 
@@ -1036,7 +1090,7 @@ struct LyricsFlatDriverView: View {
         case .local:
             lyricsVM.ensureLyricsLoaded(
                 track: presentation.localTrack,
-                currentTime: presentation.lyricsCurrentTime,
+                currentTime: playbackCoordinator.liveLyricsTime,
                 isPlaying: presentation.isPlaying,
                 reason: reason,
                 forceLyricsReload: forceLyricsReload

@@ -14,7 +14,8 @@
   "requires": [
     "scene@2",
     "theme@1",
-    "clock.playback@1"
+    "clock.playback@1",
+    "host@1"
   ],
   "scene": {
     "state": {
@@ -30,10 +31,11 @@
             "=theme.artBackgroundSecondary"
           ],
           "frame": {
-            "x": "50%",
-            "y": "50%",
+            "x": 0,
+            "y": 0,
+            "anchor": "topLeading",
             "width": "100%",
-            "height": "100%"
+            "height": "=host.layout.window.height"
           }
         },
         {

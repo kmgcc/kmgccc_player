@@ -59,6 +59,8 @@ struct SkinSceneFilters: ViewModifier {
                 let amplitude = filter[member: "amplitude"].number(4)
                 let shader = library.skinFxWave(.float(time), .float(amplitude), .float(filter[member: "wavelength"].number(180)), .float(filter[member: "speed"].number(1.5)))
                 view = padded(view, reach: abs(amplitude)) { $0.distortionEffect(shader, maxSampleOffset: CGSize(width: abs(amplitude), height: abs(amplitude)), isEnabled: enabled) }
+            case "fov":
+                view = SkinSceneFOV.apply(view, filter: filter, enabled: enabled)
             case "custom":
                 view = custom(view, filter: filter, time: moves ? time : 0, enabled: enabled, root: root)
             default: break
@@ -195,8 +197,14 @@ nonisolated struct SkinSceneCamera: Equatable, Sendable {
 @MainActor
 final class SkinCameraSource {
     var evaluate: @MainActor (Double) -> SkinSceneCamera = { _ in SkinSceneCamera(.null) }
-    var pausesWithPlayback = true
+    var inputs = SkinFrameInputs(frame: [], always: false)
+    /// The layer's `follow()` springs, so its children's timelines rest with them.
+    var followers: SkinFollowers?
     private var cached: (now: Double, camera: SkinSceneCamera)?
+
+    func isStill(data: SkinSceneData, playing: Bool) -> Bool {
+        inputs.isStill(playing: playing, timeMoves: data.timeMoves(playing: playing), following: followers?.isMoving == true)
+    }
 
     func camera(at now: Double) -> SkinSceneCamera {
         if let cached, cached.now == now { return cached.camera }
@@ -273,5 +281,17 @@ final class SkinGlyphClock {
     func start(for key: String, now: Double) -> Double {
         if key != self.key { self.key = key; start = now }
         return start
+    }
+}
+
+/// The display padding of a text with `glyphMotion`, kept while the text stays the same and
+/// only ever grown. A reference type, so the renderer can update it while drawing a frame.
+final class SkinGlyphPadding {
+    private var key: String?
+    private var value = 0.0
+
+    func stable(for key: String, wanted: Double) -> Double {
+        if key != self.key { self.key = key; value = wanted } else { value = max(value, wanted) }
+        return value
     }
 }

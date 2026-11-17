@@ -13,6 +13,7 @@ struct AudioSettingsView: View {
     @EnvironmentObject private var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsSearchRequest) private var searchRequest
 
     @State private var selectedTab = 0
     private let tabs = ["常规", "音效与设备"]
@@ -39,6 +40,9 @@ struct AudioSettingsView: View {
         .onAppear {
             volumeControlTarget = settings.volumeControlTarget
             lookaheadEnabled = settings.audioLookaheadEnabled
+        }
+        .onChange(of: searchRequest, initial: true) { _, request in
+            if request?.category == .audio, let tab = request?.tab { selectedTab = tab }
         }
         .onChange(of: volumeControlTarget) { _, newValue in
             settings.volumeControlTarget = newValue
@@ -68,6 +72,7 @@ struct AudioSettingsView: View {
                     )
                 }
             }
+            .settingsSearchAnchor("audio.general")
 
             AudioProcessingGlobalsSettingsView(
                 controller: appSession.audioProcessingGlobalsController

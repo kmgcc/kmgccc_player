@@ -76,8 +76,16 @@ nonisolated enum ImportEnrichmentWorker {
         artist: String,
         album: String,
         duration: Double? = nil,
-        qqMusicCoverService: QQMusicCoverService
+        qqMusicCoverService: QQMusicCoverService,
+        albumPool: AlbumContentLookupPool? = nil,
+        albumScope: String? = nil
     ) async -> ImportCoverLookupOutcome {
+        if let albumPool, let albumScope {
+            return await albumPool.covers.value(for: albumScope) {
+                await Self.fetchCover(title: nil, artist: artist, album: album, duration: nil, qqMusicCoverService: qqMusicCoverService)
+            }
+        }
+
         guard !Task.isCancelled else { return .failed("已取消") }
         let normalizedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -144,6 +152,13 @@ nonisolated enum ImportArtistMetadataOutcome: Sendable {
     case failed(String)
 }
 
+/// One lookup per credited artist: a joined credit such as "A, B" owns one
+/// artist entry per name, so each name is searched and stored on its own.
+nonisolated struct ImportArtistMetadataResult: Sendable {
+    let name: String
+    let outcome: ImportArtistMetadataOutcome
+}
+
 nonisolated enum ImportAlbumMetadataOutcome: Sendable {
     case completed(AlbumMetadataDetail)
     case noResults
@@ -154,6 +169,13 @@ nonisolated enum ImportArtistArtworkOutcome: Sendable {
     case completed(Data)
     case noResults
     case failed(String)
+}
+
+/// One lookup per credited artist: a joined credit such as "A, B" owns one
+/// artist entry per name, so each name is searched and stored on its own.
+nonisolated struct ImportArtistArtworkResult: Sendable {
+    let name: String
+    let outcome: ImportArtistArtworkOutcome
 }
 
 nonisolated enum ImportAlbumArtworkOutcome: Sendable {
@@ -244,8 +266,16 @@ nonisolated enum MetadataEnrichmentWorker {
 
     static func fetchAlbumMetadata(
         album: String,
-        artist: String
+        artist: String,
+        albumPool: AlbumContentLookupPool? = nil,
+        albumScope: String? = nil
     ) async -> ImportAlbumMetadataOutcome {
+        if let albumPool, let albumScope {
+            return await albumPool.metadata.value(for: albumScope) {
+                await Self.fetchAlbumMetadata(album: album, artist: artist)
+            }
+        }
+
         guard !Task.isCancelled else { return .failed("已取消") }
         guard !album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .noResults
@@ -322,8 +352,16 @@ nonisolated enum MetadataEnrichmentWorker {
     static func fetchAlbumArtwork(
         album: String,
         artist: String,
-        qqMusicCoverService: QQMusicCoverService
+        qqMusicCoverService: QQMusicCoverService,
+        albumPool: AlbumContentLookupPool? = nil,
+        albumScope: String? = nil
     ) async -> ImportAlbumArtworkOutcome {
+        if let albumPool, let albumScope {
+            return await albumPool.artwork.value(for: albumScope) {
+                await Self.fetchAlbumArtwork(album: album, artist: artist, qqMusicCoverService: qqMusicCoverService)
+            }
+        }
+
         guard !Task.isCancelled else { return .failed("已取消") }
         let cleanAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanAlbum.isEmpty, !LibraryNormalization.isUnknownAlbum(cleanAlbum) else {

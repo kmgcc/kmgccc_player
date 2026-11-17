@@ -115,6 +115,23 @@ final class MotionArtworkFirstFrameCacheTests: XCTestCase {
         XCTAssertNotNil(cache.cachedFrame(for: target))
     }
 
+    func testCachedUncroppedFrameReturnsOriginalUncroppedImage() async throws {
+        let square = try makeFrame()
+        let wideContext = try XCTUnwrap(CGContext(data: nil, width: 16, height: 8,
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let wide = try XCTUnwrap(wideContext.makeImage())
+        let frame = MotionArtworkFirstFrame(image: square, uncroppedImage: wide)
+        let cache = MotionArtworkFirstFrameCache(maxCount: 2, maxBytes: 1024 * 1024) { _ in frame }
+        let res = resource("wide")
+        await cache.prepare(res, context: BackgroundWorkContext())
+
+        let cropped = try XCTUnwrap(cache.cachedFrame(for: res))
+        let uncropped = try XCTUnwrap(cache.cachedUncroppedFrame(for: res))
+        XCTAssertEqual(cropped.width, 8)
+        XCTAssertEqual(uncropped.width, 16)
+    }
+
     private func resource(_ name: String) -> MotionArtworkResource {
         MotionArtworkResource(url: URL(fileURLWithPath: "/motion-artwork-test/\(name).mp4"), startTime: 0, duration: 20)
     }

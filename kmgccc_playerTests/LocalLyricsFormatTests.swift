@@ -194,6 +194,18 @@ final class LocalLyricsFormatTests: XCTestCase {
         await assertConversionFails(#"<tt xmlns="http://www.w3.org/ns/ttml"></tt>"#, with: .invalidTTML("TTML 缺少 <body> 节点"))
     }
 
+    func testTTMLValidationScansPrefixedAndCaseInsensitiveTags() {
+        let prefixed = #"<tt:tt xmlns:tt="http://www.w3.org/ns/ttml"><tt:body><tt:div><tt:p begin="00:01.000">Hi</tt:p></tt:div></tt:body></tt:tt>"#
+        XCTAssertTrue(LyricsFormatSupport.validateTTML(prefixed).isValid)
+
+        let uppercase = #"<TT><BODY><DIV><P>Hi</P></DIV></BODY></TT>"#
+        XCTAssertTrue(LyricsFormatSupport.validateTTML(uppercase).isValid)
+
+        XCTAssertFalse(LyricsFormatSupport.validateTTML(#"<tt><div>Hi</div></tt>"#).isValid)
+        XCTAssertFalse(LyricsFormatSupport.validateTTML(#"<body><p>Hi</p></body>"#).isValid)
+        XCTAssertFalse(LyricsFormatSupport.validateTTML(#"<ttm:agent type="person">A</ttm:agent>"#).isValid)
+    }
+
     // MARK: - Files
 
     func testDecodesLegacyEncodingsAndByteOrderMarks() throws {
@@ -225,6 +237,25 @@ final class LocalLyricsFormatTests: XCTestCase {
         try Data("[1000,1000](1000,1000,0)From YRC".utf8).write(to: directory.appendingPathComponent("Song.yrc"))
         let fromYRC = await LocalLyricsImporter.ttmlForImportedAudio(at: audioURL, embeddedLyrics: embedded)
         XCTAssertTrue(fromYRC?.contains("From YRC") == true)
+    }
+
+    func testNormalizationStripsLeadingWhitespaceFromWords() {
+        let rawWords = [
+            ParsedLyrics.Word(text: "  Hello", startMs: 1000, endMs: 1500),
+            ParsedLyrics.Word(text: " World", startMs: 1500, endMs: 2000),
+            ParsedLyrics.Word(text: " End  ", startMs: 2000, endMs: 2500)
+        ]
+        let line = ParsedLyrics.Line(words: rawWords, startMs: 1000, endMs: 2500)
+        let normalized = ParsedLyrics(lines: [line]).normalized()
+        guard let normalizedLine = normalized.lines.first else {
+            return XCTFail("Expected normalized line")
+        }
+        XCTAssertEqual(normalizedLine.words[0].text, "Hello ")
+        // The space before a word moves to the previous word so the joined
+        // text keeps its original spacing.
+        XCTAssertEqual(normalizedLine.words[1].text, "World ")
+        XCTAssertEqual(normalizedLine.words[2].text, "End")
+        XCTAssertEqual(normalizedLine.words.map(\.text).joined(), "Hello World End")
     }
 
     // MARK: - Helpers

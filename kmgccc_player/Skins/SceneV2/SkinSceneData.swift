@@ -1,5 +1,6 @@
 import AppKit
 import MelismaKit
+import MotionKit
 import Observation
 import SwiftUI
 
@@ -38,6 +39,14 @@ final class SkinSceneData {
     @ObservationIgnored var pointerMovedAt = Date.timeIntervalSinceReferenceDate
     /// Reduced motion freezes the scene clock, so `spin()` and friends hold still.
     @ObservationIgnored var freezesTime = false
+    /// The scene's own motion settings and the MotionKit tokens in effect at its root.
+    @ObservationIgnored var motion = SkinSceneMotion()
+    @ObservationIgnored var motionTokens = MotionTokens.standard
+    /// True while the playback flow eases between paused and playing, so nodes that read
+    /// `time` stay on their timeline until it settles.
+    private(set) var flowMoving = false
+    @ObservationIgnored private var flow = SkinPlaybackFlow()
+    @ObservationIgnored private var flowTimer: Timer?
     @ObservationIgnored private(set) var viewportSize = CGSize(width: 1, height: 1)
     @ObservationIgnored private var hostFacts: [String: SkinValue] = ["host.pointerIdle": .boolean(false)]
     @ObservationIgnored private var viewportFacts: [String: SkinValue] = [:]
@@ -67,41 +76,46 @@ final class SkinSceneData {
     func invalidate() { revision &+= 1 }
 
     func set(_ domain: SkinDataDomain, _ values: [String: SkinValue]) {
-        revision &+= 1
         switch domain {
-        case .track: if track != values { track = values }
-        case .artwork: if artwork != values { artwork = values }
-        case .playback: if playback != values { playback = values }
-        case .lyrics: if lyrics != values { lyrics = values }
-        case .theme: if theme != values { theme = values }
+        case .track: replace(\.track, values)
+        case .artwork: replace(\.artwork, values)
+        case .playback: replace(\.playback, values)
+        case .lyrics: replace(\.lyrics, values)
+        case .theme: replace(\.theme, values)
         case .viewport:
-            let merged = values.merging(viewportFacts) { _, new in new }
-            if viewport != merged { viewport = merged }
+            replace(\.viewport, values.merging(viewportFacts) { _, new in new })
             viewportSize = CGSize(width: values["viewport.width"]?.number(1) ?? 1, height: values["viewport.height"]?.number(1) ?? 1)
-        case .host:
-            let merged = values.merging(hostFacts) { _, new in new }
-            if host != merged { host = merged }
-        case .prefs: if prefs != values { prefs = values }
-        case .like: if like != values { like = values }
-        case .queue: if queue != values { queue = values }
-        case .library: if library != values { library = values }
-        case .output: if output != values { output = values }
-        case .params: if parameters != values { parameters = values }
-        case .state: if state != values { state = values }
-        case .clock, .lyricsTimeline, .audio, .time, .local: break
+        case .host: replace(\.host, values.merging(hostFacts) { _, new in new })
+        case .prefs: replace(\.prefs, values)
+        case .like: replace(\.like, values)
+        case .queue: replace(\.queue, values)
+        case .library: replace(\.library, values)
+        case .output: replace(\.output, values)
+        case .params: replace(\.parameters, values)
+        case .state: replace(\.state, values)
+        case .clock, .lyricsTimeline, .audio, .time, .local, .follow, .wallTime: break
         }
+    }
+
+    /// Writes only a changed domain, so readers and cached node values stay put otherwise.
+    private func replace(_ field: ReferenceWritableKeyPath<SkinSceneData, [String: SkinValue]>, _ values: [String: SkinValue]) {
+        guard self[keyPath: field] != values else { return }
+        revision &+= 1
+        self[keyPath: field] = values
     }
 
     // Unchanged facts are not written, so a host probe update does not re-render every reader.
     func updateHostFacts(_ values: [String: SkinValue]) {
-        revision &+= 1
         hostFacts.merge(values) { _, new in new }
-        if values.contains(where: { host[$0.key] != $0.value }) { host.merge(values) { _, new in new } }
+        guard values.contains(where: { host[$0.key] != $0.value }) else { return }
+        revision &+= 1
+        host.merge(values) { _, new in new }
     }
     func updateViewportFacts(_ values: [String: SkinValue]) {
-        revision &+= 1
         viewportFacts.merge(values) { _, new in new }
-        if values.contains(where: { viewport[$0.key] != $0.value }) { viewport.merge(values) { _, new in new } }
+        guard values.contains(where: { viewport[$0.key] != $0.value }) else { return }
+        revision &+= 1
+        viewport.merge(values) { _, new in new }
     }
 
     func setState(_ name: String, _ value: SkinValue) {
@@ -111,8 +125,7 @@ final class SkinSceneData {
     }
 
     func resetState(_ defaults: [String: SkinValue]) {
-        revision &+= 1
-        if state != defaults { state = defaults }
+        replace(\.state, defaults)
     }
 
     // MARK: Reads from expressions
@@ -120,7 +133,30 @@ final class SkinSceneData {
     func parameter(_ name: String) -> SkinValue { parameters[name] ?? .null }
     func stateValue(_ name: String) -> SkinValue { state[name] ?? .null }
 
-    func time(at now: Double) -> Double { freezesTime ? 0 : max(0, now - startTime) }
+    /// Scene time: wall seconds weighted by the playback flow, so motion slows to a stop on
+    /// pause and gathers pace on play. A scene that continues while paused runs on the wall clock.
+    func time(at now: Double) -> Double {
+        if freezesTime { return 0 }
+        return motion.pause == .continue ? freeTime(at: now) : flow.time(at: now)
+    }
+
+    func freeTime(at now: Double) -> Double { freezesTime ? 0 : max(0, now - startTime) }
+
+    /// Whether `time` can still advance; a paused scene whose flow has settled stands still.
+    func timeMoves(playing: Bool) -> Bool { playing || flowMoving || motion.pause == .continue }
+
+    /// Retargets the flow when playback starts or pauses. The first call places it without easing.
+    func updateFlow(playing: Bool, now: Double = Date.timeIntervalSinceReferenceDate) {
+        let spec = freezesTime || motion.pause == .stop ? nil : SkinMotion.spec(motion.flow, tokens: motionTokens, custom: motion.tokens)
+        guard let delay = flow.set(playing: playing, spec: spec, now: now) else { return }
+        flowTimer?.invalidate()
+        flowMoving = true
+        let timer = Timer(timeInterval: delay + 0.05, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.flowMoving = false }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        flowTimer = timer
+    }
 
     func value(forKey key: String, domain: SkinDataDomain, now: Double) -> SkinValue {
         switch domain {
@@ -137,7 +173,9 @@ final class SkinSceneData {
         case .output: return output[key] ?? .null
         case .params: return parameters[key] ?? .null
         case .state: return state[key] ?? .null
-        case .time: return .number(time(at: now))
+        case .time: return .number(key == "playback.flow" ? (freezesTime ? 0 : flow.value(at: now)) : time(at: now))
+        case .wallTime: return .number(freeTime(at: now))
+        case .follow: return .null
         case .host:
             switch key {
             case "host.pointerIdleTime": return .number(max(0, now - pointerMovedAt))
@@ -183,44 +221,67 @@ final class SkinSceneData {
 
 /// Playback position extrapolated from the coordinator's presentation updates.
 struct SkinPlaybackClock {
-    var position: Double = 0
-    var anchor: Double = Date.timeIntervalSinceReferenceDate
     var isPlaying = false
     var duration: Double = 0
     var rate: Double = 1
     /// Seconds to subtract from the playback position to reach lyric document time.
     var lyricsOffset: Double = 0
     var seekOffset: Double = 0
-    private var lyricsPosition: Double?
-    private var lyricsAnchor: Double = 0
-    private var lyricsPlaying = false
+    private var playback = SkinSmoothedTime()
+    private var lyrics: SkinSmoothedTime?
 
     func position(at now: Double) -> Double {
-        let raw = isPlaying ? position + max(0, now - anchor) * rate : position
+        let raw = playback.value(at: now, rate: rate)
         return duration > 0 ? min(duration, max(0, raw)) : max(0, raw)
     }
 
     func lyricsTime(at now: Double) -> Double {
-        guard let lyricsPosition else { return position(at: now) - lyricsOffset }
-        return lyricsPosition + (lyricsPlaying ? max(0, now - lyricsAnchor) * rate : 0)
+        guard let lyrics else { return position(at: now) - lyricsOffset }
+        return lyrics.value(at: now, rate: rate)
     }
 
-    mutating func updateLyrics(position: Double, isPlaying: Bool, now: Double) {
-        if lyricsPosition == nil || isPlaying != lyricsPlaying || abs(lyricsTime(at: now) - position) > 0.2 {
-            lyricsPosition = position; lyricsAnchor = now
-        }
-        lyricsPlaying = isPlaying
+    /// `jump` lands on `position` at once: a seek, or a change of the skin's lyric lead.
+    mutating func updateLyrics(position: Double, isPlaying: Bool, now: Double, jump: Bool = false) {
+        var lyrics = self.lyrics ?? SkinSmoothedTime()
+        lyrics.sample(position, playing: isPlaying, rate: rate, now: now, jump: jump)
+        self.lyrics = lyrics
     }
 
-    /// Re-anchor only on a real discontinuity, so 4 Hz presentation ticks never jitter frames.
-    mutating func update(position newPosition: Double, isPlaying playing: Bool, duration newDuration: Double, now: Double) {
-        let predicted = position(at: now)
-        if playing != isPlaying || abs(predicted - newPosition) > 0.2 || newDuration != duration {
-            position = newPosition
-            anchor = now
-        }
+    mutating func update(position newPosition: Double, isPlaying playing: Bool, duration newDuration: Double, now: Double, jump: Bool = false) {
+        playback.sample(newPosition, playing: playing, rate: rate, now: now, jump: jump || newDuration != duration)
         isPlaying = playing
         duration = newDuration
+    }
+}
+
+/// A media position that follows sparse samples without stepping. Samples come from a 10 Hz
+/// timer and reach the scene a little late, so each one is a slightly stale reading. Between
+/// samples the time runs at the playback rate; a sample that disagrees is caught up by running
+/// up to a quarter faster or slower until the next one, so the time never jumps or runs backwards
+/// while playing. A seek, a change of play state or a gap over a second lands at once.
+struct SkinSmoothedTime {
+    private var base = 0.0
+    private var anchor = 0.0
+    private var speed = 1.0
+    private var playing = false
+    private var started = false
+
+    func value(at now: Double, rate: Double) -> Double {
+        playing ? base + max(0, now - anchor) * rate * speed : base
+    }
+
+    mutating func sample(_ position: Double, playing isPlaying: Bool, rate: Double, now: Double, jump: Bool = false) {
+        let current = value(at: now, rate: rate)
+        let error = position - current
+        if !started || jump || isPlaying != playing || abs(error) > 1 || (!isPlaying && abs(error) > 0.0005) {
+            base = position; anchor = now; speed = 1; playing = isPlaying; started = true
+            return
+        }
+        guard isPlaying else { return }
+        base = current; anchor = now
+        // A sample is never newer than now, so a small lag is expected and left alone.
+        let drift = error < 0 ? min(0, error + 0.05) : max(0, error - 0.01)
+        speed = 1 + min(0.25, max(-0.25, drift / 0.6))
     }
 }
 
@@ -240,7 +301,12 @@ final class SkinLyricsTimeline {
     /// `timing` moves each line switch earlier the way native lyrics do, so a scene's current
     /// line arrives with the native one; word and line progress keep the authored times.
     func load(_ document: LyricsDocument?, timing: LyricsTimingConfiguration? = nil) {
-        let groups = document?.groups ?? []
+        let groups = (document?.groups ?? []).map { group in
+            var group = group
+            group.main = Self.spreadingSingleSpan(group.main, mode: document?.timingMode ?? .word)
+            group.background = group.background.map { Self.spreadingSingleSpan($0, mode: document?.timingMode ?? .word) }
+            return group
+        }
         lines = groups.enumerated().map { Self.record(for: $0.element, index: $0.offset) }
         ranges = groups.map { ($0.main.range.start, max($0.main.range.end, $0.background?.range.end ?? 0)) }
         starts = ranges.enumerated().map { index, range in
@@ -255,6 +321,49 @@ final class SkinLyricsTimeline {
         songParts = groups.map { $0.main.songPart ?? "" }
         cacheTime = .nan
         cacheIndex = -1
+    }
+
+    /// Some exports declare word timing but wrap a whole line in one timed span. Native lyrics
+    /// spread that span over the visible tokens for presentation, so a scene does the same:
+    /// CJK splits per character, other text per word with its trailing space, and each token
+    /// takes a share of the span by its character count. Source ranges stay untouched.
+    static func spreadingSingleSpan(_ line: LyricLine, mode: TTMLTimingMode) -> LyricLine {
+        guard mode == .word, line.isWordTimed, line.words.count == 1, let word = line.words.first,
+              word.ruby.isEmpty, word.romanization.isEmpty, word.range.duration > 0 else { return line }
+        var tokens: [String] = [], current = "", inWord = false
+        for character in word.text {
+            if character.isWhitespace {
+                if !current.isEmpty { current.append(character) }
+                inWord = false
+            } else if character.isPunctuation, !current.isEmpty {
+                current.append(character)
+            } else if inWord, !isCJK(character) {
+                current.append(character)
+            } else {
+                if !current.isEmpty { tokens.append(current) }
+                current = String(character)
+                inWord = !isCJK(character)
+            }
+        }
+        if !current.isEmpty { tokens.append(current) }
+        guard tokens.count > 1 else { return line }
+        let weights = tokens.map { Double(max(1, $0.filter { !$0.isWhitespace }.utf16.count)) }
+        let total = weights.reduce(0, +)
+        var spread = line, offset = 0.0
+        spread.words = tokens.enumerated().map { index, text in
+            var token = word
+            token.id = "\(word.id)-\(index)"
+            token.text = text
+            token.range = LyricRange(word.range.start + word.range.duration * offset / total,
+                                     word.range.start + word.range.duration * (offset + weights[index]) / total)
+            offset += weights[index]
+            return token
+        }
+        return spread
+    }
+
+    private static func isCJK(_ character: Character) -> Bool {
+        character.unicodeScalars.contains { (0x2E80...0x9FFF).contains($0.value) || (0xAC00...0xD7AF).contains($0.value) || (0xF900...0xFAFF).contains($0.value) }
     }
 
     static func record(for group: LyricGroup, index: Int) -> SkinValue {

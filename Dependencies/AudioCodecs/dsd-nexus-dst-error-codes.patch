@@ -1,0 +1,49 @@
+--- a/libs/libsacd/src/sacd_dst_reader.h
++++ b/libs/libsacd/src/sacd_dst_reader.h
+@@ -59,38 +59,38 @@
+ 	 * before using other operations.
+ 	 */
+ 
+-    SACD_DST_READER_IO_ERROR,
++    SACD_DST_READER_IO_ERROR = -2,
+ 	/**< An I/O error occurred while reading disc sectors. */
+ 
+-	SACD_DST_READER_MEMORY_ALLOCATION_ERROR,
++	SACD_DST_READER_MEMORY_ALLOCATION_ERROR = -3,
+ 	/**< Memory allocation failed during sector buffer allocation. */
+ 
+-    SACD_DST_READER_ACCESS_LIST_INVALID,
++    SACD_DST_READER_ACCESS_LIST_INVALID = -4,
+     /**< The Access List contains invalid frame LSN values. Frame was found
+      * before the specified starting LSN, indicating incorrect access list data.
+      */
+ 
+-    SACD_DST_READER_BUFFER_TOO_SMALL,
++    SACD_DST_READER_BUFFER_TOO_SMALL = -5,
+     /**< The provided output buffer is too small to hold the extracted frame data.
+      * Increase buffer size to accommodate the frame.
+      */
+ 
+-    SACD_DST_READER_FRAME_INCOMPLETE_DATA,
++    SACD_DST_READER_FRAME_INCOMPLETE_DATA = -6,
+     /**< Insufficient sectors were read to complete the frame. May occur when
+      * reaching end of Track Area or during streaming operations.
+      */
+ 
+-    SACD_DST_READER_FRAME_NOT_FOUND,
++    SACD_DST_READER_FRAME_NOT_FOUND = -7,
+     /**< The requested frame was not found in the Track Area. The frame number
+      * may be out of range or the Access List may be incorrect.
+      */
+ 
+-    SACD_DST_READER_FRAME_SEARCH_OVERFLOW,
++    SACD_DST_READER_FRAME_SEARCH_OVERFLOW = -8,
+     /**< Frame search encountered conflicting position data during multi-sector
+      * scan, indicating corrupted sector headers or invalid access list.
+      */
+ 
+-    SACD_DST_READER_INVALID_ARG,
++    SACD_DST_READER_INVALID_ARG = -9,
+     /**< An invalid argument was provided (e.g., NULL pointer, out-of-range value).
+      */
+ 

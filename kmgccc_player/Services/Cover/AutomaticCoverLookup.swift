@@ -51,32 +51,35 @@ nonisolated enum AutomaticCoverLookup {
 
     static func search(title: String?, artist: String, album: String, duration: Double?,
                        qqMusic: QQMusicCoverService) async throws -> CoverCandidate? {
-        let hasAlbum = !album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !LibraryNormalization.isUnknownAlbum(album)
-        let hasArtist = !artist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !LibraryNormalization.isUnknownArtist(artist)
+        // 未知艺人 / 群星 / 未知专辑 are not identities providers can match.
+        let seedArtist = LibraryNormalization.searchSeedArtist(artist)
+        let seedAlbum = LibraryNormalization.searchSeedAlbum(album)
+        let hasAlbum = !seedAlbum.isEmpty
+        let hasArtist = !seedArtist.isEmpty
         guard title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false || hasAlbum else { return nil }
         var providers = ["appleCache", "appleWeb"].map { provider in
             Provider(source: .appleMusic, timeout: CoverLookupConfiguration.appleMusicTimeout) {
-                try await appleCandidates(provider: provider, title: title, artist: artist, album: album, duration: duration)
+                try await appleCandidates(provider: provider, title: title, artist: seedArtist, album: seedAlbum, duration: duration)
             }
         }
         providers.append(Provider(source: .qqmusic, timeout: CoverLookupConfiguration.qqMusicCandidatesTimeout) {
             do {
-                return try await qqMusic.searchCoverCandidates(title: title, artist: artist, album: album, duration: duration,
+                return try await qqMusic.searchCoverCandidates(title: title, artist: seedArtist, album: seedAlbum, duration: duration,
                     limit: CoverLookupConfiguration.qqMusicCandidateLimit, stopAtTarget: true)
             } catch QQMusicCoverError.noResults { return [] }
         })
         if hasAlbum {
             providers.append(Provider(source: .netease, timeout: CoverLookupConfiguration.netEaseCandidatesTimeout) {
                 let service = await NetEaseCoverService()
-                do { return try await service.searchCoverCandidates(artist: artist, album: album, stopAtTarget: true) }
+                do { return try await service.searchCoverCandidates(artist: seedArtist, album: seedAlbum, stopAtTarget: true) }
                 catch NetEaseCoverError.noResults { return [] }
             })
         }
         if hasAlbum && hasArtist {
             providers.append(Provider(source: .sacad, timeout: CoverLookupConfiguration.sacadTimeout) {
-                let data = try await CoverDownloadService.downloadCoverData(artist: artist, album: album, size: 1200)
-                return [CoverCandidate(imageData: data, source: .sacad, sourceItemId: "\(artist):\(album)",
-                                       matchedArtist: artist, matchedAlbum: album)]
+                let data = try await CoverDownloadService.downloadCoverData(artist: seedArtist, album: seedAlbum, size: 1200)
+                return [CoverCandidate(imageData: data, source: .sacad, sourceItemId: "\(seedArtist):\(seedAlbum)",
+                                       matchedArtist: seedArtist, matchedAlbum: seedAlbum)]
             })
         }
         return try await select(providers: providers)

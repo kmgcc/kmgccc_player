@@ -182,6 +182,181 @@ final class LibrarySessionControllerTests: XCTestCase {
         XCTAssertEqual(factory.madeContextIDs, [firstContext.id, secondContext.id])
     }
 
+    func testSelectingCurrentLibrarySupersedesPendingPreparation() async throws {
+        let current = FakeSession(context: context(id: UUID()), label: "current")
+        let pendingContext = context(id: UUID())
+        let pending = FakeSession(context: pendingContext, label: "pending")
+        let factory = FakeSessionFactory(sessions: [pendingContext.id: [pending]])
+        factory.suspendedContextIDs.insert(pendingContext.id)
+        let controller = LibrarySessionController(factory: factory)
+        controller.installInitialSession(current)
+
+        let task = Task { try await controller.switchToLibrary(pendingContext) }
+        await factory.waitUntilSuspended(pendingContext.id)
+        try await controller.switchToLibrary(current.context)
+        factory.resume(pendingContext.id)
+        await XCTAssertThrowsErrorAsync(expected: .superseded) { try await task.value }
+
+        XCTAssertTrue(controller.activeSession === current)
+        XCTAssertTrue(current.events.values.isEmpty)
+        XCTAssertEqual(pending.events.values, ["pending.close"])
+    }
+
+    func testFirstLoadSerializesLaterSwitchWithoutInitialSession() async throws {
+        let firstContext = context(id: UUID())
+        let secondContext = context(id: UUID())
+        let first = FakeSession(context: firstContext, label: "first")
+        first.suspendLoad = true
+        let second = FakeSession(context: secondContext, label: "second")
+        let factory = FakeSessionFactory(sessions: [firstContext.id: [first], secondContext.id: [second]])
+        let controller = LibrarySessionController(factory: factory)
+
+        let firstTask = Task { try await controller.switchToLibrary(firstContext) }
+        await first.waitUntilLoadSuspended()
+        let secondTask = Task { try await controller.switchToLibrary(secondContext) }
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(factory.madeContextIDs, [firstContext.id])
+        first.resumeLoad()
+        try await firstTask.value
+        try await secondTask.value
+
+        XCTAssertTrue(controller.activeSession === second)
+        XCTAssertEqual(first.events.values, ["first.load", "first.flush", "first.quiesce", "first.close"])
+    }
+
+    func testFirstPublicationFinishesBeforeCloseReleasesBindings() async throws {
+        let targetContext = context(id: UUID())
+        let target = FakeSession(context: targetContext, label: "target")
+        let publication = FakeSession(context: targetContext, label: "publication")
+        publication.suspendQuiesce = true
+        let controller = LibrarySessionController(factory: FakeSessionFactory(sessions: [targetContext.id: [target]]))
+        controller.didActivateSession = { _ in await publication.quiesce() }
+
+        let openTask = Task { try await controller.switchToLibrary(targetContext) }
+        await publication.waitUntilQuiesceSuspended()
+        let closeTask = Task { try await controller.closeActiveSession() }
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertEqual(target.events.values, ["target.load"])
+        publication.resumeQuiesce()
+        try await openTask.value
+        try await closeTask.value
+
+        XCTAssertNil(controller.activeSession)
+        XCTAssertEqual(controller.state, .idle)
+    }
+
+    func testSupersededPreparationFailureCannotOverwriteNewLoadingState() async throws {
+        let old = FakeSession(context: context(id: UUID()), label: "old")
+        let failedContext = context(id: UUID())
+        let latestContext = context(id: UUID())
+        let latest = FakeSession(context: latestContext, label: "latest")
+        latest.suspendLoad = true
+        let factory = FakeSessionFactory(sessions: [latestContext.id: [latest]])
+        factory.suspendedContextIDs.insert(failedContext.id)
+        factory.makeErrors[failedContext.id] = TestFailure.expected
+        let controller = LibrarySessionController(factory: factory)
+        controller.installInitialSession(old)
+
+        let failedTask = Task { try await controller.switchToLibrary(failedContext) }
+        await factory.waitUntilSuspended(failedContext.id)
+        let latestTask = Task { try await controller.switchToLibrary(latestContext) }
+        await latest.waitUntilLoadSuspended()
+        factory.resume(failedContext.id)
+        await XCTAssertThrowsErrorAsync(expected: .superseded) { try await failedTask.value }
+        XCTAssertEqual(controller.state, .loading(latestContext.id))
+        latest.resumeLoad()
+        try await latestTask.value
+        XCTAssertTrue(controller.activeSession === latest)
+    }
+
+    func testCancelledPreparationClosesCandidateAndKeepsCurrentSession() async throws {
+        let current = FakeSession(context: context(id: UUID()), label: "current")
+        let targetContext = context(id: UUID())
+        let target = FakeSession(context: targetContext, label: "target")
+        let factory = FakeSessionFactory(sessions: [targetContext.id: [target]])
+        factory.suspendedContextIDs.insert(targetContext.id)
+        let controller = LibrarySessionController(factory: factory)
+        controller.installInitialSession(current)
+
+        let task = Task { try await controller.switchToLibrary(targetContext) }
+        await factory.waitUntilSuspended(targetContext.id)
+        task.cancel()
+        factory.resume(targetContext.id)
+        do {
+            try await task.value
+            XCTFail("Expected cancellation")
+        } catch { XCTAssertTrue(error is CancellationError) }
+
+        XCTAssertTrue(controller.activeSession === current)
+        XCTAssertEqual(controller.state, .active(current.context.id))
+        XCTAssertTrue(current.events.values.isEmpty)
+        XCTAssertEqual(target.events.values, ["target.close"])
+    }
+
+    func testFailedRecoveryClosesRestoredSessionResources() async {
+        let old = FakeSession(context: context(id: UUID()), label: "old")
+        let targetContext = context(id: UUID())
+        let target = FakeSession(context: targetContext, label: "target")
+        target.loadError = TestFailure.expected
+        let restored = FakeSession(context: old.context, label: "restored")
+        restored.loadError = TestFailure.expected
+        let controller = LibrarySessionController(factory: FakeSessionFactory(sessions: [
+            targetContext.id: [target], old.context.id: [restored]
+        ]))
+        controller.installInitialSession(old)
+
+        await XCTAssertThrowsErrorAsync(expected: .targetAndRecoveryFailed) {
+            try await controller.switchToLibrary(targetContext)
+        }
+        XCTAssertNil(controller.activeSession)
+        XCTAssertEqual(controller.state, .unavailable(old.context.id))
+        XCTAssertEqual(restored.events.values, ["restored.load", "restored.close"])
+    }
+
+    func testCancellationDuringLoadDoesNotCancelRecovery() async throws {
+        let old = FakeSession(context: context(id: UUID()), label: "old")
+        let targetContext = context(id: UUID())
+        let target = FakeSession(context: targetContext, label: "target")
+        target.suspendLoad = true
+        target.requiresUncancelledLoad = true
+        let restored = FakeSession(context: old.context, label: "restored")
+        restored.requiresUncancelledLoad = true
+        let controller = LibrarySessionController(factory: FakeSessionFactory(sessions: [
+            targetContext.id: [target], old.context.id: [restored]
+        ]))
+        controller.installInitialSession(old)
+
+        let task = Task { try await controller.switchToLibrary(targetContext) }
+        await target.waitUntilLoadSuspended()
+        task.cancel()
+        target.resumeLoad()
+        do {
+            try await task.value
+            XCTFail("Expected cancellation")
+        } catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertTrue(controller.activeSession === restored)
+        XCTAssertEqual(controller.state, .active(old.context.id))
+    }
+
+    func testCurrentLibraryModeMismatchKeepsExistingSession() async {
+        let current = FakeSession(context: context(id: UUID()), label: "current")
+        let controller = LibrarySessionController(factory: FakeSessionFactory(sessions: [:]))
+        controller.installInitialSession(current)
+        let wrongMode = LibraryContext(
+            id: current.context.id, mode: .referenced, rootURL: current.context.rootURL,
+            rootBookmarkData: current.context.rootBookmarkData, generation: 2
+        )
+        do {
+            try await controller.switchToLibrary(wrongMode)
+            XCTFail("Expected mode mismatch")
+        } catch {
+            XCTAssertEqual(error as? LibrarySessionFactoryError, .manifestModeMismatch)
+        }
+        XCTAssertTrue(controller.activeSession === current)
+        XCTAssertEqual(controller.state, .active(current.context.id))
+        XCTAssertTrue(current.events.values.isEmpty)
+    }
+
     func testPlaybackMemoryIsIsolatedPerLibrary() throws {
         let suiteName = "PlaybackMemoryTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -328,6 +503,7 @@ private final class FakeSession: LibrarySessionLifecycle {
     var flushError: Error?
     var suspendLoad = false
     var suspendQuiesce = false
+    var requiresUncancelledLoad = false
     private var didReachSuspendedLoad = false
     private var didReachSuspendedQuiesce = false
     private var loadContinuation: CheckedContinuation<Void, Never>?
@@ -347,6 +523,7 @@ private final class FakeSession: LibrarySessionLifecycle {
                 loadContinuation = continuation
             }
         }
+        if requiresUncancelledLoad { try Task.checkCancellation() }
         if let loadError { throw loadError }
     }
 

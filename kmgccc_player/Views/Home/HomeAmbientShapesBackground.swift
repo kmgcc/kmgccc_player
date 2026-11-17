@@ -142,6 +142,8 @@ final class HomeAmbientRootView: NSView {
     private let motion: HomeAmbientMotionState
     private var motionSubscription: AnyCancellable?
     private var geometrySubscription: AnyCancellable?
+    private var occlusionSubscription: AnyCancellable?
+    private var needsVisibleRebuild = false
 
     private var sourceColor: NSColor?
     private var sourceAnalysis: ArtworkColorAnalysis?
@@ -232,6 +234,7 @@ final class HomeAmbientRootView: NSView {
             Log.debug("[HomeAmbient/root] viewDidMoveToWindow=nil — releasing subs", category: .ui)
             geometrySubscription = nil
             motionSubscription = nil
+            occlusionSubscription = nil
             presentations = []
             removeAllShapeLayers()
             tintedShapeCache.removeAll(keepingCapacity: false)
@@ -239,6 +242,11 @@ final class HomeAmbientRootView: NSView {
             hasLoadedShapes = false
             lastLayoutSignature = nil
         } else {
+            occlusionSubscription = NotificationCenter.default.publisher(
+                for: NSWindow.didChangeOcclusionStateNotification, object: window
+            ).sink { [weak self] _ in
+                self?.rebuildIfVisible()
+            }
             loadShapesIfNeeded()
             subscribeToLayoutState()
             subscribeToMotion()
@@ -248,6 +256,7 @@ final class HomeAmbientRootView: NSView {
             // runloop tick on first mount.
             applyGeometryChange(HomeWindowLayoutState.shared.geometry)
             applyScrollOffset(motion.scrollOffsetY)
+            rebuildIfVisible()
             Log.debug(
                 "[HomeAmbient/root] viewDidMoveToWindow=window presentations=\(presentations.count) geomValid=\(geometry.hasValidLayout) scrollY=\(Int(scrollOffsetY))",
                 category: .ui
@@ -273,12 +282,23 @@ final class HomeAmbientRootView: NSView {
 
         if paletteChanged {
             tintedShapeCache.removeAll(keepingCapacity: true)
-            updateBaseLayerColor()
-            rebuildOrReposition(for: geometry, forceFullRebuild: true)
+            needsVisibleRebuild = true
+            rebuildIfVisible()
         }
         if motionEnabledChanged {
             applyLayerTransforms()
         }
+    }
+
+    /// A separate fullscreen space can leave Home mounted in an occluded
+    /// window. Remember its latest palette and geometry without rasterizing
+    /// its decorative shapes in the middle of the visible track transition.
+    private func rebuildIfVisible() {
+        guard needsVisibleRebuild, let window,
+              window.isVisible, window.occlusionState.contains(.visible) else { return }
+        needsVisibleRebuild = false
+        updateBaseLayerColor()
+        rebuildOrReposition(for: geometry, forceFullRebuild: true)
     }
 
     // MARK: - Subscriptions
@@ -305,6 +325,10 @@ final class HomeAmbientRootView: NSView {
         guard next.hasValidLayout else { return }
         guard next != geometry else { return }
         geometry = next
+        guard let window, window.isVisible, window.occlusionState.contains(.visible) else {
+            needsVisibleRebuild = true
+            return
+        }
         rebuildOrReposition(for: next, forceFullRebuild: false)
     }
 
@@ -350,6 +374,10 @@ final class HomeAmbientRootView: NSView {
         for geometry: HomeWindowLayoutState.Geometry,
         forceFullRebuild: Bool
     ) {
+        guard let window, window.isVisible, window.occlusionState.contains(.visible) else {
+            needsVisibleRebuild = true
+            return
+        }
         guard geometry.hasValidLayout, !shapeLoadResult.images.isEmpty else {
             presentations = []
             lastLayoutSignature = nil

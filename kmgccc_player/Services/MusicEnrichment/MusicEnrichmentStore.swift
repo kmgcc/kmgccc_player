@@ -232,15 +232,31 @@ actor MusicEnrichmentStore {
         let userSelected = shared?.isUserSelected == true
         var assets = shared?.assets.filter(assetExists) ?? []
         if !userSelected {
+            if record.query.duration > 0 {
+                assets.removeAll { asset in
+                    MotionAudioAligner.isMusicVideo(songDuration: record.query.duration, videoDuration: asset.duration)
+                }
+            }
             for asset in record.assets where !asset.relativePath.hasPrefix("AlbumAssets/") && !assets.contains(where: { $0.kind == asset.kind }) {
+                if record.query.duration > 0 && MotionAudioAligner.isMusicVideo(songDuration: record.query.duration, videoDuration: asset.duration) {
+                    continue
+                }
                 guard let url = assetURL(asset), FileManager.default.fileExists(atPath: url.path) else { continue }
                 let descriptor = MotionArtworkDescriptor(kind: asset.kind, url: asset.sourceURL, width: asset.width, height: asset.height)
                 if let migrated = try importMotion(from: url, descriptor: descriptor, startTime: asset.startTime, duration: asset.duration,
                     fileExtension: url.pathExtension, albumIdentity: resolvedKey) { assets.append(migrated) }
             }
         }
-        record.assets = assets
-        guard !assets.isEmpty || userSelected else { record.albumMotionIdentity = nil; return record }
+        let hasTrackMV = record.query.duration > 0 && record.assets.contains {
+            !$0.relativePath.hasPrefix("AlbumAssets/") && MotionAudioAligner.isMusicVideo(songDuration: record.query.duration, videoDuration: $0.duration)
+        }
+        if !hasTrackMV {
+            record.assets = assets
+        }
+        guard !assets.isEmpty || userSelected else {
+            record.albumMotionIdentity = nil
+            return record
+        }
         if shared?.identity != resolvedKey || shared?.assets != assets {
             try writeAlbum(AlbumMotionRecord(identity: resolvedKey, catalogAlbumID: resolvedCatalogID, assets: assets,
                 updatedAt: shared?.assets == assets ? shared?.updatedAt : Date(), isUserSelected: shared?.isUserSelected),
@@ -248,7 +264,7 @@ actor MusicEnrichmentStore {
         } else {
             try writeAlias(identity.fallbackKey, to: resolvedKey, catalogID: resolvedCatalogID)
         }
-        record.albumMotionIdentity = resolvedKey
+        record.albumMotionIdentity = hasTrackMV ? nil : resolvedKey
         return record
     }
 

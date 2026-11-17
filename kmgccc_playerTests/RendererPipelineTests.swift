@@ -476,6 +476,73 @@ final class RendererTimelineTests: XCTestCase {
         pipeline.stop()
     }
 
+    func testDSPReplacementUpdatesQueuedLimiterMetersWithoutChangingAnalysisSource() {
+        let pipeline = RendererPlaybackPipeline()
+        pipeline.setVolume(0)
+        defer { pipeline.stop() }
+        let primed = expectation(description: "unprocessed audio is queued")
+        let primedGate = OneShotGate()
+        pipeline.onEnqueue = { _, pts in
+            if pts > 0.8, primedGate.claim() { primed.fulfill() }
+        }
+        pipeline.load(
+            source: MemoryRendererPCMProvider(sampleRate: 48_000, channels: 2, frames: 144_000, marker: 0.5),
+            autoplay: false
+        )
+        wait(for: [primed], timeout: 2)
+
+        var bands = DSPParametricEQBand.defaultBands
+        bands[1] = DSPParametricEQBand(enabled: true, type: .lowShelf, frequencyHz: 200, gainDB: 12)
+        let limited = AudioDSPConfiguration(
+            enabled: true,
+            headroom: DSPHeadroomConfiguration(mode: .off),
+            nodes: [.parametricEQ(bands: bands)]
+        )
+        let limitedRequest = UUID()
+        let didLimit = expectation(description: "boosted audio replaces the queued output")
+        let limitedGate = OneShotGate()
+        pipeline.onDSPApplyEvent = { event in
+            if event.requestID == limitedRequest, event.state == .scheduled, limitedGate.claim() {
+                didLimit.fulfill()
+            }
+        }
+        pipeline.applyDSP(limited, revision: "limited", requestID: limitedRequest)
+        wait(for: [didLimit], timeout: 3)
+
+        let limitedChunks = pipeline.dspAnalysisChunksForTesting.filter { $0.revision == "limited" }
+        XCTAssertGreaterThan(limitedChunks.count, 1, "the replacement must update already queued analysis chunks")
+        XCTAssertTrue(limitedChunks.allSatisfy { chunk in
+            chunk.meters.contains { reading in
+                reading.nodeID == DSPLimiterConfiguration.nodeID && (reading.values.first ?? 0) > 0.05
+            }
+        })
+        XCTAssertTrue(limitedChunks.allSatisfy { $0.pcm.data.allSatisfy { $0 == 0.5 } },
+                      "visualization must retain the decoded source instead of the limited output")
+        let unchanged = pipeline.dspAnalysisChunksForTesting.filter { $0.revision == "initial" }
+        XCTAssertFalse(unchanged.isEmpty, "analysis before the replacement boundary stays on the original chain")
+        XCTAssertTrue(unchanged.allSatisfy { $0.meters.isEmpty })
+
+        // Removing the EQ changes topology and replaces the same queued tail.
+        // A bypassed replacement must clear the old limiter readings too.
+        let flatRequest = UUID()
+        let didBypass = expectation(description: "flat audio replaces the limited output")
+        let flatGate = OneShotGate()
+        pipeline.onDSPApplyEvent = { event in
+            if event.requestID == flatRequest, event.state == .scheduled, flatGate.claim() {
+                didBypass.fulfill()
+            }
+        }
+        pipeline.applyDSP(
+            AudioDSPConfiguration(enabled: true, nodes: [], limiter: DSPLimiterConfiguration(enabled: false)),
+            revision: "flat", requestID: flatRequest
+        )
+        wait(for: [didBypass], timeout: 3)
+        let flatChunks = pipeline.dspAnalysisChunksForTesting.filter { $0.revision == "flat" }
+        XCTAssertGreaterThan(flatChunks.count, 1)
+        XCTAssertTrue(flatChunks.allSatisfy { $0.meters.isEmpty })
+        XCTAssertTrue(flatChunks.allSatisfy { $0.pcm.data.allSatisfy { $0 == 0.5 } })
+    }
+
     func testRendererRecoveryUsesLogicalSegmentBoundaryWithOutputLead() {
         let outgoing = RendererSegmentDescriptor(
             id: UUID(),

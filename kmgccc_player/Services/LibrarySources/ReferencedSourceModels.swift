@@ -240,6 +240,7 @@ nonisolated struct ReferencedSourceDescriptor: Codable, Sendable, Equatable, Ide
 
 nonisolated enum ReferencedSourceStoreError: Error, Equatable, LocalizedError {
     case incompleteSource(UUID)
+    case sourceChanged(UUID)
     case missingSchema
     case unsupportedSchema(Int)
     case missingMode
@@ -253,6 +254,7 @@ nonisolated enum ReferencedSourceStoreError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .incompleteSource(let id): return "Referenced source \(id) is missing source.json."
+        case .sourceChanged(let id): return "Referenced source \(id) changed while it was being read."
         case .missingSchema: return "Referenced source schemaVersion is missing."
         case .unsupportedSchema(let version): return "Unsupported referenced source schema: \(version)"
         case .missingMode: return "Referenced source mode is missing."

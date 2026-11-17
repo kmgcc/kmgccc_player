@@ -163,7 +163,7 @@ struct HomeAlbumsSection: View {
     }
 
     private func play(_ album: AlbumEntry) {
-        let tracks = libraryVM.allTracks.filter { $0.albumGroupKey == album.canonicalKey }
+        let tracks = libraryVM.tracksForAlbumInDisplayOrder(album.canonicalKey)
         playbackCoordinator.playTracks(
             tracks,
             startingAt: 0,

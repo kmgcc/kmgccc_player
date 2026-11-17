@@ -9,7 +9,7 @@ kmgccc_player 把用户资料库、可重建索引、派生缓存和系统缓存
 
 `library.json` 是资料库的权威入口，保存资料库 UUID、显示名、schema 和固定模式。全局 `LibraryRegistry.json` 只保存资料库 bookmark、最后已知路径、模式投影、当前资料库 ID，以及两种模式各自最近使用的资料库；打开和重连仍以 `library.json` 为准。
 
-- **托管模式（managed）**：导入时把音频复制到 `Tracks/<trackUUID>/audio.<ext>`。删除曲目会永久删除资料库副本，不操作最初的导入源。
+- **托管模式（managed）**：独立歌曲存放于 `Tracks/<trackUUID>/audio.<ext>`，整轨与 SACD 原文件存放于 `MediaAssets/`，多个逻辑曲目引用同一物理媒体。删除单轨释放该轨资料，最后一个有效引用释放后清理共享媒体。
 - **原位模式（referenced）**：音频留在外部来源，Track sidecar 保存 bookmark、来源 membership、physical identity 和 fingerprint。资料库只保存 App 元数据与派生数据。
 
 同一资料库不能混合两种 locator。模式在创建后不可修改；切换模式实际是切换到该模式最近使用的另一资料库，或进入创建流程。
@@ -26,6 +26,12 @@ kmgccc_player Library - <资料库名称>/
     audio.<ext>                 # 仅托管模式
     artwork.jpg
     lyrics.ttml
+  MediaAssets/<programUUID>/<physicalVersion>/
+    <originalAudioFile>
+    <cueOrCorrectionFile>
+  Recovery/
+    AudioProgramImports/
+    AudioExpansions/
   Sources/                     # 原位来源与权威事务记录
     <sourceUUID>/source.json
     ignored-items.json
@@ -48,6 +54,10 @@ kmgccc_player Library - <资料库名称>/
     LibraryScan/manifest.json
     SourceScan/<sourceUUID>.json
 ```
+
+首次写入分轨或共享媒体时，资料库 schema 从 1 升至 2，并在 Recovery 保留旧 manifest。Track sidecar schema 10 增加媒体选择和解码参数，来源扫描 manifest 2 为一个物理文件记录多个 Track ID。新版本继续读取旧记录。
+
+分轨组先暂存原文件与逐轨资料，再通过组提交记录决定可见性。中断后未完整提交的组进入资料库检查流程，原始媒体和可恢复资料保留。已有整轨展开时保存原条目、用户资料及歌单位置，可从资料库检查页恢复。
 
 ## 数据平面
 
@@ -93,7 +103,11 @@ scanner 只生成 immutable diff，reconciler 用持久化 intent 提交 sidecar
 
 移除 source 只删除 membership 和该来源独有的 App track，不删除外部音频；仍属于重叠来源的 Track 保留同一 UUID。移除整个原位资料库也不删除外部音频。
 
+删除原位歌曲时，不再贡献任何歌曲的单文件来源随这次删除一并移除，来源列表不会留下空条目；目录来源始终保留。
+
 NCM 转换在来源目录使用 reservation 和唯一输出名，绝不覆盖或删除原 NCM。`Sources/ncm-conversions.json` 保存 pending/success/removed 关联；ignore 同时阻止已删除的 NCM 或转换输出被自动重新导入。只有用户手动选择 NCM 才会解除相应屏蔽并重试。
+
+视频容器（MP4、M4V、MOV）在导入时规范化为只含音轨的 M4A：托管库存入曲目目录，原位库发布在视频旁并使用唯一文件名。提取出的音频带有来源标记，来源扫描因此不会把它当成第二首歌；重新导入同一视频会复用这个名字，不堆叠副本。画面单独提取为首帧 JPEG 封面与无声动态封面，动态封面与其他资产一样存放在资料库的曲目目录。原视频不修改；删除该歌曲时，提取出的音频随之移除。
 
 ## 派生缓存
 

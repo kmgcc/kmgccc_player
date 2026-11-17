@@ -24,15 +24,26 @@ enum NativeSkinComponents {
         catalog.register("native.spectrum") { snapshot, config in SkinSpectrumComponent(snapshot: snapshot, configuration: config) }
         catalog.register("native.waveform") { _, config in SkinWaveformComponent(configuration: config) }
         catalog.register("native.led") { snapshot, config in SkinLEDComponent(snapshot: snapshot, configuration: config) }
-        catalog.register("native.actionsCapsule", isInteractive: true) { _, config in SkinLeadingCapsule(configuration: config) }
-        catalog.register("native.volumeCapsule", isInteractive: true) { _, config in SkinVolumeCapsule(configuration: config) }
+        catalog.register("native.actionsCapsule", isInteractive: true) { _, config in SkinFullscreenOnly { SkinLeadingCapsule(configuration: config) } }
+        catalog.register("native.volumeCapsule", isInteractive: true) { _, config in SkinFullscreenOnly { SkinVolumeCapsule(configuration: config) } }
         for control in SkinActionButton.Kind.allCases {
             catalog.register("native." + control.rawValue) { _, config in SkinActionButton(kind: control, configuration: config) }
         }
         catalog.register("native.miniPlayer", isInteractive: true) { snapshot, config in
-            SkinMiniPlayerComponent(snapshot: snapshot, configuration: config)
+            SkinFullscreenOnly { SkinMiniPlayerComponent(snapshot: snapshot, configuration: config) }
         }
         SkinComponentContract.register(in: catalog)
+    }
+}
+
+/// The window keeps the App's own mini player, so a scene's mini player capsules appear only in
+/// fullscreen and a window skin can neither replace nor remove it.
+struct SkinFullscreenOnly<Content: View>: View {
+    @Environment(\.skinSceneSurface) private var surface
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if surface == .fullscreen { content() }
     }
 }
 
@@ -96,6 +107,31 @@ private struct SkinTrackInfoComponent: View {
     }
 }
 
+/// A full, scrollable description, using the same inheritance as the detail sheet.
+struct SkinTrackDescriptionComponent: View {
+    let configuration: SkinComponentConfiguration
+    @Environment(PlaybackCoordinator.self) private var playback
+    @Environment(LibraryViewModel.self) private var library
+
+    var body: some View {
+        let _ = library.refreshTrigger
+        let presentation = playback.stablePresentation
+        let detail = presentation.source == .local ? presentation.localTrack.map {
+            TrackDetailResolver.resolve(for: $0, libraryVM: library)
+        } : nil
+        let centered = configuration.text("alignment", fallback: "leading") == "center"
+        ScrollView {
+            Text(detail?.text ?? "")
+                .font(.system(size: configuration.number("fontSize", fallback: 14)))
+                .foregroundStyle(configuration.color(fallback: .primary))
+                .multilineTextAlignment(centered ? .center : .leading)
+                .frame(maxWidth: .infinity, alignment: centered ? .center : .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .id(presentation.localTrack?.id)
+    }
+}
+
 private struct SkinImageComponent: View {
     let configuration: SkinComponentConfiguration
     @Environment(\.skinPackageResources) private var resources
@@ -123,7 +159,7 @@ private struct SkinSpectrumComponent: View {
                 usesDarkForeground: configuration.boolean("darkForeground", fallback: snapshot.theme.spectrumUsesDarkForeground),
                 scale: configuration.number("scale", fallback: 1), isHovered: false,
                 pausedBehavior: configuration.text("paused") == "dots" ? .minimalDots : .default,
-                capsuleCount: max(1, min(64, Int(configuration.number("count", fallback: 9)))),
+                capsuleCount: max(1, min(64, Int(configuration.number("count", fallback: Double(TunedSpectrumEngine.baselineBandCount))))),
                 preferredWidth: proxy.size.width, preferredHeight: proxy.size.height
             )
         }

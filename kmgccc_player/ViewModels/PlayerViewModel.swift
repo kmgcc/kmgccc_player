@@ -38,6 +38,10 @@ final class PlayerViewModel {
         playbackService.isPlaying
     }
 
+    var isLyricsClockPlaying: Bool {
+        playbackService.isLyricsClockPlaying
+    }
+
     var currentTime: Double {
         playbackService.currentTime
     }

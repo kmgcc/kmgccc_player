@@ -92,7 +92,9 @@ private enum CassetteLayout {
         let adjustedContext = isFullscreen ? context.withContentSizeAdjustment(scaleAdjustment) : context
         let size = cassetteSize(for: adjustedContext)
         let visualizerMode = isFullscreen ? fullscreenVisualizerMode : normalVisualizerMode
-        let centeredYOffset: CGFloat = visualizerMode == "led" ? 12 : max(22, min(36, size.height * 0.07))
+        let centeredYOffset: CGFloat = isFullscreen
+            ? (visualizerMode == "led" ? 12 : max(22, min(36, size.height * 0.07)))
+            : 0
         let horizontalOffset = FullscreenCoverHorizontalOffset.artworkOffsetX(for: context, baseOffset: -6)
         return Metrics(
             size: size,
@@ -524,6 +526,12 @@ private struct CassetteArtwork: View, Equatable {
         .overlay { if isolatedPart == nil || isolatedPart == "reels" { HolesOverlay(context: context, tint: tint) } }
         .overlay { if isolatedPart == nil || isolatedPart == "waveform" { WaveformCapsulesLayer(context: context).zIndex(999) } }
         .frame(width: size.width, height: size.height)
+        .motionArtworkFullscreenSource(
+            context: context,
+            cornerRadius: 16,
+            insetScale: 0.90,
+            handoffStyle: .maskedCrossfade
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .offset(x: horizontalOffset, y: centeredYOffset)
         .onAppear {

@@ -33,6 +33,27 @@ final class NativeLyricsSurface: NSObject {
     private(set) var currentTime = 0.0
     private(set) var isPlaying = false
     private var pendingClickSeek = false
+    private struct DecodedDocument {
+        let trackID: UUID?
+        let text: String
+        let document: LyricsDocument
+    }
+    // Keep the current and previous documents for replay and adjacent-track
+    // switches. Exact source text is part of the key so edits cannot reuse a
+    // document decoded from older lyrics for the same track.
+    private var decodedDocuments: [DecodedDocument] = []
+    private struct EntryDiagnostics {
+        let started: CFTimeInterval
+        let initialLayouts: Int
+        let initialGlyphMisses: Int
+        var previousFrame: CFTimeInterval?
+        var frames = 0
+        var maxRenderMs = 0.0
+        var maxGapMs = 0.0
+        var over8ms = 0
+        var over16ms = 0
+    }
+    private var entryDiagnostics: EntryDiagnostics?
 
     init(role: LyricsSurfaceRole) {
         self.role = role
@@ -43,6 +64,10 @@ final class NativeLyricsSurface: NSObject {
         // A surface may be configured or receive a snapshot before a host is
         // visible. Activation is the only operation that starts frame delivery.
         view.automaticDisplayUpdates = false
+
+        if DebugUIHooks.diagnosticsEnabled {
+            view.onFrame = { [weak self] frame in self?.recordEntryFrame(frame) }
+        }
 
         view.onSeek = { [weak self] seconds in
             guard let self else { return }
@@ -113,6 +138,7 @@ final class NativeLyricsSurface: NSObject {
         lastInputTrackID = trackID
 
         if rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            entryDiagnostics = nil
             view.clear(time: self.currentTime, playing: isPlaying)
             view.releaseRenderingResources()
             lastError = nil
@@ -124,11 +150,36 @@ final class NativeLyricsSurface: NSObject {
 
         do {
             let installStart = CACurrentMediaTime()
-            let data = Data(rawText.utf8)
-            let decoded = try TTMLDecoder().decode(data)
+            let decoded: LyricsDocument
+            let cacheHit: Bool
+            if let index = decodedDocuments.firstIndex(where: { $0.trackID == trackID && $0.text == rawText }) {
+                let cached = decodedDocuments.remove(at: index)
+                decodedDocuments.insert(cached, at: 0)
+                decoded = cached.document
+                cacheHit = true
+            } else {
+                decoded = try TTMLDecoder().decode(Data(rawText.utf8))
+                decodedDocuments.insert(DecodedDocument(trackID: trackID, text: rawText, document: decoded), at: 0)
+                if decodedDocuments.count > 2 { decodedDocuments.removeLast() }
+                cacheHit = false
+            }
             let decodeEnd = CACurrentMediaTime()
-            view.releaseRenderingResources()
-            let releaseEnd = CACurrentMediaTime()
+            let previousFrame = view.lastFrame
+            // `install(document:)` already tears the previous document down
+            // (groups, cache, layout) and re-arms the display link. Calling
+            // `releaseRenderingResources()` first repeated that teardown and
+            // invalidated the display link, so every track switch paid for the
+            // layer tree twice and then rebuilt it. The document is swapped
+            // atomically by `install`, so the old surface also stays intact if
+            // the new document is rejected later.
+            let releaseEnd = decodeEnd
+            if DebugUIHooks.diagnosticsEnabled {
+                entryDiagnostics = EntryDiagnostics(
+                    started: releaseEnd,
+                    initialLayouts: previousFrame?.layoutCount ?? 0,
+                    initialGlyphMisses: previousFrame?.glyphCacheMisses ?? 0
+                )
+            }
             view.install(
                 document: decoded,
                 time: self.currentTime,
@@ -136,16 +187,18 @@ final class NativeLyricsSurface: NSObject {
             )
             let installEnd = CACurrentMediaTime()
             DebugUIHooks.record(String(
-                format: "lyrics-install role=%@ decode=%.1fms release=%.1fms install=%.1fms",
+                format: "lyrics-install role=%@ decode=%.1fms release=%.1fms install=%.1fms cache=%@",
                 role.rawValue,
                 (decodeEnd - installStart) * 1000,
                 (releaseEnd - decodeEnd) * 1000,
-                (installEnd - releaseEnd) * 1000
+                (installEnd - releaseEnd) * 1000,
+                cacheHit ? "hit" : "miss"
             ))
             lastError = nil
             lastTTML = rawText
             lastTrackID = trackID
         } catch {
+            entryDiagnostics = nil
             // Parse before replacing the previous visible document. The native
             // view follows the same failure boundary as the old bridge: an
             // invalid payload is recorded and the last valid surface remains.
@@ -162,6 +215,31 @@ final class NativeLyricsSurface: NSObject {
             )
         }
         pendingClickSeek = false
+    }
+
+    private func recordEntryFrame(_ frame: LyricsFrame) {
+        guard var metrics = entryDiagnostics else { return }
+        let now = CACurrentMediaTime()
+        metrics.frames += 1
+        metrics.maxRenderMs = max(metrics.maxRenderMs, frame.renderMilliseconds)
+        if let previous = metrics.previousFrame {
+            metrics.maxGapMs = max(metrics.maxGapMs, (now - previous) * 1000)
+        }
+        metrics.previousFrame = now
+        if frame.renderMilliseconds > 8.33 { metrics.over8ms += 1 }
+        if frame.renderMilliseconds > 16.67 { metrics.over16ms += 1 }
+        if now - metrics.started >= 2 {
+            entryDiagnostics = nil
+            DebugUIHooks.record(String(
+                format: "lyrics-entry role=%@ frames=%d maxRender=%.1fms maxCallbackGap=%.1fms over8ms=%d over16ms=%d layouts=%d glyphMisses=%d",
+                role.rawValue, metrics.frames, metrics.maxRenderMs, metrics.maxGapMs,
+                metrics.over8ms, metrics.over16ms,
+                max(0, frame.layoutCount - metrics.initialLayouts),
+                max(0, frame.glyphCacheMisses - metrics.initialGlyphMisses)
+            ))
+        } else {
+            entryDiagnostics = metrics
+        }
     }
 
     func synchronize(
@@ -196,15 +274,22 @@ final class NativeLyricsSurface: NSObject {
     func setCurrentTime(
         _ time: Double,
         force: Bool = false,
+        playing: Bool? = nil,
         motion: LyricsSeekMotion = .immediate
     ) {
         guard time.isFinite else { return }
+        // The transport owns the clock. Re-assert its play state before the
+        // time guard so a surface cannot keep running on its own when the
+        // sample that was supposed to pause it never arrived.
+        if let playing, playing != isPlaying {
+            setPlaying(playing)
+        }
         guard force || abs(time - currentTime) >= 0.001 || pendingClickSeek else { return }
         // A forced update is used for an explicit seek/reveal (for example
         // when the fullscreen surface is brought back on screen). Preserve
         // that intent all the way through the native clock so a stale
         // low-frequency playback sample cannot be mistaken for the seek.
-        synchronize(time: time, playing: isPlaying, seek: force, motion: motion)
+        synchronize(time: time, playing: playing ?? isPlaying, seek: force, motion: motion)
     }
 
     func setPlaying(_ playing: Bool, force: Bool = false, hostTime: Double = CACurrentMediaTime()) {
@@ -233,6 +318,7 @@ final class NativeLyricsSurface: NSObject {
     }
 
     func trimTransientResources() {
+        decodedDocuments.removeAll()
         view.pruneTransientCaches()
     }
 
@@ -249,6 +335,7 @@ final class NativeLyricsSurface: NSObject {
     }
 
     func shutdown() {
+        decodedDocuments.removeAll()
         setRenderingActive(false)
         view.releaseRenderingResources()
         onSeek = nil
@@ -484,20 +571,25 @@ final class NativeLyricsSurfaceManager {
     func updatePlaybackTime(
         _ time: Double,
         force: Bool = false,
+        playing: Bool? = nil,
         motion: LyricsSeekMotion = .immediate
     ) {
         guard time.isFinite else { return }
         let normalized = max(0, time)
+        let resolvedPlaying = playing ?? snapshot.playing
         snapshot.time = normalized
         for (role, surface) in surfaces where activeRoles.contains(role) && role.receivesSharedPlaybackSnapshot {
-            surface.setCurrentTime(normalized, force: force, motion: motion)
+            surface.setCurrentTime(normalized, force: force, playing: resolvedPlaying, motion: motion)
         }
         snapshot.time = activePlaybackSurface?.currentTime ?? normalized
     }
 
     func updatePlayingState(_ playing: Bool) {
         snapshot.playing = playing
-        for (role, surface) in surfaces where activeRoles.contains(role) && role.receivesSharedPlaybackSnapshot {
+        // A surface that is hidden while the transport pauses still owns a
+        // clock. Keep its play state authoritative even while it is inactive,
+        // otherwise it can come back with a clock that kept running.
+        for (role, surface) in surfaces where role.receivesSharedPlaybackSnapshot {
             surface.setPlaying(playing)
         }
         if let effectiveTime = activePlaybackSurface?.currentTime {

@@ -913,17 +913,17 @@ actor LRCConverterService {
             xmlParts.append("<p ttm:agent=\"v1\" itunes:key=\"L\(i + 1)\" begin=\"" + formatTimeForTTML(lineStart) + "\" end=\"" + formatTimeForTTML(lineEnd) + "\">")
             
             let segments = lineData.segments
-            for segment in segments {
+            for (segIndex, segment) in segments.enumerated() {
                 let begin = formatTimeForTTML(segment.time)
                 let end = formatTimeForTTML(segment.endTime ?? segment.time + 0.5)
                 let text = escapeXML(segment.text)
                 
                 var span = ""
-                if !segment.leadingSpace.isEmpty {
+                if segIndex > 0 && !segment.leadingSpace.isEmpty {
                     span += escapeXML(segment.leadingSpace)
                 }
                 span += "<span begin=\"\(begin)\" end=\"\(end)\">\(text)</span>"
-                if !segment.trailingSpace.isEmpty {
+                if segIndex < segments.count - 1 && !segment.trailingSpace.isEmpty {
                     span += escapeXML(segment.trailingSpace)
                 }
                 
@@ -984,17 +984,17 @@ actor LRCConverterService {
             xmlParts.append("<p begin=\"" + formatTimeForTTML(lineStart) + "\" end=\"" + formatTimeForTTML(lineEnd) + "\" ttm:agent=\"v1\" itunes:key=\"L\(i + 1)\">")
             
             let segments = lineData.segments
-            for segment in segments {
+            for (segIndex, segment) in segments.enumerated() {
                 let begin = formatTimeForTTML(segment.time)
                 let end = formatTimeForTTML(segment.endTime ?? segment.time + 0.5)
                 let text = escapeXML(segment.text)
                 
                 var span = ""
-                if !segment.leadingSpace.isEmpty {
+                if segIndex > 0 && !segment.leadingSpace.isEmpty {
                     span += escapeXML(segment.leadingSpace)
                 }
                 span += "<span begin=\"\(begin)\" end=\"\(end)\">\(text)</span>"
-                if !segment.trailingSpace.isEmpty {
+                if segIndex < segments.count - 1 && !segment.trailingSpace.isEmpty {
                     span += escapeXML(segment.trailingSpace)
                 }
                 

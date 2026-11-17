@@ -50,7 +50,27 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         // source repair, or any sidecar writer can touch this Library root.
         let writerLease = try LibraryWriterLease.acquire(paths: context.paths)
 
+        // The manifest was read before the lease existed. A cooperating
+        // process could have moved or replaced the root in between; the lease
+        // is only meaningful for the root that is still there now.
+        do {
+            let lockedManifest = try MusicLibraryManifest.read(from: context.paths.manifestURL)
+            guard lockedManifest.libraryID == context.id, lockedManifest.mode == context.mode else {
+                writerLease.release()
+                throw LibrarySessionFactoryError.manifestIdentityMismatch
+            }
+        } catch let error as LibrarySessionFactoryError {
+            throw error
+        } catch {
+            writerLease.release()
+            throw error
+        }
+
         try context.paths.createRequiredDirectories()
+        // Replay interrupted range updates under the library's writer lease,
+        // before any repository or derived index reads their projections.
+        try AudioProgramImportTransaction.recoverInterruptedUpdates(paths: context.paths)
+
         let mutationJournal = LibraryMutationJournal(
             paths: context.paths,
             libraryID: context.id
@@ -58,7 +78,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         let recoveredMutations = try await mutationJournal.recoverInterruptedMutations()
         if !recoveredMutations.isEmpty {
             Log.warning(
-                "[LibrarySession] recovered \(recoveredMutations.count) interrupted mutation intent(s) before reload",
+                "[LibrarySession] found \(recoveredMutations.count) interrupted mutation intent(s); unresolved records remain in Pending",
                 category: .library
             )
         }
@@ -176,7 +196,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
                 )
             }
         }
-        let playbackHistoryStore = PlaybackHistoryStore(context: context)
+        let playbackHistoryStore = try PlaybackHistoryStore(context: context)
         let playbackHistoryViewModel = PlaybackHistoryViewModel(
             preferenceStatsService: preferenceStatsService
         )
@@ -195,7 +215,8 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             qqMusicCoverService: cacheServices.qqMusicCoverService,
             artistArtworkProviderCoordinator: cacheServices.artistArtworkProviderCoordinator,
             lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
-            amllDBService: cacheServices.amllDBService
+            amllDBService: cacheServices.amllDBService,
+            paths: context.paths
         )
         let ignoredItemsStore = sourceScope.map { _ in
             IgnoredReferencedItemsStore(paths: context.paths)
@@ -323,7 +344,11 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
                 ignoredItemsStore: ignoredItemsStore,
                 ncmRegistry: ncmRegistry,
                 bookmarkResolver: sourceBookmarkResolver,
-                requiresSecurityScope: requiresSecurityScope
+                requiresSecurityScope: requiresSecurityScope,
+                repository: repository,
+                confirmSharedOriginalDeletion: { [weak libraryViewModel] tracks in
+                    await libraryViewModel?.confirmSharedOriginalDeletion?(tracks)
+                }
             )
             libraryViewModel.prepareTracksForDeletion = { tracks in
                 await deletionService.prepareForAuthorityDeletion(tracks)
@@ -402,10 +427,13 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             externalMetadataStore: cacheServices.externalPlaybackMetadataStore,
             libraryTracksProvider: { [weak libraryViewModel] in libraryViewModel?.allTracks ?? [] }
         )
-        cacheServices.musicEnrichmentService.onSnapshot = { [weak libraryViewModel, weak libraryService] snapshot in
+        cacheServices.musicEnrichmentService.onSnapshot = { [weak libraryViewModel, weak libraryService, weak cacheServices] snapshot in
             var updatedTrackIDs: [UUID] = []
             defer {
-                if !updatedTrackIDs.isEmpty { libraryViewModel?.notifyTrackAuxiliaryDataChanged(trackIDs: updatedTrackIDs) }
+                if !updatedTrackIDs.isEmpty {
+                    libraryViewModel?.notifyTrackAuxiliaryDataChanged(trackIDs: updatedTrackIDs)
+                    cacheServices?.motionAlignmentSource?.invalidate(trackIDs: updatedTrackIDs)
+                }
             }
             let trackID = snapshot.record.query.key.hasPrefix("track:")
                 ? UUID(uuidString: String(snapshot.record.query.key.dropFirst(6))) : nil
@@ -438,10 +466,28 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         MotionArtworkSongClock.shared.source = { [weak playbackCoordinator] in
             playbackCoordinator.map { (time: $0.audiblePlaybackTime, duration: $0.presentation.duration) }
         }
-        cacheServices.musicEnrichmentService.onAlbumMotionChange = { [weak libraryViewModel, weak libraryService] identity, artwork in
+        let motionAlignment = cacheServices.motionAudioAlignment
+        libraryViewModel.onMotionAlignmentTracksChanged = { [weak cacheServices] ids in
+            cacheServices?.motionAlignmentSource?.invalidate(trackIDs: ids)
+        }
+        MotionArtworkSongClock.shared.alignment = motionAlignment
+        MotionArtworkSongClock.shared.localTrack = { [weak playbackCoordinator, weak playerViewModel] in
+            guard playbackCoordinator?.activeSource == .local else { return nil }
+            return playerViewModel?.currentTrack
+        }
+        cacheServices.musicEnrichmentService.onImportedMotion = { [weak libraryViewModel, weak cacheServices] query, _ in
+            guard query.key.hasPrefix("track:"),
+                  let id = UUID(uuidString: String(query.key.dropFirst(6))),
+                  let track = libraryViewModel?.allTracks.first(where: { $0.id == id }) else { return }
+            cacheServices?.motionAlignmentSource?.invalidate(trackIDs: [track.id])
+        }
+        cacheServices.musicEnrichmentService.onAlbumMotionChange = { [weak libraryViewModel, weak libraryService, weak cacheServices] identity, artwork in
             let updated = Self.applyAlbumMotion(artwork, identity: identity, excluding: nil,
                 tracks: libraryViewModel?.allTracks ?? [], libraryService: libraryService)
-            if !updated.isEmpty { libraryViewModel?.notifyTrackAuxiliaryDataChanged(trackIDs: updated) }
+            if !updated.isEmpty {
+                libraryViewModel?.notifyTrackAuxiliaryDataChanged(trackIDs: updated)
+                cacheServices?.motionAlignmentSource?.invalidate(trackIDs: updated)
+            }
         }
         let lyricsViewModel = LyricsViewModel(settings: AppSettings.shared)
         lyricsViewModel.setPlaybackSourceProvider { [weak playbackCoordinator] in
@@ -488,6 +534,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             fileImportService: fileImportService,
             operationCoordinator: operationCoordinator,
             mutationCoordinator: mutationCoordinator,
+            mutationJournal: mutationJournal,
             storageBackend: storageBackend,
             referencedSourceStore: sourceStore,
             referencedSourceScope: sourceScope,
@@ -500,6 +547,8 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             lyricsViewModel: lyricsViewModel,
             ledMeterProvider: ledMeterProvider
         )
+        session.unresolvedMutationCount = recoveredMutations.filter { $0.state != .recovered }.count
+        session.ncmRecoveryService = referencedNCMConversionService
         session.bindLibraryViewModelOperationOwnership()
         return session
     }

@@ -35,6 +35,10 @@ struct AllArtistsView: View {
 
     @State private var deletionRequest: ArtistDeletionRequest?
     @State private var editingArtist: ArtistEntry?
+    @State private var toolbarTopInset: CGFloat = 0
+    @State private var scrollPositionID: UUID?
+    @State private var isUserScrollActive = false
+    @State private var pendingUserPosition: UUID?
 
     var body: some View {
         // Single ThemeStore subscription; rows get plain Color params.
@@ -120,6 +124,16 @@ struct AllArtistsView: View {
             ArtistInfoEditSheet(entry: entry) {}
                 .presentationSizing(.page)
         }
+        .background(
+            PlaylistTopChromeInsetReader(topInset: $toolbarTopInset)
+                .allowsHitTesting(false)
+        )
+        .task {
+            guard let savedID = pageController.collectionScrollPosition(for: .allArtists) else { return }
+            try? await Task.sleep(for: .milliseconds(40))
+            guard !Task.isCancelled else { return }
+            scrollPositionID = savedID
+        }
     }
 
     // MARK: List
@@ -129,62 +143,100 @@ struct AllArtistsView: View {
         primary: Color,
         secondary: Color
     ) -> some View {
-        ScrollView(.vertical) {
-            ReorderableMultiselectRowsSection(
-                rows: artists,
-                isMultiselectMode: pageController.isMultiselectMode,
-                selectedIDs: pageController.selectedTrackIDs,
-                canReorder: pageController.canManuallyReorderCurrentCollection,
-                isSearchFiltering: isFiltering,
-                coordinateSpaceName: "artistCollectionReorderSpace",
-                rowCornerRadius: 12,
-                bottomSpacerHeight: 120,
-                badgeText: { "\($0)" },
-                rowHeight: { _ in 76 },
-                onClearSelection: {
-                    pageController.clearMultiselectState()
-                },
-                onBeginReorder: {
-                    pageController.beginManualTrackReorderInteraction()
-                },
-                onEndReorder: {
-                    pageController.endManualTrackReorderInteraction()
-                },
-                onCommitOrder: { orderedIDs in
-                    pageController.commitManualCollectionOrder(
-                        orderedItemIDs: orderedIDs,
-                        reason: "manual-artist-reorder"
-                    )
-                },
-                rowContent: { artist, _, _ in
-                    ArtistListRow(
-                        artist: artist,
-                        trackCount: trackCount(for: artist),
-                        albumCount: albumCount(for: artist),
-                        titleColor: primary,
-                        subtitleColor: secondary,
-                        onOpen: { handleRowTap(artist) },
-                        onEdit: { editingArtist = artist },
-                        onDelete: { requestDelete(artist) }
-                    )
-                    .libraryTrackDropTarget(.artist(artist.canonicalName), cornerRadius: 12)
-                },
-                floatingContent: { artist in
-                    ArtistListRow(
-                        artist: artist,
-                        trackCount: trackCount(for: artist),
-                        albumCount: albumCount(for: artist),
-                        titleColor: primary,
-                        subtitleColor: secondary,
-                        enableSecondaryInteractions: false,
-                        onOpen: {},
-                        onEdit: {},
-                        onDelete: {}
-                    )
-                }
+        GeometryReader { proxy in
+            ScrollView(.vertical) {
+                ReorderableMultiselectRowsSection(
+                    rows: artists,
+                    isMultiselectMode: pageController.isMultiselectMode,
+                    selectedIDs: pageController.selectedTrackIDs,
+                    canReorder: pageController.canManuallyReorderCurrentCollection,
+                    isSearchFiltering: isFiltering,
+                    coordinateSpaceName: "artistCollectionReorderSpace",
+                    rowCornerRadius: 12,
+                    bottomSpacerHeight: 120,
+                    badgeText: { "\($0)" },
+                    rowHeight: { _ in 76 },
+                    onClearSelection: {
+                        pageController.clearMultiselectState()
+                    },
+                    onBeginReorder: {
+                        pageController.beginManualTrackReorderInteraction()
+                    },
+                    onEndReorder: {
+                        pageController.endManualTrackReorderInteraction()
+                    },
+                    onCommitOrder: { orderedIDs in
+                        pageController.commitManualCollectionOrder(
+                            orderedItemIDs: orderedIDs,
+                            reason: "manual-artist-reorder"
+                        )
+                    },
+                    rowContent: { artist, _, _ in
+                        ArtistListRow(
+                            artist: artist,
+                            trackCount: trackCount(for: artist),
+                            albumCount: albumCount(for: artist),
+                            titleColor: primary,
+                            subtitleColor: secondary,
+                            onOpen: { handleRowTap(artist) },
+                            onEdit: { editingArtist = artist },
+                            onDelete: { requestDelete(artist) }
+                        )
+                        .libraryTrackDropTarget(.artist(artist.canonicalName), cornerRadius: 12)
+                    },
+                    floatingContent: { artist in
+                        ArtistListRow(
+                            artist: artist,
+                            trackCount: trackCount(for: artist),
+                            albumCount: albumCount(for: artist),
+                            titleColor: primary,
+                            subtitleColor: secondary,
+                            enableSecondaryInteractions: false,
+                            onOpen: {},
+                            onEdit: {},
+                            onDelete: {}
+                        )
+                    }
+                )
+                .padding(.horizontal, Constants.Layout.listHorizontalPadding)
+                .padding(.top, 16 + toolbarTopInset)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height + toolbarTopInset, alignment: .topLeading)
+            .modifier(
+                ScrollEdgeFadeTrackingMask(
+                    topFadeHeight: 32,
+                    bottomFadeHeight: 32,
+                    topChromeInset: toolbarTopInset
+                )
             )
-            .padding(.horizontal, Constants.Layout.listHorizontalPadding)
-            .padding(.top, 16)
+            .offset(y: -toolbarTopInset)
+            .scrollPosition(
+                id: Binding<UUID?>(
+                    get: {
+                        guard !isUserScrollActive else { return nil }
+                        return scrollPositionID
+                    },
+                    set: { newValue in
+                        if isUserScrollActive {
+                            pendingUserPosition = newValue
+                        }
+                    }
+                ),
+                anchor: .top
+            )
+            .onScrollPhaseChange { oldPhase, newPhase in
+                let wasUserActive = oldPhase == .tracking || oldPhase == .interacting || oldPhase == .decelerating
+                let isUserActive = newPhase == .tracking || newPhase == .interacting || newPhase == .decelerating
+                self.isUserScrollActive = isUserActive
+                if isUserActive {
+                    scrollPositionID = nil
+                }
+                if newPhase == .idle && wasUserActive {
+                    if let pending = pendingUserPosition {
+                        pageController.updateCollectionScrollPosition(pending, for: .allArtists)
+                    }
+                }
+            }
         }
     }
 
@@ -254,6 +306,8 @@ struct AllArtistsView: View {
     }
 
     private func open(_ artist: ArtistEntry) {
+        let targetID = pendingUserPosition ?? artist.id
+        pageController.updateCollectionScrollPosition(targetID, for: .allArtists)
         uiState.pushSelectionInHomeContext(
             .artist(artist.canonicalName),
             libraryVM: libraryVM

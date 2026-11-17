@@ -21,6 +21,9 @@ struct SkinSceneControlHost<Content: View>: View {
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(PlayerViewModel.self) private var player
     @EnvironmentObject private var theme: ThemeStore
+    @Environment(\.motionArtworkFullscreenCoordinator) private var motionFullscreen
+    @Environment(\.motionPolicy) private var motionPolicy
+    @Environment(\.motionTokens) private var motionTokens
     @State private var controls = FullscreenBottomControlsCoordinator()
     @State private var providedControls: Set<SkinSceneControl> = []
     @State private var hitRegions = SkinSceneHitRegions()
@@ -46,11 +49,15 @@ struct SkinSceneControlHost<Content: View>: View {
                 playbackMode: playback.stablePresentation.localPlaybackOrderMode ?? settings.playbackOrderMode,
                 hasTrack: playback.stablePresentation.hasTrack, isShowingLyrics: lyricsVisible,
                 isVolumeControlEnabled: playback.stablePresentation.isVolumeControlEnabled,
-                usesAdaptiveVolumeForeground: false, showsPlaybackModeRetapTip: false
+                usesAdaptiveVolumeForeground: false, showsPlaybackModeRetapTip: false,
+                isMotionArtworkFullscreenActive: motionFullscreen?.isActive == true
             ),
             actions: .init(
                 exitFullscreen: surface == .fullscreen ? onExit : enterFullscreen,
                 toggleLyrics: onToggleLyrics,
+                exitMotionArtworkFullscreen: { [weak coordinator = motionFullscreen] in
+                    coordinator?.exit(motionPolicy: motionPolicy, motionTokens: motionTokens)
+                },
                 setQuickAppearancePanelPresented: { presented in
                     if surface == .fullscreen { controls.isQuickAppearancePanelPresented = presented }
                     else { presentSettings() }

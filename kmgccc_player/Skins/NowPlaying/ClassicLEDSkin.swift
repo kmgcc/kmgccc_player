@@ -114,7 +114,7 @@ struct ClassicCoverArtworkView: View {
         // so trim the fullscreen cover stack offset only for that host.
         let yOffset: CGFloat = usesFullscreenLayout
             ? (context.fullscreenHostMode == .embeddedWindow ? 12 : 32)
-            : 18
+            : 0
 
         let dotSize: CGFloat = usesFullscreenLayout ? 14 : 12
         let spacing: CGFloat = usesFullscreenLayout ? 9 : 7
@@ -182,6 +182,11 @@ struct ClassicArtworkCoverContainer: View {
     var body: some View {
         classicCoverContent
             .frame(width: size, height: size)
+            .motionArtworkFullscreenSource(
+                context: context,
+                cornerRadius: cornerRadius,
+                handoffStyle: usesFrameMask ? .maskedCrossfade : .directLiftOff
+            )
             .contentShape(Rectangle())
             .onTapGesture {
                 advanceArtworkFrameMask()
@@ -422,6 +427,11 @@ private struct AppleStyleArtworkCoverContainer: View {
             }
         }
         .frame(width: size, height: size)
+        .motionArtworkFullscreenSource(
+            context: context,
+            cornerRadius: cornerRadius,
+            handoffStyle: .directLiftOff
+        )
     }
 }
 
@@ -902,7 +912,10 @@ enum ClassicArtworkFrameExtendedArtworkRenderer {
             blurFilter.setValue(fullCanvasMask, forKey: "inputMask")
 
             guard let output = blurFilter.outputImage?.cropped(to: canvasRect) else { return base }
-            return currentCIContext().createCGImage(output, from: canvasRect) ?? base
+            return currentCIContext().createCGImage(
+                output, from: canvasRect, format: .RGBA8,
+                colorSpace: base.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)
+            ) ?? base
         }
     }
 
@@ -1294,7 +1307,7 @@ private struct PillSpectrumView: View {
     let isFullscreen: Bool
     @Environment(\.colorScheme) private var colorScheme
 
-    private let capsuleCount: CGFloat = 9
+    private let capsuleCount = CGFloat(TunedSpectrumEngine.baselineBandCount)
     private let capsuleWidth: CGFloat = 7
     // Keep the capsule size unchanged while tightening the gaps so the
     // spectrum reads as one continuous waveform.

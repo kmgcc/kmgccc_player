@@ -50,7 +50,9 @@ struct CapsuleSpectrumDynamics: Equatable {
     /// attack/release envelope, so the spring's job is purely visual: add a
     /// short, clear overshoot on transients and a crisp rebound, without
     /// smoothing over the signal's own fast decay.
-    static let standard = CapsuleSpectrumDynamics(response: 0.165, dampingFraction: 0.54)
+    /// The tuned display spring: 0.325 s / ζ=0.83 (ω=27.5 rad/s, 0.9% overshoot).
+    /// Matches the reference recordings the algorithm was fitted against.
+    static let standard = CapsuleSpectrumDynamics(response: 0.325, dampingFraction: 0.83)
     /// Tighter, less bounce — quick and composed.
     static let tight = CapsuleSpectrumDynamics(response: 0.10, dampingFraction: 0.80)
     /// Looser and bouncier — bigger overshoot.
@@ -141,7 +143,7 @@ struct CapsuleSpectrumConfiguration {
     }
 
     init(
-        capsuleCount: Int = 9,
+        capsuleCount: Int = TunedSpectrumEngine.baselineBandCount,
         dynamics: CapsuleSpectrumDynamics = .standard,
         pauseDynamics: CapsuleSpectrumDynamics = .pauseFall,
         pausedBehavior: CapsuleSpectrumPausedBehavior = .idlePose,
@@ -168,7 +170,7 @@ struct CapsuleSpectrumConfiguration {
     /// bounds. Shared by the LED / RotatingCover / MiniPlayer surfaces — they
     /// differ only in width / spacing / stroke / pause behavior.
     static func centeredBars(
-        capsuleCount: Int = 9,
+        capsuleCount: Int = TunedSpectrumEngine.baselineBandCount,
         capsuleWidth: CGFloat,
         capsuleSpacing: CGFloat,
         strokeWidth: CGFloat,
@@ -456,7 +458,10 @@ final class CapsuleSpectrumHostView: NSView {
         // service's idle-pose frames so they don't fight the collapse target.
         if !isPlaying, configuration.pausedBehavior == .collapseToDots { return }
 
-        let wave = configuration.usesDetailedSampling && count > 9
+        // Above six bars the six-band contour can no longer address every
+        // capsule, so surfaces fall back to the engine's independent
+        // sub-band wave (36 values) and resample it to their own count.
+        let wave = count > TunedSpectrumEngine.baselineBandCount
             ? frame.detailed
             : frame.legacy
         let sampledWave = Self.resampledWave(wave, targetCount: count)
@@ -496,8 +501,28 @@ final class CapsuleSpectrumHostView: NSView {
 
     // MARK: Follower integration (display-link driven)
 
+    #if DEBUG
+    private let probeEnabled = ProcessInfo.processInfo.environment["KMGCCC_SPECTRUM_DEBUG"] == "1"
+    private var probeFrames = 0
+    private var probeCommits = 0
+    private var probeStart: CFTimeInterval = 0
+    #endif
+
     @objc private func handleFrame(_ link: CADisplayLink) {
         let now = link.timestamp
+        #if DEBUG
+        if probeEnabled {
+        if probeStart == 0 { probeStart = now }
+        probeFrames += 1
+        if now - probeStart >= 1.0 {
+            NSLog("[SpectrumFPS] %.1f fps, %d commits/s, %d bars",
+                  Double(probeFrames) / (now - probeStart), probeCommits, count)
+            probeFrames = 0
+            probeCommits = 0
+            probeStart = now
+        }
+        }
+        #endif
         var dt = lastTickTimestamp > 0 ? now - lastTickTimestamp : (1.0 / 60.0)
         lastTickTimestamp = now
         // Allow up to 1/15s of catch-up after a stalled frame, then sub-step the
@@ -530,6 +555,9 @@ final class CapsuleSpectrumHostView: NSView {
             if shouldCommitRender() {
                 renderHeights()
                 lastRenderedPositions = position
+                #if DEBUG
+                if probeEnabled { probeCommits += 1 }
+                #endif
             }
         }
     }
@@ -982,8 +1010,14 @@ final class CapsuleSpectrumHostView: NSView {
         CATransaction.setDisableActions(true)
         for index in 0..<count {
             let layer = capsuleLayers[index]
-            if layer.bounds.height != heights[index] {
-                layer.bounds = CGRect(x: 0, y: 0, width: metrics.barWidth, height: heights[index])
+            // A tall capsule is a touch wider than a resting one — the same
+            // 14.5% at full scale the reference recordings show. The layer is
+            // centred by its position, so the slot never moves.
+            let value = min(1, max(0, position[index] * boost))
+            let width = metrics.barWidth * (1 + 0.145 * value)
+            if layer.bounds.height != heights[index] || layer.bounds.width != width {
+                layer.bounds = CGRect(x: 0, y: 0, width: width, height: heights[index])
+                layer.cornerRadius = width * 0.5
             }
         }
         CATransaction.commit()

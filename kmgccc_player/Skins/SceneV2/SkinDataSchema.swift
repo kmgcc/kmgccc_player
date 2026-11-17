@@ -16,6 +16,10 @@ enum SkinDataTier: Int, Comparable {
 enum SkinDataDomain: String, CaseIterable, Hashable {
     case track, artwork, playback, clock, lyrics, lyricsTimeline, theme, audio
     case viewport, host, prefs, params, state, like, queue, library, output, time, local
+    /// `follow()` springs, which keep a node on the display timeline only while they move.
+    case follow
+    /// Wall-clock time that keeps running while playback is paused.
+    case wallTime
 }
 
 struct SkinDataField {
@@ -39,6 +43,7 @@ enum SkinDataSchema {
         add("track@1", .track, .change, [
             ("track.hasTrack", .boolean), ("track.id", .text), ("track.title", .text), ("track.artist", .text),
             ("track.album", .text), ("track.duration", .number), ("track.source", .text), ("track.emptyTitleKey", .text),
+            ("track.description", .text), ("track.descriptionSource", .text), ("track.descriptionAttribution", .text),
             ("track.external.rawTitle", .text), ("track.external.rawArtist", .text), ("track.external.rawAlbum", .text),
             ("track.external.effectiveTitle", .text), ("track.external.effectiveArtist", .text),
             ("track.external.effectiveAlbum", .text), ("track.external.usesOverride", .boolean),
@@ -70,6 +75,10 @@ enum SkinDataSchema {
         ])
         add("clock.lyrics@1", .clock, .frame, [("clock.lyrics", .number)])
         add("time@1", .time, .frame, [("time", .number)])
+        // `time` advances by the playback flow, which eases to 0 on pause and back to 1 on play;
+        // `time.free` keeps wall-clock pace for motion that should never rest.
+        add("time.flow@1", .time, .frame, [("playback.flow", .number)])
+        add("time.flow@1", .wallTime, .frame, [("time.free", .number)])
 
         add("lyrics.document@1", .lyrics, .change, [
             ("lyrics.available", .boolean), ("lyrics.availability", .text), ("lyrics.revision", .number),
@@ -83,6 +92,7 @@ enum SkinDataSchema {
             ("lyrics.prefs.showRuby", .boolean), ("lyrics.prefs.translationLanguage", .text),
             ("lyrics.prefs.romanizationLanguage", .text), ("lyrics.prefs.fontSize", .number),
             ("lyrics.prefs.fontFamily", .text), ("lyrics.prefs.translationFontSize", .number),
+            ("lyrics.prefs.fontFamilyCJK", .text), ("lyrics.prefs.fontWeight", .text),
             ("lyrics.prefs.obscenity", .text),
         ])
         add("lyrics.derived@1", .lyricsTimeline, .frame, [

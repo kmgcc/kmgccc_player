@@ -16,6 +16,25 @@ nonisolated struct PlaybackLyricsCacheKey: Equatable, Sendable {
     let ttmlLyricsFileName: String?
 }
 
+nonisolated struct PlaybackSidecarHydrationKey: Equatable, Sendable {
+    let trackID: UUID
+    let libraryRoot: String
+    let ttmlURL: URL?
+    let fallbackURL: URL?
+}
+
+nonisolated struct PlaybackSidecarRetryState {
+    private var lastKey: PlaybackSidecarHydrationKey?
+    private var nextAttemptUptime: TimeInterval = 0
+
+    mutating func begin(_ key: PlaybackSidecarHydrationKey, uptime: TimeInterval) -> Bool {
+        guard key != lastKey || uptime >= nextAttemptUptime else { return false }
+        lastKey = key
+        nextAttemptUptime = uptime + 5
+        return true
+    }
+}
+
 /// Narrow local-playback seam (§16): the coordinator issues transport
 /// commands and reads state through this abstraction instead of holding a
 /// view model strongly. `PlayerViewModel` conforms; the session factory
@@ -23,6 +42,7 @@ nonisolated struct PlaybackLyricsCacheKey: Equatable, Sendable {
 @MainActor
 protocol LocalPlaybackControlling: AnyObject {
     var isPlaying: Bool { get }
+    var isLyricsClockPlaying: Bool { get }
     var currentTime: Double { get }
     var audioOutputDelay: Double { get }
     var duration: Double { get }
@@ -59,6 +79,16 @@ extension PlayerViewModel: LocalPlaybackControlling {}
 
 extension LocalPlaybackControlling {
     var nowPlayingAssetURL: URL? { nil }
+    var isLyricsClockPlaying: Bool { isPlaying }
+}
+
+/// Elapsed-time snapshot for progress UIs and system Now Playing.
+///
+/// Kept out of `NowPlayingPresentation` so a progress tick does not invalidate
+/// the much larger body of content observers.
+struct PlaybackProgress: Equatable {
+    var currentTime: Double
+    var duration: Double
 }
 
 @Observable
@@ -74,7 +104,6 @@ final class PlaybackCoordinator {
     private let settings: AppSettings
     private let preferenceStatsService: PreferenceStatsService
     private let libraryTracksProvider: @MainActor () -> [Track]
-    private let artworkCache: TrackArtworkCache
     private let musicEnrichmentService: MusicEnrichmentService?
     private let externalMetadataStore: ExternalPlaybackMetadataStore?
     private let meterProvider: AudioLevelMeterProtocol?
@@ -84,14 +113,27 @@ final class PlaybackCoordinator {
     private var cachedLyricsText: String?
     // Inline source keys checksum the full payload; reuse while its inputs stay unchanged.
     private var cachedLocalArtworkSource: TrackArtworkSource?
+    private let localArtworkFileProbe = TrackArtworkFileProbe()
+    private var isClosed = false
     private var lastSyncedPlayingState: Bool?
     private var lastMetadataSourceSignature: String?
     private var lastTelemetrySource: PlaybackSource?
     private var lastTelemetryIsPlaying: Bool?
     private var sidecarHydrationTask: Task<Void, Never>?
     private var sidecarHydratingTrackID: UUID?
+    private var sidecarHydrationTaskID: UUID?
+    private var sidecarHydrationKey: PlaybackSidecarHydrationKey?
+    private var sidecarRetryState = PlaybackSidecarRetryState()
     private var deferredNowPlayingUpdateTask: Task<Void, Never>?
     private var trackMemoryTrimTask: Task<Void, Never>?
+    private var routineTrackMemoryTrimTask: Task<Void, Never>?
+    private var retiredTrackReleaseTask: Task<Void, Never>?
+    private var retiredTracks: [UUID: Track] = [:]
+    private var switchPreparationTask: Task<Void, Never>?
+    private var switchCommitWatchdogTask: Task<Void, Never>?
+    private var pendingSwitch: PendingTrackSwitch?
+    private var appearanceRefreshTask: Task<Void, Never>?
+    private(set) var switchGeneration: UInt64 = 0
     private let artworkWarmer: PlaybackArtworkWarmer
     private let nextSongLyricsPreloader: NextSongLyricsPreloader
     private let lyricSnippetSeekLeadInSeconds: Double = 0.8
@@ -101,12 +143,40 @@ final class PlaybackCoordinator {
     private(set) var presentation: NowPlayingPresentation = .emptyLocal
     private(set) var stablePresentation: NowPlayingPresentation = .emptyLocal
 
+    /// Playback progress, published apart from `presentation`.
+    ///
+    /// Elapsed time advances several times a second. Publishing it inside
+    /// `presentation` invalidated every observer of the now-playing content,
+    /// so a plain 4 Hz progress tick re-evaluated the whole now-playing tree
+    /// (and the library window behind it) while nothing about the track had
+    /// changed. Progress-only changes now touch this value alone; the content
+    /// presentation is written when content changes.
+    private(set) var playbackProgress = PlaybackProgress(currentTime: 0, duration: 0)
+
+    /// Content consumers still receive progress nudges through this narrow
+    /// callback when `presentation` itself did not change.
+    /// `LyricsPlaybackPipeline` uses it to keep the lyric clock anchored.
+    var onPlaybackProgressChanged: (@MainActor (NowPlayingPresentation) -> Void)?
+
     /// The audible song position right now, for media that follows the song.
     var audiblePlaybackTime: Double {
         if activeSource == .local, let localPlayback {
             return max(0, localPlayback.currentTime - localPlayback.audioOutputDelay)
         }
-        return presentation.currentTime
+        return playbackProgress.currentTime
+    }
+
+    /// Live lyric clock position. `presentation.lyricsCurrentTime` now only
+    /// advances when content changes, so any caller that needs the position at
+    /// this instant (lyric reveal, panel mount, author scripts) reads this.
+    var liveLyricsTime: Double {
+        if let override = presentation.lyricsCurrentTimeOverride {
+            return override
+        }
+        if activeSource == .local, let localPlayback {
+            return max(0, localPlayback.currentTime - localPlayback.audioOutputDelay)
+        }
+        return max(0, playbackProgress.currentTime - max(0, presentation.audioOutputDelay))
     }
     /// Monotonic marker for explicit transport seeks. Lyrics use it to
     /// distinguish a deliberate small backward seek from a stale 4 Hz
@@ -121,6 +191,26 @@ final class PlaybackCoordinator {
     var onActiveSourceChanged: ((PlaybackSource) -> Void)?
     var onTelemetryPlaybackStateChanged: ((PlaybackSource, Bool) -> Void)?
     var onPresentationChanged: (@MainActor (NowPlayingPresentation, NowPlayingPresentation) -> Void)?
+
+    /// Resolves the artwork-derived appearance (theme palette) for a staged
+    /// local track switch. The composition root wires this to `ThemeStore`;
+    /// the switch commits immediately after it returns, so the new palette,
+    /// metadata, artwork and lyric document become visible together.
+    var prepareSwitchAppearance: (@MainActor (NowPlayingPresentation) async -> Void)?
+
+    /// A local track change whose display state is staged until the lyric
+    /// document is ready. Committing once keeps SwiftUI from laying out the
+    /// now-playing surfaces first with an empty document and again when the
+    /// sidecar finishes loading.
+    private struct PendingTrackSwitch {
+        let identity: TrackSwitchIdentity
+        var presentation: NowPlayingPresentation
+        let startedAt: TimeInterval
+    }
+
+    private struct TrackSwitchIdentity: Equatable {
+        let trackID: UUID
+    }
 
     init(
         localPlayback: any LocalPlaybackControlling,
@@ -141,7 +231,6 @@ final class PlaybackCoordinator {
         self.settings = settings ?? AppSettings.shared
         self.preferenceStatsService = preferenceStatsService
         self.libraryTracksProvider = libraryTracksProvider
-        self.artworkCache = artworkCache
         self.musicEnrichmentService = musicEnrichmentService
         self.externalMetadataStore = externalMetadataStore
         self.meterProvider = meterProvider
@@ -181,6 +270,12 @@ final class PlaybackCoordinator {
     func setActiveSource(_ source: PlaybackSource) {
         if source != .local {
             cachedLocalArtworkSource = nil
+            localArtworkFileProbe.reset()
+            sidecarHydrationTask?.cancel()
+            sidecarHydrationTask = nil
+            sidecarHydratingTrackID = nil
+            sidecarHydrationTaskID = nil
+            sidecarHydrationKey = nil
         }
         guard activeSource != source else {
             if source.isExternal {
@@ -204,6 +299,11 @@ final class PlaybackCoordinator {
         let previousSource = activeSource
         trackMemoryTrimTask?.cancel()
         trackMemoryTrimTask = nil
+        routineTrackMemoryTrimTask?.cancel()
+        routineTrackMemoryTrimTask = nil
+        retiredTrackReleaseTask?.cancel()
+        retiredTrackReleaseTask = nil
+        retiredTracks.removeAll()
         if previousSource.isExternal, previousSource != source {
             externalProvider(for: previousSource)?.pause()
             externalProvider(for: previousSource)?.stop()
@@ -281,16 +381,36 @@ final class PlaybackCoordinator {
     }
 
     func close() {
+        guard !isClosed else { return }
+        isClosed = true
         musicEnrichmentService?.onChange = nil
         cachedLocalArtworkSource = nil
+        localArtworkFileProbe.reset()
         presentationTimer?.invalidate()
         presentationTimer = nil
         trackMemoryTrimTask?.cancel()
         trackMemoryTrimTask = nil
+        routineTrackMemoryTrimTask?.cancel()
+        routineTrackMemoryTrimTask = nil
+        retiredTrackReleaseTask?.cancel()
+        retiredTrackReleaseTask = nil
+        retiredTracks.removeAll()
         sidecarHydrationTask?.cancel()
         sidecarHydrationTask = nil
+        sidecarHydratingTrackID = nil
+        sidecarHydrationTaskID = nil
+        sidecarHydrationKey = nil
         deferredNowPlayingUpdateTask?.cancel()
         deferredNowPlayingUpdateTask = nil
+        cancelPendingSwitch(reason: "coordinator closed")
+        switchPreparationTask?.cancel()
+        switchPreparationTask = nil
+        switchCommitWatchdogTask?.cancel()
+        switchCommitWatchdogTask = nil
+        appearanceRefreshTask?.cancel()
+        appearanceRefreshTask = nil
+        switchGeneration &+= 1
+        prepareSwitchAppearance = nil
         stopExternalProviders()
         artworkWarmer.reset()
         nextSongLyricsPreloader.reset()
@@ -337,6 +457,12 @@ final class PlaybackCoordinator {
         recordCrashPlaybackCommand(.previous)
         switch activeSource {
         case .local:
+            // Local previous restarts the current track after three seconds.
+            // Mark that internal seek just like the progress-bar seek so the
+            // lyric clock can rebase while the renderer is still preparing.
+            if (localPlayback?.currentTime ?? 0) > 3 {
+                lyricsSeekRevision &+= 1
+            }
             localPlayback?.previous()
         case .appleMusic, .systemNowPlaying:
             activeExternalProvider?.previous()
@@ -403,7 +529,8 @@ final class PlaybackCoordinator {
             return
         }
 
-        let current = presentation.currentTime.isFinite ? max(0, presentation.currentTime) : 0
+        let liveTime = playbackProgress.currentTime
+        let current = liveTime.isFinite ? max(0, liveTime) : 0
         let unclampedTarget = current + offset
         let upperBound = presentation.duration > 0 ? presentation.duration : .greatestFiniteMagnitude
         seek(to: min(max(unclampedTarget, 0), upperBound))
@@ -661,6 +788,7 @@ final class PlaybackCoordinator {
     }
 
     func refreshPresentation() {
+        guard !isClosed else { return }
         let basePresentation: NowPlayingPresentation
         switch activeSource {
         case .local:
@@ -700,6 +828,7 @@ final class PlaybackCoordinator {
         }
 
         notifyTelemetryIfNeeded(source: activeSource, isPlaying: isPlaying)
+        let warmStart = ProcessInfo.processInfo.systemUptime
         artworkWarmer.update(
             activeSource: activeSource,
             presentation: newPresentation,
@@ -712,25 +841,374 @@ final class PlaybackCoordinator {
             currentTrack: newPresentation.localTrack,
             queue: localPlayback?.currentQueueTracks ?? []
         )
+        let warmEnd = ProcessInfo.processInfo.systemUptime
 
         let nowUptime = ProcessInfo.processInfo.systemUptime
         if isPlaying && nowUptime - lastRoutineTrimUptime > 60 {
             lastRoutineTrimUptime = nowUptime
-            if let currentID = newPresentation.localTrack?.id {
-                for queueTrack in (localPlayback?.currentQueueTracks ?? []) where queueTrack.id != currentID {
-                    queueTrack.releaseFileBackedResources()
-                }
-            }
-            CacheManager.trimRoutinePlaybackMemory()
+            scheduleRoutineTrackMemoryTrim()
+            DebugUIHooks.record(String(
+                format: "switch-timing routine-trim-schedule=%.1fms warmers=%.1fms",
+                (ProcessInfo.processInfo.systemUptime - nowUptime) * 1000,
+                (warmEnd - warmStart) * 1000
+            ))
+        } else if (warmEnd - warmStart) * 1000 > 1 {
+            DebugUIHooks.record(String(
+                format: "switch-timing warmers=%.1fms",
+                (warmEnd - warmStart) * 1000
+            ))
+        }
+
+        if stageTrackSwitchIfNeeded(newPresentation) {
+            return
         }
 
         let previousPresentation = presentation
         if !newPresentation.isEffectivelyEqualIgnoringCurrentTime(to: stablePresentation) {
             stablePresentation = newPresentation
         }
-        guard !newPresentation.isEffectivelyEqual(to: previousPresentation) else { return }
+        // Measurement switch: publishing a time-only change invalidates every
+        // observer of the whole presentation. KMGCCC_DEBUG_FREEZE_PRESENTATION_TIME=1
+        // suppresses those writes so an A/B run can measure how much of the
+        // frame cost comes from progress ticks rather than content changes.
+        let contentChanged = !newPresentation.isEffectivelyEqualIgnoringCurrentTime(to: previousPresentation)
+        let nextProgress = PlaybackProgress(
+            currentTime: newPresentation.currentTime,
+            duration: newPresentation.duration
+        )
+        guard contentChanged || nextProgress != playbackProgress else { return }
+        playbackProgress = nextProgress
+        guard contentChanged else {
+            // Progress-only tick: keep the lyric clock anchored without
+            // republishing the now-playing content to every observer.
+            onPlaybackProgressChanged?(newPresentation)
+            return
+        }
         presentation = newPresentation
         onPresentationChanged?(previousPresentation, newPresentation)
+        if previousPresentation.localTrack?.id != newPresentation.localTrack?.id {
+            releaseTrackResources(for: previousPresentation.localTrack)
+            if let newTrackID = newPresentation.localTrack?.id {
+                scheduleTrackMemoryTrim(for: newTrackID)
+            }
+        }
+    }
+
+    // MARK: - Atomic local track switches
+
+    /// Intercepts a visible local track change. Returns `true` when the new
+    /// presentation was staged instead of published.
+    @discardableResult
+    private func stageTrackSwitchIfNeeded(_ newPresentation: NowPlayingPresentation) -> Bool {
+        guard activeSource == .local else {
+            cancelPendingSwitch(reason: "source changed")
+            return false
+        }
+        guard let newTrackID = newPresentation.localTrack?.id else {
+            cancelPendingSwitch(reason: "track cleared")
+            return false
+        }
+
+        if let pending = pendingSwitch {
+            if pending.identity.trackID == newTrackID {
+                pendingSwitch?.presentation = newPresentation
+                return true
+            }
+            if newTrackID == presentation.localTrack?.id {
+                // Back to the track that is still on screen: keeping the
+                // current frame is both the fastest and the most coherent
+                // response, so drop the preparation and publish normally.
+                cancelPendingSwitch(reason: "reverted to visible track")
+                requestAppearanceRefresh()
+                return false
+            }
+            cancelPendingSwitch(reason: "superseded")
+        }
+
+        guard let visibleTrackID = presentation.localTrack?.id,
+              visibleTrackID != newTrackID
+        else {
+            return false
+        }
+        beginTrackSwitch(to: newPresentation)
+        return true
+    }
+
+    private func beginTrackSwitch(to newPresentation: NowPlayingPresentation) {
+        guard let target = newPresentation.localTrack else { return }
+        switchGeneration &+= 1
+        appearanceRefreshTask?.cancel()
+        appearanceRefreshTask = nil
+        let generation = switchGeneration
+        pendingSwitch = PendingTrackSwitch(
+            identity: TrackSwitchIdentity(trackID: target.id),
+            presentation: newPresentation,
+            startedAt: ProcessInfo.processInfo.systemUptime
+        )
+        DebugUIHooks.record(
+            "track-switch begin gen=\(generation) track=\(FirstUseHitchDiagnostics.trackIDPrefix(target.id))"
+        )
+        switchPreparationTask?.cancel()
+        switchPreparationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.prepareAndCommitTrackSwitch(generation: generation, trackID: target.id)
+        }
+        switchCommitWatchdogTask?.cancel()
+        switchCommitWatchdogTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(90))
+            guard !Task.isCancelled, let self,
+                  generation == self.switchGeneration,
+                  self.pendingSwitch != nil
+            else { return }
+            // A cold artwork read must not hold the transport hostage. The
+            // palette still lands through ThemeStore once it resolves.
+            Log.debug(
+                "[TrackSwitch] appearance deadline reached; committing without it",
+                category: .playback
+            )
+            if let committed = self.commitTrackSwitch(generation: generation) {
+                DebugUIHooks.record(
+                    "track-switch commit gen=\(generation) track=\(FirstUseHitchDiagnostics.trackIDPrefix(committed.localTrack?.id)) prepare=watchdog lyrics=\(committed.lyricsText?.count ?? 0)"
+                )
+            }
+        }
+    }
+
+    private func prepareAndCommitTrackSwitch(generation: UInt64, trackID: UUID) async {
+        let startedAt = pendingSwitch?.startedAt ?? ProcessInfo.processInfo.systemUptime
+        let token = FirstUseHitchDiagnostics.begin(
+            "PlaybackCoordinator.trackSwitch",
+            detail: "generation=\(generation) track=\(FirstUseHitchDiagnostics.trackIDPrefix(trackID))"
+        )
+        defer { FirstUseHitchDiagnostics.end(token) }
+
+        guard let target = localPlayback?.currentTrack, target.id == trackID else {
+            if generation == switchGeneration {
+                cancelPendingSwitch(reason: "target unavailable")
+            }
+            return
+        }
+
+        let lyricsStart = ProcessInfo.processInfo.systemUptime
+        let lyricsPrepared = await prepareSwitchLyrics(for: target)
+        let lyricsEnd = ProcessInfo.processInfo.systemUptime
+        guard lyricsPrepared, !Task.isCancelled, generation == switchGeneration else {
+            releaseTrackLyricsIfAbandoned(target)
+            return
+        }
+        _ = await localArtworkFileProbe.resolve(for: target)
+        guard !Task.isCancelled, generation == switchGeneration,
+              localPlayback?.currentTrack?.id == trackID else { return }
+        if pendingSwitch == nil {
+            // The appearance watchdog committed the core switch while the
+            // sidecar read was still in flight. Publish the completed
+            // document as soon as it lands instead of waiting for the timer.
+            refreshPresentation()
+            return
+        }
+        // File metadata arrived without blocking input. Use it for the same
+        // staged cover and palette commit, including local-over-online priority.
+        var latestPresentation = makeLocalPresentation()
+        enrichPresentation(&latestPresentation)
+        pendingSwitch?.presentation = latestPresentation
+
+        // The palette resolves before the commit so the new colours and the new
+        // cover appear together. Deferring it until after the switch was
+        // measured: it does not remove the invalidation, it moves the hitch into
+        // the lyric entrance window, so the wait is the cheaper trade.
+        let appearanceStart = ProcessInfo.processInfo.systemUptime
+        if let staged = pendingSwitch?.presentation {
+            await prepareSwitchAppearanceIfNeeded(for: staged)
+        }
+        let appearanceEnd = ProcessInfo.processInfo.systemUptime
+        guard !Task.isCancelled, generation == switchGeneration else {
+            releaseTrackLyricsIfAbandoned(target)
+            return
+        }
+
+        let elapsed = (ProcessInfo.processInfo.systemUptime - startedAt) * 1000
+        let commitStart = ProcessInfo.processInfo.systemUptime
+        guard let committed = commitTrackSwitch(generation: generation) else {
+            releaseTrackLyricsIfAbandoned(target)
+            return
+        }
+        DebugUIHooks.record(
+            "track-switch commit gen=\(generation) track=\(FirstUseHitchDiagnostics.trackIDPrefix(committed.localTrack?.id)) prepare=\(String(format: "%.1f", elapsed))ms lyrics=\(committed.lyricsText?.count ?? 0)"
+        )
+        DebugUIHooks.record(String(
+            format: "switch-timing staging lyrics=%.1fms appearance=%.1fms commit=%.1fms",
+            (lyricsEnd - lyricsStart) * 1000,
+            (appearanceEnd - appearanceStart) * 1000,
+            (ProcessInfo.processInfo.systemUptime - commitStart) * 1000
+        ))
+    }
+
+    /// Loads a local track's sidecar lyrics before its presentation becomes
+    /// visible. The document then installs once, with final content, instead
+    /// of being cleared and replaced when hydration completes later.
+    private func prepareSwitchLyrics(for track: Track) async -> Bool {
+        if track.ttmlLyricText?.isEmpty == false || track.lyricsText?.isEmpty == false {
+            return true
+        }
+        guard track.resolvedTTMLURL() != nil || track.resolvedLyricsURL() != nil else {
+            return true
+        }
+
+        _ = await track.loadTTMLLyricsOffMainIfNeeded()
+        guard !Task.isCancelled else { return false }
+        if track.ttmlLyricText?.isEmpty != false {
+            _ = await track.loadLyricsOffMainIfNeeded()
+        }
+        return !Task.isCancelled
+    }
+
+    /// Resolves the artwork palette inside the switch task so it can be
+    /// published immediately before the presentation. Cancelling the switch
+    /// (a newer track, or a return to the visible track) cancels this work at
+    /// its next checkpoint; the theme watcher remains the fallback for
+    /// palettes that need another pass.
+    private func prepareSwitchAppearanceIfNeeded(for presentation: NowPlayingPresentation) async {
+        guard let prepare = prepareSwitchAppearance else { return }
+        await prepare(presentation)
+    }
+
+    /// Publishes the staged track exactly once. Returns the committed
+    /// presentation, or `nil` when playback already moved to another track.
+    @discardableResult
+    private func commitTrackSwitch(generation: UInt64) -> NowPlayingPresentation? {
+        let switchCommitStart = ProcessInfo.processInfo.systemUptime
+        guard generation == switchGeneration,
+              let pending = pendingSwitch,
+              activeSource == .local,
+              let playback = localPlayback,
+              let target = playback.currentTrack,
+              target.id == pending.identity.trackID
+        else {
+            if generation == switchGeneration {
+                cancelPendingSwitch(reason: "target changed before commit")
+            }
+            return nil
+        }
+
+        switchCommitWatchdogTask?.cancel()
+        switchCommitWatchdogTask = nil
+
+        var newPresentation = pending.presentation
+        newPresentation.currentTime = playback.currentTime
+        newPresentation.duration = playback.duration
+        newPresentation.audioOutputDelay = playback.audioOutputDelay
+        newPresentation.isPlaying = playback.isPlaying
+        newPresentation.lyricsIsPlaying = playback.isLyricsClockPlaying
+        newPresentation.volume = settings.volumeControlTarget == .system
+            ? SystemVolumeService.shared.systemVolume
+            : playback.volume
+        newPresentation.localPlaybackOrderMode = playback.currentPlaybackOrderMode
+        newPresentation.isSeekEnabled = playback.duration > 0
+        newPresentation.lyricsText = preferredLyricsTextSnapshot(for: target)
+
+        let previousPresentation = presentation
+        pendingSwitch = nil
+        switchPreparationTask = nil
+        if sidecarHydratingTrackID == target.id {
+            sidecarHydratingTrackID = nil
+        }
+        if !newPresentation.isEffectivelyEqualIgnoringCurrentTime(to: stablePresentation) {
+            stablePresentation = newPresentation
+        }
+        let assembleEnd = ProcessInfo.processInfo.systemUptime
+        scheduleSidecarHydrationIfNeeded(for: target)
+        guard !newPresentation.isEffectivelyEqual(to: previousPresentation) else {
+            return newPresentation
+        }
+        presentation = newPresentation
+        onPresentationChanged?(previousPresentation, newPresentation)
+        let publishEnd = ProcessInfo.processInfo.systemUptime
+        NowPlayingService.shared.updateNowPlaying(force: true)
+        let nowPlayingEnd = ProcessInfo.processInfo.systemUptime
+        if previousPresentation.localTrack?.id != target.id {
+            // Release only after the new presentation and its consumers have
+            // committed, so the outgoing track's document state stays intact
+            // while the pipeline diffs it.
+            releaseTrackResources(for: previousPresentation.localTrack)
+            scheduleTrackMemoryTrim(for: target.id)
+        }
+        DebugUIHooks.record(String(
+            format: "switch-timing commit assemble=%.1fms publish=%.1fms nowplaying=%.1fms release=%.1fms",
+            (assembleEnd - switchCommitStart) * 1000,
+            (publishEnd - assembleEnd) * 1000,
+            (nowPlayingEnd - publishEnd) * 1000,
+            (ProcessInfo.processInfo.systemUptime - nowPlayingEnd) * 1000
+        ))
+        return newPresentation
+    }
+
+    private func cancelPendingSwitch(reason: String) {
+        guard let pending = pendingSwitch else { return }
+        pendingSwitch = nil
+        // Invalidate any appearance work that was already in flight. A late
+        // palette from the abandoned track must not outlive the switch.
+        switchGeneration &+= 1
+        appearanceRefreshTask?.cancel()
+        appearanceRefreshTask = nil
+        switchCommitWatchdogTask?.cancel()
+        switchCommitWatchdogTask = nil
+        switchPreparationTask?.cancel()
+        switchPreparationTask = nil
+        if sidecarHydratingTrackID == pending.identity.trackID {
+            sidecarHydratingTrackID = nil
+        }
+        releaseTrackLyricsIfAbandoned(pending.presentation.localTrack)
+        Log.debug(
+            "[TrackSwitch] cancelled reason=\(reason) track=\(FirstUseHitchDiagnostics.trackIDPrefix(pending.identity.trackID))",
+            category: .playback
+        )
+    }
+
+    /// Serializes background appearance work (the delayed artwork watcher)
+    /// with track switches. Requests that arrive while a switch is being
+    /// prepared are dropped; that switch publishes its palette itself.
+    func requestAppearanceRefresh() {
+        guard pendingSwitch == nil, prepareSwitchAppearance != nil else { return }
+        appearanceRefreshTask?.cancel()
+        let generation = switchGeneration
+        appearanceRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.applySwitchAppearance(self.stablePresentation)
+            guard generation == self.switchGeneration else { return }
+            self.appearanceRefreshTask = nil
+        }
+    }
+
+    private func applySwitchAppearance(_ presentation: NowPlayingPresentation) async {
+        guard let prepare = prepareSwitchAppearance else { return }
+        await prepare(presentation)
+    }
+
+    private func releaseTrackResources(for track: Track?) {
+        guard !isClosed, let track else { return }
+        retiredTracks[track.id] = track
+        guard retiredTrackReleaseTask == nil else { return }
+        retiredTrackReleaseTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while let trackID = self.retiredTracks.keys.first {
+                guard !Task.isCancelled else { return }
+                guard let retired = self.retiredTracks.removeValue(forKey: trackID) else { continue }
+                await retired.releaseFileBackedResourcesAfterCheckingDisk {
+                    self.localPlayback?.currentTrack?.id != trackID
+                        && self.presentation.localTrack?.id != trackID
+                }
+            }
+            guard !Task.isCancelled else { return }
+            self.retiredTrackReleaseTask = nil
+        }
+    }
+
+    private func releaseTrackLyricsIfAbandoned(_ track: Track?) {
+        guard let track,
+              track.id != presentation.localTrack?.id,
+              track.id != localPlayback?.currentTrack?.id
+        else { return }
+        releaseTrackResources(for: track)
     }
 
     private func enrichPresentation(_ value: inout NowPlayingPresentation) {
@@ -766,12 +1244,15 @@ final class PlaybackCoordinator {
             isrc: seed["isrc"]?.text,
             seedAttributes: seed.isEmpty ? nil : seed,
             storedMotionArtwork: value.source == .local ? value.localTrack?.motionArtwork : nil,
-            albumArtist: value.localTrack?.albumArtist
+            albumArtist: value.localTrack?.albumArtist,
+            sourceAlbumIdentity: value.source == .local ? value.localTrack?.audioProgramLookupScope : nil
         )
         musicEnrichmentService.update(query: query)
         guard let snapshot = musicEnrichmentService.snapshot(for: key) else { return }
         value.musicEnrichment = snapshot
-        if value.artworkData == nil, let artwork = snapshot.artworkData {
+        if value.canUseEnrichmentArtwork,
+           !(value.source == .local && value.isArtworkLoading),
+           let artwork = snapshot.artworkData {
             value.artworkData = artwork
             let artworkIdentity = "enrichment:\(key):artwork"
             value.artworkIdentity = artworkIdentity
@@ -910,14 +1391,8 @@ final class PlaybackCoordinator {
             return empty
         }
 
-        if let previousTrack = presentation.localTrack,
-           previousTrack.id != track.id {
-            previousTrack.releaseFileBackedResources()
-            scheduleTrackMemoryTrim(for: track.id)
-        }
-
         let artworkData = track.artworkData
-        let artworkFileSnapshot = track.existingArtworkFileSnapshot()
+        let artworkFileSnapshot = localArtworkFileProbe.snapshot(for: track)
         let artworkSource: TrackArtworkSource?
         if let cachedSource = cachedLocalArtworkSource,
            cachedSource.matches(
@@ -934,16 +1409,18 @@ final class PlaybackCoordinator {
             )
             cachedLocalArtworkSource = artworkSource
         }
-        let hasDiskArtworkCache = artworkSource.map { source in
-            // `trackArtworkSource` just validated this file URL; avoid another
-            // synchronous file-existence probe during the 4 Hz refresh.
-            source.artworkFileURL != nil || artworkCache.hasAnyDiskCache(for: source)
-        } ?? false
         let lyricsText = preferredLyricsTextSnapshot(for: track)
         let isArtworkLoading = track.artworkData?.isEmpty != false
-            && artworkSource?.artworkFileURL != nil
-            && !hasDiskArtworkCache
-        scheduleSidecarHydrationIfNeeded(for: track)
+            && artworkSource?.artworkFileURL == nil
+            && localArtworkFileProbe.isResolving
+        let hasVisibleTrackChange = presentation.localTrack != nil
+            && presentation.localTrack?.id != track.id
+        if !hasVisibleTrackChange {
+            // A visible track change is staged first; the switch preparation
+            // owns the sidecar read so the document is complete on its first
+            // install. Other refreshes keep the ordinary hydration safety net.
+            scheduleSidecarHydrationIfNeeded(for: track)
+        }
         return NowPlayingPresentation(
             source: .local,
             localTrack: track,
@@ -979,6 +1456,7 @@ final class PlaybackCoordinator {
             externalMatchConfidence: nil,
             externalLyricsStatusMessage: nil,
             externalConnectionState: nil,
+            lyricsIsPlaying: playback.isLyricsClockPlaying,
             isControlEnabled: true,
             isSeekEnabled: playback.duration > 0,
             isVolumeControlEnabled: true,
@@ -988,6 +1466,7 @@ final class PlaybackCoordinator {
     }
 
     private func releaseEmptyLocalPresentationResources() {
+        localArtworkFileProbe.reset()
         trackMemoryTrimTask?.cancel()
         trackMemoryTrimTask = nil
         cachedLocalArtworkSource = nil
@@ -996,7 +1475,7 @@ final class PlaybackCoordinator {
         // The paused presentation timer also polls an empty queue. Reclaim
         // once when the previous track leaves, rather than on every poll.
         guard let previousTrack = presentation.localTrack else { return }
-        previousTrack.releaseFileBackedResources()
+        releaseTrackResources(for: previousTrack)
         CacheManager.trimRoutinePlaybackMemory()
     }
 
@@ -1016,6 +1495,26 @@ final class PlaybackCoordinator {
                   self.activeSource == .local,
                   self.localPlayback?.currentTrack?.id == trackID else { return }
             self.trackMemoryTrimTask = nil
+            CacheManager.trimRoutinePlaybackMemory()
+        }
+    }
+
+    private func scheduleRoutineTrackMemoryTrim() {
+        guard routineTrackMemoryTrimTask == nil else { return }
+        routineTrackMemoryTrimTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            let queue = self.activeSource == .local ? self.localPlayback?.currentQueueTracks ?? [] : []
+            for (index, track) in queue.enumerated() {
+                guard !Task.isCancelled else { return }
+                await track.releaseFileBackedResourcesAfterCheckingDisk {
+                    self.activeSource == .local && self.localPlayback?.currentTrack?.id != track.id
+                }
+                // Tracks without hydrated media return immediately. A large
+                // queue must still give input and navigation a turn.
+                if index.isMultiple(of: 32) { await Task.yield() }
+            }
+            guard !Task.isCancelled else { return }
+            self.routineTrackMemoryTrimTask = nil
             CacheManager.trimRoutinePlaybackMemory()
         }
     }
@@ -1050,17 +1549,25 @@ final class PlaybackCoordinator {
     }
 
     private func scheduleSidecarHydrationIfNeeded(for track: Track) {
-        let needsTTMLLyrics = track.ttmlLyricText?.isEmpty != false
-            && (track.resolvedTTMLURL() != nil || track.resolvedLyricsURL() != nil)
-        guard needsTTMLLyrics else { return }
-        guard sidecarHydratingTrackID != track.id else { return }
-
+        guard track.ttmlLyricText?.isEmpty != false else { return }
         let trackID = track.id
-        let ttmlURL = needsTTMLLyrics ? track.resolvedTTMLURL() : nil
-        let ttmlFallbackURL = needsTTMLLyrics ? track.resolvedLyricsURL() : nil
+        let ttmlURL = track.resolvedTTMLURL()
+        let ttmlFallbackURL = track.resolvedLyricsURL().flatMap {
+            $0.lastPathComponent.lowercased().hasSuffix(".ttml") ? $0 : nil
+        }
+        guard ttmlURL != nil || ttmlFallbackURL != nil else { return }
+        let key = PlaybackSidecarHydrationKey(
+            trackID: trackID, libraryRoot: track.libraryRootSnapshot,
+            ttmlURL: ttmlURL, fallbackURL: ttmlFallbackURL
+        )
+        guard sidecarHydrationTask == nil || sidecarHydrationKey != key else { return }
+        guard sidecarRetryState.begin(key, uptime: ProcessInfo.processInfo.systemUptime) else { return }
 
         sidecarHydrationTask?.cancel()
         sidecarHydratingTrackID = trackID
+        let taskID = UUID()
+        sidecarHydrationTaskID = taskID
+        sidecarHydrationKey = key
         sidecarHydrationTask = Task(priority: .utility) { @MainActor [weak self, weak track] in
             let token = FirstUseHitchDiagnostics.begin(
                 "PlaybackCoordinator.lyricsSidecarHydration",
@@ -1078,15 +1585,21 @@ final class PlaybackCoordinator {
                     token,
                     detail: "ttmlChars=\(ttml?.count ?? 0)"
                 )
-                if self?.sidecarHydratingTrackID == trackID {
+                if self?.sidecarHydrationTaskID == taskID {
                     self?.sidecarHydratingTrackID = nil
+                    self?.sidecarHydrationTaskID = nil
+                    self?.sidecarHydrationKey = nil
+                    self?.sidecarHydrationTask = nil
                 }
             }
 
-            guard !Task.isCancelled, let self, let track, track.id == trackID else { return }
-            if let ttml, track.ttmlLyricText?.isEmpty != false {
-                track.ttmlLyricText = ttml
-            }
+            guard !Task.isCancelled, let self, let track, track.id == trackID,
+                  self.sidecarHydrationTaskID == taskID,
+                  track.libraryRootSnapshot == key.libraryRoot,
+                  track.resolvedTTMLURL() == ttmlURL,
+                  track.resolvedLyricsURL().flatMap({ $0.lastPathComponent.lowercased().hasSuffix(".ttml") ? $0 : nil }) == ttmlFallbackURL,
+                  let ttml, track.ttmlLyricText?.isEmpty != false else { return }
+            track.ttmlLyricText = ttml
             if self.localPlayback?.currentTrack?.id == trackID {
                 self.cachedLyricsKey = nil
                 self.refreshPresentation()

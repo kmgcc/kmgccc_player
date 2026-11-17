@@ -44,16 +44,21 @@ struct NowPlayingLyricsTabView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {
             renderingSection
+                .settingsSearchAnchor("lyrics.appearance")
 
             springSection
+                .settingsSearchAnchor("lyrics.spring")
 
             fontsSection
+                .settingsSearchAnchor("lyrics.fonts")
 
             previewSection
+                .settingsSearchAnchor("lyrics.preview")
 
             LyricsTimingConfigSection()
                 .environment(settings)
                 .environment(lyricsVM)
+                .settingsSearchAnchor("lyrics.timing")
         }
     }
 
@@ -66,7 +71,7 @@ struct NowPlayingLyricsTabView: View {
                     title: "减弱高亮",
                     isOn: $amllDiscreteWordHighlightEnabled,
                     titleFont: presentationStyle.rowLabelFont,
-                    info: "开启后歌词逐字亮起而不是扫光。" + (skinOwnedNote("highlight", "高亮") ?? "")
+                    info: "开启后歌词逐字亮起。" + (skinOwnedNote("highlight", "高亮") ?? "")
                 )
             }
         }

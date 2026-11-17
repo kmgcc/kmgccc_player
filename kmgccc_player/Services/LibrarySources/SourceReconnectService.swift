@@ -225,7 +225,7 @@ final class SourceReconnectService {
         trackID: UUID,
         selectedURL: URL
     ) async throws -> TrackRelocationProposal {
-        guard AudioFormatSupport.playableExtensions.contains(selectedURL.pathExtension.lowercased()) else {
+        guard AudioFormatSupport.physicalMediaExtensions.contains(selectedURL.pathExtension.lowercased()) else {
             throw SourceReconnectServiceError.unsupportedAudioFormat(selectedURL.pathExtension)
         }
         guard let track = await repository.fetchTracks(ids: [trackID]).first else {
@@ -276,22 +276,40 @@ final class SourceReconnectService {
         guard fingerprint == proposal.fingerprint else {
             throw SourceReconnectServiceError.selectedFileChanged(proposal.selectedURL.path)
         }
-        locator.fileBookmarkData = try bookmarkResolver.refreshBookmark(for: proposal.selectedURL)
-        locator.lastKnownPath = proposal.selectedURL.path
-        locator.fingerprint = fingerprint
-        locator.sourceMemberships = memberships(for: proposal.selectedURL)
-        locator.primarySourceID = primarySourceID(locator.sourceMemberships)
-
-        let mutation = ReferencedSourceLocatorMutation(
-            trackID: track.id,
-            locator: locator,
-            availability: .available
-        )
-        let result = await repository.commitReferencedSourceMutations([mutation])
+        let all = await repository.fetchTracks(in: nil)
+        let group = track.mediaSelection?.groupID
+        let related = all.filter { candidate in
+            guard candidate.id != track.id, let group, candidate.mediaSelection?.groupID == group,
+                  candidate.availability != .available, let other = candidate.mediaLocator.referencedFile,
+                  other.allSourceMemberships.isEmpty else { return false }
+            if let previous = locator.fingerprint, let otherFingerprint = other.fingerprint {
+                return TrackIdentityResolver.samePhysicalIdentity(previous, otherFingerprint)
+            }
+            return other.lastKnownPath == locator.lastKnownPath
+        }
+        let bookmark = try bookmarkResolver.refreshBookmark(for: proposal.selectedURL)
+        var mutations: [ReferencedSourceLocatorMutation] = []
+        for item in [track] + related {
+            guard case var .referenced(updated) = item.mediaLocator else { continue }
+            let selection = item.mediaSelection
+            let url = proposal.selectedURL
+            var properties = try await Task.detached {
+                try AudioDecoderFactory.probe(url, selection: selection).audioProperties
+            }.value
+            properties.mediaSelection = selection
+            updated.fileBookmarkData = bookmark
+            updated.lastKnownPath = proposal.selectedURL.path
+            updated.fingerprint = fingerprint
+            updated.primaryAudioProperties = properties
+            updated.sourceMemberships = memberships(for: proposal.selectedURL)
+            updated.primarySourceID = primarySourceID(updated.sourceMemberships)
+            mutations.append(.init(trackID: item.id, locator: updated, availability: .available))
+        }
+        let result = await repository.commitReferencedSourceMutations(mutations)
         guard result.failedTrackIDs.isEmpty else {
             throw SourceReconnectServiceError.authorityCommitFailed(result.failedTrackIDs)
         }
-        await repository.attachReferencedSourceMutations([mutation])
+        await repository.attachReferencedSourceMutations(mutations)
     }
 
     private func sourceReconnectMutations(
@@ -308,7 +326,15 @@ final class SourceReconnectService {
                   locator.containsSource(sourceID) else {
                 continue
             }
-            if let match = acceptedByTrackID[track.id] {
+            let shared = accepted.first { match in
+                locator.allSourceMemberships.contains { $0.sourceID == sourceID && $0.relativePath == match.previousRelativePath }
+            }
+            if let match = acceptedByTrackID[track.id] ?? shared {
+                let selection = track.mediaSelection
+                let url = match.candidate.url
+                let properties = try await Task.detached {
+                    try AudioDecoderFactory.probe(url, selection: selection).audioProperties
+                }.value
                 let bookmark = try bookmarkResolver.refreshBookmark(for: match.candidate.url)
                 locator.refreshLocation(
                     for: sourceID,
@@ -320,6 +346,9 @@ final class SourceReconnectService {
                     sourceID: sourceID,
                     relativePath: match.candidate.relativePath
                 ))
+                var selectedProperties = properties
+                selectedProperties.mediaSelection = selection
+                locator.setAudioProperties(selectedProperties, for: sourceID)
                 locator.sourceMemberships.sort(by: membershipOrder)
                 locator.primarySourceID = primarySourceID(locator.sourceMemberships)
                 mutations.append(.init(trackID: track.id, locator: locator, availability: .available))
@@ -346,8 +375,17 @@ final class SourceReconnectService {
         let manifestByTrackID = (manifest?.entries ?? []).reduce(
             into: [UUID: ReferencedSourceScanEntry]()
         ) { entries, entry in
-            guard let trackID = entry.trackID, entries[trackID] == nil else { return }
-            entries[trackID] = entry
+            for trackID in entry.boundTrackIDs where entries[trackID] == nil { entries[trackID] = entry }
+        }
+        let physicalTracks = Dictionary(grouping: tracks.filter {
+            $0.mediaLocator.referencedFile?.allSourceMemberships.contains { $0.sourceID == sourceID } == true
+        }, by: { $0.mediaLocator.referencedFile?.allSourceMemberships.first { $0.sourceID == sourceID }?.relativePath ?? "" })
+        let durations = physicalTracks.mapValues { members -> Double in
+            let selections = members.compactMap(\.mediaSelection)
+            guard !selections.isEmpty else { return members.map(\.duration).max() ?? 0 }
+            let end = selections.map { $0.startSeconds + $0.duration }.max() ?? 0
+            let beginning = selections.first?.kind == .sacd ? selections.map(\.startSeconds).min() ?? 0 : 0
+            return end - beginning
         }
         return tracks.compactMap { track in
             guard case let .referenced(locator) = track.mediaLocator,
@@ -361,7 +399,7 @@ final class SourceReconnectService {
                 trackID: track.id,
                 relativePath: entry?.relativePath ?? membership.relativePath,
                 fingerprint: entry?.fingerprint ?? locator.fingerprint,
-                duration: track.duration
+                duration: durations[membership.relativePath] ?? track.duration
             )
         }
     }
@@ -390,7 +428,7 @@ final class SourceReconnectService {
     }
 
     private func acquireAccess(to url: URL) throws -> SecurityScopedResourceLease {
-        let didStart = bookmarkResolver.startAccessing(url)
+        let didStart = requiresSecurityScope && bookmarkResolver.startAccessing(url)
         guard didStart || (!requiresSecurityScope && FileManager.default.isReadableFile(atPath: url.path)) else {
             throw SourceReconnectServiceError.authorizationFailed(url.path)
         }
@@ -432,7 +470,7 @@ final class SourceReconnectService {
             }
             // A file source reconnects by selecting the file itself.
             guard isDirectory.boolValue else {
-                guard AudioFormatSupport.playableExtensions.contains(
+                guard AudioFormatSupport.physicalMediaExtensions.contains(
                     root.pathExtension.lowercased()
                 ) else {
                     throw SourceReconnectServiceError.invalidCandidateRoot(root.path)
@@ -482,7 +520,7 @@ final class SourceReconnectService {
                         continue
                     }
                     guard values.isRegularFile == true,
-                          AudioFormatSupport.playableExtensions.contains(
+                          AudioFormatSupport.physicalMediaExtensions.contains(
                               resolved.pathExtension.lowercased()
                           ),
                           let relative = relativePath(resolved, root: root) else {
@@ -513,12 +551,9 @@ final class SourceReconnectService {
     }
 
     private nonisolated static func duration(of url: URL) async -> Double {
-        do {
-            let duration = try await AVURLAsset(url: url).load(.duration).seconds
-            return duration.isFinite && duration >= 0 ? duration : 0
-        } catch {
-            return 0
-        }
+        await Task.detached(priority: .userInitiated) {
+            (try? AudioDecoderFactory.open(url).info.duration) ?? 0
+        }.value
     }
 
     private nonisolated static func identityMatches(

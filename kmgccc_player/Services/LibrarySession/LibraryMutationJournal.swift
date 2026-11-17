@@ -35,6 +35,9 @@ nonisolated enum LibraryMutationJournalState: String, Codable, Sendable {
     case failed
     case completed
     case recovered
+    /// Reviewed by the user but not auto-verified. Kept in Completed as
+    /// evidence; it no longer blocks new writes.
+    case archived
 }
 
 nonisolated enum LibraryMutationStepState: String, Codable, Sendable {
@@ -162,6 +165,18 @@ nonisolated enum LibraryMutationJournalError: Error, Equatable, LocalizedError, 
     }
 }
 
+nonisolated struct LibraryMutationJournalRecordFailure: Sendable, Equatable, Identifiable {
+    let fileURL: URL
+    let reason: String
+
+    var id: String { fileURL.path }
+}
+
+nonisolated struct LibraryMutationJournalInspection: Sendable, Equatable {
+    let intents: [LibraryMutationIntent]
+    let failures: [LibraryMutationJournalRecordFailure]
+}
+
 /// Durable, library-scoped intent log for short mutations.
 ///
 /// The journal does not pretend that SQLite plus sidecar files form one ACID
@@ -275,33 +290,130 @@ actor LibraryMutationJournal {
     func recoverInterruptedMutations() throws -> [LibraryMutationIntent] {
         try prepareDirectories()
         var recovered: [LibraryMutationIntent] = []
-        for url in try pendingRecordURLs() {
-            var intent = try decodeIntent(at: url)
-            try validate(intent)
+        let inspection = try inspectPending()
+        if let first = inspection.failures.first {
+            throw LibraryMetadataReadError(
+                fileURL: first.fileURL,
+                reason: first.reason,
+                additionalFiles: inspection.failures.dropFirst().map(\.fileURL)
+            )
+        }
+        for intentRecord in inspection.intents {
+            var intent = intentRecord
+            let url = pendingURL(for: intent.id)
             if intent.state == .completed {
                 try persist(intent, to: completedURL(for: intent.id))
                 try fileManager.removeItem(at: url)
                 continue
             }
 
-            intent.state = .recovered
-            intent.updatedAt = Date()
             let pendingSteps = intent.steps
                 .filter { $0.state != .completed }
                 .map(\.id)
-            intent.recoverySummary = pendingSteps.isEmpty
-                ? "authoritative stores reloaded at next session open; no step completion was claimed"
-                : "authoritative stores reloaded at next session open; unresolved steps: \(pendingSteps.joined(separator: ","))"
-            try persist(intent, to: completedURL(for: intent.id))
-            try fileManager.removeItem(at: url)
+            intent.updatedAt = Date()
+            if intent.state == .prepared || pendingSteps.isEmpty {
+                // Prepared intents have not entered the mutation body. When
+                // all steps are complete, the body already returned normally.
+                intent.state = .recovered
+                intent.recoverySummary = pendingSteps.isEmpty
+                    ? "all recorded steps completed before interruption"
+                    : "interrupted before mutation began"
+                try persist(intent, to: completedURL(for: intent.id))
+                try fileManager.removeItem(at: url)
+            } else {
+                // The generic log lacks enough information to reconcile the
+                // projections. Keep the original evidence in Pending until
+                // an operation-specific repair can establish consistency.
+                intent.recoverySummary = "unresolved steps: \(pendingSteps.joined(separator: ","))"
+                try persist(intent, to: url)
+            }
             recovered.append(intent)
         }
         try pruneCompletedRecordsIfNeeded()
         return recovered.sorted { $0.createdAt < $1.createdAt }
     }
 
+    /// Reads pending records without creating directories, rewriting records,
+    /// or archiving anything. Used by diagnostics and by operation-specific
+    /// recovery before it decides whether an intent can be adjudicated.
+    func inspectPending() throws -> LibraryMutationJournalInspection {
+        var intents: [LibraryMutationIntent] = []
+        var failures: [LibraryMutationJournalRecordFailure] = []
+        for url in try pendingRecordURLs().sorted(by: { $0.path < $1.path }) {
+            do { intents.append(try decodeIntent(at: url)) }
+            catch {
+                failures.append(.init(fileURL: url, reason: error.localizedDescription))
+            }
+        }
+        return LibraryMutationJournalInspection(
+            intents: intents.sorted { $0.createdAt < $1.createdAt },
+            failures: failures
+        )
+    }
+
+    /// Archives an unresolved intent after an operation-specific verifier has
+    /// established that its durable projection is consistent. The original
+    /// record is written to Completed before Pending is removed, so every
+    /// crash point keeps at least one complete record.
+    @discardableResult
+    func markResolved(
+        intentID: UUID,
+        summary: String
+    ) throws -> LibraryMutationIntent {
+        var intent = try loadPending(id: intentID)
+        guard intent.state != .completed else { return intent }
+        intent.state = .recovered
+        intent.recoverySummary = String(summary.prefix(1_024))
+        intent.updatedAt = Date()
+        try persist(intent, to: completedURL(for: intent.id))
+        let pendingURL = pendingURL(for: intent.id)
+        if fileManager.fileExists(atPath: pendingURL.path) {
+            try fileManager.removeItem(at: pendingURL)
+        }
+        // The intent is already durable in Completed; a failed prune must not
+        // turn a successful adjudication into an error.
+        try? pruneCompletedRecordsIfNeeded()
+        return intent
+    }
+
+    /// Archives an intent that no verifier could adjudicate. The record is
+    /// preserved in Completed and explicitly marked as reviewed rather than
+    /// recovered; nothing in the library is changed.
+    @discardableResult
+    func archiveUnresolved(
+        intentID: UUID,
+        summary: String
+    ) throws -> LibraryMutationIntent {
+        var intent = try loadPending(id: intentID)
+        intent.state = .archived
+        intent.recoverySummary = String(summary.prefix(1_024))
+        intent.updatedAt = Date()
+        try persist(intent, to: completedURL(for: intent.id))
+        let pendingURL = pendingURL(for: intent.id)
+        if fileManager.fileExists(atPath: pendingURL.path) {
+            try fileManager.removeItem(at: pendingURL)
+        }
+        try? pruneCompletedRecordsIfNeeded()
+        return intent
+    }
+
     func pendingIntents() throws -> [LibraryMutationIntent] {
-        try pendingRecordURLs().map(decodeIntent(at:)).sorted { $0.createdAt < $1.createdAt }
+        try inspectPending().intents
+    }
+
+    /// True when the library carries a durable record of an interrupted
+    /// commit. Lifecycle operations that move or delete the whole root must
+    /// refuse until those records are adjudicated.
+    nonisolated static func hasPendingRecords(
+        paths: LibraryPaths,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        guard let records = try? fileManager.contentsOfDirectory(
+            at: paths.pendingTransactionsRootURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return false }
+        return records.contains { $0.pathExtension == "json" }
     }
 
     func completedIntents() throws -> [LibraryMutationIntent] {

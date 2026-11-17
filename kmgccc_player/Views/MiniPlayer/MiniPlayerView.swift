@@ -447,9 +447,14 @@ struct MiniPlayerView: View {
             },
             onDragEnd: {
                 playbackCoordinator.seek(to: dragProgress)
+                // End the preview with the transport state at this moment, not
+                // the one captured when the row was built. A pause that lands
+                // during the drag would otherwise restart the lyric clock while
+                // the transport is already stopped.
+                let live = playbackCoordinator.presentation
                 LyricsSurfaceManager.shared.endPlaybackTimePreview(
-                    at: lyricsPreviewTime(for: dragProgress, presentation: presentation),
-                    isPlaying: presentation.effectiveLyricsIsPlaying
+                    at: lyricsPreviewTime(for: dragProgress, presentation: live),
+                    isPlaying: live.effectiveLyricsIsPlaying
                 )
                 isDragging = false
             }
@@ -465,14 +470,15 @@ struct MiniPlayerView: View {
     }
 
     private func progressDisplayTime(for presentation: NowPlayingPresentation) -> Double {
-        isDragging ? dragProgress : presentation.currentTime
+        isDragging ? dragProgress : playbackCoordinator.playbackProgress.currentTime
     }
 
     private func lyricsPreviewTime(
         for seekTime: Double,
         presentation: NowPlayingPresentation
     ) -> Double {
-        max(0, presentation.lyricsCurrentTime + (seekTime - presentation.currentTime))
+        max(0, presentation.lyricsCurrentTime
+            + (seekTime - playbackCoordinator.playbackProgress.currentTime))
     }
     
     private func currentArtworkTaskKey(for presentation: NowPlayingPresentation) -> String {
@@ -538,7 +544,7 @@ struct MiniPlayerView: View {
     private func progressWidth(in totalWidth: CGFloat) -> CGFloat {
         let presentation = playbackCoordinator.presentation
         guard presentation.duration > 0 else { return 0 }
-        let time = isDragging ? dragProgress : presentation.currentTime
+        let time = isDragging ? dragProgress : playbackCoordinator.playbackProgress.currentTime
         let progress = time / presentation.duration
         return totalWidth * CGFloat(max(0, min(1, progress)))
     }

@@ -4,6 +4,16 @@
 //
 
 import Foundation
+import Darwin
+
+private nonisolated enum NCMFileReading {
+    static func readIfPresent(_ url: URL) throws -> Data? {
+        do { return try Data(contentsOf: url) }
+        catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+            return nil
+        }
+    }
+}
 
 // NCMConversionAssociation is persisted with TrackSidecar in LibrarySidecars.swift.
 
@@ -76,14 +86,14 @@ nonisolated enum NCMGeneratedOutputMarkerStore {
         fileManager: FileManager = .default
     ) throws -> NCMGeneratedOutputMarkerFile {
         let url = markerURL(in: outputDirectory)
-        guard fileManager.fileExists(atPath: url.path) else {
+        guard let data = try NCMFileReading.readIfPresent(url) else {
             return NCMGeneratedOutputMarkerFile()
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let file = try decoder.decode(
             NCMGeneratedOutputMarkerFile.self,
-            from: Data(contentsOf: url)
+            from: data
         )
         guard file.schemaVersion == NCMGeneratedOutputMarkerFile.currentSchemaVersion else {
             throw NCMConversionRegistryError.unsupportedSchema(file.schemaVersion)
@@ -97,15 +107,9 @@ nonisolated enum NCMGeneratedOutputMarkerStore {
         fileManager: FileManager = .default
     ) throws {
         try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        var file: NCMGeneratedOutputMarkerFile
-        do {
-            file = try load(in: outputDirectory, fileManager: fileManager)
-        } catch {
-            // A corrupt marker must not make a valid source folder
-            // permanently unimportable. The next successful atomic write
-            // replaces only this metadata file; audio products are untouched.
-            file = NCMGeneratedOutputMarkerFile()
-        }
+        // Preserve an unreadable or newer-version marker: replacing it with
+        // an empty file would discard associations belonging to other songs.
+        var file = try load(in: outputDirectory, fileManager: fileManager)
         if let index = file.records.firstIndex(where: {
             $0.operationID == record.operationID
                 || sameExactFingerprint($0.sourceFingerprint, record.sourceFingerprint)
@@ -225,6 +229,7 @@ nonisolated enum NCMConversionRegistryError: Error, LocalizedError, Equatable {
     case outputAlreadyReserved(UUID)
     case recordNotFound(UUID)
     case invalidTransition
+    case concurrentUpdate
 
     var errorDescription: String? {
         switch self {
@@ -233,6 +238,7 @@ nonisolated enum NCMConversionRegistryError: Error, LocalizedError, Equatable {
         case .outputAlreadyReserved: return "The NCM output is already reserved."
         case .recordNotFound: return "The NCM conversion reservation was not found."
         case .invalidTransition: return "The NCM conversion reservation is in an invalid state."
+        case .concurrentUpdate: return "NCM conversion records changed; retry the operation."
         }
     }
 }
@@ -241,6 +247,7 @@ actor NCMConversionRegistry {
     private let url: URL
     private let fileManager = FileManager.default
     private var journal: NCMConversionJournal?
+    private var loadedBytes: Data?
     private var stalePendingRecoveryIDs: [UUID] = []
 
     init(paths: LibraryPaths) {
@@ -248,19 +255,17 @@ actor NCMConversionRegistry {
     }
 
     func load() throws -> NCMConversionJournal {
-        if let journal { return journal }
-        guard fileManager.fileExists(atPath: url.path) else {
+        guard let data = try NCMFileReading.readIfPresent(url) else {
             let empty = NCMConversionJournal()
             journal = empty
+            loadedBytes = nil
             stalePendingRecoveryIDs = []
             return empty
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        var decoded = try decoder.decode(
-            NCMConversionJournal.self,
-            from: Data(contentsOf: url)
-        )
+        var decoded = try decoder.decode(NCMConversionJournal.self, from: data)
+        loadedBytes = data
         guard decoded.schemaVersion == NCMConversionJournal.currentSchemaVersion else {
             throw NCMConversionRegistryError.unsupportedSchema(decoded.schemaVersion)
         }
@@ -273,7 +278,10 @@ actor NCMConversionRegistry {
         // crash between reserve() and markOutputReady would block the source
         // forever.
         let recovered = Self.retireStalePendingRecords(&decoded, fileManager: fileManager)
-        stalePendingRecoveryIDs = recovered
+        if !recovered.isEmpty {
+            stalePendingRecoveryIDs = Array(Set(stalePendingRecoveryIDs + recovered))
+                .sorted { $0.uuidString < $1.uuidString }
+        }
         let droppedCommittedCovers = Self.stripCoverDataForCommittedRecords(&decoded)
         if recovered.isEmpty && !droppedCommittedCovers {
             journal = decoded
@@ -326,7 +334,7 @@ actor NCMConversionRegistry {
         for index in journal.records.indices
         where journal.records[index].state == .pending
             && journal.records[index].creatorProcessEpoch != creatorProcessEpoch {
-            removeCrashDebris(for: journal.records[index], fileManager: fileManager)
+            retainCrashDebris(for: journal.records[index], fileManager: fileManager)
             journal.records[index].state = .failed
             journal.records[index].errorSummary =
                 "App exited before the conversion finished; reservation recovered"
@@ -336,25 +344,20 @@ actor NCMConversionRegistry {
         return retired
     }
 
-    /// Removes the scratch artifacts a killed conversion leaves beside its
-    /// NCM source: the temporary decode directory and the reservation
-    /// placeholder, both named with the dead operation's UUID. A finalized
-    /// output path (inside the managed "NCM 转换" folder) is deliberately left
-    /// alone — it is either absent or a fully published product that the
-    /// normal reuse path adopts on the next conversion.
-    nonisolated private static func removeCrashDebris(
+    /// Preserve paths left by an interrupted conversion: the path may have
+    /// been replaced or acquired new contents since the operation stopped.
+    nonisolated private static func retainCrashDebris(
         for record: NCMConversionRecord,
         fileManager: FileManager
     ) {
         let sourceParent = URL(fileURLWithPath: record.sourcePath).deletingLastPathComponent()
         let temporaryDirectory = sourceParent
             .appendingPathComponent(".kmgccc-ncm-\(record.id.uuidString)", isDirectory: true)
-        try? fileManager.removeItem(at: temporaryDirectory)
         let placeholder = sourceParent
             .appendingPathComponent(".kmgccc-ncm-\(record.id.uuidString).pending", isDirectory: false)
-        let expectedOutput = URL(fileURLWithPath: record.expectedOutputPath).standardizedFileURL.path
-        guard expectedOutput == placeholder.standardizedFileURL.path else { return }
-        try? fileManager.removeItem(at: placeholder)
+        for path in [temporaryDirectory, placeholder] where fileManager.fileExists(atPath: path.path) {
+            Log.warning("[NCMRecovery] retaining interrupted conversion artifact: \(path.path)", category: .import)
+        }
     }
 
     func reserve(_ record: NCMConversionRecord) throws {
@@ -475,6 +478,9 @@ actor NCMConversionRegistry {
     func markCommitted(operationID: UUID, trackID: UUID) throws {
         try update(operationID) { record in
             guard record.state == .outputReady || record.state == .committed else {
+                throw NCMConversionRegistryError.invalidTransition
+            }
+            guard record.trackID == nil || record.trackID == trackID else {
                 throw NCMConversionRegistryError.invalidTransition
             }
             record.trackID = trackID
@@ -631,6 +637,23 @@ actor NCMConversionRegistry {
 
     private func persist(_ value: NCMConversionJournal) throws {
         try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let lockURL = url.appendingPathExtension("lock")
+        let fd = Darwin.open(lockURL.path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, mode_t(S_IRUSR | S_IWUSR))
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { _ = Darwin.close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else {
+            throw NCMConversionRegistryError.concurrentUpdate
+        }
+        guard kmgccc_flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            throw NCMConversionRegistryError.concurrentUpdate
+        }
+        defer { _ = kmgccc_flock(fd, LOCK_UN) }
+        let diskBytes = try NCMFileReading.readIfPresent(url)
+        guard diskBytes == loadedBytes else {
+            journal = nil
+            throw NCMConversionRegistryError.concurrentUpdate
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -644,6 +667,7 @@ actor NCMConversionRegistry {
             try fileManager.moveItem(at: temporaryURL, to: url)
         }
         journal = value
+        loadedBytes = data
     }
 
     private static func sameSource(_ lhs: NCMConversionRecord, _ rhs: NCMConversionRecord) -> Bool {

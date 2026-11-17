@@ -33,11 +33,14 @@ nonisolated enum AudioImportError: LocalizedError, Sendable {
 
 nonisolated enum ImportEffectCommitError: LocalizedError, Sendable {
     case missingReusedTrack(UUID)
+    case tracksNotCommitted
 
     var errorDescription: String? {
         switch self {
         case .missingReusedTrack(let trackID):
             return "复用歌曲在提交前已不存在（\(trackID.uuidString)）"
+        case .tracksNotCommitted:
+            return "导入文件未完成提交，请检查资料库后重试。"
         }
     }
 }
@@ -146,6 +149,7 @@ final class FileImportService: FileImportServiceProtocol {
     private let ncmConversionPipeline: ManagedNCMConversionPipeline
     private let planner: ImportPlanner
     private let committer: ImportCommitter
+    private let albumTrackOrderingService: AlbumTrackOrderingService
     /// Main-actor queue state. The queue deliberately does not use
     /// `Task<[Track], Never>`: SwiftData `Track` objects are main-actor
     /// persistent models and cannot cross a task's Sendable result boundary.
@@ -168,6 +172,13 @@ final class FileImportService: FileImportServiceProtocol {
     /// Main-actor UI hook.  The service remains independent of presentation;
     /// AppSessionHost stores the failures in UI state for the sidebar report.
     var onImportFailures: (@MainActor ([ImportInputFailure], LibraryImportOrigin) -> Void)?
+    var onCueDescriptorChoice: (@MainActor (URL, [URL]) async -> URL?)?
+    var onSACDAreaChoice: (@MainActor (URL, [Int], Int) async -> Int?)?
+    var onAudioProgramExpansionNeeded: (@MainActor ([AudioProgramExpansionProposal]) -> Void)?
+    private var approvedAudioProgramGroups = Set<UUID>()
+    /// Album-order outcomes are reported after the import task finishes so the
+    /// UI can collect every failure in one place.
+    var onAlbumOrderingResult: (@MainActor (AlbumOrderingOutcome) -> Void)?
 
     init(
         repository: LibraryRepositoryProtocol,
@@ -208,7 +219,8 @@ final class FileImportService: FileImportServiceProtocol {
             qqMusicCoverService: qqMusicCoverService,
             artistArtworkProviderCoordinator: artistArtworkProviderCoordinator,
             lyricsSearchCoordinator: lyricsSearchCoordinator,
-            amllDBService: amllDBService
+            amllDBService: amllDBService,
+            albumLookups: importEnrichmentService.albumLookups
         )
         self.ncmConversionPipeline = ManagedNCMConversionPipeline(
             operationCoordinator: operationCoordinator
@@ -229,6 +241,10 @@ final class FileImportService: FileImportServiceProtocol {
             importEnrichmentService: importEnrichmentService,
             referencedNCMConversionService: referencedNCMConversionService
         )
+        self.albumTrackOrderingService = AlbumTrackOrderingService(
+            libraryService: libraryService,
+            repository: repository
+        )
         Log.debug("FileImportService initialized", category: .import)
     }
 
@@ -236,6 +252,18 @@ final class FileImportService: FileImportServiceProtocol {
 
     func cancelEnrichment(for trackIDs: Set<UUID>) async {
         await importEnrichmentService.cancelEnrichment(for: trackIDs)
+    }
+
+    /// Explicit listener action from the album editor. It overrides an
+    /// automatic sort preference on purpose, then reports the same outcome
+    /// shape as the import pass.
+    func organizeAlbumTrackOrder(albumKey: String) async -> AlbumOrderingOutcome {
+        let outcome = await albumTrackOrderingService.applyCatalogOrder(
+            toAlbumKeys: [albumKey],
+            force: true
+        )
+        onAlbumOrderingResult?(outcome)
+        return outcome
     }
 
     /// Stops accepting new imports and waits for the service-owned import
@@ -392,6 +420,14 @@ final class FileImportService: FileImportServiceProtocol {
     /// Production entry used by referenced-source reconciliation. It uses the same
     /// metadata, sidecar, and visibility pipeline without presenting AppKit UI.
     func importAutomatically(_ urls: [URL]) async -> [Track] {
+        // A monitor event can surface a file that is still being copied. Wait
+        // for each write to finish before fingerprints and content digests are
+        // taken: a half-written file either fails the decode probe or, worse,
+        // hashes to something the complete file never matches, which turns one
+        // recording into a second Track.
+        for url in urls {
+            _ = await PerAudioFileImportTask.waitForFileToSettle(url)
+        }
         let importOutcome = await importURLs(
             urls,
             to: nil,
@@ -453,6 +489,27 @@ final class FileImportService: FileImportServiceProtocol {
             sources: sources,
             importedTrackIDsByPath: importedTrackIDsByPath
         )
+    }
+
+    func audioProgramsForUpdate(_ proposal: AudioProgramExpansionProposal) async throws -> [ImportDiscoveredFile] {
+        guard await acquireImportSlot() else { throw CancellationError() }
+        defer { releaseImportSlot() }
+        let input = await storageBackend.prepareInputs([proposal.sourceURL])
+        defer { storageBackend.finishImportBatch() }
+        if let failure = input.failures.first { throw AudioDecodingError.failed(failure.message) }
+        return input.files.filter { $0.mediaSelection?.groupID == proposal.id }
+    }
+
+    func expandAudioPrograms(_ proposals: [AudioProgramExpansionProposal]) async -> [Track] {
+        guard !proposals.isEmpty else { return [] }
+        let outcome = await enqueueImport { [weak self] in
+            guard let self else { return .empty }
+            self.approvedAudioProgramGroups = Set(proposals.map(\.id))
+            defer { self.approvedAudioProgramGroups.removeAll() }
+            return await self.performImport(proposals.map(\.sourceURL), to: nil, metadataOverride: nil,
+                presentation: .interactive, isManualSelection: true, origin: .menu, enrichmentPolicy: .standard)
+        }
+        return outcome.tracks
     }
 
     private enum ImportPresentation {
@@ -644,7 +701,8 @@ final class FileImportService: FileImportServiceProtocol {
 
         if presentation == .interactive, origin != .automation { uiPresentationObserver?() }
         let progressController = BatchImportProgressDialogController(
-            presentsWindow: presentation == .interactive && origin != .automation,
+            presentsWindow: false,
+            onProgress: { [weak self] detail in self?.operationCoordinator.recordCheckpoint(detail) },
             onCancelRequested: {
                 Task {
                     await cancellationToken.requestCancel()
@@ -661,9 +719,80 @@ final class FileImportService: FileImportServiceProtocol {
         )
 
         // The backend captures panel/drag scopes before this suspension returns.
-        let inputPlan = await storageBackend.prepareInputs(selectedURLs)
+        var inputPlan = await storageBackend.prepareInputs(selectedURLs)
         lastImportFailures.append(contentsOf: inputPlan.failures)
         defer { storageBackend.finishImportBatch() }
+        for choice in inputPlan.cueChoices {
+            guard presentation == .interactive, origin != .automation, let choose = onCueDescriptorChoice else {
+                lastImportFailures.append(.init(url: choice.file.url, message: "发现多份 CUE，请手动选择分轨描述"))
+                continue
+            }
+            guard let descriptor = await choose(choice.file.url, choice.descriptors) else {
+                importSession.cleanupStaging()
+                return .empty
+            }
+            do {
+                let url = choice.file.url
+                let programs = try await Task.detached {
+                    try AudioProgramResolver.tracks(at: url, cueDescriptor: descriptor) ?? []
+                }.value
+                let replacements = programs.map { program in
+                    var file = choice.file
+                    file.mediaSelection = program.selection
+                    file.programMetadata = AudioProgramMetadata(title: program.title, artist: program.artist,
+                        album: program.album, albumArtist: program.albumArtist)
+                    return file
+                }
+                inputPlan = ImportInputPlan(files: inputPlan.files + replacements,
+                    directorySources: inputPlan.directorySources, failures: inputPlan.failures)
+                try AudioProgramSourcePreferences.save(cue: descriptor,
+                    groupID: AudioMediaSelection.groupID(for: url), paths: paths)
+            } catch { lastImportFailures.append(.init(url: choice.file.url, message: error.localizedDescription)) }
+        }
+        if presentation == .interactive, origin != .automation, let chooseArea = onSACDAreaChoice {
+            let images = Dictionary(grouping: inputPlan.files.filter { $0.mediaSelection?.kind == .sacd },
+                by: { $0.mediaSelection!.groupID })
+            for (groupID, files) in images {
+                guard let first = files.first else { continue }
+                do {
+                    let url = first.url
+                    let info = try await Task.detached { try AudioDecoderFactory.open(url).info }.value
+                    guard let areas = info.availableAreas, areas.count > 1 else { continue }
+                    guard let area = await chooseArea(url, areas, first.mediaSelection?.area ?? 0) else {
+                        importSession.cleanupStaging()
+                        return .empty
+                    }
+                    let programs = try await Task.detached { try AudioProgramResolver.tracks(at: url, area: area) ?? [] }.value
+                    let replacements = programs.map { program in
+                        var file = ImportDiscoveredFile(url: program.url, memberships: first.memberships,
+                            primarySourceID: first.primarySourceID, fingerprint: first.fingerprint)
+                        file.mediaSelection = program.selection
+                        file.programMetadata = AudioProgramMetadata(title: program.title, artist: program.artist,
+                            album: program.album, albumArtist: program.albumArtist)
+                        return file
+                    }
+                    inputPlan = ImportInputPlan(files: inputPlan.files.filter { $0.mediaSelection?.groupID != groupID } + replacements,
+                        directorySources: inputPlan.directorySources, failures: inputPlan.failures)
+                    try AudioProgramSourcePreferences.save(area: area, groupID: groupID, paths: paths)
+                } catch {
+                    lastImportFailures.append(.init(url: first.url, message: error.localizedDescription))
+                    importSession.cleanupStaging()
+                    return .empty
+                }
+            }
+        }
+        if storageBackend.mode == .referenced, !isManualSelection {
+            do {
+                let suppressed = try LogicalAudioTrackTombstones.load(paths: paths)
+                inputPlan = ImportInputPlan(files: inputPlan.files.filter { file in
+                    file.mediaSelection.map { !suppressed.contains($0.logicalKey) } ?? true
+                }, directorySources: inputPlan.directorySources, failures: inputPlan.failures)
+            } catch {
+                lastImportFailures.append(.init(url: paths.sourcesRootURL, message: "无法读取已移除的分轨记录"))
+                importSession.cleanupStaging()
+                return .empty
+            }
+        }
         // NCM conversion may need write access to the folder containing each
         // source. Keep one parent authorization per directory for this whole
         // import, including cancellation and partial-failure paths, instead
@@ -684,8 +813,10 @@ final class FileImportService: FileImportServiceProtocol {
             inputPlan: inputPlan,
             libraryTracks: libraryTracks,
             isManualSelection: isManualSelection,
-            session: importSession
+            session: importSession,
+            approvedProgramGroups: approvedAudioProgramGroups
         )
+        if !interpretation.pendingAudioExpansions.isEmpty { onAudioProgramExpansionNeeded?(interpretation.pendingAudioExpansions) }
         var fileTrackMappings = interpretation.fileTrackMappings
         var reusedTracks = interpretation.reusedTracks
         var reusedTrackIDs = interpretation.reusedTrackIDs
@@ -696,7 +827,9 @@ final class FileImportService: FileImportServiceProtocol {
         progressController.update(
             stage: .scanning,
             progress: Self.progress(for: .scanning, completed: discoveredFileCount, total: max(discoveredFileCount, 1)),
-            detail: discoveredFileCount > 0 ? "已找到 \(discoveredFileCount) 个可导入文件" : "未找到支持的音频文件",
+            detail: discoveredFileCount > 0
+                ? "已找到 \(Set(interpretation.filesToImport.map { $0.url.path }).count + interpretation.eligibleNCMFiles.count) 个音频文件，共 \(discoveredFileCount) 首歌曲"
+                : "扫描完成",
             completedCount: discoveredFileCount,
             totalCount: discoveredFileCount
         )
@@ -747,13 +880,16 @@ final class FileImportService: FileImportServiceProtocol {
             )
         }
 
-        let discoveredItems = (interpretation.filesToImport + interpretation.eligibleNCMFiles).map {
-            BatchImportProgressItemSeed(id: $0.url.path, fileName: $0.url.lastPathComponent)
+        let pendingFiles = interpretation.filesToImport + interpretation.eligibleNCMFiles
+        progressController.setMediaCounts(physicalFiles: Set(pendingFiles.map { $0.url.standardizedFileURL.path }).count,
+            logicalTracks: pendingFiles.count)
+        let discoveredItems = pendingFiles.map {
+            BatchImportProgressItemSeed(id: $0.progressID, fileName: $0.url.lastPathComponent)
         }
         progressController.setItems(discoveredItems)
         for file in interpretation.filesToImport {
             progressController.updateItem(
-                id: file.url.path,
+                id: file.progressID,
                 stage: .metadata,
                 status: .waiting,
                 detail: "等待解析歌曲信息"
@@ -784,7 +920,7 @@ final class FileImportService: FileImportServiceProtocol {
         reusedTrackIDs = conversion.reusedTrackIDs
         fileTrackMappings.append(contentsOf: conversion.fileTrackMappings)
         lastImportFailures.append(contentsOf: conversion.failures)
-        if conversion.cancelledAfterManagedConversion {
+        if conversion.wasCancelled {
             return await finishCancelledImportOutcome(
                 session: importSession,
                 importedRecords: [],
@@ -834,8 +970,16 @@ final class FileImportService: FileImportServiceProtocol {
         if !duplicateRows.isEmpty, presentation == .interactive {
             switch storageBackend.mode {
             case .referenced:
+                // Similar metadata is insufficient to bypass video extraction.
+                // Only the source-identity path above may reuse a converted movie.
+                selectedDuplicates = preparedCandidates.duplicateCandidates.filter {
+                    AudioFormatSupport.isVideoContainer($0.fileURL)
+                }
+                let audioDuplicateCandidates = preparedCandidates.duplicateCandidates.filter {
+                    !AudioFormatSupport.isVideoContainer($0.fileURL)
+                }
                 let reuseResult = await reuseReferencedDuplicateCandidates(
-                    preparedCandidates.duplicateCandidates,
+                    audioDuplicateCandidates,
                     libraryTracks: libraryTracks,
                     existingLocators: referencedReuseLocators,
                     session: importSession,
@@ -848,7 +992,8 @@ final class FileImportService: FileImportServiceProtocol {
                 referencedReuseLocators = reuseResult.locators
                 referencedReuseNCMOperationIDs = reuseResult.ncmOperationIDsByTrackID
                 lastImportFailures.append(contentsOf: reuseResult.failures)
-                policyDecision = .automaticReuseExisting
+                policyDecision = selectedDuplicates.isEmpty
+                    ? .automaticReuseExisting : .automaticReuseExistingAndImportVideo
             case .managed:
                 selectedDuplicates = preparedCandidates.duplicateCandidates
                 policyDecision = .automaticImportAllAsNew
@@ -930,7 +1075,10 @@ final class FileImportService: FileImportServiceProtocol {
         let enrichmentMode: ImportEnrichmentMode
         switch enrichmentPolicy {
         case .standard:
-            enrichmentMode = AppSettings.shared.deferImportEnrichment ? .deferred : .immediate
+            let mediaFirst = finalCandidates.contains {
+                $0.discoveredFile.mediaSelection != nil || AudioDecoderFactory.extendedExtensions.contains($0.fileURL.pathExtension.lowercased())
+            }
+            enrichmentMode = mediaFirst || AppSettings.shared.deferImportEnrichment ? .deferred : .immediate
         case .migration:
             enrichmentMode = .skipped
         }
@@ -1066,7 +1214,7 @@ final class FileImportService: FileImportServiceProtocol {
                 progressController.update(
                     stage: .enrichingMetadata,
                     progress: Self.progress(for: .enrichingMetadata, completed: 0, total: 0),
-                    detail: "所有歌曲已有歌词与封面，无需后台补全",
+                    detail: "所有歌曲已有歌词与封面",
                     completedCount: 0,
                     totalCount: 0
                 )
@@ -1179,6 +1327,46 @@ final class FileImportService: FileImportServiceProtocol {
             completedCount: 2,
             totalCount: 2
         )
+
+        if enrichmentMode != .skipped, !persistedTracks.isEmpty {
+            progressController.update(
+                stage: .orderingAlbums,
+                progress: Self.progress(for: .orderingAlbums, completed: 0, total: 1),
+                detail: "正在查询本次导入的专辑",
+                completedCount: 0,
+                totalCount: 0
+            )
+            let orderingOutcome = await albumTrackOrderingService.applyCatalogOrder(
+                toImportedTracks: persistedTracks.filter { $0.mediaSelection == nil },
+                isCancelled: { progressController.isCancellationRequested }
+            ) { completed, total, albumTitle in
+                progressController.update(
+                    stage: .orderingAlbums,
+                    progress: Self.progress(for: .orderingAlbums, completed: completed, total: total),
+                    detail: "正在整理“\(albumTitle)”的曲序",
+                    completedCount: completed,
+                    totalCount: total
+                )
+            }
+            Log.info(
+                "[Import] album ordering albums=\(orderingOutcome.updatedAlbumCount) tracks=\(orderingOutcome.orderedTrackCount) failures=\(orderingOutcome.failures.count)",
+                category: .import
+            )
+            if !progressController.isCancellationRequested {
+                onAlbumOrderingResult?(orderingOutcome)
+            }
+            if await isImportCancellationRequested(progressController, cancellationToken) {
+                return await finishCancelledImportOutcome(
+                    session: importSession,
+                    importedRecords: importedRecords,
+                    createdTrackIDs: importBatch.createdTrackIDs,
+                    to: playlist,
+                    progressController: progressController,
+                    totalCount: finalCandidates.count,
+                    fileTrackMappings: fileTrackMappings
+                )
+            }
+        }
 
         progressController.update(
             stage: .completed,
@@ -1362,9 +1550,15 @@ final class FileImportService: FileImportServiceProtocol {
                                 "[Import] referenced NCM duplicate commit failed operation=\(operationID.uuidString) track=\(trackID.uuidString): \(error.localizedDescription)",
                                 category: .import
                             )
+                            mutationCoordinator?.recordUnresolved(
+                                "Referenced NCM association was not committed for track \(trackID.uuidString), operation \(operationID.uuidString)."
+                            )
                         }
                     }
                 }
+            }
+            if storageBackend.mode == .referenced {
+                try LogicalAudioTrackTombstones.remove(Set(tracks.compactMap { $0.mediaSelection?.logicalKey }), paths: paths)
             }
         } catch {
             await storageBackend.rollbackPreparedSources()
@@ -1389,18 +1583,39 @@ final class FileImportService: FileImportServiceProtocol {
     ) async -> [Track]? {
         do {
             if let mutationCoordinator {
-                let savedIDs: [UUID]? = try await mutationCoordinator.run(
+                let savedIDs: [UUID] = try await mutationCoordinator.run(
                     kind: .importCommit,
-                    targetIDs: tracks.map { $0.id.uuidString }
+                    targetIDs: tracks.map { $0.id.uuidString },
+                    stepIDs: ["audio", "track_metadata", "ncm_associations"]
                 ) {
-                    await self.committer.saveImportedTracks(
+                    guard let saved = await self.committer.saveImportedTracks(
                         tracks,
                         progressController: progressController,
                         session: session,
-                        cancellationToken: cancellationToken
-                    )?.map(\.id)
+                        cancellationToken: cancellationToken,
+                        didCommitAudio: { try await mutationCoordinator.recordCompletedStep("audio") },
+                        didCommitTracks: { savedIDs in
+                            guard Set(savedIDs) == Set(tracks.map(\.id)) else { return }
+                            do {
+                                try await mutationCoordinator.recordCompletedStep("track_metadata")
+                                try await mutationCoordinator.recordCompletedStep("ncm_associations")
+                            } catch {
+                                mutationCoordinator.recordUnresolved("Unable to record completed import steps: \(error)")
+                            }
+                        }
+                    ) else {
+                        if await cancellationToken.isCancelled || Task.isCancelled { throw CancellationError() }
+                        throw ImportEffectCommitError.tracksNotCommitted
+                    }
+                    let expectedIDs = Set(tracks.map(\.id))
+                    let savedIDs = Set(saved.map(\.id))
+                    if savedIDs != expectedIDs {
+                        mutationCoordinator.recordUnresolved(
+                            "Import saved \(savedIDs.count) of \(expectedIDs.count) requested tracks."
+                        )
+                    }
+                    return saved.map(\.id)
                 }
-                guard let savedIDs else { return nil }
                 let savedByID = Dictionary(
                     await repository.fetchTracks(ids: savedIDs).map { ($0.id, $0) },
                     uniquingKeysWith: { existing, _ in existing }
@@ -1413,6 +1628,8 @@ final class FileImportService: FileImportServiceProtocol {
                 session: session,
                 cancellationToken: cancellationToken
             )
+        } catch is CancellationError {
+            return nil
         } catch {
             lastImportFailures.append(.init(
                 url: failureURL,
@@ -1534,8 +1751,22 @@ final class FileImportService: FileImportServiceProtocol {
                 let incomingIsPlayable = await AudioFilePreparationActor.canOpenForPlayback(
                     candidate.fileURL
                 )
-                var mergedLocator = incomingIsPlayable ? incomingLocator : previousLocator
-                let locationsToMerge = incomingIsPlayable
+                // A playable copy must not take over a Track that is still
+                // healthy where it is: deleting the copy would then strand a
+                // Track the user never moved, and the Album would point into
+                // the folder the copy came from. It joins as an alternate
+                // location instead. A Track that is missing, or whose recording
+                // is gone, still follows the copy. An NCM output is the
+                // exception: it was produced on purpose from the same source,
+                // so the freshest product stays first.
+                let recordingIsPresent = !previousLocator.lastKnownPath.isEmpty
+                    && FileManager.default.fileExists(atPath: previousLocator.lastKnownPath)
+                let preferIncoming = incomingIsPlayable
+                    && (candidate.ncmLocator != nil
+                        || existingTrack.availability != .available
+                        || !recordingIsPresent)
+                var mergedLocator = preferIncoming ? incomingLocator : previousLocator
+                let locationsToMerge = preferIncoming
                     ? previousLocator.locations
                     : incomingLocator.locations
                 for location in locationsToMerge {
@@ -1544,6 +1775,11 @@ final class FileImportService: FileImportServiceProtocol {
                 if !incomingIsPlayable {
                     Log.warning(
                         "[Import] duplicate copy could not be decoded; preserving the existing playable location first track=\(existingTrackID.uuidString)",
+                        category: .import
+                    )
+                } else if !preferIncoming {
+                    Log.info(
+                        "[Import] duplicate copy linked as an alternate location; the existing recording stays primary track=\(existingTrackID.uuidString)",
                         category: .import
                     )
                 }

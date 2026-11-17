@@ -238,6 +238,16 @@ final class ReferencedNCMConversionService {
         // user's original folder layout clean.
         let outputDirectory = authorization.directoryURL
             .appendingPathComponent(Self.outputDirectoryName, isDirectory: true)
+        // Validate the shared marker before reserving or publishing anything;
+        // a corrupt marker must remain available for repair.
+        do {
+            _ = try NCMGeneratedOutputMarkerStore.load(in: outputDirectory, fileManager: fileManager)
+        } catch {
+            throw LibraryMetadataReadError(
+                fileURL: outputDirectory.appendingPathComponent(NCMGeneratedOutputMarkerStore.fileName),
+                reason: error.localizedDescription
+            )
+        }
 
         // Adopt a product that travelled with the source folder before doing
         // any audio decryption. New products are identified by the hidden
@@ -645,6 +655,63 @@ final class ReferencedNCMConversionService {
         try await registry.markCommitted(operationID: operationID, trackID: trackID)
     }
 
+    /// Finish a previously interrupted registry transition only when an
+    /// already-loaded track, the reservation, and the output file agree.
+    func recoverCommittedAssociations(
+        _ candidates: [(trackID: UUID, association: NCMConversionAssociation)]
+    ) async {
+        for candidate in candidates {
+            do {
+                guard let record = try await registry.record(operationID: candidate.association.operationID),
+                      record.state == .outputReady,
+                      record.trackID == candidate.trackID,
+                      let expectedFingerprint = record.outputFingerprint else { continue }
+                let output = URL(fileURLWithPath: record.expectedOutputPath).standardizedFileURL
+                guard output.path == URL(fileURLWithPath: candidate.association.outputPath).standardizedFileURL.path,
+                      URL(fileURLWithPath: record.sourcePath).standardizedFileURL.path
+                        == URL(fileURLWithPath: candidate.association.sourcePath).standardizedFileURL.path else { continue }
+                let actual = try identityProvider.fingerprint(for: output)
+                guard NCMGeneratedOutputMarkerStore.sameExactFingerprint(expectedFingerprint, actual) else { continue }
+                try await markCommitted(operationID: record.id, trackID: candidate.trackID)
+            } catch {
+                Log.warning("[NCMRecovery] association remains unresolved operation=\(candidate.association.operationID): \(error)", category: .import)
+            }
+        }
+    }
+
+    /// A reused track may store the NCM product as an alternate location
+    /// rather than as its primary NCM association. Match the durable track
+    /// and both file identities before repairing the registry entry.
+    func recoverCommittedLocations(_ locationsByTrack: [UUID: [ReferencedTrackLocation]]) async {
+        let records: [NCMConversionRecord]
+        do { records = try await registry.load().records }
+        catch {
+            Log.warning("[NCMRecovery] cannot inspect conversion registry: \(error)", category: .import)
+            return
+        }
+        for record in records where record.state == .outputReady {
+            guard let trackID = record.trackID,
+                  let sourceIdentity = record.sourceIdentity,
+                  let expectedFingerprint = record.outputFingerprint,
+                  let locations = locationsByTrack[trackID] else { continue }
+            let output = URL(fileURLWithPath: record.expectedOutputPath).standardizedFileURL
+            let hasMatchingLocation = locations.contains { location in
+                guard let fingerprint = location.fingerprint,
+                      location.ncmSourceIdentity == sourceIdentity,
+                      URL(fileURLWithPath: location.lastKnownPath).standardizedFileURL.path == output.path else { return false }
+                return NCMGeneratedOutputMarkerStore.sameExactFingerprint(fingerprint, expectedFingerprint)
+            }
+            guard hasMatchingLocation else { continue }
+            do {
+                let actual = try identityProvider.fingerprint(for: output)
+                guard NCMGeneratedOutputMarkerStore.sameExactFingerprint(expectedFingerprint, actual) else { continue }
+                try await markCommitted(operationID: record.id, trackID: trackID)
+            } catch {
+                Log.warning("[NCMRecovery] location remains unresolved operation=\(record.id): \(error)", category: .import)
+            }
+        }
+    }
+
     /// Returns a committed NCM output locator and repairs records written by
     /// the old implementation, which incorrectly stored the generated output
     /// path as the source membership.
@@ -703,6 +770,18 @@ final class ReferencedNCMConversionService {
             fingerprint = try identityProvider.fingerprint(for: file.url)
         }
         return try await registry.allowManualRetry(matching: fingerprint)
+    }
+
+    /// Video conversion publishes the extracted audio beside the movie. A
+    /// folder this process can already write needs no grant, so importing a
+    /// movie stays as direct as importing any other song; only a refused
+    /// folder falls back to the shared per-batch parent-directory grant that
+    /// NCM conversion uses.
+    func authorizeVideoOutput(for file: ImportDiscoveredFile) async throws -> URL {
+        guard isImportBatchActive else { throw VideoMusicImportError.parentAuthorizationDenied }
+        let directory = file.url.deletingLastPathComponent()
+        if fileManager.isWritableFile(atPath: directory.path) { return directory }
+        return try await writeAuthorization(for: file).directoryURL
     }
 
     private func writeAuthorization(for file: ImportDiscoveredFile) async throws -> NCMParentDirectoryAuthorization {

@@ -99,6 +99,14 @@ nonisolated enum ExternalPlaybackTextNormalizer {
         return false
     }
 
+    /// Without an artist seed, duration is the only evidence separating a song
+    /// from its covers and namesakes, so the tolerance stays tight: `背叛` by
+    /// 福梦 runs 291s while the 曹格 version runs 321s.
+    static func durationSupportsArtistlessMatch(source: Double, candidate: Double) -> Bool {
+        guard source > 0, candidate > 0 else { return false }
+        return abs(source - candidate) <= 12
+    }
+
     /// Returns true when both sides are short single-token titles (compact ≤ 6 chars)
     /// AND their edit distance exceeds 1.  This is a hard-reject gate that must be
     /// checked *before* the general titleScore threshold.

@@ -12,6 +12,12 @@ import Combine
 import Dispatch
 import SwiftData
 
+nonisolated enum DebugLaunchScenarioPolicy {
+    static func allowsScenario(isDebugBuild: Bool, environment: [String: String]) -> Bool {
+        isDebugBuild || environment["KMGCCC_DEBUG_UI_HOOKS"] == "1"
+    }
+}
+
 @MainActor
 final class AppSessionHost: ObservableObject {
     @Published private(set) var libraryVM: LibraryViewModel?
@@ -32,6 +38,15 @@ final class AppSessionHost: ObservableObject {
     /// True while a user-initiated retry is trying to establish the startup
     /// library after an exceptional open failure.
     @Published private(set) var isRetryingLibraryStartup = false
+    /// True while a library switch is closing the old session or loading the new one.
+    @Published private(set) var isLibraryTransitioning = false
+    @Published private(set) var libraryStartupFailureMessage: String?
+    @Published var isLibraryRepairPresented = false
+    @Published private(set) var libraryRepairReport: LibraryRepairReport?
+    @Published private(set) var isInspectingLibraryRepair = false
+    @Published private(set) var isRepairingLibrary = false
+    private var libraryRepairRootURL: URL?
+    private var persistedLibraryRecoveryState: LibraryRecoveryState?
     /// Pushed referenced-source scan states for the active library (the
     /// library root itself is excluded). Fed by `LibraryChangeMonitor`
     /// transitions and the manual rescan wrappers below so views can read a
@@ -44,6 +59,7 @@ final class AppSessionHost: ObservableObject {
     /// operation coordinator (plan §14). Views read this published snapshot
     /// instead of polling task state.
     @Published private(set) var activeLibraryTasks: [LibraryOperationTaskDescriptor] = []
+    @Published private(set) var unresolvedLibraryMutationCount = 0
     /// Tasks the sidebar's task stack shows right now: those whose kind
     /// registered a rule that passes, after the anti-flicker delay.
     @Published private(set) var sidebarVisibleTaskIDs: Set<UUID> = []
@@ -153,11 +169,14 @@ final class AppSessionHost: ObservableObject {
     /// being opened. The old boolean guard was set before the async work and
     /// let a second caller show the window with a nil session in between.
     private var setupTask: Task<Void, Never>?
+    private var launchDiagnosticsTask: Task<Void, Never>?
+    private var hasPreparedLaunchDiagnostics = false
     private var playbackModeObserver: NSObjectProtocol?
     private var workspaceLibraryObservers: [NSObjectProtocol] = []
     private var appActiveLibraryObserver: NSObjectProtocol?
     private var backgroundSettingsObserver: NSObjectProtocol?
     private var activeLibraryRescanTask: Task<Void, Never>?
+    private var lastForegroundLibraryRescan: (libraryID: UUID, uptime: TimeInterval)?
     private var trashedLibraryReconciliationTask: Task<Void, Never>?
     private var playbackMemoryTimer: Timer?
     private var memoryPressureObserverToken: UUID?
@@ -209,12 +228,40 @@ final class AppSessionHost: ObservableObject {
         self.placeholderPlaybackHistoryViewModel = playbackHistoryViewModel
         self.skinManager = SkinManager(catalog: SkinRegistry.catalog)
 
+        sessionController.onStateChange = { [weak self] state in
+            switch state {
+            case .preparing, .quiescing, .loading: self?.isLibraryTransitioning = true
+            case .idle, .active, .unavailable: self?.isLibraryTransitioning = false
+            }
+        }
         sessionController.willReleaseActiveSession = { [weak self] in
             await self?.releaseActiveSessionBindings()
         }
         sessionController.didActivateSession = { [weak self] session in
             guard let self, let session = session as? LibrarySession else { return }
             await self.publishActiveSession(session)
+            // A live session is the final state the recovery marker was
+            // waiting for; its library and the durable selection now agree.
+            self.persistedLibraryRecoveryState = nil
+            LibraryRecoveryStateStore().clear()
+            self.libraryStartupFailureMessage = nil
+            // A source notice belongs to the previous library. Drop it before
+            // the new session can publish its own source state.
+            if self.uiState.sidebarNotice?.sourceID != nil {
+                self.uiState.dismissSidebarNotice()
+            }
+            if session.unresolvedMutationCount > 0 {
+                self.uiState.showSidebarNotice(
+                    "上次资料库操作未完成，请检查资料库内容。",
+                    style: .warning,
+                    actionTitle: "检查资料库",
+                    destination: .libraryRepair,
+                    isSticky: true,
+                    tag: .libraryMutation
+                )
+            } else {
+                self.clearLibraryMutationNoticeIfNeeded()
+            }
             do {
                 try await self.registryStore?.setActiveLibrary(
                     id: session.context.id,
@@ -239,17 +286,24 @@ final class AppSessionHost: ObservableObject {
                 "来源文件夹新增 \(count) 首歌曲，正在补全信息",
                 duration: 4
             )
-        case .unavailable(_, _):
+        case .unavailable(let sourceID, _):
             uiState.showSidebarNotice(
                 "来源文件夹暂时不可用",
                 style: .warning,
-                actionTitle: "打开设置"
+                actionTitle: "处理来源",
+                sourceID: sourceID,
+                destination: .librarySettings(anchor: "library.source.\(sourceID.uuidString)"),
+                isSticky: true
             )
-        case .fileFailures(_, let failures):
+        case .available(let sourceID):
+            uiState.dismissSidebarNotice(sourceID: sourceID)
+        case .fileFailures(_, let rootURL, let rootIsFile, let failures):
             uiState.recordLibraryImportFailures(
                 failures.map { failure in
                     ImportInputFailure(
-                        url: URL(fileURLWithPath: failure.relativePath ?? "来源文件"),
+                        url: rootIsFile
+                            ? rootURL
+                            : rootURL.appendingPathComponent(failure.relativePath ?? ""),
                         message: failure.summary
                     )
                 },
@@ -258,7 +312,8 @@ final class AppSessionHost: ObservableObject {
             uiState.showSidebarNotice(
                 "来源文件夹中有 \(failures.count) 个文件未能导入",
                 style: .warning,
-                actionTitle: "查看失败"
+                actionTitle: "查看失败",
+                destination: .libraryImportStatus
             )
         case .scanFailures(_, let failures):
             uiState.recordLibraryImportFailures(
@@ -273,7 +328,8 @@ final class AppSessionHost: ObservableObject {
             uiState.showSidebarNotice(
                 "来源扫描失败 \(failures.count) 项",
                 style: .warning,
-                actionTitle: "查看失败"
+                actionTitle: "查看失败",
+                destination: .libraryImportStatus
             )
         case .reconcileFailures(_, let failures):
             uiState.recordLibraryImportFailures(
@@ -288,7 +344,8 @@ final class AppSessionHost: ObservableObject {
             uiState.showSidebarNotice(
                 "有 \(failures.count) 首歌曲未能更新",
                 style: .warning,
-                actionTitle: "查看失败"
+                actionTitle: "查看失败",
+                destination: .libraryImportStatus
             )
         case .monitorFailure(_, let summary):
             uiState.recordLibraryImportFailures(
@@ -298,7 +355,8 @@ final class AppSessionHost: ObservableObject {
             uiState.showSidebarNotice(
                 "来源文件夹扫描失败，请检查来源设置",
                 style: .warning,
-                actionTitle: "查看失败"
+                actionTitle: "来源设置",
+                destination: .librarySettings(anchor: "library.sources")
             )
         }
     }
@@ -355,18 +413,20 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
-    func openMusicLibrary(at url: URL) async throws -> [UUID] {
+    func openMusicLibrary(at url: URL, expectedContext: LibraryContext? = nil) async throws -> [UUID] {
         guard let libraryOpenService else { throw LibraryOpenError.libraryNotFound }
+        let previousSession = activeLibraryBinding.activeSession
         let selectedURL = url.standardizedFileURL
         let defaultRoot = LibraryLocationStore.defaultLibraryRootURL.standardizedFileURL
         let isDefaultLibrarySelection = selectedURL == defaultRoot
             || selectedURL.appendingPathComponent(LibraryPaths.rootDirectoryName, isDirectory: true)
                 .standardizedFileURL == defaultRoot
-        _ = try await libraryOpenService.open(
+        let opened = try await libraryOpenService.open(
             selectedURL: selectedURL,
+            expectedContext: expectedContext,
             allowStalePathConflictRepair: isDefaultLibrarySelection
         )
-        return try await unavailableReferencedSourceIDs()
+        return await unavailableReferencedSourceIDs(afterOpening: opened.context, previousSession: previousSession)
     }
 
     func openInspectedMusicLibrary(_ context: LibraryContext) async throws -> [UUID] {
@@ -376,21 +436,21 @@ final class AppSessionHost: ObservableObject {
             requiresSecurityScope: false
         )
         defer { lease.release() }
-        return try await openMusicLibrary(at: context.rootURL)
+        return try await openMusicLibrary(at: context.rootURL, expectedContext: context)
     }
 
     func activateRegisteredLibrary(id: UUID) async throws -> [UUID] {
-        guard let registryStore else { throw RegisteredLibraryActivationError.notRegistered }
-        let context = try await LibraryStartupContextResolver(registryStore: registryStore)
-            .resolveRegistered(libraryID: id, generation: activeLibraryBinding.generation &+ 1)
-        try await sessionController.switchToLibrary(context)
-        return try await unavailableReferencedSourceIDs()
+        guard let libraryOpenService else { throw RegisteredLibraryActivationError.notRegistered }
+        let previousSession = activeLibraryBinding.activeSession
+        let opened = try await libraryOpenService.activateRegisteredLibrary(id: id)
+        return await unavailableReferencedSourceIDs(afterOpening: opened.context, previousSession: previousSession)
     }
 
     func reconnectRegisteredLibrary(id: UUID, at url: URL) async throws -> [UUID] {
         guard let libraryOpenService else { throw LibraryOpenError.libraryNotFound }
-        _ = try await libraryOpenService.reconnectRegisteredLibrary(id: id, selectedURL: url)
-        return try await unavailableReferencedSourceIDs()
+        let previousSession = activeLibraryBinding.activeSession
+        let opened = try await libraryOpenService.reconnectRegisteredLibrary(id: id, selectedURL: url)
+        return await unavailableReferencedSourceIDs(afterOpening: opened.context, previousSession: previousSession)
     }
 
     func prepareSourceReconnect(
@@ -508,7 +568,8 @@ final class AppSessionHost: ObservableObject {
                     self.uiState.showSidebarNotice(
                         "部分音乐未导入",
                         style: .warning,
-                        actionTitle: "查看失败"
+                        actionTitle: "查看失败",
+                        destination: .libraryImportStatus
                     )
                 } else if result.imported > 0 {
                     self.uiState.showSidebarNotice("新增 \(result.imported) 首歌曲")
@@ -518,14 +579,16 @@ final class AppSessionHost: ObservableObject {
                 self?.uiState.showSidebarNotice(
                     result.imported > 0 ? "部分音乐未导入" : "初始音乐导入失败",
                     style: .warning,
-                    actionTitle: "查看失败"
+                    actionTitle: "查看失败",
+                    destination: .libraryImportStatus
                 )
             } catch {
                 guard !Task.isCancelled else { return }
                 self?.uiState.showSidebarNotice(
                     "初始音乐导入失败",
                     style: .warning,
-                    actionTitle: "查看失败"
+                    actionTitle: "查看失败",
+                    destination: .libraryImportStatus
                 )
             }
         }
@@ -708,18 +771,57 @@ final class AppSessionHost: ObservableObject {
 
     private func bindLibraryTaskStatePush(for session: LibrarySession) {
         activeLibraryTasks = session.libraryTaskDescriptorsSnapshot()
+        unresolvedLibraryMutationCount = session.unresolvedMutationCount
+        session.bindUnresolvedMutationObserver { [weak self, weak session] in
+            guard let self, let session else { return }
+            self.unresolvedLibraryMutationCount = session.unresolvedMutationCount
+            guard session.unresolvedMutationCount > 0 else {
+                self.clearLibraryMutationNoticeIfNeeded()
+                return
+            }
+            self.uiState.showSidebarNotice(
+                "资料库操作未完成，请检查资料库内容。",
+                style: .warning,
+                actionTitle: "检查资料库",
+                destination: .libraryRepair,
+                isSticky: true,
+                tag: .libraryMutation
+            )
+        }
         session.bindLibraryTaskStateObserver { [weak self, weak session] in
             guard let self, let session else { return }
             self.activeLibraryTasks = session.libraryTaskDescriptorsSnapshot()
             self.updateLibraryWriteHold()
             self.refreshSidebarTaskVisibility()
         }
+        session.bindSlowQuiescenceObserver(tasks: { [weak self] kinds in
+            let labels = Set(kinds.map { kind in
+                switch kind {
+                case .importFiles, .ncmConversion: return "导入"
+                case .sourceScan: return "来源扫描"
+                case .enrichment: return "信息补全"
+                case .indexUpdate: return "索引更新"
+                case .libraryBundleExport: return "资料库导出"
+                case .embeddedTagWrite: return "标签写入"
+                case .loudnessAnalysis: return "响度分析"
+                case .automation, .other: return "资料库任务"
+                }
+            }).sorted().joined(separator: "、")
+            self?.uiState.showSidebarNotice("正在等待\(labels)结束", style: .warning)
+        }, commits: { [weak self] _ in
+            self?.uiState.showSidebarNotice("正在等待资料库写入结束", style: .warning)
+        }, stage: { [weak self] label in
+            self?.uiState.showSidebarNotice("正在等待\(label)结束", style: .warning)
+        })
         updateLibraryWriteHold()
         refreshSidebarTaskVisibility()
     }
 
     private func unbindLibraryTaskStatePush(of session: LibrarySession?) {
         session?.bindLibraryTaskStateObserver(nil)
+        session?.bindUnresolvedMutationObserver(nil)
+        session?.bindSlowQuiescenceObserver(tasks: nil, commits: nil, stage: nil)
+        unresolvedLibraryMutationCount = 0
         activeLibraryTasks = []
         updateLibraryWriteHold()
         refreshSidebarTaskVisibility()
@@ -1016,16 +1118,46 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
-    private func unavailableReferencedSourceIDs() async throws -> [UUID] {
+    private func unavailableReferencedSourceIDs(
+        afterOpening context: LibraryContext,
+        previousSession: LibrarySession?
+    ) async -> [UUID] {
         guard let session = activeLibraryBinding.activeSession,
+              session !== previousSession,
+              session.context.id == context.id,
+              session.context.rootURL == context.rootURL,
               session.context.mode == .referenced,
               let store = session.referencedSourceStore else {
             return []
         }
-        return try await store.loadAll()
-            .filter { $0.status != .available }
-            .map(\.id)
-            .sorted { $0.uuidString < $1.uuidString }
+        let sourceIDs: [UUID]?
+        do {
+            sourceIDs = try await session.runLibraryOperation {
+                await LibraryOpenService.unavailableReferencedSourceIDs(in: store)
+            }
+        } catch is CancellationError {
+            return []
+        } catch LibraryOperationError.sessionQuiescing {
+            return []
+        } catch {
+            guard !Task.isCancelled,
+                  activeLibraryBinding.activeSession === session else { return [] }
+            Log.warning("[LibraryOpen] source check could not run library=\(context.id): \(error)", category: .library)
+            sourceIDs = nil
+        }
+        guard !Task.isCancelled,
+              activeLibraryBinding.activeSession === session else { return [] }
+        guard let sourceIDs else {
+            uiState.showSidebarNotice(
+                "资料库已打开，来源状态暂时无法读取",
+                style: .warning,
+                actionTitle: "检查资料库",
+                destination: .libraryRepair,
+                isSticky: true
+            )
+            return []
+        }
+        return sourceIDs
     }
 
     func libraryScopedSettings() async throws -> LibraryScopedSettings {
@@ -1219,6 +1351,8 @@ final class AppSessionHost: ObservableObject {
     private func performInitialSetup() async {
         guard !hasSetupDependencies else { return }
         hasSetupDependencies = true
+        startLaunchDiagnosticsIfNeeded()
+        await Task.yield()
 
         systemConditions.start()
         backgroundWorkScheduler.configurationProvider = {
@@ -1255,12 +1389,24 @@ final class AppSessionHost: ObservableObject {
         mainThreadStallMonitor.start()
         startMemoryPressureMonitoring()
         installProcessLifecycleHandlers()
+        // A previous launch may have ended after a failed session rollback.
+        // Surface that state before resolving the registry so the user sees
+        // why the app is not opening the library they last used.
+        if let persistedState = LibraryRecoveryStateStore().load() {
+            persistedLibraryRecoveryState = persistedState
+            libraryStartupFailureMessage = persistedState.message
+            Log.warning(
+                "[LibraryLifecycle] persisted recovery state intended=\(persistedState.intendedLibraryID?.uuidString ?? "nil") active=\(persistedState.activeLibraryID?.uuidString ?? "nil") liveSession=\(persistedState.hasLiveSession)",
+                category: .library
+            )
+        }
         var lifecycleRecoverySucceeded = true
         var successorModeAfterRemoval: MusicLibraryMode?
         if let libraryRelocationService {
             do { _ = try await libraryRelocationService.replayPendingRepair() }
             catch {
                 lifecycleRecoverySucceeded = false
+                libraryStartupFailureMessage = LibraryOpenFailure.message(for: error)
                 Log.error("[LibraryLifecycle] pending relocation repair failed", category: .library)
             }
         }
@@ -1272,6 +1418,7 @@ final class AppSessionHost: ObservableObject {
                 }
             } catch {
                 lifecycleRecoverySucceeded = false
+                libraryStartupFailureMessage = LibraryOpenFailure.message(for: error)
                 Log.error("[LibraryLifecycle] pending removal repair failed", category: .library)
             }
         }
@@ -1289,15 +1436,18 @@ final class AppSessionHost: ObservableObject {
         switch startupResolution {
         case .context(let startupContext):
             do {
-                try await sessionController.switchToLibrary(startupContext)
+                guard let libraryOpenService else { throw LibraryOpenError.libraryNotRegistered }
+                _ = try await libraryOpenService.open(selectedURL: startupContext.rootURL, expectedContext: startupContext)
                 await restorePlaybackMemoryIfNeeded()
             } catch {
+                libraryStartupFailureMessage = LibraryOpenFailure.message(for: error)
                 Log.error(
                     "[LibrarySession] initial load failed library=\(startupContext.id): \(error)",
                     category: .library
                 )
                 await releaseActiveSessionBindings()
-                if LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error) {
+                if persistedLibraryRecoveryState == nil,
+                   LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error) {
                     if let defaultContext = await ensureFactoryDefaultLibraryIfNeeded(
                         allowUnreachableActiveLibrary: true
                     ) {
@@ -1306,13 +1456,15 @@ final class AppSessionHost: ObservableObject {
                     }
                 } else {
                     Log.warning(
-                        "[LibrarySession] active library writer lease unavailable; default creation suppressed",
+                        "[LibrarySession] active library activation deferred; default creation suppressed: \(error)",
                         category: .library
                     )
                 }
             }
         case .noActive:
-            if let defaultContext = await ensureFactoryDefaultLibraryIfNeeded() {
+            if persistedLibraryRecoveryState != nil {
+                Log.info("[LibrarySession] no active library; persisted recovery state defers default creation", category: .library)
+            } else if let defaultContext = await ensureFactoryDefaultLibraryIfNeeded() {
                 // The default-library path is either opened or created by the
                 // lifecycle service. Both paths activate the session before
                 // returning, so the normal empty-library UI can render.
@@ -1322,7 +1474,8 @@ final class AppSessionHost: ObservableObject {
                 Log.info("[LibrarySession] no active library; waiting for chooser", category: .library)
             }
         case .unavailable:
-            if let defaultContext = await ensureFactoryDefaultLibraryIfNeeded(
+            if lifecycleRecoverySucceeded, persistedLibraryRecoveryState == nil,
+               let defaultContext = await ensureFactoryDefaultLibraryIfNeeded(
                 allowUnreachableActiveLibrary: true
             ) {
                 await restorePlaybackMemoryIfNeeded()
@@ -1335,27 +1488,20 @@ final class AppSessionHost: ObservableObject {
         // A normal launch must never publish a completed setup with a nil
         // session. This bounded retry also covers a short-lived contention
         // window when a previous instance is still releasing its writer lease.
-        if activeLibraryBinding.activeSession == nil {
+        if lifecycleRecoverySucceeded,
+           persistedLibraryRecoveryState == nil,
+           activeLibraryBinding.activeSession == nil {
             _ = await ensureFactoryDefaultLibraryWithRetries()
         }
+        if activeLibraryBinding.activeSession != nil { libraryStartupFailureMessage = nil }
 
         AppVersionGate.shared.recordCurrentAppLaunch()
-        let crashReportInstallID = await TelemetryService.shared.prepareAnonymousInstallIDForSignedUpload()
-        await CrashReportService.shared.start(
-            anonymousInstallID: crashReportInstallID
-        )
-        MetricKitDiagnosticService.shared.start(anonymousInstallID: crashReportInstallID)
 #if DEBUG
         DebugCrashTrigger.scheduleIfRequested()
 #endif
-        if CrashReportService.shared.hasPendingPrompt {
-            CrashReportService.shared.setPromptQueueDrainedHandler { [weak self] in
-                self?.scheduleDeferredLaunchPromptsIfNeeded()
-            }
-        } else {
-            scheduleDeferredLaunchPromptsIfNeeded()
-        }
         hasCompletedInitialSetup = true
+        showPreservedRelocationCopiesIfNeeded()
+        finishLaunchPromptsIfReady()
         DebugUIHooks.installIfEnabled(appSession: self)
         if AppSettings.shared.automationEndpointEnabled {
             do {
@@ -1396,17 +1542,364 @@ final class AppSessionHost: ObservableObject {
               !isRetryingLibraryStartup else { return }
         isRetryingLibraryStartup = true
         defer { isRetryingLibraryStartup = false }
+        do {
+            if let registryStore, await registryStore.startupFailure != nil {
+                _ = try await registryStore.reload()
+            }
+            _ = try await libraryRelocationService?.replayPendingRepair()
+            _ = try await libraryRemovalService?.replayPendingRepair()
+        } catch {
+            libraryStartupFailureMessage = LibraryOpenFailure.message(for: error)
+            return
+        }
+        // A persisted recovery failure names the library that was being
+        // activated. Reopen that library instead of silently creating an
+        // empty replacement, so the user can still recover the real one.
+        if let intendedID = persistedLibraryRecoveryState?.intendedLibraryID,
+           let libraryOpenService {
+            do {
+                _ = try await libraryOpenService.activateRegisteredLibrary(id: intendedID)
+                persistedLibraryRecoveryState = nil
+                LibraryRecoveryStateStore().clear()
+                libraryStartupFailureMessage = nil
+                await restorePlaybackMemoryIfNeeded()
+                autoPresentLibrarySetupIfNeeded()
+                showPreservedRelocationCopiesIfNeeded()
+                return
+            } catch {
+                libraryStartupFailureMessage = LibraryOpenFailure.message(for: error)
+                return
+            }
+        }
         if await ensureFactoryDefaultLibraryWithRetries() != nil {
+            libraryStartupFailureMessage = nil
             await restorePlaybackMemoryIfNeeded()
             autoPresentLibrarySetupIfNeeded()
+            showPreservedRelocationCopiesIfNeeded()
+        }
+    }
+
+    // MARK: - Library repair
+
+    /// Opens the read-only repair surface for the library the app is trying
+    /// to use. Inspection writes nothing; only an explicit quarantine action
+    /// moves a broken record into the library's Recovery folder.
+    func restoreAudioProgram(_ snapshotID: UUID) async {
+        guard let session = activeLibraryBinding.activeSession else { return }
+        do {
+            try await session.runLibraryOperation { try await session.restoreAudioProgram(snapshotID) }
+            guard activeLibraryBinding.activeSession === session else { return }
+            await session.libraryViewModel.reloadLibrary()
+            uiState.dismissSidebarNotice(sourceID: snapshotID)
+            uiState.showSidebarNotice("整轨资料已恢复")
+            await refreshLibraryRepairReport()
+        } catch {
+            guard activeLibraryBinding.activeSession === session else { return }
+            uiState.showSidebarNotice(error.localizedDescription, style: .warning,
+                actionTitle: "查看详情", sourceID: snapshotID, destination: .libraryRepair,
+                isSticky: true, tag: .audioProgramRecovery)
+        }
+    }
+
+    private var isPreviewingAudioPrograms = false
+
+    func previewAudioPrograms(_ proposals: [AudioProgramExpansionProposal]) async {
+        guard !isPreviewingAudioPrograms, let session = activeLibraryBinding.activeSession else { return }
+        isPreviewingAudioPrograms = true
+        defer { isPreviewingAudioPrograms = false }
+        do {
+            var titles: [String] = []
+            for proposal in proposals {
+                let files = try await session.fileImportService.audioProgramsForUpdate(proposal)
+                titles.append(proposal.sourceURL.lastPathComponent)
+                for file in files {
+                    guard let metadata = file.programMetadata, let selection = file.mediaSelection else { continue }
+                    let seconds = Int(selection.duration)
+                    let duration = String(format: "%d:%02d", seconds / 60, seconds % 60)
+                    titles.append("\(selection.trackNumber). \(metadata.title) — \(metadata.artist)（\(duration)）")
+                }
+            }
+            guard activeLibraryBinding.activeSession === session else { return }
+            let choice = await uiState.chooseAudioProgram(title: "分轨预览",
+                fileName: "变更前的资料可在资料库修复中恢复", labels: [], selected: 0,
+                trackTitles: titles, actionTitle: "应用分轨")
+            guard choice != nil, activeLibraryBinding.activeSession === session else { return }
+            guard proposals.allSatisfy({ proposal in
+                uiState.pendingAudioExpansions.contains(proposal)
+            }) else {
+                uiState.showSidebarNotice("分轨描述已更新，请重新预览", style: .warning,
+                    actionTitle: "查看分轨", destination: .audioProgramExpansion, isSticky: true, tag: .audioPrograms)
+                return
+            }
+            await expandAudioPrograms(proposals)
+        } catch {
+            guard activeLibraryBinding.activeSession === session else { return }
+            uiState.showSidebarNotice(error.localizedDescription, style: .warning,
+                actionTitle: "资料库修复", destination: .libraryRepair, isSticky: true, tag: .audioProgramRecovery)
+        }
+    }
+
+    func expandAudioPrograms(_ proposals: [AudioProgramExpansionProposal]) async {
+        guard let session = activeLibraryBinding.activeSession else { return }
+        do {
+            let count = try await session.runLibraryOperation {
+                try await session.expandAudioPrograms(proposals)
+            }
+            guard activeLibraryBinding.activeSession === session else { return }
+            let completed = Set(proposals.map(\.id))
+            uiState.pendingAudioExpansions.removeAll { completed.contains($0.id) }
+            if uiState.pendingAudioExpansions.isEmpty { uiState.dismissSidebarNotice(tag: .audioPrograms) }
+            uiState.showSidebarNotice("已整理 \(count) 首歌曲")
+            await session.libraryViewModel.reloadLibrary()
+        } catch {
+            guard activeLibraryBinding.activeSession === session else { return }
+            uiState.showSidebarNotice(error.localizedDescription, style: .warning,
+                actionTitle: "资料库修复", sourceID: proposals.first?.id, destination: .libraryRepair,
+                isSticky: true, tag: .audioProgramRecovery)
+        }
+    }
+
+    func presentLibraryRepair() {
+        libraryRepairReport = nil
+        isLibraryRepairPresented = true
+        Task { @MainActor in
+            guard let rootURL = await repairCandidateRootURL() else {
+                isLibraryRepairPresented = false
+                uiState.showSidebarNotice("找不到可以检查的资料库位置", style: .warning)
+                return
+            }
+            libraryRepairRootURL = rootURL
+            await refreshLibraryRepairReport()
+        }
+    }
+
+    func refreshLibraryRepairReport() async {
+        let rootURL: URL
+        if let existing = libraryRepairRootURL {
+            rootURL = existing
+        } else if let resolved = await repairCandidateRootURL() {
+            rootURL = resolved
+            libraryRepairRootURL = resolved
+        } else {
+            libraryRepairReport = nil
+            return
+        }
+        guard !isInspectingLibraryRepair else { return }
+        isInspectingLibraryRepair = true
+        defer { isInspectingLibraryRepair = false }
+        libraryRepairReport = await LibraryRepairInspector.inspect(rootURL: rootURL)
+    }
+
+    /// Moves every quarantinable record into Recovery, then retries the open
+    /// when no session is active. The moved records remain readable.
+    func quarantineLibraryRepairIssues() async {
+        guard let rootURL = libraryRepairRootURL,
+              let report = libraryRepairReport,
+              !isRepairingLibrary else { return }
+        let quarantinable = quarantinableRepairIssues(report)
+        guard !quarantinable.isEmpty else { return }
+        isRepairingLibrary = true
+        defer { isRepairingLibrary = false }
+        let result: LibraryRepairQuarantineResult
+        let containsAudioProgram = quarantinable.contains { issue in
+            if case .some(.audioProgramImport(_)) = issue.quarantineTarget { return true }
+            return false
+        }
+        if containsAudioProgram {
+            do {
+                if let session = activeLibraryBinding.activeSession, session.context.id == report.libraryID {
+                    result = try await session.quarantineAudioProgramIssues(quarantinable)
+                } else {
+                    let lease = try LibraryWriterLease.acquire(paths: LibraryPaths(rootURL: rootURL))
+                    defer { lease.release() }
+                    result = LibraryRepairQuarantineService(rootURL: rootURL).quarantine(quarantinable, libraryID: report.libraryID)
+                }
+            } catch is CancellationError { return }
+            catch {
+                uiState.showSidebarNotice(error.localizedDescription, style: .warning,
+                    actionTitle: "资料库修复", destination: .libraryRepair, isSticky: true, tag: .audioProgramRecovery)
+                return
+            }
+        } else {
+            result = LibraryRepairQuarantineService(rootURL: rootURL).quarantine(quarantinable, libraryID: report.libraryID)
+        }
+        if result.moved.isEmpty {
+            if let failure = result.failed.first {
+                uiState.showSidebarNotice("记录恢复失败：\(failure)", style: .warning)
+            } else {
+                uiState.showSidebarNotice("没有需要处理的记录", style: .warning)
+            }
+        } else {
+            uiState.showSidebarNotice(
+                "已处理 \(result.moved.count) 个记录",
+                style: .warning
+            )
+        }
+        await refreshLibraryRepairReport()
+        if activeLibraryBinding.activeSession == nil {
+            // Keep the persisted intent: retry reopens the same library
+            // instead of creating an empty replacement.
+            await retryLibraryStartup()
+        } else if let session = activeLibraryBinding.activeSession {
+            await session.libraryViewModel.reloadLibrary()
+            session.importEnrichmentService.resumeSavedWork(force: true)
+            let remaining = await session.recoverPendingMutations()
+            unresolvedLibraryMutationCount = remaining
+            if remaining == 0 { clearLibraryMutationNoticeIfNeeded() }
+        }
+    }
+
+    /// Whether the current report offers a quarantine action the App can
+    /// apply without disturbing a live session. A source directory is only
+    /// moved while the library is closed, because a running session still
+    /// holds its resolved scope.
+    var canQuarantineLibraryRepairIssues: Bool {
+        guard let report = libraryRepairReport else { return false }
+        return !quarantinableRepairIssues(report).isEmpty
+    }
+
+    private func quarantinableRepairIssues(_ report: LibraryRepairReport) -> [LibraryRepairIssue] {
+        let sessionIsActive = activeLibraryBinding.activeSession != nil
+        return report.issues.filter { issue in
+            guard issue.quarantineTarget != nil else { return false }
+            return !sessionIsActive || issue.kind != .source
+        }
+    }
+
+    /// Re-verifies unsettled journal records against their durable
+    /// projections and releases the write isolation of resolved targets.
+    func verifyUnsettledLibraryMutations() async {
+        guard let session = activeLibraryBinding.activeSession else { return }
+        let remaining = await session.recoverPendingMutations()
+        unresolvedLibraryMutationCount = remaining
+        if remaining == 0 {
+            clearLibraryMutationNoticeIfNeeded()
+            uiState.showSidebarNotice("未完成的操作记录已核对完成", style: .success)
+        } else {
+            showLibraryMutationNotice(count: remaining)
+        }
+        await refreshLibraryRepairReport()
+    }
+
+    private func showLibraryMutationNotice(count: Int, archived: Int = 0) {
+        uiState.showSidebarNotice(
+            archived > 0
+                ? "已归档 \(archived) 条，仍有 \(count) 条资料库操作记录需要处理"
+                : "仍有 \(count) 条资料库操作记录需要处理",
+            style: .warning,
+            actionTitle: "检查资料库",
+            destination: .libraryRepair,
+            isSticky: true,
+            tag: .libraryMutation
+        )
+    }
+
+    private func clearLibraryMutationNoticeIfNeeded() {
+        uiState.dismissSidebarNotice(tag: .libraryMutation)
+    }
+
+    /// Archives records the user reviewed when no automatic verifier applies.
+    /// The evidence stays in the library's Completed journal.
+    func archiveUnresolvedLibraryMutations() async {
+        let report = libraryRepairReport
+        let intentIDs = report?.unresolvedTransactions.map(\.id) ?? []
+        guard !intentIDs.isEmpty else {
+            uiState.showSidebarNotice("没有需要归档的记录", style: .warning)
+            return
+        }
+        let archived: Int
+        let remaining: Int
+        if let session = activeLibraryBinding.activeSession {
+            archived = await session.archiveUnresolvedMutations()
+            remaining = session.unresolvedMutationCount
+            unresolvedLibraryMutationCount = remaining
+        } else if let report {
+            archived = await LibraryMutationArchiveService.archive(
+                rootURL: report.rootURL,
+                libraryID: report.libraryID ?? UUID(),
+                intentIDs: intentIDs
+            )
+            remaining = intentIDs.count - archived
+        } else {
+            archived = 0
+            remaining = intentIDs.count
+        }
+        if remaining == 0 {
+            clearLibraryMutationNoticeIfNeeded()
+            uiState.showSidebarNotice(
+                archived > 0 ? "已归档 \(archived) 条操作记录" : "未完成的操作记录已核对完成",
+                style: .success
+            )
+        } else if archived > 0 {
+            showLibraryMutationNotice(count: remaining, archived: archived)
+        } else {
+            showLibraryMutationNotice(count: remaining)
+        }
+        await refreshLibraryRepairReport()
+    }
+
+    private func repairCandidateRootURL() async -> URL? {
+        if let context = activeLibraryBinding.context { return context.rootURL }
+        guard let registryStore else { return nil }
+        let registry = await registryStore.snapshot()
+        if let activeID = registry.activeLibraryID,
+           let descriptor = registry.library(id: activeID) {
+            return URL(fileURLWithPath: descriptor.lastKnownPath, isDirectory: true)
+        }
+        if let intendedID = persistedLibraryRecoveryState?.intendedLibraryID,
+           let descriptor = registry.library(id: intendedID) {
+            return URL(fileURLWithPath: descriptor.lastKnownPath, isDirectory: true)
+        }
+        return nil
+    }
+
+    private func showPreservedRelocationCopiesIfNeeded() {
+        guard let paths = libraryRelocationService?.preservedRecoveryCopies, !paths.isEmpty else { return }
+        let locations = paths.map(\.path).joined(separator: "\n")
+        uiState.showSidebarNotice(
+            "迁移副本已保留：\n\(locations)",
+            style: .warning,
+            actionTitle: "显示位置",
+            destination: .revealPath(paths[0].path),
+            isSticky: true
+        )
+    }
+
+    /// Crash import and signed delivery do not depend on a readable library or
+    /// hold the main window behind a network registration attempt.
+    private func startLaunchDiagnosticsIfNeeded() {
+        guard launchDiagnosticsTask == nil, !hasPreparedLaunchDiagnostics else { return }
+        launchDiagnosticsTask = Task { @MainActor [weak self] in
+            let installID = await TelemetryService.shared.prepareAnonymousInstallIDForSignedUpload()
+            guard !Task.isCancelled else { return }
+            MetricKitDiagnosticService.shared.start(anonymousInstallID: installID)
+            await CrashReportService.shared.start(anonymousInstallID: installID)
+            guard !Task.isCancelled, let self else { return }
+            self.hasPreparedLaunchDiagnostics = true
+            self.launchDiagnosticsTask = nil
+            self.finishLaunchPromptsIfReady()
+        }
+    }
+
+    private func finishLaunchPromptsIfReady() {
+        guard hasCompletedInitialSetup, hasPreparedLaunchDiagnostics else { return }
+        if CrashReportService.shared.hasPendingPrompt {
+            CrashReportService.shared.setPromptQueueDrainedHandler { [weak self] in
+                self?.scheduleDeferredLaunchPromptsIfNeeded()
+            }
+        } else {
+            scheduleDeferredLaunchPromptsIfNeeded()
         }
     }
 
     private func ensureFactoryDefaultLibraryWithRetries() async -> LibraryContext? {
         for attempt in 0..<4 {
+            guard !Task.isCancelled else { return nil }
             if attempt > 0 {
                 try? await Task.sleep(for: .milliseconds(250))
             }
+            // A manual open may have succeeded while a retry was sleeping.
+            if let context = activeLibraryBinding.context { return context }
             if let context = await ensureFactoryDefaultLibraryIfNeeded(
                 allowUnreachableActiveLibrary: true
             ) {
@@ -1424,10 +1917,20 @@ final class AppSessionHost: ObservableObject {
     private func ensureFactoryDefaultLibraryIfNeeded(
         allowUnreachableActiveLibrary: Bool = false
     ) async -> LibraryContext? {
-        guard let registryStore,
+        guard !Task.isCancelled,
+              let registryStore,
               let libraryOpenService,
               let libraryCreationService else { return nil }
+        if let failure = await registryStore.startupFailure {
+            libraryStartupFailureMessage = LibraryOpenFailure.message(for: MusicLibraryRegistryError.unavailable(failure))
+            Log.error("[LibrarySession] default creation suppressed because the registry could not be read: \(failure)", category: .library)
+            return nil
+        }
+        let observedGeneration = activeLibraryBinding.generation
         let registry = await registryStore.snapshot()
+        guard activeLibraryBinding.generation == observedGeneration else {
+            return activeLibraryBinding.context
+        }
         let preferRegisteredLibraries = registry.pendingFactoryDefaultReplacement != true
 
         // A nil active pointer can also be left behind by an interrupted
@@ -1435,22 +1938,23 @@ final class AppSessionHost: ObservableObject {
         // reachable registered library before falling back to the default.
         guard allowUnreachableActiveLibrary || registry.activeLibraryID == nil
             || registry.pendingFactoryDefaultReplacement == true else { return nil }
-        let resolver = LibraryStartupContextResolver(registryStore: registryStore)
         var candidateIDs: [UUID] = []
         if let activeID = registry.activeLibraryID { candidateIDs.append(activeID) }
         candidateIDs.append(contentsOf: [registry.recentManagedLibraryID, registry.recentReferencedLibraryID].compactMap { $0 })
         candidateIDs.append(contentsOf: registry.libraries.map(\.id))
         var seen = Set<UUID>()
-        for candidateID in candidateIDs where preferRegisteredLibraries && seen.insert(candidateID).inserted {
-            guard let context = try? await resolver.resolveRegistered(libraryID: candidateID) else { continue }
+        for candidateID in candidateIDs where seen.insert(candidateID).inserted {
+            guard preferRegisteredLibraries || candidateID == registry.activeLibraryID else { continue }
+            guard !Task.isCancelled,
+                  activeLibraryBinding.generation == observedGeneration else {
+                return activeLibraryBinding.context
+            }
             do {
-                try await sessionController.switchToLibrary(context)
-                try await registryStore.setActiveLibrary(id: context.id, manifestMode: context.mode)
-                return context
+                return try await libraryOpenService.activateRegisteredLibrary(id: candidateID).context
             } catch {
                 guard LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error) else {
                     Log.warning(
-                        "[LibrarySession] registered library writer lease unavailable; default creation suppressed",
+                        "[LibrarySession] registered library activation deferred; default creation suppressed: \(error)",
                         category: .library
                     )
                     return nil
@@ -1459,12 +1963,17 @@ final class AppSessionHost: ObservableObject {
             }
         }
 
+        guard !Task.isCancelled,
+              activeLibraryBinding.generation == observedGeneration else {
+            return activeLibraryBinding.context
+        }
         let defaultRoot = LibraryLocationStore.defaultLibraryRootURL
         if FileManager.default.fileExists(atPath: defaultRoot.path) {
             if registry.pendingFactoryDefaultReplacement == true {
                 guard let manifest = try? MusicLibraryManifest.read(from: LibraryPaths(rootURL: defaultRoot).manifestURL),
-                      registry.activeLibraryID == manifest.libraryID,
-                      registry.library(id: manifest.libraryID)?.lastKnownPath == defaultRoot.path else {
+                      let descriptor = registry.library(id: manifest.libraryID),
+                      descriptor.modeProjection == manifest.mode,
+                      descriptor.lastKnownPath == defaultRoot.path else {
                     Log.warning("[LibrarySession] replacement default path is occupied; waiting for recovery", category: .library)
                     return nil
                 }
@@ -1477,12 +1986,12 @@ final class AppSessionHost: ObservableObject {
                     selectedURL: defaultRoot,
                     allowStalePathConflictRepair: true
                 ).context
-                try await registryStore.completeFactoryDefaultReplacement(libraryID: context.id)
+                await completeFactoryDefaultReplacementIfPossible(libraryID: context.id)
                 return context
             } catch {
                 guard LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error) else {
                     Log.warning(
-                        "[LibrarySession] default library writer lease unavailable; alternate creation suppressed",
+                        "[LibrarySession] default library activation deferred; alternate creation suppressed: \(error)",
                         category: .library
                     )
                     return nil
@@ -1494,6 +2003,10 @@ final class AppSessionHost: ObservableObject {
             }
         }
 
+        guard !Task.isCancelled,
+              activeLibraryBinding.generation == observedGeneration else {
+            return activeLibraryBinding.context
+        }
         let parentURL = defaultRoot.deletingLastPathComponent()
         do {
             let result = try await libraryCreationService.create(
@@ -1506,7 +2019,7 @@ final class AppSessionHost: ObservableObject {
             )
             switch result {
             case .created(let context, _):
-                try await registryStore.completeFactoryDefaultReplacement(libraryID: context.id)
+                await completeFactoryDefaultReplacementIfPossible(libraryID: context.id)
                 shouldPresentFirstRunLibrarySetup = true
                 return context
             case .existingLibrary(let context):
@@ -1516,6 +2029,7 @@ final class AppSessionHost: ObservableObject {
                 // activate it before returning a context to the window.
                 return try await libraryOpenService.open(
                     selectedURL: context.rootURL,
+                    expectedContext: context,
                     allowStalePathConflictRepair: true
                 ).context
             case .existingLibraryModeMismatch:
@@ -1530,12 +2044,23 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
+    private func completeFactoryDefaultReplacementIfPossible(libraryID: UUID) async {
+        do {
+            try await registryStore?.completeFactoryDefaultReplacement(libraryID: libraryID)
+        } catch {
+            // Activation has committed. Keep the usable session and retry the
+            // housekeeping flag during the next reconciliation.
+            Log.warning("[LibrarySession] default replacement status save deferred library=\(libraryID): \(error)", category: .library)
+        }
+    }
+
     /// First-launch onboarding: after a fresh install the factory-default
     /// library is already open, so present the setup wizard once the
     /// What's New window has been dismissed. The panel floats above the
     /// main window and never blocks its loading or rendering.
     func autoPresentLibrarySetupIfNeeded() {
-        guard hasCompletedInitialSetup, !didAutoPresentLibrarySetup else { return }
+        guard hasCompletedInitialSetup, didScheduleDeferredLaunchPrompts,
+              !didAutoPresentLibrarySetup else { return }
         didAutoPresentLibrarySetup = true
         guard shouldPresentFirstRunLibrarySetup,
               librarySetupFlow.presentation == .none else { return }
@@ -1564,7 +2089,8 @@ final class AppSessionHost: ObservableObject {
     }
 
     private func scheduleDeferredLaunchPromptsIfNeeded() {
-        guard !didScheduleDeferredLaunchPrompts else { return }
+        guard hasCompletedInitialSetup, hasPreparedLaunchDiagnostics,
+              !didScheduleDeferredLaunchPrompts else { return }
         didScheduleDeferredLaunchPrompts = true
         WhatsNewWindowManager.shared.showIfNeeded()
         Log.debug("[Lifecycle] WhatsNew window check completed", category: .ui)
@@ -1577,14 +2103,16 @@ final class AppSessionHost: ObservableObject {
     }
 
     func switchLibrary(to context: LibraryContext) async throws {
+        guard let libraryOpenService else { throw LibraryOpenError.libraryNotRegistered }
         savePlaybackMemory()
-        try await sessionController.switchToLibrary(context)
+        _ = try await libraryOpenService.open(selectedURL: context.rootURL, expectedContext: context)
         didAttemptPlaybackMemoryRestore = false
         await restorePlaybackMemoryIfNeeded()
     }
 
     private func publishActiveSession(_ session: LibrarySession) async {
         uiState.clearLibraryImportFailureReports()
+        uiState.clearAlbumOrderingFailures()
         audioDSPController.setSourceIsLocal(!session.playbackCoordinator.activeSource.isExternal)
         audioProcessingGlobalsController.setSourceIsLocal(!session.playbackCoordinator.activeSource.isExternal)
         audioDSPScriptController.bind(dspController: audioDSPController)
@@ -1612,6 +2140,11 @@ final class AppSessionHost: ObservableObject {
                 revision: { [weak session] in session?.libraryViewModel.tracksRevision ?? 0 },
                 score: { [weak session] id in session?.preferenceStatsService.getPreferenceScore(for: id) ?? 0 }
             )
+            await session.cacheServices.attachMotionAlignmentSource(
+                scheduler: backgroundWorkScheduler, owner: owner, libraryID: session.context.id,
+                tracks: { [weak session] in session?.libraryViewModel.allTracks ?? [] },
+                revision: { [weak session] in session?.libraryViewModel.tracksRevision ?? 0 }
+            )
         }
         session.setEqualLoudnessContext(equalLoudnessController.context)
         activeLibraryBinding.publish(session)
@@ -1626,8 +2159,44 @@ final class AppSessionHost: ObservableObject {
         let lyricsVM = session.lyricsViewModel
         let ledMeterProvider = session.ledMeterProvider
         let importEnrichmentService = session.importEnrichmentService
+        uiState.pendingAudioExpansions = []
+        uiState.resetLibraryNotices()
+        session.fileImportService.onCueDescriptorChoice = { [weak uiState] url, descriptors in
+            guard let uiState else { return nil }
+            let selected = await uiState.chooseAudioProgram(title: "选择 CUE 分轨描述",
+                fileName: url.lastPathComponent, labels: descriptors.map(\.lastPathComponent), selected: 0)
+            return selected.map { descriptors[$0] }
+        }
+        session.fileImportService.onSACDAreaChoice = { [weak uiState] url, areas, selected in
+            guard let uiState else { return nil }
+            let index = await uiState.chooseAudioProgram(title: "选择 SACD 音频区域", fileName: url.lastPathComponent,
+                labels: areas.map { $0 == 0 ? "立体声" : "多声道" }, selected: areas.firstIndex(of: selected) ?? 0)
+            return index.map { areas[$0] }
+        }
+        session.fileImportService.onAudioProgramExpansionNeeded = { [weak uiState] proposals in
+            uiState?.recordAudioProgramProposals(proposals)
+        }
+        session.importEnrichmentService.onPersistenceFailure = { [weak uiState] message in
+            uiState?.showSidebarNotice(message, style: .warning, actionTitle: "查看详情",
+                destination: .libraryRepair, isSticky: true, tag: .audioProgramRecovery)
+        }
         session.fileImportService.onImportFailures = { [weak uiState] failures, origin in
             uiState?.recordLibraryImportFailures(failures, origin: origin)
+        }
+        session.fileImportService.onAlbumOrderingResult = { [weak uiState, weak libraryVM] outcome in
+            uiState?.applyAlbumOrderingOutcome(outcome)
+            for albumKey in outcome.updatedAlbumKeys {
+                libraryVM?.refreshAlbumOrderingMetadata(albumKey: albumKey)
+            }
+        }
+        libraryVM.confirmSharedOriginalDeletion = { [weak uiState] tracks in
+            guard let uiState else { return nil }
+            let names = Set(tracks.compactMap { $0.mediaLocator.referencedFile?.lastKnownPath }.map { URL(fileURLWithPath: $0).lastPathComponent }).sorted()
+            let choice = await uiState.chooseAudioProgram(title: "共享原文件", fileName: names.joined(separator: "、"),
+                labels: ["仅移除所选分轨", "删除原文件及全部相关曲目"], selected: 0,
+                trackTitles: tracks.sorted { ($0.mediaSelection?.trackNumber ?? 0) < ($1.mediaSelection?.trackNumber ?? 0) }
+                    .map { "\($0.title) — \($0.artist)" }, actionTitle: "继续")
+            return choice.map { $0 == 1 }
         }
         libraryVM.onTrackDeletionPreparationFailures = { [weak self] failures in
             guard let self, !failures.isEmpty else { return }
@@ -1637,12 +2206,24 @@ final class AppSessionHost: ObservableObject {
             self.uiState.showSidebarNotice(
                 message,
                 style: .warning,
-                actionTitle: "打开设置"
+                actionTitle: "删除设置",
+                destination: .librarySettings(anchor: "library.deletion"),
+                isSticky: true
             )
         }
         libraryVM.onImportRejectedNotice = { [weak self] message in
             guard let self else { return }
             self.uiState.showSidebarNotice(message, style: .warning)
+        }
+        libraryVM.onLibraryWriteFailureNotice = { [weak self] message in
+            guard let self else { return }
+            self.uiState.showSidebarNotice(
+                message,
+                style: .warning,
+                actionTitle: "检查资料库",
+                destination: .libraryRepair,
+                isSticky: true
+            )
         }
 
         self.libraryVM = libraryVM
@@ -1664,7 +2245,18 @@ final class AppSessionHost: ObservableObject {
             playbackCoordinator: playbackCoordinator
         )
         self.lyricsPlaybackPipeline = lyricsPlaybackPipeline
+
+        // A local track switch resolves its artwork palette before publishing,
+        // so the new colors and the new document land in the same render pass.
+        playbackCoordinator.prepareSwitchAppearance = { presentation in
+            guard ProcessInfo.processInfo.environment["KMGCCC_DEBUG_SKIP_SWITCH_THEME"] != "1" else { return }
+            await ThemeStore.shared.updateTheme(for: presentation)
+        }
+
         lyricsPlaybackPipeline.start()
+        playbackCoordinator.onPlaybackProgressChanged = { [weak lyricsPlaybackPipeline] presentation in
+            lyricsPlaybackPipeline?.syncProgressOnly(presentation)
+        }
 
         playbackCoordinator.onActiveSourceChanged = { [weak ledMeterProvider, weak lyricsVM, weak audioDSPController, weak audioProcessingGlobalsController] source in
             audioDSPController?.setSourceIsLocal(!source.isExternal)
@@ -1759,6 +2351,7 @@ final class AppSessionHost: ObservableObject {
         firstUsePrewarmTask?.cancel()
         firstUsePrewarmTask = nil
         lyricsPlaybackPipeline = nil
+        playbackCoordinator?.onPlaybackProgressChanged = nil
         PreferenceStatsLifecycleHandler.shared.releaseLibrarySession()
         await FullscreenWindowManager.shared.releaseLibrarySession()
         AppKitMainSplitWindowController.releaseActiveLibraryReferences()
@@ -1811,7 +2404,7 @@ final class AppSessionHost: ObservableObject {
                 MainActor.assumeIsolated {
                     // Idle artwork work keeps its place; the scheduler pauses
                     // it while the listener is using the App.
-                    self?.scheduleActiveLibraryRescan()
+                    self?.scheduleActiveLibraryRescan(fromForeground: true)
                 }
             }
         }
@@ -1926,13 +2519,25 @@ final class AppSessionHost: ObservableObject {
         )
     }
 
-    private func scheduleActiveLibraryRescan() {
+    private func scheduleActiveLibraryRescan(fromForeground: Bool = false) {
         activeLibraryRescanTask?.cancel()
         activeLibraryRescanTask = Task { @MainActor [weak self] in
+            if fromForeground {
+                do { try await Task.sleep(for: .milliseconds(500)) }
+                catch { return }
+            }
             guard let self else { return }
             await reconcileTrashedMusicLibraries()
             guard !Task.isCancelled, let session = activeLibraryBinding.activeSession else { return }
             let libraryID = session.context.id
+            if fromForeground {
+                if let previous = lastForegroundLibraryRescan,
+                   previous.libraryID == libraryID,
+                   ProcessInfo.processInfo.systemUptime - previous.uptime < 30 {
+                    return
+                }
+                lastForegroundLibraryRescan = (libraryID, ProcessInfo.processInfo.systemUptime)
+            }
             if session.context.mode == .referenced {
                 do {
                     try await refreshAllReferencedSources(automatic: true)
@@ -1969,6 +2574,7 @@ final class AppSessionHost: ObservableObject {
                 systemConditions.removeObserver(memoryPressureObserverToken)
             }
             firstUsePrewarmTask?.cancel()
+            launchDiagnosticsTask?.cancel()
             activeLibraryRescanTask?.cancel()
             AppDelegate.applicationWillTerminateHandler = nil
             AppDelegate.shouldCancelTerminationForPendingUpdateHandler = nil
@@ -2388,7 +2994,8 @@ final class AppSessionHost: ObservableObject {
     }
 
     private func scheduleDebugTerminationIfNeeded(after seconds: TimeInterval?) {
-        guard let seconds, seconds > 0 else { return }
+        guard DebugLaunchScenario.current != nil,
+              let seconds, seconds.isFinite, seconds > 0 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
             Log.debug("DebugLaunch: terminating app after \(seconds)s", category: .ui)
             NSApp.terminate(nil)
@@ -2579,6 +3186,17 @@ private final class MainThreadStallMonitor {
                 "[MainThreadStall] delayMs=\(String(format: "%.1f", delayMs)) severity=\(severity) thread=main operationStack=[\(stack)] recentEvents=[\(recent)] isPlaying=\(isPlaying) trackID=\(trackPrefix) surface=\(surface) contextMenu=[\(contextMenu)]",
                 category: .perf
             )
+            // The unified-log copy above is private, so a measurement run cannot
+            // read it back. Mirror the same stall through the debug hook channel,
+            // which is public and only active with KMGCCC_DEBUG_UI_HOOKS=1.
+            DebugUIHooks.record(String(
+                format: "main-stall delay=%.1fms severity=%@ surface=%@ stack=[%@] recent=[%@]",
+                delayMs,
+                severity,
+                surface,
+                stack,
+                recent
+            ))
         }
 
         expectedFireTime = DispatchTime(uptimeNanoseconds: now.uptimeNanoseconds + intervalNanoseconds)
@@ -2620,6 +3238,14 @@ private struct DebugLaunchScenario {
 
     static var current: DebugLaunchScenario? {
         let environment = ProcessInfo.processInfo.environment
+#if DEBUG
+        let isDebugBuild = true
+#else
+        let isDebugBuild = false
+#endif
+        guard DebugLaunchScenarioPolicy.allowsScenario(isDebugBuild: isDebugBuild, environment: environment) else {
+            return nil
+        }
         let trackID = environment["KMGCCC_DEBUG_PROOF_TRACK_ID"].flatMap(UUID.init(uuidString:))
         let fullscreenSkinID = environment["KMGCCC_DEBUG_PROOF_FULLSCREEN_SKIN"]?
             .trimmingCharacters(in: .whitespaces)

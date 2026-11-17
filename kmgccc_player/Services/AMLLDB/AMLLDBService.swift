@@ -141,7 +141,8 @@ final class AMLLDBService: ObservableObject {
         artist: String? = nil,
         album: String? = nil,
         duration: Double? = nil,
-        limit: Int = 20
+        limit: Int = 20,
+        allowFuzzy: Bool = false
     ) -> [AMLLDBSearchResult] {
         Self.logger.debug("[AMLLDB] Search called - title: '\(title)', artist: '\(artist ?? "nil")', album: '\(album ?? "nil")'")
 
@@ -166,7 +167,7 @@ final class AMLLDBService: ObservableObject {
         )
 
         // Perform search
-        let candidates = AMLLDBSearcher.search(entries: entries, params: params)
+        let candidates = AMLLDBSearcher.search(entries: entries, params: params, allowFuzzy: allowFuzzy)
 
         Self.logger.debug("[AMLLDB] Search returned \(candidates.count) results")
 
@@ -174,7 +175,9 @@ final class AMLLDBService: ObservableObject {
         return candidates.prefix(limit).map { candidate in
             AMLLDBSearchResult(
                 rawLyricFile: candidate.entry.rawLyricFile,
-                musicName: candidate.bestTitle,
+                musicName: allowFuzzy
+                    ? (candidate.entry.titles.first { ManualMusicSearch.exact(title, $0) } ?? candidate.bestTitle)
+                    : candidate.bestTitle,
                 artists: candidate.displayArtists,
                 album: candidate.displayAlbum,
                 matchScore: candidate.totalScore,

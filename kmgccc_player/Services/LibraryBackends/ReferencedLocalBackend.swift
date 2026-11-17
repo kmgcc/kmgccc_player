@@ -48,6 +48,21 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         var sourceIDs: [URL: UUID] = [:]
         var sources: [ImportSourceSelection] = []
         var failures: [ImportInputFailure] = []
+        var physicalSelections: [URL] = []
+        for selected in selectedURLs {
+            guard selected.pathExtension.lowercased() == "cue" else { physicalSelections.append(selected); continue }
+            let accessed = selected.startAccessingSecurityScopedResource()
+            defer { if accessed { selected.stopAccessingSecurityScopedResource() } }
+            do {
+                let files = try AudioProgramResolver.referencedAudioURLs(in: selected)
+                for file in files {
+                    try AudioProgramSourcePreferences.save(cue: selected,
+                        groupID: AudioMediaSelection.groupID(for: file), paths: paths)
+                    if !physicalSelections.contains(file) { physicalSelections.append(file) }
+                }
+            } catch { failures.append(.init(url: selected, message: error.localizedDescription)) }
+        }
+        let selectedURLs = physicalSelections
         let existingDescriptors: [ReferencedSourceDescriptor]
         do {
             existingDescriptors = try await sourceStore.loadAll()
@@ -132,14 +147,19 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
                 // remove.
                 return !coveredBySource && !sourceScope.isTrustedAutomationPath(root)
             }
+        // Pools exist to share one parent-directory grant among the selected
+        // files. An unsandboxed build reads those directories directly, so it
+        // takes no grant and the selections below stay lease-free.
         var authorizationPools: [String: SecurityScopedResourceLeasePool] = [:]
-        for root in groupedAuthorizationRoots {
-            let didStart = bookmarkResolver.startAccessing(root)
-            guard didStart else { continue }
-            let lease = SecurityScopedResourceLease { [bookmarkResolver] in
-                bookmarkResolver.stopAccessing(root)
+        if requiresSecurityScope {
+            for root in groupedAuthorizationRoots {
+                let didStart = bookmarkResolver.startAccessing(root)
+                guard didStart else { continue }
+                let lease = SecurityScopedResourceLease { [bookmarkResolver] in
+                    bookmarkResolver.stopAccessing(root)
+                }
+                authorizationPools[canonicalPath(root)] = SecurityScopedResourceLeasePool(rootLease: lease)
             }
-            authorizationPools[canonicalPath(root)] = SecurityScopedResourceLeasePool(rootLease: lease)
         }
 
         for selected in uniqueSelections {
@@ -265,13 +285,12 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         }
         let scanned = await ImportInputScanner.scan(
             selectedURLs: readableSelections,
-            directorySources: sourceIDs
+            directorySources: sourceIDs,
+            sacdAreas: (try? AudioProgramSourcePreferences.areas(paths: paths)) ?? [:],
+            cueSelections: (try? AudioProgramSourcePreferences.cues(paths: paths)) ?? [:]
         )
-        let plan = ImportInputPlan(
-            files: scanned.files,
-            directorySources: sources,
-            failures: failures + scanned.failures
-        )
+        let plan = ImportInputPlan(files: scanned.files, directorySources: sources,
+            failures: failures + scanned.failures, cueChoices: scanned.cueChoices)
         lastPreparedInputPlan = plan
         return plan
     }

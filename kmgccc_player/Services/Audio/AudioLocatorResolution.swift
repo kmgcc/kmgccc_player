@@ -291,6 +291,16 @@ nonisolated struct LocalAudioResourceResolver: Sendable {
                 return lhs.relativePath.count < rhs.relativePath.count
             }
             for membership in orderedMemberships {
+                // Video memberships identify the import source. Its extracted
+                // audio has its own bookmark and is the only playback target.
+                if location.videoSource != nil { continue }
+                // A converted source's membership points at the encrypted input
+                // (.ncm); the playable product is the location's bookmark.
+                // Offering the input as a candidate decodes to an error and
+                // delays playback while the resolver walks past it.
+                guard AudioFormatSupport.playableExtensions.contains(
+                    URL(fileURLWithPath: membership.relativePath).pathExtension.lowercased()
+                ) else { continue }
                 guard TrackMediaLocator.isSafeRelativePath(membership.relativePath) else {
                     // A malformed/stale source edge must not hide a valid
                     // bookmark or alternate location. Reject this candidate
@@ -382,7 +392,7 @@ nonisolated struct LocalAudioResourceResolver: Sendable {
                 continue
             }
 
-            let didStart = bookmarkResolver.startAccessing(resolved.url)
+            let didStart = requiresSecurityScope && bookmarkResolver.startAccessing(resolved.url)
             guard didStart || (!requiresSecurityScope && FileManager.default.isReadableFile(atPath: resolved.url.path)) else {
                 lastError = .permissionDenied
                 continue

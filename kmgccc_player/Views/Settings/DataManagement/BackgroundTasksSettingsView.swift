@@ -21,7 +21,9 @@ struct BackgroundTasksSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             generalSection
+                .settingsSearchAnchor("background.general")
             taskSection
+                .settingsSearchAnchor("background.tasks")
         }
     }
 
@@ -83,6 +85,7 @@ struct BackgroundTasksSettingsView: View {
                             card: card,
                             isOn: card.controlledDomains.map(domainBinding)
                         )
+                        .settingsSearchAnchor("background.task.\(card.id)")
                     }
                 }
             }
@@ -97,6 +100,7 @@ struct BackgroundTasksSettingsView: View {
         result.append(nextSongCard)
         result.append(lyricsIndexCard)
         result.append(metadataCompletionCard)
+        result.append(motionAlignmentCard)
         if let source = cacheServices.artworkRenovationSource, source.isVisible {
             result.append(BackgroundTaskCard(
                 id: "artwork-renovation", title: "资料库封面翻新", systemImage: "photo.badge.arrow.down",
@@ -181,6 +185,18 @@ struct BackgroundTasksSettingsView: View {
             status: status,
             note: paused ? "已暂停" : (waitNote(.metadataCompletion, resources: [.network, .disk], hasWork: progress.remaining > 0) ?? failure),
             controlledDomains: [.metadataCompletion]
+        )
+    }
+
+    private var motionAlignmentCard: BackgroundTaskCard {
+        let progress = cacheServices.motionAlignmentSource?.progress ?? .empty
+        let status = "已检查 \(progress.completed.formatted()) 首，剩余 \(progress.remaining.formatted()) 首"
+        return BackgroundTaskCard(
+            id: "motion-alignment", title: "MV 时间对齐", systemImage: "waveform",
+            status: status,
+            note: waitNote(.motionAlignment, resources: [.compute, .disk], hasWork: progress.remaining > 0)
+                ?? (progress.failed > 0 ? "\(progress.failed.formatted()) 首分析失败，稍后重试" : nil),
+            controlledDomains: [.motionAlignment]
         )
     }
 

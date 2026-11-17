@@ -97,17 +97,14 @@ struct KmgcccPlayerApp: App {
     let initialLibraryContext: LibraryContext?
 
     init() {
+        // Capture failures in preference migration and font registration too.
+        CrashReporterBootstrap.shared.enable()
+        CrashBreadcrumbRecorder.shared.record(.appLaunchStarted)
         UpdatePreferences.migrateIfNeeded()
 
         // Register the bundled Inter family before any settings preview or
         // lyric surface asks CoreText/SwiftUI to resolve it.
         BundledFontRegistrar.register()
-
-        // Install the crash handler before SwiftData or the main window is
-        // created. The handler only writes PLCrashReporter's pending file;
-        // parsing, redaction and all network work happen on a later launch.
-        CrashReporterBootstrap.shared.enable()
-        CrashBreadcrumbRecorder.shared.record(.appLaunchStarted)
 
         // Phase 2 colour-system self-check. No-op unless invoked via
         // `COLOR_SYSTEM_SELF_CHECK=1`, in which case the process exits

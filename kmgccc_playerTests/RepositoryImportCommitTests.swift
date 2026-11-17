@@ -17,6 +17,46 @@ private final class SidecarWriteSpy: @unchecked Sendable {
 
 @MainActor
 final class RepositoryImportCommitTests: XCTestCase {
+    func testReloadRescansWhenImportCommitsAfterItsDiskSnapshot() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.cleanup() }
+        let gate = SuspendedLibraryScan()
+        let repository = SwiftDataLibraryRepository(
+            libraryService: fixture.libraryService,
+            scanLibrary: { await gate.scan(paths: $0) }
+        )
+        let reload = Task { await repository.reloadFromLibrary() }
+        await gate.waitForFirstScan()
+        let imported = makeTrack(title: "New song", root: fixture.paths.rootURL)
+        let committed = await repository.commitImportedTracks([imported])
+        XCTAssertEqual(committed.persistedTrackIDs, [imported.id])
+        await gate.resume()
+        await reload.value
+
+        let tracks = await repository.fetchTracks(in: nil)
+        XCTAssertEqual(tracks.map(\.id), [imported.id])
+    }
+
+    func testReloadRescansWhenTrackIsDeletedAfterItsDiskSnapshot() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.cleanup() }
+        let gate = SuspendedLibraryScan()
+        let repository = SwiftDataLibraryRepository(
+            libraryService: fixture.libraryService,
+            scanLibrary: { await gate.scan(paths: $0) }
+        )
+        let track = makeTrack(title: "Removed song", root: fixture.paths.rootURL)
+        _ = await repository.commitImportedTracks([track])
+        let reload = Task { await repository.reloadFromLibrary() }
+        await gate.waitForFirstScan()
+        try await repository.deleteTrack(track)
+        await gate.resume()
+        await reload.value
+
+        let tracks = await repository.fetchTracks(in: nil)
+        XCTAssertTrue(tracks.isEmpty)
+    }
+
     func testRepeatedCommitKeepsOneRuntimeInstancePerTrackID() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.cleanup() }
@@ -363,6 +403,40 @@ final class RepositoryImportCommitTests: XCTestCase {
             mediaLocator: .referenced(referenced),
             libraryRootSnapshot: root.path
         )
+    }
+}
+
+/// Holds `reloadFromLibrary()` after its first disk snapshot so the test can
+/// commit or delete a song before the reload publishes. Continuations keep the
+/// hand-off inside an actor; `XCTestExpectation` is not Sendable and cannot be
+/// stored here under Swift 6 strict concurrency.
+private actor SuspendedLibraryScan {
+    private var isFirstScan = true
+    private var firstScanWaiters: [CheckedContinuation<Void, Never>] = []
+    private var resumeContinuation: CheckedContinuation<Void, Never>?
+
+    func scan(paths: kmgccc_player.LibraryPaths) async -> kmgccc_player.LibraryDiskSnapshot {
+        let snapshot = await Task.detached { LibraryDiskScanner(paths: paths).scanAll() }.value
+        if isFirstScan {
+            isFirstScan = false
+            let waiters = firstScanWaiters
+            firstScanWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+            await withCheckedContinuation { resumeContinuation = $0 }
+        }
+        return snapshot
+    }
+
+    /// Returns once the first disk snapshot has been taken and the reload is
+    /// suspended on `resume()`.
+    func waitForFirstScan() async {
+        guard isFirstScan else { return }
+        await withCheckedContinuation { firstScanWaiters.append($0) }
+    }
+
+    func resume() {
+        resumeContinuation?.resume()
+        resumeContinuation = nil
     }
 }
 

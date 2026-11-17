@@ -47,10 +47,14 @@ private struct CLIOptions {
     var dryRun = false
     var confirm = false
     var force = false
+    var mcpProfile = MCPToolProfile.full
 }
 
 enum AutomationToolDefaults {
     static let defaultConnectionTimeout: TimeInterval = 10
+    /// Mutations can queue behind library work in the App; a slow reply must
+    /// not look like a failed request, because retrying duplicates the write.
+    static let mutationTimeout: TimeInterval = 30
     static let maximumTimeout: TimeInterval = 120
 
     static var socketPath: String {
@@ -91,6 +95,11 @@ enum AutomationToolDefaults {
         var budget = !timeoutWasSet && (slowMethods.contains(request.method) || waitsForInteraction)
             ? maximumTimeout
             : configuredTimeout
+
+        if !timeoutWasSet,
+           AutomationToolCatalog.descriptor(for: request.method)?.readOnly == false {
+            budget = max(budget, mutationTimeout)
+        }
 
         if ["jobs.wait", AutomationMethod.dspWait].contains(request.method), !timeoutWasSet {
             let waitSeconds: TimeInterval
@@ -178,7 +187,8 @@ private struct AutomationCLI {
                     socketPath: options.socketPath,
                     noLaunch: options.noLaunch,
                     timeout: options.timeout,
-                    timeoutWasSet: options.timeoutWasSet
+                    timeoutWasSet: options.timeoutWasSet,
+                    profile: options.mcpProfile
                 )
             ).run()
             return AutomationCLIExitCode(rawValue: mcpExitCode) ?? .internalError
@@ -189,11 +199,23 @@ private struct AutomationCLI {
         switch command {
         case "automation":
             guard let action = args.first else {
-                writeDiagnostic("usage error: automation requires capabilities, scopes or call")
+                writeDiagnostic("usage error: automation requires tools, describe, capabilities, scopes or call")
                 return .usage
             }
             args.removeFirst()
             switch action {
+            case "tools":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: automation tools does not accept positional arguments")
+                    return .usage
+                }
+                return listTools()
+            case "describe":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: automation describe requires exactly one method name")
+                    return .usage
+                }
+                return describeTool(args[0])
             case "capabilities":
                 guard args.isEmpty else {
                     writeDiagnostic("usage error: automation capabilities does not accept positional arguments")
@@ -1651,6 +1673,13 @@ private struct AutomationCLI {
             case "--no-launch":
                 options.noLaunch = true
                 args.remove(at: index)
+            case "--profile":
+                guard index + 1 < args.count,
+                      let profile = MCPToolProfile(rawValue: args[index + 1].lowercased()) else {
+                    throw CLIError.invalidValue("--profile")
+                }
+                options.mcpProfile = profile
+                args.removeSubrange(index...(index + 1))
             case "--socket":
                 guard index + 1 < args.count else { throw CLIError.missingValue("--socket") }
                 options.socketPath = args[index + 1]
@@ -1853,6 +1882,10 @@ private struct AutomationCLI {
             print("\(method): ok")
             return
         }
+        if method == AutomationMethod.automationCapabilities {
+            renderCapabilities(result)
+            return
+        }
         switch result {
         case .object(let values):
             for key in values.keys.sorted() {
@@ -1863,11 +1896,39 @@ private struct AutomationCLI {
         }
     }
 
+    /// The full descriptor list is what `automation tools` and
+    /// `automation describe` already serve; printing it here would bury the
+    /// scopes and notes under a hundred kilobytes.
+    private func renderCapabilities(_ result: AutomationJSONValue) {
+        guard case .object(let values) = result else {
+            print(render(value: result))
+            return
+        }
+        for key in values.keys.sorted() where key != "tools" {
+            print("\(key): \(render(value: values[key]!))")
+        }
+        guard case .array(let tools) = values["tools"] else { return }
+        print("tools: \(tools.count)")
+        for tool in tools {
+            guard case .object(let fields) = tool,
+                  case .string(let name) = fields["name"] else { continue }
+            if case .string(let title) = fields["title"] {
+                print("\(name)\t\(title)")
+            } else {
+                print(name)
+            }
+        }
+    }
+
     private func render(value: AutomationJSONValue) -> String {
         switch value {
         case .null: return "null"
         case .boolean(let value): return value ? "true" : "false"
-        case .number(let value): return String(value)
+        case .number(let value):
+            if value.rounded() == value, abs(value) < 1e15 {
+                return String(Int64(value))
+            }
+            return String(value)
         case .string(let value): return value
         case .array(let values): return "[\(values.map(render(value:)).joined(separator: ", "))]"
         case .object(let values):
@@ -1880,7 +1941,12 @@ private struct AutomationCLI {
         player-automation [cli] <command> [options]
 
         Commands:
-          automation capabilities  List the shared capability catalog
+          mcp-stdio [--profile core|full]
+                                   Serve MCP over stdio; core exposes daily tools only
+          automation tools        List method names with one-line titles
+          automation describe <method>
+                                   Read one method's parameters and input schema
+          automation capabilities Show the full catalog with scopes and notes
           automation scopes        Show granted and denied scopes
           automation call <method> Call any catalog method with --params-json
           system ping             Check the App automation socket
@@ -2035,6 +2101,47 @@ private struct AutomationCLI {
         } catch {
             writeDiagnostic("failed to encode JSON: \(error.localizedDescription)")
         }
+    }
+
+    /// One line per method so an Agent can pick a target without loading the
+    /// whole catalog. The catalog is compiled into the CLI, so this answers
+    /// without a running App.
+    private func listTools() -> AutomationCLIExitCode {
+        for tool in AutomationToolCatalog.all {
+            print("\(tool.name)\t\(tool.title)")
+        }
+        return .success
+    }
+
+    private func describeTool(_ name: String) -> AutomationCLIExitCode {
+        guard let tool = AutomationToolCatalog.descriptor(for: name) else {
+            let suggestions = AutomationToolCatalog.suggestions(for: name)
+            let hint = suggestions.isEmpty ? "" : "; did you mean \(suggestions.joined(separator: ", "))?"
+            writeDiagnostic("usage error: unknown method \(name)\(hint)")
+            return .usage
+        }
+        print("\(tool.name)  \(tool.title)")
+        print(
+            "readOnly: \(tool.readOnly)  risk: \(tool.risk.rawValue)"
+                + "  dryRun: \(tool.supportsDryRun)  confirmation: \(tool.requiresConfirmation)"
+        )
+        if !tool.scopes.isEmpty {
+            print("scopes: \(tool.scopes.map(\.rawValue).joined(separator: ", "))")
+        }
+        print(tool.description)
+        print("input schema:")
+        print(schemaText(tool.inputSchema))
+        return .success
+    }
+
+    private func schemaText(_ schema: AutomationJSONValue) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(schema),
+              let text = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return text
     }
 
     private func writeDiagnostic(_ message: String) {

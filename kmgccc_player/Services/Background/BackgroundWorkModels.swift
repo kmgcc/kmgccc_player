@@ -91,6 +91,8 @@ nonisolated enum BackgroundWorkDomain: String, CaseIterable, Sendable {
     /// the listener's request.
     case importEnrichment
     case metadataCompletion
+    /// Aligning a local song with the audio of its motion video.
+    case motionAlignment
     /// One-time replacement of legacy, potentially degraded source covers.
     case artworkRenovation
     /// Keeping the library in step with its folders.
@@ -105,7 +107,7 @@ nonisolated enum BackgroundWorkDomain: String, CaseIterable, Sendable {
         case .artworkColors, .playbackArtwork, .homeArtwork, .listArtwork, .missingArtwork,
              .pageThumbnails: true
         case .loudness, .cacheMaintenance, .lyricsIndex, .libraryMaintenance, .appUpdate,
-             .importEnrichment, .metadataCompletion, .artworkRenovation, .sourceSync, .fileWork, .nextSongLyrics: false
+             .importEnrichment, .metadataCompletion, .motionAlignment, .artworkRenovation, .sourceSync, .fileWork, .nextSongLyrics: false
         }
     }
 

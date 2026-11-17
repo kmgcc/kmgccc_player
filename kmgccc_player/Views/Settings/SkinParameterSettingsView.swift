@@ -10,7 +10,7 @@ struct SkinParameterSettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     private var visibleDefinitions: [SkinParameterDefinition] {
-        definitions.filter { $0.isUserVisible && $0.surfaces.contains(surface) && isVisible($0) }
+        Self.visibleDefinitions(skinID: skinID, surface: surface, definitions: definitions, store: store)
     }
 
     var body: some View {
@@ -20,6 +20,7 @@ struct SkinParameterSettingsView: View {
                 if let title = section.title { Text(title).settingsDescriptionStyle() }
                 ForEach(section.definitions) { definition in
                     parameterRow(definition)
+                        .settingsSearchAnchor("skin.parameter.\(definition.id)")
                 }
             }
         }
@@ -102,7 +103,25 @@ struct SkinParameterSettingsView: View {
         store.set(skinID: skinID, surface: surface, definition: definition, value: value)
     }
 
-    private func isVisible(_ definition: SkinParameterDefinition) -> Bool {
+    static func visibleDefinitions(
+        skinID: String,
+        surface: SkinSurface,
+        definitions: [SkinParameterDefinition],
+        store: SkinParameterStore
+    ) -> [SkinParameterDefinition] {
+        definitions.filter {
+            $0.isUserVisible && $0.surfaces.contains(surface)
+                && isVisible($0, skinID: skinID, surface: surface, definitions: definitions, store: store)
+        }
+    }
+
+    private static func isVisible(
+        _ definition: SkinParameterDefinition,
+        skinID: String,
+        surface: SkinSurface,
+        definitions: [SkinParameterDefinition],
+        store: SkinParameterStore
+    ) -> Bool {
         guard let condition = definition.visibleWhen else { return true }
         var environment = SkinCompileEnvironment()
         environment.params = Dictionary(uniqueKeysWithValues: definitions.map { ($0.id, SkinValue($0.defaultValue).type) })

@@ -1357,6 +1357,8 @@ final class LocalLibraryService {
         let folder = paths.trackFolderURL(for: trackID)
         guard fileManager.fileExists(atPath: folder.path) else { return }
 
+        let sharedPath = (try? Data(contentsOf: folder.appendingPathComponent("meta.json")))
+            .flatMap { try? JSONDecoder().decode(SharedMediaReference.self, from: $0) }?.mediaLocator?.managedLibraryRelativePath
         do {
             try fileManager.removeItem(at: folder)
         } catch {
@@ -1379,6 +1381,14 @@ final class LocalLibraryService {
                 albumEntryIDs: []
             )
         }
+        if let sharedPath {
+            do { try SharedMediaAssetStore.releaseIfUnreferenced(sharedPath, paths: paths) }
+            catch { Log.warning("Shared audio retained for recovery: \(error.localizedDescription)", category: .library) }
+        }
+    }
+
+    private nonisolated struct SharedMediaReference: Decodable {
+        let mediaLocator: TrackMediaLocator?
     }
 
     // MARK: - Playlist Sidecars
@@ -1429,10 +1439,18 @@ final class LocalLibraryService {
         let effectiveSortKey = trackSortKey ?? existingSidecar?.trackSortKey
         let effectiveSortOrder = trackSortOrder ?? existingSidecar?.trackSortOrder
         let requestedCustomOrder = customTrackOrder ?? existingSidecar?.customTrackOrder
-        let effectiveCustomOrder = normalizedOrder(
-            requestedCustomOrder,
-            availableIDs: normalizedTrackIDs
-        )
+        // A custom order keeps the manual arrangement, so tracks that arrive
+        // later join by their add time instead of always landing at the end:
+        // ascending appends them, descending puts the latest on top.
+        let itemDates = items.reduce(into: [UUID: Date]()) { $0[$1.trackID] = $1.addedAt }
+        let effectiveCustomOrder = requestedCustomOrder.map { order in
+            CustomTrackOrderMerge.merging(
+                customOrder: order,
+                availableIDs: normalizedTrackIDs,
+                addedAt: itemDates,
+                placesNewTracksOnTop: TrackSortOrder(rawValue: effectiveSortOrder ?? "") == .descending
+            )
+        }
         let sidecar = PlaylistSidecar(
             id: playlistID,
             name: name,
@@ -2174,6 +2192,7 @@ final class LocalLibraryService {
             persistedSidecar.trackSortKey = sidecar.trackSortKey ?? existing?.trackSortKey
             persistedSidecar.trackSortOrder = sidecar.trackSortOrder ?? existing?.trackSortOrder
             persistedSidecar.customTrackOrder = sidecar.customTrackOrder ?? existing?.customTrackOrder
+            persistedSidecar.catalogTrackNumbers = sidecar.catalogTrackNumbers ?? existing?.catalogTrackNumbers
             // Writers that do not carry the album's loudness switch keep it;
             // `setAlbumLoudnessOverride` is the one place that clears it.
             persistedSidecar.loudnessUnified = sidecar.loudnessUnified ?? existing?.loudnessUnified
@@ -2284,7 +2303,8 @@ final class LocalLibraryService {
         albumID: UUID,
         orderedTrackIDs: [UUID],
         sortOrder: String,
-        availableTrackIDs: [UUID]
+        availableTrackIDs: [UUID],
+        catalogTrackNumbers: [UUID: Int]? = nil
     ) -> Bool {
         guard var sidecar = loadAlbumSidecar(albumID: albumID) else { return false }
         sidecar.trackSortKey = "custom"
@@ -2293,6 +2313,10 @@ final class LocalLibraryService {
             orderedTrackIDs,
             availableIDs: availableTrackIDs
         )
+        if let catalogTrackNumbers {
+            let available = Set(availableTrackIDs)
+            sidecar.catalogTrackNumbers = catalogTrackNumbers.filter { available.contains($0.key) }
+        }
         do {
             try writeAlbumSidecar(sidecar, artworkData: nil)
             return true

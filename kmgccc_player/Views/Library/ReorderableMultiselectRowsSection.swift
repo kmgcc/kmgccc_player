@@ -102,7 +102,10 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
     }
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        let order = isMultiselectMode || draggingID != nil ? displayedOrderIDs : []
+        let indices = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($0.element, $0.offset) })
+        let draggedSet = Set(draggedIDs)
+        return ZStack(alignment: .topLeading) {
             if isMultiselectMode {
                 selectedRunBackgrounds
                     .allowsHitTesting(false)
@@ -118,12 +121,14 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
                             // same height contract.
                             .frame(height: rowHeight(row), alignment: .leading)
                             .contentShape(Rectangle())
+                            .id(row.id)
                     }
                 } else {
-                    ForEach(displayRows) { row in
-                        rowContainer(row)
+                    ForEach(displayRows(in: order)) { row in
+                        rowContainer(row, order: order, indices: indices, draggedSet: draggedSet)
                             .frame(height: rowHeight(row), alignment: .topLeading)
                             .background(rowFrameReporter(for: row.id))
+                            .id(row.id)
                     }
                 }
                 Color.clear.frame(height: bottomSpacerHeight)
@@ -269,10 +274,10 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
         return ordered
     }
 
-    private var displayRows: [Row] {
+    private func displayRows(in order: [UUID]) -> [Row] {
         guard visualOrderIDs != nil else { return rows }
         let lookup = rowLookup
-        return displayedOrderIDs.compactMap { lookup[$0] }
+        return order.compactMap { lookup[$0] }
     }
 
     private var draggedRows: [Row] {
@@ -281,10 +286,6 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
         // order still use draggedIDs, which remains in the list's order.
         let cardIDs = draggingID.map { id in [id] + draggedIDs.filter { $0 != id } } ?? draggedIDs
         return cardIDs.compactMap { lookup[$0] }
-    }
-
-    private var visibleDraggedRows: [Row] {
-        Array(draggedRows.prefix(maxVisibleDraggedCards))
     }
 
     private var draggedIDSet: Set<UUID> {
@@ -337,15 +338,17 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
     }
 
     private var dragGroupHeight: CGFloat {
-        guard !visibleDraggedRows.isEmpty else { return 0 }
-        let visibleCount = max(1, min(draggedRows.count, maxVisibleDraggedCards))
-        let maxRowHeight = visibleDraggedRows.map(rowHeight).max() ?? 0
+        let visibleCards = dragCardPresentation.cards.prefix(maxVisibleDraggedCards)
+        guard !visibleCards.isEmpty else { return 0 }
+        let visibleCount = visibleCards.count
+        let maxRowHeight = visibleCards.map(\.height).max() ?? 0
         return maxRowHeight + CGFloat(visibleCount - 1) * pileCardOverlap + 16
     }
 
     private var insertionIndicatorY: CGFloat? {
         guard draggingID != nil, let dragInsertionIndex else { return nil }
-        let remaining = displayedOrderIDs.filter { !draggedIDSet.contains($0) }
+        let draggedSet = draggedIDSet
+        let remaining = displayedOrderIDs.filter { !draggedSet.contains($0) }
         if remaining.isEmpty {
             return dragFloatingY
         }
@@ -409,16 +412,21 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
     }
 
     @ViewBuilder
-    private func rowContainer(_ row: Row) -> some View {
+    private func rowContainer(
+        _ row: Row,
+        order: [UUID],
+        indices: [UUID: Int],
+        draggedSet: Set<UUID>
+    ) -> some View {
         let isSelected = selectedIDs.contains(row.id)
-        let continuity = selectionContinuity(for: row.id)
+        let continuity = selectionContinuity(for: row.id, order: order, indices: indices)
 
         if !isMultiselectMode && draggingID == nil {
             rowContent(row, isSelected, continuity)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
         } else {
-            let isDragged = draggingID != nil && draggedIDSet.contains(row.id)
+            let isDragged = draggingID != nil && draggedSet.contains(row.id)
             ZStack {
                 rowPlaceholder()
                     .opacity(isDragged ? 1 : 0)
@@ -823,29 +831,20 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
     // MARK: - Targets and auto-scroll
 
     private func targetInsertionIndex(forCenterY centerY: CGFloat) -> Int {
-        let remaining = displayedOrderIDs.filter { !draggedIDSet.contains($0) }
+        let draggedSet = draggedIDSet
+        let remaining = displayedOrderIDs.filter { !draggedSet.contains($0) }
         guard !remaining.isEmpty else { return 0 }
 
-        let visibleRows = remaining.enumerated().compactMap { index, id -> (index: Int, frame: CGRect)? in
-            guard let frame = rowFrames[id] else { return nil }
-            return (index, frame)
+        var lastReportedIndex: Int?
+        for (index, id) in remaining.enumerated() {
+            guard let frame = rowFrames[id] else { continue }
+            if centerY < frame.midY { return index }
+            lastReportedIndex = index
         }
-        guard let firstVisible = visibleRows.first else {
-            return max(0, min(remaining.count, dragLastTargetIndex))
+        if let lastReportedIndex {
+            return min(remaining.count, lastReportedIndex + 1)
         }
-
-        if centerY < firstVisible.frame.midY {
-            return firstVisible.index
-        }
-
-        for visible in visibleRows where centerY < visible.frame.midY {
-            return visible.index
-        }
-
-        if let lastVisible = visibleRows.last {
-            return min(remaining.count, lastVisible.index + 1)
-        }
-        return remaining.count
+        return max(0, min(remaining.count, dragLastTargetIndex))
     }
 
     private func insertionIndexForCurrentGroup(
@@ -1058,12 +1057,15 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
         return max(0, rect.minY)
     }
 
-    private func selectionContinuity(for id: UUID) -> TrackRowSelectionContinuity {
+    private func selectionContinuity(
+        for id: UUID,
+        order: [UUID],
+        indices: [UUID: Int]
+    ) -> TrackRowSelectionContinuity {
         guard isMultiselectMode, selectedIDs.contains(id) else {
             return .isolated
         }
-        let order = displayedOrderIDs
-        guard let index = order.firstIndex(of: id) else { return .isolated }
+        guard let index = indices[id] else { return .isolated }
         let connectsToPrevious = index > 0 && selectedIDs.contains(order[index - 1])
         let connectsToNext = index + 1 < order.count && selectedIDs.contains(order[index + 1])
         return TrackRowSelectionContinuity(

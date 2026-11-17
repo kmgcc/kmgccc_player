@@ -55,6 +55,8 @@ struct SkinSceneHost: View {
 
     @Environment(SkinManager.self) private var skinManager
     @Environment(UIStateViewModel.self) private var uiState
+    @Environment(\.motionArtworkFullscreenCoordinator) private var motionFullscreen
+    @AppStorage(AppSettings.motionArtworkEnabledDefaultsKey) private var motionArtworkEnabled = true
     @ObservedObject private var fullscreen = FullscreenWindowManager.shared
     @State private var lyricsConfiguration: SkinComponentConfiguration?
     @State private var reloadError: String?
@@ -124,6 +126,9 @@ struct SkinSceneHost: View {
         }
         .contentShape(Rectangle())
         .contextMenuWithVisibleIcons {
+            if let videoFullscreenAction {
+                Button("全屏播放", action: videoFullscreenAction)
+            }
             if SkinRegistry.customizationEnabled {
                 Button("刷新皮肤", action: reload)
                 Button("恢复外观", action: onRestore)
@@ -133,6 +138,33 @@ struct SkinSceneHost: View {
             Button("好", role: .cancel) { reloadError = nil }
         } message: { Text(reloadError ?? "") }
 
+    }
+
+    private var videoFullscreenAction: (() -> Void)? {
+        guard viewport.surface == .fullscreen,
+              let motionFullscreen,
+              !motionFullscreen.isActive,
+              motionFullscreen.canEnter(
+                for: context.track?.preferredMotionArtwork,
+                motionArtworkEnabled: motionArtworkEnabled,
+                motionPolicy: context.motionPolicy
+              ) else {
+            return nil
+        }
+        let resource = context.track?.preferredMotionArtwork
+        let poster = context.track?.artworkImage
+        let policy = context.motionPolicy
+        let tokens = context.motionTokens
+        let enabled = motionArtworkEnabled
+        return { [weak coordinator = motionFullscreen] in
+            coordinator?.enter(
+                resource: resource,
+                fallbackPoster: poster,
+                motionArtworkEnabled: enabled,
+                motionPolicy: policy,
+                motionTokens: tokens
+            )
+        }
     }
 
     private var resourceDirectory: URL? {

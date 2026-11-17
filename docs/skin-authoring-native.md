@@ -58,9 +58,22 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 | 背景 | `background.host`、`background.unifiedMesh`、`background.amllMesh`、`background.coverGradientBlur`、`background.art`、`background.artworkBlur`、`background.dimming`、`transition.bokeh` |
 | 可视化 | `visualizer.capsuleSpectrum`、`visualizer.pillSpectrum`、`visualizer.led`、`visualizer.waveform`、`visualizer.progressSpectrum` |
 | 控制 | `control.miniPlayer`、`control.leadingCapsule`、`control.volumeCapsule`、`control.transport`、`control.playPause`、`control.skip`、`control.previous`、`control.next`、`control.progress`、`control.volume`、`control.expandableVolume`、`control.playbackMode`、`control.like`、`control.dislike`、`control.outputDevice`、`control.queue`、`control.lyricsToggle`、`control.fullscreen`、`control.settings`、`control.quickPanel`、`control.actionButton`、`control.glassButton`、`control.glassTriplePill` |
-| 文字 | `text.trackInfo`、`text.marquee` |
+| 文字 | `text.trackInfo`、`text.trackDescription`、`text.marquee` |
 | 面板 | `panel.queue`、`panel.quickAppearance`、`panel.trackDetail`、`sheet.trackEdit`、`sheet.externalInfo`、`sheet.settings`、`menu.trackContext`、`menu.player` |
 | 行为 | `behavior.autoHide`、`behavior.lyricsEndAutoHide`、`behavior.scrollVolume`、`behavior.pointerOcclusion`、`behavior.windowDrag` |
+
+窗口里的播放条由 App 固定提供，皮肤不能替换或移除；`control.miniPlayer`、`control.leadingCapsule` 与 `control.volumeCapsule` 只在全屏显示，写在窗口场景里不会出现。
+
+`text.trackDescription` 在节点的 `frame` 内显示完整歌曲介绍，内容超出时可滚动；`props` 支持 `fontSize`、`color` 和 `alignment`（`leading` 或 `center`）。本地歌曲按歌曲、专辑、首位艺人的顺序取第一段非空介绍；没有介绍或播放外部来源时留空。切歌时滚动位置重置。
+
+```json
+{
+  "type": "component",
+  "component": "text.trackDescription",
+  "frame": {"width": 320, "height": 240},
+  "props": {"fontSize": 14, "alignment": "leading"}
+}
+```
 
 `control.miniPlayer` 默认与全屏播放条等长，并在节点 `frame` 内居中。`props` 可调：`width` 为 1 倍尺寸下的总长度，`align` 为 leading、center 或 trailing；`showsLeading`、`showsVolume`、`showsTrackInfo`、`showsTransport`、`showsPlaybackMode`、`showsProgress` 与 `showsLyricsButton` 控制各部分显隐。隐去进度后，播放条按内容收紧。
 
@@ -94,6 +107,8 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 
 以 `=` 开头的字符串是表达式，其他值是常量。支持算术、比较、布尔、条件表达式、成员与下标访问，以及固定函数表；没有任意函数调用、循环或网络。
 
+自定义排版可读取 `track.description`（完整介绍）、`track.descriptionSource`（`track`、`album`、`artist` 或空字符串）和 `track.descriptionAttribution`（继承时的来源说明）。它们与 `text.trackDescription` 使用相同的继承规则；没有可用介绍时均为空字符串。可将文字节点放入 `scroll` 以阅读较长内容。
+
 常用数据域：
 
 | 域 | 内容 |
@@ -109,7 +124,9 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 | `queue` | 播放队列：数量、位置、接下来的曲目，以及完整队列 |
 | `params`、`state` | 持久皮肤参数与当前场景的临时状态 |
 
-`host.layout` 给出内置宿主为皮肤安排的位置，单位为视口点：`artwork`、`lyrics`、`miniPlayer` 与 `canvas` 各含 x、y、width、height、midX、midY，`scale` 为宿主缩放。歌词显隐时随之更新。把节点 `frame` 写成 `"x": "=host.layout.lyrics.x"` 并配 `"anchor": "topLeading"`，即可与内置皮肤对齐。`prefs.artBackgroundEnabled`、`prefs.artworkScale` 与 `prefs.miniPlayerAutoHide` 按当前界面读取用户设置。
+`host.layout` 给出内置宿主为皮肤安排的位置，单位为视口点：`artwork`、`lyrics`、`miniPlayer`、`canvas` 与 `window` 各含 x、y、width、height、midX、midY，`scale` 为宿主缩放。歌词显隐时随之更新。
+
+窗口里的视口是 App 播放条上方的区域：`50%`、`vh` 与 `viewport.height` 都按这块区域计算，内容居中时便以播放条之上的高度为准，与内置皮肤一致。`host.layout.miniPlayer` 是播放条在视口下方的位置，`host.layout.window` 是从视口原点到窗口底边的整块区域；背景要铺到播放条下面时，把 `frame` 写成 `{"x": 0, "y": 0, "anchor": "topLeading", "width": "100%", "height": "=host.layout.window.height"}`。全屏时 `window` 与视口相同。把节点 `frame` 写成 `"x": "=host.layout.lyrics.x"` 并配 `"anchor": "topLeading"`，即可与内置皮肤对齐。`prefs.artBackgroundEnabled`、`prefs.artworkScale` 与 `prefs.miniPlayerAutoHide` 按当前界面读取用户设置。
 
 播放队列可以完全由皮肤绘制。声明 `queue.items@1` 后，`queue.items` 是队列中每首曲目的记录（id、index、title、artist、album、duration、isCurrent），`queue.currentIndex` 为当前曲目的序号，`queue.title` 为队列名称，`queue.available` 表示当前来源有本地队列。用 `scroll` 包住 `repeat`，`scrollTo` 绑定 `queue.currentIndex`，只绘制可见的行；`artwork` 写上 `"track": "=item.id"` 即显示该曲目的缩略图；点击行时执行 `{"do": "queue.play", "value": "=item.index"}`。面板随 `host.queueVisible` 显隐，宽高、背景与排版都由皮肤决定。根节点的 `controls` 列出 `queue` 后，宿主不再叠加自己的队列面板。
 
@@ -119,7 +136,7 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 
 `clock.position` 是音频进度；`clock.lyrics` 是含视觉偏移的歌词文档时间。点击歌词使用 `seekToLyric` 或 `lyricTime(index)`，避免把视觉提前量带进跳转。
 
-常量在编译时折叠；曲目、主题和参数按变化更新；只有引用时钟、音频或逐帧效果的节点进入显示时间线。进入时间线的节点每帧只重算逐帧的属性，其余属性保留到数据变化；但它每帧重建自身与全部子节点，所以逐帧的值应写在叶子节点上，不要写在包着控件的图层上。`camera`、`filter` 与 `bloom` 各自带时间线，只逐帧改变几何与着色，不重建子树，因此镜头漂移可以放心写在根图层上。`host.pointerIdle` 只在指针停下或再次移动时变化，可以放心用来隐藏整组控件；`host.pointerIdleTime` 逐帧更新。时间线跟随显示器，不另设帧率上限。只依赖时钟、歌词或音频的节点在暂停播放时停下；`time` 与动画函数照常运行。
+常量在编译时折叠；曲目、主题和参数按变化更新；只有引用时钟、音频或逐帧效果的节点进入显示时间线。进入时间线的节点每帧只重算逐帧的属性，其余属性保留到数据变化；但它每帧重建自身与全部子节点，所以逐帧的值应写在叶子节点上，不要写在包着控件的图层上。`camera`、`filter` 与 `bloom` 各自带时间线，只逐帧改变几何与着色，不重建子树，因此镜头漂移可以放心写在根图层上。`host.pointerIdle` 只在指针停下或再次移动时变化，可以放心用来隐藏整组控件；`host.pointerIdleTime` 逐帧更新。时间线跟随显示器，不另设帧率上限。节点的时间线在它读到的输入全部静止后歇下：只依赖时钟、歌词或音频的节点在暂停的一刻停下；读 `time` 的节点随播放流缓缓停稳后停下；`follow()` 落定后停下；关键帧、`host.pointerIdleTime` 与 `time.free` 一直运行。
 
 ## 交互与动画
 
@@ -147,6 +164,34 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 {"motion":{"speed":1.2,"emphasis":{"bounce":0.3},"control":{"stiffness":320,"damping":24}}}
 ```
 
+表达式里也能直接用 MotionKit 的弹簧，时长都随用户的动画速度缩放，减弱动态效果时直接落到终点：
+
+| 写法 | 结果 |
+| --- | --- |
+| `spring(token, 秒)` | 该 token 的弹簧在给定秒数时的进度，自 0 起、到 1 落定，带回弹的 token 会略过 1 |
+| `springVelocity(token, 秒)` | 同一弹簧每秒的进度变化 |
+| `springTo(秒, 时长, 弹性)` | 一段给定时长与弹性（0 到 1）的 MotionKit 弹簧在该时刻的进度；弹性为 0 时平滑落定、不越过 1。时长与弹性可以来自参数，让用户调整入场的长短与回弹 |
+| `follow(目标, token)` | 一个追随目标的弹簧；目标改变时从当前位置与速度接着追，不会跳变。token 省略时为 control |
+| `followVelocity(目标, token)` | 同一追随弹簧的速度，单位为目标单位每秒，适合做拉伸与倾斜 |
+
+token 可以是名称，也可以是与 `animation` 相同的记录。`spring` 适合有起点的动作，例如 `"=mix(-40, 0, spring(\"emphasis\", glyph.age))"` 让字带着回弹落位；`follow` 适合跟随会变的值，例如 `"=follow(self.hovered ? 1.08 : 1, \"emphasis\")"`。每个 `follow` 在每个节点与每个字上各有一份弹簧；数字写成 `spring(t, 频率, 阻尼)` 时仍是自 1 衰减到 0 的振荡。
+
+场景的 `motion` 设置写在 `scene` 下，与 `root` 并列：
+
+```json
+{"motion":{
+  "pause":"settle",
+  "flow":"gestureSettle",
+  "tokens":{"slam":{"token":"emphasis","duration":0.32,"bounce":0.45},"drift":{"token":"layout","duration":1.6}}
+}}
+```
+
+- `pause` 决定暂停时自由运动怎么办。`settle`（默认）让 `time` 随播放流减速直到停下，播放时再加速回来；`continue` 让 `time` 按墙钟一直走；`stop` 在暂停的一刻停住。歌词与播放时钟始终如实。
+- `flow` 是播放流使用的 token。`playback.flow` 读到这条曲线本身，播放时为 1，暂停后弹向 0，可以用来让光晕、镜头推近等随暂停收拢。
+- `tokens` 定义皮肤自己的 token，每个都在一个内置 token 上重设参数（未写 `token` 时为 control），名称不能与内置 token 相同。`animation`、`transition`、`enter`、`spring` 与 `follow` 都可以用这些名称，用户的动画速度同样作用于它们。
+
+`time.free` 是不受暂停影响的场景秒数，写给即使暂停也应缓缓流动的背景；读它的节点一直在时间线上，宜用在少数叶子节点。
+
 `enter` 让节点首次出现时按给定方式进入，取值与 transition 相同，另可加 `delay`。写在根节点上，就是切换到这款皮肤时的入场；切换皮肤时，新旧场景先按 backgroundTransition 交叉淡化。减弱动态效果时只保留淡入淡出。
 
 `keyframes` 使用 duration、repeat、trigger 和 tracks；每条数值轨道按等距采样点插值。`watch` 的 value 变化时执行 do；写上 `"initial": true` 时，节点出现时也执行一次。
@@ -160,6 +205,7 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 | `start`、`end` | 字的开始与结束时刻，秒 |
 | `age`、`progress` | 自开始以来的秒数，以及在本字时长内的 0 到 1 进度 |
 | `lineAge` | 自本行第一个字开始以来的秒数 |
+| `fontSize` | 该节点的字号，位移可写成字号的倍数 |
 
 歌词行按逐词时间分配到字，没有逐词时间时按整行均分；普通文字以文字最近一次变化为起点，`progress` 恒为 1。静止时的字波与逐字进入可以合写：
 
@@ -171,7 +217,11 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 }}
 ```
 
-`easeIn`、`easeOut`、`easeInOut` 与 `backOut` 把 0 到 1 的进度映射为缓动曲线，`backOut` 带回弹。表达式里的时长宜写成 MotionKit token 的倍数：声明 `motion@1` 后，`motion.emphasis`、`motion.contentReplacement` 等给出各 token 按用户动画速度换算后的秒数，`motion.speed` 为相对标准速度的倍率；上例的 0.5 可写作 `motion.emphasis`。颜色同理取自 `theme.*`，皮肤便随歌曲换色。逐字运动与 `glyphs` 过渡可以叠加；`outline` 为每个字描边，写成宽度，或 `{width, color, hollow}`，`hollow` 只留外圈，适合做空心衬底大字。`extrude` 为每个字加上实心的厚度，写成深度，或 `{depth, angle, color, endColor}`，颜色由近及远渐变。glyphMotion 另有 `split`（红蓝错开的点数，逐字色散）与 `smearX`/`smearY`（沿位移方向的拖影）。减弱动态效果时逐字运动停止，描边与厚度保留。
+`easeIn`、`easeOut`、`easeInOut` 与 `backOut` 把 0 到 1 的进度映射为缓动曲线，`backOut` 带回弹。表达式里的时长宜写成 MotionKit token 的倍数：声明 `motion@1` 后，`motion.emphasis`、`motion.contentReplacement` 等给出各 token 按用户动画速度换算后的秒数，`motion.speed` 为相对标准速度的倍率；上例的 0.5 可写作 `motion.emphasis`。颜色同理取自 `theme.*`，皮肤便随歌曲换色。逐字运动与 `glyphs` 过渡可以叠加；`outline` 为每个字描边，写成宽度，或 `{width, color, hollow}`，`hollow` 只留外圈，适合做空心衬底大字；宽度为 0 时不描边。`extrude` 为每个字加上实心的厚度，写成深度，或 `{depth, angle, color, endColor}`，颜色由近及远渐变。glyphMotion 另有 `split`（红蓝错开的点数，逐字色散）与 `smearX`/`smearY`（沿位移方向的拖影）。减弱动态效果时逐字运动停止，描边与厚度保留。
+
+文字默认按像素栅格绘制，缓慢缩放或平移时会一格一格地跳。`text` 写上 `"subpixel": true` 后，每个字按字形轮廓填充，位置与字号连续变化，适合镜头缓推和逐字慢移的大字；表情符号等没有轮廓的字仍按原方式绘制。
+
+歌词字体可以跟随 App：声明 `lyrics.prefs@1` 后，`lyrics.prefs.fontFamily`、`lyrics.prefs.fontFamilyCJK` 与 `lyrics.prefs.fontWeight`（thin 到 black）给出用户为当前皮肤选定的歌词字体与字重，这款皮肤没有单独设置时为全局歌词设置。皮肤可以把它作为一个字体选项，与自带的字体并列，例如 `"font": "=params.font == 'app' ? lyrics.prefs.fontFamilyCJK : 'youyou-yisong'"`。
 
 逐词排版用文字测量与列表函数完成，不必手算：
 
@@ -183,6 +233,9 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 | `pluck(列表, 字段)` | 取出每条记录的一个字段 |
 | `argmax(列表)`、`argmin(列表)` | 最大、最小值的序号 |
 | `addEach(列表, 数或列表)`、`mulEach(列表, 数或列表)` | 逐项相加、相乘 |
+| `kineticLayout(词, 种子, 避开, 宽, 高, 竖排字距, 字体, 字重, 强度, 丰富度)` | 把一行歌词排成海报式构图，返回每个词的位置与大小 |
+
+`kineticLayout` 以 100 为普通字的 1em。它按字数与时长选出主词和次重点，再由种子生成构图：先按段数、行宽、文字种类与节奏挑一种骨架（成行、主词独占一行、竖排主词靠边、竖排主词居中、环绕、竖列、阶梯、弧线、单词拆字、波浪、齐块、散布、螺旋、斜排、阶梯竖列，以及唱得慢的行偶尔使用、并倾向连续出现的安静整齐行），再随机组合对齐、纵向错落、阶梯与折线、断行位置、大小搭配与整体倾斜，同一种骨架也很少重复。大小搭配与大致从左到右的阅读顺序始终保留，词与词互不重叠。西文词按中文字号的 0.8 倍排，较长的西文主词放大得更少。`字体` 可以是一个名称，也可以是 [西文字体, 中文字体]。`丰富度` 从 0 到 1，省略时为 1：0 时大致从左到右成行，偶尔出现竖排；1 时所有骨架都可能出现。它可以写成参数，也可以按每首歌或每行歌词改变。`避开` 是构图序号列表，常放前两行用过的；同一骨架两行内不再出现。整幅构图超出宽高时等比缩小并居中。结果含 `family`（骨架 × 1000 + 变体）、`archetype`（骨架序号）、`hero`、`size`（[宽, 高]）、`ghost`（[x, y, 倍率]，倍率为 0 表示无）、`ghostText` 与 `items`；每项有 `x`、`y`（中心）、`s`（倍率）、`w`、`h`、`v`（竖排为 1）、`r`（角度）、`ex`/`ey`（入场来向的单位向量，按构图选择：顺读向、上升、下落、随对齐方向、按行交替、自中心放射，环绕、螺旋、弧线与波浪沿自身形状；部分词随机改从中心、最近的边或反方向进入，所有来向带少许随机偏转）、`m`（入场方式：0 滑入、1 由大缩入、2 旋入、3 拉链、4 远处落入）、`role`（0 衬字、1 次重点、2 主词）、`k`（中日韩文字为 1）、`t`（显示文本）、`start`、`end`。只有一个词的整行会先按字或词拆开，因此 `items` 可能比输入的词多。函数在换行时求值一次，结果宜存入 state。
 
 例如每个词的起点：`"=offsets(measureEach(lyrics.current.words, 64, \"heavy\"), 12)[index]"`；唱得最久的词：`"=argmax(addEach(pluck(lyrics.current.words, \"end\"), mulEach(pluck(lyrics.current.words, \"start\"), -1)))"`。
 
@@ -206,6 +259,7 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 | `scanlines` | spacing、intensity、speed | 扫描线 |
 | `wave` | amplitude、wavelength、speed | 缓慢的液态扭曲 |
 | `grain` | amount | 逐帧胶片颗粒 |
+| `fov` | distortion、chromatic、blur、start | 镜头边缘：广角畸变、边缘色散与半径渐增的边缘模糊；start 以内不受影响 |
 
 `custom` 调用包内预编译的着色器库，写法为 `{type: "custom", library: "fx.metallib", function, kind, args, reach, animated}`。`kind` 为 layer（可采样子树）、color 或 distortion；函数在 SwiftUI 规定的参数之后依次收到 `float2 size`（含外扩的画布尺寸）、`float time`，再按顺序收到 `args`：数为 float，2 至 4 个数的列表为 float2 至 float4，颜色为 half4。`reach` 为最大采样偏移，`animated` 为 true 时逐帧更新。用 `xcrun -sdk macosx metal -o fx.metallib fx.metal` 编译，源码以 `#include <SwiftUI/SwiftUI_Metal.h>` 开头，函数标注 `[[stitchable]]`。
 
@@ -215,7 +269,9 @@ ZIP 根目录包含 `manifest.json`。场景可直接写在 manifest 的 `scene`
 
 `shape` 的 `stroke` 改为描线，写成宽度，或 `{width, color, cap, join, dash}`；同时写了 `color` 时才另行填充。`trimStart` 与 `trimEnd` 截取线段，让 `trimEnd` 随时间从 0 走到 1，就是逐笔画出的线圈。
 
-`spectrum`、`waveform`、`meter` 直接绘制共享音频。`particles` 提供确定性的粒子画布：默认是缓缓上浮的尘点；写上 `lifetime`（秒）后改为发射，每颗粒子在随机位置出现，沿 `angle` 度方向、在 `spread` 度内散开，以 `speed` 点每秒飞行，在一生中淡入淡出，`trail` 给出以秒计的拖尾，`colors` 为随机取用的颜色。配合 `blendMode: plusLighter` 与 `bloom`，就是带拖尾的彗星与火花。`shadow` 可以写成数组，按顺序叠加多层。`video.path` 加载静音循环视频，隐藏时停止；动态封面使用 `artwork`，沿用 App 的共享解码。
+`spectrum`、`waveform`、`meter` 直接绘制共享音频。`particles` 提供确定性的粒子画布：默认是缓缓上浮的尘点；写上 `lifetime`（秒）后改为发射，每颗粒子在随机位置出现，沿 `angle` 度方向、在 `spread` 度内散开，以 `speed` 点每秒飞行，在一生中淡入淡出，`trail` 给出以秒计的拖尾，`colors` 为随机取用的颜色。`turbulence`（点）与 `wander`（弧度每秒）让粒子沿前进方向两侧缓慢摆动，`curve` 让路线逐渐弯曲；粒子始终向前，拖尾是它刚走过的路径，画成一条由细到粗、由暗到亮的连续光带。配合 `blendMode: plusLighter`，就是带拖尾的彗星与火花。
+
+`comet` 是绕目标飞行的单颗彗星，以节点中心为目标：`orbit` 为 [rx, ry] 椭圆，`progress` 从 0 到 1 表示飞行进度，通常由时钟算出；它从 `angle` 所指的一侧远处飞来，绕目标转过 `sweep` 度后飞离。`trail` 为拖尾占整段飞行的比例，`size` 为实心彗头半径，`width` 为拖尾最宽处。节点框需要容纳整段轨迹，约为椭圆的 5.6 倍。`shadow` 可以写成数组，按顺序叠加多层。`video.path` 加载静音循环视频，隐藏时停止；动态封面使用 `artwork`，沿用 App 的共享解码。
 
 `fonts` 列出包内 ttf、otf 或 ttc 路径。字体按可见场景持有，退出后释放登记。
 
@@ -231,9 +287,11 @@ float4 skinFragment(float2 uv, constant SkinUniforms& u, texture2d<float> artwor
 
 `parameters` 声明 id、title、defaultValue、control；control 支持 toggle、range、choice 和 color。`isUserVisible` 为 true 的参数出现在设置的皮肤选项与全屏快速面板中，只为少量重要选项开启。`visibleWhen` 可以引用其他 params，支持参数联动。相邻且 `section` 相同的参数归在同一小标题下。普通用户不编辑位置。场景用到 `control.miniPlayer` 时，快速面板同时列出播放条的可视化、自动隐藏与材质；用到 `background.host` 时，窗口设置列出艺术背景开关。
 
+`lyricsLead` 是宿主识别的保留参数，单位为秒。声明后，它只把该皮肤的歌词时钟提前对应秒数，不改变原生歌词与其他皮肤；`clock.lyrics`、`lyrics.current` 与逐词进度都会一起前移。正值提前，默认 0.4 表示提前 400 毫秒。
+
 内置原件保留，导出置灰。导入同 ID 用户包时可替换或另存副本；失败保留当前版本。删除使用中的皮肤会把相关模式切回默认皮肤，播放继续。
 
-“关联目录”登记作者目录，并监听文件变更。错误保留上一次可用场景；移除关联保留源码。右键刷新或设置内重载会重新编译当前包。
+“关联目录”登记作者目录，并监听文件变更；选中存放多个皮肤包的文件夹时，其中每个含 `manifest.json` 的子目录都会关联。错误保留上一次可用场景；移除关联保留源码。右键刷新或设置内重载会重新编译当前包。
 
 从仓库根目录检查和打包：
 

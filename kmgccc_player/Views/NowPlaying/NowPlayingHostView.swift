@@ -43,14 +43,14 @@ struct NowPlayingHostView: View {
         let selectedSkin = skinManager.skin(for: selectedSkinID)
 
         GeometryReader { proxy in
-            let hasScene = selectedSkin.scene != nil
-            let contentHeight = hasScene ? proxy.size.height : max(0, proxy.size.height - Constants.Layout.miniPlayerHeight - 12)
+            // Every window skin lays out above the App's mini player, which stays in place.
+            let contentHeight = max(0, proxy.size.height - SkinHostLayout.windowMiniPlayerReserve)
             let contentBounds = CGRect(origin: .zero, size: CGSize(width: mainContentWidth, height: contentHeight))
             let context = makeContext(windowSize: proxy.size, contentBounds: contentBounds)
             if let scene = selectedSkin.scene {
                 SkinSceneHost(
                     skin: selectedSkin, scene: scene, context: context, session: skinSession,
-                    viewport: .init(size: proxy.size, surface: .window, fullscreenHost: .none),
+                    viewport: .init(size: CGSize(width: proxy.size.width, height: contentHeight), surface: .window, fullscreenHost: .none),
                     onRestore: { settings.selectedNowPlayingSkinID = SkinRegistry.defaultSkinID }
                 )
                 .id(skinSession.identity(for: selectedSkinID))

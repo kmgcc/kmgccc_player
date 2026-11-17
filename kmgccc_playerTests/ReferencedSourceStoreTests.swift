@@ -60,7 +60,7 @@ final class ReferencedSourceStoreTests: XCTestCase {
         )
         let store = ReferencedSourceStore(paths: fixture.paths)
         await XCTAssertThrowsErrorAsync(try await store.loadAll()) {
-            XCTAssertEqual($0 as? ReferencedSourceStoreError, .incompleteSource(id))
+            XCTAssertEqual(($0 as? LibraryMetadataReadError)?.fileURL, fixture.paths.sourceDescriptorURL(for: id))
         }
     }
 
@@ -148,6 +148,66 @@ final class ReferencedSourceStoreTests: XCTestCase {
         XCTAssertEqual(loaded.excludedRelativePaths, [String]())
         let upgraded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         XCTAssertEqual(upgraded["schemaVersion"] as? Int, ReferencedSourceDescriptor.currentSchemaVersion)
+    }
+
+    func testBrokenSourceDoesNotTriggerUpgradeOfOtherSources() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let store = ReferencedSourceStore(paths: fixture.paths)
+        let source = ReferencedSourceDescriptor(
+            rootBookmarkData: Data("bookmark".utf8), lastKnownPath: "/Music", displayName: "Music"
+        )
+        try await store.save(source)
+        let url = fixture.paths.sourceDescriptorURL(for: source.id)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        object["schemaVersion"] = 2
+        let original = try JSONSerialization.data(withJSONObject: object)
+        try original.write(to: url)
+        let brokenID = UUID()
+        try FileManager.default.createDirectory(at: fixture.paths.sourceRootURL(for: brokenID), withIntermediateDirectories: true)
+        let secondBrokenID = UUID()
+        try FileManager.default.createDirectory(at: fixture.paths.sourceRootURL(for: secondBrokenID), withIntermediateDirectories: true)
+
+        await XCTAssertThrowsErrorAsync(try await store.loadAll()) {
+            guard let error = $0 as? LibraryMetadataReadError else { return XCTFail("Expected source diagnostics") }
+            XCTAssertEqual(Set([error.fileURL] + error.additionalFiles), Set([
+                fixture.paths.sourceDescriptorURL(for: brokenID),
+                fixture.paths.sourceDescriptorURL(for: secondBrokenID)
+            ]))
+        }
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
+    func testInspectionReportsEveryBrokenSourceWithoutWriting() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let store = ReferencedSourceStore(paths: fixture.paths)
+        let source = ReferencedSourceDescriptor(
+            rootBookmarkData: Data("bookmark".utf8), lastKnownPath: "/Music", displayName: "Music"
+        )
+        try await store.save(source)
+        let descriptorURL = fixture.paths.sourceDescriptorURL(for: source.id)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: descriptorURL)) as? [String: Any])
+        object["schemaVersion"] = 2
+        let original = try JSONSerialization.data(withJSONObject: object)
+        try original.write(to: descriptorURL)
+
+        let brokenID = UUID()
+        try FileManager.default.createDirectory(
+            at: fixture.paths.sourceRootURL(for: brokenID),
+            withIntermediateDirectories: true
+        )
+        let unexpected = fixture.paths.sourcesRootURL.appendingPathComponent("notes", isDirectory: true)
+        try FileManager.default.createDirectory(at: unexpected, withIntermediateDirectories: true)
+
+        let inventory = try await store.inspectAll()
+
+        XCTAssertEqual(inventory.descriptors.map(\.id), [source.id])
+        XCTAssertEqual(inventory.issues.map(\.sourceID), [brokenID])
+        XCTAssertEqual(inventory.issues.first?.descriptorURL, fixture.paths.sourceDescriptorURL(for: brokenID))
+        XCTAssertEqual(inventory.unexpectedEntries.map(\.lastPathComponent), ["notes"])
+        // Inspection must not perform the schema upgrade it reports.
+        XCTAssertEqual(try Data(contentsOf: descriptorURL), original)
     }
 
     func testInvalidExcludedRelativePathIsRejectedWithoutMutation() async throws {

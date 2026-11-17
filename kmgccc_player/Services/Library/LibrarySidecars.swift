@@ -29,6 +29,9 @@ nonisolated struct TrackAudioProperties: Codable, Equatable, Hashable, Sendable 
     var sampleRateHz: Int?
     var bitDepth: Int?
     var channelCount: Int?
+    var mediaSelection: AudioMediaSelection? = nil
+    var decodedSampleRateHz: Int? = nil
+    var isLossless: Bool? = nil
 
     init(
         format: String? = nil,
@@ -312,7 +315,7 @@ nonisolated struct ImportProvenance: Codable, Equatable, Sendable {
 }
 
 nonisolated struct TrackSidecar: Codable, Sendable {
-    static let currentSchemaVersion = 9
+    static let currentSchemaVersion = 10
 
     let schemaVersion: Int
     let id: UUID
@@ -1012,6 +1015,10 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
     var trackSortKey: String?
     var trackSortOrder: String?
     var customTrackOrder: [UUID]?
+    /// Absolute album positions (1-based, including catalog tracks not present
+    /// in the library) keyed by local track id. Present only after an online
+    /// catalog lookup; nil means the album page uses sequential row numbers.
+    var catalogTrackNumbers: [UUID: Int]?
     /// Listener override for album-wide volume normalization; nil follows
     /// the automatic judgement.
     var loudnessUnified: Bool?
@@ -1042,6 +1049,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         case trackSortKey
         case trackSortOrder
         case customTrackOrder
+        case catalogTrackNumbers
         case loudnessUnified
     }
 
@@ -1071,6 +1079,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         trackSortKey: String? = nil,
         trackSortOrder: String? = nil,
         customTrackOrder: [UUID]? = nil,
+        catalogTrackNumbers: [UUID: Int]? = nil,
         loudnessUnified: Bool? = nil
     ) {
         self.loudnessUnified = loudnessUnified
@@ -1099,6 +1108,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         self.trackSortKey = trackSortKey
         self.trackSortOrder = trackSortOrder
         self.customTrackOrder = customTrackOrder
+        self.catalogTrackNumbers = catalogTrackNumbers
     }
 
     init(from decoder: Decoder) throws {
@@ -1140,6 +1150,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         trackSortKey = try c.decodeIfPresent(String.self, forKey: .trackSortKey)
         trackSortOrder = try c.decodeIfPresent(String.self, forKey: .trackSortOrder)
         customTrackOrder = try c.decodeIfPresent([UUID].self, forKey: .customTrackOrder)
+        catalogTrackNumbers = try c.decodeIfPresent([UUID: Int].self, forKey: .catalogTrackNumbers)
         loudnessUnified = try c.decodeIfPresent(Bool.self, forKey: .loudnessUnified)
     }
 
@@ -1178,6 +1189,7 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         try c.encodeIfPresent(trackSortKey, forKey: .trackSortKey)
         try c.encodeIfPresent(trackSortOrder, forKey: .trackSortOrder)
         try c.encodeIfPresent(customTrackOrder, forKey: .customTrackOrder)
+        try c.encodeIfPresent(catalogTrackNumbers, forKey: .catalogTrackNumbers)
         try c.encodeIfPresent(loudnessUnified, forKey: .loudnessUnified)
     }
 }

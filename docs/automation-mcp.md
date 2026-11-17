@@ -72,6 +72,12 @@ server capabilities 声明 `tools` 和 `resources`。`tools/list` 的 schema、�
 scope、dry-run 和 job hints 来自 `AutomationToolCatalog`。MCP annotations 是给 Agent 的
 提示，不是安全边界；App IPC policy 仍会重新检查 scope 和 confirmation。
 
+`mcp-stdio` 支持 `--profile core|full`。`core` 只暴露 `system.*`、`playback.*`、`queue.*`、
+`jobs.*` 和查询/导入常用的 `library.list/get/tracks/stats/import`；完整目录有 150 余个工具，
+序列化后约 140 KB，连接即占满一段上下文。设置里的“复制 MCP 配置”默认带 `--profile core`，
+需要完整 schema 时改成 `--profile full` 重新复制。profile 只影响 `tools/list` 的暴露范围，
+`tools/call` 仍接受目录中的任何方法。
+
 当前 Resources：
 
 - `kmgccc://capabilities`：共享能力和组合查询概览；

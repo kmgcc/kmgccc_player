@@ -13,7 +13,9 @@ struct AudioProcessingGlobalsSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             fadeSection
+                .settingsSearchAnchor("audio.fade")
             loudnessSection
+                .settingsSearchAnchor("audio.loudness")
             errorSection
         }
     }

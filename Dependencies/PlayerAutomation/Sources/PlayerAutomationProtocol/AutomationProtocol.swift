@@ -4804,6 +4804,59 @@ public enum AutomationToolCatalog {
         all.first { $0.name == name }
     }
 
+    /// Methods accepted by a tool, taken from its input schema.
+    public static func acceptedParameters(for name: String) -> [String] {
+        guard let descriptor = descriptor(for: name),
+              case let .object(schema) = descriptor.inputSchema,
+              case let .object(properties)? = schema["properties"] else {
+            return []
+        }
+        return properties.keys.sorted()
+    }
+
+    /// Nearest method names for a mistyped call, so the error suggests the
+    /// real spelling instead of only reporting the miss.
+    public static func suggestions(for method: String, limit: Int = 3) -> [String] {
+        let target = method.lowercased()
+        let prefixed = all.map(\.name).filter { $0.hasPrefix(target) }
+        if prefixed.count >= limit {
+            return Array(prefixed.prefix(limit))
+        }
+        let domain = target.split(separator: ".").first.map(String.init)
+        let scoped = all.map(\.name).filter { name in
+            guard let domain else { return true }
+            return name.hasPrefix(domain + ".")
+        }
+        var ranked = prefixed
+        let byDistance = scoped
+            .filter { !ranked.contains($0) }
+            .map { ($0, editDistance(target, $0)) }
+            .sorted { $0.1 < $1.1 }
+        for entry in byDistance {
+            ranked.append(entry.0)
+            if ranked.count == limit { break }
+        }
+        return ranked
+    }
+
+    private static func editDistance(_ lhs: String, _ rhs: String) -> Int {
+        let left = Array(lhs)
+        let right = Array(rhs)
+        if left.isEmpty { return right.count }
+        if right.isEmpty { return left.count }
+        var previous = Array(0...right.count)
+        var current = [Int](repeating: 0, count: right.count + 1)
+        for i in 1...left.count {
+            current[0] = i
+            for j in 1...right.count {
+                let cost = left[i - 1] == right[j - 1] ? 0 : 1
+                current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+            }
+            swap(&previous, &current)
+        }
+        return previous[right.count]
+    }
+
     /// Return unknown top-level parameter names for a tool whose schema opts
     /// into strict object validation. Nested objects can remain open when the
     /// schema deliberately uses them as extension points (for example the

@@ -75,6 +75,10 @@ final class FullscreenLyricsCoordinator {
 
     @ObservationIgnored private var resolvedLyrics: ResolvedLyrics?
 
+    /// The auto-hide end time is derived from the whole TTML document. Keep the
+    /// most recent result so repeated payload evaluations do not re-parse it.
+    @ObservationIgnored private var resolvedEndTime: (ttml: String, end: TimeInterval?)?
+
     /// Keep validation out of repeated fullscreen presentation evaluations.
     /// Exact text comparison also catches edits that retain the track identity;
     /// the single entry retains rejected/absent results without growing a cache.
@@ -169,6 +173,7 @@ final class FullscreenLyricsCoordinator {
     func resetForDisappear() {
         cancelAllScheduledWork()
         resolvedLyrics = nil
+        resolvedEndTime = nil
         suppressViewport = false
         hostMounted = false
         autoHiddenAfterEnding = false
@@ -260,7 +265,14 @@ final class FullscreenLyricsCoordinator {
             return effects
         }
 
-        let rawLastEndTime = FullscreenTTMLTimingExtractor.lastMainLineEndTime(in: ttml)
+        let rawLastEndTime: TimeInterval?
+        if let resolvedEndTime, resolvedEndTime.ttml == ttml {
+            rawLastEndTime = resolvedEndTime.end
+        } else {
+            let end = FullscreenTTMLTimingExtractor.lastMainLineEndTime(in: ttml)
+            resolvedEndTime = (ttml, end)
+            rawLastEndTime = end
+        }
         lastEndTime = rawLastEndTime
         lastVisualEndTime = rawLastEndTime.map {
             max(0, $0 + snapshot.visualOffsetSeconds)

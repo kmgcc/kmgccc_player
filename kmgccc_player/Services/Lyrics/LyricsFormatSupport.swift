@@ -20,16 +20,14 @@ nonisolated enum LyricsFormatSupport {
         guard !trimmed.isEmpty else {
             return .invalid("歌词为空")
         }
-        guard looksLikeTTML(trimmed) else {
+        let tags = scanTTMLTags(trimmed)
+        guard tags.rootOpening else {
             return .invalid("歌词不是 TTML 格式")
         }
-
-        guard trimmed.range(of: #"<(?:\w+:)?tt(?:\s|>|/)"#, options: [.regularExpression, .caseInsensitive]) != nil,
-              trimmed.range(of: #"</(?:\w+:)?tt\s*>"#, options: [.regularExpression, .caseInsensitive]) != nil else {
+        guard tags.rootClosing else {
             return .invalid("未找到 TTML <tt> 根节点")
         }
-        guard trimmed.range(of: #"<(?:\w+:)?body(?:\s|>|/)"#, options: [.regularExpression, .caseInsensitive]) != nil,
-              trimmed.range(of: #"</(?:\w+:)?body\s*>"#, options: [.regularExpression, .caseInsensitive]) != nil else {
+        guard tags.bodyOpening, tags.bodyClosing else {
             return .invalid("TTML 缺少 <body> 节点")
         }
         return .valid
@@ -38,7 +36,88 @@ nonisolated enum LyricsFormatSupport {
     static func looksLikeTTML(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        return trimmed.range(of: #"<(?:\w+:)?tt(?:\s|>|/)"#, options: [.regularExpression, .caseInsensitive]) != nil
+        return scanTTMLTags(trimmed).rootOpening
+    }
+
+    /// A whole TTML payload is tens to hundreds of kilobytes. Six regex scans
+    /// over it cost about 100 ms on the main thread, and validation runs once
+    /// per newly presented track, exactly when the lyric entrance starts.
+    /// Scan the tags once instead.
+    private struct TTMLTagScan {
+        var rootOpening = false
+        var rootClosing = false
+        var bodyOpening = false
+        var bodyClosing = false
+        var isComplete: Bool { rootOpening && rootClosing && bodyOpening && bodyClosing }
+    }
+
+    private static func scanTTMLTags(_ text: String) -> TTMLTagScan {
+        var scan = TTMLTagScan()
+        let utf8 = text.utf8
+        var index = utf8.startIndex
+        let end = utf8.endIndex
+
+        func folded(_ byte: UInt8) -> UInt8 {
+            byte >= 65 && byte <= 90 ? byte + 32 : byte
+        }
+        func isNameByte(_ byte: UInt8) -> Bool {
+            byte != UInt8(ascii: ">") && byte != UInt8(ascii: "/")
+                && byte != UInt8(ascii: " ") && byte != UInt8(ascii: "\t")
+                && byte != UInt8(ascii: "\n") && byte != UInt8(ascii: "\r")
+        }
+        func isRootName(_ range: Range<String.UTF8View.Index>) -> Bool {
+            guard utf8.distance(from: range.lowerBound, to: range.upperBound) == 2 else { return false }
+            let second = utf8.index(after: range.lowerBound)
+            return folded(utf8[range.lowerBound]) == UInt8(ascii: "t")
+                && folded(utf8[second]) == UInt8(ascii: "t")
+        }
+        func isBodyName(_ range: Range<String.UTF8View.Index>) -> Bool {
+            guard utf8.distance(from: range.lowerBound, to: range.upperBound) == 4 else { return false }
+            let expected = Array("body".utf8)
+            var cursor = range.lowerBound
+            for byte in expected {
+                if folded(utf8[cursor]) != byte { return false }
+                cursor = utf8.index(after: cursor)
+            }
+            return true
+        }
+
+        while index < end, !scan.isComplete {
+            guard utf8[index] == UInt8(ascii: "<") else {
+                index = utf8.index(after: index)
+                continue
+            }
+            var cursor = utf8.index(after: index)
+            var closing = false
+            if cursor < end, utf8[cursor] == UInt8(ascii: "/") {
+                closing = true
+                cursor = utf8.index(after: cursor)
+            }
+            let nameStart = cursor
+            while cursor < end, isNameByte(utf8[cursor]) {
+                cursor = utf8.index(after: cursor)
+            }
+            guard cursor > nameStart else {
+                index = utf8.index(after: index)
+                continue
+            }
+            var localStart = nameStart
+            var probe = nameStart
+            while probe < cursor {
+                if utf8[probe] == UInt8(ascii: ":") {
+                    localStart = utf8.index(after: probe)
+                }
+                probe = utf8.index(after: probe)
+            }
+            let localRange = localStart..<cursor
+            if isRootName(localRange) {
+                if closing { scan.rootClosing = true } else { scan.rootOpening = true }
+            } else if isBodyName(localRange) {
+                if closing { scan.bodyClosing = true } else { scan.bodyOpening = true }
+            }
+            index = cursor
+        }
+        return scan
     }
 
     static func looksLikeLRC(_ text: String) -> Bool {

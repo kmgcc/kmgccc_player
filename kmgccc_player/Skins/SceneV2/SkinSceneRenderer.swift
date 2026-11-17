@@ -51,6 +51,7 @@ struct SkinSceneV2View: View {
             .onDisappear { fonts.release(); didPrepare = false; SkinSceneRuntimeMetrics.shared.unmount(metricsID) }
             .environment(\.skinSceneMetricsID, metricsID)
             .environment(\.skinSceneData, data)
+            .environment(\.skinMotionCustomTokens, program.motion.tokens)
             .alert("皮肤资源", isPresented: Binding(get: { resourceError != nil }, set: { if !$0 { resourceError = nil } })) {
                 Button("好", role: .cancel) { resourceError = nil }
             } message: { Text(resourceError ?? "") }
@@ -84,20 +85,26 @@ struct SkinSceneNodeV2View: View {
     @State private var backdropReading: SkinBackdropReading?
     @State private var measuredFrame: CGRect?
     @State private var glyphClock = SkinGlyphClock()
+    @State private var glyphPadding = SkinGlyphPadding()
     @State private var valueCache = SkinNodeValueCache()
     @State private var cameraSource = SkinCameraSource()
+    @State private var followers = SkinFollowers()
     @Environment(\.skinBackdropReading) private var inheritedReading
     @Namespace private var glassNamespace
 
     private var needsFrames: Bool {
         node.tier == .frame || node.watches.contains(where: { $0.value.tier == .frame }) || node.properties["keyframes"] != nil || node.properties["glyphMotion"] != nil
-            || ["spectrum", "waveform", "meter", "particles", "shader", "fog", "lyricLine"].contains(node.type)
+            || ["spectrum", "waveform", "meter", "particles", "shader", "fog", "lyricLine", "comet"].contains(node.type)
     }
 
-    /// Clock, lyric and audio inputs stand still while paused; free-running time keeps going.
+    /// Clock, lyric and audio inputs stand still while paused; scene time once the playback flow
+    /// settles; follow springs once they land.
     private var framesPaused: Bool {
-        !active || (node.pausesWithPlayback && !components.snapshot.playback.isPlaying)
+        let playing = components.snapshot.playback.isPlaying
+        return !active || node.frameInputs.isStill(playing: playing, timeMoves: data.timeMoves(playing: playing), following: followers.isMoving)
     }
+
+    private var moves: Bool { configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion) == .full }
 
     var body: some View {
         Group {
@@ -121,11 +128,19 @@ struct SkinSceneNodeV2View: View {
         values["self"] = .record(own)
         values["parent"] = .record(["width": .number(size.width), "height": .number(size.height)])
         if let gesture { values["gesture"] = gesture }
-        return SkinEvaluationContext(data: data, locals: values, now: now, live: live)
+        var context = SkinEvaluationContext(data: data, locals: values, now: now, live: live)
+        context.motionTokens = motionTokens
+        context.moves = moves
+        context.followers = followers
+        return context
     }
 
     private func render(at now: Double) -> AnyView {
         let context = context(now: now)
+        // A hidden node with no transition draws nothing, so the rest of its values are not evaluated.
+        if node.hidesWithoutTransition, node.properties["visible"]?.evaluate(context).isTruthy == false {
+            return AnyView(EmptyView())
+        }
         var values = node.values(context, cache: valueCache)
         for effect in values["effects"]?.listValue ?? [] {
             let name = effect[member: "type"].textValue
@@ -156,7 +171,7 @@ struct SkinSceneNodeV2View: View {
             result = AnyView(result.modifier(SkinSceneFilters(filters: filter.type == .list ? filter.listValue : [filter], dormant: dormant)))
         }
         if let bloom = values["bloom"] { result = AnyView(result.modifier(SkinSceneBloom(value: bloom, dormant: dormant))) }
-        result = SkinNodeStyle.apply(result, values: values, reduceTransparency: reduceTransparency)
+        result = SkinNodeStyle.apply(result, values: values, keys: node.styleKeys, reduceTransparency: reduceTransparency)
         if let key = values["key"] {
             result = AnyView(SkinKeyedSwap(key: String(describing: key), transition: transition ?? .null, content: result))
         }
@@ -179,7 +194,7 @@ struct SkinSceneNodeV2View: View {
         }
         let tokens = SkinMotion.tokens(motionTokens, override: values["motion"])
         if let animation = values["animation"] {
-            let spec = SkinMotion.spec(animation, tokens: tokens)
+            let spec = SkinMotion.spec(animation, tokens: tokens, custom: data.motion.tokens)
             // Per-frame values are already continuous; animating them would chase every frame.
             let animated = values.filter { node.properties[$0.key]?.tier != .frame }
             result = AnyView(result.motionAnimation(spec, value: animated))
@@ -255,7 +270,7 @@ struct SkinSceneNodeV2View: View {
             let centre = CGPoint(x: x + (0.5 - point.x) * (width ?? 0), y: y + (0.5 - point.y) * (height ?? 0))
             // A free repeat hands the camera on to its cells instead of following it as a whole.
             if let camera, !(node.type == "repeat" && values["layout"]?.textValue == "free") {
-                let paused = !active || (camera.source.pausesWithPlayback && !components.snapshot.playback.isPlaying)
+                let paused = !active || camera.source.isStill(data: data, playing: components.snapshot.playback.isPlaying)
                 result = AnyView(result.modifier(SkinCameraFollow(link: camera, centre: centre, depth: values["depth"]?.number() ?? 0, size: size, paused: paused)))
             }
             result = AnyView(result.position(centre))
@@ -279,7 +294,7 @@ struct SkinSceneNodeV2View: View {
             let link = cameraLink(now: now)
             let stack = AnyView(ZStack(alignment: .topLeading) { ForEach(node.children) { child($0, size: size, positioned: true, camera: link) } }.frame(width: size.width, height: size.height))
             guard let link else { return stack }
-            let paused = !active || (link.source.pausesWithPlayback && !components.snapshot.playback.isPlaying)
+            let paused = !active || link.source.isStill(data: data, playing: components.snapshot.playback.isPlaying)
             return AnyView(stack.modifier(SkinCameraTurn(link: link, paused: paused)))
         case "row": return AnyView(HStack(spacing: spacing) { ForEach(node.children) { child($0, size: size) } })
         case "column": return AnyView(VStack(spacing: spacing) { ForEach(node.children) { child($0, size: size) } })
@@ -326,9 +341,11 @@ struct SkinSceneNodeV2View: View {
             let value = node.type == "lyricLine" ? data.lyricsTimeline.line(relative: offset, time: lyricTime)[member: field].textValue : values["text"]?.textValue ?? ""
             let fontSize = values["fontSize"]?.number(24) ?? 24
             let font = values["font"]?.textValue ?? ""
-            var typeface = font.isEmpty
-                ? Font.system(size: fontSize, weight: skinFontWeight(values["weight"]?.textValue ?? "regular"), design: skinFontDesign(values["design"]?.textValue ?? ""))
-                : Font.custom(font, size: fontSize)
+            let weight = values["weight"]?.textValue ?? "regular"
+            // A family name takes the face nearest `weight`; a PostScript name is used as named.
+            let resolved = font.isEmpty ? nil : SkinFontResolver.font(font, size: fontSize, weight: weight)
+            var typeface = resolved.map { Font($0 as CTFont) }
+                ?? Font.system(size: fontSize, weight: skinFontWeight(weight), design: skinFontDesign(values["design"]?.textValue ?? ""))
             if values["italic"]?.isTruthy == true { typeface = typeface.italic() }
             let tracking = values["tracking"]?.number() ?? 0
             func layout(_ text: Text) -> some View {
@@ -339,7 +356,14 @@ struct SkinSceneNodeV2View: View {
                     .minimumScaleFactor((values["minScale"]?.number(1) ?? 1).clamped01)
             }
             let lineIndex = data.lyricsTimeline.currentIndex(at: lyricTime) + offset
-            let glyphs = glyphStyle(values, text: value, lineIndex: node.type == "lyricLine" ? lineIndex : nil, lyricTime: lyricTime, now: now, fontSize: fontSize)
+            var glyphs = glyphStyle(values, text: value, lineIndex: node.type == "lyricLine" ? lineIndex : nil, lyricTime: lyricTime, now: now, fontSize: fontSize)
+            // `subpixel`: plain text fills its glyph outlines, so it moves and zooms smoothly.
+            if node.type == "text", values["subpixel"]?.isTruthy == true {
+                var style = glyphs ?? SkinGlyphStyle(padding: 1)
+                style.vector = SkinGlyphVector(font: font, weight: weight, size: fontSize, color: foreground,
+                                               characters: value.filter { !$0.isNewline }.map(String.init))
+                glyphs = style
+            }
             if node.type == "lyricLine", let highlight = values["highlightColor"]?.colorValue {
                 // Word by word: each word moves toward `highlightColor` as it is sung, so wrapped lines stay right.
                 if values["highlightStyle"]?.textValue == "word", field == "text",
@@ -404,13 +428,14 @@ struct SkinSceneNodeV2View: View {
         case "spectrum", "waveform", "meter": return AnyView(SkinSceneAudioCanvas(kind: node.type, data: data, values: values, now: now, color: components.snapshot.theme.accentColor))
         case "particles": return AnyView(SkinSceneParticles(data: data, values: values, now: now, reduceMotion: reduceMotion))
         case "shader": return AnyView(SkinSceneShader(path: values["path"]?.textValue ?? "", function: values["function"]?.textValue ?? "skinFragment", data: data, snapshot: components.snapshot, now: now))
+        case "comet": return AnyView(SkinSceneComet(values: values).frame(width: size.width, height: size.height))
         default: return AnyView(EmptyView())
         }
     }
 
     /// Evaluates `glyphMotion` once per glyph. `glyph` carries index, count, char, word, line,
-    /// start and end (seconds), age (seconds since the glyph's start), progress (0…1 through it)
-    /// and lineAge. Lyric lines time glyphs by the sung words; plain text from when it last changed.
+    /// start and end (seconds), age (seconds since the glyph's start), progress (0…1 through it),
+    /// lineAge and fontSize. Lyric lines time glyphs by the sung words; plain text from when it last changed.
     private func glyphStyle(_ values: [String: SkinValue], text: String, lineIndex: Int?, lyricTime: Double, now: Double, fontSize: Double) -> SkinGlyphStyle? {
         let fallback = values["color"]?.colorValue ?? data.theme["theme.appForeground.primary"]?.colorValue
         let outline = SkinGlyphOutline(values["outline"], fallback: fallback)
@@ -436,12 +461,13 @@ struct SkinSceneNodeV2View: View {
         style.transforms.reserveCapacity(characters.count)
         for (index, character) in characters.enumerated() {
             let time = times[index]
+            scope.followSlot = index + 1
             scope.locals["glyph"] = .record([
                 "index": .number(Double(index)), "count": .number(Double(characters.count)), "char": .text(String(character)),
                 "word": .number(Double(time.word)), "line": .number(Double(lineIndex ?? 0)),
                 "start": .number(time.start), "end": .number(time.end), "age": .number(clock - time.start),
                 "progress": .number(time.end > time.start ? ((clock - time.start) / (time.end - time.start)).clamped01 : (clock >= time.start ? 1 : 0)),
-                "lineAge": .number(clock - lineStart),
+                "lineAge": .number(clock - lineStart), "fontSize": .number(fontSize),
             ])
             let transform = SkinGlyphTransform(motion.evaluate(scope))
             reach = max(reach, abs(transform.x) + abs(transform.split) + abs(transform.smearX) / 2,
@@ -449,7 +475,12 @@ struct SkinSceneNodeV2View: View {
             growth = max(growth, transform.scale - 1, abs(transform.rotation) > 0.5 ? 0.5 : 0)
             style.transforms.append(transform)
         }
-        style.padding += reach + growth * fontSize
+        // Heavy and italic faces ink past their advance; leave room so they are not cut.
+        let wanted = style.padding + reach + growth * fontSize + fontSize * 0.12
+        // A renderer's display padding that changes under a text moves its glyphs sideways, so a
+        // padding that shrank as an entrance settled made the glyph jump half an em. It is kept per
+        // text and only grows; the first frame of an entrance usually reaches the most it needs.
+        style.padding = glyphPadding.stable(for: text + "\u{1F}" + String(fontSize), wanted: max(wanted, style.padding + fontSize * 0.6))
         return style
     }
 
@@ -462,7 +493,8 @@ struct SkinSceneNodeV2View: View {
             return SkinCameraLink(source: cameraSource, steady: SkinSceneCamera(property.evaluate(context(now: now))))
         }
         let view = self
-        cameraSource.pausesWithPlayback = node.cameraPausesWithPlayback
+        cameraSource.inputs = node.cameraInputs
+        cameraSource.followers = followers
         cameraSource.evaluate = { now in SkinSceneCamera(property.evaluate(view.context(now: now))) }
         return SkinCameraLink(source: cameraSource, steady: nil)
     }
@@ -609,6 +641,7 @@ private func skinFontDesign(_ name: String) -> Font.Design {
 private func skinFontWeight(_ name: String) -> Font.Weight {
     switch name {
     case "ultralight": .ultraLight
+    case "thin": .thin
     case "light": .light
     case "medium": .medium
     case "semibold": .semibold

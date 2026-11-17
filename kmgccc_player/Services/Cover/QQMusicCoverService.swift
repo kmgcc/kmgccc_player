@@ -52,12 +52,15 @@ actor QQMusicCoverService {
         album: String,
         duration: Double? = nil,
         limit: Int = CoverLookupConfiguration.qqMusicCandidateLimit,
-        stopAtTarget: Bool = false
+        stopAtTarget: Bool = false,
+        manualSuggestions: Bool = false
     ) async throws -> [CoverCandidate] {
         let query = CoverQuery(
             title: trimmed(title),
-            artist: trimmed(artist) ?? "",
-            album: trimmed(album) ?? "",
+            // Placeholder identities narrow the query to nothing and then
+            // veto every candidate during scoring; search without them.
+            artist: LibraryNormalization.searchSeedArtist(artist),
+            album: LibraryNormalization.searchSeedAlbum(album),
             duration: duration,
             limit: limit
         )
@@ -72,7 +75,7 @@ actor QQMusicCoverService {
         }
 
         let startedAt = Date()
-        let rawCandidates = try await fetchRawCandidates(for: query, cancelsWithCaller: stopAtTarget)
+        let rawCandidates = try await fetchRawCandidates(for: query, cancelsWithCaller: stopAtTarget || manualSuggestions)
 
         var scored: [(candidate: QQMusicArtworkCandidate, confidence: Double)] = []
         for candidate in rawCandidates {
@@ -82,8 +85,17 @@ actor QQMusicCoverService {
                 category: .import
             )
             var rejectReason: String?
-            let scoreValue = Self.scoreAndDiagnose(candidate, for: query, rejectReason: &rejectReason)
-            if let confidence = scoreValue, confidence >= 0.50 {
+            let strictScore = Self.scoreAndDiagnose(candidate, for: query, rejectReason: &rejectReason)
+            let scoreValue: Double?
+            if manualSuggestions {
+                let suggestionScore = Self.manualConfidence(candidate, for: query)
+                scoreValue = (strictScore ?? 0) >= CoverLookupConfiguration.automaticCoverConfidenceThreshold
+                    ? suggestionScore
+                    : min(suggestionScore, CoverLookupConfiguration.automaticCoverConfidenceThreshold - 0.001)
+            } else {
+                scoreValue = strictScore
+            }
+            if let confidence = scoreValue, manualSuggestions || confidence >= 0.50 {
                 Log.info("[QQMusicCover] accepted: score=\(String(format: "%.2f", confidence))", category: .import)
                 scored.append((candidate, confidence))
             } else {
@@ -92,6 +104,17 @@ actor QQMusicCoverService {
             }
         }
         scored.sort { lhs, rhs in
+            if manualSuggestions {
+                func rank(_ candidate: QQMusicArtworkCandidate) -> ManualMusicSearch.Rank {
+                    ManualMusicSearch.rank(
+                        title: query.title, artist: query.artist, album: query.album,
+                        candidateTitle: candidate.title, candidateArtist: candidate.artist ?? candidate.artistName,
+                        candidateAlbum: candidate.album
+                    )
+                }
+                let left = rank(lhs.candidate), right = rank(rhs.candidate)
+                if left != right { return left.isBetter(than: right) }
+            }
             if lhs.confidence == rhs.confidence {
                 return (lhs.candidate.albumMid ?? lhs.candidate.songMid ?? "") <
                     (rhs.candidate.albumMid ?? rhs.candidate.songMid ?? "")
@@ -169,7 +192,7 @@ actor QQMusicCoverService {
 
         let startedAt = Date()
         let rawCandidates = try await cachedMetadata(
-            key: metadataKey(method: "artist", title: nil, artist: artist, album: "", duration: nil),
+            key: metadataKey(method: "artist", title: nil, artist: artist, album: "", duration: nil, limit: limit),
             taskFactory: {
                 Task {
                     try await self.helper.searchArtistArtwork(name: artist, limit: limit)
@@ -252,7 +275,7 @@ actor QQMusicCoverService {
             do {
                 results.append(
                     contentsOf: try await cachedMetadata(
-                        key: metadataKey(method: "track", title: title, artist: query.artist, album: query.album, duration: query.duration),
+                        key: metadataKey(method: "track", title: title, artist: query.artist, album: query.album, duration: query.duration, limit: query.limit),
                         cancelsWithCaller: cancelsWithCaller,
                         taskFactory: {
                             Task {
@@ -278,7 +301,7 @@ actor QQMusicCoverService {
             do {
                 results.append(
                     contentsOf: try await cachedMetadata(
-                        key: metadataKey(method: "album", title: nil, artist: query.artist, album: query.album, duration: nil),
+                        key: metadataKey(method: "album", title: nil, artist: query.artist, album: query.album, duration: nil, limit: query.limit),
                         cancelsWithCaller: cancelsWithCaller,
                         taskFactory: {
                             Task {
@@ -487,7 +510,8 @@ actor QQMusicCoverService {
         title: String?,
         artist: String,
         album: String,
-        duration: Double?
+        duration: Double?,
+        limit: Int
     ) -> String {
         let normalized = [
             method,
@@ -495,6 +519,7 @@ actor QQMusicCoverService {
             ExternalPlaybackTextNormalizer.normalizedKey(artist),
             ExternalPlaybackTextNormalizer.normalizedKey(album),
             duration.map { String(Int($0.rounded())) } ?? "",
+            String(limit),
         ].joined(separator: "|")
         return Self.cacheKey(normalized)
     }
@@ -529,6 +554,20 @@ actor QQMusicCoverService {
     ) -> Double? {
         var ignored: String?
         return scoreAndDiagnose(candidate, for: query, rejectReason: &ignored)
+    }
+
+    /// Suggestions are never gated by the automatic matcher's hard rejects.
+    private nonisolated static func manualConfidence(_ candidate: QQMusicArtworkCandidate, for query: CoverQuery) -> Double {
+        let rank = ManualMusicSearch.rank(
+            title: query.title, artist: query.artist, album: query.album,
+            candidateTitle: candidate.title, candidateArtist: candidate.artist ?? candidate.artistName,
+            candidateAlbum: candidate.album
+        )
+        let hasTitle = query.title?.isEmpty == false && candidate.title?.isEmpty == false
+        let nameScore = hasTitle ? rank.titleSimilarity : rank.albumSimilarity
+        let artistScore = ManualMusicSearch.cleanArtist(query.artist).isEmpty ? 0.5 : rank.artistSimilarity
+        let albumScore = ManualMusicSearch.cleanAlbum(query.album).isEmpty ? 0.5 : rank.albumSimilarity
+        return nameScore * 0.65 + artistScore * 0.25 + albumScore * 0.10
     }
 
     private nonisolated static func scoreAndDiagnose(
@@ -570,13 +609,33 @@ actor QQMusicCoverService {
             }
 
             let sourceArtist = ExternalPlaybackTextNormalizer.normalizeArtist(query.artist)
-            let candidateArtist = ExternalPlaybackTextNormalizer.normalizeArtist(
-                candidate.artist ?? candidate.artistName
-            )
-            let artistScore = ExternalPlaybackTextNormalizer.artistSimilarity(sourceArtist, candidateArtist)
-            guard artistScore >= 0.22 else {
-                rejectReason = "artist mismatch: score=\(String(format: "%.2f", artistScore)) query=\"\(query.artist)\" candidate=\"\(candidate.artist ?? candidate.artistName ?? "-")\""
-                return nil
+            let artistIsUnknown = LibraryNormalization.isUnknownArtist(query.artist)
+            if artistIsUnknown,
+               query.title?.isEmpty == false,
+               let sourceDuration = query.duration,
+               sourceDuration > 0
+            {
+                // No artist to confirm the match, so the duration must.
+                guard ExternalPlaybackTextNormalizer.durationSupportsArtistlessMatch(
+                    source: sourceDuration,
+                    candidate: Double(candidate.duration ?? 0)
+                ) else {
+                    rejectReason = "unknown artist and duration mismatch: source=\(sourceDuration) candidate=\(candidate.duration ?? 0)"
+                    return nil
+                }
+            }
+            let artistScore: Double
+            if artistIsUnknown {
+                artistScore = 0.5
+            } else {
+                let candidateArtist = ExternalPlaybackTextNormalizer.normalizeArtist(
+                    candidate.artist ?? candidate.artistName
+                )
+                artistScore = ExternalPlaybackTextNormalizer.artistSimilarity(sourceArtist, candidateArtist)
+                guard artistScore >= 0.22 else {
+                    rejectReason = "artist mismatch: score=\(String(format: "%.2f", artistScore)) query=\"\(query.artist)\" candidate=\"\(candidate.artist ?? candidate.artistName ?? "-")\""
+                    return nil
+                }
             }
 
             let candidateDuration = Double(candidate.duration ?? 0)

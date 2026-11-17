@@ -10,6 +10,35 @@ struct FullscreenSkinArtworkArea: View {
     let onShowDetails: () -> Void
     let onRefreshLyricsColors: () -> Void
 
+    @Environment(\.motionArtworkFullscreenCoordinator) private var motionFullscreen
+    @AppStorage(AppSettings.motionArtworkEnabledDefaultsKey) private var motionArtworkEnabled = true
+
+    private var videoFullscreenAction: (() -> Void)? {
+        guard let motionFullscreen,
+              !motionFullscreen.isActive,
+              motionFullscreen.canEnter(
+                for: context.track?.preferredMotionArtwork,
+                motionArtworkEnabled: motionArtworkEnabled,
+                motionPolicy: context.motionPolicy
+              ) else {
+            return nil
+        }
+        let resource = context.track?.preferredMotionArtwork
+        let poster = context.track?.artworkImage
+        let policy = context.motionPolicy
+        let tokens = context.motionTokens
+        let enabled = motionArtworkEnabled
+        return { [weak coordinator = motionFullscreen] in
+            coordinator?.enter(
+                resource: resource,
+                fallbackPoster: poster,
+                motionArtworkEnabled: enabled,
+                motionPolicy: policy,
+                motionTokens: tokens
+            )
+        }
+    }
+
     var body: some View {
         ZStack {
             skin.makeArtwork(context: context)
@@ -25,6 +54,7 @@ struct FullscreenSkinArtworkArea: View {
         .contentShape(Rectangle())
         .contextMenuWithVisibleIcons {
             FullscreenSkinContextMenu(
+                onEnterVideoFullscreen: videoFullscreenAction,
                 onShowDetails: onShowDetails,
                 onRefreshLyricsColors: onRefreshLyricsColors
             )
@@ -33,11 +63,18 @@ struct FullscreenSkinArtworkArea: View {
 }
 
 struct FullscreenSkinContextMenu: View {
+    var onEnterVideoFullscreen: (() -> Void)? = nil
     let onShowDetails: () -> Void
     let onRefreshLyricsColors: () -> Void
 
     var body: some View {
         Group {
+            if let onEnterVideoFullscreen {
+                Button(action: onEnterVideoFullscreen) {
+                    Label("全屏播放", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+            }
+
             Button(action: onShowDetails) {
                 Label("查看详情", systemImage: "doc.text")
             }

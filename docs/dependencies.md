@@ -1,6 +1,6 @@
 # 外部组件与构建依赖
 
-kmgccc_player 的 Swift 代码由 Xcode 构建，歌词渲染、歌词搜索、封面候选和系统播放状态读取还依赖若干独立运行组件。`scripts/bootstrap.sh` 统一取得、校验和构建这些组件，Xcode 只消费 bootstrap 生成的产品。
+kmgccc_player 的 Swift 代码由 Xcode 构建，歌词搜索、封面候选和系统播放状态读取还依赖若干独立运行组件，由 `scripts/bootstrap.sh` 统一取得、校验和构建。音频解码库由 Xcode 的 Prepare Audio Codecs 阶段调用固定构建脚本，随 App 打包。
 
 ```mermaid
 flowchart LR
@@ -39,6 +39,12 @@ flowchart LR
 | SACAD | 单次命令行进程 | 专辑封面搜索和下载 | SACAD 候选不可用 |
 
 这些组件都按进程或 WebView 边界隔离。Swift 侧只依赖稳定协议，不直接调用第三方服务内部 API。
+
+## 音频解码库
+
+`scripts/build-audio-codecs.sh` 构建 FFmpeg 8.1.3、WavPack 5.8.1 与固定提交的 DSD Nexus `libsacd_lite`，产物位于 App 的 `Resources/AudioCodecs`。Swift 通过统一解码工厂读取 PCM，运行时从 bundle 加载这些库。
+
+脚本锁定源码版本、归档校验值、补丁和配置摘要。FFmpeg 使用 LGPL 配置，WavPack 使用 BSD-3-Clause，DSD Nexus 使用 LGPL-2.1-or-later。具体源码标识、修改说明与许可证见 `Dependencies/AudioCodecs/NOTICE.txt` 及随库打包的许可证文本。
 
 ## AMLL
 

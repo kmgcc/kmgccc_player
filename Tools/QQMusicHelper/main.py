@@ -371,6 +371,38 @@ def _song_mid(value: Any) -> str:
     return _first_text(value, ("mid", "songMID", "songMid", "songmid"))
 
 
+def _album_song_entry(item: Any) -> dict[str, Any]:
+    """Album song list rows carry the song either directly or under `songInfo`."""
+    if not isinstance(item, dict):
+        return {}
+    info = _first_dict(item, ("songInfo", "song_info")) or item
+    track_number = _first_int(info, ("index_album", "indexAlbum"))
+    disc_number = _first_int(info, ("index_cd", "indexCd"))
+    return {
+        "songMid": _song_mid(info),
+        "title": _song_title(info),
+        "artist": _singers_text(info),
+        "album": _album_name(info),
+        "duration": _first_int(info, ("interval", "duration", "durationSec")),
+        "discNumber": disc_number if disc_number is not None else 0,
+        "trackNumber": track_number if track_number is not None else 0,
+    }
+
+
+def _album_song_page(value: Any) -> tuple[list[dict[str, Any]], int]:
+    plain = _to_plain(value)
+    if not isinstance(plain, dict):
+        return [], 0
+    items = plain.get("song_list")
+    if not isinstance(items, list):
+        items = plain.get("songList")
+    if not isinstance(items, list):
+        items = []
+    total = _first_int(plain, ("total_num", "totalNum")) or 0
+    songs = [_album_song_entry(item) for item in items]
+    return [song for song in songs if song.get("songMid") or song.get("title")], total
+
+
 def _album_cover_url(album_mid: str) -> str:
     if not album_mid:
         return ""
@@ -675,6 +707,55 @@ async def fetch_album_detail(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def fetch_album_songs(params: dict[str, Any]) -> dict[str, Any]:
+    """Album songs in catalog order. `index_cd`/`index_album` carry disc and track."""
+    _require_dependency()
+    album = str(params.get("album") or "").strip()
+    artist = str(params.get("artist") or "").strip()
+    album_mid = str(params.get("albumMid") or params.get("mid") or "").strip()
+
+    if not album_mid and (album or artist):
+        candidates = await search_album_artwork({"album": album, "artist": artist, "limit": 1})
+        if candidates:
+            album_mid = str(candidates[0].get("albumMid") or "").strip()
+
+    if not album_mid:
+        # A miss is a normal outcome for album ordering, not a helper failure.
+        _log(f"album songs not found album={album} artist={artist}")
+        return {"source": SOURCE, "albumMid": "", "total": 0, "songs": []}
+
+    songs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    total = 0
+    page_size = 50
+    for page in range(1, 11):
+        plain = await _execute_client_request(
+            lambda client, page=page: client.album.get_song(album_mid, num=page_size, page=page)
+        )
+        page_songs, page_total = _album_song_page(plain)
+        total = page_total or total
+        for song in page_songs:
+            key = song.get("songMid") or f"{song.get('title')}|{song.get('duration')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            songs.append(song)
+        if len(page_songs) < page_size or (total and len(songs) >= total):
+            break
+
+    songs.sort(key=lambda song: (
+        int(song.get("discNumber") or 0),
+        int(song.get("trackNumber") or 0) if int(song.get("trackNumber") or 0) > 0 else 9_999,
+    ))
+    _log(f"album songs albumMid={album_mid} total={total or len(songs)} returned={len(songs)}")
+    return {
+        "source": SOURCE,
+        "albumMid": album_mid,
+        "total": total or len(songs),
+        "songs": songs,
+    }
+
+
 async def fetch_song_detail(params: dict[str, Any]) -> dict[str, Any]:
     _require_dependency()
     title = str(params.get("title") or "").strip()
@@ -775,6 +856,14 @@ async def handle_request(request: dict[str, Any]) -> dict[str, Any]:
             f"detail=1 confidence={float(detail.get('confidence') or 0):.2f} durationMs={duration_ms}"
         )
         return {"id": request_id, "ok": True, "detail": detail}
+    elif method == "fetch_album_songs":
+        songs = await fetch_album_songs(params)
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        _log(
+            f"response id={request_id} method={method} "
+            f"songs={len(songs.get('songs') or [])} durationMs={duration_ms}"
+        )
+        return {"id": request_id, "ok": True, **songs}
     else:
         raise ValueError(f"unsupported method: {method}")
 

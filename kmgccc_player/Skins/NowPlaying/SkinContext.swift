@@ -58,6 +58,9 @@ struct SkinContext {
         /// Reuses the exact same inputs as MiniPlayerSpectrumView.
         let spectrumArtworkColors: [NSColor]
         let spectrumUsesDarkForeground: Bool
+        /// Color paired with the displayed artwork snapshot, including while
+        /// the global theme is still transitioning to another track.
+        var coverGradientDominant: NSColor? = nil
     }
 
     let track: TrackMetadata?

@@ -52,52 +52,161 @@ nonisolated enum PerAudioFileImportTask {
                     maxPixelSize: ArtworkDataNormalizer.importMaxPixelSize
                 )
             }
-            return await ImportMetadataExtractor.extractArtwork(from: candidate.fileURL)
+            if let embedded = await ImportMetadataExtractor.extractArtwork(from: candidate.fileURL) { return embedded }
+            guard candidate.discoveredFile.mediaSelection != nil else { return nil }
+            return ImportMetadataExtractor.extractProgramFolderArtwork(beside: candidate.fileURL)
         }()
         // Managed NCM progress IDs retain the encrypted source path;
         // fileURL points to a temporary decrypted audio product.
         let originalSourceURL = placement.storageKind == .managed
             && URL(fileURLWithPath: candidate.progressID).pathExtension.lowercased() == "ncm"
             ? URL(fileURLWithPath: candidate.progressID) : candidate.fileURL
-        async let localLyricsTask = LocalLyricsImporter.ttmlForImportedAudio(
-            at: originalSourceURL,
-            embeddedLyrics: candidate.metadata.lyrics
-        )
+        async let localLyricsTask: String? = {
+            if candidate.discoveredFile.mediaSelection != nil {
+                let title = candidate.metadata.title.replacingOccurrences(of: "/", with: "_")
+                let perTrackURL = originalSourceURL.deletingLastPathComponent()
+                    .appendingPathComponent(title).appendingPathExtension(originalSourceURL.pathExtension)
+                guard perTrackURL != originalSourceURL else { return nil }
+                return await LocalLyricsImporter.sidecarTTML(forAudioAt: perTrackURL)
+            }
+            return await LocalLyricsImporter.ttmlForImportedAudio(at: originalSourceURL,
+                embeddedLyrics: candidate.metadata.lyrics)
+        }()
 
+        var videoMusic: ImportedVideoMusic?
+        var generatedReferencedAudioURL: URL?
+        var preparedSuccessfully = false
+        defer {
+            if !preparedSuccessfully {
+                if let videoMusic {
+                    try? FileManager.default.removeItem(at: videoMusic.audioURL.deletingLastPathComponent())
+                }
+                if let generatedReferencedAudioURL {
+                    try? FileManager.default.removeItem(at: generatedReferencedAudioURL)
+                }
+            }
+        }
         do {
             try await cancellationToken.checkCancellation()
-            try Self.ensureAudioIsDecodable(
-                candidate.fileURL,
-                knownDuration: candidate.metadata.duration
-            )
+            if AudioFormatSupport.isVideoContainer(candidate.fileURL) {
+                videoMusic = try await VideoMusicImporter.prepare(
+                    sourceURL: candidate.fileURL,
+                    outputDirectory: stagingDirectoryURL,
+                    cancellationToken: cancellationToken
+                )
+            }
+            let preparedURL: URL
+            if case .managed(let stagedURL, _) = placement { preparedURL = stagedURL }
+            else { preparedURL = candidate.fileURL }
+            let audioURL = videoMusic?.audioURL ?? preparedURL
+            let duration = videoMusic?.duration ?? candidate.metadata.duration
+            do {
+                try Self.ensureAudioIsDecodable(
+                    audioURL,
+                    knownDuration: duration,
+                    selection: candidate.discoveredFile.mediaSelection
+                )
+            } catch {
+                // A file that is still being copied into a monitored folder can
+                // fail the decode probe and read cleanly a moment later. Wait
+                // for the write to settle and probe once more, instead of
+                // telling the user that a healthy song cannot be decoded.
+                let before = Self.fileState(audioURL)
+                guard await Self.waitForFileToSettle(audioURL),
+                      Self.fileState(audioURL) != before else {
+                    throw error
+                }
+                try Self.ensureAudioIsDecodable(
+                    audioURL,
+                    knownDuration: duration,
+                    selection: candidate.discoveredFile.mediaSelection
+                )
+            }
             try await cancellationToken.checkCancellation()
 
-            let artworkData = await extractedArtworkTask
+            let embeddedArtworkData = await extractedArtworkTask
+            let artworkData = videoMusic?.artworkData ?? embeddedArtworkData
             let ttmlLyricText = await localLyricsTask
             try await cancellationToken.checkCancellation()
 
             // A cover that exists but cannot survive a large display is not a
             // usable local cover: ask providers for a better one. The embedded
             // image stays as a fallback until a higher-resolution result lands.
-            let needsOnlineCover =
-                artworkData.map { ArtworkDataNormalizer.isBelowPreferredResolution($0) } ?? true
+            let hasVideoPoster = videoMusic?.artworkData != nil
+            let needsOnlineCover = !hasVideoPoster
+                && (artworkData.map { ArtworkDataNormalizer.isBelowPreferredResolution($0) } ?? true)
 
             // §9.2: technical properties of the physical file. NCM outputs
             // already carry bitrate/format from the decrypted header; plain
             // files are probed here while they are open for decode checks.
-            let audioProperties = candidate.audioPropertiesOverride
+            var audioProperties = candidate.audioPropertiesOverride
                 ?? Self.readAudioProperties(
-                    for: candidate.fileURL,
-                    durationSeconds: candidate.metadata.duration
+                    for: audioURL,
+                    durationSeconds: duration
                 )
+            if let selection = candidate.discoveredFile.mediaSelection {
+                var properties = audioProperties ?? TrackAudioProperties()
+                properties.mediaSelection = selection
+                audioProperties = properties
+            }
             let mediaLocator: TrackMediaLocator
+            var stagedAudioURL: URL?
             switch placement {
-            case .managed(_, let relativePath):
+            case .managed(let stagedURL, let plannedRelativePath):
+                let relativePath = videoMusic == nil ? plannedRelativePath : "Tracks/\(trackId.uuidString)/audio.m4a"
+                stagedAudioURL = videoMusic?.audioURL ?? stagedURL
                 mediaLocator = .managed(libraryRelativePath: relativePath)
             case .referenced(var locator):
+                if let videoMusic {
+                    guard let directory = candidate.videoOutputDirectoryURL else {
+                        throw VideoMusicImportError.parentAuthorizationDenied
+                    }
+                    let fingerprint = try candidate.discoveredFile.fingerprint
+                        ?? ReferencedFileIdentityProvider().fingerprint(for: candidate.fileURL)
+                    let source = ReferencedVideoSource(
+                        path: candidate.fileURL.path, fingerprint: fingerprint,
+                        bookmarkData: locator.fileBookmarkData
+                    )
+                    let published = try VideoMusicImporter.publishReferencedAudio(
+                        from: videoMusic.audioURL, beside: candidate.fileURL,
+                        in: directory, source: source
+                    )
+                    generatedReferencedAudioURL = published
+                    locator.fileBookmarkData = try SystemBookmarkResolver().refreshBookmark(for: published)
+                    locator.lastKnownPath = published.path
+                    locator.fingerprint = try ReferencedFileIdentityProvider().fingerprint(for: published)
+                    locator.videoSource = source
+                }
                 locator.primaryAudioProperties = audioProperties
                 mediaLocator = .referenced(locator)
             }
+            try await cancellationToken.checkCancellation()
+            let motionArtwork = videoMusic?.motionArtwork(trackID: trackId)
+            var stagedAssets: [ImportStagedAssetFile]
+            if let motionURL = videoMusic?.motionURL, let asset = motionArtwork?.assets.first {
+                stagedAssets = [.init(stagedURL: motionURL, libraryRelativePath: asset.relativePath)]
+            } else {
+                stagedAssets = []
+            }
+            if candidate.discoveredFile.mediaSelection != nil || candidate.fileURL.pathExtension.lowercased() == "wv",
+               case .managed(let stagedURL, let relativePath) = placement {
+                let folder = stagedURL.deletingLastPathComponent()
+                let companions: [URL]
+                if candidate.discoveredFile.mediaSelection != nil {
+                    companions = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+                } else {
+                    let correction = stagedURL.deletingPathExtension().appendingPathExtension("wvc")
+                    companions = FileManager.default.fileExists(atPath: correction.path) ? [correction] : []
+                }
+                let parent = (relativePath as NSString).deletingLastPathComponent
+                for companion in companions where companion != stagedURL {
+                    let destination = candidate.discoveredFile.mediaSelection == nil
+                        ? (relativePath as NSString).deletingPathExtension + ".wvc"
+                        : "\(parent)/\(companion.lastPathComponent)"
+                    stagedAssets.append(.init(stagedURL: companion, libraryRelativePath: destination))
+                }
+            }
+            preparedSuccessfully = true
 
             return ImportTaskOutput(
                 index: index,
@@ -112,14 +221,11 @@ nonisolated enum PerAudioFileImportTask {
                     artistCredits: candidate.metadata.artistCredits,
                     album: candidate.metadata.album,
                     albumArtist: candidate.metadata.albumArtist,
-                    duration: candidate.metadata.duration,
+                    duration: duration,
                     importedAt: importedAt,
                     originalFilePath: originalSourceURL.path,
                     mediaLocator: mediaLocator,
-                    stagedAudioURL: {
-                        if case .managed(let stagedURL, _) = placement { return stagedURL }
-                        return nil
-                    }(),
+                    stagedAudioURL: stagedAudioURL,
                     artworkData: artworkData,
                     ttmlLyricText: ttmlLyricText,
                     lyricsText: nil,
@@ -140,7 +246,11 @@ nonisolated enum PerAudioFileImportTask {
                     }(),
                     embeddedSnapshot: candidate.embeddedSnapshot,
                     audioProperties: audioProperties,
-                    enrichmentSuggestions: candidate.enrichmentSuggestions
+                    enrichmentSuggestions: candidate.enrichmentSuggestions,
+                    motionArtwork: motionArtwork,
+                    artworkIsUserSelected: hasVideoPoster,
+                    stagedAssets: stagedAssets,
+                    generatedReferencedAudioURL: generatedReferencedAudioURL
                 ),
                 needsLyricsEnrichment: ttmlLyricText == nil,
                 needsCoverEnrichment: needsOnlineCover,
@@ -192,32 +302,51 @@ nonisolated enum PerAudioFileImportTask {
         }
     }
 
-    /// Final safety net before copying a file into the library: if we never
-    /// determined a positive duration, confirm Core Audio can at least open the
-    /// file. This turns "silently imported a 0-second broken track" into a
-    /// clear, per-file import failure. Files with a known duration short-circuit
-    /// (the common case), so valid audio is never rejected here.
+    /// Size and modification date of a file. Two reads are compared to tell a
+    /// finished copy from one that is still being written.
+    nonisolated static func fileState(_ url: URL) -> FileState? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? Int64,
+              let modifiedAt = attributes[.modificationDate] as? Date else {
+            return nil
+        }
+        return FileState(size: size, modifiedAt: modifiedAt)
+    }
+
+    nonisolated struct FileState: Equatable, Sendable {
+        let size: Int64
+        let modifiedAt: Date
+    }
+
+    /// Waits until two consecutive reads agree. Bounded, so a file that is
+    /// genuinely unreadable is still reported instead of blocking the import.
+    nonisolated static func waitForFileToSettle(
+        _ url: URL,
+        timeout: TimeInterval = 3,
+        pollInterval: UInt64 = 150_000_000
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        var previous = fileState(url)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: pollInterval)
+            let current = fileState(url)
+            if let current, current == previous { return true }
+            previous = current
+        }
+        return false
+    }
+
+    /// Probe the same decoder used by playback, including a small PCM read.
+    /// AVAsset reporting a duration is not evidence that Core Audio can decode
+    /// the media; video containers previously slipped through that shortcut.
     nonisolated static func ensureAudioIsDecodable(
         _ url: URL,
-        knownDuration: Double
+        knownDuration: Double,
+        selection: AudioMediaSelection? = nil
     ) throws {
-        if knownDuration > 0, knownDuration.isFinite { return }
         do {
-            let file = try AVAudioFile(forReading: url)
-            guard file.length > 0,
-                  file.processingFormat.sampleRate.isFinite,
-                  file.processingFormat.sampleRate > 0,
-                  file.processingFormat.channelCount > 0 else {
-                throw AudioImportError.undecodable(fileName: url.lastPathComponent)
-            }
+            _ = try AudioDecoderFactory.probe(url, selection: selection)
         } catch {
-            Log.warning(
-                "[Import] rejected undecodable file '\(url.lastPathComponent)': \(error.localizedDescription)",
-                category: .import
-            )
-            if error is AudioImportError {
-                throw error
-            }
             throw AudioImportError.undecodable(fileName: url.lastPathComponent)
         }
     }
@@ -229,86 +358,15 @@ nonisolated enum PerAudioFileImportTask {
         for url: URL,
         durationSeconds: Double
     ) -> TrackAudioProperties? {
-        let format = url.pathExtension.uppercased()
-        var codec = Self.inferredCodec(forPathExtension: url.pathExtension)
-        var sampleRateHz: Int?
-        var channelCount: Int?
-        var bitDepth: Int?
-
-        if let audioFile = try? AVAudioFile(forReading: url) {
-            codec = Self.codecName(
-                for: audioFile.fileFormat.streamDescription.pointee.mFormatID
-            ) ?? codec
-            let processingFormat = audioFile.processingFormat
-            if processingFormat.sampleRate > 0 {
-                sampleRateHz = Int(processingFormat.sampleRate)
-            }
-            if processingFormat.channelCount > 0 {
-                channelCount = Int(processingFormat.channelCount)
-            }
-            let bitsPerChannel = processingFormat.streamDescription.pointee.mBitsPerChannel
-            if bitsPerChannel > 0 {
-                bitDepth = Int(bitsPerChannel)
-            }
+        guard let resource = try? AudioDecoderFactory.open(url),
+              (try? resource.provider.nextChunk(maxFrames: 256)) != nil else { return nil }
+        var properties = resource.info.audioProperties
+        properties.format = url.pathExtension.uppercased()
+        let duration = Double(resource.length) / resource.sampleRate
+        if duration > 0, let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+            properties.bitrateKbps = Int((Double(size) * 8 / duration / 1000).rounded())
         }
-
-        let bitrateKbps: Int?
-        if durationSeconds > 0, durationSeconds.isFinite,
-           let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-           let fileSize = attributes[.size] as? Int64,
-           fileSize > 0 {
-            bitrateKbps = Int((Double(fileSize) * 8 / durationSeconds / 1000).rounded())
-        } else {
-            bitrateKbps = nil
-        }
-
-        guard format.isEmpty == false || sampleRateHz != nil || bitrateKbps != nil else {
-            return nil
-        }
-        return TrackAudioProperties(
-            format: format.isEmpty ? nil : format,
-            codec: codec,
-            bitrateKbps: bitrateKbps,
-            sampleRateHz: sampleRateHz,
-            bitDepth: bitDepth,
-            channelCount: channelCount
-        )
-    }
-
-    /// AVAudioFile exposes the source stream's format id separately from the
-    /// decoded processing format. Keep the user-facing names short and stable
-    /// so diagnostics can distinguish, for example, M4A/AAC from M4A/ALAC.
-    private nonisolated static func codecName(for formatID: AudioFormatID) -> String? {
-        let bytes = [
-            UInt8((formatID >> 24) & 0xff),
-            UInt8((formatID >> 16) & 0xff),
-            UInt8((formatID >> 8) & 0xff),
-            UInt8(formatID & 0xff)
-        ]
-        guard let rawTag = String(bytes: bytes, encoding: .ascii) else { return nil }
-        switch rawTag.trimmingCharacters(in: .whitespacesAndNewlines) {
-        case "aac": return "AAC"
-        case ".mp3": return "MP3"
-        case "alac": return "ALAC"
-        case "lpcm": return "PCM"
-        case "flac": return "FLAC"
-        case "opus": return "Opus"
-        case "vorb": return "Vorbis"
-        case "ima4": return "IMA4"
-        case "ulaw": return "μ-law"
-        case "alaw": return "A-law"
-        default: return nil
-        }
-    }
-
-    private nonisolated static func inferredCodec(forPathExtension pathExtension: String) -> String? {
-        switch pathExtension.lowercased() {
-        case "mp3": return "MP3"
-        case "flac": return "FLAC"
-        case "alac": return "ALAC"
-        case "wav", "wave", "aif", "aiff": return "PCM"
-        default: return nil
-        }
+        return properties
     }
 
     // MARK: - Concurrency calculators
@@ -352,6 +410,10 @@ internal struct ImportedTrackPayload: Sendable {
     let embeddedSnapshot: EmbeddedMetadataSnapshot?
     let audioProperties: TrackAudioProperties?
     let enrichmentSuggestions: [EnrichmentSuggestion]?
+    let motionArtwork: TrackMotionArtwork?
+    let artworkIsUserSelected: Bool
+    let stagedAssets: [ImportStagedAssetFile]
+    let generatedReferencedAudioURL: URL?
 
     nonisolated init(
         id: UUID,
@@ -372,7 +434,11 @@ internal struct ImportedTrackPayload: Sendable {
         importProvenance: ImportProvenance?,
         embeddedSnapshot: EmbeddedMetadataSnapshot? = nil,
         audioProperties: TrackAudioProperties? = nil,
-        enrichmentSuggestions: [EnrichmentSuggestion]? = nil
+        enrichmentSuggestions: [EnrichmentSuggestion]? = nil,
+        motionArtwork: TrackMotionArtwork? = nil,
+        artworkIsUserSelected: Bool = false,
+        stagedAssets: [ImportStagedAssetFile] = [],
+        generatedReferencedAudioURL: URL? = nil
     ) {
         self.id = id
         self.title = title
@@ -393,6 +459,10 @@ internal struct ImportedTrackPayload: Sendable {
         self.embeddedSnapshot = embeddedSnapshot
         self.audioProperties = audioProperties
         self.enrichmentSuggestions = enrichmentSuggestions
+        self.motionArtwork = motionArtwork
+        self.artworkIsUserSelected = artworkIsUserSelected
+        self.stagedAssets = stagedAssets
+        self.generatedReferencedAudioURL = generatedReferencedAudioURL
     }
 }
 

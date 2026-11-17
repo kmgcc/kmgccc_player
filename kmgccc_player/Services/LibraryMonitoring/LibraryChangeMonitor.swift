@@ -14,7 +14,7 @@ nonisolated struct LibraryFileEvent: Sendable, Equatable {
 
 nonisolated struct ManagedLibraryFileEventFilter: Sendable {
     private let rootPath: String
-    private let authoritativeDirectoryNames = Set(["Tracks", "Playlists", "Artists", "Albums"])
+    private let authoritativeDirectoryNames = Set(["Tracks", "Playlists", "Artists", "Albums", "MediaAssets"])
 
     init(paths: LibraryPaths) {
         rootPath = paths.rootURL.standardizedFileURL.path
@@ -241,11 +241,20 @@ actor LibraryChangeMonitor {
         eventFilter = nil
     }
 
+    /// FSEvents opens one descriptor per watched path and keeps it for the
+    /// lifetime of the stream. A file source changes only together with its
+    /// directory, so watching the directory covers it while collapsing every
+    /// file of one folder into a single watch — a library that imports songs
+    /// one file at a time would otherwise hold one descriptor per song.
     private var eventWatchPaths: [String] {
         var result: [String] = []
         var seen = Set<String>()
-        for path in sourceWatchPaths.values.joined() where seen.insert(path).inserted {
-            result.append(path)
+        for path in sourceWatchPaths.values.joined() {
+            let url = URL(fileURLWithPath: path)
+            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            let watchPath = isDirectory ? path : url.deletingLastPathComponent().path
+            guard seen.insert(watchPath).inserted else { continue }
+            result.append(watchPath)
         }
         return result
     }

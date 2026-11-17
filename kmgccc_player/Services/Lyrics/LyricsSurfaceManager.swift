@@ -265,7 +265,14 @@ final class LyricsSurfaceManager {
 
     func updatePlaybackTime(_ currentTime: Double, force: Bool = false) {
         guard currentTime.isFinite, !isPlaybackTimePreviewActive else { return }
-        NativeLyricsSurfaceManager.shared.updatePlaybackTime(currentTime, force: force)
+        // Carry the transport's play state with every time sample. A surface
+        // that was woken by another path must not keep its own clock running
+        // while the transport is paused.
+        NativeLyricsSurfaceManager.shared.updatePlaybackTime(
+            currentTime,
+            force: force,
+            playing: currentPlaybackSnapshot.isPlaying
+        )
         currentPlaybackSnapshot.currentTime = NativeLyricsSurfaceManager.shared.currentPlaybackTime
     }
 

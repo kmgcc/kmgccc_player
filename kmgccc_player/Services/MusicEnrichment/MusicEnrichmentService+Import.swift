@@ -14,12 +14,13 @@ nonisolated struct ValidatedMotionVideo: Sendable {
 }
 
 nonisolated enum MotionVideoImportError: LocalizedError {
-    case unplayable, tooLong
+    case unplayable, tooLong, musicVideoNotAllowedForAlbum
 
     var errorDescription: String? {
         switch self {
         case .unplayable: "请选择可播放的视频。"
         case .tooLong: "视频时长须在20分钟以内。"
+        case .musicVideoNotAllowedForAlbum: "MV 不能作为专辑动态封面。"
         }
     }
 }
@@ -72,10 +73,21 @@ extension MusicEnrichmentService {
     func importMotionVideo(from url: URL, for query: MusicEnrichmentQuery, scope: MotionArtworkScope = .track) async throws -> MusicEnrichmentSnapshot {
         guard !isClosed else { throw CancellationError() }
         try Task.checkCancellation()
-        if scope == .album, try await importAlbumMotionVideo(from: url, for: query) {
-            return try await clearMotion(for: query, resumeAutomatic: true)
+        let validated = try await validateMotionVideo(from: url)
+        try Task.checkCancellation()
+        let isMV = query.duration > 0 && MotionAudioAligner.isMusicVideo(songDuration: query.duration, videoDuration: validated.duration)
+        let effectiveScope = isMV ? .track : scope
+        let snapshot: MusicEnrichmentSnapshot
+        if effectiveScope == .album, try await importAlbumMotionVideo(from: url, for: query) {
+            snapshot = try await clearMotion(for: query, resumeAutomatic: true)
+        } else {
+            snapshot = try await trackIndependent(Task { try await self.performMotionVideoImport(from: url, for: query) })
         }
-        return try await trackIndependent(Task { try await self.performMotionVideoImport(from: url, for: query) })
+        if let resource = snapshot.squareArtwork,
+           MotionAudioAligner.isMusicVideo(songDuration: query.duration, videoDuration: resource.duration) {
+            onImportedMotion?(query, resource)
+        }
+        return snapshot
     }
 
     private func performMotionVideoImport(from url: URL, for query: MusicEnrichmentQuery) async throws -> MusicEnrichmentSnapshot {

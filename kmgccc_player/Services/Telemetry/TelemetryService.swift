@@ -154,6 +154,7 @@ final class TelemetryService: NSObject {
     private var crashSelectedSkinID: String?
     private var checkpointTimer: Timer?
     private var uploadTask: Task<Void, Never>?
+    private var registrationTask: Task<Bool, Never>?
     // Coarse anonymous device info, computed once per launch. Only attached to
     // uploads when telemetry consent is enabled (never to the install-seen-only
     // path used for non-consenting users).
@@ -333,7 +334,7 @@ final class TelemetryService: NSObject {
     }
 
     private func recoverPreviousSessionIfNeeded() {
-        guard Self.isReportingAllowed else { return }
+        guard Self.isReportingAllowed, accumulator == nil else { return }
         guard consentStore.isEnabled, let checkpoint = recoveryStore.load() else { return }
         let summary = checkpoint.recoveredSummary()
         queue.enqueue(summaryEvent(from: summary))
@@ -476,6 +477,18 @@ final class TelemetryService: NSObject {
     /// no-ops once UserDefaults records success. Safe for install-seen-only uploads
     /// because those are already sent even when usage telemetry is disabled.
     private func ensureRegistered() async -> Bool {
+        if let registrationTask { return await registrationTask.value }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return false }
+            return await self.performSigningRegistration()
+        }
+        registrationTask = task
+        let result = await task.value
+        registrationTask = nil
+        return result
+    }
+
+    private func performSigningRegistration() async -> Bool {
         guard Self.isReportingAllowed else { return false }
         // Force key load/generation first. publicKeyBase64() calls privateKey()
         // internally, which generates a new software key and sets

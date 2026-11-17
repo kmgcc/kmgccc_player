@@ -9,6 +9,9 @@ import SwiftUI
 struct AudioVisualizationSelectorRow: View {
     let title: String
     @Binding var selection: AudioVisualizationKind
+    /// Mini Player sizes its LED meter from the available width, so it has no
+    /// meaningful count choice to offer.
+    var showsLEDCount: Bool = true
 
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
@@ -27,7 +30,7 @@ struct AudioVisualizationSelectorRow: View {
 
             // LED rows belong to the LED choice and appear only with it.
             if selection == .led {
-                LEDMeterSettingsView()
+                LEDMeterSettingsView(showsCount: showsLEDCount)
                     .transition(.opacity)
             }
         }

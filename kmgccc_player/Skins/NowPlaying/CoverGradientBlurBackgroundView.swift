@@ -279,6 +279,19 @@ struct CoverGradientBlurBackgroundView: View {
     @State private var currentSize: CGSize = .zero
     @State private var latestSize: CGSize = .zero
     @State private var isLiveResizing = false
+    /// Live motion artwork delivers a new frame ~30 times a second. Rebuilding
+    /// the whole-canvas blur for each of them costs a full render plus an
+    /// upload per video frame, which competes with the lyric animation for no
+    /// visible gain: the backdrop is already low-frequency. A change that
+    /// arrives after a quiet period (a track switch, a resize) renders at once;
+    /// a burst of live frames is limited to `liveArtworkRenderInterval`.
+    @State private var lastRenderRequestUptime: TimeInterval = 0
+    @State private var lastAcceptedRenderUptime: TimeInterval = 0
+
+    private static let liveArtworkQuietInterval: TimeInterval = 0.2
+    private static let liveArtworkRenderInterval: TimeInterval = 0.25
+    private static let debugSkipsRender =
+        ProcessInfo.processInfo.environment["KMGCCC_DEBUG_SKIP_COVER_BLUR"] == "1"
 
     var body: some View {
         GeometryReader { geometry in
@@ -360,6 +373,11 @@ struct CoverGradientBlurBackgroundView: View {
     private func performRender() async {
         let key = renderKey
 
+        // Measurement switch: KMGCCC_DEBUG_SKIP_COVER_BLUR=1 keeps the previous
+        // backdrop so an A/B run can tell whether the backdrop render and its
+        // full-canvas upload are what stalls the frame after a track switch.
+        if Self.debugSkipsRender { return }
+
         guard key.isRenderable else {
             // Transient artwork gap on a cold track switch: the new track is
             // selected before its lazily-loaded artwork data / checksum is in
@@ -376,6 +394,18 @@ struct CoverGradientBlurBackgroundView: View {
         }
 
         if lastRenderKey == key, renderedCGImage != nil { return }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let sinceLastRequest = now - lastRenderRequestUptime
+        lastRenderRequestUptime = now
+        if renderedCGImage != nil,
+           sinceLastRequest < Self.liveArtworkQuietInterval,
+           now - lastAcceptedRenderUptime < Self.liveArtworkRenderInterval {
+            // A burst of live artwork frames. Keep the current backdrop; the
+            // next accepted frame catches up within one interval.
+            return
+        }
+        lastAcceptedRenderUptime = now
 
         guard artworkData != nil || artworkImage != nil else {
             // Same hold semantics as above for the artwork-bytes gap.
@@ -1597,7 +1627,7 @@ enum CoverGradientBlurRenderer {
         config: CoverGradientBlurConfig
     ) -> CGImage? {
 
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let colorSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
 
         guard let context = CGContext(

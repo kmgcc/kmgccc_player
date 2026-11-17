@@ -55,6 +55,10 @@ Tools/ColorGoldenMaster/
 .mnemon/
 .omo/
 .dsh-vision-router/
+.dsh-computer-use/
+
+# Local verification snapshots
+/state/
 
 # macOS
 .DS_Store

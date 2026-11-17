@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     override init() {
         super.init()
         Self.shared = self
+        ProcessFileDescriptorBudget.raiseToHardLimit()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -132,11 +133,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Intercepts bare playback keys app-wide so they work even when an
     /// `NSTableView` (backing SwiftUI `List`) has keyboard focus. Without this,
     /// `NSTableView.keyDown` consumes space/arrow keys before the menu bar
-    /// shortcut can fire.
+    /// shortcut can fire. Settings also needs the opposite behavior: while its
+    /// sheet is key, playback and fullscreen shortcuts must stay inert.
     private func installKeyboardPlaybackMonitor() {
         keyboardPlaybackMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
-            if Self.routePlaybackKeyToTextInput(event, in: event.window ?? NSApp.keyWindow) {
+            let window = event.window ?? NSApp.keyWindow
+            if Self.routePlaybackKeyToTextInput(event, in: window) {
+                self.resetKeyboardSeekState()
+                return nil
+            }
+
+            if self.settingsWindowSuppressesPlaybackShortcut(event, in: window) {
                 self.resetKeyboardSeekState()
                 return nil
             }
@@ -208,8 +216,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             at: ProcessInfo.processInfo.systemUptime
         )
         let reference = step.continuesFromPreviousTarget
-            ? (seekTarget ?? playbackCoordinator.presentation.currentTime)
-            : playbackCoordinator.presentation.currentTime
+            ? (seekTarget ?? playbackCoordinator.playbackProgress.currentTime)
+            : playbackCoordinator.playbackProgress.currentTime
         let signedOffset = direction == .forward ? step.seconds : -step.seconds
         let duration = playbackCoordinator.presentation.duration
         let upperBound = duration > 0 ? duration : .greatestFiniteMagnitude
@@ -238,15 +246,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         seekPresentationIdentity = nil
     }
 
+    /// Settings is a sheet, so the app menu remains active behind it. Menu key
+    /// equivalents would otherwise start playback, seek, or open fullscreen
+    /// while the user is only navigating settings.
+    private func settingsWindowSuppressesPlaybackShortcut(_ event: NSEvent, in window: NSWindow?) -> Bool {
+        guard Self.isSettingsWindow(window),
+              Self.isPlaybackOrFullscreenShortcut(event) else { return false }
+        // A focused editor still needs its bare typing keys. Deliver the key
+        // directly so the menu cannot claim it.
+        if Self.isBareFullscreenKey(event),
+           let responder = window?.firstResponder,
+           Self.isTextInputResponder(responder) {
+            responder.keyDown(with: event)
+        }
+        return true
+    }
+
+    private static func isBareFullscreenKey(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        return modifiers.isEmpty
+            && event.charactersIgnoringModifiers?.lowercased() == "f"
+    }
+
+    private static func isSettingsWindow(_ window: NSWindow?) -> Bool {
+        var candidate = window
+        while let current = candidate {
+            if current.identifier == SettingsWindowMarker.identifier {
+                return true
+            }
+            if current.attachedSheet?.identifier == SettingsWindowMarker.identifier {
+                return true
+            }
+            candidate = current.sheetParent
+        }
+        return false
+    }
+
+    private static func isTextInputResponder(_ responder: NSResponder?) -> Bool {
+        guard let responder else { return false }
+        return responder is NSTextView
+            || responder is NSTextField
+            || String(describing: type(of: responder)).contains("FieldEditor")
+    }
+
+    private static func isPlaybackOrFullscreenShortcut(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        switch event.keyCode {
+        case 49: // Space
+            return modifiers.isEmpty
+        case 123, 124: // Left/Right arrows
+            return modifiers.isEmpty || modifiers == .command
+        default:
+            break
+        }
+
+        if isBareFullscreenKey(event) { return true }
+        guard let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
+        let windowedFullscreen: NSEvent.ModifierFlags = [.command, .control, .option]
+        let playbackPanel: NSEvent.ModifierFlags = [.command, .option]
+        if key == "f" {
+            return modifiers == windowedFullscreen
+        }
+        if key == "q" || key == "p" {
+            return modifiers == playbackPanel
+        }
+        return false
+    }
+
     /// Menu key equivalents run before the responder's normal key handling.
     /// Deliver editing keys directly so the playback menu cannot claim them.
     static func routePlaybackKeyToTextInput(_ event: NSEvent, in window: NSWindow?) -> Bool {
         guard [49, 123, 124].contains(event.keyCode),
-              let responder = window?.firstResponder else { return false }
-        guard responder is NSTextView || responder is NSTextField
-                || String(describing: type(of: responder)).contains("FieldEditor") else {
-            return false
-        }
+              let responder = window?.firstResponder,
+              isTextInputResponder(responder) else { return false }
         responder.keyDown(with: event)
         return true
     }

@@ -25,6 +25,7 @@ struct LyricsTimingConfigSection: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var configuredMotionPolicy
+    @Environment(\.settingsSearchRequest) private var searchRequest
 
     // Local state for slider binding (fixes UI update issue with @ObservationIgnored properties)
     @State private var leadInMs: Double = Defaults.leadInMs
@@ -72,6 +73,9 @@ struct LyricsTimingConfigSection: View {
             leadInMs = settings.lyricsLeadInMs
             nearSwitchGapMs = settings.lyricsNearSwitchGapMs
             globalAdvanceMs = settings.lyricsGlobalAdvanceMs
+        }
+        .onChange(of: searchRequest, initial: true) { _, request in
+            if request?.anchor == "lyrics.timing" { isExpanded = true }
         }
         .onChange(of: leadInMs) { _, _ in syncToSettings() }
         .onChange(of: nearSwitchGapMs) { _, _ in syncToSettings() }

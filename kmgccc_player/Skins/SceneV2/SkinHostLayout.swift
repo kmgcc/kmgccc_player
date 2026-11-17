@@ -8,8 +8,9 @@ enum SkinHostLayout {
     static let canvas = CGSize(width: 1470, height: 923)
     static let buttonSize: CGFloat = 60
     static let controlsBottomPadding: CGFloat = 72
-    /// Window scenes draw the fullscreen capsule a little smaller than the fullscreen host.
-    static let windowControlsScale: CGFloat = 0.8
+    /// The App's window mini player and its bottom margin. Every window skin, preset or scene,
+    /// lays out in the area above it, so content centres on what the eye sees as the page.
+    static let windowMiniPlayerReserve = Constants.Layout.miniPlayerHeight + 12
 
     struct Frames {
         var scale: CGFloat
@@ -17,6 +18,9 @@ enum SkinHostLayout {
         var artwork: CGRect
         var lyrics: CGRect
         var miniPlayer: CGRect
+        /// The whole host, from the scene's origin: in a window it reaches under the mini player,
+        /// for backdrops that should run to the bottom edge.
+        var window: CGRect
     }
 
     static func fullscreenScale(for size: CGSize) -> CGFloat {
@@ -67,20 +71,18 @@ enum SkinHostLayout {
                                 y: size.height - (controlsBottomPadding + buttonSize) * scale,
                                 width: group.width * scale, height: buttonSize * scale)
         return Frames(scale: scale, canvas: CGRect(origin: origin, size: CGSize(width: canvas.width * scale, height: canvas.height * scale)),
-                      artwork: artwork, lyrics: lyrics, miniPlayer: miniPlayer)
+                      artwork: artwork, lyrics: lyrics, miniPlayer: miniPlayer, window: CGRect(origin: .zero, size: size))
     }
 
+    /// `size` is the area above the App's mini player; the mini player itself lies just below it.
     private static func window(size: CGSize, lyricsVisible: Bool) -> Frames {
-        let scale = windowControlsScale
-        let controlsHeight = buttonSize * scale
-        let bottom = size.height - controlsHeight - 20
         let artworkWidth = lyricsVisible ? size.width * 0.56 : size.width
-        let artwork = CGRect(x: 0, y: 0, width: artworkWidth, height: max(0, bottom - 12))
-        let lyrics = CGRect(x: artworkWidth, y: 24, width: max(0, size.width - artworkWidth - 32), height: max(0, bottom - 36))
-        let group = FullscreenBottomControlsGeometry.make(isLeftActionsExpanded: false, isVolumeExpanded: false).fullGroupRect
-        let width = min(size.width - 48, group.width * scale)
-        let miniPlayer = CGRect(x: (size.width - width) / 2, y: bottom, width: width, height: controlsHeight)
-        return Frames(scale: scale, canvas: CGRect(origin: .zero, size: size), artwork: artwork, lyrics: lyrics, miniPlayer: miniPlayer)
+        let artwork = CGRect(x: 0, y: 0, width: artworkWidth, height: size.height)
+        let lyrics = CGRect(x: artworkWidth, y: 24, width: max(0, size.width - artworkWidth - 32), height: max(0, size.height - 36))
+        let inset = GlassStyleTokens.miniPlayerHorizontalPadding
+        let miniPlayer = CGRect(x: inset, y: size.height, width: max(0, size.width - inset * 2), height: Constants.Layout.miniPlayerHeight)
+        let window = CGRect(x: 0, y: 0, width: size.width, height: size.height + windowMiniPlayerReserve)
+        return Frames(scale: 1, canvas: CGRect(origin: .zero, size: size), artwork: artwork, lyrics: lyrics, miniPlayer: miniPlayer, window: window)
     }
 
     static func value(_ frames: Frames) -> SkinValue {
@@ -89,7 +91,7 @@ enum SkinHostLayout {
                      "midX": .number(rect.midX), "midY": .number(rect.midY)])
         }
         return .record(["scale": .number(frames.scale), "canvas": rect(frames.canvas), "artwork": rect(frames.artwork),
-                        "lyrics": rect(frames.lyrics), "miniPlayer": rect(frames.miniPlayer)])
+                        "lyrics": rect(frames.lyrics), "miniPlayer": rect(frames.miniPlayer), "window": rect(frames.window)])
     }
 }
 

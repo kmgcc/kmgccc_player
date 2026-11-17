@@ -60,7 +60,7 @@ private enum RotatingCoverLayout {
     private static let embeddedFullscreenYOffset: CGFloat = 12
 
     static let discToBaseRatio: CGFloat = 0.75
-    static let yOffsetWindow: CGFloat = 18
+    static let yOffsetWindow: CGFloat = 0
     static let yOffsetFullscreen: CGFloat = 32
 
     struct Metrics {
@@ -1031,6 +1031,12 @@ private struct RotatingCoverArtwork: View {
                     .frame(width: layout.baseSize, height: layout.baseSize)
                 }
             }
+            .motionArtworkFullscreenSource(
+                context: context,
+                cornerRadius: layout.baseSize * 0.5,
+                insetScale: 0.90,
+                handoffStyle: .maskedCrossfade
+            )
 
             if visualizerMode == "led" {
                 let usesFullscreen = usesFullscreenLayout
@@ -1190,7 +1196,7 @@ private struct PillSpectrumView: View {
     let isFullscreen: Bool
     @Environment(\.colorScheme) private var colorScheme
 
-    private let capsuleCount: CGFloat = 9
+    private let capsuleCount = CGFloat(TunedSpectrumEngine.baselineBandCount)
     private let capsuleWidth: CGFloat = 7
     // Keep the capsule size unchanged while tightening the gaps so the
     // spectrum reads as one continuous waveform.

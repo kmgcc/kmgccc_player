@@ -24,6 +24,10 @@ struct AllPlaylistsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var deletionRequest: PlaylistDeletionRequest?
+    @State private var toolbarTopInset: CGFloat = 0
+    @State private var scrollPositionID: UUID?
+    @State private var isUserScrollActive = false
+    @State private var pendingUserPosition: UUID?
 
     var body: some View {
         let palette = themeStore.appForegroundPalette
@@ -101,6 +105,16 @@ struct AllPlaylistsView: View {
         } message: { _ in
             Text(NSLocalizedString("edit.playlist.delete_desc", comment: ""))
         }
+        .background(
+            PlaylistTopChromeInsetReader(topInset: $toolbarTopInset)
+                .allowsHitTesting(false)
+        )
+        .task {
+            guard let savedID = pageController.collectionScrollPosition(for: .allPlaylists) else { return }
+            try? await Task.sleep(for: .milliseconds(40))
+            guard !Task.isCancelled else { return }
+            scrollPositionID = savedID
+        }
     }
 
     private func list(
@@ -109,60 +123,98 @@ struct AllPlaylistsView: View {
         secondary: Color,
         tertiary: Color
     ) -> some View {
-        ScrollView(.vertical) {
-            ReorderableMultiselectRowsSection(
-                rows: playlists,
-                isMultiselectMode: pageController.isMultiselectMode,
-                selectedIDs: pageController.selectedTrackIDs,
-                canReorder: pageController.canManuallyReorderCurrentCollection,
-                isSearchFiltering: isFiltering,
-                coordinateSpaceName: "playlistCollectionReorderSpace",
-                rowCornerRadius: 12,
-                bottomSpacerHeight: 120,
-                badgeText: { "\($0)" },
-                rowHeight: { _ in 76 },
-                onClearSelection: {
-                    pageController.clearMultiselectState()
-                },
-                onBeginReorder: {
-                    pageController.beginManualTrackReorderInteraction()
-                },
-                onEndReorder: {
-                    pageController.endManualTrackReorderInteraction()
-                },
-                onCommitOrder: { orderedIDs in
-                    pageController.commitManualCollectionOrder(
-                        orderedItemIDs: orderedIDs,
-                        reason: "manual-playlist-reorder"
-                    )
-                },
-                rowContent: { playlist, _, _ in
-                    PlaylistListRow(
-                        playlist: playlist,
-                        titleColor: primary,
-                        subtitleColor: secondary,
-                        metaColor: tertiary,
-                        onOpen: { handleRowTap(playlist) },
-                        onPlay: { play(playlist) },
-                        onDelete: { deletionRequest = PlaylistDeletionRequest(playlist: playlist) }
-                    )
-                    .libraryTrackDropTarget(.playlist(playlist.id), cornerRadius: 12, sinkAnchor: .center)
-                },
-                floatingContent: { playlist in
-                    PlaylistListRow(
-                        playlist: playlist,
-                        titleColor: primary,
-                        subtitleColor: secondary,
-                        metaColor: tertiary,
-                        enableSecondaryInteractions: false,
-                        onOpen: {},
-                        onPlay: {},
-                        onDelete: {}
-                    )
-                }
+        GeometryReader { proxy in
+            ScrollView(.vertical) {
+                ReorderableMultiselectRowsSection(
+                    rows: playlists,
+                    isMultiselectMode: pageController.isMultiselectMode,
+                    selectedIDs: pageController.selectedTrackIDs,
+                    canReorder: pageController.canManuallyReorderCurrentCollection,
+                    isSearchFiltering: isFiltering,
+                    coordinateSpaceName: "playlistCollectionReorderSpace",
+                    rowCornerRadius: 12,
+                    bottomSpacerHeight: 120,
+                    badgeText: { "\($0)" },
+                    rowHeight: { _ in 76 },
+                    onClearSelection: {
+                        pageController.clearMultiselectState()
+                    },
+                    onBeginReorder: {
+                        pageController.beginManualTrackReorderInteraction()
+                    },
+                    onEndReorder: {
+                        pageController.endManualTrackReorderInteraction()
+                    },
+                    onCommitOrder: { orderedIDs in
+                        pageController.commitManualCollectionOrder(
+                            orderedItemIDs: orderedIDs,
+                            reason: "manual-playlist-reorder"
+                        )
+                    },
+                    rowContent: { playlist, _, _ in
+                        PlaylistListRow(
+                            playlist: playlist,
+                            titleColor: primary,
+                            subtitleColor: secondary,
+                            metaColor: tertiary,
+                            onOpen: { handleRowTap(playlist) },
+                            onPlay: { play(playlist) },
+                            onDelete: { deletionRequest = PlaylistDeletionRequest(playlist: playlist) }
+                        )
+                        .libraryTrackDropTarget(.playlist(playlist.id), cornerRadius: 12, sinkAnchor: .center)
+                    },
+                    floatingContent: { playlist in
+                        PlaylistListRow(
+                            playlist: playlist,
+                            titleColor: primary,
+                            subtitleColor: secondary,
+                            metaColor: tertiary,
+                            enableSecondaryInteractions: false,
+                            onOpen: {},
+                            onPlay: {},
+                            onDelete: {}
+                        )
+                    }
+                )
+                .padding(.horizontal, Constants.Layout.listHorizontalPadding)
+                .padding(.top, 16 + toolbarTopInset)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height + toolbarTopInset, alignment: .topLeading)
+            .modifier(
+                ScrollEdgeFadeTrackingMask(
+                    topFadeHeight: 32,
+                    bottomFadeHeight: 32,
+                    topChromeInset: toolbarTopInset
+                )
             )
-            .padding(.horizontal, Constants.Layout.listHorizontalPadding)
-            .padding(.top, 16)
+            .offset(y: -toolbarTopInset)
+            .scrollPosition(
+                id: Binding<UUID?>(
+                    get: {
+                        guard !isUserScrollActive else { return nil }
+                        return scrollPositionID
+                    },
+                    set: { newValue in
+                        if isUserScrollActive {
+                            pendingUserPosition = newValue
+                        }
+                    }
+                ),
+                anchor: .top
+            )
+            .onScrollPhaseChange { oldPhase, newPhase in
+                let wasUserActive = oldPhase == .tracking || oldPhase == .interacting || oldPhase == .decelerating
+                let isUserActive = newPhase == .tracking || newPhase == .interacting || newPhase == .decelerating
+                self.isUserScrollActive = isUserActive
+                if isUserActive {
+                    scrollPositionID = nil
+                }
+                if newPhase == .idle && wasUserActive {
+                    if let pending = pendingUserPosition {
+                        pageController.updateCollectionScrollPosition(pending, for: .allPlaylists)
+                    }
+                }
+            }
         }
     }
 
@@ -220,6 +272,8 @@ struct AllPlaylistsView: View {
     }
 
     private func open(_ playlist: Playlist) {
+        let targetID = pendingUserPosition ?? playlist.id
+        pageController.updateCollectionScrollPosition(targetID, for: .allPlaylists)
         uiState.pushSelectionInHomeContext(
             .playlist(playlist.id),
             libraryVM: libraryVM

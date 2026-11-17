@@ -412,6 +412,9 @@ public final class AppSettings {
         static let lyricsBackgroundMode = "lyricsBackgroundMode"
         static let homeCardMaterialMode = "homeCardMaterialMode"
         static let homeSectionOrder = "homeSectionOrder"
+        static let homeMottoText = "homeMottoText"
+        static let homeMottoTranslation = "homeMottoTranslation"
+        static let homeMottoNote = "homeMottoNote"
     }
 
     private enum ImportKeys {
@@ -789,6 +792,52 @@ public final class AppSettings {
 
     func resetHomeSectionOrder() {
         homeSectionOrder = HomeSection.defaultOrder
+    }
+
+    static let defaultHomeMottoText = "“Where words fail, music speaks.”"
+    static let defaultHomeMottoTranslation = "言所不及处，笙箫相继。"
+    static let defaultHomeMottoNote = "— Hans Christian Andersen"
+
+    var homeMottoText: String {
+        get {
+            access(keyPath: \.homeMottoText)
+            return UserDefaults.standard.string(forKey: AppearanceKeys.homeMottoText) ?? Self.defaultHomeMottoText
+        }
+        set {
+            withMutation(keyPath: \.homeMottoText) {
+                UserDefaults.standard.set(newValue, forKey: AppearanceKeys.homeMottoText)
+            }
+        }
+    }
+
+    var homeMottoTranslation: String {
+        get {
+            access(keyPath: \.homeMottoTranslation)
+            return UserDefaults.standard.string(forKey: AppearanceKeys.homeMottoTranslation) ?? Self.defaultHomeMottoTranslation
+        }
+        set {
+            withMutation(keyPath: \.homeMottoTranslation) {
+                UserDefaults.standard.set(newValue, forKey: AppearanceKeys.homeMottoTranslation)
+            }
+        }
+    }
+
+    var homeMottoNote: String {
+        get {
+            access(keyPath: \.homeMottoNote)
+            return UserDefaults.standard.string(forKey: AppearanceKeys.homeMottoNote) ?? Self.defaultHomeMottoNote
+        }
+        set {
+            withMutation(keyPath: \.homeMottoNote) {
+                UserDefaults.standard.set(newValue, forKey: AppearanceKeys.homeMottoNote)
+            }
+        }
+    }
+
+    func resetHomeMotto() {
+        homeMottoText = Self.defaultHomeMottoText
+        homeMottoTranslation = Self.defaultHomeMottoTranslation
+        homeMottoNote = Self.defaultHomeMottoNote
     }
 
     /// Whether imported tracks should appear immediately and fetch lyrics/artwork afterward.

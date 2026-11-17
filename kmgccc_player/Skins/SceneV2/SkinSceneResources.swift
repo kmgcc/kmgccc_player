@@ -137,7 +137,8 @@ struct SkinSceneAudioCanvas: View {
 /// Deterministic particles: every position is a function of time and the particle's index, so
 /// nothing is simulated or stored. Without `lifetime` they drift upward as dust; with `lifetime`
 /// each particle is emitted at a random point, travels along `angle` ± `spread` degrees at
-/// `speed` points per second, fades in and out over its life, and draws a tail of `trail` seconds.
+/// `speed` points per second, fades in and out over its life, and draws the path of its last
+/// `trail` seconds as one tapered tail.
 struct SkinSceneParticles: View {
     let data: SkinSceneData
     let values: [String: SkinValue]
@@ -175,27 +176,45 @@ struct SkinSceneParticles: View {
         let spread = (values["spread"]?.number(20) ?? 20) * .pi / 180
         let speed = values["speed"]?.number(120) ?? 120
         let trail = max(0, values["trail"]?.number() ?? 0)
+        // `turbulence` (points) sways a comet sideways along a slow wave of `wander` rad/s, and
+        // `curve` (rad/s) bends its course. The sway is across a fixed forward axis, so the
+        // comet never turns back on itself; speed, sway and bend vary per comet.
+        let turbulence = max(0, values["turbulence"]?.number() ?? 0)
+        let wander = max(0.01, values["wander"]?.number() ?? 0.65)
+        let curve = values["curve"]?.number() ?? 0
         for index in 0..<count {
             let n = Double(index) + seed * 101
             let local = time / lifetime + hash(n, 1)
             let cycle = floor(local), t = local - cycle
-            let x0 = hash(n + cycle * 7.13, 2) * size.width, y0 = hash(n + cycle * 7.13, 3) * size.height
-            let direction = angle + (hash(n + cycle * 7.13, 4) - 0.5) * spread
-            let velocity = speed * (0.6 + 0.8 * hash(n + cycle * 7.13, 5))
+            let key = n + cycle * 7.13
+            let x0 = hash(key, 2) * size.width, y0 = hash(key, 3) * size.height
+            let direction = angle + (hash(key, 4) - 0.5) * spread
+            let velocity = speed * (0.45 + 1.1 * hash(key, 5))
+            let sway = turbulence * (0.4 + 1.2 * hash(key, 8))
+            let pace = wander * (0.6 + 0.8 * hash(key, 10))
+            let phase = hash(key, 9) * 2 * .pi
+            let bend = curve * (hash(key, 11) * 2 - 1)
+            let forward = CGPoint(x: cos(direction), y: sin(direction)), side = CGPoint(x: -forward.y, y: forward.x)
             func point(_ t: Double) -> CGPoint {
-                CGPoint(x: x0 + cos(direction) * velocity * t * lifetime, y: y0 + sin(direction) * velocity * t * lifetime)
+                let travel = t * lifetime
+                let along = velocity * travel
+                let across = sway * (sin(travel * pace + phase) - sin(phase)) + 0.5 * bend * velocity * travel * travel
+                return CGPoint(x: x0 + forward.x * along + side.x * across, y: y0 + forward.y * along + side.y * across)
             }
             let head = point(t)
             let alpha = sin(.pi * t)
             let color = palette[Int(hash(n, 6) * Double(palette.count)) % palette.count]
             let dot = radius * (0.6 + 0.8 * hash(n, 7))
-            if trail > 0 {
-                let tail = point(max(0, t - trail / lifetime))
-                var line = Path(); line.move(to: tail); line.addLine(to: head)
-                context.stroke(line, with: .linearGradient(Gradient(colors: [color.opacity(0), color.opacity(alpha)]), startPoint: tail, endPoint: head),
-                               style: StrokeStyle(lineWidth: dot * 1.2, lineCap: .round))
+            let headRadius = max(dot, 1.2)
+            if trail > 0, t > 0, alpha > 0.001 {
+                let tailTime = max(0, t - trail * (0.7 + 0.6 * hash(key, 12)) / lifetime)
+                let points = (0...28).map { point(tailTime + (t - tailTime) * Double($0) / 28) }
+                SkinCometPath.draw(in: &context, points: points, width: headRadius, head: headRadius, color: color, alpha: alpha)
+                continue
             }
-            context.fill(Path(ellipseIn: CGRect(x: head.x - dot, y: head.y - dot, width: dot * 2, height: dot * 2)), with: .color(color.opacity(alpha)))
+            let headRect = CGRect(x: head.x - headRadius, y: head.y - headRadius,
+                                  width: headRadius * 2, height: headRadius * 2)
+            context.fill(Path(ellipseIn: headRect), with: .color(color.opacity(alpha)))
         }
     }
 

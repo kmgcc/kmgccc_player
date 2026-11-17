@@ -84,7 +84,7 @@ nonisolated struct MusicLibraryManifest: Codable, Sendable, Equatable {
     }
 
     func validated() throws -> MusicLibraryManifest {
-        guard schemaVersion == Self.currentSchemaVersion else {
+        guard (1...2).contains(schemaVersion) else {
             throw MusicLibraryManifestError.unsupportedSchema(schemaVersion)
         }
         guard libraryID != UUID.zero else {
@@ -99,7 +99,16 @@ nonisolated struct MusicLibraryManifest: Codable, Sendable, Equatable {
     static func read(from url: URL) throws -> MusicLibraryManifest {
         let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: value) { return date }
+            formatter.formatOptions = [.withInternetDateTime]
+            if let date = formatter.date(from: value) { return date }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid library manifest date")
+        }
         return try decoder.decode(MusicLibraryManifest.self, from: data).validated()
     }
 
@@ -112,7 +121,15 @@ nonisolated struct MusicLibraryManifest: Codable, Sendable, Equatable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(self).write(to: url, options: .atomic)
+        // Renaming a library from a context opened before its first split import
+        // must retain the newer on-disk format version.
+        var manifest = self
+        if let existing = try? Self.read(from: url), existing.libraryID == libraryID,
+           existing.schemaVersion > schemaVersion {
+            manifest = Self(schemaVersion: existing.schemaVersion, libraryID: libraryID,
+                displayName: displayName, mode: mode, createdAt: createdAt, updatedAt: updatedAt)
+        }
+        try encoder.encode(manifest).write(to: url, options: .atomic)
     }
 }
 

@@ -639,6 +639,10 @@ final class LibraryInitialImportIntegrationTests: XCTestCase {
             cancelledIDs.formUnion(trackIDs)
             await base.cancelEnrichment(for: trackIDs)
         }
+
+        func organizeAlbumTrackOrder(albumKey: String) async -> AlbumOrderingOutcome {
+            await base.organizeAlbumTrackOrder(albumKey: albumKey)
+        }
     }
 
     private struct SelectiveTrackRecycler: LibraryRecycling {

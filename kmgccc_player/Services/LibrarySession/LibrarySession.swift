@@ -114,6 +114,7 @@ final class LibrarySession: LibrarySessionLifecycle {
     /// Playback signals the background scheduler and habit forecast use:
     /// listening starts, and audio supply that ran short.
     func bindBackgroundSignals(scheduler: BackgroundWorkScheduler, habits: ListeningHabitForecast) {
+        importEnrichmentService.resumeSavedWork()
         playbackService.onListeningStarted = { [weak self, weak habits] in
             habits?.recordListeningStart()
             // Volume normalization is on whenever its idle scan is active or
@@ -204,6 +205,11 @@ final class LibrarySession: LibrarySessionLifecycle {
                 keeping: Set(self.libraryViewModel.allTracks.map(\.id))
             )
             await self.searchIndex.compact()
+            let paths = self.context.paths
+            await Task.detached(priority: .utility) {
+                do { try SharedMediaAssetStore.pruneUnreferenced(paths: paths) }
+                catch { Log.warning("[LibraryStorage] shared media retained: \(error.localizedDescription)", category: .library) }
+            }.value
         }
         storageMaintenance = maintenance
         maintenance.start(scheduler: scheduler, owner: owner)
@@ -217,9 +223,15 @@ final class LibrarySession: LibrarySessionLifecycle {
     private let playbackService: AVAudioPlaybackService
     private let operationCoordinator: LibraryOperationCoordinator
     private let mutationCoordinator: LibraryMutationCoordinator
+    private let mutationJournal: LibraryMutationJournal
     private var isLoaded = false
     private var isClosed = false
+    private var onSlowQuiescenceStage: (@MainActor (String) -> Void)?
     private(set) var initialReconcileOutcome: InitialReconcileOutcome?
+    private(set) var unresolvedMutationIntents: [LibraryMutationIntent] = []
+    var unresolvedMutationCount = 0
+    var ncmRecoveryService: ReferencedNCMConversionService?
+    private var onUnresolvedMutation: (@MainActor () -> Void)?
 
     init(
         context: LibraryContext,
@@ -240,6 +252,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         fileImportService: FileImportService,
         operationCoordinator: LibraryOperationCoordinator,
         mutationCoordinator: LibraryMutationCoordinator,
+        mutationJournal: LibraryMutationJournal,
         storageBackend: any LibraryStorageBackend,
         referencedSourceStore: ReferencedSourceStore?,
         referencedSourceScope: ReferencedSourceScope?,
@@ -271,6 +284,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         self.fileImportService = fileImportService
         self.operationCoordinator = operationCoordinator
         self.mutationCoordinator = mutationCoordinator
+        self.mutationJournal = mutationJournal
         self.storageBackend = storageBackend
         self.referencedSourceStore = referencedSourceStore
         self.referencedSourceScope = referencedSourceScope
@@ -282,6 +296,9 @@ final class LibrarySession: LibrarySessionLifecycle {
         self.playbackCoordinator = playbackCoordinator
         self.lyricsViewModel = lyricsViewModel
         self.ledMeterProvider = ledMeterProvider
+        mutationCoordinator.onUnresolvedMutation = { [weak self] intent in
+            self?.noteUnresolvedMutation(intent)
+        }
     }
 
     func load() async throws {
@@ -290,6 +307,24 @@ final class LibrarySession: LibrarySessionLifecycle {
         try context.paths.createRequiredDirectories()
         await libraryViewModel.reloadLibrary()
         try Task.checkCancellation()
+        if let ncmRecoveryService {
+            let candidates = libraryViewModel.allTracks.compactMap { track in
+                track.ncmConversionAssociation.map { (trackID: track.id, association: $0) }
+            }
+            await ncmRecoveryService.recoverCommittedAssociations(candidates)
+            var locationsByTrack: [UUID: [ReferencedTrackLocation]] = [:]
+            for track in libraryViewModel.allTracks {
+                if let locator = track.mediaLocator.referencedFile {
+                    locationsByTrack[track.id] = locator.locations
+                }
+            }
+            await ncmRecoveryService.recoverCommittedLocations(locationsByTrack)
+        }
+        // The journal only records that a commit was interrupted. Establish
+        // whether its durable projection is actually consistent before any
+        // writer is allowed to touch the same targets. NCM recovery runs
+        // first so an association it can finish is visible to the verifier.
+        await recoverPendingMutations()
         if let referencedSourceReconciler {
             initialReconcileOutcome = try await Self.runInitialReconcile(
                 reconciler: referencedSourceReconciler,
@@ -331,6 +366,22 @@ final class LibrarySession: LibrarySessionLifecycle {
         } catch {
             Log.warning(
                 "[LibrarySession] referenced orphan repair deferred after load failure: \(error)",
+                category: .library
+            )
+        }
+
+        // A file source whose songs are already gone can only be left over
+        // from an earlier deletion. The change monitor has not started yet,
+        // so retiring it here needs no watch-path handover.
+        do {
+            _ = try await operationCoordinator.run {
+                try await reconciler.pruneUnusedFileSources()
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            Log.warning(
+                "[LibrarySession] unused file source cleanup deferred after load failure: \(error)",
                 category: .library
             )
         }
@@ -448,6 +499,223 @@ final class LibrarySession: LibrarySessionLifecycle {
     /// lifetime registry. Callers must use this wrapper for user-initiated
     /// asynchronous work instead of creating an unowned Task around the
     /// session.
+    func quarantineAudioProgramIssues(_ issues: [LibraryRepairIssue]) async throws -> LibraryRepairQuarantineResult {
+        try await runLibraryOperation { [self] in
+            while await LibraryImportCoordinator.shared.snapshot().isImporting {
+                try await Task.sleep(for: .milliseconds(200))
+            }
+            try Task.checkCancellation()
+            return try await mutationCoordinator.run(kind: .userLibraryMutation) { [self] in
+                LibraryRepairQuarantineService(rootURL: context.rootURL).quarantine(issues, libraryID: context.id)
+            }
+        }
+    }
+
+    func restoreAudioProgram(_ snapshotID: UUID) async throws {
+        guard let snapshot = try AudioProgramRecoverySnapshot.loadAll(paths: context.paths).first(where: { $0.id == snapshotID }) else {
+            throw AudioDecodingError.failed("整轨恢复记录已失效")
+        }
+        try await mutationCoordinator.run(kind: .userLibraryMutation,
+            targetIDs: snapshot.oldTracks.map { $0.id.uuidString }) { [self] in
+            try snapshot.restoreTrackFiles(paths: context.paths)
+            await repository.reloadFromLibrary()
+            let tracks = await repository.fetchTracks(in: nil)
+            let byID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+            let playlists = await repository.fetchPlaylists()
+            let datesByPlaylist = await repository.fetchPlaylistItemAddedAtMap()
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let oldSources = try snapshot.oldTracks.map { (saved: $0, sidecar: try decoder.decode(TrackSidecar.self, from: $0.sidecar)) }
+            var replacements: [UUID: UUID] = [:]
+            for child in tracks where snapshot.newTrackIDs.contains(child.id) {
+                let matching = oldSources.filter { original in
+                    let sameMedia = original.saved.replacementMediaPath.map { $0 == child.mediaLocator.managedLibraryRelativePath }
+                        ?? (original.sidecar.mediaLocator.referencedFile?.lastKnownPath == child.mediaLocator.referencedFile?.lastKnownPath)
+                    guard sameMedia else { return false }
+                    let selection = original.sidecar.audioProperties?.mediaSelection ?? original.sidecar.mediaLocator.referencedFile?.primaryAudioProperties?.mediaSelection
+                    return selection == nil || selection?.trackNumber == child.mediaSelection?.trackNumber
+                }
+                if matching.count == 1 { replacements[child.id] = matching[0].saved.id }
+            }
+            for saved in snapshot.playlists {
+                guard let playlist = playlists.first(where: { $0.id == saved.id }) else { continue }
+                var next: [Track] = []
+                var seen = Set<UUID>()
+                var dates = datesByPlaylist[playlist.id] ?? [:]
+                for current in playlist.tracks {
+                    let id = replacements[current.id] ?? current.id
+                    guard seen.insert(id).inserted, let restored = byID[id] else { continue }
+                    next.append(restored)
+                    if id != current.id { dates[id] = saved.itemAddedAt[id] ?? dates[current.id] }
+                }
+                try await repository.replacePlaylistTracks(next, in: playlist, itemAddedAt: dates)
+            }
+        }
+    }
+
+    private func updateAudioProgramRanges(_ proposal: AudioProgramExpansionProposal) async throws -> Int? {
+        let all = await repository.fetchTracks(in: nil)
+        let old = all.filter { proposal.oldTrackIDs.contains($0.id) }
+        guard old.count == proposal.trackCount, old.allSatisfy({ $0.mediaSelection != nil }) else { return nil }
+        let programs = try await fileImportService.audioProgramsForUpdate(proposal)
+        guard programs.count == old.count else { return nil }
+        let byKey = Dictionary(grouping: programs, by: { $0.mediaSelection?.logicalKey ?? "" })
+        for track in old {
+            guard let prior = track.mediaSelection, let files = byKey[prior.logicalKey], files.count == 1,
+                  let file = files.first, let metadata = file.programMetadata, let incoming = file.mediaSelection,
+                  metadata.album == (track.embeddedMetadataSnapshot?.album ?? track.album),
+                  metadata.albumArtist == (track.embeddedMetadataSnapshot?.albumArtist ?? prior.albumArtist ?? track.albumArtist) else { return nil }
+            let sameRange = prior.start == incoming.start && prior.length == incoming.length && prior.timeScale == incoming.timeScale
+            let sameRecording = LibraryNormalization.normalizeTitle(track.embeddedMetadataSnapshot?.title ?? track.title) == LibraryNormalization.normalizeTitle(metadata.title)
+                && LibraryNormalization.normalizeArtist(track.embeddedMetadataSnapshot?.artistDisplay ?? track.artist) == LibraryNormalization.normalizeArtist(metadata.artist)
+            guard sameRange || sameRecording else { return nil }
+            if let path = track.mediaLocator.managedLibraryRelativePath, let fingerprint = file.fingerprint {
+                let physical = AudioMediaSelection.groupID(for: file.url)
+                let prefix = "MediaAssets/\(proposal.id.uuidString)/\(physical.uuidString)-\(fingerprint.fileSize)-\(fingerprint.modifiedAt)/"
+                guard path.hasPrefix(prefix) else { return nil }
+            }
+        }
+        return try await mutationCoordinator.run(kind: .userLibraryMutation,
+            targetIDs: old.map { $0.id.uuidString }) { [self] in
+            let saved = try old.map { track in
+                AudioProgramRecoverySnapshot.WholeTrack(id: track.id,
+                    sidecar: try Data(contentsOf: context.paths.trackMetaURL(for: track.id)),
+                    replacementMediaPath: track.mediaLocator.managedLibraryRelativePath)
+            }
+            let snapshot = AudioProgramRecoverySnapshot(id: UUID(), createdAt: Date(), oldTracks: saved,
+                newTrackIDs: old.map(\.id), playlists: [])
+            try snapshot.write(to: context.paths)
+            let transaction = try AudioProgramImportTransaction.begin(groupID: proposal.id,
+                trackIDs: Set(old.map(\.id)), paths: context.paths, recoverySnapshotID: snapshot.id)
+            await fileImportService.cancelEnrichment(for: Set(old.map(\.id)))
+            if let current = playerViewModel.currentTrack, old.contains(where: { $0.id == current.id }) { playerViewModel.stop() }
+            do {
+                for track in old {
+                    guard let key = track.mediaSelection?.logicalKey, let selection = byKey[key]?.first?.mediaSelection else { continue }
+                    var properties = track.mediaLocator.referencedFile?.primaryAudioProperties ?? track.audioProperties ?? TrackAudioProperties()
+                    properties.mediaSelection = selection
+                    properties.mediaSelection?.albumResourceID = track.mediaSelection?.albumResourceID
+                    if case .referenced(var locator) = track.mediaLocator {
+                        locator.primaryAudioProperties = properties
+                        track.mediaLocator = .referenced(locator)
+                    } else { track.audioProperties = properties }
+                    if let metadata = byKey[key]?.first?.programMetadata {
+                        var source = track.embeddedMetadataSnapshot ?? EmbeddedMetadataSnapshot(capturedAt: Date())
+                        source.title = metadata.title
+                        source.artistDisplay = metadata.artist
+                        source.album = metadata.album
+                        source.albumArtist = metadata.albumArtist
+                        source.durationSeconds = selection.duration
+                        source.capturedAt = Date()
+                        track.embeddedMetadataSnapshot = source
+                        if !track.isMetadataFieldManual("title") { track.title = metadata.title }
+                        if !track.isMetadataFieldManual("artist") { track.artist = metadata.artist }
+                    }
+                    track.duration = selection.duration
+                }
+                let result = await repository.persistTrackMetaOnly(old, reason: "audioProgramRanges")
+                guard result.failedTrackIDs.isEmpty else { throw AudioDecodingError.failed("分轨范围保存失败") }
+                try transaction.complete(paths: context.paths)
+            } catch {
+                try snapshot.restoreTrackFiles(paths: context.paths)
+                try transaction.complete(paths: context.paths)
+                await repository.reloadFromLibrary()
+                throw error
+            }
+            await importEnrichmentService.enqueueTracks(old)
+            return old.count
+        }
+    }
+
+    func expandAudioPrograms(_ requests: [AudioProgramExpansionProposal]) async throws -> Int {
+        var proposals: [AudioProgramExpansionProposal] = []
+        var updatedCount = 0
+        for proposal in requests {
+            if let count = try await updateAudioProgramRanges(proposal) { updatedCount += count }
+            else { proposals.append(proposal) }
+        }
+        guard !proposals.isEmpty else { return updatedCount }
+        let oldIDs = Set(proposals.flatMap(\.oldTrackIDs))
+        libraryViewModel.onTracksDeleted?(oldIDs)
+        await fileImportService.cancelEnrichment(for: oldIDs)
+        let imported = await fileImportService.expandAudioPrograms(proposals)
+        guard proposals.allSatisfy({ proposal in
+            imported.filter { $0.mediaSelection?.groupID == proposal.id }.count == proposal.trackCount
+        }) else { throw AudioDecodingError.failed("分轨尚未完整导入，原整轨已保留") }
+        let existing = await repository.fetchTracks(in: nil)
+        let oldTracks = existing.filter { oldIDs.contains($0.id) }
+        let playlists = await repository.fetchPlaylists()
+        let impacted = playlists.filter { $0.tracks.contains { oldIDs.contains($0.id) } }
+        let prior = Dictionary(uniqueKeysWithValues: impacted.map { ($0.id, $0.tracks) })
+        let priorDates = await repository.fetchPlaylistItemAddedAtMap()
+        let paths = context.paths
+        return try await mutationCoordinator.run(kind: .userLibraryMutation,
+            targetIDs: oldTracks.map { $0.id.uuidString }) { [self] in
+            let savedTracks = try oldTracks.map { track in
+                let sidecar = try Data(contentsOf: paths.trackMetaURL(for: track.id))
+                let group = proposals.first { $0.oldTrackIDs.contains(track.id) }?.id
+                let originalPaths = Set([track.originalFilePath, track.mediaLocator.referencedFile?.lastKnownPath,
+                    track.mediaLocator.managedLibraryRelativePath.flatMap { paths.libraryURL(from: $0)?.path }]
+                    .compactMap { $0 }.filter { !$0.isEmpty }.map(TrackIdentityResolver.canonicalPath))
+                let candidates = imported.filter { $0.mediaSelection?.groupID == group }
+                let replacement = candidates.first { originalPaths.contains(TrackIdentityResolver.canonicalPath($0.originalFilePath)) }
+                    ?? (Set(candidates.map { $0.mediaLocator.managedLibraryRelativePath ?? $0.originalFilePath }).count == 1 ? candidates.first : nil)
+                if track.mediaLocator.storageKind == .managed && replacement == nil {
+                    throw AudioDecodingError.failed("原整轨和分轨音频无法对应，请核对 CUE 文件")
+                }
+                return AudioProgramRecoverySnapshot.WholeTrack(id: track.id, sidecar: sidecar,
+                    replacementMediaPath: replacement?.mediaLocator.managedLibraryRelativePath)
+            }
+            let snapshot = AudioProgramRecoverySnapshot(id: UUID(), createdAt: Date(), oldTracks: savedTracks,
+                newTrackIDs: imported.map(\.id), playlists: impacted.map {
+                    AudioProgramRecoverySnapshot.PlaylistState(id: $0.id, trackIDs: $0.tracks.map(\.id),
+                        itemAddedAt: priorDates[$0.id] ?? [:])
+                })
+            try snapshot.write(to: paths)
+            do {
+                for playlist in impacted {
+                    var next: [Track] = []
+                    var seen = Set<UUID>()
+                    var dates = priorDates[playlist.id] ?? [:]
+                    for track in prior[playlist.id] ?? [] {
+                        if let proposal = proposals.first(where: { $0.oldTrackIDs.contains(track.id) }) {
+                            let children = imported.filter {
+                                $0.mediaSelection?.groupID == proposal.id
+                                    && (track.mediaSelection == nil || $0.mediaSelection?.trackNumber == track.mediaSelection?.trackNumber)
+                            }
+                                .sorted { ($0.mediaSelection?.trackNumber ?? 0) < ($1.mediaSelection?.trackNumber ?? 0) }
+                            for child in children where seen.insert(child.id).inserted {
+                                next.append(child)
+                                dates[child.id] = dates[track.id] ?? Date()
+                            }
+                            dates[track.id] = nil
+                        } else if seen.insert(track.id).inserted { next.append(track) }
+                    }
+                    try await repository.replacePlaylistTracks(next, in: playlist, itemAddedAt: dates)
+                }
+                await fileImportService.cancelEnrichment(for: Set(oldTracks.map(\.id)))
+                try await repository.deleteTracks(oldTracks)
+            } catch {
+                let replacementError = error
+                try snapshot.restoreTrackFiles(paths: paths)
+                await repository.reloadFromLibrary()
+                let restored = await repository.fetchTracks(in: nil)
+                let restoredByID = Dictionary(uniqueKeysWithValues: restored.map { ($0.id, $0) })
+                let currentPlaylists = await repository.fetchPlaylists()
+                for original in impacted {
+                    guard let playlist = currentPlaylists.first(where: { $0.id == original.id }) else { continue }
+                    let tracks = (prior[playlist.id] ?? []).compactMap { restoredByID[$0.id] }
+                    try await repository.replacePlaylistTracks(tracks, in: playlist,
+                        itemAddedAt: priorDates[playlist.id] ?? [:])
+                }
+                await fileImportService.cancelEnrichment(for: Set(imported.map(\.id)))
+                try await repository.deleteTracks(imported)
+                throw replacementError
+            }
+            return imported.count + updatedCount
+        }
+    }
+
     func runLibraryOperation<Value: Sendable>(
         _ work: @escaping @MainActor () async throws -> Value
     ) async throws -> Value {
@@ -466,6 +734,111 @@ final class LibrarySession: LibrarySessionLifecycle {
     /// instead of polling task state.
     func bindLibraryTaskStateObserver(_ onChange: (@MainActor () -> Void)?) {
         operationCoordinator.onTasksDidChange = onChange
+    }
+
+    func bindUnresolvedMutationObserver(_ onChange: (@MainActor () -> Void)?) {
+        onUnresolvedMutation = onChange
+    }
+
+    /// Re-examines pending intents against the durable projections. Called on
+    /// load and from the repair surface after the user reviews the records.
+    /// Returns the number of intents that remain unresolved.
+    @discardableResult
+    func recoverPendingMutations() async -> Int {
+        let paths = context.paths
+        let intents: [LibraryMutationIntent]
+        do {
+            intents = try await mutationJournal.pendingIntents()
+        } catch {
+            Log.error("[LibraryMutation] cannot inspect pending records: \(error)", category: .library)
+            return unresolvedMutationCount
+        }
+        guard !intents.isEmpty else {
+            applyUnresolvedMutations([])
+            return 0
+        }
+        let snapshot = await Task.detached(priority: .utility) {
+            LibraryMutationProjectionReader.read(paths: paths)
+        }.value
+        var unresolved: [LibraryMutationIntent] = []
+        for intent in intents {
+            let verdict = LibraryMutationVerifier.verify(intent, snapshot: snapshot)
+            guard verdict.isResolved else {
+                unresolved.append(intent)
+                continue
+            }
+            do {
+                _ = try await mutationJournal.markResolved(
+                    intentID: intent.id,
+                    summary: verdict.summary
+                )
+                Log.warning(
+                    "[LibraryMutation] verified interrupted \(intent.kind.rawValue) intent \(intent.id): \(verdict.summary)",
+                    category: .library
+                )
+            } catch {
+                Log.error(
+                    "[LibraryMutation] failed to archive verified intent \(intent.id): \(error)",
+                    category: .library
+                )
+                unresolved.append(intent)
+            }
+        }
+        applyUnresolvedMutations(unresolved)
+        return unresolved.count
+    }
+
+    /// Archives every currently unresolved intent after the user reviewed the
+    /// records. Nothing in the library is modified and no recovery is claimed.
+    @discardableResult
+    func archiveUnresolvedMutations() async -> Int {
+        // A record that a verifier can still resolve must be recovered rather
+        // than filed as reviewed, even when the user came here to archive.
+        await recoverPendingMutations()
+        var archived = 0
+        for intent in unresolvedMutationIntents {
+            do {
+                _ = try await mutationJournal.archiveUnresolved(
+                    intentID: intent.id,
+                    summary: "reviewed by the user; no automatic verifier applies"
+                )
+                archived += 1
+            } catch {
+                Log.error(
+                    "[LibraryMutation] failed to archive reviewed intent \(intent.id): \(error)",
+                    category: .library
+                )
+            }
+        }
+        await recoverPendingMutations()
+        return archived
+    }
+
+    private func noteUnresolvedMutation(_ intent: LibraryMutationIntent) {
+        if let index = unresolvedMutationIntents.firstIndex(where: { $0.id == intent.id }) {
+            unresolvedMutationIntents[index] = intent
+        } else {
+            unresolvedMutationIntents.append(intent)
+        }
+        unresolvedMutationCount = unresolvedMutationIntents.count
+        mutationCoordinator.isolateTargets(intent.targetIDs)
+        onUnresolvedMutation?()
+    }
+
+    private func applyUnresolvedMutations(_ intents: [LibraryMutationIntent]) {
+        unresolvedMutationIntents = intents
+        unresolvedMutationCount = intents.count
+        mutationCoordinator.replaceIsolatedTargets(Set(intents.flatMap(\.targetIDs)))
+    }
+
+    func bindSlowQuiescenceObserver(
+        tasks: (@MainActor ([LibraryTaskKind]) -> Void)?,
+        commits: (@MainActor (Int) -> Void)?,
+        stage: (@MainActor (String) -> Void)?
+    ) {
+        operationCoordinator.onSlowQuiescence = tasks
+        mutationCoordinator.onSlowQuiescence = commits
+        onSlowQuiescenceStage = stage
     }
 
     /// Current live task descriptors for hosts that surface session-wide
@@ -797,7 +1170,7 @@ final class LibrarySession: LibrarySessionLifecycle {
                 conflicted: false,
                 currentQuality: currentQuality,
                 candidateQuality: candidateQuality,
-                message: "kept current lyrics because the candidate is not better"
+                message: "Kept the current lyrics: candidate quality \(candidateQuality) does not beat the current \(currentQuality). Pass force=true to replace them anyway."
             )
         }
         track.ttmlLyricText = ttml
@@ -944,6 +1317,52 @@ final class LibrarySession: LibrarySessionLifecycle {
                 try await work()
             }
         }
+        libraryViewModel.afterTracksDeleted = { [weak self] in
+            await self?.pruneUnusedFileSourcesAfterDeletion()
+        }
+    }
+
+    /// Deleting the last song of a single-file source retires that source in
+    /// the same turn, so 音乐来源 never lists an entry that leads nowhere.
+    /// The change monitor is handed over to the remaining roots only when a
+    /// source is actually removed.
+    private func pruneUnusedFileSourcesAfterDeletion() async {
+        guard !isClosed, let reconciler = referencedSourceReconciler else { return }
+        let pending: [UUID]
+        do {
+            pending = try await reconciler.unusedFileSourceIDs()
+        } catch {
+            Log.warning(
+                "[LibrarySession] unused file source lookup failed: \(error.localizedDescription)",
+                category: .library
+            )
+            return
+        }
+        guard !pending.isEmpty else { return }
+        guard let libraryChangeMonitor else {
+            _ = try? await reconciler.pruneUnusedFileSources()
+            return
+        }
+        let originalRoots = (try? await reconciler.monitoredSourceRoots()) ?? [:]
+        await libraryChangeMonitor.stopAndWait()
+        _ = try? await reconciler.pruneUnusedFileSources()
+        do {
+            try await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: reconciler,
+                roots: try await reconciler.monitoredSourceRoots()
+            )
+        } catch {
+            Log.error(
+                "[LibrarySession] source monitor restart after file source cleanup failed: \(error.localizedDescription)",
+                category: .library
+            )
+            try? await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: reconciler,
+                roots: originalRoots
+            )
+        }
     }
 
     /// Starts non-blocking session work, such as initial import after the
@@ -1048,7 +1467,11 @@ final class LibrarySession: LibrarySessionLifecycle {
                 values["enrichmentCompleted"] = .boolean(true)
                 values["enrichmentWarnings"] = .array(warnings.map { .string($0) })
                 self.operationCoordinator.recordResult(.object(values))
-                self.operationCoordinator.recordCheckpoint("Import and enrichment complete")
+                for warning in warnings {
+                    let trackID = UUID(uuidString: String(warning.prefix(36)))
+                    self.operationCoordinator.recordPartialFailure(warning, itemID: trackID)
+                }
+                self.operationCoordinator.recordCheckpoint(warnings.isEmpty ? "Import and enrichment complete" : "Import complete with enrichment items pending")
             } catch is CancellationError {
                 let cancelledEnrichmentIDs = retryEnrichment
                     ? affectedTrackIDs
@@ -1755,6 +2178,7 @@ final class LibrarySession: LibrarySessionLifecycle {
             context.paths.playlistsRootURL,
             context.paths.artistsRootURL,
             context.paths.albumsRootURL,
+            context.rootURL.appendingPathComponent("MediaAssets", isDirectory: true),
         ]
         let fileManager = FileManager.default
         guard paths.allSatisfy({ fileManager.fileExists(atPath: $0.path) }) else {
@@ -1783,6 +2207,17 @@ final class LibrarySession: LibrarySessionLifecycle {
         )
     }
 
+    private func waitForQuiescenceStage(_ label: String, work: @MainActor () async -> Void) async {
+        let warning = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(15)) }
+            catch { return }
+            Log.warning("[LibrarySession] waiting for \(label) to finish", category: .library)
+            self?.onSlowQuiescenceStage?(label)
+        }
+        defer { warning.cancel() }
+        await work()
+    }
+
     func quiesce() async {
         guard !isClosed else { return }
         operationCoordinator.stopAcceptingNewOperations()
@@ -1791,13 +2226,13 @@ final class LibrarySession: LibrarySessionLifecycle {
         revokeBackgroundWork()
         playbackService.unbindAudioProcessingGlobals()
         playbackService.unbindAudioDSPDevices()
-        await libraryChangeMonitor?.stopAndWait()
+        await waitForQuiescenceStage("文件监控") { _ = await libraryChangeMonitor?.stopAndWait() }
         await operationCoordinator.cancelAndWait()
-        await fileImportService.quiesce()
+        await waitForQuiescenceStage("文件导入") { await fileImportService.quiesce() }
         playerViewModel.stop()
         playerViewModel.stopLevelMeter()
-        await importEnrichmentService.quiesce()
-        await libraryService.quiesceAndWaitForBackgroundWrites()
+        await waitForQuiescenceStage("信息补全") { await importEnrichmentService.quiesce() }
+        await waitForQuiescenceStage("后台写入") { await libraryService.quiesceAndWaitForBackgroundWrites() }
         mutationCoordinator.stopAcceptingNewMutations()
         await mutationCoordinator.waitForDrain()
         libraryViewModel.prepareForSessionClose()

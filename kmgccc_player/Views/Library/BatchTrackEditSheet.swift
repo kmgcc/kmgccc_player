@@ -630,7 +630,7 @@ struct BatchTrackEditSheet: View {
         guard let track = currentTrack else { return nil }
         return MusicEnrichmentQuery(
             key: "track:" + track.id.uuidString, title: title, artist: artist, album: album,
-            duration: track.duration, albumArtist: track.albumArtist
+            duration: track.duration, albumArtist: track.albumArtist, sourceAlbumIdentity: track.audioProgramLookupScope
         )
     }
 
@@ -639,6 +639,9 @@ struct BatchTrackEditSheet: View {
     private func prepareTrack(at index: Int, triggerAutoSearch: Bool) {
         guard tracks.indices.contains(index) else { return }
 
+        coverFetchTask?.cancel()
+        coverFetchTask = nil
+        coverCoordinator?.cancelSearch()
         currentIndex = index
         coverCoordinator?.clear()  // Clear stale candidates from previous track
         pendingMotionCandidate = nil
@@ -648,6 +651,7 @@ struct BatchTrackEditSheet: View {
         metadataLookupMessage = nil
         metadataFetchTask?.cancel()
         metadataFetchTask = nil
+        isMetadataLookupInFlight = false
 
         loadTrackDraft(from: tracks[index])
         playCurrentTrackForEditing(tracks[index])
@@ -1039,12 +1043,14 @@ struct BatchTrackEditSheet: View {
                 album: album,
                 duration: durationVal
             )
+            guard !Task.isCancelled else { return }
 
             await MainActor.run {
                 self.metadataCandidates = candidates
             }
 
             if let detail = await libraryVM.fetchTrackMetadataDetail(track) {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     let didApply = applyMetadataDetailIntoDraft(detail)
                     isMetadataLookupInFlight = false
@@ -1053,6 +1059,7 @@ struct BatchTrackEditSheet: View {
                 return
             }
 
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 isMetadataLookupInFlight = false
                 metadataLookupMessage = "未发现匹配，请手动选择"
@@ -1108,6 +1115,7 @@ struct BatchTrackEditSheet: View {
                 album: album,
                 duration: durationVal
             ) {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     var changed = false
                     updateString(&album, with: detail.album, changed: &changed)
@@ -1137,6 +1145,7 @@ struct BatchTrackEditSheet: View {
                     metadataLookupMessage = "已应用所选元数据"
                 }
             } else {
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     isMetadataLookupInFlight = false
                     metadataLookupMessage = "元数据获取失败"

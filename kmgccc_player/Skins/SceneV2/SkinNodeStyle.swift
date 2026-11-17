@@ -11,12 +11,13 @@ struct SkinVisibilityTransition: ViewModifier {
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var motionPolicy
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.skinMotionCustomTokens) private var customTokens
 
     func body(content: Content) -> some View {
         let spec = SkinTransitionLook.spec(value)
         content
             .modifier(SkinTransitionLook(spec: spec, hidden: hidden, moves: motionPolicy.resolving(accessibilityReduceMotion: reduceMotion) == .full))
-            .motionAnimation(SkinTransitionLook.animation(spec, tokens: motionTokens), value: hidden)
+            .motionAnimation(SkinTransitionLook.animation(spec, tokens: motionTokens, custom: customTokens), value: hidden)
     }
 }
 
@@ -29,7 +30,9 @@ struct SkinTransitionLook: ViewModifier {
     var direction: Double = 1
 
     static func spec(_ value: SkinValue) -> SkinValue { value.type == .record ? value : .record(["type": value]) }
-    static func animation(_ spec: SkinValue, tokens: MotionTokens) -> MotionSpec { SkinMotion.spec(spec, tokens: tokens) }
+    static func animation(_ spec: SkinValue, tokens: MotionTokens, custom: [String: SkinValue] = [:]) -> MotionSpec {
+        SkinMotion.spec(spec, tokens: tokens, custom: custom)
+    }
 
     func body(content: Content) -> some View {
         let kinds = Set(spec[member: "type"].textValue.split(separator: "+").map { $0.trimmingCharacters(in: .whitespaces) })
@@ -80,7 +83,10 @@ struct SkinGlyphTransform: Equatable, Sendable {
         rotation = value[member: "rotation"].number(); scale = value[member: "scale"].number(1)
         opacity = value[member: "opacity"].number(1).clamped01; blur = max(0, value[member: "blur"].number())
         split = value[member: "split"].number(); smearX = value[member: "smearX"].number(); smearY = value[member: "smearY"].number()
-        tint = value[member: "tint"].colorValue?.swiftUIColor
+        // Multiplying by white changes nothing; leaving it out spares the glyph a filter pass.
+        if let color = value[member: "tint"].colorValue, color.lightness < 0.999 || color.chroma > 0.001 || color.alpha < 0.999 {
+            tint = color.swiftUIColor
+        }
     }
 }
 
@@ -109,7 +115,9 @@ struct SkinGlyphOutline: Equatable, Sendable {
 
     init?(_ value: SkinValue?, fallback: OKLCHColor?) {
         guard let value, value.type != .null else { return nil }
-        width = max(0.5, value.numberValue ?? value[member: "width"].number(1.5))
+        let width = value.numberValue ?? value[member: "width"].number(1.5)
+        guard width > 0 else { return nil }
+        self.width = max(0.5, width)
         ink = SkinGlyphInk(value[member: "color"].colorValue ?? fallback ?? OKLCHColor(lightness: 1, chroma: 0, hue: nil))
         hollow = value[member: "hollow"].isTruthy
     }
@@ -139,8 +147,25 @@ struct SkinGlyphStyle: Equatable, Sendable {
     var transforms: [SkinGlyphTransform] = []
     var outline: SkinGlyphOutline?
     var extrude: SkinGlyphExtrude?
+    /// Glyphs filled as outlines (`subpixel` text).
+    var vector: SkinGlyphVector?
     /// How far glyphs may draw outside the text's frame.
     var padding = 0.0
+}
+
+/// One glyph slice, drawn as its outline when the text is `subpixel` and the outline is known.
+private struct SkinGlyphShape {
+    let slice: Text.Layout.RunSlice
+    let outline: Path?
+    let color: Color?
+
+    func draw(in context: GraphicsContext) {
+        guard let outline, let color else { context.draw(slice); return }
+        var context = context
+        let origin = slice.typographicBounds.origin
+        context.translateBy(x: origin.x, y: origin.y)
+        context.fill(outline, with: .color(color))
+    }
 }
 
 /// Draws scene text glyph by glyph: the `glyphs` reveal, `glyphMotion` and `outline` in one pass.
@@ -168,6 +193,13 @@ struct SkinGlyphRenderer: TextRenderer {
 
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
         var index = 0
+        // Outlines only when every slice is one character, so slice and character stay paired.
+        var vector = style.vector
+        if let current = vector {
+            var slices = 0
+            for line in layout { for run in line { slices += run.count } }
+            if slices != current.characters.count { vector = nil }
+        }
         for line in layout {
             for run in line {
                 for slice in run {
@@ -193,38 +225,56 @@ struct SkinGlyphRenderer: TextRenderer {
                     guard opacity > 0.001 else { continue }
                     glyph.opacity *= opacity
                     if radius > 0.05 { glyph.addFilter(.blur(radius: radius)) }
-                    Self.draw(slice, motion: motion, style: style, in: glyph)
+                    let outline = vector.flatMap { SkinGlyphOutlines.path($0.characters[index], font: $0.font, weight: $0.weight, size: $0.size) }
+                    Self.draw(SkinGlyphShape(slice: slice, outline: outline, color: vector?.color), motion: motion, style: style, in: glyph)
                 }
             }
         }
     }
 
     /// Extrusion behind, outline ring, then the face. Plain glyphs skip the offscreen layer.
-    private static func draw(_ slice: Text.Layout.RunSlice, motion: SkinGlyphTransform?, style: SkinGlyphStyle, in context: GraphicsContext) {
+    private static func draw(_ slice: SkinGlyphShape, motion: SkinGlyphTransform?, style: SkinGlyphStyle, in context: GraphicsContext) {
         let split = motion?.split ?? 0
         let smear = CGSize(width: motion?.smearX ?? 0, height: motion?.smearY ?? 0)
         let smears = abs(smear.width) + abs(smear.height) > 0.25
-        guard style.outline != nil || style.extrude != nil || abs(split) > 0.05 || smears else { context.draw(slice); return }
+        guard style.outline != nil || style.extrude != nil || abs(split) > 0.05 || smears else { slice.draw(in: context); return }
         context.drawLayer { layer in
             if let extrude = style.extrude {
                 let steps = Int(min(32, ceil(extrude.depth)))
-                for step in stride(from: steps, through: 1, by: -1) {
-                    let fraction = Double(step) / Double(steps)
-                    var copy = layer
-                    copy.addFilter(.colorMatrix(mix(extrude.near, extrude.far, fraction).matrix))
-                    copy.translateBy(x: extrude.dx * extrude.depth * fraction, y: extrude.dy * extrude.depth * fraction)
-                    copy.draw(slice)
+                if extrude.near == extrude.far {
+                    // One colour: every step shares a single filtered layer.
+                    var solid = layer
+                    solid.addFilter(.colorMatrix(extrude.near.matrix))
+                    solid.drawLayer { copies in
+                        for step in stride(from: steps, through: 1, by: -1) {
+                            let fraction = Double(step) / Double(steps)
+                            var copy = copies
+                            copy.translateBy(x: extrude.dx * extrude.depth * fraction, y: extrude.dy * extrude.depth * fraction)
+                            slice.draw(in: copy)
+                        }
+                    }
+                } else {
+                    for step in stride(from: steps, through: 1, by: -1) {
+                        let fraction = Double(step) / Double(steps)
+                        var copy = layer
+                        copy.addFilter(.colorMatrix(mix(extrude.near, extrude.far, fraction).matrix))
+                        copy.translateBy(x: extrude.dx * extrude.depth * fraction, y: extrude.dy * extrude.depth * fraction)
+                        slice.draw(in: copy)
+                    }
                 }
             }
             if let outline = style.outline {
+                // The ring is one ink, so its copies are filtered once as a layer, not once each.
                 var ring = layer
                 ring.addFilter(.colorMatrix(outline.ink.matrix))
                 let steps = outline.width > 2 ? 16 : 8
-                for step in 0..<steps {
-                    let angle = Double(step) / Double(steps) * 2 * .pi
-                    var copy = ring
-                    copy.translateBy(x: cos(angle) * outline.width, y: sin(angle) * outline.width)
-                    copy.draw(slice)
+                ring.drawLayer { copies in
+                    for step in 0..<steps {
+                        let angle = Double(step) / Double(steps) * 2 * .pi
+                        var copy = copies
+                        copy.translateBy(x: cos(angle) * outline.width, y: sin(angle) * outline.width)
+                        slice.draw(in: copy)
+                    }
                 }
             }
             var face = layer
@@ -246,8 +296,8 @@ struct SkinGlyphRenderer: TextRenderer {
     }
 
     /// Red and blue drawn `split` points apart, green in place, summed back to the original colour.
-    private static func drawFace(_ slice: Text.Layout.RunSlice, split: Double, in context: GraphicsContext) {
-        guard abs(split) > 0.05 else { context.draw(slice); return }
+    private static func drawFace(_ slice: SkinGlyphShape, split: Double, in context: GraphicsContext) {
+        guard abs(split) > 0.05 else { slice.draw(in: context); return }
         context.drawLayer { layer in
             for (channel, offset) in [(0, split), (1, 0.0), (2, -split)] {
                 var copy = layer
@@ -256,7 +306,7 @@ struct SkinGlyphRenderer: TextRenderer {
                 copy.addFilter(.colorMatrix(matrix))
                 copy.blendMode = .plusLighter
                 copy.translateBy(x: offset, y: 0)
-                copy.draw(slice)
+                slice.draw(in: copy)
             }
         }
     }
@@ -292,6 +342,8 @@ struct SkinGlyphLayer<Content: View>: View {
 
 extension EnvironmentValues {
     @Entry var skinGlyphReveal: SkinGlyphReveal?
+    /// The scene's own named motion tokens, from its `motion.tokens`.
+    @Entry var skinMotionCustomTokens: [String: SkinValue] = [:]
 }
 
 /// MotionKit for authors. An `animation` or `transition` names a token and may retune it with
@@ -314,8 +366,18 @@ enum SkinMotion {
         return tokens
     }
 
-    static func spec(_ value: SkinValue, tokens: MotionTokens) -> MotionSpec {
+    /// A name may also be one of the skin's own tokens from the scene's `motion.tokens`; those
+    /// retune a built-in token (`control` unless they name another), so they follow the user's speed.
+    static func spec(_ value: SkinValue, tokens: MotionTokens, custom: [String: SkinValue] = [:]) -> MotionSpec {
         let name = value.type == .text ? value.textValue : value[member: "token"].textValue
+        if MotionToken(rawValue: name) == nil, let own = custom[name] {
+            var base = own
+            if value.type == .record, case .record(var fields) = own, case .record(let overrides) = value {
+                fields.merge(overrides.filter { $0.key != "token" }) { _, new in new }
+                base = .record(fields)
+            }
+            return spec(base, tokens: tokens)
+        }
         let token = MotionToken(rawValue: name) ?? .control
         return value.type == .record ? tuned(value, token: token, tokens: tokens) : tokens[token]
     }
@@ -344,13 +406,14 @@ struct SkinEnterTransition: ViewModifier {
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var motionPolicy
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.skinMotionCustomTokens) private var customTokens
 
     func body(content: Content) -> some View {
         let spec = SkinTransitionLook.spec(value)
         content
             .modifier(SkinTransitionLook(spec: spec, hidden: !shown, moves: motionPolicy.resolving(accessibilityReduceMotion: reduceMotion) == .full))
             .onAppear {
-                let animation = motionPolicy.resolvedAnimation(for: SkinTransitionLook.animation(spec, tokens: motionTokens), accessibilityReduceMotion: reduceMotion)
+                let animation = motionPolicy.resolvedAnimation(for: SkinTransitionLook.animation(spec, tokens: motionTokens, custom: customTokens), accessibilityReduceMotion: reduceMotion)
                 withAnimation(animation?.delay(max(0, spec[member: "delay"].number()))) { shown = true }
             }
     }
@@ -367,20 +430,22 @@ struct SkinKeyedSwap: View {
     @Environment(\.motionTokens) private var motionTokens
     @Environment(\.motionPolicy) private var motionPolicy
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.skinMotionCustomTokens) private var customTokens
 
     var body: some View {
         let spec = SkinTransitionLook.spec(transition.type == .null ? .text("fade") : transition)
         let moves = motionPolicy.resolving(accessibilityReduceMotion: reduceMotion) == .full
-        let leave = Self.leaving(spec, enterDuration: SkinTransitionLook.animation(spec, tokens: motionTokens).duration)
-        let enterAnimation = motionPolicy.resolvedAnimation(for: SkinTransitionLook.animation(spec, tokens: motionTokens), accessibilityReduceMotion: reduceMotion)
-        let leaveAnimation = motionPolicy.resolvedAnimation(for: SkinTransitionLook.animation(leave, tokens: motionTokens), accessibilityReduceMotion: reduceMotion)
+        let enter = SkinTransitionLook.animation(spec, tokens: motionTokens, custom: customTokens)
+        let leave = Self.leaving(spec, enterDuration: enter.duration)
+        let enterAnimation = motionPolicy.resolvedAnimation(for: enter, accessibilityReduceMotion: reduceMotion)
+        let leaveAnimation = motionPolicy.resolvedAnimation(for: SkinTransitionLook.animation(leave, tokens: motionTokens, custom: customTokens), accessibilityReduceMotion: reduceMotion)
         ZStack {
             content.id(key).transition(.asymmetric(
                 insertion: AnyTransition.modifier(active: SkinTransitionLook(spec: spec, hidden: true, moves: moves), identity: SkinTransitionLook(spec: spec, hidden: false)).animation(enterAnimation),
                 removal: AnyTransition.modifier(active: SkinTransitionLook(spec: spec, hidden: true, moves: moves, direction: -1), identity: SkinTransitionLook(spec: spec, hidden: false)).animation(leaveAnimation)
             ))
         }
-        .motionAnimation(SkinTransitionLook.animation(spec, tokens: motionTokens), value: key)
+        .motionAnimation(enter, value: key)
     }
 
     private static func leaving(_ spec: SkinValue, enterDuration: Double) -> SkinValue {
@@ -391,8 +456,11 @@ struct SkinKeyedSwap: View {
 }
 
 enum SkinNodeStyle {
-    static func apply(_ content: AnyView, values: [String: SkinValue], reduceTransparency: Bool) -> AnyView {
+    /// `keys` names the style properties the node can ever set. Effects outside it are left off the
+    /// view instead of being applied at their identity value on every frame.
+    static func apply(_ content: AnyView, values: [String: SkinValue], keys: Set<String>? = nil, reduceTransparency: Bool) -> AnyView {
         var result = content
+        func sets(_ names: String...) -> Bool { keys.map { set in names.contains { set.contains($0) } } ?? true }
         let shape = SkinSceneShape(kind: values["glass"]?[member: "shape"].textValue ?? values["shape"]?.textValue ?? "rectangle", cornerRadius: values["cornerRadius"]?.number() ?? values["glass"]?[member: "cornerRadius"].number() ?? 0)
         if let color = values["background"]?.colorValue { result = AnyView(result.background(color.swiftUIColor, in: shape)) }
         if let material = values["material"]?.textValue {
@@ -413,18 +481,20 @@ enum SkinNodeStyle {
         for shadow in values["shadow"].map({ $0.type == .list ? $0.listValue : [$0] }) ?? [] {
             result = AnyView(result.shadow(color: shadow[member: "color"].colorValue?.swiftUIColor ?? .clear, radius: shadow[member: "radius"].number(), x: shadow[member: "x"].number(), y: shadow[member: "y"].number()))
         }
-        result = AnyView(result
-            .opacity(values["opacity"]?.number(1) ?? 1)
-            .rotationEffect(.degrees(values["rotation"]?.number() ?? 0))
-            .scaleEffect(x: values["scaleX"]?.number() ?? values["scale"]?.number(1) ?? 1, y: values["scaleY"]?.number() ?? values["scale"]?.number(1) ?? 1)
-            .offset(x: values["offsetX"]?.number() ?? 0, y: values["offsetY"]?.number() ?? 0)
-            .blur(radius: max(0, values["blur"]?.number() ?? 0))
-            .brightness(values["brightness"]?.number() ?? 0)
-            .contrast(values["contrast"]?.number(1) ?? 1)
-            .saturation(values["saturation"]?.number(1) ?? 1)
-            .grayscale(values["grayscale"]?.number() ?? 0)
-            .hueRotation(.degrees(values["hueRotation"]?.number() ?? 0))
-            .blendMode(blendMode(values["blendMode"]?.textValue ?? "normal")))
+        // Applied in this order; each is present only when the node can set it.
+        if sets("opacity") { result = AnyView(result.opacity(values["opacity"]?.number(1) ?? 1)) }
+        if sets("rotation") { result = AnyView(result.rotationEffect(.degrees(values["rotation"]?.number() ?? 0))) }
+        if sets("scale", "scaleX", "scaleY") {
+            result = AnyView(result.scaleEffect(x: values["scaleX"]?.number() ?? values["scale"]?.number(1) ?? 1, y: values["scaleY"]?.number() ?? values["scale"]?.number(1) ?? 1))
+        }
+        if sets("offsetX", "offsetY") { result = AnyView(result.offset(x: values["offsetX"]?.number() ?? 0, y: values["offsetY"]?.number() ?? 0)) }
+        if sets("blur") { result = AnyView(result.blur(radius: max(0, values["blur"]?.number() ?? 0))) }
+        if sets("brightness") { result = AnyView(result.brightness(values["brightness"]?.number() ?? 0)) }
+        if sets("contrast") { result = AnyView(result.contrast(values["contrast"]?.number(1) ?? 1)) }
+        if sets("saturation") { result = AnyView(result.saturation(values["saturation"]?.number(1) ?? 1)) }
+        if sets("grayscale") { result = AnyView(result.grayscale(values["grayscale"]?.number() ?? 0)) }
+        if sets("hueRotation") { result = AnyView(result.hueRotation(.degrees(values["hueRotation"]?.number() ?? 0))) }
+        if sets("blendMode") { result = AnyView(result.blendMode(blendMode(values["blendMode"]?.textValue ?? "normal"))) }
         if values["invert"]?.isTruthy == true { result = AnyView(result.colorInvert()) }
         return result
     }

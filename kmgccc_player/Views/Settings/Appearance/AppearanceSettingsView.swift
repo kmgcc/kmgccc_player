@@ -75,6 +75,7 @@ struct AppearanceSettingsView: View {
     }
 
     var body: some View {
+        @Bindable var settings = settings
         VStack(alignment: .leading, spacing: 20) {
             SettingsHeaderLabel("外观", systemImage: "paintpalette")
 
@@ -123,12 +124,33 @@ struct AppearanceSettingsView: View {
                     homeCardMaterialModePicker
                 }
             }
+            .settingsSearchAnchor("appearance.general")
 
             SidebarSetBarSettingsSection()
+                .settingsSearchAnchor("appearance.sidebar")
 
             SettingsSection("主页板块顺序") {
                 homeSectionOrderEditor
             }
+            .settingsSearchAnchor("appearance.homeOrder")
+
+            SettingsSection("主页音乐座右铭", headerTrailing: {
+                Button("恢复默认") { settings.resetHomeMotto() }
+                    .buttonStyle(AppPanelButtonStyle())
+            }) {
+                VStack(alignment: .leading, spacing: 12) {
+                    mottoField("正文", text: $settings.homeMottoText)
+                    mottoField("翻译", text: $settings.homeMottoTranslation)
+                    mottoField("注解", text: $settings.homeMottoNote)
+                }
+            }
+            .settingsSearchAnchor("appearance.motto")
+
+            SettingsSection("工具栏自定义") {
+                Text("右键点击工具栏按钮，选择“自定义工具栏”即可编辑。")
+                    .settingsDescriptionStyle()
+            }
+            .settingsSearchAnchor("appearance.toolbar")
         }
         .onAppear {
             artworkTintMode = settings.artworkTintMode
@@ -159,6 +181,16 @@ struct AppearanceSettingsView: View {
         .onChange(of: settings.homeSectionOrder) { _, newValue in
             guard newValue != homeSectionOrder else { return }
             homeSectionOrder = newValue
+        }
+    }
+
+    private func mottoField(_ title: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).settingsRowLabelStyle()
+            TextField(title, text: text, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(1...5)
+                .accessibilityLabel(title)
         }
     }
 

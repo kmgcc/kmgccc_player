@@ -294,10 +294,19 @@ private struct HomeArtistCircle: View {
                     .labelStyle(.titleOnly)
             }
         }
-        .task {
-            if image != nil { return }
+        .task(id: artworkKey) {
+            // The key carries the entry's update time and cover file, so a
+            // cover that lands later replaces the generated placeholder.
+            if let cached = HomeArtworkMemoryStore.shared.cachedImage(for: artworkKey) {
+                image = cached
+                return
+            }
             await loadImage()
         }
+    }
+
+    private var artworkKey: String {
+        HomeArtworkMemoryStore.artistKey(for: artist, pixelSide: mode.homeArtistRailPixelSide)
     }
 
     private func loadImage() async {

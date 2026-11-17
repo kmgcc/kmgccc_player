@@ -7,6 +7,13 @@
 
 import Foundation
 
+/// Original movie associated with an extracted, playable audio location.
+nonisolated struct ReferencedVideoSource: Codable, Equatable, Hashable, Sendable {
+    var path: String
+    var fingerprint: ReferencedFileFingerprint
+    var bookmarkData: Data? = nil
+}
+
 nonisolated struct ReferencedFileIdentity: Codable, Sendable, Hashable {
     var volumeUUID: String?
     var resourceIdentifierArchive: Data?
@@ -70,6 +77,7 @@ nonisolated struct ReferencedTrackLocation: Codable, Sendable, Equatable, Hashab
     var lastKnownPath: String
     var fingerprint: ReferencedFileFingerprint?
     var ncmSourceIdentity: ReferencedFileIdentity?
+    var videoSource: ReferencedVideoSource?
     /// Technical properties of the physical file at this location (schema 9).
     var audioProperties: TrackAudioProperties?
     /// Hex SHA-256 of the audio bytes at this location. Computed on demand in
@@ -87,6 +95,7 @@ nonisolated struct ReferencedTrackLocation: Codable, Sendable, Equatable, Hashab
         lastKnownPath: String = "",
         fingerprint: ReferencedFileFingerprint? = nil,
         ncmSourceIdentity: ReferencedFileIdentity? = nil,
+        videoSource: ReferencedVideoSource? = nil,
         audioProperties: TrackAudioProperties? = nil,
         contentDigest: String? = nil,
         availabilityRaw: String? = nil
@@ -97,6 +106,7 @@ nonisolated struct ReferencedTrackLocation: Codable, Sendable, Equatable, Hashab
         self.lastKnownPath = lastKnownPath
         self.fingerprint = fingerprint
         self.ncmSourceIdentity = ncmSourceIdentity
+        self.videoSource = videoSource
         self.audioProperties = audioProperties
         self.contentDigest = contentDigest
         self.availabilityRaw = availabilityRaw
@@ -110,6 +120,7 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
     var lastKnownPath: String
     var fingerprint: ReferencedFileFingerprint?
     var ncmSourceIdentity: ReferencedFileIdentity?
+    var videoSource: ReferencedVideoSource?
     /// Locations beyond the legacy primary location. This is empty for old
     /// sidecars and is populated when duplicate physical copies are merged.
     var alternateLocations: [ReferencedTrackLocation]
@@ -133,6 +144,7 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
         case lastKnownPath
         case fingerprint
         case ncmSourceIdentity
+        case videoSource
         case alternateLocations
         case primaryLocationID
         case primaryAudioProperties
@@ -147,6 +159,7 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
         lastKnownPath: String = "",
         fingerprint: ReferencedFileFingerprint? = nil,
         ncmSourceIdentity: ReferencedFileIdentity? = nil,
+        videoSource: ReferencedVideoSource? = nil,
         alternateLocations: [ReferencedTrackLocation] = [],
         primaryLocationID: UUID = UUID(),
         primaryAudioProperties: TrackAudioProperties? = nil,
@@ -159,6 +172,7 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
         self.lastKnownPath = lastKnownPath
         self.fingerprint = fingerprint
         self.ncmSourceIdentity = ncmSourceIdentity
+        self.videoSource = videoSource
         self.alternateLocations = alternateLocations
         self.primaryLocationID = primaryLocationID
         self.primaryAudioProperties = primaryAudioProperties
@@ -174,6 +188,7 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
         lastKnownPath = try container.decodeIfPresent(String.self, forKey: .lastKnownPath) ?? ""
         fingerprint = try container.decodeIfPresent(ReferencedFileFingerprint.self, forKey: .fingerprint)
         ncmSourceIdentity = try container.decodeIfPresent(ReferencedFileIdentity.self, forKey: .ncmSourceIdentity)
+        videoSource = try container.decodeIfPresent(ReferencedVideoSource.self, forKey: .videoSource)
         alternateLocations = try container.decodeIfPresent([ReferencedTrackLocation].self, forKey: .alternateLocations) ?? []
         primaryLocationID = try container.decodeIfPresent(UUID.self, forKey: .primaryLocationID) ?? UUID()
         primaryAudioProperties = try container.decodeIfPresent(TrackAudioProperties.self, forKey: .primaryAudioProperties)
@@ -189,6 +204,7 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
         try container.encode(lastKnownPath, forKey: .lastKnownPath)
         try container.encodeIfPresent(fingerprint, forKey: .fingerprint)
         try container.encodeIfPresent(ncmSourceIdentity, forKey: .ncmSourceIdentity)
+        try container.encodeIfPresent(videoSource, forKey: .videoSource)
         if !alternateLocations.isEmpty {
             try container.encode(alternateLocations, forKey: .alternateLocations)
         }
@@ -209,6 +225,7 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
             && lhs.lastKnownPath == rhs.lastKnownPath
             && lhs.fingerprint == rhs.fingerprint
             && lhs.ncmSourceIdentity == rhs.ncmSourceIdentity
+            && lhs.videoSource == rhs.videoSource
             && lhs.alternateLocations == rhs.alternateLocations
             && lhs.primaryAudioProperties == rhs.primaryAudioProperties
             && lhs.primaryContentDigest == rhs.primaryContentDigest
@@ -225,6 +242,7 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
             lastKnownPath: lastKnownPath,
             fingerprint: fingerprint,
             ncmSourceIdentity: ncmSourceIdentity,
+            videoSource: videoSource,
             audioProperties: primaryAudioProperties,
             contentDigest: primaryContentDigest,
             availabilityRaw: primaryAvailabilityRaw
@@ -271,6 +289,20 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
         self.fileBookmarkData = fileBookmarkData
         self.lastKnownPath = lastKnownPath
         if let fingerprint { self.fingerprint = fingerprint }
+    }
+
+    /// Source moves update lineage without turning a movie back into the
+    /// playback location. The generated audio keeps its own identity.
+    mutating func refreshVideoSource(for sourceID: UUID, url: URL, fingerprint: ReferencedFileFingerprint) {
+        if sourceMemberships.contains(where: { $0.sourceID == sourceID }), videoSource != nil {
+            videoSource?.path = url.path
+            videoSource?.fingerprint = fingerprint
+        }
+        for index in alternateLocations.indices where alternateLocations[index].videoSource != nil
+            && alternateLocations[index].sourceMemberships.contains(where: { $0.sourceID == sourceID }) {
+            alternateLocations[index].videoSource?.path = url.path
+            alternateLocations[index].videoSource?.fingerprint = fingerprint
+        }
     }
 
     /// Reassigns a source membership while retaining the location that
@@ -347,6 +379,7 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
             lastKnownPath = ""
             fingerprint = nil
             ncmSourceIdentity = nil
+            videoSource = nil
             primaryAudioProperties = nil
             primaryContentDigest = nil
             primaryAvailabilityRaw = nil
@@ -384,6 +417,7 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
                 lastKnownPath = ""
                 fingerprint = nil
                 ncmSourceIdentity = nil
+                videoSource = nil
                 primaryAudioProperties = nil
                 primaryContentDigest = nil
                 primaryAvailabilityRaw = nil
@@ -396,6 +430,13 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
         }
     }
 
+    mutating func setAudioProperties(_ properties: TrackAudioProperties, for sourceID: UUID) {
+        if sourceMemberships.contains(where: { $0.sourceID == sourceID }) { primaryAudioProperties = properties }
+        for index in alternateLocations.indices where alternateLocations[index].sourceMemberships.contains(where: { $0.sourceID == sourceID }) {
+            alternateLocations[index].audioProperties = properties
+        }
+    }
+
     mutating func mergeLocation(_ incoming: ReferencedTrackLocation) {
         let incomingKey = Self.locationKey(incoming)
         if incomingKey == Self.locationKey(locations[0]) {
@@ -404,6 +445,7 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
             if lastKnownPath.isEmpty { lastKnownPath = incoming.lastKnownPath }
             fingerprint = incoming.fingerprint ?? fingerprint
             ncmSourceIdentity = incoming.ncmSourceIdentity ?? ncmSourceIdentity
+            videoSource = incoming.videoSource ?? videoSource
             primaryAudioProperties = incoming.audioProperties ?? primaryAudioProperties
             primaryContentDigest = incoming.contentDigest ?? primaryContentDigest
             primaryAvailabilityRaw = incoming.availabilityRaw ?? primaryAvailabilityRaw
@@ -417,10 +459,57 @@ nonisolated struct ReferencedFileLocator: Codable, Sendable, Equatable {
             if existing.lastKnownPath.isEmpty { existing.lastKnownPath = incoming.lastKnownPath }
             existing.fingerprint = incoming.fingerprint ?? existing.fingerprint
             existing.ncmSourceIdentity = incoming.ncmSourceIdentity ?? existing.ncmSourceIdentity
+            existing.videoSource = incoming.videoSource ?? existing.videoSource
+            existing.audioProperties = incoming.audioProperties ?? existing.audioProperties
             alternateLocations[index] = existing
         } else {
             alternateLocations.append(incoming)
         }
+    }
+
+    /// Makes a readable alternate location the primary one when the preferred
+    /// recording is gone. Memberships are not lost: the dead location keeps
+    /// its own memberships and stays as a fallback, so the Track stops
+    /// advertising a deleted copy as its file while another copy still plays.
+    @discardableResult
+    mutating func promoteFirstExistingLocation(
+        fileExists: (String) -> Bool
+    ) -> Bool {
+        guard !lastKnownPath.isEmpty, !fileExists(lastKnownPath) else { return false }
+        guard let index = alternateLocations.firstIndex(where: { fileExists($0.lastKnownPath) }) else {
+            return false
+        }
+        let promoted = alternateLocations.remove(at: index)
+        let demoted = ReferencedTrackLocation(
+            id: primaryLocationID,
+            fileBookmarkData: fileBookmarkData,
+            sourceMemberships: sourceMemberships,
+            lastKnownPath: lastKnownPath,
+            fingerprint: fingerprint,
+            ncmSourceIdentity: ncmSourceIdentity,
+            videoSource: videoSource,
+            audioProperties: primaryAudioProperties,
+            contentDigest: primaryContentDigest,
+            availabilityRaw: primaryAvailabilityRaw
+        )
+        primaryLocationID = promoted.id
+        fileBookmarkData = promoted.fileBookmarkData
+        sourceMemberships = promoted.sourceMemberships
+        lastKnownPath = promoted.lastKnownPath
+        fingerprint = promoted.fingerprint
+        ncmSourceIdentity = promoted.ncmSourceIdentity
+        videoSource = promoted.videoSource
+        primaryAudioProperties = promoted.audioProperties
+        primaryContentDigest = promoted.contentDigest
+        primaryAvailabilityRaw = promoted.availabilityRaw
+        primarySourceID = sourceMemberships.min {
+            if $0.relativePath.count != $1.relativePath.count {
+                return $0.relativePath.count < $1.relativePath.count
+            }
+            return $0.sourceID.uuidString < $1.sourceID.uuidString
+        }?.sourceID
+        alternateLocations.append(demoted)
+        return true
     }
 
     /// Persists an on-demand content digest onto the location with the given

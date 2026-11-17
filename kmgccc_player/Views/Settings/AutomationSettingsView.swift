@@ -1,4 +1,5 @@
 import AppKit
+import PlayerAutomationProtocol
 import SwiftUI
 
 /// Settings for the local automation control planes. The business
@@ -12,6 +13,9 @@ struct AutomationSettingsView: View {
     @State private var isDiagnosticsExpanded = false
     @State private var didCopyMCPConfiguration = false
     @State private var didCopyCLICommand = false
+    @State private var didCopySkillPath = false
+    @State private var didCopySkillPrompt = false
+    @State private var isSkillAdvancedExpanded = false
 
     private struct MCPServerConfiguration: Encodable {
         let command: String
@@ -35,12 +39,13 @@ struct AutomationSettingsView: View {
                     )
                 }
             }
+            .settingsSearchAnchor("automation.general")
 
             SettingsSection("MCP 接入") {
                 VStack(alignment: .leading, spacing: 14) {
                     commandBlock(
                         title: "MCP stdio",
-                        command: "player-automation mcp-stdio",
+                        command: "player-automation mcp-stdio --profile core",
                         buttonTitle: didCopyMCPConfiguration ? "已复制" : "复制 MCP 配置",
                         buttonSystemImage: didCopyMCPConfiguration ? "checkmark" : "doc.on.doc",
                         action: copyMCPConfiguration
@@ -48,20 +53,62 @@ struct AutomationSettingsView: View {
 
                     Text("配置可直接粘贴到 agent 工具的配置文件。")
                         .settingsDescriptionStyle()
-
-                    Divider()
-
-                    commandBlock(
-                        title: "命令行",
-                        command: "player-automation cli --help",
-                        buttonTitle: didCopyCLICommand ? "已复制" : "复制命令",
-                        buttonSystemImage: didCopyCLICommand ? "checkmark" : "doc.on.doc",
-                        action: copyCLICommand
-                    )
                 }
             }
+            .settingsSearchAnchor("automation.mcp")
+
+            SettingsSection("Agent 技能") {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(
+                        """
+                        复制下面的安装指令，粘贴给你常用的 Agent 工具，例如 Claude、Codex、WorkBuddy。它会读取技能目录并完成安装。
+                        命令走本机自动化接口，播放器没运行时第一条命令会自动启动它。
+                        """
+                    )
+                    .settingsDescriptionStyle()
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 10) {
+                        Spacer(minLength: 12)
+
+                        Button {
+                            copySkillPrompt()
+                        } label: {
+                            Label(
+                                didCopySkillPrompt ? "已复制" : "复制安装指令",
+                                systemImage: didCopySkillPrompt ? "checkmark" : "doc.on.doc"
+                            )
+                        }
+                        .buttonStyle(AppPanelButtonStyle())
+                    }
+
+                    DisclosureGroup("高级", isExpanded: $isSkillAdvancedExpanded) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            commandBlock(
+                                title: "技能目录",
+                                command: AutomationSkillInstaller.exportDirectory().path,
+                                buttonTitle: didCopySkillPath ? "已复制" : "复制路径",
+                                buttonSystemImage: didCopySkillPath ? "checkmark" : "doc.on.doc",
+                                action: copySkillPath
+                            )
+
+                            commandBlock(
+                                title: "命令行",
+                                command: "player-automation cli --help",
+                                buttonTitle: didCopyCLICommand ? "已复制" : "复制命令",
+                                buttonSystemImage: didCopyCLICommand ? "checkmark" : "doc.on.doc",
+                                action: copyCLICommand
+                            )
+                        }
+                        .padding(.top, 8)
+                    }
+                }
+            }
+            .settingsSearchAnchor("automation.skill")
+            .task { syncAgentSkillExport() }
 
             TrustedAudioRootSettingsSection()
+                .settingsSearchAnchor("automation.trusted")
 
             SettingsSection("运行状态") {
                 VStack(alignment: .leading, spacing: 14) {
@@ -98,6 +145,7 @@ struct AutomationSettingsView: View {
                     }
                 }
             }
+            .settingsSearchAnchor("automation.status")
 
             // SettingsSection("内置 AI") {
             //     Text("内置 AI 尚未启用。")
@@ -143,10 +191,7 @@ struct AutomationSettingsView: View {
                 Button(action: action) {
                     Label(buttonTitle, systemImage: buttonSystemImage)
                 }
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.capsule)
-                .clipShape(Capsule())
-                .controlSize(.small)
+                .buttonStyle(AppPanelButtonStyle())
             }
         }
     }
@@ -178,7 +223,7 @@ struct AutomationSettingsView: View {
             mcpServers: [
                 "kmgccc_player": MCPServerConfiguration(
                     command: bundledAutomationExecutableURL.path,
-                    args: ["mcp-stdio"]
+                    args: ["mcp-stdio", "--profile", "core"]
                 )
             ]
         )
@@ -206,6 +251,21 @@ struct AutomationSettingsView: View {
     private func copyToPasteboard(_ value: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    private func syncAgentSkillExport() {
+        guard let executable = AutomationSkillInstaller.automationExecutableURL else { return }
+        try? AutomationSkillInstaller.syncExport(executableURL: executable)
+    }
+
+    private func copySkillPath() {
+        copyToPasteboard(AutomationSkillInstaller.exportDirectory().path)
+        didCopySkillPath = true
+    }
+
+    private func copySkillPrompt() {
+        copyToPasteboard(AutomationSkillInstaller.installPrompt())
+        didCopySkillPrompt = true
     }
 }
 

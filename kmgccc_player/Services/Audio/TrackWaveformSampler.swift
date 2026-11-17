@@ -15,14 +15,14 @@ nonisolated enum TrackWaveformSampler {
 
     /// Levels in 0...1, one per bin, scaled to the loudest bin. Empty when
     /// the file cannot be read.
-    static func levels(url: URL, binCount: Int) async -> [Float] {
+    static func levels(url: URL, binCount: Int, selection: AudioMediaSelection? = nil) async -> [Float] {
         await Task.detached(priority: .userInitiated) {
-            sample(url: url, binCount: max(1, binCount))
+            sample(url: url, binCount: max(1, binCount), selection: selection)
         }.value
     }
 
-    private static func sample(url: URL, binCount: Int) -> [Float] {
-        guard let file = try? AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false),
+    private static func sample(url: URL, binCount: Int, selection: AudioMediaSelection?) -> [Float] {
+        guard let file = try? AudioDecoderFactory.open(url, selection: selection),
               file.length > 0,
               let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: windowFrames)
         else { return [] }

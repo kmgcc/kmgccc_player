@@ -42,6 +42,7 @@ struct StorageSettingsView: View {
                     }
                 }
             }
+            .settingsSearchAnchor("storage.library")
 
             SettingsSection("缓存") {
                 VStack(alignment: .leading, spacing: SettingsStyleTokens.groupSpacing) {
@@ -70,10 +71,12 @@ struct StorageSettingsView: View {
                     }
                 }
             }
+            .settingsSearchAnchor("storage.cache")
 
             SettingsSection("App") {
                 row(.appData)
             }
+            .settingsSearchAnchor("storage.app")
 
             if !model.otherLibraries.isEmpty {
                 SettingsSection("其他资料库") {

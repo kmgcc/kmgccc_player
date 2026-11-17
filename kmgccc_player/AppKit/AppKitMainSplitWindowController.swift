@@ -22,6 +22,7 @@
 
 import AppKit
 import MotionKit
+import Observation
 import SwiftUI
 
 @MainActor

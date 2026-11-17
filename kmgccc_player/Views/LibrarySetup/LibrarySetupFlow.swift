@@ -479,7 +479,10 @@ struct LibrarySetupFlow: View {
     private func openExisting(_ context: LibraryContext) {
         // The library is already open — treat "打开" as success instead of
         // re-running the whole open transaction against the active session.
-        if appSession.activeLibraryBinding.context?.id == context.id {
+        if let active = appSession.activeLibraryBinding.context,
+           active.id == context.id,
+           active.mode == context.mode,
+           active.rootURL == context.rootURL {
             flow.completeAndDismiss()
             return
         }
@@ -494,9 +497,12 @@ struct LibrarySetupFlow: View {
                     flow.present(.sourceReconnect(libraryID: context.id, sourceIDs: sourceIDs))
                 }
                 await onChange()
+            } catch is CancellationError {
+                guard flow.isCurrentOperation(operation) else { return }
+                flow.finishOperation()
             } catch {
                 guard flow.isCurrentOperation(operation) else { return }
-                flow.fail("无法打开资料库。")
+                flow.fail(LibraryOpenFailure.message(for: error))
             }
         }
     }
@@ -516,9 +522,12 @@ struct LibrarySetupFlow: View {
             } catch RegisteredLibraryActivationError.reconnectRequired {
                 guard flow.isCurrentOperation(operation) else { return }
                 flow.present(.reconnectRequired(libraryID: library.id, mode: library.modeProjection))
+            } catch is CancellationError {
+                guard flow.isCurrentOperation(operation) else { return }
+                flow.finishOperation()
             } catch {
                 guard flow.isCurrentOperation(operation) else { return }
-                flow.fail("无法打开资料库。")
+                flow.fail(LibraryOpenFailure.message(for: error))
             }
         }
     }

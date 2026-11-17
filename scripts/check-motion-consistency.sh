@@ -157,6 +157,12 @@ is_allowlisted() {
         return 0
       fi
       ;;
+    kmgccc_player/Skins/SceneV2/SkinSceneComet.swift)
+      if [[ "$text" == *SkinCometPath.smooth* ]]; then
+        printf 'continuous comet flight arc and trail fade along the drawn path'
+        return 0
+      fi
+      ;;
   esac
 
   return 1

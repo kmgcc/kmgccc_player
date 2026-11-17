@@ -43,7 +43,16 @@ nonisolated struct ReferencedSourceReconcileOutcome: Sendable, Equatable {
 nonisolated enum ReferencedSourceNotice: Sendable, Equatable {
     case filesImported(sourceID: UUID, count: Int)
     case unavailable(sourceID: UUID, status: ReferencedSourceStatus)
-    case fileFailures(sourceID: UUID, failures: [ReferencedSourceScanFailure])
+    /// A later scan reached the folder again. Surfaces use it to retire the
+    /// "source folder is temporarily unavailable" warning instead of leaving
+    /// it up next to a healthy source.
+    case available(sourceID: UUID)
+    case fileFailures(
+        sourceID: UUID,
+        rootURL: URL,
+        rootIsFile: Bool,
+        failures: [ReferencedSourceScanFailure]
+    )
     case scanFailures(sourceID: UUID, failures: [ReferencedSourceScanFailure])
     case reconcileFailures(sourceID: UUID, failures: [ReferencedSourceScanFailure])
     case monitorFailure(sourceIDs: [UUID], summary: String)
@@ -502,6 +511,81 @@ final class ReferencedSourceReconciler {
         return created
     }
 
+    /// File sources stand for the one file the listener added. Once the last
+    /// song it contributed is deleted the descriptor can no longer play or
+    /// rescan anything — its file is tombstoned — so it would linger in
+    /// 音乐来源 as an entry that leads nowhere. Directory sources are never
+    /// retired this way: the folder itself was the choice.
+    ///
+    /// A tombstone is required on purpose. A library whose tracks failed to
+    /// load looks empty, and that must never be mistaken for “every source
+    /// lost its songs”.
+    func unusedFileSourceIDs() async throws -> [UUID] {
+        guard !isClosed else { return [] }
+        let descriptors = try await sourceStore.loadAll()
+        let fileSources = descriptors.filter { $0.mode == .file }
+        guard !fileSources.isEmpty else { return [] }
+        let tracks = await repository.fetchTracks(in: nil)
+        var usedSourceIDs = Set<UUID>()
+        for track in tracks {
+            guard case let .referenced(locator) = track.mediaLocator else { continue }
+            usedSourceIDs.formUnion(locator.allSourceMemberships.map(\.sourceID))
+        }
+        let candidates = fileSources.filter { !usedSourceIDs.contains($0.id) }
+        guard !candidates.isEmpty else { return [] }
+        let tombstones = (try? await ignoredItemsStore.allItems()) ?? []
+        return candidates
+            .filter { hasRemovalTombstone($0, tombstones: tombstones) }
+            .map(\.id)
+    }
+
+    /// The listener removed this file from the library (the tombstone written
+    /// when the song was deleted). Path and physical identity are both
+    /// accepted so an extracted video's tombstone still matches after the
+    /// movie was renamed.
+    private func hasRemovalTombstone(
+        _ descriptor: ReferencedSourceDescriptor,
+        tombstones: [IgnoredReferencedItem]
+    ) -> Bool {
+        guard !tombstones.isEmpty else { return false }
+        let path = URL(fileURLWithPath: descriptor.lastKnownPath).standardizedFileURL.path
+        let knownPaths = Set(tombstones.map {
+            URL(fileURLWithPath: $0.lastKnownPath).standardizedFileURL.path
+        })
+        if knownPaths.contains(path) { return true }
+        guard let fingerprint = try? ReferencedFileIdentityProvider()
+            .fingerprint(for: URL(fileURLWithPath: path)) else { return false }
+        let key = ReferencedPhysicalIdentityKey(fingerprint)
+        return tombstones.contains { ReferencedPhysicalIdentityKey($0.fingerprint) == key }
+    }
+
+    /// Removes every unreferenced file source through the ordinary source
+    /// removal path, so playlist contributions and scan manifests settle the
+    /// same way they do when 移除来源 is used.
+    @discardableResult
+    func pruneUnusedFileSources() async throws -> [UUID] {
+        let candidates = try await unusedFileSourceIDs()
+        guard !candidates.isEmpty else { return [] }
+        var removed: [UUID] = []
+        for sourceID in candidates {
+            do {
+                try await removeSource(sourceID)
+                removed.append(sourceID)
+            } catch {
+                Log.warning(
+                    "[ReferencedSource] failed to retire unused file source \(sourceID): \(error.localizedDescription)",
+                    category: .library
+                )
+            }
+        }
+        guard !removed.isEmpty else { return [] }
+        Log.info(
+            "[ReferencedSource] retired unused file sources count=\(removed.count)",
+            category: .library
+        )
+        return removed
+    }
+
     @discardableResult
     func replayPending(sourceID: UUID? = nil) async throws -> ReferencedReconcileChanges {
         var changes = ReferencedReconcileChanges()
@@ -529,6 +613,7 @@ final class ReferencedSourceReconciler {
         var changes = ReferencedReconcileChanges()
         guard !isClosed else { return changes }
         for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+            try Task.checkCancellation()
             guard !isClosed else { return changes }
             changes += try await replayPending(sourceID: sourceID)
             guard try await intentStore.pending(libraryID: context.id, sourceID: sourceID).isEmpty else {
@@ -549,7 +634,10 @@ final class ReferencedSourceReconciler {
                 rootURL: root,
                 excludedRelativePaths: Set(descriptor.excludedRelativePaths)
             )
-            if result.diff.sourceStatus != .available {
+            if result.diff.sourceStatus != .available,
+               let resolved = try? bookmarkResolver.resolve(descriptor.rootBookmarkData),
+               resolved.url.standardizedFileURL != root.standardizedFileURL,
+               FileManager.default.isReadableFile(atPath: resolved.url.path) {
                 // The authorized URL is path-stale after a rename/move while
                 // the app was running; the bookmark still follows the inode.
                 // Re-resolve authorization for THIS source only (refresh,
@@ -734,7 +822,7 @@ final class ReferencedSourceReconciler {
         var intent = original
         if intent.operation == .reconcile,
            intent.diff.sourceStatus == .available,
-           intent.mutations.isEmpty || intent.proposedManifest?.entries.contains(where: { $0.trackID == nil }) == true {
+           intent.mutations.isEmpty || !intent.diff.added.isEmpty || intent.proposedManifest?.entries.contains(where: { $0.boundTrackIDs.isEmpty }) == true {
             guard let rootURL = explicitRootURL ?? sourceScope.authorizedRoots[intent.sourceID]?.url else { return changes }
             let isFileRoot = rootIsFile(rootURL)
             let imported = intent.diff.added.isEmpty
@@ -742,6 +830,10 @@ final class ReferencedSourceReconciler {
                 : await importer.importAutomatically(intent.diff.added.map {
                     url(forRelativePath: $0.relativePath, root: rootURL, rootIsFile: isFileRoot)
                 })
+            // A monitor restart cancels its import. Keep the prepared intent
+            // for the next scan instead of publishing failures or an empty
+            // binding snapshot for files that were never processed.
+            try Task.checkCancellation()
             changes.importedFiles += imported.count
             guard !isClosed else { return changes }
             let firstScanPresentPaths: Set<String>? = (
@@ -755,6 +847,7 @@ final class ReferencedSourceReconciler {
                 diff: intent.diff,
                 rootURL: rootURL,
                 importedTracks: imported,
+                scannedEntries: intent.proposedManifest?.entries ?? [],
                 firstScanPresentPaths: firstScanPresentPaths
             )
             intent = try await intentStore.updateMutations(intent, mutations: mutations)
@@ -768,6 +861,8 @@ final class ReferencedSourceReconciler {
             if !unresolvedAdded.isEmpty {
                 await noticePublisher.publish(.fileFailures(
                     sourceID: intent.sourceID,
+                    rootURL: rootURL,
+                    rootIsFile: isFileRoot,
                     failures: unresolvedAdded.map {
                         ReferencedSourceScanFailure(
                             relativePath: $0.relativePath,
@@ -779,9 +874,20 @@ final class ReferencedSourceReconciler {
             if var manifest = intent.proposedManifest {
                 for index in manifest.entries.indices {
                     let entry = manifest.entries[index]
+                    let logicalIDs = tracks.filter { track in
+                        guard let locator = track.mediaLocator.referencedFile else { return false }
+                        return locator.allSourceMemberships.contains { $0.sourceID == intent.sourceID && $0.relativePath == entry.relativePath }
+                    }.sorted { ($0.mediaSelection?.trackNumber ?? 0) < ($1.mediaSelection?.trackNumber ?? 0) }.map(\.id)
+                    let logicalTracks = tracks.filter { logicalIDs.contains($0.id) }
+                    if let program = logicalTracks.compactMap(\.mediaSelection).first {
+                        manifest.entries[index].programFingerprint = program.descriptorFingerprint
+                    } else if !logicalIDs.isEmpty {
+                        manifest.entries[index].programFingerprint = nil
+                    }
+                    manifest.entries[index].trackIDs = logicalIDs.isEmpty ? nil : logicalIDs
                     manifest.entries[index].trackID = physicalTrackIDs[ReferencedPhysicalIdentityKey(entry.fingerprint)]
                         ?? entry.fingerprint.identity.flatMap { ncmSourceTrackIDs[$0] }
-                        ?? entry.trackID
+                        ?? logicalIDs.first ?? entry.trackID
                 }
                 intent = try await intentStore.updateManifest(intent, manifest: manifest)
             }
@@ -856,6 +962,8 @@ final class ReferencedSourceReconciler {
         case .reconcile:
             if let manifest = intent.proposedManifest { try await manifestStore.save(manifest) }
             var descriptor = try await sourceStore.load(id: intent.sourceID)
+            let recoveredFromUnavailable = descriptor.status != .available
+                && intent.diff.sourceStatus == .available
             descriptor.status = intent.diff.sourceStatus
             if intent.diff.sourceStatus == .available { descriptor.lastScan = Date() }
             try await sourceStore.save(descriptor)
@@ -877,6 +985,8 @@ final class ReferencedSourceReconciler {
             }
             if intent.diff.sourceStatus != .available {
                 await noticePublisher.publish(.unavailable(sourceID: intent.sourceID, status: intent.diff.sourceStatus))
+            } else if recoveredFromUnavailable {
+                await noticePublisher.publish(.available(sourceID: intent.sourceID))
             }
             if !intent.diff.failures.isEmpty {
                 await noticePublisher.publish(.scanFailures(
@@ -1212,19 +1322,32 @@ final class ReferencedSourceReconciler {
                 ? membership.relativePath
                 : nil
         }
-        return matchingPaths.min {
+        let path = matchingPaths.min {
             $0 != $1 && $0.localizedStandardCompare($1) == .orderedAscending
         } ?? ""
+        if let selection = track.mediaSelection { return path + String(format: "#%06d", selection.trackNumber) }
+        return path
     }
 
     private func physicalTrackIDMap(_ tracks: [Track]) -> [ReferencedPhysicalIdentityKey: UUID] {
-        tracks.reduce(into: [:]) { result, track in
+        var result = tracks.reduce(into: [ReferencedPhysicalIdentityKey: UUID]()) { result, track in
             guard case let .referenced(locator) = track.mediaLocator else { return }
             for location in locator.locations {
                 guard let fingerprint = location.fingerprint else { continue }
                 result[ReferencedPhysicalIdentityKey(fingerprint)] = track.id
             }
         }
+        // Prefer converted music over an older raw-movie entry for the same
+        // source, independently of the runtime array's ordering.
+        for track in tracks.reversed() {
+            guard let locator = track.mediaLocator.referencedFile else { continue }
+            for location in locator.locations {
+                if let source = location.videoSource {
+                    result[ReferencedPhysicalIdentityKey(source.fingerprint)] = track.id
+                }
+            }
+        }
+        return result
     }
 
     private func ncmSourceTrackIDMap(_ tracks: [Track]) -> [ReferencedFileIdentity: UUID] {
@@ -1241,6 +1364,7 @@ final class ReferencedSourceReconciler {
         diff: ReferencedSourceDiff,
         rootURL: URL,
         importedTracks: [Track],
+        scannedEntries: [ReferencedSourceScanEntry] = [],
         firstScanPresentPaths: Set<String>? = nil
     ) async -> [ReferencedSourceLocatorMutation] {
         let allTracks = await repository.fetchTracks(in: nil)
@@ -1267,7 +1391,7 @@ final class ReferencedSourceReconciler {
                 )
                 didRepairGeneratedOutputMembership = true
                 if locator.allSourceMemberships.isEmpty,
-                   let sourcePath = track.ncmConversionAssociation?.sourcePath {
+                   let sourcePath = track.ncmConversionAssociation?.sourcePath ?? locator.videoSource?.path {
                     let sourceURL = URL(fileURLWithPath: sourcePath)
                     if let rel = relativePath(sourceURL, root: rootURL),
                        FileManager.default.fileExists(atPath: sourceURL.path) {
@@ -1298,7 +1422,7 @@ final class ReferencedSourceReconciler {
             if let added = matchingAddedFile(
                 for: locator,
                 groupedByPhysicalIdentity: addedFilesByPhysicalIdentity
-            ) {
+            ), shouldFollowAddedFile(track: track, locator: locator) {
                 let resolvedURL = url(
                     forRelativePath: added.relativePath,
                     root: rootURL,
@@ -1354,7 +1478,20 @@ final class ReferencedSourceReconciler {
                 fingerprint: replacement.newFingerprint
             )
             setMembership(sourceID: diff.sourceID, relativePath: replacement.relativePath, locator: &locator)
-            changes[track.id] = .init(trackID: track.id, locator: locator, availability: .available)
+            let selection = track.mediaSelection
+            let info = await Task.detached {
+                try? AudioDecoderFactory.probe(resolvedURL, selection: selection)
+            }.value
+            if var properties = info?.audioProperties {
+                properties.mediaSelection = selection
+                locator.setAudioProperties(properties, for: diff.sourceID)
+            }
+            changes[track.id] = .init(trackID: track.id, locator: locator, availability: info != nil ? .available : .missing)
+            if info == nil {
+                await noticePublisher.publish(.fileFailures(sourceID: diff.sourceID,
+                    rootURL: rootURL, rootIsFile: isFileRoot,
+                    failures: [.init(relativePath: replacement.relativePath, summary: "音频替换后分轨范围需要核验")]))
+            }
         }
         let presentTrackIDs = Set(importedTracks.map(\.id) + diff.moved.map(\.trackID) + diff.replacements.map(\.trackID))
         for missing in diff.missing {
@@ -1362,11 +1499,65 @@ final class ReferencedSourceReconciler {
                   let track = tracksByID[missing.trackID], case var .referenced(locator) = track.mediaLocator else { continue }
             locator.removeSourcePreservingRecovery(diff.sourceID)
             locator.primarySourceID = primarySourceID(locator.sourceMemberships)
+            // The removed file can be the preferred copy while another copy of
+            // the same recording still plays. Prefer the readable one instead
+            // of leaving the Track pointing at a deleted path.
+            _ = locator.promoteFirstExistingLocation {
+                FileManager.default.fileExists(atPath: $0)
+            }
             changes[track.id] = .init(
                 trackID: track.id,
                 locator: locator,
                 availability: locator.allSourceMemberships.isEmpty ? .missing : track.availability
             )
+        }
+
+        // A referenced Track whose memberships were cleared by an earlier move
+        // or delete never leaves `missing`: the repair branch above only runs
+        // for Tracks that still carry a membership, and a file that is back
+        // under a path the scan manifest already binds to this Track produces
+        // no diff entry at all. Rebuild the membership from that binding, or
+        // from the Track's own recorded origin, whenever the file is on disk.
+        let scannedTrackPaths = Dictionary(
+            scannedEntries.flatMap { entry in entry.boundTrackIDs.map { ($0, entry.relativePath) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for track in allTracks {
+            guard changes[track.id] == nil,
+                  track.availability != .available,
+                  case var .referenced(locator) = track.mediaLocator,
+                  let relative = recoveredRelativePath(
+                      for: track,
+                      locator: locator,
+                      rootURL: rootURL,
+                      scannedTrackPaths: scannedTrackPaths
+                  ) else { continue }
+            if let selection = track.mediaSelection {
+                let url = rootIsFile(rootURL) ? rootURL : rootURL.appendingPathComponent(relative)
+                let readable = await Task.detached { (try? AudioDecoderFactory.probe(url, selection: selection)) != nil }.value
+                guard readable else { continue }
+            }
+            setMembership(sourceID: diff.sourceID, relativePath: relative, locator: &locator)
+            // Restoring the membership is not enough when the recorded playback
+            // file itself is gone: a converted source can be found again while
+            // its product was renamed. Point the locator at the product the
+            // conversion committed, so an available Track is a playable one.
+            let recordedPath = locator.lastKnownPath
+            if !recordedPath.isEmpty,
+               !FileManager.default.fileExists(atPath: recordedPath),
+               let outputPath = track.ncmConversionAssociation?.outputPath,
+               FileManager.default.fileExists(atPath: outputPath) {
+                let outputURL = URL(fileURLWithPath: outputPath).standardizedFileURL
+                if let fingerprint = try? ReferencedFileIdentityProvider().fingerprint(for: outputURL) {
+                    refresh(
+                        locator: &locator,
+                        sourceID: diff.sourceID,
+                        url: outputURL,
+                        fingerprint: fingerprint
+                    )
+                }
+            }
+            changes[track.id] = .init(trackID: track.id, locator: locator, availability: .available)
         }
 
         // First successful scan is authoritative: with no previous manifest
@@ -1389,6 +1580,9 @@ final class ReferencedSourceReconciler {
                       }) else { continue }
                 locator.removeSourcePreservingRecovery(diff.sourceID)
                 locator.primarySourceID = primarySourceID(locator.sourceMemberships)
+                _ = locator.promoteFirstExistingLocation {
+                    FileManager.default.fileExists(atPath: $0)
+                }
                 changes[track.id] = .init(
                     trackID: track.id,
                     locator: locator,
@@ -1399,12 +1593,29 @@ final class ReferencedSourceReconciler {
         return changes.values.sorted { $0.trackID.uuidString < $1.trackID.uuidString }
     }
 
+    /// A byte-identical copy dropped into a monitored folder is a duplicate,
+    /// not a move: the Track's own file is still where it was. Following the
+    /// copy would strand the Track the moment the copy is deleted, and would
+    /// make the Album point into an unrelated folder. Only follow the newly
+    /// observed file when the Track's recorded location is gone.
+    private func shouldFollowAddedFile(
+        track: Track,
+        locator: ReferencedFileLocator
+    ) -> Bool {
+        guard track.availability == .available else { return true }
+        let recordedPath = locator.locations.first {
+            $0.id == locator.primaryLocationID
+        }?.lastKnownPath ?? locator.lastKnownPath
+        guard !recordedPath.isEmpty else { return true }
+        return !FileManager.default.fileExists(atPath: recordedPath)
+    }
+
     private func matchingAddedFile(
         for locator: ReferencedFileLocator,
         groupedByPhysicalIdentity: [ReferencedPhysicalIdentityKey: [ReferencedSourceAddedFile]]
     ) -> ReferencedSourceAddedFile? {
         let candidateGroups = locator.locations.compactMap { location -> [ReferencedSourceAddedFile]? in
-            guard let fingerprint = location.fingerprint else { return nil }
+            guard let fingerprint = location.videoSource?.fingerprint ?? location.fingerprint else { return nil }
             return groupedByPhysicalIdentity[ReferencedPhysicalIdentityKey(fingerprint)]
         }
         let candidates = candidateGroups.flatMap { $0 }
@@ -1418,6 +1629,25 @@ final class ReferencedSourceReconciler {
         url: URL,
         fingerprint: ReferencedFileFingerprint
     ) {
+        if AudioFormatSupport.isVideoContainer(url), let videoLocation = locator.locations.first(where: {
+            $0.videoSource != nil && $0.sourceMemberships.contains { $0.sourceID == sourceID }
+        }) {
+            locator.refreshVideoSource(for: sourceID, url: url, fingerprint: fingerprint)
+            // A folder move can carry both files. Follow the extracted audio
+            // by its own identity, without substituting the observed movie.
+            let audioURL = url.deletingLastPathComponent()
+                .appendingPathComponent(URL(fileURLWithPath: videoLocation.lastKnownPath).lastPathComponent)
+            if let current = try? ReferencedFileIdentityProvider().fingerprint(for: audioURL),
+               let previous = videoLocation.fingerprint,
+               TrackIdentityResolver.samePhysicalIdentity(current, previous),
+               let bookmark = try? bookmarkResolver.refreshBookmark(for: audioURL) {
+                locator.refreshLocation(for: sourceID, fileBookmarkData: bookmark, lastKnownPath: audioURL.path, fingerprint: current)
+                if let source = locator.locations.first(where: { $0.id == videoLocation.id })?.videoSource {
+                    try? VideoMusicImporter.markGeneratedAudio(audioURL, source: source)
+                }
+            }
+            return
+        }
         let bookmark = (try? bookmarkResolver.refreshBookmark(for: url))
             ?? locator.fileBookmarkData
         locator.refreshLocation(
@@ -1437,11 +1667,47 @@ final class ReferencedSourceReconciler {
         locator.primarySourceID = primarySourceID(locator.sourceMemberships)
     }
 
+    /// Finds a source-relative path that proves this Track's file is present
+    /// again, in order of authority: the scan manifest's binding for this
+    /// Track, the Track's own NCM/video origin, then its last known location.
+    /// Generated products are skipped because the scanner hides them, so a
+    /// membership pointing at one would be removed by the next scan.
+    private func recoveredRelativePath(
+        for track: Track,
+        locator: ReferencedFileLocator,
+        rootURL: URL,
+        scannedTrackPaths: [UUID: String]
+    ) -> String? {
+        let isFileRoot = rootIsFile(rootURL)
+        func present(_ relative: String) -> String? {
+            let candidate = url(forRelativePath: relative, root: rootURL, rootIsFile: isFileRoot)
+            return FileManager.default.fileExists(atPath: candidate.path) ? relative : nil
+        }
+        if let scanned = scannedTrackPaths[track.id], let relative = present(scanned) {
+            return relative
+        }
+        let origin = track.ncmConversionAssociation?.sourcePath ?? locator.videoSource?.path
+        if let origin,
+           let relative = relativePath(URL(fileURLWithPath: origin), root: rootURL),
+           let found = present(relative) {
+            return found
+        }
+        guard generatedOutputRelativePath(for: track, locator: locator, rootURL: rootURL) == nil,
+              !locator.lastKnownPath.isEmpty,
+              let relative = relativePath(URL(fileURLWithPath: locator.lastKnownPath), root: rootURL) else {
+            return nil
+        }
+        return present(relative)
+    }
+
     private func generatedOutputRelativePath(
         for track: Track,
         locator: ReferencedFileLocator,
         rootURL: URL
     ) -> String? {
+        // An explicitly selected file is itself the source. Directory scans
+        // hide generated products, but single-file scans include that file.
+        guard !rootIsFile(rootURL) else { return nil }
         let outputURL = URL(fileURLWithPath: locator.lastKnownPath).standardizedFileURL
         guard !locator.lastKnownPath.isEmpty else { return nil }
         let associationMatches = track.ncmConversionAssociation.map {
@@ -1457,7 +1723,8 @@ final class ReferencedSourceReconciler {
                 )
             } ?? false
             : false
-        guard associationMatches || markerMatches else { return nil }
+        let videoMatches = locator.videoSource != nil && VideoMusicImporter.isGeneratedAudio(outputURL)
+        guard associationMatches || markerMatches || videoMatches else { return nil }
         return relativePath(outputURL, root: rootURL)
     }
 

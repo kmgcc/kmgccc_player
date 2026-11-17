@@ -28,12 +28,36 @@ enum SidebarNoticeStyle: Sendable {
     case warning
 }
 
+/// Identifies a notice so the App can clear it later without disturbing a
+/// newer notice for something else.
+nonisolated enum SidebarNoticeTag: String, Sendable {
+    case libraryMutation
+    case audioPrograms
+    case audioProgramRecovery
+    case albumOrdering
+}
+
+/// Where a sidebar notice's action should take the user. Kept independent of
+/// view types so notices stay `Sendable`.
+nonisolated enum SidebarNoticeDestination: Equatable, Sendable {
+    case libraryImportStatus
+    case audioProgramExpansion
+    case albumOrderingFailures
+    case librarySettings(anchor: String?)
+    case libraryRepair
+    case revealPath(String)
+}
+
 struct SidebarNotice: Equatable, Identifiable, Sendable {
     let id = UUID()
     let message: String
     let style: SidebarNoticeStyle
     let actionTitle: String?
+    let destination: SidebarNoticeDestination?
+    let isSticky: Bool
+    let tag: SidebarNoticeTag?
     let sourceID: UUID?
+    var visibleDuration: TimeInterval? = nil
 }
 
 /// Observable ViewModel for UI layout state.
@@ -153,19 +177,72 @@ final class UIStateViewModel {
 
     /// Compact, transient notice shown in the sidebar bottom status area.
     var sidebarNotice: SidebarNotice?
+    private var queuedSidebarNotices: [SidebarNotice] = []
+    var pendingAudioAreaChoice: AudioProgramAreaChoice?
+    private var queuedAudioChoices: [AudioProgramAreaChoice] = []
+    var pendingAudioExpansions: [AudioProgramExpansionProposal] = []
+
+    func recordAudioProgramProposals(_ proposals: [AudioProgramExpansionProposal]) {
+        guard !proposals.isEmpty else { return }
+        for proposal in proposals {
+            if let index = pendingAudioExpansions.firstIndex(where: { $0.id == proposal.id }) {
+                pendingAudioExpansions[index] = proposal
+            } else {
+                pendingAudioExpansions.append(proposal)
+            }
+        }
+        showSidebarNotice("有分轨待处理", style: .warning, actionTitle: "查看分轨",
+            destination: .audioProgramExpansion, isSticky: true, tag: .audioPrograms)
+    }
 
     /// Import failures outlive the progress window so a background source
     /// scan can be reviewed from the sidebar instead of sending the user to a
     /// settings page that has no error details.
     private(set) var libraryImportFailureReports: [LibraryImportFailureReport] = []
 
+    /// Album-order failures from the most recent import or manual action.
+    /// They stay available until the listener retries, opens the album, or
+    /// dismisses the notice.
+    private(set) var albumOrderingFailures: [AlbumOrderingFailure] = []
+
     func recordLibraryImportFailures(
         _ failures: [ImportInputFailure],
         origin: LibraryImportOrigin
     ) {
         guard !failures.isEmpty else { return }
+        // One file can fail twice in one scan: the importer explains why it
+        // could not decode it, and the source scan separately reports that it
+        // stayed unimported. That is one problem, not two. Keep a single entry
+        // per file and prefer the longer, more concrete reason.
+        var unique: [ImportInputFailure] = []
+        for failure in failures {
+            let key = Self.importFailureKey(failure)
+            if let reportIndex = libraryImportFailureReports.firstIndex(where: { report in
+                report.failures.contains { Self.importFailureKey($0) == key }
+            }),
+               let failureIndex = libraryImportFailureReports[reportIndex].failures.firstIndex(where: {
+                   Self.importFailureKey($0) == key
+               }) {
+                let report = libraryImportFailureReports[reportIndex]
+                let stored = report.failures[failureIndex]
+                if failure.message.count > stored.message.count {
+                    var updated = report.failures
+                    updated[failureIndex] = failure
+                    libraryImportFailureReports[reportIndex] = LibraryImportFailureReport(
+                        id: report.id,
+                        origin: report.origin,
+                        failures: updated,
+                        createdAt: report.createdAt
+                    )
+                }
+                continue
+            }
+            guard !unique.contains(where: { Self.importFailureKey($0) == key }) else { continue }
+            unique.append(failure)
+        }
+        guard !unique.isEmpty else { return }
         libraryImportFailureReports.append(
-            LibraryImportFailureReport(origin: origin, failures: failures)
+            LibraryImportFailureReport(origin: origin, failures: unique)
         )
         // Keep the status surface bounded even when a disconnected source is
         // retried repeatedly over a long-running session.
@@ -174,8 +251,49 @@ final class UIStateViewModel {
         }
     }
 
+    private static func importFailureKey(_ failure: ImportInputFailure) -> String {
+        failure.url.standardizedFileURL.path
+    }
+
     func clearLibraryImportFailureReports() {
         libraryImportFailureReports.removeAll()
+    }
+
+    /// Applies one ordering pass. Successful albums clear older failures;
+    /// current failures replace the same album's stale detail.
+    func applyAlbumOrderingOutcome(_ outcome: AlbumOrderingOutcome) {
+        guard !outcome.updatedAlbumKeys.isEmpty || !outcome.failures.isEmpty else { return }
+        let updated = Set(outcome.updatedAlbumKeys)
+        if !updated.isEmpty {
+            albumOrderingFailures.removeAll { updated.contains($0.albumKey) }
+        }
+        for failure in outcome.failures {
+            if let index = albumOrderingFailures.firstIndex(where: { $0.albumKey == failure.albumKey }) {
+                albumOrderingFailures[index] = failure
+            } else {
+                albumOrderingFailures.append(failure)
+            }
+        }
+        if albumOrderingFailures.count > 20 {
+            albumOrderingFailures.removeFirst(albumOrderingFailures.count - 20)
+        }
+        updateAlbumOrderingNotice()
+    }
+
+    func removeAlbumOrderingFailure(albumKey: String) {
+        albumOrderingFailures.removeAll { $0.albumKey == albumKey }
+        updateAlbumOrderingNotice()
+    }
+
+    func clearAlbumOrderingFailures() {
+        albumOrderingFailures.removeAll()
+        updateAlbumOrderingNotice()
+    }
+
+    private func updateAlbumOrderingNotice() {
+        guard !albumOrderingFailures.isEmpty else { dismissSidebarNotice(tag: .albumOrdering); return }
+        showSidebarNotice("\(albumOrderingFailures.count) 张专辑的曲序待整理", style: .warning,
+            actionTitle: "查看详情", destination: .albumOrderingFailures, isSticky: true, tag: .albumOrdering)
     }
 
     func showSidebarNotice(
@@ -183,24 +301,91 @@ final class UIStateViewModel {
         style: SidebarNoticeStyle = .success,
         duration: TimeInterval? = nil,
         actionTitle: String? = nil,
-        sourceID: UUID? = nil
+        sourceID: UUID? = nil,
+        destination: SidebarNoticeDestination? = nil,
+        isSticky: Bool = false,
+        tag: SidebarNoticeTag? = nil
     ) {
-        let notice = SidebarNotice(
-            message: message,
-            style: style,
-            actionTitle: actionTitle,
-            sourceID: sourceID
-        )
-        sidebarNotice = notice
+        let notice = SidebarNotice(message: message, style: style, actionTitle: actionTitle,
+            destination: destination, isSticky: isSticky, tag: tag, sourceID: sourceID,
+            visibleDuration: duration)
+        let sameTask: (SidebarNotice) -> Bool = {
+            $0.sourceID == sourceID && $0.tag == tag && $0.destination == destination
+        }
+        if let current = sidebarNotice, current.isSticky, !sameTask(current) {
+            if let index = queuedSidebarNotices.firstIndex(where: sameTask) { queuedSidebarNotices[index] = notice }
+            else { queuedSidebarNotices.append(notice) }
+            return
+        }
+        queuedSidebarNotices.removeAll(where: sameTask)
+        presentSidebarNotice(notice)
+    }
 
+    private func presentSidebarNotice(_ notice: SidebarNotice) {
         sidebarNoticeDismissTask?.cancel()
-        let visibleDuration = duration ?? (style == .warning ? 8 : 1.8)
-        let delay = UInt64(max(0.1, visibleDuration) * 1_000_000_000)
+        sidebarNoticeDismissTask = nil
+        sidebarNotice = notice
+        guard !notice.isSticky else { return }
+        let duration = notice.visibleDuration ?? (notice.style == .warning ? 8 : 1.8)
         sidebarNoticeDismissTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: delay)
-            guard !Task.isCancelled else { return }
-            if self?.sidebarNotice?.id == notice.id {
-                self?.sidebarNotice = nil
+            try? await Task.sleep(for: .seconds(max(0.1, duration)))
+            guard !Task.isCancelled, self?.sidebarNotice?.id == notice.id else { return }
+            self?.dismissSidebarNotice()
+        }
+    }
+
+    func dismissSidebarNotice() {
+        sidebarNoticeDismissTask?.cancel()
+        sidebarNoticeDismissTask = nil
+        sidebarNotice = nil
+        if !queuedSidebarNotices.isEmpty { presentSidebarNotice(queuedSidebarNotices.removeFirst()) }
+    }
+
+    func dismissSidebarNotice(sourceID: UUID) {
+        queuedSidebarNotices.removeAll { $0.sourceID == sourceID }
+        if sidebarNotice?.sourceID == sourceID { dismissSidebarNotice() }
+    }
+
+    func dismissSidebarNotice(tag: SidebarNoticeTag) {
+        queuedSidebarNotices.removeAll { $0.tag == tag }
+        if sidebarNotice?.tag == tag { dismissSidebarNotice() }
+    }
+
+    func resetLibraryNotices() {
+        pendingAudioExpansions.removeAll()
+        queuedSidebarNotices.removeAll()
+        dismissSidebarNotice()
+        let choices = queuedAudioChoices + (pendingAudioAreaChoice.map { [$0] } ?? [])
+        queuedAudioChoices.removeAll()
+        pendingAudioAreaChoice = nil
+        choices.forEach { $0.finish(nil) }
+    }
+
+    func chooseAudioProgram(title: String, fileName: String, labels: [String], selected: Int,
+        trackTitles: [String] = [], actionTitle: String = "导入") async -> Int? {
+        let requestID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(returning: nil); return }
+                let request = AudioProgramAreaChoice(id: requestID, title: title, labels: labels,
+                    trackTitles: trackTitles, actionTitle: actionTitle,
+                    fileName: fileName, areas: Array(labels.indices), selectedArea: selected) { [weak self] index in
+                        self?.queuedAudioChoices.removeAll { $0.id == requestID }
+                        if self?.pendingAudioAreaChoice?.id == requestID {
+                            self?.pendingAudioAreaChoice = nil
+                            if self?.queuedAudioChoices.isEmpty == false {
+                                self?.pendingAudioAreaChoice = self?.queuedAudioChoices.removeFirst()
+                            }
+                        }
+                        continuation.resume(returning: index)
+                    }
+                if pendingAudioAreaChoice == nil { pendingAudioAreaChoice = request }
+                else { queuedAudioChoices.append(request) }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                if self?.pendingAudioAreaChoice?.id == requestID { self?.pendingAudioAreaChoice?.finish(nil) }
+                else { self?.queuedAudioChoices.first { $0.id == requestID }?.finish(nil) }
             }
         }
     }

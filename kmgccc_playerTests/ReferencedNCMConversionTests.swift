@@ -48,6 +48,37 @@ private actor ConversionCounter {
 
 @MainActor
 final class ReferencedNCMConversionTests: XCTestCase {
+    func testCancelledReferencedConversionEndsPlanningWithoutFileFailure() async throws {
+        let fixture = try Fixture(convert: { _, _ in throw CancellationError() })
+        defer { fixture.cleanup() }
+        let coordinator = LibraryOperationCoordinator()
+        let backend = ReferencedLocalBackend(
+            paths: fixture.paths,
+            sourceStore: ReferencedSourceStore(paths: fixture.paths),
+            sourceScope: fixture.scope,
+            bookmarkResolver: fixture.resolver
+        )
+        let planner = ImportPlanner(
+            repository: StubLibraryRepository(), storageBackend: backend, paths: fixture.paths,
+            referencedNCMConversionService: fixture.service, operationCoordinator: coordinator,
+            ncmConversionPipeline: ManagedNCMConversionPipeline(operationCoordinator: coordinator)
+        )
+        let session = try ImportSession(paths: fixture.paths)
+        defer { session.cleanupStaging() }
+        let token = ImportCancellationToken()
+        let result = await planner.resolveConversions(
+            filesToImport: [], eligibleNCMFiles: [try fixture.input()],
+            reusedTracks: [], reusedTrackIDs: [], session: session, cancellationToken: token,
+            progressController: BatchImportProgressDialogController(presentsWindow: false)
+        )
+
+        XCTAssertTrue(result.wasCancelled)
+        XCTAssertTrue(result.failures.isEmpty)
+        XCTAssertTrue(result.resolvedFiles.isEmpty)
+        let cancelled = await token.isCancelled
+        XCTAssertTrue(cancelled)
+    }
+
     func testFolderSourceWritesIntoOutputSubfolderAndPersistsReservationAssociation() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -356,6 +387,154 @@ final class ReferencedNCMConversionTests: XCTestCase {
         XCTAssertEqual(committed?.state, .committed)
     }
 
+    func testCommitCannotReplaceExistingTrackAssociation() async throws {
+        let fixture = try Fixture(convert: { source, directory in
+            try Fixture.makeResult(source: source, directory: directory)
+        })
+        defer { fixture.cleanup() }
+        let input = try fixture.input()
+        let output = try await fixture.service.convert(input)
+        try await fixture.service.associateTrack(operationID: output.operationID, trackID: fixture.trackID)
+        do {
+            try await fixture.service.markCommitted(operationID: output.operationID, trackID: UUID())
+            XCTFail("A different track must not replace an existing association")
+        } catch {
+            XCTAssertEqual(error as? NCMConversionRegistryError, .invalidTransition)
+        }
+        let registry = NCMConversionRegistry(paths: fixture.paths)
+        let record = try await registry.record(operationID: output.operationID)
+        XCTAssertEqual(record?.trackID, fixture.trackID)
+        XCTAssertEqual(record?.state, .outputReady)
+    }
+
+    func testCorruptOutputMarkerIsNotOverwritten() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent(NCMGeneratedOutputMarkerStore.fileName)
+        let original = Data("corrupt marker".utf8)
+        try original.write(to: url)
+        let fingerprint = ReferencedFileFingerprint(fileSize: 12, modifiedAt: 1)
+        let record = NCMGeneratedOutputRecord(
+            operationID: UUID(), sourcePath: "/source.ncm", sourceFingerprint: fingerprint,
+            outputPath: "/output.mp3", outputFingerprint: fingerprint, format: .mp3,
+            metadata: NCMMetadata(musicName: "Song", artist: [], album: "Album", albumPic: "", format: "mp3", bitrate: 0, duration: 0),
+            createdAt: Date(), updatedAt: Date()
+        )
+        XCTAssertThrowsError(try NCMGeneratedOutputMarkerStore.upsert(record, in: root))
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
+    func testMarkerPathThatIsDirectoryIsNotTreatedAsMissing() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent(NCMGeneratedOutputMarkerStore.fileName, isDirectory: true)
+        try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
+        XCTAssertThrowsError(try NCMGeneratedOutputMarkerStore.load(in: root))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testCorruptOutputMarkerStopsBeforeConversionOrReservation() async throws {
+        let counter = ConversionCounter()
+        let fixture = try Fixture(convert: { source, directory in
+            await counter.increment()
+            return try Fixture.makeResult(source: source, directory: directory)
+        })
+        defer { fixture.cleanup() }
+        let outputDirectory = fixture.sourceRoot.appendingPathComponent(ReferencedNCMConversionService.outputDirectoryName)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        let marker = outputDirectory.appendingPathComponent(NCMGeneratedOutputMarkerStore.fileName)
+        let original = Data("corrupt marker".utf8)
+        try original.write(to: marker)
+        do {
+            _ = try await fixture.service.convert(try fixture.input())
+            XCTFail("A corrupt marker must stop conversion")
+        } catch let error as LibraryMetadataReadError {
+            XCTAssertEqual(error.fileURL, marker)
+        }
+        let count = await counter.count
+        XCTAssertEqual(count, 0)
+        XCTAssertEqual(try Data(contentsOf: marker), original)
+        let records = try await fixture.registry.load().records
+        XCTAssertTrue(records.isEmpty)
+    }
+
+    func testSiblingRegistryReloadsBeforeUpdatingConversion() async throws {
+        let fixture = try Fixture(convert: { source, directory in
+            try Fixture.makeResult(source: source, directory: directory)
+        })
+        defer { fixture.cleanup() }
+        let sibling = NCMConversionRegistry(paths: fixture.paths)
+        _ = try await sibling.load()
+        let output = try await fixture.service.convert(try fixture.input())
+        try await sibling.associateTrack(operationID: output.operationID, trackID: fixture.trackID)
+        try await fixture.service.markCommitted(operationID: output.operationID, trackID: fixture.trackID)
+        let fresh = NCMConversionRegistry(paths: fixture.paths)
+        let record = try await fresh.record(operationID: output.operationID)
+        XCTAssertEqual(record?.trackID, fixture.trackID)
+        XCTAssertEqual(record?.state, .committed)
+    }
+
+    func testRecoveryCommitsMatchingLoadedTrackAssociation() async throws {
+        let fixture = try Fixture(convert: { source, directory in
+            try Fixture.makeResult(source: source, directory: directory)
+        })
+        defer { fixture.cleanup() }
+        let output = try await fixture.service.convert(try fixture.input())
+        try await fixture.service.associateTrack(operationID: output.operationID, trackID: fixture.trackID)
+        await fixture.service.recoverCommittedAssociations([
+            (trackID: UUID(), association: output.association)
+        ])
+        let before = NCMConversionRegistry(paths: fixture.paths)
+        let beforeRecord = try await before.record(operationID: output.operationID)
+        XCTAssertEqual(beforeRecord?.state, .outputReady)
+        await fixture.service.recoverCommittedAssociations([
+            (trackID: fixture.trackID, association: output.association)
+        ])
+        let registry = NCMConversionRegistry(paths: fixture.paths)
+        let record = try await registry.record(operationID: output.operationID)
+        XCTAssertEqual(record?.state, .committed)
+        XCTAssertEqual(record?.trackID, fixture.trackID)
+    }
+
+    func testRecoveryPreservesReservationWhenOutputChanged() async throws {
+        let fixture = try Fixture(convert: { source, directory in
+            try Fixture.makeResult(source: source, directory: directory)
+        })
+        defer { fixture.cleanup() }
+        let output = try await fixture.service.convert(try fixture.input())
+        try await fixture.service.associateTrack(operationID: output.operationID, trackID: fixture.trackID)
+        try Data("changed output".utf8).write(to: output.result.audioFileURL)
+        await fixture.service.recoverCommittedAssociations([
+            (trackID: fixture.trackID, association: output.association)
+        ])
+        let registry = NCMConversionRegistry(paths: fixture.paths)
+        let record = try await registry.record(operationID: output.operationID)
+        XCTAssertEqual(record?.state, .outputReady)
+    }
+
+    func testRecoveryCommitsMatchingAlternateTrackLocation() async throws {
+        let fixture = try Fixture(convert: { source, directory in
+            try Fixture.makeResult(source: source, directory: directory)
+        })
+        defer { fixture.cleanup() }
+        let output = try await fixture.service.convert(try fixture.input())
+        guard output.locator.ncmSourceIdentity != nil else {
+            throw XCTSkip("The test volume did not provide a source identity")
+        }
+        try await fixture.service.associateTrack(operationID: output.operationID, trackID: fixture.trackID)
+        await fixture.service.recoverCommittedLocations([UUID(): output.locator.locations])
+        let before = NCMConversionRegistry(paths: fixture.paths)
+        let beforeRecord = try await before.record(operationID: output.operationID)
+        XCTAssertEqual(beforeRecord?.state, .outputReady)
+        await fixture.service.recoverCommittedLocations([fixture.trackID: output.locator.locations])
+        let registry = NCMConversionRegistry(paths: fixture.paths)
+        let record = try await registry.record(operationID: output.operationID)
+        XCTAssertEqual(record?.state, .committed)
+        XCTAssertEqual(record?.trackID, fixture.trackID)
+    }
+
     func testRemovedConversionBlocksAutomaticReentryAndManualRetryRecoversOutput() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -498,8 +677,9 @@ final class ReferencedNCMConversionTests: XCTestCase {
         let recoveredIDs = try await fixture.registry.recoverStalePendingReservations()
 
         XCTAssertEqual(recoveredIDs, [staleID])
-        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: fixture.sourceRoot.path)
-            .contains { $0.hasPrefix(".kmgccc-ncm-") })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: debrisDirectory.appendingPathComponent("song.mp3").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceRoot
+            .appendingPathComponent(".kmgccc-ncm-\(staleID.uuidString).pending").path))
         let output = try await fixture.service.convert(input)
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.result.audioFileURL.path))
         let reloaded = NCMConversionRegistry(paths: fixture.paths)

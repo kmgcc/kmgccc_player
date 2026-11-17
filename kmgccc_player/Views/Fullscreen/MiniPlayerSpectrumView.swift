@@ -35,6 +35,8 @@ struct MiniPlayerSpectrumView: View {
     let capsuleCount: Int
     let preferredWidth: CGFloat?
     let preferredHeight: CGFloat?
+    /// Explicit capsule width (points). When nil, falls back to `baseDotSize*scale`.
+    let capsuleWidthOverride: CGFloat?
 
     init(
         isPlaying: Bool,
@@ -45,9 +47,10 @@ struct MiniPlayerSpectrumView: View {
         scale: CGFloat,
         isHovered: Bool,
         pausedBehavior: MiniPlayerSpectrumPausedBehavior,
-        capsuleCount: Int = 9,
+        capsuleCount: Int = TunedSpectrumEngine.baselineBandCount,
         preferredWidth: CGFloat? = nil,
-        preferredHeight: CGFloat? = nil
+        preferredHeight: CGFloat? = nil,
+        capsuleWidth: CGFloat? = nil
     ) {
         self.isPlaying = isPlaying
         self.isActive = isActive
@@ -60,17 +63,19 @@ struct MiniPlayerSpectrumView: View {
         self.capsuleCount = max(1, capsuleCount)
         self.preferredWidth = preferredWidth
         self.preferredHeight = preferredHeight
+        self.capsuleWidthOverride = capsuleWidth
     }
 
     // Layout constants (scaled)
-    private let baseDotSize: CGFloat = 5.8
+    /// Matches the progress bar's thickness so a resting capsule is a circle
+    /// with exactly the bar's end radius.
+    private let baseDotSize: CGFloat = 6
     private let baseSpacing: CGFloat = 4
     private let baseHeight: CGFloat = 52
     private let baseWidth: CGFloat = 100
     private let collapsedWidth: CGFloat = 14
-    private let baseCornerRadius: CGFloat = 10
 
-    private var dotSize: CGFloat { baseDotSize * scale }
+    private var dotSize: CGFloat { capsuleWidthOverride ?? baseDotSize * scale }
     private var spacing: CGFloat { baseSpacing * scale }
     private var height: CGFloat { preferredHeight ?? baseHeight * scale }
     private var expandedWidth: CGFloat { preferredWidth ?? baseWidth * scale }
@@ -86,9 +91,13 @@ struct MiniPlayerSpectrumView: View {
         isHovered ? 0.0 : 1.0
     }
 
-    /// Current corner radius based on hover state
+    /// Corner radius of the hover cluster: a pill while collapsing, square
+    /// otherwise. The expanded spectrum must NOT be rounded — the row is exactly
+    /// as wide as its capsules, so a 6pt radius clipped the four corners of the
+    /// outermost capsules once they reached full height (their top edge sits
+    /// 0.85pt below the frame edge, well inside the corner curve).
     private var currentCornerRadius: CGFloat {
-        isHovered ? collapsedWidthScaled * 0.5 : baseCornerRadius * scale
+        isHovered ? collapsedWidthScaled * 0.5 : 0
     }
 
     var body: some View {
@@ -165,7 +174,7 @@ private struct MiniPlayerSpectrumContainer: NSViewRepresentable {
             capsuleSpacing: spacing,
             strokeWidth: 0.5,
             pausedBehavior: pausedBehavior == .minimalDots ? .collapseToDots : .idlePose,
-            usesDetailedSampling: capsuleCount > 9
+            usesDetailedSampling: capsuleCount > TunedSpectrumEngine.baselineBandCount
         )
     }
 

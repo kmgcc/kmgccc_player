@@ -116,3 +116,7 @@
 | **43** | 清理全部缓存 | 按钮 | **行内直显** | App 会在空闲时也会整理缓存，让它们保持在各自的上限以内；清理后，需要的内容会在使用时重新生成。 | | [StorageSettingsView.swift](../kmgccc_player/Views/Settings/Storage/StorageSettingsView.swift#L68) |
 | **44** | 启用本机自动化 | 开关 | **行内直显** | 让本机上的 MCP、CLI 和脚本访问播放器。 | | [AutomationSettingsView.swift](../kmgccc_player/Views/Settings/AutomationSettingsView.swift#L34) |
 | **45** | 复制 MCP 配置 | 命令行/按钮 | **行内直显** | 配置可直接粘贴到 agent 工具的配置文件。 | | [AutomationSettingsView.swift](../kmgccc_player/Views/Settings/AutomationSettingsView.swift#L48) |
+| **46** | Agent 技能 | 说明 | **行内直显** | 复制下面的安装指令，粘贴给你常用的 Agent 工具，例如 Claude、Codex、WorkBuddy。它会读取技能目录并完成安装。命令走本机自动化接口，播放器没运行时第一条命令会自动启动它。 | | [AutomationSettingsView.swift](../kmgccc_player/Views/Settings/AutomationSettingsView.swift#L64) |
+| **47** | 复制安装指令 | 按钮 | **行内直显** | 复制安装指令 | | [AutomationSettingsView.swift](../kmgccc_player/Views/Settings/AutomationSettingsView.swift#L78) |
+| **48** | 技能目录 | 命令行/按钮 | **折叠（高级）** | 技能目录 / 复制路径 | | [AutomationSettingsView.swift](../kmgccc_player/Views/Settings/AutomationSettingsView.swift#L88) |
+| **49** | 命令行 | 命令行/按钮 | **折叠（高级）** | 命令行 / 复制命令 | | [AutomationSettingsView.swift](../kmgccc_player/Views/Settings/AutomationSettingsView.swift#L96) |

@@ -22,6 +22,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// Latest transport intent shared by every playback surface. The renderer
     /// can remain audible briefly while a pause fades out.
     private(set) var isPlaying: Bool = false
+    /// Non-nil when the last play request could not start audio. The request
+    /// publishes its track immediately, so this is the only way a failed
+    /// start can be told apart from a play that simply produced silence.
+    private(set) var lastPlaybackFailure: String?
     private(set) var currentTime: Double = 0
     private(set) var duration: Double = 0
     private(set) var currentTrack: Track? {
@@ -33,6 +37,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     var isReadyForSeek: Bool {
         audioFile != nil
+    }
+
+    var isLyricsClockPlaying: Bool {
+        isPlaying && audioFile != nil && pendingRendererStartSegmentID == nil
+            && spatialPendingSeek == nil && currentTime > audioOutputDelay
     }
 
     var volume: Double {
@@ -79,7 +88,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     // MARK: - Renderer Components
 
-    private var audioFile: AVAudioFile?
+    private var audioFile: AudioDecoderResource?
     private let rendererPipeline = RendererPlaybackPipeline()
     private var spatialCurrentSegmentID: UUID?
     private var pendingRendererStartSegmentID: UUID?
@@ -164,6 +173,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private var playGeneration: UInt64 = 0
     /// The in-flight preparation task, cancelled when a newer request starts.
     private var prepTask: Task<Void, Never>?
+    /// Generation that already rebuilt the renderer graph after an open
+    /// failure, so the recovery runs at most once per play request.
+    private var openFailureRetryGeneration: UInt64?
 
     // MARK: - Paused Restore (Playback Memory)
 
@@ -627,7 +639,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         activeLookaheadEnabled = desired
         currentTime = max(0, min(resumeTime, duration))
-        let provider = AVFilePCMProvider(file: file, startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
+        let provider = file.makeProvider(startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
         let segmentID = UUID()
         spatialCurrentSegmentID = segmentID
         rendererLoadSegmentID = segmentID
@@ -808,7 +820,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             locator: track.mediaLocator,
             libraryPaths: LibraryPaths(rootURL: root),
             authorizedSourceRoots: authorizedSourceRootsProvider.snapshot(),
-            titleForLog: track.title
+            titleForLog: track.title,
+            mediaSelection: track.mediaSelection
         )
     }
 
@@ -825,7 +838,14 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // stopPlayback runs invalidatePreparation() — bumping playGeneration and
         // cancelling any in-flight prepare — and clears currentTrack/audioFile +
         // releases the old file's security scope.
+        let stopStart = ProcessInfo.processInfo.systemUptime
         stopPlayback(clearQueue: false, keepPlayingState: shouldKeepPlaying)
+        lastPlaybackFailure = nil
+        openFailureRetryGeneration = nil
+        DebugUIHooks.record(String(
+            format: "switch-timing stop-playback=%.1fms",
+            (ProcessInfo.processInfo.systemUptime - stopStart) * 1000
+        ))
 
         if shouldKeepPlaying {
             isPlaying = true
@@ -909,6 +929,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         )
         defer { FirstUseHitchDiagnostics.end(scheduleToken) }
 
+        lastPlaybackFailure = nil
         currentFileURL = resource.resolvedURL
         currentFileLease = resource.lease
         audioFile = resource.file
@@ -952,7 +973,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let upperBound = duration > 0.5 ? duration - 0.5 : 0
         let position = max(0, min(requestedPosition, upperBound))
         let frame = AVAudioFramePosition(position * sampleRate)
-        let provider = AVFilePCMProvider(file: resource.file, startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
+        let provider = resource.file.makeProvider(startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
         adoptCurrentLoudnessPlan(makeLoudnessPlan(track: track, url: resource.resolvedURL),
                                  track: track, url: resource.resolvedURL)
         pauseTransitionPending = false
@@ -969,7 +990,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         currentTime = position
         activeTimelineToken = UUID()
 
+        let latencyStart = ProcessInfo.processInfo.systemUptime
         refreshOutputLatency(force: true)
+        DebugUIHooks.record(String(
+            format: "switch-timing output-latency=%.1fms",
+            (ProcessInfo.processInfo.systemUptime - latencyStart) * 1000
+        ))
         AudioAnalysisHub.shared.enableRendererFeed()
         AudioAnalysisHub.shared.setPlaying(shouldAutoplay)
         rendererPipeline.setVolume(Float(volume))
@@ -1031,8 +1057,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             // Resolution failed: mark missing (matches old resolveFileURL path).
             track.availability = .missing
         case AudioFilePreparationActor.PrepError.openFailed:
-            // Resolved but failed to open: keep availability (matches old catch).
-            break
+            // Resolved but failed to open. A stale route can leave the live
+            // graph unable to open files that are healthy on disk, so rebuild
+            // the graph once before treating the track as unplayable.
+            if retryAfterOpenFailure(track: track, generation: generation) {
+                return
+            }
         default:
             break
         }
@@ -1041,9 +1071,40 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             "[PlaybackPipeline] prepare failed track=\(track.id.uuidString) title=\(track.title) error=\(error)",
             category: .audio
         )
+        lastPlaybackFailure = error.localizedDescription
         stopAccessingCurrentFile()
         pendingRetryPositionSeconds = nil
         isPlaying = false
+    }
+
+    /// Stops the renderer so its next load builds a new engine, then repeats the
+    /// same preparation once. Returns false when this request already retried or
+    /// no longer owns the play generation.
+    private func retryAfterOpenFailure(track: Track, generation: UInt64) -> Bool {
+        guard generation == playGeneration,
+              openFailureRetryGeneration != generation else { return false }
+        openFailureRetryGeneration = generation
+        Log.warning(
+            "[PlaybackPipeline] rebuilding audio graph after open failure track=\(track.id.uuidString)",
+            category: .audio
+        )
+        rendererPipeline.stop {}
+        let request = makePrepRequest(for: track)
+        isPlaying = true
+        prepTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let resource = try await self.prepActor.prepare(request)
+                self.finishStartIfCurrent(resource, generation: generation)
+            } catch {
+                self.handlePrepareFailureIfCurrent(
+                    error,
+                    trackID: request.trackID,
+                    generation: generation
+                )
+            }
+        }
+        return true
     }
 
     /// A terminal renderer failure stops this request without advancing the
@@ -1096,6 +1157,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             "[RendererAudio] stopped track=\(currentTrack?.id.uuidString ?? "nil") position=\(String(format: "%.3f", currentTime))s segment=\(segmentID?.uuidString ?? "unassociated") error=\(error)",
             category: .audio
         )
+        lastPlaybackFailure = error.localizedDescription
         rendererPipeline.stop {
             currentLeaseToRelease?.release()
             prefetchedLeaseToRelease?.release()
@@ -1277,7 +1339,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private func seekSpatialRenderer(
         to seconds: Double,
-        file: AVAudioFile,
+        file: AudioDecoderResource,
         wasPlaying: Bool
     ) {
         cancelPendingCompletion()
@@ -1290,7 +1352,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
 
         let position = max(0, min(seconds, duration))
-        let provider = AVFilePCMProvider(file: file, startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
+        let provider = file.makeProvider(startingFrame: activeDecodedStartFrame, frameCount: activeDecodedFrameCount)
         let segmentID = UUID()
         spatialCurrentSegmentID = segmentID
         rendererLoadSegmentID = segmentID
@@ -1561,8 +1623,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let frameCount = trim?.scheduledFrameCount
         let itemDuration = trim?.scheduledDuration
             ?? (resource.sampleRate > 0 ? Double(resource.file.length) / resource.sampleRate : resource.duration)
-        let provider = AVFilePCMProvider(
-            file: resource.file,
+        let provider = resource.file.makeProvider(
             startingFrame: startFrame,
             frameCount: frameCount
         )

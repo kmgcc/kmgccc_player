@@ -153,10 +153,15 @@ struct TrackDetailContent {
     let subtitle: String
     let attributionNote: String?
     let text: String
+    var source: String = ""
 }
 
 enum TrackDetailResolver {
     static func resolve(for track: Track, libraryVM: LibraryViewModel?) -> TrackDetailContent {
+        resolve(for: track, albums: libraryVM?.albumEntries ?? [], artists: libraryVM?.artistEntries ?? [])
+    }
+
+    static func resolve(for track: Track, albums: [AlbumEntry], artists: [ArtistEntry]) -> TrackDetailContent {
         let title = "歌曲详情"
         let subtitle: String
         if !track.title.isEmpty, !track.artist.isEmpty {
@@ -175,18 +180,20 @@ enum TrackDetailResolver {
                 title: title,
                 subtitle: subtitle,
                 attributionNote: nil,
-                text: desc
+                text: desc,
+                source: "track"
             )
         }
 
-        if let album = libraryVM?.albumEntries.first(where: { $0.canonicalKey == track.albumGroupKey }) {
+        if let album = albums.first(where: { $0.canonicalKey == track.albumGroupKey }) {
             let albumDesc = album.description.trimmingCharacters(in: .whitespacesAndNewlines)
             if !albumDesc.isEmpty {
                 return TrackDetailContent(
                     title: title,
                     subtitle: subtitle,
                     attributionNote: "来自 \(album.displayTitle)",
-                    text: albumDesc
+                    text: albumDesc,
+                    source: "album"
                 )
             }
         }
@@ -194,14 +201,15 @@ enum TrackDetailResolver {
         let artistKey = LibraryNormalization.artistComponents(for: track).first?.canonicalName
             ?? LibraryNormalization.artistComponents(track.artist).first?.canonicalName
             ?? ""
-        if let artistEntry = libraryVM?.artistEntries.first(where: { $0.canonicalName == artistKey }) {
+        if let artistEntry = artists.first(where: { $0.canonicalName == artistKey }) {
             let artistDesc = artistEntry.description.trimmingCharacters(in: .whitespacesAndNewlines)
             if !artistDesc.isEmpty {
                 return TrackDetailContent(
                     title: title,
                     subtitle: subtitle,
                     attributionNote: "来自 \(artistEntry.displayName)",
-                    text: artistDesc
+                    text: artistDesc,
+                    source: "artist"
                 )
             }
         }
@@ -210,7 +218,8 @@ enum TrackDetailResolver {
             title: title,
             subtitle: subtitle,
             attributionNote: nil,
-            text: ""
+            text: "",
+            source: ""
         )
     }
 }

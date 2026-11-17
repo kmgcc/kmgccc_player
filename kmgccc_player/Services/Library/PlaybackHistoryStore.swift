@@ -33,8 +33,8 @@ final class PlaybackHistoryStore {
     @ObservationIgnored private var dailyCountsCache: [Date: Int]?
     private(set) var revision: Int = 0
 
-    init(context: LibraryContext) {
-        let container = Self.makeContainer(context: context)
+    init(context: LibraryContext) throws {
+        let container = try Self.makeContainer(context: context)
         self.modelContainer = container
         self.modelContext = ModelContext(container)
         self.activeStoreURL = context.paths.playbackHistoryStoreURL
@@ -295,7 +295,7 @@ final class PlaybackHistoryStore {
         )
     }
 
-    private static func makeContainer(context: LibraryContext) -> ModelContainer {
+    private static func makeContainer(context: LibraryContext) throws -> ModelContainer {
         let schema = Schema([PlaybackHistoryRecord.self])
         let persistentStoreURL = PlaybackHistoryStorePaths.prepareStoreURL(in: context.paths)
 
@@ -313,7 +313,10 @@ final class PlaybackHistoryStore {
         }
 
         Log.error("[PlaybackHistory] using an in-memory history store for this launch", category: .library)
-        return makeInMemoryContainer()
+        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        // A second failure belongs to the library-open recovery flow. It must
+        // not terminate the whole App before the recovery window can appear.
+        return try ModelContainer(for: schema, configurations: [configuration])
     }
 
     private static func makeInMemoryContainer() -> ModelContainer {

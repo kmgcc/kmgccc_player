@@ -10,6 +10,8 @@ import SwiftUI
 /// LED meter rows shown under an audio visualization selector while LED is
 /// selected. The configuration is global, so every surface shares it.
 struct LEDMeterSettingsView: View {
+    var showsCount: Bool = true
+
     @Environment(AppSettings.self) private var settings
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @EnvironmentObject private var themeStore: ThemeStore
@@ -21,7 +23,9 @@ struct LEDMeterSettingsView: View {
 
     var body: some View {
         VStack(spacing: presentationStyle.scaled(16)) {
-            ledCountPicker
+            if showsCount {
+                ledCountPicker
+            }
             brightnessLevelsPicker
         }
         .onAppear {
@@ -36,6 +40,7 @@ struct LEDMeterSettingsView: View {
         HStack(spacing: presentationStyle.scaled(8)) {
             Text("settings.led.count")
                 .settingsRowLabelStyle()
+                .padding(.leading, labelIndent)
             Spacer()
             SlidingSelector(
                 segments: [9, 11, 13, 15],
@@ -79,6 +84,7 @@ struct LEDMeterSettingsView: View {
         HStack(spacing: presentationStyle.scaled(8)) {
             Text("settings.led.brightness")
                 .settingsRowLabelStyle()
+                .padding(.leading, labelIndent)
             Spacer()
             SlidingSelector(
                 segments: [3, 5, 7],
@@ -122,6 +128,12 @@ struct LEDMeterSettingsView: View {
         presentationStyle.usesMaterialSectionCards
             ? presentationStyle.settingsPrimaryTextColor(appColors: appColors)
             : themeStore.accentColor
+    }
+
+    /// Labels sit one step in from the selector they belong to. The tracks
+    /// keep the section's trailing alignment.
+    private var labelIndent: CGFloat {
+        presentationStyle.scaled(14)
     }
 
     private func applyLedConfig() {

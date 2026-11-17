@@ -41,6 +41,7 @@ struct SkinActionButton: View {
 
     private var symbol: String {
         if kind == .playPause { return playback.stablePresentation.isPlaying ? "pause.fill" : "play.fill" }
+        if kind == .lyricsToggle, native?.presentation.isMotionArtworkFullscreenActive == true { return "rectangle.compress.vertical" }
         if kind == .lyricsToggle, native?.presentation.isShowingLyrics == true { return "quote.bubble.fill" }
         if kind == .fullscreen && surface == .fullscreen { return "arrow.down.right.and.arrow.up.left" }
         return kind.symbol
@@ -57,7 +58,12 @@ struct SkinActionButton: View {
         case .playPause: playback.stablePresentation.isPlaying ? "Pause" : "Play"
         case .previous: "Previous Track"
         case .next: "Next Track"
-        case .lyricsToggle: native?.presentation.isShowingLyrics == true ? "Hide Lyrics" : "Show Lyrics"
+        case .lyricsToggle:
+            if native?.presentation.isMotionArtworkFullscreenActive == true {
+                "退出视频全屏"
+            } else {
+                native?.presentation.isShowingLyrics == true ? "Hide Lyrics" : "Show Lyrics"
+            }
         case .fullscreen: surface == .fullscreen ? "fullscreen.exit" : "全屏播放"
         case .settings: "设置"
         case .quickPanel: "快速外观"
@@ -68,7 +74,12 @@ struct SkinActionButton: View {
         case .playPause: actions.playPause()
         case .previous: actions.previous()
         case .next: actions.next()
-        case .lyricsToggle: actions.toggleLyrics()
+        case .lyricsToggle:
+            if native?.presentation.isMotionArtworkFullscreenActive == true {
+                native?.actions.exitMotionArtworkFullscreen()
+            } else {
+                actions.toggleLyrics()
+            }
         case .fullscreen: surface == .fullscreen ? actions.exit() : actions.enterFullscreen()
         case .settings: actions.openSettings()
         case .quickPanel: actions.openQuickPanel()

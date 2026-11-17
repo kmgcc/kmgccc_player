@@ -60,6 +60,7 @@ nonisolated struct MusicEnrichmentQuery: Codable, Equatable, Sendable {
     var seedAttributes: [String: MusicMetadataValue]? = nil
     var storedMotionArtwork: TrackMotionArtwork? = nil
     var albumArtist: String? = nil
+    var sourceAlbumIdentity: String? = nil
 }
 
 nonisolated struct MotionArtworkDescriptor: Codable, Equatable, Sendable {
@@ -104,7 +105,7 @@ nonisolated struct StoredMotionArtwork: Codable, Equatable, Sendable {
     var height: Int?
 }
 
-nonisolated struct MotionArtworkResource: Equatable, Sendable {
+nonisolated struct MotionArtworkResource: Hashable, Sendable {
     var url: URL
     var startTime: Double
     var duration: Double
@@ -175,7 +176,14 @@ nonisolated struct MusicEnrichmentRecord: Codable, Equatable, Sendable {
 
     var motionDescriptors: [MotionArtworkDescriptor] {
         var seen = Set<String>()
-        let descriptors = manualMotionSelection?.motion ?? results.flatMap { $0.motion ?? [] }
+        let albumResults = results.filter { result in
+            guard query.sourceAlbumIdentity != nil else { return true }
+            if let albumName = result.attributes?["albumName"]?.text {
+                return MusicAlbumMotionIdentity.normalized(albumName) == MusicAlbumMotionIdentity.normalized(query.album)
+            }
+            return query.appleAlbumID != nil && result.albumID == query.appleAlbumID
+        }
+        let descriptors = manualMotionSelection?.motion ?? albumResults.flatMap { $0.motion ?? [] }
         return descriptors.filter { seen.insert($0.url).inserted }
     }
 }
@@ -212,6 +220,17 @@ extension MusicEnrichmentRecord {
         let inheritedCatalog = albumMotionIdentity.flatMap { $0.hasPrefix("apple:") ? String($0.dropFirst(6)) : nil }
         // A song's own choice may come from another release; it says nothing about the local album.
         let storedCatalog = query.storedMotionArtwork.flatMap { $0.isUserSelected ? nil : $0.catalogAlbumID }
+        if let source = query.sourceAlbumIdentity {
+            let matching = results.first { result in
+                guard result.source == "appleWeb" || result.source == "appleCache",
+                      let name = result.attributes?["albumName"]?.text else { return false }
+                return MusicAlbumMotionIdentity.normalized(name) == album
+            }
+            let key = "source:\(source)"
+            let inherited = query.storedMotionArtwork?.albumIdentity == key ? storedCatalog : nil
+            return MusicAlbumMotionIdentity(key: key, catalogAlbumID: query.appleAlbumID ?? matching?.albumID ?? inherited,
+                fallbackKey: key)
+        }
         let catalog = query.appleAlbumID ?? results.first(where: { $0.source == "appleWeb" || $0.source == "appleCache" })?.albumID ?? storedCatalog ?? inheritedCatalog
         if let catalog, !catalog.isEmpty {
             return MusicAlbumMotionIdentity(key: "apple:\(catalog)", catalogAlbumID: catalog, fallbackKey: fallback)
@@ -228,6 +247,12 @@ nonisolated struct TrackMotionArtwork: Codable, Equatable, Sendable {
     var isUserSelected: Bool
     var catalogAlbumID: String?
     var albumIdentity: String? = nil
+
+    init(importedAssets: [StoredMotionArtwork]) {
+        assets = importedAssets
+        isUserSelected = true
+        catalogAlbumID = nil
+    }
 
     init(snapshot: MusicEnrichmentSnapshot) {
         assets = snapshot.record.assets

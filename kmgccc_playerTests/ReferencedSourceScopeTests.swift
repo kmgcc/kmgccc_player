@@ -35,7 +35,12 @@ final class ReferencedSourceScopeTests: XCTestCase {
         resolver.stale = true
         let scope = kmgccc_player.ReferencedSourceScope()
 
-        let issues = await scope.start(descriptors: [source], store: store, bookmarkResolver: resolver)
+        let issues = await scope.start(
+            descriptors: [source],
+            store: store,
+            bookmarkResolver: resolver,
+            requiresSecurityScope: true
+        )
         XCTAssertTrue(issues.isEmpty)
         XCTAssertEqual(resolver.starts, 1)
         XCTAssertEqual(resolver.stops, 0)
@@ -66,7 +71,12 @@ final class ReferencedSourceScopeTests: XCTestCase {
         let resolver = SourceBookmarkResolverSpy(url: root)
         let scope = kmgccc_player.ReferencedSourceScope()
 
-        let issues = await scope.start(descriptors: [good, offline], store: store, bookmarkResolver: resolver)
+        let issues = await scope.start(
+            descriptors: [good, offline],
+            store: store,
+            bookmarkResolver: resolver,
+            requiresSecurityScope: true
+        )
         XCTAssertTrue(issues.contains(kmgccc_player.ReferencedSourceScopeIssue.offline(offline.id)))
         XCTAssertNotNil(scope.authorizedRoots[good.id])
         XCTAssertNil(scope.authorizedRoots[offline.id])
@@ -136,6 +146,40 @@ final class ReferencedSourceScopeTests: XCTestCase {
         )
         XCTAssertTrue(sandboxIssues.contains(kmgccc_player.ReferencedSourceScopeIssue.permissionDenied(source.id)))
         XCTAssertTrue(sandboxScope.authorizedRoots.isEmpty)
+    }
+
+    /// An unsandboxed build reads referenced roots directly. Starting a scope
+    /// per source anyway pins one path chain of file descriptors per file for
+    /// the whole session, which exhausts the process descriptor budget once a
+    /// library holds a few dozen referenced files.
+    func testUnsandboxedSourcesStartNoSecurityScope() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = try makePaths(root)
+        let sources = (0..<8).map { index in
+            kmgccc_player.ReferencedSourceDescriptor(
+                rootBookmarkData: Data("bookmark-\(index)".utf8),
+                lastKnownPath: root.appendingPathComponent("track-\(index).m4a").path,
+                displayName: "track-\(index).m4a"
+            )
+        }
+        let store = kmgccc_player.ReferencedSourceStore(paths: paths)
+        for source in sources { try await store.save(source) }
+        let resolver = SourceBookmarkResolverSpy(url: root)
+        let scope = kmgccc_player.ReferencedSourceScope()
+
+        let issues = await scope.start(
+            descriptors: sources,
+            store: store,
+            bookmarkResolver: resolver,
+            requiresSecurityScope: false
+        )
+
+        XCTAssertTrue(issues.isEmpty)
+        XCTAssertEqual(sources.filter { scope.authorizedRoots[$0.id] != nil }.count, sources.count)
+        XCTAssertEqual(resolver.starts, 0)
+        scope.close()
+        XCTAssertEqual(resolver.stops, 0)
     }
 
     func testRegularBookmarkSourceIsAvailableOutsideSandboxPolicy() async throws {

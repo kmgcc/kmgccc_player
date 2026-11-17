@@ -1008,7 +1008,8 @@ struct AutomationLibraryHandler {
                         ttmlURL: existingAsset(track.resolvedTTMLURL()),
                         failures: trackFailures,
                         motionArtwork: track.motionArtwork,
-                        libraryRootURL: session.context.paths.rootURL
+                        libraryRootURL: session.context.paths.rootURL,
+                        mediaSelection: track.mediaSelection
                     )
                 }
                 let playlists = libraryPlaylists.map {
@@ -1404,6 +1405,10 @@ struct AutomationLibraryHandler {
                 return failure(.permissionDenied, "The App could not authorize the selected library location.")
             case .transactionInProgress:
                 return failure(.conflict, "Another library lifecycle operation is in progress.", retryable: true)
+            case .libraryChanged:
+                return failure(.conflict, "The selected library changed before activation. Select it again.", retryable: true)
+            case .registryCommitFailed:
+                return failure(.internalError, "The library index could not be saved.", retryable: true)
             case .activationFailed, .recoveryFailed:
                 return failure(.internalError, "The library could not be activated safely; the App preserved its recovery boundary.", retryable: true)
             }
@@ -1418,7 +1423,7 @@ struct AutomationLibraryHandler {
                 return failure(.invalidRequest, "The registered library failed validation and was not moved.")
             case .securityScopeDenied:
                 return failure(.permissionDenied, "The App could not authorize the library or destination location.")
-            case .transactionInProgress, .pendingRepair, .recoveryConflict:
+            case .transactionInProgress, .pendingRepair, .recoveryConflict, .pendingMutations:
                 return failure(.conflict, "The library has an unfinished lifecycle transaction; repair or retry after the App reports it is ready.", retryable: true)
             case .closeFailed, .copyFailed, .publicationFailed, .newSessionFailed,
                  .registryCommitFailed, .recoveryFailed:
@@ -1431,7 +1436,7 @@ struct AutomationLibraryHandler {
                 return failure(.invalidRequest, "The requested library is not a valid registered library.")
             case .securityScopeDenied:
                 return failure(.permissionDenied, "The App could not authorize the library location.")
-            case .transactionInProgress, .pendingRepair:
+            case .transactionInProgress, .pendingRepair, .pendingMutations:
                 return failure(.conflict, "The library has an unfinished removal transaction; repair or retry after the App reports it is ready.", retryable: true)
             case .closeFailed, .recycleFailed, .intentWriteFailed, .recoveryFailed:
                 return failure(.internalError, "The library could not be moved to the macOS Trash safely; the App preserved its recovery boundary.", retryable: true)

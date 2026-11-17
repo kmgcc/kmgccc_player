@@ -9,6 +9,7 @@ enum SkinPackageError: LocalizedError {
     case multipleLyrics
     case archive(String)
     case invalidManifest(String)
+    case folder(String)
 
     var errorDescription: String? {
         switch self {
@@ -18,6 +19,7 @@ enum SkinPackageError: LocalizedError {
         case .multipleLyrics: "每个场景支持一个原生歌词组件"
         case .archive(let message): message
         case .invalidManifest(let message): "皮肤定义无效：\(message)"
+        case .folder(let message): message
         }
     }
 }

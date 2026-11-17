@@ -21,6 +21,17 @@ nonisolated struct QQMusicArtworkCandidate: Codable, Equatable, Sendable {
     var confidence: Double?
 }
 
+/// One row of the catalog album's track list, already in disc/track order.
+nonisolated struct QQMusicAlbumSong: Codable, Equatable, Sendable {
+    var songMid: String?
+    var title: String?
+    var artist: String?
+    var album: String?
+    var duration: Int?
+    var discNumber: Int?
+    var trackNumber: Int?
+}
+
 nonisolated enum MetadataDetailSource: String, Codable, Sendable {
     case qqmusic
     case musicbrainz
@@ -427,11 +438,29 @@ actor QQMusicMetadataProvider: MetadataDetailProvider {
                     candidate: candidateTitle
                 ) else { continue }
 
-                // 2. Artist validation
+                // 2. Artist validation. 未知艺人 / 群星 name no one, so the
+                // title and duration decide. The duration has to confirm the
+                // match: without an artist it is the only disambiguator.
                 let sourceArtist = ExternalPlaybackTextNormalizer.normalizeArtist(artist)
-                let candidateArtist = ExternalPlaybackTextNormalizer.normalizeArtist(candidate.artist ?? candidate.artistName)
-                let artistScore = ExternalPlaybackTextNormalizer.artistSimilarity(sourceArtist, candidateArtist)
-                guard artistScore >= 0.22 else { continue }
+                let artistScore: Double
+                if LibraryNormalization.isUnknownArtist(artist) {
+                    if let duration, duration > 0 {
+                        guard ExternalPlaybackTextNormalizer.durationSupportsArtistlessMatch(
+                            source: Double(duration),
+                            candidate: Double(candidate.duration ?? 0)
+                        ) else { continue }
+                    }
+                    artistScore = 0.5
+                } else {
+                    let candidateArtist = ExternalPlaybackTextNormalizer.normalizeArtist(
+                        candidate.artist ?? candidate.artistName
+                    )
+                    artistScore = ExternalPlaybackTextNormalizer.artistSimilarity(
+                        sourceArtist,
+                        candidateArtist
+                    )
+                    guard artistScore >= 0.22 else { continue }
+                }
 
                 // 3. Duration/obvious conflict validation
                 if let duration, duration > 0, let candDuration = candidate.duration, candDuration > 0 {
@@ -536,7 +565,7 @@ final class MetadataDetailCoordinator {
     }
 
     func fetchArtistDetail(name: String, singerMid: String? = nil) async throws -> ArtistMetadataDetail {
-        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = LibraryNormalization.searchSeedArtist(name)
         guard !name.isEmpty || (singerMid?.isEmpty == false) else {
             throw MetadataDetailError.noResults
         }
@@ -549,8 +578,8 @@ final class MetadataDetailCoordinator {
     }
 
     func fetchAlbumDetail(album: String, artist: String, albumMid: String? = nil) async throws -> AlbumMetadataDetail {
-        let album = album.trimmingCharacters(in: .whitespacesAndNewlines)
-        let artist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        let album = LibraryNormalization.searchSeedAlbum(album)
+        let artist = LibraryNormalization.searchSeedArtist(artist)
         guard !album.isEmpty || (albumMid?.isEmpty == false) else {
             throw MetadataDetailError.noResults
         }
@@ -570,8 +599,11 @@ final class MetadataDetailCoordinator {
         duration: Int? = nil
     ) async throws -> TrackMetadataDetail {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let artist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
-        let album = album.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 未知艺人 / 群星 / 未知专辑 name nothing: a query carrying them
+        // narrows the search and lets the mismatch checks reject the right
+        // song. Drop them here so every caller searches the same way.
+        let artist = LibraryNormalization.searchSeedArtist(artist)
+        let album = LibraryNormalization.searchSeedAlbum(album)
         guard !title.isEmpty || (songMid?.isEmpty == false) else {
             throw MetadataDetailError.noResults
         }
@@ -678,6 +710,7 @@ actor QQMusicHelperProcess {
         let ok: Bool
         let candidates: [QQMusicArtworkCandidate]?
         let detail: QQMusicMetadataDetail?
+        let songs: [QQMusicAlbumSong]?
         let error: String?
     }
 
@@ -717,6 +750,12 @@ actor QQMusicHelperProcess {
         let album: String?
         let songMid: String?
         let duration: Int?
+    }
+
+    private struct AlbumSongsParams: Encodable, Sendable {
+        let album: String?
+        let artist: String?
+        let albumMid: String?
     }
 
     private let requestTimeout: TimeInterval = 15
@@ -830,19 +869,48 @@ actor QQMusicHelperProcess {
         )
     }
 
+    /// The catalog's own track order, sorted by disc and track number.
+    func fetchAlbumSongs(
+        album: String? = nil,
+        artist: String? = nil,
+        albumMid: String? = nil
+    ) async throws -> [QQMusicAlbumSong] {
+        let startedAt = Date()
+        let reply = try await perform(
+            method: "fetch_album_songs",
+            params: AlbumSongsParams(
+                album: trimmedOptional(album),
+                artist: trimmedOptional(artist),
+                albumMid: trimmedOptional(albumMid)
+            )
+        )
+        let songs = reply.response.songs ?? []
+        recordSuccess()
+        let durationMs = Int(Date().timeIntervalSince(startedAt) * 1_000)
+        Log.info(
+            "[QQMusicHelperProcess] response id=\(reply.id) method=fetch_album_songs songs=\(songs.count) durationMs=\(durationMs)",
+            category: .import
+        )
+        return songs
+    }
+
     func terminate() {
         stopProcess(failingPendingWith: QQMusicHelperError.cancelled)
     }
 
-    private func request<Params: Encodable & Sendable>(
+    private struct HelperReply: Sendable {
+        let id: String
+        let response: QQMusicHelperResponse
+    }
+
+    private func perform<Params: Encodable & Sendable>(
         method: String,
         params: Params
-    ) async throws -> [QQMusicArtworkCandidate] {
+    ) async throws -> HelperReply {
         try checkCircuitBreaker()
         try await ensureRunning()
 
         let id = UUID().uuidString
-        let startedAt = Date()
         let query = querySummary(params)
         Log.info("[QQMusicHelperProcess] request id=\(id) method=\(method) query=\(query)", category: .import)
 
@@ -874,11 +942,20 @@ actor QQMusicHelperProcess {
             throw QQMusicHelperError.requestFailed(message)
         }
 
-        let candidates = response.candidates ?? []
+        return HelperReply(id: id, response: response)
+    }
+
+    private func request<Params: Encodable & Sendable>(
+        method: String,
+        params: Params
+    ) async throws -> [QQMusicArtworkCandidate] {
+        let startedAt = Date()
+        let reply = try await perform(method: method, params: params)
+        let candidates = reply.response.candidates ?? []
         recordSuccess()
         let durationMs = Int(Date().timeIntervalSince(startedAt) * 1_000)
         let topConfidence = candidates.compactMap(\.confidence).max() ?? 0
-        Log.info("[QQMusicHelperProcess] response id=\(id) method=\(method) candidates=\(candidates.count) topConfidence=\(String(format: "%.2f", topConfidence)) durationMs=\(durationMs)", category: .import)
+        Log.info("[QQMusicHelperProcess] response id=\(reply.id) method=\(method) candidates=\(candidates.count) topConfidence=\(String(format: "%.2f", topConfidence)) durationMs=\(durationMs)", category: .import)
         return candidates
     }
 
@@ -886,53 +963,18 @@ actor QQMusicHelperProcess {
         method: String,
         params: Params
     ) async throws -> QQMusicMetadataDetail {
-        try checkCircuitBreaker()
-        try await ensureRunning()
-
-        let id = UUID().uuidString
         let startedAt = Date()
-        let query = querySummary(params)
-        Log.info("[QQMusicHelperProcess] request id=\(id) method=\(method) query=\(query)", category: .import)
-
-        let response: QQMusicHelperResponse
-        do {
-            response = try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
-                    self.enqueueRequest(
-                        id: id,
-                        method: method,
-                        params: params,
-                        continuation: continuation
-                    )
-                }
-            } onCancel: {
-                Task {
-                    await self.failPendingRequest(id: id, error: QQMusicHelperError.cancelled)
-                }
-            }
-        } catch {
-            Log.warning("[QQMusicHelperProcess] request failed id=\(id) method=\(method) reason=\(error)", category: .import)
-            throw error
-        }
-
-        guard response.ok else {
-            let message = response.error ?? "unknown helper error"
-            recordFailure(reason: message)
-            Log.warning("[QQMusicHelperProcess] request failed id=\(id) method=\(method) reason=\(message)", category: .import)
-            throw QQMusicHelperError.requestFailed(message)
-        }
-
-        guard let detail = response.detail else {
+        let reply = try await perform(method: method, params: params)
+        guard let detail = reply.response.detail else {
             let message = "missing metadata detail"
             recordFailure(reason: message)
-            Log.warning("[QQMusicHelperProcess] request failed id=\(id) method=\(method) reason=\(message)", category: .import)
+            Log.warning("[QQMusicHelperProcess] request failed id=\(reply.id) method=\(method) reason=\(message)", category: .import)
             throw QQMusicHelperError.invalidResponse(message)
         }
-
         recordSuccess()
         let durationMs = Int(Date().timeIntervalSince(startedAt) * 1_000)
         let confidence = detail.confidence ?? detail.metadataConfidence ?? 0
-        Log.info("[QQMusicHelperProcess] response id=\(id) method=\(method) detail=1 confidence=\(String(format: "%.2f", confidence)) durationMs=\(durationMs)", category: .import)
+        Log.info("[QQMusicHelperProcess] response id=\(reply.id) method=\(method) detail=1 confidence=\(String(format: "%.2f", confidence)) durationMs=\(durationMs)", category: .import)
         return detail
     }
 

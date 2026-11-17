@@ -309,6 +309,10 @@ nonisolated struct LibraryOperationTaskDescriptor: Codable, Equatable, Sendable,
         }
         currentPhase = currentPhase ?? "recovery"
     }
+
+    fileprivate var wasInterruptedAfterRestart: Bool {
+        partialFailureSummaries.contains("The App restarted before this Job reached a terminal state.")
+    }
 }
 
 private struct PersistedLibraryJobs: Codable {
@@ -324,7 +328,7 @@ private struct PersistedLibraryJobs: Codable {
 /// Small, atomic JSON persistence for the App-owned Job observation surface.
 /// The actual library mutations remain owned by their existing stores; this
 /// file only makes Job state and retry metadata durable across App launches.
-private struct LibraryOperationJobStore {
+private struct LibraryOperationJobStore: Sendable {
     let fileURL: URL
 
     func load() -> [LibraryOperationTaskDescriptor] {
@@ -387,6 +391,9 @@ final class LibraryOperationCoordinator {
     private let libraryID: UUID?
     private let sessionGeneration: UInt64?
     private let jobStore: LibraryOperationJobStore?
+    private let slowQuiescenceDelay: Duration
+    private let jobPersistenceQueue = DispatchQueue(label: "player.library.jobs.persistence", qos: .utility)
+    private var pendingProgressPersistence: Task<Void, Never>?
 
     /// Live task snapshots ordered by creation time. A terminal descriptor is
     /// published through `onTasksDidChange` first and removed from this list
@@ -404,23 +411,29 @@ final class LibraryOperationCoordinator {
     /// Invoked on the MainActor after every task-state mutation. Observers
     /// copy `taskDescriptors` inside the callback to refresh their snapshot.
     @MainActor var onTasksDidChange: (@MainActor () -> Void)?
+    @MainActor var onSlowQuiescence: (@MainActor ([LibraryTaskKind]) -> Void)?
 
     init(
         libraryID: UUID? = nil,
         sessionGeneration: UInt64? = nil,
-        persistenceURL: URL? = nil
+        persistenceURL: URL? = nil,
+        slowQuiescenceDelay: Duration = .seconds(15)
     ) {
         self.libraryID = libraryID
         self.sessionGeneration = sessionGeneration
+        self.slowQuiescenceDelay = slowQuiescenceDelay
         self.jobStore = persistenceURL.map(LibraryOperationJobStore.init(fileURL:))
 
         guard let jobStore = self.jobStore else { return }
         var restored = jobStore.load()
+        let interruptedIDs = Set(restored.filter { !$0.state.isTerminal }.map(\.id))
         let recoveryDate = Date()
         for index in restored.indices where !restored[index].state.isTerminal {
             restored[index].markInterruptedAfterRestart(at: recoveryDate)
         }
-        self.recentTaskDescriptors = Array(restored.prefix(recentTaskLimit))
+        let interrupted = restored.filter { interruptedIDs.contains($0.id) || $0.wasInterruptedAfterRestart }
+        let previousHistory = restored.filter { !interruptedIDs.contains($0.id) && !$0.wasInterruptedAfterRestart }
+        self.recentTaskDescriptors = interrupted + Array(previousHistory.prefix(recentTaskLimit))
         jobStore.save(self.recentTaskDescriptors)
     }
 
@@ -602,7 +615,7 @@ final class LibraryOperationCoordinator {
     /// Calls from outside any coordinated operation are silent no-ops.
     func recordCheckpoint(_ label: String) {
         guard let operationID = LibraryOperationContext.current?.operationID else { return }
-        mutateDescriptor(id: operationID) { descriptor in
+        mutateDescriptor(id: operationID, debouncePersistence: true) { descriptor in
             descriptor.markCheckpointed(label: label, at: Date())
         }
     }
@@ -612,7 +625,7 @@ final class LibraryOperationCoordinator {
     /// summary list then classifies the result as partialFailure.
     func recordPartialFailure(_ summary: String, itemID: UUID? = nil) {
         guard let operationID = LibraryOperationContext.current?.operationID else { return }
-        mutateDescriptor(id: operationID) { descriptor in
+        mutateDescriptor(id: operationID, debouncePersistence: true) { descriptor in
             descriptor.appendPartialFailure(summary, itemID: itemID)
         }
     }
@@ -621,7 +634,7 @@ final class LibraryOperationCoordinator {
     /// outside a coordinated operation are ignored, just like checkpoints.
     func recordProgress(completedCount: Int, totalCount: Int?, phase: String? = nil) {
         guard let operationID = LibraryOperationContext.current?.operationID else { return }
-        mutateDescriptor(id: operationID) { descriptor in
+        mutateDescriptor(id: operationID, debouncePersistence: true) { descriptor in
             descriptor.updateProgress(
                 completedCount: completedCount,
                 totalCount: totalCount,
@@ -662,12 +675,37 @@ final class LibraryOperationCoordinator {
     }
 
     func cancelAndWait() async {
+        let warningTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                do { try await Task.sleep(for: self.slowQuiescenceDelay) }
+                catch { return }
+                guard !self.operations.isEmpty else { return }
+                let pending = self.taskDescriptors.map { "\($0.kind.rawValue):\($0.id.uuidString)" }
+                    .joined(separator: ", ")
+                Log.warning("[LibraryJobs] waiting for cancelled operations to finish: \(pending)", category: .library)
+                self.onSlowQuiescence?(self.taskDescriptors.map(\.kind))
+            }
+        }
+        defer { warningTask.cancel() }
         while !operations.isEmpty {
             let pending = operations
             pending.values.forEach { $0.cancel() }
             for operation in pending.values {
                 await operation.wait()
             }
+        }
+        await flushPersistence()
+    }
+
+    func flushPersistence() async {
+        if pendingProgressPersistence != nil {
+            pendingProgressPersistence?.cancel()
+            pendingProgressPersistence = nil
+            persistJobs()
+        }
+        await withCheckedContinuation { continuation in
+            jobPersistenceQueue.async { continuation.resume() }
         }
     }
 
@@ -731,9 +769,9 @@ final class LibraryOperationCoordinator {
         }
         if let finalDescriptor = descriptor(id: operationID) {
             recentTaskDescriptors.insert(finalDescriptor, at: 0)
-            if recentTaskDescriptors.count > recentTaskLimit {
-                recentTaskDescriptors.removeLast(recentTaskDescriptors.count - recentTaskLimit)
-            }
+            let interrupted = recentTaskDescriptors.filter(\.wasInterruptedAfterRestart)
+            let history = recentTaskDescriptors.filter { !$0.wasInterruptedAfterRestart }
+            recentTaskDescriptors = interrupted + Array(history.prefix(recentTaskLimit))
         }
         retire(operationID: operationID)
         // The first notification exposes the terminal live snapshot for UI
@@ -748,11 +786,18 @@ final class LibraryOperationCoordinator {
 
     private func mutateDescriptor(
         id: UUID,
+        debouncePersistence: Bool = false,
         _ transform: (inout LibraryOperationTaskDescriptor) -> Void
     ) {
         guard let index = taskDescriptors.firstIndex(where: { $0.id == id }) else { return }
         transform(&taskDescriptors[index])
-        persistJobs()
+        if debouncePersistence {
+            scheduleProgressPersistence()
+        } else {
+            pendingProgressPersistence?.cancel()
+            pendingProgressPersistence = nil
+            persistJobs()
+        }
         notifyTasksDidChange()
     }
 
@@ -778,7 +823,23 @@ final class LibraryOperationCoordinator {
                 if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
                 return $0.id.uuidString < $1.id.uuidString
             }
-        jobStore.save(Array(liveAndRecent.prefix(recentTaskLimit)))
+        let activeIDs = Set(taskDescriptors.map(\.id))
+        let active = liveAndRecent.filter { activeIDs.contains($0.id) }
+        let interrupted = liveAndRecent.filter { !activeIDs.contains($0.id) && $0.wasInterruptedAfterRestart }
+        let recent = liveAndRecent.filter { !activeIDs.contains($0.id) && !$0.wasInterruptedAfterRestart }
+        let snapshot = active + interrupted + Array(recent.prefix(recentTaskLimit))
+        jobPersistenceQueue.async { jobStore.save(snapshot) }
+    }
+
+    private func scheduleProgressPersistence() {
+        guard jobStore != nil, pendingProgressPersistence == nil else { return }
+        pendingProgressPersistence = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .milliseconds(250)) }
+            catch { return }
+            guard let self else { return }
+            self.pendingProgressPersistence = nil
+            self.persistJobs()
+        }
     }
 
     private func notifyTasksDidChange() {
