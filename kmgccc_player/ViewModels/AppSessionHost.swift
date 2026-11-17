@@ -2547,6 +2547,14 @@ final class AppSessionHost: ObservableObject {
                 lastForegroundLibraryRescan = (libraryID, ProcessInfo.processInfo.systemUptime)
             }
             if session.context.mode == .referenced {
+                // A healthy file monitor already reconciles every change
+                // through FSEvents, so a foreground rescan would repeat the
+                // same work. Keep it only as the fallback for a stopped
+                // listener or a failed automatic scan; mount and unmount
+                // notifications never take this path.
+                if fromForeground, await referencedMonitorIsHealthy(session) {
+                    return
+                }
                 do {
                     try await refreshAllReferencedSources(automatic: true)
                 } catch {
@@ -2559,6 +2567,17 @@ final class AppSessionHost: ObservableObject {
                 await monitor.markDirty(sourceIDs: [libraryID], fullScan: true)
             }
         }
+    }
+
+    /// The change monitor publishes one scan state per watched root, including
+    /// the library root, and clears the snapshot when its event stream stops.
+    /// An empty snapshot therefore means no listener is running; a failed
+    /// state means the last automatic reconcile failed, so activating the App
+    /// remains the fallback retry.
+    private func referencedMonitorIsHealthy(_ session: LibrarySession) async -> Bool {
+        guard let monitor = session.libraryChangeMonitor else { return false }
+        let states = await monitor.sourceStateSnapshot()
+        return !states.isEmpty && !states.values.contains(.failed)
     }
 
 
