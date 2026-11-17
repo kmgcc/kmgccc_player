@@ -314,7 +314,7 @@ final class SkinSystemTests: XCTestCase {
         XCTAssertTrue(try node(#"{"type":"text","text":"a","filter":{"type":"custom","library":"fx.metallib","function":"ripple"}}"#).referencedAssets.contains("fx.metallib"))
         XCTAssertNoThrow(try node(#"{"type":"text","text":"=str(offsets(measureEach(split(\"a b c\", \" \"), 20, \"heavy\"), 4)[1])","extrude":{"depth":6,"angle":30},"shadow":[{"radius":2},{"radius":8}]}"#))
         XCTAssertNoThrow(try node(#"{"type":"particles","lifetime":2,"angle":-30,"spread":10,"trail":0.3,"count":6,"turbulence":40,"wander":0.6,"curve":0.1}"#))
-        let comet = try node(#"{"type":"comet","frame":{"x":120,"y":80,"width":600,"height":400},"orbit":[140,90],"progress":"=fract(time)","angle":90,"sweep":-240,"trail":0.16,"size":3,"width":3,"color":"#FFFFFF"}"#)
+        let comet = try node(##"{"type":"comet","frame":{"x":120,"y":80,"width":600,"height":400},"orbit":[140,90],"progress":"=fract(time)","angle":90,"sweep":-240,"trail":0.16,"size":3,"width":3,"color":"#FFFFFF"}"##)
         XCTAssertEqual(comet.type, "comet")
 
         // Kinetic layout: every word gets a box, boxes never overlap, the block fits the safe area.

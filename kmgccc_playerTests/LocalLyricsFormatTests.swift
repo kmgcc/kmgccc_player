@@ -251,8 +251,11 @@ final class LocalLyricsFormatTests: XCTestCase {
             return XCTFail("Expected normalized line")
         }
         XCTAssertEqual(normalizedLine.words[0].text, "Hello ")
-        XCTAssertEqual(normalizedLine.words[1].text, "World")
+        // The space before a word moves to the previous word so the joined
+        // text keeps its original spacing.
+        XCTAssertEqual(normalizedLine.words[1].text, "World ")
         XCTAssertEqual(normalizedLine.words[2].text, "End")
+        XCTAssertEqual(normalizedLine.words.map(\.text).joined(), "Hello World End")
     }
 
     // MARK: - Helpers

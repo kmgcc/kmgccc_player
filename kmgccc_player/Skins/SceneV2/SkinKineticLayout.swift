@@ -623,7 +623,17 @@ enum SkinKineticLayout {
     /// row, or out of the centre. Specials enter along their own shape.
     private static func enter(_ parts: inout [Segment], archetype: Archetype, hero: Int, align: Int, complexity c: Double, draws: Draws) {
         func set(_ index: Int, _ x: Double, _ y: Double) {
-            let length = max(0.001, hypot(x, y))
+            let length = hypot(x, y)
+            // A zero vector has no direction: a word can sit exactly on the
+            // composition centre in orbit mode, and the hero blend cancels to
+            // zero when its word enters straight down. Skins read `ex`/`ey` as
+            // a unit offset, so keep the default "rises from below" instead of
+            // handing them 0, 0.
+            guard length > 0.000_1 else {
+                parts[index].ex = 0
+                parts[index].ey = 1
+                return
+            }
             parts[index].ex = x / length; parts[index].ey = y / length
         }
         let cx = parts.map(\.x).reduce(0, +) / Double(parts.count), cy = parts.map(\.y).reduce(0, +) / Double(parts.count)

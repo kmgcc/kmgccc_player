@@ -438,7 +438,7 @@ final class TrackIdentityResolverTests: XCTestCase {
 
     // MARK: - Sidecar round trip
 
-    func testImportProvenanceRoundTripsThroughSidecarSchemaNine() throws {
+    func testImportProvenanceRoundTripsThroughSidecarSchema() throws {
         let sidecar = kmgccc_player.TrackSidecar(
             id: UUID(),
             title: "t",
@@ -462,7 +462,7 @@ final class TrackIdentityResolverTests: XCTestCase {
                 contentDigest: "deadbeef"
             )
         )
-        XCTAssertEqual(sidecar.schemaVersion, 9)
+        XCTAssertEqual(sidecar.schemaVersion, kmgccc_player.TrackSidecar.currentSchemaVersion)
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
