@@ -53,14 +53,14 @@ scripts/build_and_run.sh 使用运行锁，把这项检查放在构建前和启�
 
 ## 歌词组件 Swift Package 前置
 
-歌词组件通过 Swift Package `MelismaKit` 接入，本地 checkout 是 `../MelismaKit`。修改组件原项目的源码不会改变 App 当前已经解析的远程依赖；因此本机测试不能只看组件仓库的提交，还要确认 App 的依赖图和实际编译输入：
+歌词组件通过 Swift Package `MelismaKit` 接入。日常构建按 Xcode 工程配置接受本地或远程来源，远程版本由工程的版本约束和 `Package.resolved` 管理。
 
-1. 默认运行 `./scripts/check-melismakit-dependency.sh --require-local`，确认 Xcode 工程引用本地 `MelismaKit` checkout，而不是 `XCRemoteSwiftPackageReference`。
-2. 构建使用 `xcodebuild -verbose` 保存的日志，再用同一脚本的 `--build-log` 检查编译输入包含 `MelismaKit/Sources/MelismaKit`，且没有 `SourcePackages/checkouts/melismakit`。
-3. `Package.resolved` 中残留旧远程 pin 只能作为复核信号；真正决定本次构建来源的是工程依赖图和编译日志。不要因为只修改了 `MelismaKit` 就假设 App 已经使用了这次修改。
-4. 只有明确进行远程依赖构建时才使用 `--require-remote`：组件发布新版本 tag 后，App 必须重新解析依赖并核对 `Package.resolved` 的新 revision。
+1. 默认运行 `./scripts/check-melismakit-dependency.sh --auto`，根据工程引用检查来源。现有远程版本可直接参与构建，缺少远程 pin 时由 Xcode 在构建期间解析。
+2. 构建使用 `xcodebuild -verbose` 保存日志，再用同一脚本的 `--build-log` 补充核对来源。增量构建可能复用缓存，日志缺少组件源码路径时仅提示。工程与日志来源冲突时阻塞。
+3. 当前任务直接修改本地组件时，使用 `--require-local` 或 `MELISMAKIT_EXPECTED_SOURCE=local`，并确认 App 采用这次组件修改。本地 checkout 为 `../MelismaKit`。
+4. 更新远程组件版本时，重新解析依赖并核对 `Package.resolved` 中的 revision。日常构建继续使用已解析的版本。
 
-`build_and_run.sh`、`build_app.sh` 和 `verify.sh` 默认执行本地依赖检查；远程构建必须显式设置 `MELISMAKIT_EXPECTED_SOURCE=remote`，不能用手动 `open` 或其他构建入口绕过依赖和进程检查。
+`build_and_run.sh`、`build_app.sh` 和 `verify.sh` 统一默认 `MELISMAKIT_EXPECTED_SOURCE=auto`。需要限定来源时可显式设置 `local` 或 `remote`。主 App 启动沿用标准运行入口和进程检查。
 
 ## 构建与测试节奏
 
